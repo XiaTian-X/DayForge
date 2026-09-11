@@ -1,7 +1,7 @@
 """Authentication service layer with business logic."""
 import bcrypt
 from datetime import datetime, timedelta, timezone
-from jose import jwt
+import jwt
 
 from src.config import settings
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -39,5 +39,5 @@ def verify_token(token: str) -> dict | None:
     try:
         payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
         return payload
-    except jwt.JWTError:
+    except jwt.PyJWTError:
         return None

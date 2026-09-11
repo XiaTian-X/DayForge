@@ -1,7 +1,7 @@
 """Tests for authentication service layer."""
 import pytest
 from datetime import datetime, timedelta, timezone
-from jose import jwt
+import jwt
 
 from src.auth.service import (
     verify_password,

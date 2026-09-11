@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlmodel import SQLModel, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import text
-from jose import jwt
+import jwt
 from datetime import datetime, timedelta, timezone
 import asyncio
 
