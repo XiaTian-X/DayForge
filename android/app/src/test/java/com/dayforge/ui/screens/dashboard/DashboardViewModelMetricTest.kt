@@ -26,6 +26,7 @@ import com.dayforge.domain.model.MetricWithLatestValue
 import com.dayforge.domain.service.ActiveTimerStateProvider
 import com.dayforge.domain.service.CheckInService
 import com.dayforge.domain.service.FailureChecker
+import com.dayforge.domain.service.HabitCompletionCoordinator
 import com.dayforge.domain.service.HabitStatusCalculator
 import com.dayforge.domain.service.HabitLifecycleCoordinator
 import com.dayforge.domain.service.HabitTimerCoordinator
@@ -116,10 +117,12 @@ class DashboardViewModelMetricTest {
         )
         val linkedMetricCoordinator =
             LinkedMetricCoordinator(context, mockPreferencesManager, metricRepository, repository)
+        val completionCoordinator =
+            HabitCompletionCoordinator(context, checkInService, repository, metricRepository)
         viewModel = DashboardViewModel(
             context,
             repository,
-            checkInService,
+            completionCoordinator,
             DashboardHabitListBuilder(habitStatusCalculator),
             DashboardTimeWindowTicker(repository, mockPreferencesManager),
             HabitLifecycleCoordinator(context, repository),
