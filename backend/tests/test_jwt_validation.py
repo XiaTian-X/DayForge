@@ -2,7 +2,7 @@
 import pytest
 from httpx import AsyncClient, ASGITransport
 from datetime import datetime, timedelta, timezone
-from jose import jwt
+import jwt
 
 from src.main import app
 from src.config import settings

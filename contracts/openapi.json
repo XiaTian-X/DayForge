@@ -548,6 +548,46 @@
         "title": "SyncBootstrapResponse",
         "type": "object"
       },
+      "SyncChangeResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "changed_at": {
+            "title": "Changed At"
+          },
+          "entity_type": {
+            "title": "Entity Type"
+          },
+          "entity_uuid": {
+            "title": "Entity Uuid"
+          },
+          "operation": {
+            "title": "Operation"
+          },
+          "origin_device_id": {
+            "title": "Origin Device Id"
+          },
+          "payload": {
+            "title": "Payload"
+          },
+          "revision": {
+            "title": "Revision"
+          },
+          "sequence": {
+            "title": "Sequence"
+          }
+        },
+        "required": [
+          "sequence",
+          "entity_type",
+          "entity_uuid",
+          "operation",
+          "revision",
+          "payload",
+          "changed_at"
+        ],
+        "title": "SyncChangeResponse",
+        "type": "object"
+      },
       "SyncOperationRequest": {
         "additionalProperties": false,
         "properties": {
@@ -604,6 +644,55 @@
           "action"
         ],
         "title": "SyncOperationRequest",
+        "type": "object"
+      },
+      "SyncOperationResult": {
+        "additionalProperties": false,
+        "properties": {
+          "base_entity": {
+            "title": "Base Entity"
+          },
+          "conflict_kind": {
+            "title": "Conflict Kind"
+          },
+          "conflicting_fields": {
+            "title": "Conflicting Fields"
+          },
+          "entity": {
+            "title": "Entity"
+          },
+          "entity_type": {
+            "title": "Entity Type"
+          },
+          "entity_uuid": {
+            "title": "Entity Uuid"
+          },
+          "error_code": {
+            "title": "Error Code"
+          },
+          "local_entity": {
+            "title": "Local Entity"
+          },
+          "message": {
+            "title": "Message"
+          },
+          "operation_id": {
+            "title": "Operation Id"
+          },
+          "revision": {
+            "title": "Revision"
+          },
+          "status": {
+            "title": "Status"
+          }
+        },
+        "required": [
+          "operation_id",
+          "entity_type",
+          "entity_uuid",
+          "status"
+        ],
+        "title": "SyncOperationResult",
         "type": "object"
       },
       "SyncPullResponse": {
@@ -811,6 +900,34 @@
           "occurred_at"
         ],
         "title": "TimerCommandRequest",
+        "type": "object"
+      },
+      "TimerCommandResult": {
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "title": "Command Id"
+          },
+          "error_code": {
+            "title": "Error Code"
+          },
+          "message": {
+            "title": "Message"
+          },
+          "session": {},
+          "session_id": {
+            "title": "Session Id"
+          },
+          "status": {
+            "title": "Status"
+          }
+        },
+        "required": [
+          "command_id",
+          "session_id",
+          "status"
+        ],
+        "title": "TimerCommandResult",
         "type": "object"
       },
       "TimerHeartbeatRequest": {
@@ -1225,6 +1342,13 @@
       },
       "ValidationError": {
         "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
           "loc": {
             "items": {
               "anyOf": [
