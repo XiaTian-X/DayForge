@@ -1,0 +1,15 @@
+{
+  "server_instance_id": "90000000-0000-4000-8000-000000000001",
+  "sync_epoch": "91000000-0000-4000-8000-000000000002",
+  "protocol_version": 4,
+  "capabilities": [
+    "sync_v2",
+    "timer_commands",
+    "timer_takeover",
+    "duration_day_allocations",
+    "iana_timezones",
+    "device_capabilities",
+    "household_admin"
+  ],
+  "server_time": "2026-08-03T15:01:00Z"
+}

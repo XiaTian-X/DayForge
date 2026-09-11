@@ -1,0 +1,29 @@
+{
+  "results": [
+    {
+      "command_id": "81000000-0000-4000-8000-000000000004",
+      "session_id": "80000000-0000-4000-8000-000000000001",
+      "status": "applied",
+      "session": {
+        "session_id": "80000000-0000-4000-8000-000000000001",
+        "activity_uuid": "20000000-0000-4000-8000-000000000002",
+        "state": "completed",
+        "controller_device_id": "00000000-0000-4000-8000-000000000001",
+        "control_generation": 1,
+        "revision": 4,
+        "next_command_sequence": 5,
+        "started_at": "2026-08-03T15:59:30Z",
+        "state_changed_at": "2026-08-03T16:01:30Z",
+        "ended_at": "2026-08-03T16:01:30Z",
+        "timezone": "Asia/Shanghai",
+        "is_countdown": false,
+        "target_seconds": 60,
+        "max_duration_seconds": 180,
+        "active_elapsed_ms": 60000,
+        "last_heartbeat_at": "2026-08-03T16:01:31Z",
+        "completed_event_id": "80000000-0000-4000-8000-000000000001"
+      }
+    }
+  ],
+  "server_time": "2026-08-03T16:01:31Z"
+}

@@ -1,0 +1,22 @@
+{
+  "device_id": "00000000-0000-4000-8000-000000000001",
+  "operations": [
+    {
+      "operation_id": "71000000-0000-4000-8000-000000000001",
+      "entity_type": "plan_node",
+      "entity_uuid": "11000000-0000-4000-8000-000000000001",
+      "action": "upsert",
+      "payload": {
+        "node_kind": "goal",
+        "title": "Original title",
+        "description": "Original description",
+        "goal": {
+          "evaluation_policy": {
+            "schema_version": 1,
+            "type": "manual"
+          }
+        }
+      }
+    }
+  ]
+}

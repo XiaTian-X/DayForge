@@ -21,6 +21,8 @@ Room schema、计时、后台任务或 Android 平台行为变化时还需要相
 
 协议、时间、账户、数据库或同步改动必须启动临时后端，至少覆盖：登录、设备注册、首次同步、增量 push/pull、重复提交幂等、创建/修改/删除、账户隔离、冲突、时间与计时、备份恢复。
 
+同步协议的仓库级 JSON 样例位于 `contracts/sync-v2/`。后端的 `test_sync_contract_matrix.py` 和 Android 的 `SyncV2ContractFixtureTest` 必须读取这些共享文件，不能在各自模块复制一份。修改 `contracts/` 会同时触发两个 CI 模块，避免只验证单端。
+
 ## 必须长期覆盖的异常矩阵
 
 - 无网络、有移动网络但局域网服务器不可达、Wi-Fi 可用但端口不可达。

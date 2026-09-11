@@ -1,0 +1,39 @@
+{
+  "changes": [
+    {
+      "sequence": 43,
+      "entity_type": "metric_observation",
+      "entity_uuid": "50000000-0000-4000-8000-000000000001",
+      "operation": "upsert",
+      "revision": 1,
+      "payload": {
+        "metric_uuid": "30000000-0000-4000-8000-000000000001",
+        "value": "60.5",
+        "unit": "kg",
+        "occurred_at": "2026-01-01T07:30:00Z",
+        "local_date": "2025-12-31",
+        "timezone": "America/Los_Angeles",
+        "source_type": "app"
+      },
+      "changed_at": "2026-08-03T15:00:07Z",
+      "origin_device_id": "00000000-0000-4000-8000-000000000001"
+    },
+    {
+      "sequence": 44,
+      "entity_type": "plan_node",
+      "entity_uuid": "10000000-0000-4000-8000-000000000001",
+      "operation": "delete",
+      "revision": 2,
+      "payload": {
+        "node_kind": "goal",
+        "title": "Health",
+        "deleted_at": "2026-08-03T15:00:08Z"
+      },
+      "changed_at": "2026-08-03T15:00:08Z",
+      "origin_device_id": "00000000-0000-4000-8000-000000000001"
+    }
+  ],
+  "next_cursor": 44,
+  "has_more": false,
+  "server_time": "2026-08-03T15:00:09Z"
+}

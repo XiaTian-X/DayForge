@@ -1,0 +1,32 @@
+{
+  "results": [
+    {
+      "operation_id": "71000000-0000-4000-8000-000000000003",
+      "entity_type": "plan_node",
+      "entity_uuid": "11000000-0000-4000-8000-000000000001",
+      "status": "conflict",
+      "revision": 2,
+      "error_code": "REVISION_CONFLICT",
+      "message": "The same fields changed on another device",
+      "entity": {
+        "node_kind": "goal",
+        "title": "Remote title",
+        "description": "Original description"
+      },
+      "base_entity": {
+        "node_kind": "goal",
+        "title": "Original title",
+        "description": "Original description"
+      },
+      "local_entity": {
+        "node_kind": "goal",
+        "title": "Local title",
+        "description": "Original description"
+      },
+      "conflicting_fields": [
+        "title"
+      ],
+      "conflict_kind": "overlapping_fields"
+    }
+  ]
+}

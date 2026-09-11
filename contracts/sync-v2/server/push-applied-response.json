@@ -1,0 +1,21 @@
+{
+  "results": [
+    {
+      "operation_id": "70000000-0000-4000-8000-000000000001",
+      "entity_type": "plan_node",
+      "entity_uuid": "10000000-0000-4000-8000-000000000001",
+      "status": "applied",
+      "revision": 1,
+      "entity": {
+        "node_kind": "goal",
+        "title": "Health",
+        "goal": {
+          "evaluation_policy": {
+            "schema_version": 1,
+            "type": "manual"
+          }
+        }
+      }
+    }
+  ]
+}

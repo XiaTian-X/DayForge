@@ -1,0 +1,130 @@
+{
+  "device_id": "00000000-0000-4000-8000-000000000001",
+  "operations": [
+    {
+      "operation_id": "70000000-0000-4000-8000-000000000001",
+      "entity_type": "plan_node",
+      "entity_uuid": "10000000-0000-4000-8000-000000000001",
+      "action": "upsert",
+      "payload": {
+        "node_kind": "goal",
+        "title": "Health",
+        "goal": {
+          "evaluation_policy": {
+            "schema_version": 1,
+            "type": "manual"
+          }
+        }
+      }
+    },
+    {
+      "operation_id": "70000000-0000-4000-8000-000000000002",
+      "entity_type": "plan_node",
+      "entity_uuid": "20000000-0000-4000-8000-000000000001",
+      "action": "upsert",
+      "payload": {
+        "node_kind": "activity",
+        "title": "Drink water",
+        "parent_uuid": "10000000-0000-4000-8000-000000000001",
+        "activity": {
+          "tracking_mode": "check",
+          "recurrence_rule": {
+            "schema_version": 1,
+            "type": "daily",
+            "interval": 1
+          },
+          "completion_policy": "recurring",
+          "target_value": "1",
+          "failure_policy": {
+            "schema_version": 1,
+            "type": "strict"
+          },
+          "timezone": "America/New_York"
+        }
+      }
+    },
+    {
+      "operation_id": "70000000-0000-4000-8000-000000000003",
+      "entity_type": "plan_node",
+      "entity_uuid": "20000000-0000-4000-8000-000000000002",
+      "action": "upsert",
+      "payload": {
+        "node_kind": "activity",
+        "title": "Focus for one minute",
+        "parent_uuid": "10000000-0000-4000-8000-000000000001",
+        "activity": {
+          "tracking_mode": "duration",
+          "is_countdown": false,
+          "recurrence_rule": {
+            "schema_version": 1,
+            "type": "daily",
+            "interval": 1
+          },
+          "completion_policy": "recurring",
+          "target_value": "60",
+          "target_unit": "second",
+          "failure_policy": {
+            "schema_version": 1,
+            "type": "strict"
+          },
+          "timezone": "Asia/Shanghai"
+        }
+      }
+    },
+    {
+      "operation_id": "70000000-0000-4000-8000-000000000004",
+      "entity_type": "metric",
+      "entity_uuid": "30000000-0000-4000-8000-000000000001",
+      "action": "upsert",
+      "payload": {
+        "name": "Weight",
+        "unit": "kg",
+        "decimal_places": 1,
+        "aggregation_type": "average"
+      }
+    },
+    {
+      "operation_id": "70000000-0000-4000-8000-000000000005",
+      "entity_type": "activity_event",
+      "entity_uuid": "40000000-0000-4000-8000-000000000001",
+      "action": "upsert",
+      "payload": {
+        "activity_uuid": "20000000-0000-4000-8000-000000000001",
+        "event_type": "check_in",
+        "occurred_at": "2026-11-01T05:30:00Z",
+        "local_date": "2026-11-01",
+        "timezone": "America/New_York",
+        "source_type": "app"
+      }
+    },
+    {
+      "operation_id": "70000000-0000-4000-8000-000000000006",
+      "entity_type": "metric_observation",
+      "entity_uuid": "50000000-0000-4000-8000-000000000001",
+      "action": "upsert",
+      "payload": {
+        "metric_uuid": "30000000-0000-4000-8000-000000000001",
+        "value": "60.5",
+        "unit": "kg",
+        "occurred_at": "2026-01-01T07:30:00Z",
+        "local_date": "2025-12-31",
+        "timezone": "America/Los_Angeles",
+        "source_type": "app"
+      }
+    },
+    {
+      "operation_id": "70000000-0000-4000-8000-000000000007",
+      "entity_type": "activity_metric_link",
+      "entity_uuid": "60000000-0000-4000-8000-000000000001",
+      "action": "upsert",
+      "payload": {
+        "activity_uuid": "20000000-0000-4000-8000-000000000001",
+        "metric_uuid": "30000000-0000-4000-8000-000000000001",
+        "coefficient": "1",
+        "show_in_activity_detail": true,
+        "prompt_on_complete": true,
+        "is_active": true
+      }
+    }
+  ]
+}
