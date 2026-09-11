@@ -22,7 +22,7 @@ import com.dayforge.R
 import com.dayforge.domain.model.CardColorStyle
 import com.dayforge.ui.components.CompactMetricCard
 import com.dayforge.ui.components.MetricCard
-import com.dayforge.ui.screens.dashboard.MetricWithLatestValue
+import com.dayforge.domain.model.MetricWithLatestValue
 
 /**
  * MetricsScreen displays all metrics in a dedicated screen.
