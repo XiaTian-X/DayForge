@@ -7,9 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.dayforge.R
 import com.dayforge.data.local.dao.HabitDao
-import com.dayforge.data.local.dao.HabitMetricLinkDao
 import com.dayforge.data.local.dao.MetricDao
-import com.dayforge.data.local.entity.HabitMetricLinkEntity
 import com.dayforge.data.model.FailMode
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
@@ -29,7 +27,6 @@ class CreateTempTaskViewModel @Inject constructor(
     private val habitRepository: HabitRepository,
     private val habitDao: HabitDao,
     private val metricDao: MetricDao,
-    private val habitMetricLinkDao: HabitMetricLinkDao,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -146,34 +143,9 @@ class CreateTempTaskViewModel @Inject constructor(
                     targetCycles = 1, // D-10: hardcoded
                     failMode = FailMode.LOOSE, // D-11: hardcoded (loose mode for temp tasks)
                     bestTime = null,
-                    context = context
+                    context = context,
+                    selectedMetricIds = currentState.selectedMetricIds
                 )
-
-                // Create metric links AFTER successful habit creation
-                if (currentState.selectedMetricIds.isNotEmpty()) {
-                    try {
-                        val habit = habitRepository.getHabitById(habitId)
-                        if (habit != null) {
-                            for (metricId in currentState.selectedMetricIds) {
-                                val metric = metricDao.getMetricById(metricId)
-                                if (metric != null) {
-                                    val link = HabitMetricLinkEntity(
-                                        habitId = habitId,
-                                        habitUuid = habit.uuid,
-                                        metricId = metricId,
-                                        metricUuid = metric.uuid,
-                                        coefficient = 1.0,
-                                        showInHabitDetail = true,
-                                        promptOnComplete = true
-                                    )
-                                    habitMetricLinkDao.insertOrIgnore(link)
-                                }
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.w("CreateTempTaskViewModel", "Failed to create metric links", e)
-                    }
-                }
 
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,

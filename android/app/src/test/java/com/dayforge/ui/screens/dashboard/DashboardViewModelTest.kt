@@ -14,6 +14,7 @@ import com.dayforge.data.local.dao.TimeLogDao
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.HabitRepository
+import com.dayforge.data.repository.MetricRepository
 import com.dayforge.domain.service.CheckInService
 import com.dayforge.domain.service.FailureChecker
 import com.dayforge.domain.service.HabitStatusCalculator
@@ -80,7 +81,28 @@ class DashboardViewModelTest {
         // Create HabitStatusCalculator
         val failureChecker = FailureChecker(completionDao, timeLogDao)
         val habitStatusCalculator = HabitStatusCalculator(failureChecker, completionDao, timeLogDao)
-        viewModel = DashboardViewModel(context, repository, checkInService, habitStatusCalculator, timeLogDao, habitDao, mockPreferencesManager, metricDao, metricLogDao, habitMetricLinkDao, completionDao, mockk<StructuralEditGuard>(relaxed = true))
+        val metricRepository = MetricRepository(
+            database,
+            metricDao,
+            metricLogDao,
+            habitDao,
+            habitMetricLinkDao,
+            mockk<StructuralEditGuard>(relaxed = true)
+        )
+        viewModel = DashboardViewModel(
+            context,
+            repository,
+            checkInService,
+            habitStatusCalculator,
+            timeLogDao,
+            habitDao,
+            mockPreferencesManager,
+            metricDao,
+            metricLogDao,
+            habitMetricLinkDao,
+            completionDao,
+            metricRepository
+        )
     }
 
     @After

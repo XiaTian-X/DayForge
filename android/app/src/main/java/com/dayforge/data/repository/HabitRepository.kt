@@ -109,29 +109,38 @@ class HabitRepository @Inject constructor(
         return id
     }
 
-    suspend fun updateHabit(habit: HabitEntity, context: Context? = null) {
+    suspend fun updateHabit(
+        habit: HabitEntity,
+        context: Context? = null,
+        selectedMetricIds: Set<Long>? = null
+    ) {
         structuralEditGuard?.requireAllowed()
-        val previousHabit = habitDao.getHabitById(habit.id)
-        habitDao.update(habit.copy(
-            updatedAt = System.currentTimeMillis()
-        ))
+        val persistedHabit = habit.copy(updatedAt = System.currentTimeMillis())
+        val previousHabit = database.withTransaction {
+            val previous = requireNotNull(habitDao.getHabitById(habit.id)) {
+                "Habit no longer exists: ${habit.id}"
+            }
+            habitDao.update(persistedHabit)
+            selectedMetricIds?.let { reconcileMetricLinks(persistedHabit, it) }
+            previous
+        }
         // Notify widgets to update
         context?.let { notifyWidgetUpdate(it, habit.id) }
         // Handle reminder scheduling changes (NOTIFY-01)
         context?.let {
-            val previousBestTime = previousHabit?.bestTime
-            val previousHabitType = previousHabit?.habitType ?: habit.habitType
-            val previousTargetValue = previousHabit?.targetValue ?: habit.targetValue
-            val newBestTime = habit.bestTime
+            val previousBestTime = previousHabit.bestTime
+            val previousHabitType = previousHabit.habitType
+            val previousTargetValue = previousHabit.targetValue
+            val newBestTime = persistedHabit.bestTime
 
             // Check if reminder needs to be rescheduled
             val needsCancel = previousBestTime != null &&
                 (newBestTime == null ||
                  newBestTime != previousBestTime ||
-                 previousHabitType != habit.habitType ||
-                 previousTargetValue != habit.targetValue)
+                 previousHabitType != persistedHabit.habitType ||
+                 previousTargetValue != persistedHabit.targetValue)
 
-            val needsSchedule = newBestTime != null && habit.habitType != HabitType.GOAL
+            val needsSchedule = newBestTime != null && persistedHabit.habitType != HabitType.GOAL
 
             // Cancel existing reminder if needed
             if (needsCancel) {
@@ -140,9 +149,43 @@ class HabitRepository @Inject constructor(
 
             // Schedule new reminder if needed
             if (needsSchedule) {
-                HabitReminderScheduler.scheduleReminder(it, habit.id, newBestTime, habit.habitType, habit.targetValue)
+                HabitReminderScheduler.scheduleReminder(
+                    it,
+                    persistedHabit.id,
+                    newBestTime,
+                    persistedHabit.habitType,
+                    persistedHabit.targetValue
+                )
             }
         }
+    }
+
+    private suspend fun reconcileMetricLinks(habit: HabitEntity, selectedMetricIds: Set<Long>) {
+        val linkDao = database.habitMetricLinkDao()
+        val existingLinks = linkDao.getAllLinksForHabit(habit.id)
+        existingLinks
+            .filter { it.metricId !in selectedMetricIds }
+            .forEach { linkDao.delete(it) }
+
+        val existingMetricIds = existingLinks.mapTo(mutableSetOf()) { it.metricId }
+        selectedMetricIds
+            .filterNot { it in existingMetricIds }
+            .forEach { metricId ->
+                val metric = requireNotNull(database.metricDao().getMetricById(metricId)) {
+                    "Selected metric no longer exists: $metricId"
+                }
+                linkDao.insertOrIgnore(
+                    HabitMetricLinkEntity(
+                        habitId = habit.id,
+                        habitUuid = habit.uuid,
+                        metricId = metricId,
+                        metricUuid = metric.uuid,
+                        coefficient = 1.0,
+                        showInHabitDetail = true,
+                        promptOnComplete = true
+                    )
+                )
+            }
     }
 
     suspend fun deleteHabit(

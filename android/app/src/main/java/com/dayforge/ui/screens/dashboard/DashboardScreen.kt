@@ -510,7 +510,7 @@ fun DashboardScreen(
                 linkedMetrics = state.linkedMetrics,
                 onRecord = { values, neverAskAgain ->
                     scope.launch {
-                        viewModel.recordMetricValues(state.habitId, values)
+                        if (!viewModel.recordMetricValues(state.habitId, values)) return@launch
                         if (neverAskAgain) {
                             viewModel.setNeverAskAgain(state.habitId, true)
                         }

@@ -16,12 +16,13 @@ import com.dayforge.data.local.dao.TimeLogDao
 import com.dayforge.data.local.dao.CompletionDao
 import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.HabitEntity
-import com.dayforge.data.local.entity.MetricLogEntity
 import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.data.model.CheckInResult
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.model.HabitWithStats
 import com.dayforge.data.repository.HabitRepository
+import com.dayforge.data.repository.MetricRepository
+import com.dayforge.data.repository.MetricValueDraft
 import com.dayforge.domain.model.CardColorStyle
 import com.dayforge.domain.model.FilterMode
 import com.dayforge.domain.service.ActiveTimerStateProvider
@@ -32,7 +33,6 @@ import com.dayforge.domain.service.TimerService
 import com.dayforge.domain.service.HabitPriorityCalculator
 import com.dayforge.domain.service.CountingSlotCalculator
 import com.dayforge.domain.service.TimeMatchResult
-import com.dayforge.domain.service.StructuralEditGuard
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.time.LocalDate
@@ -71,7 +71,7 @@ class DashboardViewModel @Inject constructor(
     private val metricLogDao: MetricLogDao,
     private val habitMetricLinkDao: HabitMetricLinkDao,
     private val completionDao: CompletionDao,
-    private val structuralEditGuard: StructuralEditGuard
+    private val metricRepository: MetricRepository
 ) : ViewModel() {
 
     // Shared timer management
@@ -631,28 +631,32 @@ class DashboardViewModel @Inject constructor(
     suspend fun recordMetricValues(
         habitId: Long,
         values: List<com.dayforge.ui.components.MetricValueInput>
-    ) {
-        val recordedAt = System.currentTimeMillis()
-        val logs = values.mapNotNull { input ->
-            val metric = metricDao.getMetricById(input.metricId) ?: return@mapNotNull null
-            MetricLogEntity(
-                metricId = input.metricId,
-                date = recordedAt,
-                value = input.value,
-                unit = metric.unit,
-                note = input.note
+    ): Boolean {
+        return try {
+            val recordedAt = System.currentTimeMillis()
+            metricRepository.recordValues(
+                values.map { input -> MetricValueDraft(input.metricId, input.value, input.note) },
+                recordedAt
             )
-        }
-        if (logs.isNotEmpty()) metricLogDao.insertAll(logs)
 
-        // Only this check-in has been handled. Other habits linked to the same
-        // metric may still have their own pending prompt.
-        preferencesManager.removePendingMetricHabit(habitId)
-        val updateIntent = android.content.Intent(TimerService.ACTION_WIDGET_UPDATE).apply {
-            putExtra(TimerService.EXTRA_HABIT_ID, habitId)
-            setPackage(context.packageName)
+            // Only this check-in has been handled. Other habits linked to the same
+            // metric may still have their own pending prompt.
+            preferencesManager.removePendingMetricHabit(habitId)
+            val updateIntent = android.content.Intent(TimerService.ACTION_WIDGET_UPDATE).apply {
+                putExtra(TimerService.EXTRA_HABIT_ID, habitId)
+                setPackage(context.packageName)
+            }
+            context.sendBroadcast(updateIntent)
+            true
+        } catch (error: Exception) {
+            Log.e(TAG, "Failed to record linked metrics", error)
+            Toast.makeText(
+                context,
+                context.getString(R.string.metric_error_record_failed, error.message.orEmpty()),
+                Toast.LENGTH_LONG
+            ).show()
+            false
         }
-        context.sendBroadcast(updateIntent)
     }
 
     /**
@@ -929,8 +933,7 @@ class DashboardViewModel @Inject constructor(
     fun updateAggregationType(metricId: Long, aggregationType: String) {
         viewModelScope.launch {
             runCatching {
-                structuralEditGuard.requireAllowed()
-                metricDao.updateAggregationType(metricId, aggregationType)
+                metricRepository.updateAggregationType(metricId, aggregationType)
             }.onFailure {
                 Toast.makeText(context, it.message ?: "当前设备不能修改指标配置", Toast.LENGTH_LONG).show()
             }
