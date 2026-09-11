@@ -2,7 +2,7 @@
 androidGradle = "8.7.3"
 composeBom = "2024.12.01"
 coreKtx = "1.15.0"
-appcompat = "1.7.0"
+appcompat = "1.8.0"
 kotlin = "2.0.21"
 ksp = "2.0.21-1.0.28"
 room = "2.6.1"
