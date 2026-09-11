@@ -21,6 +21,7 @@ import com.dayforge.data.local.entity.HabitMetricLinkEntity
 import com.dayforge.data.local.entity.MetricEntity
 import com.dayforge.data.local.entity.MetricLogEntity
 import com.dayforge.data.local.entity.TimeLogEntity
+import com.dayforge.data.model.FailMode
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.HabitRepository
@@ -28,6 +29,7 @@ import com.dayforge.data.repository.MetricRepository
 import com.dayforge.domain.service.CheckInService
 import com.dayforge.domain.service.ActiveTimerStateProvider
 import com.dayforge.domain.service.FailureChecker
+import com.dayforge.domain.service.HabitLifecycleCoordinator
 import com.dayforge.domain.service.HabitTimerCoordinator
 import com.dayforge.domain.service.TimerManager
 import com.dayforge.ui.components.LinkedMetricInfo
@@ -135,6 +137,7 @@ class NestedViewModelTest {
             checkInService = CheckInService(habitRepository, completionDao, timeLogDao),
             preferencesManager = preferencesManager,
             metricCoordinator = metricCoordinator,
+            lifecycleCoordinator = HabitLifecycleCoordinator(context, habitRepository),
             timerCoordinator = HabitTimerCoordinator(
                 TimerManager(context, habitDao, timeLogDao),
                 ActiveTimerStateProvider(timeLogDao, habitRepository, context)
@@ -421,6 +424,52 @@ class NestedViewModelTest {
         assertFalse(recorded)
         assertNull(metricLogDao.getLatestLog(validMetricId))
         assertEquals(setOf(habitId), preferencesManager.pendingMetricHabits.first())
+    }
+
+    @Test
+    fun `goal and reactivation dialogs preserve child lifecycle state`() = runTest {
+        val parent = habit(HabitType.GOAL, "Goal", uuid = "goal")
+        habitDao.insert(parent)
+        val childId = habitDao.insert(
+            habit(
+                HabitType.CHECK_IN,
+                "Target child",
+                uuid = "target-child",
+                parentUuid = parent.uuid,
+                targetCycles = 1
+            )
+        )
+        awaitHierarchy { parents ->
+            parents.singleOrNull()?.children?.singleOrNull()?.habit?.id == childId
+        }
+
+        viewModel.logCompletion(childId)
+        awaitGoalDialogVisibility(visible = true)
+        assertEquals(childId, viewModel.goalHabitId.value)
+        assertEquals(1, viewModel.goalProgress.value)
+        assertEquals(1, viewModel.goalTarget.value)
+
+        viewModel.dismissGoalDialog()
+        awaitGoalDialogVisibility(visible = false)
+        assertEquals(FailMode.LOOSE, habitDao.getHabitById(childId)?.failMode)
+
+        viewModel.showReactivationDialog(childId)
+        assertTrue(viewModel.showReactivationDialog.value)
+        assertEquals(childId, viewModel.reactivationHabitId.value)
+        assertEquals("Target child", viewModel.reactivationHabitName.value)
+
+        viewModel.dismissReactivationDialog()
+        assertFalse(viewModel.showReactivationDialog.value)
+        assertNull(viewModel.reactivationHabitId.value)
+        assertEquals("", viewModel.reactivationHabitName.value)
+    }
+
+    private suspend fun awaitGoalDialogVisibility(visible: Boolean) {
+        withContext(Dispatchers.Default.limitedParallelism(1)) {
+            withTimeout(5_000) {
+                viewModel.showGoalDialog.first { it == visible }
+            }
+        }
     }
 
     private suspend fun awaitHierarchy(

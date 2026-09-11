@@ -27,6 +27,7 @@ import com.dayforge.domain.service.ActiveTimerStateProvider
 import com.dayforge.domain.service.CheckInService
 import com.dayforge.domain.service.FailureChecker
 import com.dayforge.domain.service.HabitStatusCalculator
+import com.dayforge.domain.service.HabitLifecycleCoordinator
 import com.dayforge.domain.service.HabitTimerCoordinator
 import com.dayforge.domain.service.MetricOverviewProvider
 import com.dayforge.domain.service.StructuralEditGuard
@@ -121,6 +122,7 @@ class DashboardViewModelMetricTest {
             checkInService,
             DashboardHabitListBuilder(habitStatusCalculator),
             DashboardTimeWindowTicker(repository, mockPreferencesManager),
+            HabitLifecycleCoordinator(context, repository),
             HabitTimerCoordinator(
                 TimerManager(context, habitDao, timeLogDao),
                 ActiveTimerStateProvider(timeLogDao, repository, context)

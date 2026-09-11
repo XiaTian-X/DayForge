@@ -16,7 +16,9 @@ import com.dayforge.data.repository.HabitRepository
 import com.dayforge.domain.model.ActiveTimerState
 import com.dayforge.domain.model.CardColorStyle
 import com.dayforge.domain.service.CheckInService
+import com.dayforge.domain.service.HabitLifecycleCoordinator
 import com.dayforge.domain.service.HabitTimerCoordinator
+import com.dayforge.domain.service.ReactivationResult
 import com.dayforge.ui.components.LinkedMetricInfo
 import com.dayforge.ui.components.MetricValueInput
 import com.dayforge.ui.metrics.LinkedMetricCoordinator
@@ -104,6 +106,7 @@ class NestedViewModel @Inject constructor(
     private val checkInService: CheckInService,
     private val preferencesManager: PreferencesManager,
     private val metricCoordinator: LinkedMetricCoordinator,
+    private val lifecycleCoordinator: HabitLifecycleCoordinator,
     private val timerCoordinator: HabitTimerCoordinator,
 ) : ViewModel() {
 
@@ -201,28 +204,16 @@ class NestedViewModel @Inject constructor(
      * State for the goal completion dialog shown when targetCycles is reached.
      * Per TARGET-08: Dialog appears when check-in reaches target cycles.
      */
-    private val _showGoalDialog = MutableStateFlow(false)
-    val showGoalDialog: StateFlow<Boolean> = _showGoalDialog.asStateFlow()
-
-    private val _goalHabitId = MutableStateFlow<Long?>(null)
-    val goalHabitId: StateFlow<Long?> = _goalHabitId.asStateFlow()
-
-    private val _goalProgress = MutableStateFlow(0)
-    val goalProgress: StateFlow<Int> = _goalProgress.asStateFlow()
-
-    private val _goalTarget = MutableStateFlow(0)
-    val goalTarget: StateFlow<Int> = _goalTarget.asStateFlow()
+    val showGoalDialog: StateFlow<Boolean> = lifecycleCoordinator.showGoalDialog
+    val goalHabitId: StateFlow<Long?> = lifecycleCoordinator.goalHabitId
+    val goalProgress: StateFlow<Int> = lifecycleCoordinator.goalProgress
+    val goalTarget: StateFlow<Int> = lifecycleCoordinator.goalTarget
 
     // ========== Reactivation Dialog State ==========
 
-    private val _showReactivationDialog = MutableStateFlow(false)
-    val showReactivationDialog: StateFlow<Boolean> = _showReactivationDialog.asStateFlow()
-
-    private val _reactivationHabitId = MutableStateFlow<Long?>(null)
-    val reactivationHabitId: StateFlow<Long?> = _reactivationHabitId.asStateFlow()
-
-    private val _reactivationHabitName = MutableStateFlow("")
-    val reactivationHabitName: StateFlow<String> = _reactivationHabitName.asStateFlow()
+    val showReactivationDialog: StateFlow<Boolean> = lifecycleCoordinator.showReactivationDialog
+    val reactivationHabitId: StateFlow<Long?> = lifecycleCoordinator.reactivationHabitId
+    val reactivationHabitName: StateFlow<String> = lifecycleCoordinator.reactivationHabitName
 
     // Children deletion dialog state
     data class PendingDeleteInfo(val habit: HabitEntity, val childCount: Int)
@@ -431,12 +422,7 @@ class NestedViewModel @Inject constructor(
      */
     private fun onGoalReached(habitId: Long, progress: Int) {
         val habit = findHabitById(habitId)
-        if (habit != null && habit.targetCycles != null) {
-            _showGoalDialog.value = true
-            _goalHabitId.value = habitId
-            _goalProgress.value = progress
-            _goalTarget.value = habit.targetCycles
-        }
+        lifecycleCoordinator.showGoalCompletion(habit, progress)
     }
 
     /**
@@ -445,11 +431,9 @@ class NestedViewModel @Inject constructor(
      */
     fun confirmGoalCompletion() {
         viewModelScope.launch {
-            val habitId = _goalHabitId.value ?: return@launch
-            habitRepository.updateIsActive(habitId, false, context)
-            _showGoalDialog.value = false
-            // Show toast notification
-            Toast.makeText(context, context.getString(R.string.toast_habit_completed), Toast.LENGTH_SHORT).show()
+            if (lifecycleCoordinator.confirmGoalCompletion()) {
+                Toast.makeText(context, context.getString(R.string.toast_habit_completed), Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -461,13 +445,9 @@ class NestedViewModel @Inject constructor(
      */
     fun dismissGoalDialog() {
         viewModelScope.launch {
-            val habitId = _goalHabitId.value ?: return@launch
+            val habitId = lifecycleCoordinator.goalHabitId.value ?: return@launch
             val habit = habitDao.getHabitById(habitId)
-            // Only switch to LOOSE if currently STRICT (preserve user's choice if already LOOSE)
-            if (habit != null && habit.failMode == com.dayforge.data.model.FailMode.STRICT) {
-                habitRepository.updateFailMode(habitId, com.dayforge.data.model.FailMode.LOOSE, context)
-            }
-            _showGoalDialog.value = false
+            lifecycleCoordinator.dismissGoalDialog(habit)
         }
     }
 
@@ -479,11 +459,7 @@ class NestedViewModel @Inject constructor(
      */
     fun showReactivationDialog(habitId: Long) {
         val habit = findHabitById(habitId)
-        if (habit != null) {
-            _showReactivationDialog.value = true
-            _reactivationHabitId.value = habitId
-            _reactivationHabitName.value = habit.name
-        }
+        lifecycleCoordinator.showReactivationDialog(habit)
     }
 
     /**
@@ -491,19 +467,15 @@ class NestedViewModel @Inject constructor(
      */
     fun confirmReactivation() {
         viewModelScope.launch {
-            val habitId = _reactivationHabitId.value ?: return@launch
+            val habitId = lifecycleCoordinator.reactivationHabitId.value ?: return@launch
             val habit = findHabitById(habitId)
-            if (habit != null) {
-                try {
-                    habitRepository.clearHabitHistory(habit, context)
+            when (lifecycleCoordinator.confirmReactivation(habit)) {
+                ReactivationResult.SUCCESS ->
                     Toast.makeText(context, context.getString(R.string.toast_habit_reactivated), Toast.LENGTH_SHORT).show()
-                } catch (e: Exception) {
+                ReactivationResult.FAILURE ->
                     Toast.makeText(context, context.getString(R.string.toast_clear_history_failed), Toast.LENGTH_SHORT).show()
-                }
+                ReactivationResult.NO_HABIT -> Unit
             }
-            _showReactivationDialog.value = false
-            _reactivationHabitId.value = null
-            _reactivationHabitName.value = ""
         }
     }
 
@@ -511,9 +483,7 @@ class NestedViewModel @Inject constructor(
      * Dismisses the reactivation dialog.
      */
     fun dismissReactivationDialog() {
-        _showReactivationDialog.value = false
-        _reactivationHabitId.value = null
-        _reactivationHabitName.value = ""
+        lifecycleCoordinator.dismissReactivationDialog()
     }
 
     // ========== Habit Delete ==========

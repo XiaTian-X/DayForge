@@ -22,8 +22,10 @@ import com.dayforge.domain.model.FilterMode
 import com.dayforge.domain.model.MetricWithLatestValue
 import com.dayforge.domain.model.ActiveTimerState
 import com.dayforge.domain.service.CheckInService
+import com.dayforge.domain.service.HabitLifecycleCoordinator
 import com.dayforge.domain.service.HabitTimerCoordinator
 import com.dayforge.domain.service.MetricOverviewProvider
+import com.dayforge.domain.service.ReactivationResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.time.LocalDate
@@ -55,6 +57,7 @@ class DashboardViewModel @Inject constructor(
     private val checkInService: CheckInService,
     private val dashboardHabitListBuilder: DashboardHabitListBuilder,
     private val dashboardTimeWindowTicker: DashboardTimeWindowTicker,
+    private val lifecycleCoordinator: HabitLifecycleCoordinator,
     private val timerCoordinator: HabitTimerCoordinator,
     private val timeLogDao: TimeLogDao,
     private val habitDao: com.dayforge.data.local.dao.HabitDao,
@@ -315,28 +318,16 @@ class DashboardViewModel @Inject constructor(
      * State for the goal completion dialog shown when targetCycles is reached.
      * Per TARGET-08: Dialog appears when check-in reaches target cycles.
      */
-    private val _showGoalDialog = MutableStateFlow(false)
-    val showGoalDialog: StateFlow<Boolean> = _showGoalDialog.asStateFlow()
-
-    private val _goalHabitId = MutableStateFlow<Long?>(null)
-    val goalHabitId: StateFlow<Long?> = _goalHabitId.asStateFlow()
-
-    private val _goalProgress = MutableStateFlow(0)
-    val goalProgress: StateFlow<Int> = _goalProgress.asStateFlow()
-
-    private val _goalTarget = MutableStateFlow(0)
-    val goalTarget: StateFlow<Int> = _goalTarget.asStateFlow()
+    val showGoalDialog: StateFlow<Boolean> = lifecycleCoordinator.showGoalDialog
+    val goalHabitId: StateFlow<Long?> = lifecycleCoordinator.goalHabitId
+    val goalProgress: StateFlow<Int> = lifecycleCoordinator.goalProgress
+    val goalTarget: StateFlow<Int> = lifecycleCoordinator.goalTarget
 
     // ========== Reactivation Dialog State ==========
 
-    private val _showReactivationDialog = MutableStateFlow(false)
-    val showReactivationDialog: StateFlow<Boolean> = _showReactivationDialog.asStateFlow()
-
-    private val _reactivationHabitId = MutableStateFlow<Long?>(null)
-    val reactivationHabitId: StateFlow<Long?> = _reactivationHabitId.asStateFlow()
-
-    private val _reactivationHabitName = MutableStateFlow("")
-    val reactivationHabitName: StateFlow<String> = _reactivationHabitName.asStateFlow()
+    val showReactivationDialog: StateFlow<Boolean> = lifecycleCoordinator.showReactivationDialog
+    val reactivationHabitId: StateFlow<Long?> = lifecycleCoordinator.reactivationHabitId
+    val reactivationHabitName: StateFlow<String> = lifecycleCoordinator.reactivationHabitName
 
     // Children deletion dialog state
     data class PendingDeleteInfo(val habit: HabitEntity, val childCount: Int)
@@ -400,12 +391,7 @@ class DashboardViewModel @Inject constructor(
      */
     private fun onGoalReached(habitId: Long, progress: Int) {
         val habit = habitsWithStats.value.find { it.habit.id == habitId }?.habit
-        if (habit != null && habit.targetCycles != null) {
-            _showGoalDialog.value = true
-            _goalHabitId.value = habitId
-            _goalProgress.value = progress
-            _goalTarget.value = habit.targetCycles
-        }
+        lifecycleCoordinator.showGoalCompletion(habit, progress)
     }
 
     /**
@@ -414,11 +400,9 @@ class DashboardViewModel @Inject constructor(
      */
     fun confirmGoalCompletion() {
         viewModelScope.launch {
-            val habitId = _goalHabitId.value ?: return@launch
-            habitRepository.updateIsActive(habitId, false, context)
-            _showGoalDialog.value = false
-            // Show toast notification
-            Toast.makeText(context, "习惯已完成", Toast.LENGTH_SHORT).show()
+            if (lifecycleCoordinator.confirmGoalCompletion()) {
+                Toast.makeText(context, "习惯已完成", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -430,13 +414,9 @@ class DashboardViewModel @Inject constructor(
      */
     fun dismissGoalDialog() {
         viewModelScope.launch {
-            val habitId = _goalHabitId.value ?: return@launch
+            val habitId = lifecycleCoordinator.goalHabitId.value ?: return@launch
             val habit = habitsWithStats.value.find { it.habit.id == habitId }?.habit
-            // Only switch to LOOSE if currently STRICT (preserve user's choice if already LOOSE)
-            if (habit != null && habit.failMode == com.dayforge.data.model.FailMode.STRICT) {
-                habitRepository.updateFailMode(habitId, com.dayforge.data.model.FailMode.LOOSE, context)
-            }
-            _showGoalDialog.value = false
+            lifecycleCoordinator.dismissGoalDialog(habit)
         }
     }
 
@@ -448,11 +428,7 @@ class DashboardViewModel @Inject constructor(
      */
     fun showReactivationDialog(habitId: Long) {
         val habit = habitsWithStats.value.find { it.habit.id == habitId }?.habit
-        if (habit != null) {
-            _showReactivationDialog.value = true
-            _reactivationHabitId.value = habitId
-            _reactivationHabitName.value = habit.name
-        }
+        lifecycleCoordinator.showReactivationDialog(habit)
     }
 
     /**
@@ -460,19 +436,15 @@ class DashboardViewModel @Inject constructor(
      */
     fun confirmReactivation() {
         viewModelScope.launch {
-            val habitId = _reactivationHabitId.value ?: return@launch
+            val habitId = lifecycleCoordinator.reactivationHabitId.value ?: return@launch
             val habit = habitsWithStats.value.find { it.habit.id == habitId }?.habit
-            if (habit != null) {
-                try {
-                    habitRepository.clearHabitHistory(habit, context)
+            when (lifecycleCoordinator.confirmReactivation(habit)) {
+                ReactivationResult.SUCCESS ->
                     Toast.makeText(context, "习惯已重新激活，历史记录已清空", Toast.LENGTH_SHORT).show()
-                } catch (e: Exception) {
+                ReactivationResult.FAILURE ->
                     Toast.makeText(context, "清空历史失败，请检查网络连接", Toast.LENGTH_SHORT).show()
-                }
+                ReactivationResult.NO_HABIT -> Unit
             }
-            _showReactivationDialog.value = false
-            _reactivationHabitId.value = null
-            _reactivationHabitName.value = ""
         }
     }
 
@@ -480,9 +452,7 @@ class DashboardViewModel @Inject constructor(
      * Dismisses the reactivation dialog.
      */
     fun dismissReactivationDialog() {
-        _showReactivationDialog.value = false
-        _reactivationHabitId.value = null
-        _reactivationHabitName.value = ""
+        lifecycleCoordinator.dismissReactivationDialog()
     }
 
     // ========== Habit Operations ==========
