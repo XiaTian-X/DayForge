@@ -1,6 +1,7 @@
 package com.dayforge.ui.screens.dashboard
 
 import android.content.Context
+import androidx.lifecycle.viewModelScope
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import app.cash.turbine.test
@@ -12,7 +13,11 @@ import com.dayforge.data.local.dao.HabitMetricLinkDao
 import com.dayforge.data.local.dao.MetricDao
 import com.dayforge.data.local.dao.MetricLogDao
 import com.dayforge.data.local.dao.TimeLogDao
+import com.dayforge.data.local.entity.HabitEntity
+import com.dayforge.data.local.entity.HabitMetricLinkEntity
 import com.dayforge.data.local.entity.MetricEntity
+import com.dayforge.data.local.entity.MetricLogEntity
+import com.dayforge.data.model.FailMode
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.HabitRepository
@@ -21,15 +26,21 @@ import com.dayforge.domain.service.CheckInService
 import com.dayforge.domain.service.FailureChecker
 import com.dayforge.domain.service.HabitStatusCalculator
 import com.dayforge.domain.service.StructuralEditGuard
+import com.dayforge.ui.metrics.LinkedMetricCoordinator
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -81,6 +92,8 @@ class DashboardViewModelMetricTest {
             every { hasShownBatteryGuidance } returns flowOf(false)
             every { dateChangeTrigger } returns flowOf(System.currentTimeMillis() / (24 * 60 * 60 * 1000L))
             every { filterMode } returns flowOf("all")
+            every { pendingMetricHabits } returns flowOf(emptySet())
+            every { getNeverAskAgain(any()) } returns flowOf(false)
         }
         // Create a real CheckInService that uses the repository
         checkInService = CheckInService(repository, completionDao, timeLogDao)
@@ -105,16 +118,19 @@ class DashboardViewModelMetricTest {
             mockPreferencesManager,
             metricDao,
             metricLogDao,
-            habitMetricLinkDao,
             completionDao,
-            metricRepository
+            metricRepository,
+            LinkedMetricCoordinator(context, mockPreferencesManager, metricRepository)
         )
     }
 
     @After
-    fun teardown() {
+    fun teardown() = runBlocking {
+        if (::viewModel.isInitialized) {
+            viewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+        }
+        if (::database.isInitialized) database.close()
         Dispatchers.resetMain()
-        database.close()
     }
 
     @Test
@@ -281,4 +297,141 @@ class DashboardViewModelMetricTest {
             assertEquals("Second should be First Metric (older)", "First Metric", metrics[1].metric.name)
         }
     }
+
+    @Test
+    fun linkedMetricsByHabit_hidesNonDetailLinks_andRefreshesLatestValue() = runTest {
+        val habit = habit("Dashboard habit")
+        val habitId = habitDao.insert(habit)
+        val visibleMetric = metric("Visible", "kg", 1, uuid = "visible")
+        val hiddenMetric = metric("Hidden", "cm", 0, uuid = "hidden")
+        val visibleMetricId = metricDao.insert(visibleMetric)
+        val hiddenMetricId = metricDao.insert(hiddenMetric)
+        habitMetricLinkDao.insert(
+            link(habitId, habit.uuid, visibleMetricId, visibleMetric.uuid, showInDetail = true)
+        )
+        habitMetricLinkDao.insert(
+            link(habitId, habit.uuid, hiddenMetricId, hiddenMetric.uuid, showInDetail = false)
+        )
+
+        val initial = awaitLinkedMetrics { it[habitId]?.size == 1 }
+        assertEquals(visibleMetricId, initial.getValue(habitId).single().metricId)
+        assertNull(initial.getValue(habitId).single().latestValue)
+
+        metricLogDao.insert(
+            MetricLogEntity(
+                metricId = visibleMetricId,
+                date = 2_000L,
+                value = 71.3,
+                unit = visibleMetric.unit
+            )
+        )
+
+        val updated = awaitLinkedMetrics {
+            it[habitId]?.singleOrNull()?.latestValue == 71.3
+        }
+        assertEquals(71.3, updated.getValue(habitId).single().latestValue ?: Double.NaN, 0.0)
+    }
+
+    @Test
+    fun postCheckInPrompt_marksTemporaryTask_andIncludesOnlyPromptLinks() = runTest {
+        val temporaryTask = habit(
+            name = "Temporary task",
+            iconResId = 53,
+            targetCycles = 1,
+            failMode = FailMode.LOOSE
+        )
+        val habitId = habitDao.insert(temporaryTask)
+        val promptedMetric = metric("Prompted", "kg", 1, uuid = "prompted")
+        val silentMetric = metric("Silent", "cm", 0, uuid = "silent")
+        val promptedMetricId = metricDao.insert(promptedMetric)
+        val silentMetricId = metricDao.insert(silentMetric)
+        habitMetricLinkDao.insert(
+            link(
+                habitId,
+                temporaryTask.uuid,
+                promptedMetricId,
+                promptedMetric.uuid,
+                prompt = true
+            )
+        )
+        habitMetricLinkDao.insert(
+            link(
+                habitId,
+                temporaryTask.uuid,
+                silentMetricId,
+                silentMetric.uuid,
+                prompt = false
+            )
+        )
+
+        viewModel.checkAndShowPostCheckInDialog(habitId, temporaryTask.name)
+
+        val state = requireNotNull(viewModel.postCheckInState.value)
+        assertEquals(habitId, state.habitId)
+        assertEquals(temporaryTask.name, state.habitName)
+        assertTrue(state.show)
+        assertTrue(state.isTempTask)
+        assertEquals(listOf(promptedMetricId), state.linkedMetrics.map { it.metricId })
+    }
+
+    private suspend fun awaitLinkedMetrics(
+        predicate: (Map<Long, List<com.dayforge.ui.components.LinkedMetricInfo>>) -> Boolean
+    ): Map<Long, List<com.dayforge.ui.components.LinkedMetricInfo>> =
+        withContext(Dispatchers.Default.limitedParallelism(1)) {
+            withTimeout(5_000) {
+                viewModel.linkedMetricsByHabit.first(predicate)
+            }
+        }
+
+    private fun habit(
+        name: String,
+        iconResId: Int = 1,
+        targetCycles: Int? = null,
+        failMode: FailMode = FailMode.STRICT
+    ) = HabitEntity(
+        name = name,
+        habitType = HabitType.CHECK_IN,
+        iconResId = iconResId,
+        colorHex = "#2196F3",
+        schedule = HabitSchedule.Daily,
+        targetCycles = targetCycles,
+        failMode = failMode,
+        uuid = "habit-${name.lowercase().replace(' ', '-')}",
+        createdAt = 1_000L,
+        updatedAt = 1_000L
+    )
+
+    private fun metric(
+        name: String,
+        unit: String,
+        decimalPlaces: Int,
+        uuid: String
+    ) = MetricEntity(
+        name = name,
+        unit = unit,
+        decimalPlaces = decimalPlaces,
+        iconResId = 1,
+        colorHex = "#4CAF50",
+        uuid = uuid,
+        createdAt = 1_000L,
+        updatedAt = 1_000L
+    )
+
+    private fun link(
+        habitId: Long,
+        habitUuid: String,
+        metricId: Long,
+        metricUuid: String,
+        showInDetail: Boolean = true,
+        prompt: Boolean = true
+    ) = HabitMetricLinkEntity(
+        habitId = habitId,
+        habitUuid = habitUuid,
+        metricId = metricId,
+        metricUuid = metricUuid,
+        showInHabitDetail = showInDetail,
+        promptOnComplete = prompt,
+        createdAt = 1_000L,
+        updatedAt = 1_000L
+    )
 }

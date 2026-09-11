@@ -21,6 +21,8 @@ import com.dayforge.domain.service.TimerManager
 import com.dayforge.domain.service.TimerService
 import com.dayforge.ui.components.LinkedMetricInfo
 import com.dayforge.ui.components.MetricValueInput
+import com.dayforge.ui.metrics.LinkedMetricCoordinator
+import com.dayforge.ui.metrics.LinkedMetricPromptState
 import com.dayforge.ui.screens.dashboard.ActiveTimerState
 import com.dayforge.util.DateTimeUtils
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -96,16 +98,6 @@ sealed class StartTimerResult {
     data class HasActiveTimer(val currentHabitId: Long) : StartTimerResult()
 }
 
-/**
- * State for the post-check-in dialog that prompts users to record linked metrics.
- */
-data class PostCheckInState(
-    val habitId: Long,
-    val habitName: String,
-    val linkedMetrics: List<LinkedMetricInfo>,
-    val show: Boolean = true
-)
-
 @HiltViewModel
 class NestedViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -115,7 +107,7 @@ class NestedViewModel @Inject constructor(
     private val nestedHabitTreeBuilder: NestedHabitTreeBuilder,
     private val checkInService: CheckInService,
     private val preferencesManager: PreferencesManager,
-    private val metricCoordinator: NestedMetricCoordinator,
+    private val metricCoordinator: LinkedMetricCoordinator,
 ) : ViewModel() {
 
     // Shared timer management
@@ -196,7 +188,10 @@ class NestedViewModel @Inject constructor(
      * Linked metrics by habit ID.
      */
     val linkedMetricsByHabit: StateFlow<Map<Long, List<LinkedMetricInfo>>> =
-        metricCoordinator.observeLinkedMetrics(habitRepository.allHabits)
+        metricCoordinator.observeLinkedMetrics(
+            habitIds = habitRepository.allHabits.map { habits -> habits.map { it.id }.toSet() },
+            onlyShownInHabitDetail = false
+        )
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.Lazily,
@@ -206,7 +201,7 @@ class NestedViewModel @Inject constructor(
     /**
      * State for the post-check-in dialog.
      */
-    val postCheckInState: StateFlow<PostCheckInState?> = metricCoordinator.postCheckInState
+    val postCheckInState: StateFlow<LinkedMetricPromptState?> = metricCoordinator.postCheckInState
 
     // ========== Goal Completion Dialog State ==========
 

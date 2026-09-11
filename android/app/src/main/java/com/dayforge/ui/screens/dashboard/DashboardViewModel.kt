@@ -9,7 +9,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.dayforge.R
 import com.dayforge.data.local.PreferencesManager
-import com.dayforge.data.local.dao.HabitMetricLinkDao
 import com.dayforge.data.local.dao.MetricDao
 import com.dayforge.data.local.dao.MetricLogDao
 import com.dayforge.data.local.dao.TimeLogDao
@@ -22,7 +21,6 @@ import com.dayforge.data.model.HabitType
 import com.dayforge.data.model.HabitWithStats
 import com.dayforge.data.repository.HabitRepository
 import com.dayforge.data.repository.MetricRepository
-import com.dayforge.data.repository.MetricValueDraft
 import com.dayforge.domain.model.CardColorStyle
 import com.dayforge.domain.model.FilterMode
 import com.dayforge.domain.service.ActiveTimerStateProvider
@@ -39,6 +37,9 @@ import java.time.LocalDate
 import java.time.ZonedDateTime
 import java.time.ZoneId
 import com.dayforge.ui.components.LinkedMetricInfo
+import com.dayforge.ui.components.MetricValueInput
+import com.dayforge.ui.metrics.LinkedMetricCoordinator
+import com.dayforge.ui.metrics.LinkedMetricPromptState
 import com.dayforge.util.DateTimeUtils
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
@@ -69,9 +70,9 @@ class DashboardViewModel @Inject constructor(
     private val preferencesManager: PreferencesManager,
     private val metricDao: MetricDao,
     private val metricLogDao: MetricLogDao,
-    private val habitMetricLinkDao: HabitMetricLinkDao,
     private val completionDao: CompletionDao,
-    private val metricRepository: MetricRepository
+    private val metricRepository: MetricRepository,
+    private val linkedMetricCoordinator: LinkedMetricCoordinator
 ) : ViewModel() {
 
     // Shared timer management
@@ -150,7 +151,7 @@ class DashboardViewModel @Inject constructor(
      * This approach is more reliable than Flow calculation which could miss updates
      * when the app is in the background or when multiple habits share the same metric.
      */
-    val pendingMetricHabits: StateFlow<Set<Long>> = preferencesManager.pendingMetricHabits
+    val pendingMetricHabits: StateFlow<Set<Long>> = linkedMetricCoordinator.pendingMetricHabits
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.Lazily,
@@ -363,16 +364,11 @@ class DashboardViewModel @Inject constructor(
      * when habits, logs, or links change. This ensures the UI refreshes when
      * habit-metric links are added/updated during sync.
      */
-    val linkedMetricsByHabit: StateFlow<Map<Long, List<LinkedMetricInfo>>> = combine(
-        habitsWithStats,
-        metricLogDao.getLatestLogFlow(),
-        habitMetricLinkDao.getAllActiveLinksFlow()  // Trigger on link changes (e.g., sync)
-    ) { habitsList, _, _ ->
-        habitsList.associate { habitWithStats ->
-            // Room's suspend DAO methods handle threading internally
-            habitWithStats.habit.id to getLinkedMetricsForHabit(habitWithStats.habit.id).first()
-        }
-    }.stateIn(
+    val linkedMetricsByHabit: StateFlow<Map<Long, List<LinkedMetricInfo>>> =
+        linkedMetricCoordinator.observeLinkedMetrics(
+            habitIds = habitsWithStats.map { habits -> habits.map { it.habit.id }.toSet() },
+            onlyShownInHabitDetail = true
+        ).stateIn(
         scope = viewModelScope,
         started = SharingStarted.Lazily,  // Changed from WhileSubscribed to ensure flow stays active
         initialValue = emptyMap()
@@ -410,30 +406,6 @@ class DashboardViewModel @Inject constructor(
             preferencesManager.setFilterMode(mode)
         }
     }
-
-    /**
-     * Get linked metrics for a specific habit.
-     * Per METRIC-08: Shows linked metrics under habit cards.
-     * Per D-12: Only links with showInHabitDetail=true are displayed.
-     *
-     * @param habitId The ID of the habit
-     * @return Flow of linked metric info list
-     */
-    fun getLinkedMetricsForHabit(habitId: Long): Flow<List<LinkedMetricInfo>> =
-        habitMetricLinkDao.getLinksByHabit(habitId).map { links ->
-            links.filter { it.showInHabitDetail }.mapNotNull { link ->
-                // Room's suspend DAO methods handle threading internally
-                val metric = metricDao.getMetricById(link.metricId) ?: return@mapNotNull null
-                val latestLog = metricLogDao.getLatestLog(link.metricId)
-                LinkedMetricInfo(
-                    metricName = metric.name,
-                    metricId = metric.id,
-                    latestValue = latestLog?.value,
-                    unit = metric.unit,
-                    decimalPlaces = metric.decimalPlaces
-                )
-            }
-        }
 
     /**
      * Active timer state for real-time UI updates.
@@ -530,8 +502,8 @@ class DashboardViewModel @Inject constructor(
      * Per METRIC-09: Users should be prompted to record linked metrics after checking in.
      * Per D-15 to D-19: Dialog shows linked metrics, supports inline recording, and "never ask again".
      */
-    private val _postCheckInState = MutableStateFlow<PostCheckInState?>(null)
-    val postCheckInState: StateFlow<PostCheckInState?> = _postCheckInState
+    val postCheckInState: StateFlow<LinkedMetricPromptState?> =
+        linkedMetricCoordinator.postCheckInState
 
     // ========== Goal Completion Dialog State ==========
 
@@ -576,49 +548,11 @@ class DashboardViewModel @Inject constructor(
      * @param habitName The name of the habit (for display in dialog)
      */
     suspend fun checkAndShowPostCheckInDialog(habitId: Long, habitName: String) {
-        // Check if user has "never ask again" set for this habit
-        val neverAsk = preferencesManager.getNeverAskAgain(habitId).first()
-        if (neverAsk) return
-
-        // Get linked metrics with promptOnComplete=true
-        val links = try {
-            habitMetricLinkDao.getLinksByHabit(habitId).first()
-        } catch (e: Exception) {
-            emptyList()
-        }
-        val promptLinks = links.filter { it.promptOnComplete }
-
-        if (promptLinks.isEmpty()) return
-
-        // Build linked metric info list
-        val metricInfos = promptLinks.mapNotNull { link ->
-            // Room's suspend DAO methods handle threading internally
-            val metric = metricDao.getMetricById(link.metricId) ?: return@mapNotNull null
-            val latestLog = metricLogDao.getLatestLog(link.metricId)
-            LinkedMetricInfo(
-                metricName = metric.name,
-                metricId = metric.id,
-                latestValue = latestLog?.value,
-                unit = metric.unit,
-                decimalPlaces = metric.decimalPlaces
-            )
-        }
-
-        // 检测临时任务：targetCycles=1 + failMode=LOOSE + habitType=CHECK_IN + iconResId=53(TaskAlt)
         val habit = habitDao.getHabitById(habitId)
         val isTempTask = habit?.let { h ->
             h.targetCycles == 1 && h.failMode == com.dayforge.data.model.FailMode.LOOSE && h.habitType == HabitType.CHECK_IN && h.iconResId == 53
         } ?: false
-
-        if (metricInfos.isNotEmpty()) {
-            _postCheckInState.value = PostCheckInState(
-                habitId = habitId,
-                habitName = habitName,
-                linkedMetrics = metricInfos,
-                show = true,
-                isTempTask = isTempTask  // 临时任务标志，对话框关闭后删除
-            )
-        }
+        linkedMetricCoordinator.showPromptIfNeeded(habitId, habitName, isTempTask)
     }
 
     /**
@@ -630,34 +564,8 @@ class DashboardViewModel @Inject constructor(
      */
     suspend fun recordMetricValues(
         habitId: Long,
-        values: List<com.dayforge.ui.components.MetricValueInput>
-    ): Boolean {
-        return try {
-            val recordedAt = System.currentTimeMillis()
-            metricRepository.recordValues(
-                values.map { input -> MetricValueDraft(input.metricId, input.value, input.note) },
-                recordedAt
-            )
-
-            // Only this check-in has been handled. Other habits linked to the same
-            // metric may still have their own pending prompt.
-            preferencesManager.removePendingMetricHabit(habitId)
-            val updateIntent = android.content.Intent(TimerService.ACTION_WIDGET_UPDATE).apply {
-                putExtra(TimerService.EXTRA_HABIT_ID, habitId)
-                setPackage(context.packageName)
-            }
-            context.sendBroadcast(updateIntent)
-            true
-        } catch (error: Exception) {
-            Log.e(TAG, "Failed to record linked metrics", error)
-            Toast.makeText(
-                context,
-                context.getString(R.string.metric_error_record_failed, error.message.orEmpty()),
-                Toast.LENGTH_LONG
-            ).show()
-            false
-        }
-    }
+        values: List<MetricValueInput>
+    ): Boolean = linkedMetricCoordinator.recordMetricValues(habitId, values)
 
     /**
      * Set "never ask again" preference for a habit's metric prompt.
@@ -667,14 +575,14 @@ class DashboardViewModel @Inject constructor(
      * @param value True to suppress future prompts
      */
     suspend fun setNeverAskAgain(habitId: Long, value: Boolean) {
-        preferencesManager.setNeverAskAgain(habitId, value)
+        linkedMetricCoordinator.setNeverAskAgain(habitId, value)
     }
 
     /**
      * Dismiss the post-check-in dialog.
      */
     fun dismissPostCheckInDialog() {
-        _postCheckInState.value = null
+        linkedMetricCoordinator.dismissPrompt()
     }
 
     // ========== Goal Completion Dialog Methods ==========
@@ -848,8 +756,7 @@ class DashboardViewModel @Inject constructor(
                 if (isTempTask) {
                     // 临时任务完成：跳过目标完成对话框
                     // 检查是否有关联指标需要提示
-                    val links = habitMetricLinkDao.getLinksByHabit(habitId).first()
-                    val hasPromptMetrics = links.any { it.promptOnComplete }
+                    val hasPromptMetrics = linkedMetricCoordinator.hasPromptMetrics(habitId)
 
                     if (!hasPromptMetrics) {
                         // 无关联指标 → 直接删除
@@ -867,8 +774,7 @@ class DashboardViewModel @Inject constructor(
             if (habit != null && result is CheckInResult.Success && result.completed) {
                 if (isTempTask) {
                     // 临时任务：检查是否有关联指标（已在上面判断是否删除）
-                    val links = habitMetricLinkDao.getLinksByHabit(habitId).first()
-                    if (links.any { it.promptOnComplete }) {
+                    if (linkedMetricCoordinator.hasPromptMetrics(habitId)) {
                         checkAndShowPostCheckInDialog(habitId, habit.name)
                     }
                 } else {
@@ -1059,22 +965,4 @@ data class MetricWithLatestValue(
     val latestValue: Double?,
     val latestLogDate: Long?,
     val logs: List<com.dayforge.data.local.entity.MetricLogEntity> = emptyList()
-)
-
-/**
- * State for the post-check-in metric recording dialog.
- * Per METRIC-09: Prompts user to record linked metrics after checking in.
- * Per D-15 to D-19: Dialog shows linked metrics, supports inline recording.
- *
- * @param habitId The ID of the habit that was checked in
- * @param habitName The name of the habit (for display)
- * @param linkedMetrics List of metrics linked to this habit with promptOnComplete=true
- * @param show Whether the dialog should be shown
- */
-data class PostCheckInState(
-    val habitId: Long,
-    val habitName: String,
-    val linkedMetrics: List<LinkedMetricInfo>,
-    val show: Boolean = false,
-    val isTempTask: Boolean = false  // 临时任务标志，对话框关闭后删除
 )

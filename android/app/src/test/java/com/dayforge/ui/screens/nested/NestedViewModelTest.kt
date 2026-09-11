@@ -29,6 +29,7 @@ import com.dayforge.domain.service.CheckInService
 import com.dayforge.domain.service.FailureChecker
 import com.dayforge.ui.components.LinkedMetricInfo
 import com.dayforge.ui.components.MetricValueInput
+import com.dayforge.ui.metrics.LinkedMetricCoordinator
 import com.dayforge.util.DateTimeUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -111,7 +112,7 @@ class NestedViewModelTest {
             habitDao,
             linkDao
         )
-        val metricCoordinator = NestedMetricCoordinator(
+        val metricCoordinator = LinkedMetricCoordinator(
             context = context,
             preferencesManager = preferencesManager,
             metricRepository = metricRepository
