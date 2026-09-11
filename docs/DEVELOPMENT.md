@@ -49,6 +49,14 @@ chore(deps): upgrade FastAPI compatibility group
 
 也可以只验证 `root`、`android` 或 `backend`。
 
+## 公开仓库与本地文件
+
+- 本仓库是公开仓库。真实密钥、令牌、账户、数据库、备份、签名材料和设备配置不得进入 Git。
+- 可提交的环境配置只有使用无效占位值的 `.env.example`；实际部署配置保存在未跟踪的 `.env` 中。
+- 根 `.gitignore` 是敏感文件和生成物的最低防线，不得使用 `git add --force` 绕过。
+- `./tools/verify root` 会检查忽略规则和已跟踪文件名；GitHub CI 还会使用 Gitleaks 扫描每个待合并或推送提交中的秘密内容。
+- 如果秘密曾进入提交，即使后续删除也必须先撤销或轮换该秘密，再决定是否清理历史。
+
 ## Definition of Done
 
 - 实现符合 Issue 范围和架构不变量。

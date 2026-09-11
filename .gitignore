@@ -1,17 +1,44 @@
 # Operating systems and editors
 .DS_Store
+Thumbs.db
 .idea/
 .vscode/
+.fleet/
+.history/
 *.iml
 
 # Local secrets and configuration
 .env
 .env.*
 !.env.example
+.envrc
+.direnv/
+.netrc
+.npmrc
+.pypirc
 local.properties
 *.jks
 *.keystore
+*.p12
+*.pfx
+*.pkcs12
+*.pem
+*.key
+*.ppk
+*.mobileprovision
+keystore.properties
+signing.properties
+secrets.properties
+credentials*.json
+service-account*.json
+client_secret*.json
 google-services.json
+
+# Local AI coding-tool state (repository guidance belongs in AGENTS.md)
+.claude/
+.codex/
+.cursor/
+.aider*
 
 # Android / Gradle
 **/.gradle/
@@ -39,13 +66,19 @@ google-services.json
 
 # Runtime data and backups
 *.db
+*.db-journal
 *.db-shm
 *.db-wal
 *.sqlite
+*.sqlite-*
 *.sqlite3
+*.sqlite3-*
 *.backup
 *.bak
 backups/
+/backend/data/
+/backend/docker-compose.override.yml
+/backend/compose.override.yaml
 
 # Logs and temporary files
 *.log

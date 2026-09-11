@@ -16,12 +16,44 @@ verify_root() {
   git -C "$repo_root" diff --check
   git -C "$repo_root" diff --cached --check
 
+  local tracked_ignored
+  tracked_ignored="$(git -C "$repo_root" ls-files -ci --exclude-standard)"
+  if [[ -n "$tracked_ignored" ]]; then
+    echo "Files covered by .gitignore must not remain tracked:" >&2
+    printf '%s\n' "$tracked_ignored" >&2
+    exit 1
+  fi
+
   if git -C "$repo_root" ls-files \
     | grep -Ev '(^|/)\.env\.example$' \
-    | grep -Eq '(^|/)(\.env($|\.)|local\.properties$|.*\.(jks|keystore)$|.*\.(db|sqlite|sqlite3)$|\.forgejo/)'; then
+    | grep -Eq '(^|/)(\.env($|\.)|\.envrc$|local\.properties$|(keystore|signing|secrets)\.properties$|google-services\.json$|(service-account[^/]*|credentials[^/]*|client_secret[^/]*)\.json$|.*\.(jks|keystore|p12|pfx|pkcs12|pem|key|ppk|mobileprovision)$|.*\.(db|sqlite|sqlite3)(-(journal|wal|shm))?$|\.forgejo($|/))'; then
     echo "Forbidden secret, runtime database, or legacy CI file is tracked." >&2
     exit 1
   fi
+
+  local required_ignored_path
+  local required_ignored_paths=(
+    ".codex/settings.json"
+    ".claude/settings.local.json"
+    "android/local.properties"
+    "android/keystore.properties"
+    "android/release.jks"
+    "android/release.p12"
+    "android/private.pem"
+    "android/app/build/outputs/apk/debug/app-debug.apk"
+    "backend/.env"
+    "backend/.env.production"
+    "backend/.venv/bin/python"
+    "backend/credentials.local.json"
+    "backend/service-account.json"
+    "backend/data/dayforge.sqlite-wal"
+  )
+  for required_ignored_path in "${required_ignored_paths[@]}"; do
+    if ! git -C "$repo_root" check-ignore --quiet --no-index "$required_ignored_path"; then
+      echo "Required .gitignore coverage is missing for: $required_ignored_path" >&2
+      exit 1
+    fi
+  done
 }
 
 find_java_home() {
