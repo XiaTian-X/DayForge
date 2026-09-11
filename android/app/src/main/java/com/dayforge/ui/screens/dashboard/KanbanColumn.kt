@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.dp
 import com.dayforge.R
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.model.HabitWithStats
+import com.dayforge.domain.model.ActiveTimerState
 import com.dayforge.domain.model.CardColorStyle
 import com.dayforge.ui.components.HabitCard
 import com.dayforge.ui.components.LinkedMetricInfo

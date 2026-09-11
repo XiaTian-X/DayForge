@@ -28,7 +28,7 @@ import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.model.CardColorStyle
 import com.dayforge.domain.service.CardColorResolver
-import com.dayforge.ui.screens.dashboard.ActiveTimerState
+import com.dayforge.domain.model.ActiveTimerState
 import java.time.LocalDate
 
 /**

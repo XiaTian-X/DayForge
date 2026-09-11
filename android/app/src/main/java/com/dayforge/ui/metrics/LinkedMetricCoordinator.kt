@@ -7,6 +7,7 @@ import android.widget.Toast
 import com.dayforge.R
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.dao.LinkedMetricSnapshot
+import com.dayforge.data.repository.HabitRepository
 import com.dayforge.data.repository.MetricRepository
 import com.dayforge.data.repository.MetricValueDraft
 import com.dayforge.domain.service.TimerService
@@ -14,6 +15,7 @@ import com.dayforge.ui.components.LinkedMetricInfo
 import com.dayforge.ui.components.MetricValueInput
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,7 +36,8 @@ data class LinkedMetricPromptState(
 class LinkedMetricCoordinator @Inject constructor(
     @ApplicationContext private val context: Context,
     private val preferencesManager: PreferencesManager,
-    private val metricRepository: MetricRepository
+    private val metricRepository: MetricRepository,
+    private val habitRepository: HabitRepository
 ) {
     val pendingMetricHabits: Flow<Set<Long>> = preferencesManager.pendingMetricHabits
 
@@ -97,6 +100,14 @@ class LinkedMetricCoordinator @Inject constructor(
         }
     }
 
+    /** Waits for TimerService persistence, then shows the existing linked-metric prompt if needed. */
+    suspend fun showPromptAfterTimerStop(stoppedHabitId: Long?) {
+        stoppedHabitId ?: return
+        delay(POST_TIMER_STOP_PROMPT_DELAY_MS)
+        val habit = habitRepository.getHabitById(stoppedHabitId) ?: return
+        showPromptIfNeeded(stoppedHabitId, habit.name)
+    }
+
     suspend fun recordMetricValues(habitId: Long, values: List<MetricValueInput>): Boolean {
         return try {
             metricRepository.recordValues(
@@ -139,5 +150,6 @@ class LinkedMetricCoordinator @Inject constructor(
 
     private companion object {
         const val TAG = "LinkedMetricCoordinator"
+        const val POST_TIMER_STOP_PROMPT_DELAY_MS = 100L
     }
 }

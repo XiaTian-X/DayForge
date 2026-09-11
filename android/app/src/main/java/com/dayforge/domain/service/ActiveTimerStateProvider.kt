@@ -4,30 +4,32 @@ import android.content.Context
 import android.os.SystemClock
 import com.dayforge.data.local.dao.TimeLogDao
 import com.dayforge.data.repository.HabitRepository
-import com.dayforge.ui.screens.dashboard.ActiveTimerState
+import com.dayforge.domain.model.ActiveTimerState
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.stateIn
+import javax.inject.Inject
 
 /**
  * Shared active timer state provider extracted from DashboardViewModel and NestedViewModel.
  * Provides a StateFlow that updates every second for running timers.
  */
-class ActiveTimerStateProvider(
+class ActiveTimerStateProvider @Inject constructor(
     private val timeLogDao: TimeLogDao,
     private val habitRepository: HabitRepository,
-    private val viewModelScope: kotlinx.coroutines.CoroutineScope,
-    private val context: Context
+    @ApplicationContext private val context: Context
 ) {
     /**
      * Active timer state for real-time UI updates.
      * Uses a ticker flow to emit updates every second for running timers.
      * Combines active TimeLogEntity with habit data to provide target minutes.
      */
-    val activeTimerState: StateFlow<ActiveTimerState?> = combine(
+    fun observe(scope: CoroutineScope): StateFlow<ActiveTimerState?> = combine(
         timeLogDao.getActiveTimeLogFlow(),
         habitRepository.allHabits,
         // Ticker flow to trigger updates every second for running timers
@@ -57,7 +59,7 @@ class ActiveTimerStateProvider(
             )
         }
     }.stateIn(
-        scope = viewModelScope,
+        scope = scope,
         started = SharingStarted.Lazily,  // Changed from WhileSubscribed to ensure flow stays active
         initialValue = null
     )

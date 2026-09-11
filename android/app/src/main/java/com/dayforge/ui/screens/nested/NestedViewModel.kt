@@ -3,7 +3,6 @@ package com.dayforge.ui.screens.nested
 import android.content.Context
 import android.util.Log
 import android.widget.Toast
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.dayforge.R
@@ -14,20 +13,17 @@ import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.model.CheckInResult
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.HabitRepository
+import com.dayforge.domain.model.ActiveTimerState
 import com.dayforge.domain.model.CardColorStyle
-import com.dayforge.domain.service.ActiveTimerStateProvider
 import com.dayforge.domain.service.CheckInService
-import com.dayforge.domain.service.TimerManager
-import com.dayforge.domain.service.TimerService
+import com.dayforge.domain.service.HabitTimerCoordinator
 import com.dayforge.ui.components.LinkedMetricInfo
 import com.dayforge.ui.components.MetricValueInput
 import com.dayforge.ui.metrics.LinkedMetricCoordinator
 import com.dayforge.ui.metrics.LinkedMetricPromptState
-import com.dayforge.ui.screens.dashboard.ActiveTimerState
 import com.dayforge.util.DateTimeUtils
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.SharingStarted
@@ -108,13 +104,8 @@ class NestedViewModel @Inject constructor(
     private val checkInService: CheckInService,
     private val preferencesManager: PreferencesManager,
     private val metricCoordinator: LinkedMetricCoordinator,
+    private val timerCoordinator: HabitTimerCoordinator,
 ) : ViewModel() {
-
-    // Shared timer management
-    private val timerManager = TimerManager(context, habitDao, timeLogDao)
-    private val activeTimerStateProvider = ActiveTimerStateProvider(
-        timeLogDao, habitRepository, viewModelScope, context
-    )
 
     companion object {
         private const val TAG = "NestedViewModel"
@@ -148,9 +139,10 @@ class NestedViewModel @Inject constructor(
 
     /**
      * Active timer state for real-time UI updates.
-     * Delegates to ActiveTimerStateProvider for shared implementation.
+     * Delegates to HabitTimerCoordinator for shared implementation.
      */
-    val activeTimerState: StateFlow<ActiveTimerState?> = activeTimerStateProvider.activeTimerState
+    val activeTimerState: StateFlow<ActiveTimerState?> =
+        timerCoordinator.observeActiveTimer(viewModelScope)
 
     /**
      * Habits that have pending metric recording.
@@ -337,53 +329,40 @@ class NestedViewModel @Inject constructor(
 
     /**
      * Start a timer for a child habit.
-     * Delegates to TimerManager for shared implementation.
+     * Delegates to HabitTimerCoordinator for shared implementation.
      */
     fun startTimer(habitId: Long, targetMinutes: Int) {
         viewModelScope.launch {
-            timerManager.startTimer(habitId, targetMinutes)
+            timerCoordinator.startTimer(habitId, targetMinutes)
         }
     }
 
     /**
      * Pause the currently running timer.
-     * Delegates to TimerManager for shared implementation.
+     * Delegates to HabitTimerCoordinator for shared implementation.
      */
     fun pauseTimer() {
-        val currentState = activeTimerState.value ?: return
-        timerManager.pauseTimer(currentState.habitId, currentState.targetMinutes)
+        timerCoordinator.pauseTimer(activeTimerState.value)
     }
 
     /**
      * Resume a paused timer.
-     * Delegates to TimerManager for shared implementation.
+     * Delegates to HabitTimerCoordinator for shared implementation.
      */
     fun resumeTimer() {
-        val currentState = activeTimerState.value ?: return
-        timerManager.resumeTimer(currentState.habitId, currentState.targetMinutes)
+        timerCoordinator.resumeTimer(activeTimerState.value)
     }
 
     /**
      * Stop the currently running timer.
-     * Delegates to TimerManager for shared implementation.
+     * Delegates to HabitTimerCoordinator for shared implementation.
      */
     fun stopTimer() {
         val currentState = activeTimerState.value ?: return
-
         viewModelScope.launch {
-            val stoppedHabitId = timerManager.stopTimer(
-                habitId = currentState.habitId,
-                targetMinutes = currentState.targetMinutes
+            metricCoordinator.showPromptAfterTimerStop(
+                timerCoordinator.stopTimer(currentState)
             )
-
-            // Trigger metric dialog for TIMER habits after stopping
-            if (stoppedHabitId != null) {
-                delay(100)
-                val habitForDialog = habitDao.getHabitById(stoppedHabitId)
-                if (habitForDialog != null) {
-                    checkAndShowPostCheckInDialog(stoppedHabitId, habitForDialog.name)
-                }
-            }
         }
     }
 
@@ -391,7 +370,7 @@ class NestedViewModel @Inject constructor(
      * Check if a specific habit has the active timer.
      */
     fun isHabitTimerActive(habitId: Long): Boolean {
-        return activeTimerState.value?.habitId == habitId
+        return timerCoordinator.isHabitTimerActive(activeTimerState.value, habitId)
     }
 
     // ========== Battery Optimization ==========
