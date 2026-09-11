@@ -14,16 +14,19 @@ import com.dayforge.data.local.dao.HabitMetricLinkDao
 import com.dayforge.data.local.dao.MetricDao
 import com.dayforge.data.local.dao.MetricLogDao
 import com.dayforge.data.local.dao.TimeLogDao
+import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.HabitMetricLinkEntity
 import com.dayforge.data.local.entity.MetricEntity
 import com.dayforge.data.local.entity.MetricLogEntity
+import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.HabitRepository
 import com.dayforge.data.repository.MetricRepository
 import com.dayforge.domain.service.CheckInService
 import com.dayforge.domain.service.FailureChecker
+import com.dayforge.util.DateTimeUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -106,16 +109,20 @@ class NestedViewModelTest {
         viewModel = NestedViewModel(
             context = context,
             habitDao = habitDao,
-            completionDao = completionDao,
             timeLogDao = timeLogDao,
             habitRepository = habitRepository,
+            nestedHabitTreeBuilder = NestedHabitTreeBuilder(
+                habitDao,
+                completionDao,
+                timeLogDao,
+                FailureChecker(completionDao, timeLogDao)
+            ),
             checkInService = CheckInService(habitRepository, completionDao, timeLogDao),
             preferencesManager = preferencesManager,
             habitMetricLinkDao = linkDao,
             metricDao = metricDao,
             metricLogDao = metricLogDao,
-            metricRepository = metricRepository,
-            failureChecker = FailureChecker(completionDao, timeLogDao)
+            metricRepository = metricRepository
         )
     }
 
@@ -180,6 +187,86 @@ class NestedViewModelTest {
         assertEquals(childId, after.children.single().habit.id)
         assertTrue(after.children.single().completedToday)
         assertEquals(1, after.children.single().todayCount)
+    }
+
+    @Test
+    fun `counting child completes only after today's values reach its target`() = runTest {
+        val parent = habit(HabitType.GOAL, "Goal", uuid = "goal")
+        habitDao.insert(parent)
+        val child = habit(
+            HabitType.COUNTING,
+            "Counting child",
+            uuid = "counting-child",
+            parentUuid = parent.uuid,
+            targetValue = 3
+        )
+        val childId = habitDao.insert(child)
+        val today = DateTimeUtils.startOfDayMillis()
+
+        completionDao.insert(
+            CompletionEntity(
+                habitId = childId,
+                habitUuid = child.uuid,
+                date = today,
+                value = 2
+            )
+        )
+        val beforeTarget = awaitHierarchy { parents ->
+            parents.singleOrNull()?.children?.singleOrNull()?.todayCount == 2
+        }.single().children.single()
+        assertFalse(beforeTarget.completedToday)
+
+        completionDao.insert(
+            CompletionEntity(
+                habitId = childId,
+                habitUuid = child.uuid,
+                date = today,
+                value = 1
+            )
+        )
+        val atTarget = awaitHierarchy { parents ->
+            parents.singleOrNull()?.children?.singleOrNull()?.completedToday == true
+        }.single().children.single()
+
+        assertEquals(3, atTarget.todayCount)
+        assertTrue(atTarget.completedToday)
+    }
+
+    @Test
+    fun `completed timer child exposes seconds streak and target-cycle progress`() = runTest {
+        val parent = habit(HabitType.GOAL, "Goal", uuid = "goal")
+        habitDao.insert(parent)
+        val child = habit(
+            HabitType.TIMER,
+            "Timer child",
+            uuid = "timer-child",
+            parentUuid = parent.uuid,
+            targetValue = 1,
+            targetCycles = 2
+        )
+        val childId = habitDao.insert(child)
+        val today = DateTimeUtils.startOfDayMillis()
+
+        timeLogDao.insert(
+            TimeLogEntity(
+                habitId = childId,
+                startTime = today,
+                endTime = today + 60_000,
+                durationSeconds = 60,
+                date = today
+            )
+        )
+
+        val timerStats = awaitHierarchy { parents ->
+            parents.singleOrNull()?.children?.singleOrNull()?.todayCount == 60
+        }.single().children.single()
+
+        assertTrue(timerStats.completedToday)
+        assertEquals(60, timerStats.todayCount)
+        assertEquals(1, timerStats.currentStreak)
+        assertEquals(1, timerStats.bestStreak)
+        assertEquals(1, timerStats.targetProgress)
+        assertFalse(timerStats.hasFailed)
     }
 
     @Test
@@ -258,16 +345,19 @@ class NestedViewModelTest {
         type: HabitType,
         name: String,
         uuid: String,
-        parentUuid: String? = null
+        parentUuid: String? = null,
+        targetValue: Int = 1,
+        targetCycles: Int? = null
     ) = HabitEntity(
         name = name,
         habitType = type,
         iconResId = 0,
         colorHex = "#2196F3",
         schedule = HabitSchedule.Daily,
-        targetValue = 1,
+        targetValue = targetValue,
         uuid = uuid,
         parentHabitId = parentUuid,
+        targetCycles = targetCycles,
         createdAt = 1_000L,
         updatedAt = 1_000L
     )

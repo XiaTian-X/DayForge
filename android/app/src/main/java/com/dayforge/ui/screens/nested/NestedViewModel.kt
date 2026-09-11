@@ -9,14 +9,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.dayforge.R
 import com.dayforge.data.local.PreferencesManager
-import com.dayforge.data.local.dao.CompletionDao
 import com.dayforge.data.local.dao.HabitDao
 import com.dayforge.data.local.dao.HabitMetricLinkDao
 import com.dayforge.data.local.dao.MetricDao
 import com.dayforge.data.local.dao.MetricLogDao
 import com.dayforge.data.local.dao.TimeLogDao
 import com.dayforge.data.local.entity.HabitEntity
-import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.data.model.CheckInResult
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.HabitRepository
@@ -25,9 +23,6 @@ import com.dayforge.data.repository.MetricValueDraft
 import com.dayforge.domain.model.CardColorStyle
 import com.dayforge.domain.service.ActiveTimerStateProvider
 import com.dayforge.domain.service.CheckInService
-import com.dayforge.domain.service.FailureChecker
-import com.dayforge.domain.service.ScheduleValidator
-import com.dayforge.domain.service.StreakCalculator
 import com.dayforge.domain.service.TimerManager
 import com.dayforge.domain.service.TimerService
 import com.dayforge.ui.components.LinkedMetricInfo
@@ -47,13 +42,8 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.time.Instant
 import java.time.LocalDate
-import java.time.ZoneId
-import java.time.temporal.ChronoUnit
 import javax.inject.Inject
 
 /**
@@ -125,16 +115,15 @@ data class PostCheckInState(
 class NestedViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val habitDao: HabitDao,
-    private val completionDao: CompletionDao,
     private val timeLogDao: TimeLogDao,
     private val habitRepository: HabitRepository,
+    private val nestedHabitTreeBuilder: NestedHabitTreeBuilder,
     private val checkInService: CheckInService,
     private val preferencesManager: PreferencesManager,
     private val habitMetricLinkDao: HabitMetricLinkDao,
     private val metricDao: MetricDao,
     private val metricLogDao: MetricLogDao,
     private val metricRepository: MetricRepository,
-    private val failureChecker: FailureChecker,
 ) : ViewModel() {
 
     // Shared timer management
@@ -164,56 +153,7 @@ class NestedViewModel @Inject constructor(
         preferencesManager.dateChangeTrigger  // Triggers when date changes
     ) { topLevelHabits, completions, activeTimeLog, _ ->
         Log.d(TAG, "topLevelHabitsWithChildren combine triggered: topLevelHabits=${topLevelHabits.size}")
-
-        topLevelHabits.map { parentHabit ->
-            val children = withContext(Dispatchers.IO) {
-                habitDao.getChildrenByParentUuid(parentHabit.uuid).first()
-            }
-
-            val childrenWithStats = children.map { child ->
-                calculateChildStats(child, completions)
-            }
-
-            // Sort children by isActive && isCheckInAllowed
-            val sortedChildren = childrenWithStats.sortedByDescending { it.habit.isActive && it.isCheckInAllowed }
-
-            // Only count children where today is a check-in day (isCheckInAllowed = true)
-            // Per NEST-05: Progress should exclude non-check-in-day habits
-            // Also exclude completed goals and failed habits from progress calculation
-            val checkInAllowedChildren = sortedChildren.filter {
-                it.isCheckInAllowed && !it.isGoalCompleted && !it.hasFailed
-            }
-            val completedChildren = checkInAllowedChildren.count { it.completedToday }
-            val totalChildren = checkInAllowedChildren.size
-
-            // Calculate isCheckInAllowed for parent
-            val parentIsCheckInAllowed = ScheduleValidator.isCheckInAllowedToday(parentHabit.schedule, parentHabit.createdAt)
-            val parentNextCheckInDate = if (!parentIsCheckInAllowed) {
-                ScheduleValidator.getNextCheckInDate(parentHabit.schedule, parentHabit.createdAt)
-            } else null
-
-            // Calculate day progress for GOAL type
-            val dayProgress = if (parentHabit.habitType == HabitType.GOAL) {
-                val creationDate = Instant.ofEpochMilli(parentHabit.createdAt)
-                    .atZone(ZoneId.systemDefault())
-                    .toLocalDate()
-                ChronoUnit.DAYS.between(creationDate, LocalDate.now()).toInt() + 1
-            } else 0
-
-            ParentHabitWithChildren(
-                habit = parentHabit,
-                children = sortedChildren,
-                completedChildren = completedChildren,
-                totalChildren = totalChildren,
-                totalChildrenIncludingNonCheckInDays = sortedChildren.size,
-                isCheckInAllowed = parentIsCheckInAllowed,
-                nextCheckInDate = parentNextCheckInDate,
-                dayProgress = dayProgress
-            )
-        }
-            // Show GOAL type habits (even without children) and parent habits with children
-            .filter { it.habit.habitType == HabitType.GOAL || it.totalChildren > 0 }
-            .sortedByDescending { it.habit.isActive && it.isCheckInAllowed }
+        nestedHabitTreeBuilder.build(topLevelHabits, completions)
     }
         .onEach { _isInitialized.value = true }
         .stateIn(
@@ -334,111 +274,6 @@ class NestedViewModel @Inject constructor(
     data class PendingDeleteInfo(val habit: HabitEntity, val childCount: Int)
     private val _showChildrenDialog = MutableStateFlow<PendingDeleteInfo?>(null)
     val showChildrenDialog: StateFlow<PendingDeleteInfo?> = _showChildrenDialog.asStateFlow()
-
-    /**
-     * Calculate stats for a child habit.
-     */
-    private suspend fun calculateChildStats(
-        child: HabitEntity,
-        completions: List<com.dayforge.data.local.entity.CompletionEntity>
-    ): ChildHabitWithStats {
-        val habitCompletions = completions.filter { it.habitId == child.id }
-        val todayCompletions = habitCompletions.filter {
-            isToday(it.date)
-        }
-
-        val (todayCount, currentStreak, bestStreak) = if (child.habitType == HabitType.TIMER) {
-            val allTimeLogs = withContext(Dispatchers.IO) {
-                timeLogDao.getAllTimeLogsForHabit(child.id)
-            }
-
-            val todayStart = DateTimeUtils.startOfDayMillis()
-            val todayEnd = todayStart + DateTimeUtils.MILLIS_PER_DAY
-            val todayLogs = allTimeLogs.filter { it.date in todayStart until todayEnd }
-            val count = todayLogs.sumOf { it.durationSeconds }
-
-            val targetSeconds = child.targetValue * 60
-            val completedDates = allTimeLogs
-                .groupBy { it.date }
-                .filter { (_, logs) -> logs.sumOf { it.durationSeconds } >= targetSeconds }
-                .keys
-                .toList()
-
-            Triple(
-                count,
-                StreakCalculator.calculateCurrentStreakFromDates(completedDates),
-                StreakCalculator.calculateBestStreakFromDates(completedDates)
-            )
-        } else {
-            Triple(
-                todayCompletions.sumOf { it.value },
-                StreakCalculator.calculateCurrentStreak(habitCompletions),
-                StreakCalculator.calculateBestStreak(habitCompletions)
-            )
-        }
-
-        val todayCompletionId = todayCompletions.maxByOrNull { it.id }?.id
-
-        val completedToday = when (child.habitType) {
-            HabitType.CHECK_IN -> todayCount > 0
-            HabitType.COUNTING -> todayCount >= child.targetValue
-            HabitType.TIMER -> todayCount >= child.targetValue * 60
-            HabitType.GOAL -> false  // GOAL type doesn't have check-ins
-        }
-
-        // Check-in day validation for Weekly/Monthly/Custom schedules
-        val isCheckInAllowed = ScheduleValidator.isCheckInAllowedToday(child.schedule, child.createdAt)
-        val nextCheckInDate = if (!isCheckInAllowed) {
-            ScheduleValidator.getNextCheckInDate(child.schedule, child.createdAt)
-        } else null
-
-        // Calculate targetProgress for habits with targetCycles
-        // Per TARGET-06: TIMER habits use timelogs, other types use completions
-        val targetProgress = if (child.targetCycles != null) {
-            withContext(Dispatchers.IO) {
-                if (child.habitType == HabitType.TIMER) {
-                    timeLogDao.getDistinctDayCount(child.id)
-                } else {
-                    completionDao.getDistinctDayCount(child.id)
-                }
-            }
-        } else {
-            0
-        }
-
-        // Check failure status for target-based habits
-        val hasFailed = if (child.targetCycles != null) {
-            withContext(Dispatchers.IO) {
-                val firstCompletionDateMillis = if (child.habitType == HabitType.TIMER) {
-                    timeLogDao.getFirstTimeLogDate(child.id)
-                } else {
-                    completionDao.getFirstCompletionDate(child.id)
-                }
-                val firstCompletionDate = firstCompletionDateMillis?.let {
-                    java.time.Instant.ofEpochMilli(it)
-                        .atZone(java.time.ZoneId.systemDefault())
-                        .toLocalDate()
-                }
-                failureChecker.hasFailed(child, firstCompletionDate)
-            }
-        } else {
-            false
-        }
-
-        return ChildHabitWithStats(
-            habit = child,
-            completedToday = completedToday,
-            todayCount = todayCount,
-            lastCompletionId = todayCompletionId,
-            currentStreak = currentStreak,
-            bestStreak = bestStreak,
-            activityRate = child.activityRate,
-            isCheckInAllowed = isCheckInAllowed,
-            nextCheckInDate = nextCheckInDate,
-            targetProgress = targetProgress,
-            hasFailed = hasFailed
-        )
-    }
 
     // ========== Check-in Operations ==========
 
@@ -858,8 +693,4 @@ class NestedViewModel @Inject constructor(
             ?.habit
     }
 
-    private fun isToday(dateMillis: Long): Boolean {
-        val today = DateTimeUtils.startOfDayMillis()
-        return dateMillis == today
-    }
 }
