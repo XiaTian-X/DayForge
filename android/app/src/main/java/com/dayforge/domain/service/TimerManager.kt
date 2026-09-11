@@ -8,16 +8,32 @@ import com.dayforge.data.local.dao.TimeLogDao
 import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.util.DateTimeUtils
 import com.dayforge.widget.timer.CountdownDiscardActivity
+import dagger.hilt.android.qualifiers.ApplicationContext
+import javax.inject.Inject
 
 /**
  * Shared timer management logic extracted from DashboardViewModel and NestedViewModel.
  * Handles starting, pausing, resuming, and stopping timers.
  */
-class TimerManager(
-    private val context: Context,
+class TimerManager @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val habitDao: HabitDao,
     private val timeLogDao: TimeLogDao
 ) {
+    /** Restarts foreground execution for a persisted running timer after process recreation. */
+    suspend fun recoverRunningTimer() {
+        val activeLog = timeLogDao.getActiveTimeLog() ?: return
+        if (activeLog.isPaused) return
+
+        val habit = habitDao.getHabitById(activeLog.habitId) ?: return
+        val intent = Intent(context, TimerService::class.java).apply {
+            action = TimerService.ACTION_START
+            putExtra(TimerService.EXTRA_HABIT_ID, activeLog.habitId)
+            putExtra(TimerService.EXTRA_TARGET_MINUTES, habit.targetValue)
+        }
+        ContextCompat.startForegroundService(context, intent)
+    }
+
     /**
      * Start a timer for a habit if not already completed today.
      * @param habitId ID of the habit to start timer for
@@ -76,7 +92,7 @@ class TimerManager(
      * Shows confirmation dialog for incomplete sessions.
      * @param habitId Current habit ID
      * @param targetMinutes Current target minutes
-     * @return Habit ID if timer was stopped and metric dialog should be shown, null otherwise
+     * @return Habit ID if the stop command was accepted, null when confirmation is required
      */
     suspend fun stopTimer(
         habitId: Long,

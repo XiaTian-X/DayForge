@@ -1,10 +1,8 @@
 package com.dayforge.ui.screens.dashboard
 
 import android.content.Context
-import android.content.Intent
 import android.util.Log
 import android.widget.Toast
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.dayforge.R
@@ -22,11 +20,10 @@ import com.dayforge.data.repository.MetricRepository
 import com.dayforge.domain.model.CardColorStyle
 import com.dayforge.domain.model.FilterMode
 import com.dayforge.domain.model.MetricWithLatestValue
-import com.dayforge.domain.service.ActiveTimerStateProvider
+import com.dayforge.domain.model.ActiveTimerState
 import com.dayforge.domain.service.CheckInService
+import com.dayforge.domain.service.HabitTimerCoordinator
 import com.dayforge.domain.service.MetricOverviewProvider
-import com.dayforge.domain.service.TimerManager
-import com.dayforge.domain.service.TimerService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.time.LocalDate
@@ -38,7 +35,6 @@ import com.dayforge.ui.metrics.LinkedMetricCoordinator
 import com.dayforge.ui.metrics.LinkedMetricPromptState
 import com.dayforge.util.DateTimeUtils
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -59,6 +55,7 @@ class DashboardViewModel @Inject constructor(
     private val checkInService: CheckInService,
     private val dashboardHabitListBuilder: DashboardHabitListBuilder,
     private val dashboardTimeWindowTicker: DashboardTimeWindowTicker,
+    private val timerCoordinator: HabitTimerCoordinator,
     private val timeLogDao: TimeLogDao,
     private val habitDao: com.dayforge.data.local.dao.HabitDao,
     private val preferencesManager: PreferencesManager,
@@ -67,12 +64,6 @@ class DashboardViewModel @Inject constructor(
     private val linkedMetricCoordinator: LinkedMetricCoordinator,
     private val metricOverviewProvider: MetricOverviewProvider
 ) : ViewModel() {
-
-    // Shared timer management
-    private val timerManager = TimerManager(context, habitDao, timeLogDao)
-    private val activeTimerStateProvider = ActiveTimerStateProvider(
-        timeLogDao, habitRepository, viewModelScope, context
-    )
 
     companion object {
         private const val TAG = "DashboardViewModel"
@@ -85,25 +76,9 @@ class DashboardViewModel @Inject constructor(
     private val timeWindowTickFlow = dashboardTimeWindowTicker.observe()
 
     init {
-        // Process recovery: Restart TimerService if there was an active running timer
-        // Per D-05: recovery is automatic without user confirmation
         viewModelScope.launch {
-            val activeLog = timeLogDao.getActiveTimeLog()
-            if (activeLog != null && !activeLog.isPaused) {
-                // Timer was running, restart the foreground service
-                // Get the habit to retrieve targetMinutes
-                val habits = habitRepository.allHabits.first()
-                val habit = habits.find { it.id == activeLog.habitId }
-                if (habit != null) {
-                    val intent = Intent(context, TimerService::class.java).apply {
-                        action = TimerService.ACTION_START
-                        putExtra(TimerService.EXTRA_HABIT_ID, activeLog.habitId)
-                        putExtra(TimerService.EXTRA_TARGET_MINUTES, habit.targetValue)
-                    }
-                    // Service will check for existing log and not create new one
-                    ContextCompat.startForegroundService(context, intent)
-                }
-            }
+            // Per D-05: recovery is automatic without user confirmation.
+            timerCoordinator.recoverRunningTimer()
         }
     }
 
@@ -250,63 +225,51 @@ class DashboardViewModel @Inject constructor(
 
     /**
      * Active timer state for real-time UI updates.
-     * Delegates to ActiveTimerStateProvider for shared implementation.
+     * Delegates to HabitTimerCoordinator for shared implementation.
      */
-    val activeTimerState: StateFlow<ActiveTimerState?> = activeTimerStateProvider.activeTimerState
+    val activeTimerState: StateFlow<ActiveTimerState?> =
+        timerCoordinator.observeActiveTimer(viewModelScope)
 
     /**
      * Start a timer for the given habit.
-     * Delegates to TimerManager for shared implementation.
+     * Delegates to HabitTimerCoordinator for shared implementation.
      *
      * @param habitId The ID of the habit
      * @param targetMinutes Target duration in minutes
      */
     fun startTimer(habitId: Long, targetMinutes: Int) {
         viewModelScope.launch {
-            timerManager.startTimer(habitId, targetMinutes)
+            timerCoordinator.startTimer(habitId, targetMinutes)
         }
     }
 
     /**
      * Pause the currently running timer.
-     * Delegates to TimerManager for shared implementation.
+     * Delegates to HabitTimerCoordinator for shared implementation.
      */
     fun pauseTimer() {
-        val currentState = activeTimerState.value ?: return
-        timerManager.pauseTimer(currentState.habitId, currentState.targetMinutes)
+        timerCoordinator.pauseTimer(activeTimerState.value)
     }
 
     /**
      * Resume a paused timer.
-     * Delegates to TimerManager for shared implementation.
+     * Delegates to HabitTimerCoordinator for shared implementation.
      */
     fun resumeTimer() {
-        val currentState = activeTimerState.value ?: return
-        timerManager.resumeTimer(currentState.habitId, currentState.targetMinutes)
+        timerCoordinator.resumeTimer(activeTimerState.value)
     }
 
     /**
      * Stop the currently running timer and save the duration.
      * Triggers post-check-in dialog for linked metrics.
-     * Delegates to TimerManager for shared implementation.
+     * Delegates to HabitTimerCoordinator for shared implementation.
      */
     fun stopTimer() {
         val currentState = activeTimerState.value ?: return
-
         viewModelScope.launch {
-            val stoppedHabitId = timerManager.stopTimer(
-                habitId = currentState.habitId,
-                targetMinutes = currentState.targetMinutes
+            linkedMetricCoordinator.showPromptAfterTimerStop(
+                timerCoordinator.stopTimer(currentState)
             )
-
-            // Trigger metric dialog for TIMER habits after stopping
-            if (stoppedHabitId != null) {
-                delay(100)
-                val habitForDialog = habitDao.getHabitById(stoppedHabitId)
-                if (habitForDialog != null) {
-                    checkAndShowPostCheckInDialog(stoppedHabitId, habitForDialog.name)
-                }
-            }
         }
     }
 
@@ -317,7 +280,7 @@ class DashboardViewModel @Inject constructor(
      * @return true if this habit has the active timer
      */
     fun isHabitTimerActive(habitId: Long): Boolean {
-        return activeTimerState.value?.habitId == habitId
+        return timerCoordinator.isHabitTimerActive(activeTimerState.value, habitId)
     }
 
     /**
@@ -693,22 +656,6 @@ class DashboardViewModel @Inject constructor(
     }
 
 }
-
-/**
- * Represents the state of an active timer.
- * Used to display real-time timer progress in the UI.
- *
- * @param habitId The ID of the habit with the active timer
- * @param elapsedSeconds Seconds elapsed (excluding pause time)
- * @param isPaused Whether the timer is currently paused
- * @param targetMinutes Target duration in minutes for display
- */
-data class ActiveTimerState(
-    val habitId: Long,
-    val elapsedSeconds: Int,
-    val isPaused: Boolean,
-    val targetMinutes: Int
-)
 
 private data class DashboardHabitListInput(
     val habits: List<HabitEntity>,

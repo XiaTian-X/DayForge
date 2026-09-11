@@ -19,7 +19,7 @@ import com.dayforge.R
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.model.CardColorStyle
 import com.dayforge.domain.service.CardColorResolver
-import com.dayforge.ui.screens.dashboard.ActiveTimerState
+import com.dayforge.domain.model.ActiveTimerState
 import com.dayforge.ui.screens.nested.ChildHabitWithStats
 import java.time.LocalDate
 

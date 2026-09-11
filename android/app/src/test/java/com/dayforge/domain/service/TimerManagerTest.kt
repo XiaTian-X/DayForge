@@ -11,9 +11,11 @@ import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.widget.timer.CountdownDiscardActivity
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -51,6 +53,45 @@ class TimerManagerTest {
         assertEquals(CountdownDiscardActivity::class.java.name, intent.component?.className)
         assertTrue(intent.getBooleanExtra(CountdownDiscardActivity.EXTRA_IS_COUNTDOWN, false))
         assertTrue(intent.getIntExtra(CountdownDiscardActivity.EXTRA_SECONDS, 0) in 49..50)
+    }
+
+    @Test
+    fun `stopTimer returns habit details when stop command is accepted`() = runTest {
+        val habit = timerHabit(id = 7L, isCountdown = false)
+        coEvery { habitDao.getHabitById(7L) } returns habit
+        coEvery { timeLogDao.getActiveTimeLog() } returns null
+
+        val result = manager.stopTimer(habitId = 7L, targetMinutes = 1)
+
+        assertEquals(7L, result)
+        val intent = shadowOf(context as Application).nextStartedService
+        assertEquals(TimerService.ACTION_STOP, intent.action)
+        assertEquals(7L, intent.getLongExtra(TimerService.EXTRA_HABIT_ID, -1L))
+    }
+
+    @Test
+    fun `recoverRunningTimer restarts persisted running timer`() = runTest {
+        val activeLog = activeLog(habitId = 7L, startTime = System.currentTimeMillis())
+        coEvery { timeLogDao.getActiveTimeLog() } returns activeLog
+        coEvery { habitDao.getHabitById(7L) } returns timerHabit(id = 7L, isCountdown = false)
+
+        manager.recoverRunningTimer()
+
+        val intent = shadowOf(context as Application).nextStartedService
+        assertEquals(TimerService.ACTION_START, intent.action)
+        assertEquals(7L, intent.getLongExtra(TimerService.EXTRA_HABIT_ID, -1L))
+        assertEquals(1, intent.getIntExtra(TimerService.EXTRA_TARGET_MINUTES, -1))
+    }
+
+    @Test
+    fun `recoverRunningTimer leaves persisted paused timer stopped`() = runTest {
+        coEvery { timeLogDao.getActiveTimeLog() } returns
+            activeLog(habitId = 7L, startTime = System.currentTimeMillis()).copy(isPaused = true)
+
+        manager.recoverRunningTimer()
+
+        assertNull(shadowOf(context as Application).nextStartedService)
+        coVerify(exactly = 0) { habitDao.getHabitById(any()) }
     }
 
     @Test

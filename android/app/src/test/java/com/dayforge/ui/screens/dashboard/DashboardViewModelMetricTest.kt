@@ -23,11 +23,14 @@ import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.HabitRepository
 import com.dayforge.data.repository.MetricRepository
 import com.dayforge.domain.model.MetricWithLatestValue
+import com.dayforge.domain.service.ActiveTimerStateProvider
 import com.dayforge.domain.service.CheckInService
 import com.dayforge.domain.service.FailureChecker
 import com.dayforge.domain.service.HabitStatusCalculator
+import com.dayforge.domain.service.HabitTimerCoordinator
 import com.dayforge.domain.service.MetricOverviewProvider
 import com.dayforge.domain.service.StructuralEditGuard
+import com.dayforge.domain.service.TimerManager
 import com.dayforge.ui.metrics.LinkedMetricCoordinator
 import io.mockk.every
 import io.mockk.mockk
@@ -110,18 +113,24 @@ class DashboardViewModelMetricTest {
             habitMetricLinkDao,
             mockk<StructuralEditGuard>(relaxed = true)
         )
+        val linkedMetricCoordinator =
+            LinkedMetricCoordinator(context, mockPreferencesManager, metricRepository, repository)
         viewModel = DashboardViewModel(
             context,
             repository,
             checkInService,
             DashboardHabitListBuilder(habitStatusCalculator),
             DashboardTimeWindowTicker(repository, mockPreferencesManager),
+            HabitTimerCoordinator(
+                TimerManager(context, habitDao, timeLogDao),
+                ActiveTimerStateProvider(timeLogDao, repository, context)
+            ),
             timeLogDao,
             habitDao,
             mockPreferencesManager,
             completionDao,
             metricRepository,
-            LinkedMetricCoordinator(context, mockPreferencesManager, metricRepository),
+            linkedMetricCoordinator,
             MetricOverviewProvider(metricRepository)
         )
     }
