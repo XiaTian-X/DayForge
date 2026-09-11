@@ -34,7 +34,11 @@ Compose UI -> ViewModel -> Domain service/use case -> Repository -> Room/API
 FastAPI Router -> Service/Domain -> SQLModel/SQLAlchemy -> SQLite
 ```
 
-当前规模下不增加只有转发作用的 Repository 层。SQLite 相关备份、连接配置和维护逻辑集中在 storage/database 边界，以便未来切换 PostgreSQL 等更健壮数据库。
+当前规模下不增加只有转发作用的 Repository 层。当前发布版只支持 SQLite 和单应用 worker；`DATABASE_TYPE` 的唯一合法值是 `sqlite`，显式 `DATABASE_URL` 必须使用 `sqlite+aiosqlite`。不能把仅能拼接 URL、但没有驱动与验证矩阵的配置称为受支持数据库。
+
+数据库连接由 `src/storage/database_adapter.py` 提供。SQLite 的同步/异步引擎 URL、连接参数和 PRAGMA 均封装在该边界，备份与物理恢复继续封装在 `sqlite_maintenance.py`；领域 service 和同步 API 不直接选择数据库。
+
+新增数据库适配器前必须同时具备：锁定的运行驱动、异步应用引擎、同步 Alembic 引擎、从空库升级和模型一致性测试、同步事务/幂等/冲突矩阵、并发写入策略、备份恢复及逻辑归档往返验证。只有这些检查进入 CI 后，才能开放对应配置值；数据库迁移不得改变账户归属、公共 ID、revision、墓碑、UTC/IANA 时间和计时状态机语义。
 
 ## 时间模型
 

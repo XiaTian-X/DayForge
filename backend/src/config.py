@@ -1,10 +1,11 @@
 """Configuration management for the backend application."""
-import os
 import warnings
 from typing import Optional
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
+
+from src.storage.database_adapter import DatabaseAdapter, build_database_adapter
 
 
 # Default JWT secret for development - should be overridden in production
@@ -15,14 +16,9 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables.
 
     Attributes:
-        DATABASE_TYPE: Database type ('sqlite' or 'postgresql')
-        DATABASE_URL: Full database URL (optional, overrides other DB settings)
+        DATABASE_TYPE: Supported database type (currently only 'sqlite')
+        DATABASE_URL: Full SQLite async URL (optional, overrides SQLITE_DB_PATH)
         SQLITE_DB_PATH: Path to SQLite database file
-        POSTGRES_HOST: PostgreSQL host
-        POSTGRES_USER: PostgreSQL username
-        POSTGRES_PASSWORD: PostgreSQL password
-        POSTGRES_DB: PostgreSQL database name
-        POSTGRES_PORT: PostgreSQL port
         JWT_SECRET_KEY: Secret key for JWT encoding/decoding
         JWT_ALGORITHM: Algorithm for JWT encoding (default: HS256)
         ACCESS_TOKEN_EXPIRE_MINUTES: Access token expiration in minutes
@@ -42,13 +38,6 @@ class Settings(BaseSettings):
     DATABASE_URL: Optional[str] = None
     SQLITE_DB_PATH: str = "./dev.db"
 
-    # PostgreSQL settings
-    POSTGRES_HOST: str = "localhost"
-    POSTGRES_USER: str = "postgres"
-    POSTGRES_PASSWORD: str = "postgres"
-    POSTGRES_DB: str = "dayforge"
-    POSTGRES_PORT: int = 5432
-
     # JWT settings
     JWT_SECRET_KEY: str = DEFAULT_JWT_SECRET
     JWT_ALGORITHM: str = "HS256"
@@ -64,8 +53,9 @@ class Settings(BaseSettings):
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173", "http://localhost:8080", "http://localhost:4200"]
 
     @model_validator(mode="after")
-    def validate_security_settings(self):
-        """Allow convenient local defaults but fail closed in production."""
+    def validate_runtime_settings(self):
+        """Fail closed for unsupported storage and unsafe production secrets."""
+        build_database_adapter(self.DATABASE_TYPE, self.DATABASE_URL, self.SQLITE_DB_PATH)
         is_production = self.ENVIRONMENT.lower() == "production"
         if bool(self.ADMIN_USERNAME) != bool(self.ADMIN_PASSWORD):
             raise ValueError("ADMIN_USERNAME and ADMIN_PASSWORD must be configured together")
@@ -92,32 +82,36 @@ def get_settings() -> Settings:
     return Settings()
 
 
-def get_database_url() -> str:
-    """Get database URL based on DATABASE_TYPE setting.
-
-    Returns SQLite URL when DATABASE_TYPE is 'sqlite'.
-    Returns PostgreSQL URL when DATABASE_TYPE is 'postgresql'.
-
-    Returns:
-        Database URL string for async SQLAlchemy connection.
-    """
+def get_database_adapter() -> DatabaseAdapter:
+    """Return a validated adapter for the configured supported backend."""
     settings = get_settings()
+    return build_database_adapter(
+        settings.DATABASE_TYPE,
+        settings.DATABASE_URL,
+        settings.SQLITE_DB_PATH,
+    )
 
-    if settings.DATABASE_URL:
-        return settings.DATABASE_URL
 
-    if settings.DATABASE_TYPE == "postgresql":
-        return (
-            f"postgresql+asyncpg://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
-            f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
-        )
-    else:
-        # Default to SQLite
-        return f"sqlite+aiosqlite:///{settings.SQLITE_DB_PATH}"
+def get_database_url() -> str:
+    """Return the validated async application URL."""
+    return get_database_adapter().async_url
+
+
+def get_migration_database_url() -> str:
+    """Return the validated synchronous URL used by Alembic and maintenance tools."""
+    return get_database_adapter().migration_url
 
 
 # Convenience singleton instance
 settings = get_settings()
 
 
-__all__ = ["Settings", "settings", "get_settings", "get_database_url", "DEFAULT_JWT_SECRET"]
+__all__ = [
+    "Settings",
+    "settings",
+    "get_settings",
+    "get_database_adapter",
+    "get_database_url",
+    "get_migration_database_url",
+    "DEFAULT_JWT_SECRET",
+]

@@ -4,6 +4,8 @@
 
 后端面向家庭局域网服务器或 NAS。初始数据库为 SQLite，应用使用单 worker。公开到广域网时必须由可信反向代理提供 HTTPS、访问控制和正确的转发头配置。
 
+当前发布版不支持 PostgreSQL 或其他数据库。`DATABASE_TYPE` 必须为 `sqlite`；如果直接设置 `DATABASE_URL`，必须是 `sqlite+aiosqlite` URL，否则进程在启动阶段拒绝配置。逻辑归档是未来跨数据库迁移通道，不代表对应数据库已获得运行支持。
+
 不得在 GitHub 托管 Runner 中直接访问家庭 NAS。初期部署由 NAS 主动拉取不可变镜像；未来自动部署需要受控自托管 Runner 和最小权限凭据。
 
 ## 配置与秘密

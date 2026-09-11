@@ -33,20 +33,15 @@ class TestSettings:
         """Test that Settings loads config from environment variables."""
         from src.config import Settings
 
-        monkeypatch.setenv("DATABASE_TYPE", "postgresql")
-        monkeypatch.setenv("POSTGRES_HOST", "localhost")
-        monkeypatch.setenv("POSTGRES_USER", "testuser")
-        monkeypatch.setenv("POSTGRES_PASSWORD", "testpass")
-        monkeypatch.setenv("POSTGRES_DB", "testdb")
-        monkeypatch.setenv("POSTGRES_PORT", "5433")
+        monkeypatch.setenv("DATABASE_TYPE", "sqlite")
+        monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///./configured.db")
         monkeypatch.setenv("JWT_SECRET_KEY", "test-env-secret")
         monkeypatch.setenv("CORS_ORIGINS", '["http://example.com"]')
 
         settings = Settings()
 
-        assert settings.DATABASE_TYPE == "postgresql"
-        assert settings.POSTGRES_HOST == "localhost"
-        assert settings.POSTGRES_USER == "testuser"
+        assert settings.DATABASE_TYPE == "sqlite"
+        assert settings.DATABASE_URL == "sqlite+aiosqlite:///./configured.db"
         assert settings.JWT_SECRET_KEY == "test-env-secret"
         assert settings.CORS_ORIGINS == ["http://example.com"]
 
@@ -73,20 +68,43 @@ class TestGetDatabaseUrl:
 
         assert url == "sqlite+aiosqlite:///./test.db"
 
-    def test_returns_postgresql_url_when_database_type_is_postgresql(self, monkeypatch):
-        """Test get_database_url returns PostgreSQL URL when DATABASE_TYPE=postgresql."""
+    def test_rejects_postgresql_database_type(self, monkeypatch):
+        """Do not advertise a backend whose driver and behavior are not shipped."""
         from src.config import get_database_url
 
         monkeypatch.setenv("DATABASE_TYPE", "postgresql")
-        monkeypatch.setenv("POSTGRES_HOST", "localhost")
-        monkeypatch.setenv("POSTGRES_USER", "myuser")
-        monkeypatch.setenv("POSTGRES_PASSWORD", "mypass")
-        monkeypatch.setenv("POSTGRES_DB", "mydb")
-        monkeypatch.setenv("POSTGRES_PORT", "5432")
 
-        url = get_database_url()
+        with pytest.raises(ValidationError, match="DATABASE_TYPE must be sqlite"):
+            get_database_url()
 
-        assert url == "postgresql+asyncpg://myuser:mypass@localhost:5432/mydb"
+    @pytest.mark.parametrize(
+        "database_url",
+        [
+            "postgresql+asyncpg://user:password@localhost/dayforge",
+            "sqlite:///./missing-async-driver.db",
+            "sqlite+aiosqlite://",
+            "sqlite+aiosqlite://user@host/dayforge.db",
+            "not-a-database-url",
+        ],
+    )
+    def test_rejects_unsupported_or_malformed_database_urls(self, database_url):
+        from src.config import Settings
+
+        with pytest.raises(ValidationError, match="DATABASE_URL"):
+            Settings(DATABASE_URL=database_url)
+
+    def test_rejects_empty_sqlite_path_without_url(self):
+        from src.config import Settings
+
+        with pytest.raises(ValidationError, match="SQLITE_DB_PATH"):
+            Settings(SQLITE_DB_PATH="")
+
+    def test_explicit_sqlite_async_url_is_preserved(self, monkeypatch):
+        from src.config import get_database_url
+
+        monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///./custom.db")
+
+        assert get_database_url() == "sqlite+aiosqlite:///./custom.db"
 
     def test_sqlite_url_default_path(self):
         """Test SQLite URL uses default path when not specified."""

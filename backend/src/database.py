@@ -1,14 +1,13 @@
-"""Database configuration and session management."""
-from sqlmodel import SQLModel, create_engine, Session
-from sqlalchemy import event
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+"""Database session management over the configured storage adapter."""
+from sqlmodel import SQLModel, Session
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from typing import AsyncGenerator, Optional, Any
 
-from src.config import get_database_url
+from src.config import get_database_adapter
 
 
-# Get database URL from config
-DATABASE_URL = get_database_url()
+DATABASE_ADAPTER = get_database_adapter()
+DATABASE_URL = DATABASE_ADAPTER.async_url
 
 
 # Async engine for SQLModel - can be overridden for testing
@@ -19,22 +18,7 @@ def get_engine() -> Any:
     """Get the database engine, creating if necessary."""
     global _engine
     if _engine is None:
-        connect_args = {"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
-        _engine = create_async_engine(
-            DATABASE_URL,
-            echo=False,
-            future=True,
-            connect_args=connect_args
-        )
-        # Enable foreign keys for SQLite async engine
-        if "sqlite" in DATABASE_URL:
-            @event.listens_for(_engine.sync_engine, "connect")
-            def set_sqlite_pragma_async(dbapi_conn, connection_record):
-                cursor = dbapi_conn.cursor()
-                cursor.execute("PRAGMA foreign_keys=ON")
-                cursor.execute("PRAGMA journal_mode=WAL")
-                cursor.execute("PRAGMA busy_timeout=5000")
-                cursor.close()
+        _engine = DATABASE_ADAPTER.create_async_engine()
     return _engine
 
 
@@ -44,20 +28,7 @@ def set_engine(engine: Any) -> None:
     _engine = engine
 
 
-# Sync engine for migrations (replace +aiosqlite with empty string for SQLite)
-sync_engine_url = DATABASE_URL.replace("+aiosqlite", "")
-sync_engine = create_engine(sync_engine_url, echo=False, future=True)
-
-
-# For SQLite, enable foreign key constraints
-if "sqlite" in DATABASE_URL:
-    @event.listens_for(sync_engine, "connect")
-    def set_sqlite_pragma(dbapi_conn, connection_record):
-        cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA busy_timeout=5000")
-        cursor.close()
+sync_engine = DATABASE_ADAPTER.create_migration_engine()
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
@@ -99,4 +70,12 @@ async def create_db_and_tables():
         await conn.run_sync(SQLModel.metadata.create_all)
 
 
-__all__ = ["get_session", "create_db_and_tables", "get_engine", "set_engine", "sync_engine", "DATABASE_URL"]
+__all__ = [
+    "get_session",
+    "create_db_and_tables",
+    "get_engine",
+    "set_engine",
+    "sync_engine",
+    "DATABASE_ADAPTER",
+    "DATABASE_URL",
+]
