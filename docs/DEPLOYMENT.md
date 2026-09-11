@@ -6,6 +6,12 @@
 
 当前发布版不支持 PostgreSQL 或其他数据库。`DATABASE_TYPE` 必须为 `sqlite`；如果直接设置 `DATABASE_URL`，必须是 `sqlite+aiosqlite` URL，否则进程在启动阶段拒绝配置。逻辑归档是未来跨数据库迁移通道，不代表对应数据库已获得运行支持。
 
+## 首个生产基线重置
+
+本仓库在尚无真实数据和受支持旧客户端时，将 Android Room 重置为 schema `1`，将后端 Alembic 重置为 revision `000000000001`。此前的测试数据库不能升级或 stamp 到新 revision：Android 安装后会对较高的开发版 schema 执行破坏性重建；后端部署前必须停止旧服务、删除旧测试 SQLite 文件及其 `-wal`/`-shm` 伴随文件，再由 `alembic upgrade head` 创建新库。需要保留的仅是配置与密钥，旧测试备份不得恢复到本基线。
+
+从该基线产生真实数据后，禁止再次重写 Room 或 Alembic 历史；所有结构变化必须使用经过测试的增量迁移和升级前备份。
+
 不得在 GitHub 托管 Runner 中直接访问家庭 NAS。初期部署由 NAS 主动拉取不可变镜像；未来自动部署需要受控自托管 Runner 和最小权限凭据。
 
 ## 配置与秘密

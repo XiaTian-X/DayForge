@@ -543,6 +543,7 @@ class SyncChange(SQLModel, table=True):
     __tablename__ = "sync_changes"
     __table_args__ = (
         Index("ix_sync_changes_recipient_sequence", "recipient_user_id", "sequence"),
+        {"sqlite_autoincrement": True},
     )
 
     sequence: Optional[int] = Field(default=None, primary_key=True)

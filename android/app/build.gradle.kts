@@ -186,7 +186,6 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.turbine)
     testImplementation(libs.coroutines.test)
-    testImplementation(libs.room.testing)
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.androidx.test.runner)
     testImplementation(libs.androidx.test.ext.junit)
@@ -194,7 +193,6 @@ dependencies {
     testImplementation(libs.mockk)
     androidTestImplementation(libs.espresso.core)
     androidTestImplementation(libs.hilt.android.testing)
-    androidTestImplementation(libs.room.testing)
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.ui.test.junit4)
 }

@@ -1,12 +1,12 @@
 {
   "formatVersion": 1,
   "database": {
-    "version": 22,
-    "identityHash": "d1ad9ccf784789f519714d2ec9385d6a",
+    "version": 1,
+    "identityHash": "036fd8ad5b29045ba51f379cf9640656",
     "entities": [
       {
         "tableName": "habits",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `description` TEXT NOT NULL, `habitType` TEXT NOT NULL, `iconResId` INTEGER NOT NULL, `colorHex` TEXT NOT NULL, `schedule` TEXT NOT NULL, `targetValue` INTEGER NOT NULL, `isCountdown` INTEGER NOT NULL, `isActive` INTEGER NOT NULL, `freezeCount` INTEGER NOT NULL, `serverId` INTEGER, `uuid` TEXT NOT NULL, `parentHabitId` TEXT, `targetCycles` INTEGER, `failMode` TEXT NOT NULL, `goalSuccess` INTEGER, `activityRate` INTEGER NOT NULL, `activityRateUpdatedAt` INTEGER NOT NULL, `bestTime` INTEGER, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL)",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `description` TEXT NOT NULL, `habitType` TEXT NOT NULL, `iconResId` INTEGER NOT NULL, `colorHex` TEXT NOT NULL, `schedule` TEXT NOT NULL, `targetValue` INTEGER NOT NULL, `isCountdown` INTEGER NOT NULL, `isActive` INTEGER NOT NULL, `uuid` TEXT NOT NULL, `parentHabitId` TEXT, `targetCycles` INTEGER, `failMode` TEXT NOT NULL, `goalSuccess` INTEGER, `activityRate` INTEGER NOT NULL, `activityRateUpdatedAt` INTEGER NOT NULL, `bestTime` INTEGER, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL)",
         "fields": [
           {
             "fieldPath": "id",
@@ -67,18 +67,6 @@
             "columnName": "isActive",
             "affinity": "INTEGER",
             "notNull": true
-          },
-          {
-            "fieldPath": "freezeCount",
-            "columnName": "freezeCount",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "serverId",
-            "columnName": "serverId",
-            "affinity": "INTEGER",
-            "notNull": false
           },
           {
             "fieldPath": "uuid",
@@ -149,15 +137,6 @@
         },
         "indices": [
           {
-            "name": "index_habits_serverId",
-            "unique": false,
-            "columnNames": [
-              "serverId"
-            ],
-            "orders": [],
-            "createSql": "CREATE INDEX IF NOT EXISTS `index_habits_serverId` ON `${TABLE_NAME}` (`serverId`)"
-          },
-          {
             "name": "index_habits_uuid",
             "unique": false,
             "columnNames": [
@@ -180,7 +159,7 @@
       },
       {
         "tableName": "completions",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `habitId` INTEGER NOT NULL, `date` INTEGER NOT NULL, `value` INTEGER NOT NULL, `actualCompletedAt` INTEGER, `serverId` INTEGER, `uuid` TEXT NOT NULL, `habitUuid` TEXT, `createdAt` INTEGER NOT NULL, FOREIGN KEY(`habitId`) REFERENCES `habits`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `habitId` INTEGER NOT NULL, `date` INTEGER NOT NULL, `value` INTEGER NOT NULL, `actualCompletedAt` INTEGER, `uuid` TEXT NOT NULL, `habitUuid` TEXT, `createdAt` INTEGER NOT NULL, FOREIGN KEY(`habitId`) REFERENCES `habits`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
         "fields": [
           {
             "fieldPath": "id",
@@ -209,12 +188,6 @@
           {
             "fieldPath": "actualCompletedAt",
             "columnName": "actualCompletedAt",
-            "affinity": "INTEGER",
-            "notNull": false
-          },
-          {
-            "fieldPath": "serverId",
-            "columnName": "serverId",
             "affinity": "INTEGER",
             "notNull": false
           },
@@ -263,15 +236,6 @@
             "createSql": "CREATE INDEX IF NOT EXISTS `index_completions_date` ON `${TABLE_NAME}` (`date`)"
           },
           {
-            "name": "index_completions_serverId",
-            "unique": false,
-            "columnNames": [
-              "serverId"
-            ],
-            "orders": [],
-            "createSql": "CREATE INDEX IF NOT EXISTS `index_completions_serverId` ON `${TABLE_NAME}` (`serverId`)"
-          },
-          {
             "name": "index_completions_uuid",
             "unique": false,
             "columnNames": [
@@ -297,7 +261,7 @@
       },
       {
         "tableName": "timelogs",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `habitId` INTEGER NOT NULL, `startTime` INTEGER NOT NULL, `endTime` INTEGER, `durationSeconds` INTEGER NOT NULL, `isPaused` INTEGER NOT NULL, `pausedAt` INTEGER, `accumulatedPauseMillis` INTEGER NOT NULL, `timerSyncEnabled` INTEGER NOT NULL, `timerNextCommandSequence` INTEGER NOT NULL, `timerControlGeneration` INTEGER NOT NULL, `timerLastCommandAt` INTEGER, `timerTimezone` TEXT, `timerActiveElapsedMillis` INTEGER NOT NULL, `timerElapsedRealtimeAnchor` INTEGER, `timerBootCount` INTEGER, `date` INTEGER NOT NULL, `serverId` INTEGER, `uuid` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, FOREIGN KEY(`habitId`) REFERENCES `habits`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `habitId` INTEGER NOT NULL, `startTime` INTEGER NOT NULL, `endTime` INTEGER, `durationSeconds` INTEGER NOT NULL, `isPaused` INTEGER NOT NULL, `pausedAt` INTEGER, `accumulatedPauseMillis` INTEGER NOT NULL, `timerNextCommandSequence` INTEGER NOT NULL, `timerControlGeneration` INTEGER NOT NULL, `timerLastCommandAt` INTEGER, `timerTimezone` TEXT, `timerActiveElapsedMillis` INTEGER NOT NULL, `timerElapsedRealtimeAnchor` INTEGER, `timerBootCount` INTEGER, `date` INTEGER NOT NULL, `uuid` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, FOREIGN KEY(`habitId`) REFERENCES `habits`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
         "fields": [
           {
             "fieldPath": "id",
@@ -344,12 +308,6 @@
           {
             "fieldPath": "accumulatedPauseMillis",
             "columnName": "accumulatedPauseMillis",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "timerSyncEnabled",
-            "columnName": "timerSyncEnabled",
             "affinity": "INTEGER",
             "notNull": true
           },
@@ -402,12 +360,6 @@
             "notNull": true
           },
           {
-            "fieldPath": "serverId",
-            "columnName": "serverId",
-            "affinity": "INTEGER",
-            "notNull": false
-          },
-          {
             "fieldPath": "uuid",
             "columnName": "uuid",
             "affinity": "TEXT",
@@ -452,15 +404,6 @@
             "createSql": "CREATE INDEX IF NOT EXISTS `index_timelogs_date` ON `${TABLE_NAME}` (`date`)"
           },
           {
-            "name": "index_timelogs_serverId",
-            "unique": false,
-            "columnNames": [
-              "serverId"
-            ],
-            "orders": [],
-            "createSql": "CREATE INDEX IF NOT EXISTS `index_timelogs_serverId` ON `${TABLE_NAME}` (`serverId`)"
-          },
-          {
             "name": "index_timelogs_uuid",
             "unique": true,
             "columnNames": [
@@ -486,7 +429,7 @@
       },
       {
         "tableName": "metrics",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `description` TEXT NOT NULL, `unit` TEXT NOT NULL, `decimalPlaces` INTEGER NOT NULL, `aggregationType` TEXT NOT NULL, `targetDirection` TEXT, `targetValue` REAL, `targetValueUpper` REAL, `iconResId` INTEGER NOT NULL, `colorHex` TEXT NOT NULL, `isActive` INTEGER NOT NULL, `serverId` INTEGER, `uuid` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL)",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `description` TEXT NOT NULL, `unit` TEXT NOT NULL, `decimalPlaces` INTEGER NOT NULL, `aggregationType` TEXT NOT NULL, `targetDirection` TEXT, `targetValue` REAL, `targetValueUpper` REAL, `iconResId` INTEGER NOT NULL, `colorHex` TEXT NOT NULL, `isActive` INTEGER NOT NULL, `uuid` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL)",
         "fields": [
           {
             "fieldPath": "id",
@@ -561,12 +504,6 @@
             "notNull": true
           },
           {
-            "fieldPath": "serverId",
-            "columnName": "serverId",
-            "affinity": "INTEGER",
-            "notNull": false
-          },
-          {
             "fieldPath": "uuid",
             "columnName": "uuid",
             "affinity": "TEXT",
@@ -593,15 +530,6 @@
         },
         "indices": [
           {
-            "name": "index_metrics_serverId",
-            "unique": false,
-            "columnNames": [
-              "serverId"
-            ],
-            "orders": [],
-            "createSql": "CREATE INDEX IF NOT EXISTS `index_metrics_serverId` ON `${TABLE_NAME}` (`serverId`)"
-          },
-          {
             "name": "index_metrics_uuid",
             "unique": false,
             "columnNames": [
@@ -615,7 +543,7 @@
       },
       {
         "tableName": "metric_logs",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `metricId` INTEGER NOT NULL, `date` INTEGER NOT NULL, `value` REAL NOT NULL, `unit` TEXT NOT NULL, `note` TEXT NOT NULL, `serverId` INTEGER, `uuid` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, FOREIGN KEY(`metricId`) REFERENCES `metrics`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `metricId` INTEGER NOT NULL, `date` INTEGER NOT NULL, `value` REAL NOT NULL, `unit` TEXT NOT NULL, `note` TEXT NOT NULL, `uuid` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, FOREIGN KEY(`metricId`) REFERENCES `metrics`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
         "fields": [
           {
             "fieldPath": "id",
@@ -652,12 +580,6 @@
             "columnName": "note",
             "affinity": "TEXT",
             "notNull": true
-          },
-          {
-            "fieldPath": "serverId",
-            "columnName": "serverId",
-            "affinity": "INTEGER",
-            "notNull": false
           },
           {
             "fieldPath": "uuid",
@@ -704,15 +626,6 @@
             "createSql": "CREATE INDEX IF NOT EXISTS `index_metric_logs_date` ON `${TABLE_NAME}` (`date`)"
           },
           {
-            "name": "index_metric_logs_serverId",
-            "unique": false,
-            "columnNames": [
-              "serverId"
-            ],
-            "orders": [],
-            "createSql": "CREATE INDEX IF NOT EXISTS `index_metric_logs_serverId` ON `${TABLE_NAME}` (`serverId`)"
-          },
-          {
             "name": "index_metric_logs_uuid",
             "unique": false,
             "columnNames": [
@@ -738,7 +651,7 @@
       },
       {
         "tableName": "habit_metric_links",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `habitId` INTEGER NOT NULL, `habitUuid` TEXT NOT NULL, `metricId` INTEGER NOT NULL, `metricUuid` TEXT NOT NULL, `coefficient` REAL NOT NULL, `showInHabitDetail` INTEGER NOT NULL, `promptOnComplete` INTEGER NOT NULL, `isActive` INTEGER NOT NULL, `serverId` INTEGER, `uuid` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, FOREIGN KEY(`habitId`) REFERENCES `habits`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`metricId`) REFERENCES `metrics`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `habitId` INTEGER NOT NULL, `habitUuid` TEXT NOT NULL, `metricId` INTEGER NOT NULL, `metricUuid` TEXT NOT NULL, `coefficient` REAL NOT NULL, `showInHabitDetail` INTEGER NOT NULL, `promptOnComplete` INTEGER NOT NULL, `isActive` INTEGER NOT NULL, `uuid` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, FOREIGN KEY(`habitId`) REFERENCES `habits`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`metricId`) REFERENCES `metrics`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
         "fields": [
           {
             "fieldPath": "id",
@@ -795,12 +708,6 @@
             "notNull": true
           },
           {
-            "fieldPath": "serverId",
-            "columnName": "serverId",
-            "affinity": "INTEGER",
-            "notNull": false
-          },
-          {
             "fieldPath": "uuid",
             "columnName": "uuid",
             "affinity": "TEXT",
@@ -843,15 +750,6 @@
             ],
             "orders": [],
             "createSql": "CREATE INDEX IF NOT EXISTS `index_habit_metric_links_metricId` ON `${TABLE_NAME}` (`metricId`)"
-          },
-          {
-            "name": "index_habit_metric_links_serverId",
-            "unique": false,
-            "columnNames": [
-              "serverId"
-            ],
-            "orders": [],
-            "createSql": "CREATE INDEX IF NOT EXISTS `index_habit_metric_links_serverId` ON `${TABLE_NAME}` (`serverId`)"
           },
           {
             "name": "index_habit_metric_links_uuid",
@@ -900,7 +798,7 @@
       },
       {
         "tableName": "sync_outbox",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `operationId` TEXT NOT NULL, `recordType` TEXT NOT NULL, `entityUuid` TEXT NOT NULL, `wireEntityUuid` TEXT NOT NULL, `action` TEXT NOT NULL, `referenceUuid` TEXT, `payloadJson` TEXT, `baseRevision` INTEGER, `attemptedAt` INTEGER, `attemptCount` INTEGER NOT NULL, `lastError` TEXT, `errorCode` TEXT, `deadLetteredAt` INTEGER, `createdAt` INTEGER NOT NULL)",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `operationId` TEXT NOT NULL, `recordType` TEXT NOT NULL, `entityUuid` TEXT NOT NULL, `wireEntityUuid` TEXT NOT NULL, `action` TEXT NOT NULL, `referenceUuid` TEXT, `payloadJson` TEXT, `baseRevision` INTEGER, `basePayloadJson` TEXT, `attemptedAt` INTEGER, `attemptCount` INTEGER NOT NULL, `lastError` TEXT, `errorCode` TEXT, `deadLetteredAt` INTEGER, `createdAt` INTEGER NOT NULL)",
         "fields": [
           {
             "fieldPath": "id",
@@ -954,6 +852,12 @@
             "fieldPath": "baseRevision",
             "columnName": "baseRevision",
             "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "basePayloadJson",
+            "columnName": "basePayloadJson",
+            "affinity": "TEXT",
             "notNull": false
           },
           {
@@ -1042,7 +946,7 @@
       },
       {
         "tableName": "sync_entity_state",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`entityType` TEXT NOT NULL, `entityUuid` TEXT NOT NULL, `revision` INTEGER NOT NULL, `deleted` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`entityType`, `entityUuid`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`entityType` TEXT NOT NULL, `entityUuid` TEXT NOT NULL, `revision` INTEGER NOT NULL, `deleted` INTEGER NOT NULL, `payloadJson` TEXT, `payloadHash` TEXT, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`entityType`, `entityUuid`))",
         "fields": [
           {
             "fieldPath": "entityType",
@@ -1069,6 +973,18 @@
             "notNull": true
           },
           {
+            "fieldPath": "payloadJson",
+            "columnName": "payloadJson",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "payloadHash",
+            "columnName": "payloadHash",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
             "fieldPath": "updatedAt",
             "columnName": "updatedAt",
             "affinity": "INTEGER",
@@ -1083,6 +999,175 @@
           ]
         },
         "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "sync_conflicts",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `operationId` TEXT NOT NULL, `recordType` TEXT NOT NULL, `localEntityUuid` TEXT NOT NULL, `wireEntityUuid` TEXT NOT NULL, `entityType` TEXT NOT NULL, `action` TEXT NOT NULL, `referenceUuid` TEXT, `baseRevision` INTEGER, `serverRevision` INTEGER NOT NULL, `basePayloadJson` TEXT, `localPayloadJson` TEXT NOT NULL, `serverPayloadJson` TEXT NOT NULL, `conflictingFieldsJson` TEXT NOT NULL, `conflictKind` TEXT, `errorCode` TEXT, `message` TEXT, `status` TEXT NOT NULL, `resolution` TEXT, `createdAt` INTEGER NOT NULL, `resolvedAt` INTEGER)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationId",
+            "columnName": "operationId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "recordType",
+            "columnName": "recordType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localEntityUuid",
+            "columnName": "localEntityUuid",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "wireEntityUuid",
+            "columnName": "wireEntityUuid",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "entityType",
+            "columnName": "entityType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "action",
+            "columnName": "action",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "referenceUuid",
+            "columnName": "referenceUuid",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "baseRevision",
+            "columnName": "baseRevision",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "serverRevision",
+            "columnName": "serverRevision",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "basePayloadJson",
+            "columnName": "basePayloadJson",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "localPayloadJson",
+            "columnName": "localPayloadJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverPayloadJson",
+            "columnName": "serverPayloadJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "conflictingFieldsJson",
+            "columnName": "conflictingFieldsJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "conflictKind",
+            "columnName": "conflictKind",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "errorCode",
+            "columnName": "errorCode",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "message",
+            "columnName": "message",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "resolution",
+            "columnName": "resolution",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "resolvedAt",
+            "columnName": "resolvedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sync_conflicts_operationId",
+            "unique": true,
+            "columnNames": [
+              "operationId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_conflicts_operationId` ON `${TABLE_NAME}` (`operationId`)"
+          },
+          {
+            "name": "index_sync_conflicts_status",
+            "unique": false,
+            "columnNames": [
+              "status"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_conflicts_status` ON `${TABLE_NAME}` (`status`)"
+          },
+          {
+            "name": "index_sync_conflicts_recordType_localEntityUuid",
+            "unique": false,
+            "columnNames": [
+              "recordType",
+              "localEntityUuid"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_conflicts_recordType_localEntityUuid` ON `${TABLE_NAME}` (`recordType`, `localEntityUuid`)"
+          }
+        ],
         "foreignKeys": []
       },
       {
@@ -1404,7 +1489,7 @@
     "views": [],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'd1ad9ccf784789f519714d2ec9385d6a')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '036fd8ad5b29045ba51f379cf9640656')"
     ]
   }
 }

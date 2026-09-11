@@ -44,4 +44,11 @@ Android 和后端分别从其最终 tag 使用 `git archive` 导入，因此没�
 - GitHub 仓库公开前已对工作树和可达历史执行 Gitleaks 8.30.1 扫描，结果为零告警；仓库已启用秘密扫描、推送保护和依赖漏洞告警。
 - GitHub 仓库仅允许 squash merge 并在合并后删除分支；`main` 强制 PR、三项 CI、线性历史、已解决讨论，并禁止强推和删除。
 
+## 首个生产数据库基线
+
+- 在确认没有真实数据和受支持旧客户端后，Android Room 的开发历史 3–24 被替换为 schema `1`；对新旧导出 JSON 去除版本号和 identity hash 后逐项比较，表、字段、索引和外键完全一致。
+- 后端 6 段开发期 Alembic 历史被替换为由最终 SQLModel metadata 生成的 revision `000000000001`；空库升级后执行 `alembic check`，并验证同步序列不会在清空表后复用。
+- 旧 Android 测试数据通过高版本到 schema `1` 的 downgrade fallback 重建；旧后端 SQLite 文件必须删除后重建，不能 stamp、恢复或继续使用。
+- 本次只完成本地 JVM、构建和后端自动化验证；按用户决定未执行 Android 真机或 instrumentation 验收，Docker/NAS 验证亦未执行。
+
 本文件只保留到新仓库首个稳定基线完成。之后迁移证据应放入对应 GitHub Release，文件可删除或归档。
