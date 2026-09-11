@@ -4,12 +4,14 @@ import androidx.room.withTransaction
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.dao.HabitDao
 import com.dayforge.data.local.dao.HabitMetricLinkDao
+import com.dayforge.data.local.dao.LinkedMetricSnapshot
 import com.dayforge.data.local.dao.MetricDao
 import com.dayforge.data.local.dao.MetricLogDao
 import com.dayforge.data.local.entity.HabitMetricLinkEntity
 import com.dayforge.data.local.entity.MetricEntity
 import com.dayforge.data.local.entity.MetricLogEntity
 import com.dayforge.domain.service.StructuralEditGuard
+import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -38,6 +40,12 @@ class MetricRepository @Inject constructor(
     private val linkDao: HabitMetricLinkDao,
     private val structuralEditGuard: StructuralEditGuard? = null
 ) {
+    fun observeLinkedMetricSnapshots(): Flow<List<LinkedMetricSnapshot>> =
+        linkDao.observeLinkedMetricSnapshots()
+
+    suspend fun getLinkedMetricSnapshots(habitId: Long): List<LinkedMetricSnapshot> =
+        linkDao.getLinkedMetricSnapshots(habitId)
+
     suspend fun createMetric(
         metric: MetricEntity,
         selectedHabitIds: Set<Long> = emptySet()

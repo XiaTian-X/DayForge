@@ -1,6 +1,7 @@
 package com.dayforge.ui.screens.nested
 
 import android.content.Context
+import androidx.lifecycle.viewModelScope
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
@@ -26,12 +27,15 @@ import com.dayforge.data.repository.HabitRepository
 import com.dayforge.data.repository.MetricRepository
 import com.dayforge.domain.service.CheckInService
 import com.dayforge.domain.service.FailureChecker
+import com.dayforge.ui.components.LinkedMetricInfo
+import com.dayforge.ui.components.MetricValueInput
 import com.dayforge.util.DateTimeUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -39,6 +43,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -106,6 +111,11 @@ class NestedViewModelTest {
             habitDao,
             linkDao
         )
+        val metricCoordinator = NestedMetricCoordinator(
+            context = context,
+            preferencesManager = preferencesManager,
+            metricRepository = metricRepository
+        )
         viewModel = NestedViewModel(
             context = context,
             habitDao = habitDao,
@@ -119,18 +129,20 @@ class NestedViewModelTest {
             ),
             checkInService = CheckInService(habitRepository, completionDao, timeLogDao),
             preferencesManager = preferencesManager,
-            habitMetricLinkDao = linkDao,
-            metricDao = metricDao,
-            metricLogDao = metricLogDao,
-            metricRepository = metricRepository
+            metricCoordinator = metricCoordinator
         )
     }
 
     @After
-    fun tearDown() {
-        dataStoreScope.cancel()
-        database.close()
-        preferencesFile.delete()
+    fun tearDown() = runBlocking {
+        if (::viewModel.isInitialized) {
+            viewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+        }
+        if (::dataStoreScope.isInitialized) {
+            dataStoreScope.coroutineContext[Job]?.cancelAndJoin()
+        }
+        if (::database.isInitialized) database.close()
+        if (::preferencesFile.isInitialized) preferencesFile.delete()
         Dispatchers.resetMain()
     }
 
@@ -333,6 +345,75 @@ class NestedViewModelTest {
         assertNull(viewModel.postCheckInState.value)
     }
 
+    @Test
+    fun `linked metric cards refresh when latest value changes`() = runTest {
+        val habit = habit(HabitType.CHECK_IN, "Linked habit", uuid = "habit")
+        val habitId = habitDao.insert(habit)
+        val metric = metric("Weight", "kg", 1, uuid = "metric")
+        val metricId = metricDao.insert(metric)
+        linkDao.insert(link(habitId, habit.uuid, metricId, metric.uuid, prompt = true))
+
+        val initial = awaitLinkedMetrics { it[habitId]?.singleOrNull() != null }
+        assertNull(initial.getValue(habitId).single().latestValue)
+
+        metricLogDao.insert(
+            MetricLogEntity(
+                metricId = metricId,
+                date = 2_000L,
+                value = 72.4,
+                unit = metric.unit
+            )
+        )
+
+        val updated = awaitLinkedMetrics {
+            it[habitId]?.singleOrNull()?.latestValue == 72.4
+        }
+        assertEquals(72.4, updated.getValue(habitId).single().latestValue ?: Double.NaN, 0.0)
+    }
+
+    @Test
+    fun `recording linked values clears only the handled pending habit`() = runTest {
+        val firstHabitId = 11L
+        val otherHabitId = 12L
+        val firstMetricId = metricDao.insert(metric("Weight", "kg", 1, uuid = "weight"))
+        val secondMetricId = metricDao.insert(metric("Waist", "cm", 1, uuid = "waist"))
+        preferencesManager.addPendingMetricHabit(firstHabitId)
+        preferencesManager.addPendingMetricHabit(otherHabitId)
+
+        val recorded = viewModel.recordMetricValues(
+            firstHabitId,
+            listOf(
+                MetricValueInput(firstMetricId, 70.2, "morning"),
+                MetricValueInput(secondMetricId, 82.0)
+            )
+        )
+
+        assertTrue(recorded)
+        assertEquals(70.2, metricLogDao.getLatestLog(firstMetricId)?.value ?: Double.NaN, 0.0)
+        assertEquals("morning", metricLogDao.getLatestLog(firstMetricId)?.note)
+        assertEquals(82.0, metricLogDao.getLatestLog(secondMetricId)?.value ?: Double.NaN, 0.0)
+        assertEquals(setOf(otherHabitId), preferencesManager.pendingMetricHabits.first())
+    }
+
+    @Test
+    fun `invalid linked value submission saves nothing and keeps pending habit`() = runTest {
+        val habitId = 11L
+        val validMetricId = metricDao.insert(metric("Weight", "kg", 1, uuid = "weight"))
+        preferencesManager.addPendingMetricHabit(habitId)
+
+        val recorded = viewModel.recordMetricValues(
+            habitId,
+            listOf(
+                MetricValueInput(validMetricId, 70.2),
+                MetricValueInput(Long.MAX_VALUE, 99.9)
+            )
+        )
+
+        assertFalse(recorded)
+        assertNull(metricLogDao.getLatestLog(validMetricId))
+        assertEquals(setOf(habitId), preferencesManager.pendingMetricHabits.first())
+    }
+
     private suspend fun awaitHierarchy(
         predicate: (List<ParentHabitWithChildren>) -> Boolean
     ): List<ParentHabitWithChildren> = withContext(Dispatchers.Default.limitedParallelism(1)) {
@@ -340,6 +421,15 @@ class NestedViewModelTest {
             viewModel.topLevelHabitsWithChildren.first(predicate)
         }
     }
+
+    private suspend fun awaitLinkedMetrics(
+        predicate: (Map<Long, List<LinkedMetricInfo>>) -> Boolean
+    ): Map<Long, List<LinkedMetricInfo>> =
+        withContext(Dispatchers.Default.limitedParallelism(1)) {
+            withTimeout(5_000) {
+                viewModel.linkedMetricsByHabit.first(predicate)
+            }
+        }
 
     private fun habit(
         type: HabitType,

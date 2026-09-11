@@ -1,7 +1,6 @@
 package com.dayforge.ui.screens.nested
 
 import android.content.Context
-import android.content.Intent
 import android.util.Log
 import android.widget.Toast
 import androidx.core.content.ContextCompat
@@ -10,22 +9,18 @@ import androidx.lifecycle.viewModelScope
 import com.dayforge.R
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.dao.HabitDao
-import com.dayforge.data.local.dao.HabitMetricLinkDao
-import com.dayforge.data.local.dao.MetricDao
-import com.dayforge.data.local.dao.MetricLogDao
 import com.dayforge.data.local.dao.TimeLogDao
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.model.CheckInResult
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.HabitRepository
-import com.dayforge.data.repository.MetricRepository
-import com.dayforge.data.repository.MetricValueDraft
 import com.dayforge.domain.model.CardColorStyle
 import com.dayforge.domain.service.ActiveTimerStateProvider
 import com.dayforge.domain.service.CheckInService
 import com.dayforge.domain.service.TimerManager
 import com.dayforge.domain.service.TimerService
 import com.dayforge.ui.components.LinkedMetricInfo
+import com.dayforge.ui.components.MetricValueInput
 import com.dayforge.ui.screens.dashboard.ActiveTimerState
 import com.dayforge.util.DateTimeUtils
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -120,10 +115,7 @@ class NestedViewModel @Inject constructor(
     private val nestedHabitTreeBuilder: NestedHabitTreeBuilder,
     private val checkInService: CheckInService,
     private val preferencesManager: PreferencesManager,
-    private val habitMetricLinkDao: HabitMetricLinkDao,
-    private val metricDao: MetricDao,
-    private val metricLogDao: MetricLogDao,
-    private val metricRepository: MetricRepository,
+    private val metricCoordinator: NestedMetricCoordinator,
 ) : ViewModel() {
 
     // Shared timer management
@@ -171,7 +163,7 @@ class NestedViewModel @Inject constructor(
     /**
      * Habits that have pending metric recording.
      */
-    val pendingMetricHabits: StateFlow<Set<Long>> = preferencesManager.pendingMetricHabits
+    val pendingMetricHabits: StateFlow<Set<Long>> = metricCoordinator.pendingMetricHabits
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.Lazily,
@@ -203,32 +195,8 @@ class NestedViewModel @Inject constructor(
     /**
      * Linked metrics by habit ID.
      */
-    val linkedMetricsByHabit: StateFlow<Map<Long, List<LinkedMetricInfo>>> = habitRepository.allHabits
-        .map { habits ->
-            val result = mutableMapOf<Long, List<LinkedMetricInfo>>()
-            habits.forEach { habit ->
-                try {
-                    val links = habitMetricLinkDao.getLinksByHabit(habit.id).first()
-                    val infos = links.mapNotNull { link ->
-                        val metric = metricDao.getMetricById(link.metricId) ?: return@mapNotNull null
-                        val latestLog = metricLogDao.getLatestLog(link.metricId)
-                        LinkedMetricInfo(
-                            metricName = metric.name,
-                            metricId = metric.id,
-                            latestValue = latestLog?.value,
-                            unit = metric.unit,
-                            decimalPlaces = metric.decimalPlaces
-                        )
-                    }
-                    if (infos.isNotEmpty()) {
-                        result[habit.id] = infos
-                    }
-                } catch (e: Exception) {
-                    // Ignore errors
-                }
-            }
-            result
-        }
+    val linkedMetricsByHabit: StateFlow<Map<Long, List<LinkedMetricInfo>>> =
+        metricCoordinator.observeLinkedMetrics(habitRepository.allHabits)
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.Lazily,
@@ -238,8 +206,7 @@ class NestedViewModel @Inject constructor(
     /**
      * State for the post-check-in dialog.
      */
-    private val _postCheckInState = MutableStateFlow<PostCheckInState?>(null)
-    val postCheckInState: StateFlow<PostCheckInState?> = _postCheckInState
+    val postCheckInState: StateFlow<PostCheckInState?> = metricCoordinator.postCheckInState
 
     // ========== Goal Completion Dialog State ==========
 
@@ -454,38 +421,7 @@ class NestedViewModel @Inject constructor(
      * Called after a habit check-in to potentially show the metric recording dialog.
      */
     suspend fun checkAndShowPostCheckInDialog(habitId: Long, habitName: String) {
-        val neverAsk = preferencesManager.getNeverAskAgain(habitId).first()
-        if (neverAsk) return
-
-        val links = try {
-            habitMetricLinkDao.getLinksByHabit(habitId).first()
-        } catch (e: Exception) {
-            emptyList()
-        }
-        val promptLinks = links.filter { it.promptOnComplete }
-
-        if (promptLinks.isEmpty()) return
-
-        val metricInfos = promptLinks.mapNotNull { link ->
-            val metric = metricDao.getMetricById(link.metricId) ?: return@mapNotNull null
-            val latestLog = metricLogDao.getLatestLog(link.metricId)
-            LinkedMetricInfo(
-                metricName = metric.name,
-                metricId = metric.id,
-                latestValue = latestLog?.value,
-                unit = metric.unit,
-                decimalPlaces = metric.decimalPlaces
-            )
-        }
-
-        if (metricInfos.isNotEmpty()) {
-            _postCheckInState.value = PostCheckInState(
-                habitId = habitId,
-                habitName = habitName,
-                linkedMetrics = metricInfos,
-                show = true
-            )
-        }
+        metricCoordinator.showPromptIfNeeded(habitId, habitName)
     }
 
     /**
@@ -493,45 +429,21 @@ class NestedViewModel @Inject constructor(
      */
     suspend fun recordMetricValues(
         habitId: Long,
-        values: List<com.dayforge.ui.components.MetricValueInput>
-    ): Boolean {
-        return try {
-            val recordedAt = System.currentTimeMillis()
-            metricRepository.recordValues(
-                values.map { input -> MetricValueDraft(input.metricId, input.value, input.note) },
-                recordedAt
-            )
-
-            preferencesManager.removePendingMetricHabit(habitId)
-            val updateIntent = Intent(TimerService.ACTION_WIDGET_UPDATE).apply {
-                putExtra(TimerService.EXTRA_HABIT_ID, habitId)
-                setPackage(context.packageName)
-            }
-            context.sendBroadcast(updateIntent)
-            true
-        } catch (error: Exception) {
-            Log.e(TAG, "Failed to record linked metrics", error)
-            Toast.makeText(
-                context,
-                context.getString(R.string.metric_error_record_failed, error.message.orEmpty()),
-                Toast.LENGTH_LONG
-            ).show()
-            false
-        }
-    }
+        values: List<MetricValueInput>
+    ): Boolean = metricCoordinator.recordMetricValues(habitId, values)
 
     /**
      * Set "never ask again" preference for a habit's metric prompt.
      */
     suspend fun setNeverAskAgain(habitId: Long, value: Boolean) {
-        preferencesManager.setNeverAskAgain(habitId, value)
+        metricCoordinator.setNeverAskAgain(habitId, value)
     }
 
     /**
      * Dismiss the post-check-in dialog.
      */
     fun dismissPostCheckInDialog() {
-        _postCheckInState.value = null
+        metricCoordinator.dismissPrompt()
     }
 
     // ========== Goal Completion Dialog Methods ==========

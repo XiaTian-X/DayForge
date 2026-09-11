@@ -6,6 +6,17 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface HabitMetricLinkDao {
+    /**
+     * Observe active links together with their metric metadata and latest recorded value.
+     * Room invalidates this flow when any of the joined tables changes.
+     */
+    @Query(LINKED_METRIC_SNAPSHOT_QUERY)
+    fun observeLinkedMetricSnapshots(): Flow<List<LinkedMetricSnapshot>>
+
+    /** One-shot variant used when deciding whether a completed habit needs a metric prompt. */
+    @Query("$LINKED_METRIC_SNAPSHOT_QUERY AND links.habitId = :habitId")
+    suspend fun getLinkedMetricSnapshots(habitId: Long): List<LinkedMetricSnapshot>
+
     // Queries by habit
     @Query("SELECT * FROM habit_metric_links WHERE habitId = :habitId AND isActive = 1")
     fun getLinksByHabit(habitId: Long): Flow<List<HabitMetricLinkEntity>>
@@ -74,4 +85,27 @@ interface HabitMetricLinkDao {
 
     @Query("DELETE FROM habit_metric_links")
     suspend fun deleteAll()
+
+    companion object {
+        const val LINKED_METRIC_SNAPSHOT_QUERY = """
+            SELECT links.habitId AS habitId,
+                   metrics.id AS metricId,
+                   metrics.name AS metricName,
+                   latest.value AS latestValue,
+                   metrics.unit AS unit,
+                   metrics.decimalPlaces AS decimalPlaces,
+                   links.showInHabitDetail AS showInHabitDetail,
+                   links.promptOnComplete AS promptOnComplete
+            FROM habit_metric_links AS links
+            INNER JOIN metrics ON metrics.id = links.metricId
+            LEFT JOIN metric_logs AS latest ON latest.id = (
+                SELECT logs.id
+                FROM metric_logs AS logs
+                WHERE logs.metricId = metrics.id
+                ORDER BY logs.date DESC, logs.id DESC
+                LIMIT 1
+            )
+            WHERE links.isActive = 1
+        """
+    }
 }
