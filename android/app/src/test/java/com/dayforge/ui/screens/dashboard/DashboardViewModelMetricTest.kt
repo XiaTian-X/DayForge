@@ -22,9 +22,11 @@ import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.HabitRepository
 import com.dayforge.data.repository.MetricRepository
+import com.dayforge.domain.model.MetricWithLatestValue
 import com.dayforge.domain.service.CheckInService
 import com.dayforge.domain.service.FailureChecker
 import com.dayforge.domain.service.HabitStatusCalculator
+import com.dayforge.domain.service.MetricOverviewProvider
 import com.dayforge.domain.service.StructuralEditGuard
 import com.dayforge.ui.metrics.LinkedMetricCoordinator
 import io.mockk.every
@@ -116,11 +118,10 @@ class DashboardViewModelMetricTest {
             timeLogDao,
             habitDao,
             mockPreferencesManager,
-            metricDao,
-            metricLogDao,
             completionDao,
             metricRepository,
-            LinkedMetricCoordinator(context, mockPreferencesManager, metricRepository)
+            LinkedMetricCoordinator(context, mockPreferencesManager, metricRepository),
+            MetricOverviewProvider(metricRepository)
         )
     }
 
@@ -299,6 +300,38 @@ class DashboardViewModelMetricTest {
     }
 
     @Test
+    fun metricsWithLatest_usesNewestValue_andKeepsOnlyRecentTrendLogs() = runTest {
+        val metric = metric("Weight", "kg", 1, uuid = "weight")
+        val metricId = metricDao.insert(metric)
+        val now = System.currentTimeMillis()
+        val oldLogId = metricLogDao.insert(
+            MetricLogEntity(
+                metricId = metricId,
+                date = now - 31L * 24 * 60 * 60 * 1_000,
+                value = 73.0,
+                unit = metric.unit
+            )
+        )
+        val recentLogId = metricLogDao.insert(
+            MetricLogEntity(
+                metricId = metricId,
+                date = now - 1_000,
+                value = 71.3,
+                unit = metric.unit
+            )
+        )
+
+        val overview = awaitMetricOverviews {
+            it.singleOrNull()?.latestValue == 71.3
+        }.single()
+
+        assertEquals(recentLogId, overview.logs.single().id)
+        assertFalse(overview.logs.any { it.id == oldLogId })
+        assertEquals(71.3, overview.latestValue ?: Double.NaN, 0.0)
+        assertEquals(now - 1_000, overview.latestLogDate)
+    }
+
+    @Test
     fun linkedMetricsByHabit_hidesNonDetailLinks_andRefreshesLatestValue() = runTest {
         val habit = habit("Dashboard habit")
         val habitId = habitDao.insert(habit)
@@ -382,6 +415,14 @@ class DashboardViewModelMetricTest {
                 viewModel.linkedMetricsByHabit.first(predicate)
             }
         }
+
+    private suspend fun awaitMetricOverviews(
+        predicate: (List<MetricWithLatestValue>) -> Boolean
+    ): List<MetricWithLatestValue> = withContext(Dispatchers.Default.limitedParallelism(1)) {
+        withTimeout(5_000) {
+            viewModel.metricsWithLatest.first(predicate)
+        }
+    }
 
     private fun habit(
         name: String,

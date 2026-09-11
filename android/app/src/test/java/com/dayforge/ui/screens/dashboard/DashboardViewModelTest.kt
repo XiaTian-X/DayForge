@@ -19,6 +19,7 @@ import com.dayforge.data.repository.MetricRepository
 import com.dayforge.domain.service.CheckInService
 import com.dayforge.domain.service.FailureChecker
 import com.dayforge.domain.service.HabitStatusCalculator
+import com.dayforge.domain.service.MetricOverviewProvider
 import com.dayforge.domain.service.StructuralEditGuard
 import com.dayforge.ui.metrics.LinkedMetricCoordinator
 import app.cash.turbine.test
@@ -104,11 +105,10 @@ class DashboardViewModelTest {
             timeLogDao,
             habitDao,
             mockPreferencesManager,
-            metricDao,
-            metricLogDao,
             completionDao,
             metricRepository,
-            LinkedMetricCoordinator(context, mockPreferencesManager, metricRepository)
+            LinkedMetricCoordinator(context, mockPreferencesManager, metricRepository),
+            MetricOverviewProvider(metricRepository)
         )
     }
 

@@ -9,8 +9,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.dayforge.R
 import com.dayforge.data.local.PreferencesManager
-import com.dayforge.data.local.dao.MetricDao
-import com.dayforge.data.local.dao.MetricLogDao
 import com.dayforge.data.local.dao.TimeLogDao
 import com.dayforge.data.local.dao.CompletionDao
 import com.dayforge.data.local.entity.CompletionEntity
@@ -23,9 +21,11 @@ import com.dayforge.data.repository.HabitRepository
 import com.dayforge.data.repository.MetricRepository
 import com.dayforge.domain.model.CardColorStyle
 import com.dayforge.domain.model.FilterMode
+import com.dayforge.domain.model.MetricWithLatestValue
 import com.dayforge.domain.service.ActiveTimerStateProvider
 import com.dayforge.domain.service.CheckInService
 import com.dayforge.domain.service.HabitStatusCalculator
+import com.dayforge.domain.service.MetricOverviewProvider
 import com.dayforge.domain.service.TimerManager
 import com.dayforge.domain.service.TimerService
 import com.dayforge.domain.service.HabitPriorityCalculator
@@ -68,11 +68,10 @@ class DashboardViewModel @Inject constructor(
     private val timeLogDao: TimeLogDao,
     private val habitDao: com.dayforge.data.local.dao.HabitDao,
     private val preferencesManager: PreferencesManager,
-    private val metricDao: MetricDao,
-    private val metricLogDao: MetricLogDao,
     private val completionDao: CompletionDao,
     private val metricRepository: MetricRepository,
-    private val linkedMetricCoordinator: LinkedMetricCoordinator
+    private val linkedMetricCoordinator: LinkedMetricCoordinator,
+    private val metricOverviewProvider: MetricOverviewProvider
 ) : ViewModel() {
 
     // Shared timer management
@@ -331,25 +330,7 @@ class DashboardViewModel @Inject constructor(
      *
      * Combines metrics with latest log changes to ensure UI refreshes when new logs are recorded.
      */
-    val metricsWithLatest: StateFlow<List<MetricWithLatestValue>> = combine(
-        metricDao.getAllActiveMetrics(),
-        metricLogDao.getLatestLogFlow()
-    ) { metrics, _ ->
-        metrics.map { metric ->
-            // Room's suspend DAO methods handle threading internally
-            val latestLog = metricLogDao.getLatestLog(metric.id)
-            // Load last 30 days of logs for trend chart (D-02)
-            val now = System.currentTimeMillis()
-            val thirtyDaysAgo = now - (30 * 24 * 60 * 60 * 1000L)
-            val logs = metricLogDao.getLogsInRange(metric.id, thirtyDaysAgo, now)
-            MetricWithLatestValue(
-                metric = metric,
-                latestValue = latestLog?.value,
-                latestLogDate = latestLog?.date,
-                logs = logs
-            )
-        }
-    }
+    val metricsWithLatest: StateFlow<List<MetricWithLatestValue>> = metricOverviewProvider.observe()
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.Lazily,  // Changed from WhileSubscribed to ensure flow stays active
@@ -946,23 +927,4 @@ private data class Tuple5<T1, T2, T3, T4>(
     val second: T2,
     val third: T3,
     val fourth: T4
-)
-
-/**
- * Metric with its latest recorded value.
- * Used to display metrics on the main screen.
- *
- * Per METRIC-07: Users can see metrics in a separate section on main screen.
- * Per METRIC-10: Shows current value and target direction.
- *
- * @param metric The metric entity
- * @param latestValue The most recent recorded value, null if never recorded
- * @param latestLogDate The date of the most recent log, null if never recorded
- * @param logs List of logs for this metric (for trend chart display)
- */
-data class MetricWithLatestValue(
-    val metric: com.dayforge.data.local.entity.MetricEntity,
-    val latestValue: Double?,
-    val latestLogDate: Long?,
-    val logs: List<com.dayforge.data.local.entity.MetricLogEntity> = emptyList()
 )

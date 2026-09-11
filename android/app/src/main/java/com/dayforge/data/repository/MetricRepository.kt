@@ -40,6 +40,20 @@ class MetricRepository @Inject constructor(
     private val linkDao: HabitMetricLinkDao,
     private val structuralEditGuard: StructuralEditGuard? = null
 ) {
+    fun observeActiveMetrics(): Flow<List<MetricEntity>> = metricDao.getAllActiveMetrics()
+
+    fun observeLatestMetricLog(): Flow<MetricLogEntity?> = metricLogDao.getLatestLogFlow()
+
+    suspend fun getLatestLog(metricId: Long): MetricLogEntity? =
+        metricLogDao.getLatestLog(metricId)
+
+    suspend fun getLogsInRange(
+        metricId: Long,
+        startInclusive: Long,
+        endExclusive: Long
+    ): List<MetricLogEntity> =
+        metricLogDao.getLogsInRange(metricId, startInclusive, endExclusive)
+
     fun observeLinkedMetricSnapshots(): Flow<List<LinkedMetricSnapshot>> =
         linkDao.observeLinkedMetricSnapshots()
 
