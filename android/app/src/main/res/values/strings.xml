@@ -1,0 +1,1075 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App -->
+    <string name="app_name">DayForge</string>
+
+    <!-- Widget Descriptions -->
+    <string name="checkin_widget_description">Quick check-in for habits</string>
+    <string name="progress_widget_description">Today\'s habit progress</string>
+    <string name="motivation_widget_description">Motivation and streaks</string>
+    <string name="counting_widget_description">Counting habit tracker</string>
+    <string name="timer_widget_description">Timer habit tracker</string>
+    <string name="widget_focus_description">Shows your top-priority habit based on time</string>
+    <string name="widget_focus_empty_state">No habits in current time window</string>
+    <string name="widget_focus_starting_in">Starting in %s</string>
+    <string name="widget_focus_window_passed">Time window passed</string>
+    <string name="widget_focus_waiting">Waiting</string>
+    <string name="widget_focus_next">Next: %s</string>
+    <string name="widget_focus_next_now">Next: %s (now)</string>
+    <string name="widget_focus_next_in">Next: %s (in %s)</string>
+
+    <!-- Common Actions -->
+    <string name="action_save">Save</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_delete">Delete</string>
+    <string name="action_confirm">Confirm</string>
+    <string name="action_back">Back</string>
+    <string name="action_check_in">Check In</string>
+    <string name="action_export">Export</string>
+    <string name="action_import">Import</string>
+    <string name="action_done">Done</string>
+    <string name="action_close">Close</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_continue">Continue</string>
+    <string name="action_pause">Pause</string>
+    <string name="action_stop">Stop</string>
+    <string name="action_resume">Resume</string>
+    <string name="action_start_timer">Start Timer</string>
+    <string name="action_record_metrics">Record Metrics</string>
+    <string name="action_continue_timer">Continue Timer</string>
+    <string name="action_discard">Discard</string>
+
+    <!-- Common Labels -->
+    <string name="common_loading">Loading…</string>
+    <string name="common_error">Error</string>
+    <string name="common_success">Success</string>
+    <string name="common_empty">No data</string>
+    <string name="common_required">Required</string>
+    <string name="common_optional">Optional</string>
+    <string name="common_enabled">Enabled</string>
+    <string name="common_disabled">Disabled</string>
+    <string name="common_yes">Yes</string>
+    <string name="common_no">No</string>
+    <string name="common_ok">OK</string>
+
+    <!-- Dashboard -->
+    <string name="dashboard_tab_habits">Habits</string>
+    <string name="dashboard_tab_metrics">Metrics</string>
+    <string name="dashboard_empty_state">No habits yet. Create one to get started!</string>
+    <string name="dashboard_empty_metrics">No metrics yet. Create one from a habit detail screen.</string>
+    <string name="dashboard_fab_content_description">Create Habit</string>
+
+    <!-- Dashboard - FAB Menu -->
+    <string name="fab_menu_habit">Habit</string>
+    <string name="fab_menu_temp_task">Temporary Task</string>
+    <string name="fab_menu_content_desc">Create options</string>
+
+    <string name="dashboard_empty_hint">Tap + to create your first habit</string>
+
+    <!-- Dashboard - Focus Mode -->
+    <string name="dashboard_focus_mode_toggle">Toggle focus mode</string>
+    <string name="dashboard_focus_mode_content_desc">Toggle focus mode</string>
+    <string name="dashboard_slot_progress_format">Slot %1$d of %2$d</string>
+
+    <!-- Dashboard - Filter Mode -->
+    <string name="dashboard_filter_content_desc">Filter habits</string>
+    <string name="filter_mode_all">All</string>
+    <string name="filter_mode_time_window">Time Window</string>
+    <string name="filter_mode_checkable">Checkable</string>
+    <string name="filter_mode_terminated">Terminated</string>
+
+    <!-- Kanban column headers (Phase 91) -->
+    <string name="kanban_column_pending">To Complete</string>
+    <string name="kanban_column_completed">Completed</string>
+
+    <!-- Dashboard - Empty State for Filter Modes -->
+    <string name="dashboard_empty_all">No habits yet. Create one to get started!</string>
+    <string name="dashboard_empty_all_hint">Tap + to create your first habit</string>
+    <string name="dashboard_empty_time_window">No habits with execution time set</string>
+    <string name="dashboard_empty_time_window_hint">Set best execution time in habit edit screen</string>
+    <string name="dashboard_empty_checkable">No habits to check in</string>
+    <string name="dashboard_empty_checkable_hint">All habits are completed for today</string>
+    <string name="dashboard_empty_terminated">No terminated habits</string>
+    <string name="dashboard_empty_terminated_hint">No habits with goal completed or failed</string>
+
+    <!-- Kanban empty states (Phase 91) -->
+    <string name="dashboard_empty_completed">No completed check-ins</string>
+    <string name="dashboard_empty_completed_hint">Check in a habit to see it here</string>
+
+    <!-- Dashboard - Battery Optimization -->
+    <string name="dialog_battery_optimization_title">Background Timer Needs Your Permission</string>
+    <string name="dialog_battery_optimization_message">To ensure the timer runs reliably in the background, please disable battery optimization.\n\nHow to: Tap the button below, then select \"Don\'t optimize\" or \"Allow background activity\" in system settings.</string>
+    <string name="dialog_battery_optimization_settings">Go to Settings</string>
+    <string name="dialog_battery_optimization_later">Later</string>
+    <string name="dialog_settings_unavailable">Cannot open settings</string>
+    <string name="dialog_notification_permission_denied">Notification permission denied. Timer notifications may not appear.</string>
+
+    <!-- Dashboard - Multi-Timer -->
+    <string name="dialog_multi_timer_title">Timer Already Running</string>
+    <string name="dialog_multi_timer_message">A timer is already running. Stop it and start a new one?</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_sync_section">Data Sync</string>
+    <string name="settings_account_section">Account</string>
+    <string name="settings_config_section">Config Management</string>
+    <string name="settings_language_section">Language</string>
+    <string name="settings_about_section">About</string>
+    <string name="settings_server_address">Server Address</string>
+    <string name="settings_server_address_hint">IP:Port or URL</string>
+    <string name="settings_token_validity">Token Validity</string>
+    <string name="settings_token_validity_days">days</string>
+    <string name="settings_export_config">Export Config</string>
+    <string name="settings_import_config">Import Config</string>
+    <string name="settings_logout">Log Out</string>
+    <string name="settings_login">Log In</string>
+    <string name="settings_admin_dashboard">Admin Dashboard</string>
+    <string name="settings_version">Version</string>
+    <string name="settings_language">Language</string>
+    <string name="settings_language_system">System Default</string>
+    <string name="settings_language_chinese">中文</string>
+    <string name="settings_language_english">English</string>
+
+    <!-- Theme -->
+    <string name="settings_theme_section">Theme</string>
+    <string name="settings_theme">Theme Mode</string>
+    <string name="settings_theme_light">Light</string>
+    <string name="settings_theme_dark">Dark</string>
+    <string name="settings_theme_system">System Default</string>
+
+    <!-- Color Theme -->
+    <string name="color_theme_title">Color Theme</string>
+    <string name="color_theme_name_ocean">Ocean</string>
+    <string name="color_theme_name_nature">Nature</string>
+    <string name="color_theme_name_vibrant">Vibrant</string>
+    <string name="color_theme_manage_custom">Manage Custom Themes</string>
+    <string name="color_theme_create">Create Theme</string>
+    <string name="color_theme_edit">Edit Theme</string>
+    <string name="color_theme_delete">Delete Theme</string>
+    <string name="color_theme_name_label">Theme Name</string>
+    <string name="color_theme_delete_confirm">Delete theme \"%s\"?</string>
+
+    <!-- Global Color Theme Names (THEME-21) -->
+    <string name="theme_name_ocean">Ocean</string>
+    <string name="theme_name_nature">Nature</string>
+    <string name="theme_name_vibrant">Vibrant</string>
+    <string name="theme_name_dusk">Dusk</string>
+    <string name="theme_name_forest">Forest</string>
+    <string name="theme_name_coral">Coral</string>
+    <string name="theme_name_oled">OLED</string>
+
+    <!-- Theme Selection UI Strings (THEME-22) -->
+    <string name="settings_light_theme">Light Mode Theme</string>
+    <string name="settings_dark_theme">Dark Mode Theme</string>
+
+    <!-- Theme Import/Export -->
+    <string name="theme_import">Import Theme</string>
+    <string name="theme_export">Export Theme</string>
+    <string name="theme_delete">Delete Theme</string>
+    <string name="theme_custom">Custom</string>
+    <string name="theme_preset">Preset</string>
+    <string name="theme_importing">Importing Theme…</string>
+    <string name="theme_import_success">Theme Imported</string>
+    <string name="theme_import_success_message">Theme \"%s\" has been imported successfully.</string>
+    <string name="theme_import_error">Import Failed</string>
+    <string name="theme_error_invalid_seed_color">Invalid seed color format: %s. Expected #RRGGBB</string>
+    <string name="theme_error_no_mode">Theme must be suitable for at least one mode (light or dark)</string>
+    <string name="theme_error_invalid_colors">Invalid color formats: %s</string>
+    <string name="theme_error_save_failed">Failed to save theme</string>
+    <string name="theme_error_invalid_json">Invalid JSON format: %s</string>
+    <string name="theme_error_cannot_delete_preset">Cannot delete preset theme</string>
+    <string name="theme_exporting">Exporting Theme…</string>
+    <string name="theme_export_success">Theme Exported</string>
+    <string name="theme_export_error">Export Failed</string>
+    <string name="theme_delete_success">Theme Deleted</string>
+    <string name="theme_delete_error">Delete Failed</string>
+    <string name="theme_export_options_hint">Choose export format:</string>
+    <string name="theme_export_original">Export Original Config</string>
+    <string name="theme_export_original_hint">Minimal fields, suitable for sharing</string>
+    <string name="theme_export_template">Export Complete Template</string>
+    <string name="theme_export_template_hint">All 25 color fields, for full customization</string>
+
+    <!-- Permission Section -->
+    <string name="settings_permission_section">Permission</string>
+    <string name="settings_permission">Permission Management</string>
+    <string name="settings_permission_hint">Manage notification and app permissions</string>
+
+    <!-- Permission Screen -->
+    <string name="permission_screen_title">Permissions</string>
+    <string name="permission_section_title">App Permissions</string>
+    <string name="permission_notification_title">Notification</string>
+    <string name="permission_notification_desc">Required for timer notifications and reminders</string>
+    <string name="permission_status_granted">Granted</string>
+    <string name="permission_status_denied">Denied</string>
+    <string name="permission_status_not_required">Automatically granted</string>
+    <string name="permission_status_not_required_reason">(Android 12 and below)</string>
+    <string name="permission_request">Request Permission</string>
+    <string name="permission_open_settings">Open Settings</string>
+    <string name="permission_exact_alarm_title">Exact Alarms</string>
+    <string name="permission_exact_alarm_desc">Required for precise FocusWidget refresh timing. If denied, updates may be delayed up to 1 minute.</string>
+    <string name="permission_reminder_title">Habit Reminders</string>
+    <string name="permission_reminder_desc">Required to send notifications at your habit\'s scheduled time</string>
+
+    <!-- Notification Channel: Habit Reminders -->
+    <string name="notification_channel_habit_reminders">Habit Reminders</string>
+    <string name="notification_channel_habit_reminders_desc">Notifications for habit reminders</string>
+    <string name="notification_scheduled_time">Scheduled at %s</string>
+    <string name="notification_slot_progress">第%d次/共%d次 (已完成%d次)</string>
+
+    <!-- Habit Card Status -->
+    <string name="habit_card_status_completed">Completed</string>
+    <string name="habit_card_status_failed">Failed</string>
+    <string name="habit_card_status_inactive">Inactive</string>
+    <string name="habit_card_status_goal">Goal</string>
+    <string name="habit_card_status_non_checkin_day">Non-check-in day</string>
+    <string name="habit_card_status_countdown">Countdown</string>
+    <string name="habit_card_status_count_mode">Count Mode</string>
+    <string name="habit_card_no_checkin_today">No check-in needed today</string>
+    <string name="habit_card_parent">Parent</string>
+    <string name="habit_card_children">Children</string>
+    <string name="habit_card_status_countdown_counting">Countdown Mode</string>
+    <string name="habit_card_status_success">Success</string>
+    <string name="habit_card_no_children">No children</string>
+    <string name="habit_card_no_checkin_today_chip">No check-in today</string>
+
+    <!-- Edit Habit -->
+    <string name="edit_habit_title">Edit Habit</string>
+    <string name="create_habit_title">Create Habit</string>
+    <string name="edit_habit_name_label">Name</string>
+    <string name="edit_habit_name_hint">Enter habit name</string>
+    <string name="edit_habit_description_label">Description</string>
+    <string name="edit_habit_icon_label">Icon</string>
+    <string name="edit_habit_color_label">Color</string>
+    <string name="edit_habit_frequency_label">Frequency</string>
+    <string name="edit_habit_type_label">Type</string>
+    <string name="edit_habit_type_checkin">Check-in</string>
+    <string name="edit_habit_type_timer">Timer</string>
+    <string name="edit_habit_type_counting">Counting</string>
+    <string name="edit_habit_target_label">Target</string>
+    <string name="edit_habit_target_hint">Enter target value</string>
+    <string name="edit_habit_parent_label">Parent Habit</string>
+    <string name="edit_habit_parent_none">None</string>
+    <string name="edit_habit_metric_label">Linked Metric</string>
+    <string name="edit_habit_delete">Delete Habit</string>
+    <string name="edit_habit_activate">Activate</string>
+    <string name="edit_habit_deactivate">Deactivate</string>
+    <!-- Additional Edit/Create Habit strings -->
+    <string name="edit_habit_add_key_result">Add Key Result</string>
+    <string name="edit_habit_mode_timer">Timer Mode</string>
+    <string name="edit_habit_mode_counting">Count Mode</string>
+    <string name="edit_habit_countup">Count Up</string>
+    <string name="edit_habit_countdown">Count Down</string>
+    <string name="edit_habit_countup_counting">Count Up</string>
+    <string name="edit_habit_countdown_counting">Count Down</string>
+    <string name="edit_habit_checkin_days">Check-in Days</string>
+    <string name="edit_habit_day_mon">Mon</string>
+    <string name="edit_habit_day_tue">Tue</string>
+    <string name="edit_habit_day_wed">Wed</string>
+    <string name="edit_habit_day_thu">Thu</string>
+    <string name="edit_habit_day_fri">Fri</string>
+    <string name="edit_habit_day_sat">Sat</string>
+    <string name="edit_habit_day_sun">Sun</string>
+    <string name="edit_habit_target_optional">Target Count (Optional)</string>
+    <string name="edit_habit_target_no_modify">Existing records, cannot modify</string>
+    <string name="edit_habit_target_unlimited">Leave empty for unlimited</string>
+    <string name="edit_habit_failure_mode">Failure Mode</string>
+    <string name="edit_habit_strict_mode">Strict Mode</string>
+    <string name="edit_habit_relaxed_mode">Relaxed Mode</string>
+    <string name="edit_habit_strict_mode_desc">Fail on missed check-in day</string>
+    <string name="edit_habit_relaxed_mode_desc">Only target count matters, no time limit</string>
+    <string name="edit_habit_linked_metric_optional">Linked Metric (Optional)</string>
+    <string name="edit_habit_linked_metric_hint">Selected metrics will show in habit detail, record values after check-in</string>
+    <string name="edit_habit_selected_metrics_count">%d metric(s) selected</string>
+    <string name="edit_habit_no_metrics_available">No metrics available</string>
+    <string name="edit_habit_select_days_optional">Select Days (Optional)</string>
+    <string name="edit_habit_select_days_hint">If not selected, weekly check-in logic applies</string>
+    <!-- Dialogs -->
+    <string name="dialog_cannot_save">Cannot Save</string>
+    <string name="dialog_duplicate_habit_name">A habit with this name already exists, please modify</string>
+    <string name="dialog_cannot_change_mode">Cannot Change Mode</string>
+    <string name="dialog_timer_running_message">Timer is running, cannot change mode. Please stop timer first.</string>
+    <string name="dialog_target_empty_title">Target Empty</string>
+    <string name="dialog_target_empty_message">Target will be set to default value 1. Continue?</string>
+    <string name="dialog_value_empty_title">Value Empty</string>
+    <string name="dialog_value_empty_message">Value will be set to default value 1. Continue?</string>
+    <string name="dialog_cannot_create">Cannot Create</string>
+    <string name="dialog_duplicate_metric_name">A metric with this name already exists, please modify</string>
+    <string name="dialog_cannot_save_title">Cannot Save</string>
+
+    <!-- Frequency Types -->
+    <string name="frequency_daily">Daily</string>
+    <string name="frequency_weekly">Weekly</string>
+    <string name="frequency_monthly">Monthly</string>
+    <string name="frequency_custom">Custom</string>
+    <string name="frequency_days">Days</string>
+
+    <!-- Edit Metric -->
+    <string name="edit_metric_title">Edit Metric</string>
+    <string name="create_metric_title">Create Metric</string>
+    <string name="edit_metric_name_label">Name</string>
+    <string name="edit_metric_name_hint">Enter metric name</string>
+    <string name="edit_metric_unit_label">Unit</string>
+    <string name="edit_metric_unit_hint">e.g., times, minutes</string>
+    <string name="edit_metric_delete">Delete Metric</string>
+    <string name="edit_metric_linked_habits">Linked Habits</string>
+    <string name="edit_metric_no_linked_habits">No linked habits</string>
+
+    <!-- Edit Goal -->
+    <string name="edit_goal_title">Edit Goal</string>
+    <string name="create_goal_title">Create Goal</string>
+    <string name="create_goal_section_info">Goal Information</string>
+    <string name="create_goal_target_cycles_label">Target Cycles (optional)</string>
+    <string name="create_goal_target_cycles_hint">Leave empty for infinite tracking</string>
+    <string name="create_goal_key_results_section">Key Results</string>
+    <string name="create_goal_key_results_count">%1$d items</string>
+    <string name="create_goal_no_key_results">No key results</string>
+    <string name="create_goal_add_key_results_hint">Tap the button above to add key results</string>
+    <string name="create_goal_btn_create">Create Goal</string>
+    <string name="create_goal_error_title">Error</string>
+    <string name="goal_type_label">Goal</string>
+    <string name="edit_goal_target_label">Target</string>
+    <string name="edit_goal_target_format">Target: %1$s</string>
+    <string name="edit_goal_period_label">Period</string>
+    <string name="edit_goal_period_daily">Daily</string>
+    <string name="edit_goal_period_weekly">Weekly</string>
+    <string name="edit_goal_period_monthly">Monthly</string>
+    <string name="edit_goal_delete">Delete Goal</string>
+    <string name="goal_not_found">Goal not found</string>
+    <string name="goal_delete_failed">Delete failed: %1$s</string>
+    <string name="goal_delete_confirm_title">Confirm Delete</string>
+    <string name="goal_delete_confirm_message">Are you sure you want to delete goal \"%1$s\"? Child habits will become independent.</string>
+
+    <!-- Login -->
+    <string name="login_title">Log In</string>
+    <string name="login_username_label">Username</string>
+    <string name="login_username_hint">Enter username</string>
+    <string name="login_password_label">Password</string>
+    <string name="login_password_hint">Enter password</string>
+    <string name="login_button">Log In</string>
+    <string name="login_custom_server">Custom Server</string>
+    <string name="login_skip">Skip</string>
+    <string name="login_content_description_back">Back</string>
+    <string name="login_content_description_hide_password">Hide password</string>
+    <string name="login_content_description_show_password">Show password</string>
+    <string name="login_content_description_expand">Expand</string>
+    <string name="login_content_description_collapse">Collapse</string>
+    <string name="login_app_title">DayForge</string>
+    <string name="login_admin_managed_hint">Accounts are created and managed by your DayForge server administrator.</string>
+    <string name="login_username">Username</string>
+    <string name="login_server_settings">Server Settings</string>
+    <string name="login_server_address_label">Server Address</string>
+    <string name="login_remote_server_address_label">Remote HTTPS address (optional)</string>
+    <string name="login_remote_server_address_hint">Used on mobile data or when the local server is unavailable</string>
+    <string name="login_server_address_hint">IP:Port or URL (leave empty for default)</string>
+    <string name="login_server_http_warning">HTTP is not encrypted. Use it only on a trusted home network; prefer HTTPS for remote access.</string>
+    <string name="login_reset_default">Reset to Default</string>
+    <string name="login_save">Save</string>
+    <string name="login_sync_data_title">Sync Data?</string>
+    <string name="login_sync_data_message">Upload local changes and download the latest data from the server?</string>
+    <string name="login_sync_data_hint">You can sync manually later in Settings</string>
+    <string name="login_sync_button">Sync</string>
+    <string name="login_sync_failed">Sync failed: %1$s. Retry, or skip and sync later in Settings.</string>
+    <string name="login_local_data_title">Local Data Found</string>
+    <string name="login_local_data_unowned_message">This device has data that is not assigned to an account. Merge it into %1$s, discard it, or cancel login.</string>
+    <string name="login_local_data_other_account_message">This device has unsynced data belonging to another account. It cannot be merged into this account. Discard it only if you no longer need it, or cancel login.</string>
+    <string name="login_local_data_merge">Merge into this account</string>
+    <string name="login_local_data_discard">Discard local data</string>
+    <!-- Login errors -->
+    <string name="login_error_enter_username">Please enter username</string>
+    <string name="login_error_enter_password">Please enter password</string>
+    <string name="login_error_wrong_credentials">Incorrect username or password</string>
+    <string name="login_error_user_not_found">User not found</string>
+    <string name="login_error_network">Network connection failed, please check your network</string>
+    <string name="login_error_unknown">Login failed: %1$s</string>
+    <string name="register_error_unknown">Registration failed: %1$s</string>
+    <string name="server_error_invalid_address">Please enter a valid address (e.g., 192.168.1.1:8080 or api.example.com)</string>
+
+    <!-- Dialogs -->
+    <string name="dialog_delete_title">Delete?</string>
+    <string name="dialog_delete_message">This action cannot be undone.</string>
+    <string name="dialog_delete_habit_message">Delete this habit? All history will be lost.</string>
+    <string name="dialog_delete_metric_message">Delete this metric? Linked habits will keep their data.</string>
+    <string name="dialog_reactivate_title">Reactivate?</string>
+    <string name="dialog_reactivate_message">Reactivate this habit?</string>
+    <string name="dialog_error_save_title">Cannot Save</string>
+    <string name="dialog_error_target_empty">Target value is empty</string>
+    <string name="dialog_error_name_empty">Name is required</string>
+    <string name="dialog_export_title">Export Config</string>
+    <string name="dialog_export_message">Export all habits, metrics, and goals?</string>
+    <string name="dialog_import_title">Import Config</string>
+    <string name="dialog_import_message">This will replace all current data. Continue?</string>
+
+    <!-- Timer Dialogs -->
+    <string name="dialog_timer_switch_message">\"%1$s\" is timing. Stop it and start \"%2$s\"?</string>
+    <string name="dialog_timer_switch_fallback">A timer is running. Stop and start new one?</string>
+    <string name="dialog_discard_title">Timer Not Complete</string>
+    <string name="dialog_discard_countdown_remaining">%1$02d:%2$02d left. Discard this session?</string>
+    <string name="dialog_discard_countdown_fallback">Discard this session?</string>
+    <string name="dialog_discard_countup_elapsed">Elapsed %1$02d:%2$02d, target %3$d min. Discard?</string>
+
+    <!-- Reactivation -->
+    <string name="dialog_reactivate_failed_title">Reactivate Habit</string>
+    <string name="dialog_reactivate_completed_title">Habit Completed</string>
+    <string name="dialog_reactivate_failed_message">\"%1$s\" failed. Reactivating clears all history.</string>
+    <string name="dialog_reactivate_completed_message">\"%1$s\" completed goal. Reactivating clears all history.</string>
+    <string name="toast_reactivate_success">Habit reactivated</string>
+    <string name="toast_reactivate_error">Reactivation failed. Check network.</string>
+    <string name="default_habit_name">Habit</string>
+
+    <!-- Timer Display Formats -->
+    <string name="timer_remaining_format">%1$02d:%2$02d left / %3$d min</string>
+    <string name="timer_elapsed_format">Elapsed %1$02d:%2$02d / %3$d min</string>
+    <string name="timer_remaining_paused_format">%1$02d:%2$02d left / %3$d min (paused)</string>
+    <string name="timer_elapsed_paused_format">Elapsed %1$02d:%2$02d / %3$d min (paused)</string>
+    <string name="timer_target_format">Target %1$d min</string>
+    <string name="timer_countdown_remaining">%1$d left</string>
+    <string name="timer_countup_progress">%1$d/%2$d</string>
+
+    <!-- Component Progress -->
+    <string name="component_goal_day_progress">Day %1$d of %2$d</string>
+    <string name="component_children_completed">%1$d/%2$d completed</string>
+
+    <!-- Status Labels -->
+    <string name="status_goal_completed">Goal Completed</string>
+    <string name="status_already_failed">Failed</string>
+
+    <!-- Next Check-in Hints -->
+    <string name="next_checkin_tomorrow">Next: Tomorrow</string>
+    <string name="next_checkin_days">Next: %1$d days</string>
+    <string name="next_checkin_date">Next: %1$d/%2$d</string>
+
+    <!-- Timer Notifications -->
+    <string name="timer_notification_target_reached_title">Timer Target Achieved</string>
+    <string name="timer_notification_target_reached_text">Daily target duration reached!</string>
+    <string name="timer_notification_threshold_reached_title">Timer Limit Reached</string>
+    <string name="timer_notification_threshold_reached_text">Time limit reached!</string>
+    <string name="timer_notification_countdown_complete_title">Countdown Complete</string>
+    <string name="timer_notification_countdown_complete_text">Countdown finished!</string>
+    <string name="timer_notification_running">Timer Running</string>
+    <string name="timer_notification_paused">Timer Paused</string>
+
+    <!-- Widget -->
+    <string name="widget_configure_title">Configure Widget</string>
+    <string name="widget_select_habit">Select Habit</string>
+    <string name="widget_empty_habits">No habits to configure</string>
+    <string name="widget_add_widget">Add Widget</string>
+
+    <!-- Widget Config Activities -->
+    <string name="widget_checkin_select_title">Select Check-in Habit</string>
+    <string name="widget_counting_select_title">Select Counting Habit</string>
+    <string name="widget_timer_select_title">Select Timer Habit</string>
+    <string name="widget_timer_start">Start Timer</string>
+    <string name="widget_empty_checkin">No check-in habits available</string>
+    <string name="widget_empty_counting">No counting habits available</string>
+    <string name="widget_empty_timer">No timer habits available</string>
+    <string name="widget_empty_checkin_hint">Counting habits use 2x2 widget</string>
+    <string name="widget_empty_counting_hint">Create counting habit in app first</string>
+    <string name="widget_empty_timer_hint">Create timer habit in app first</string>
+    <string name="widget_configuring">Configuring: %1$s</string>
+    <string name="widget_target_minutes">Target: %1$d min</string>
+    <string name="widget_target_count">Target: %1$d</string>
+
+    <!-- Sync -->
+    <string name="sync_success">Sync successful</string>
+    <string name="sync_error">Sync failed</string>
+    <string name="sync_in_progress">Syncing…</string>
+    <string name="sync_last_time">Last sync: %1$s</string>
+    <string name="sync_current_endpoint">Current endpoint: %1$s</string>
+    <string name="sync_never">Never synced</string>
+    <string name="sync_now_button">Sync Now</string>
+    <string name="sync_need_login">Login required</string>
+    <string name="sync_need_network">Network required</string>
+    <string name="sync_downloading">Downloading server data…</string>
+    <string name="sync_uploading_changes">Uploading changes… %1$d/%2$d</string>
+    <string name="sync_recovering">Repairing local sync data…</string>
+    <string name="sync_rejected_count">%1$d sync issues need attention</string>
+    <string name="sync_rejected_title">Sync issues</string>
+    <string name="sync_conflict_item">%1$s · %2$s has a conflict</string>
+    <string name="sync_conflict_default_message">Local and server versions changed the same content</string>
+    <string name="sync_conflict_fields">Conflicting fields: %1$s</string>
+    <string name="sync_conflict_use_server">Use server version</string>
+    <string name="sync_conflict_use_local">Use local version and retry</string>
+    <string name="sync_rejected_unknown_error">The server rejected this change.</string>
+    <string name="sync_rejected_timer_command">Timer %1$s · %2$s</string>
+    <string name="sync_rejected_timer_use_server">Use server state</string>
+    <string name="sync_rejected_timer_cancel_title">Resolve with the server state?</string>
+    <string name="sync_rejected_timer_cancel_message">If the server timer is still active on this device, it will be cancelled. The rejected local timer record will then be cleared or replaced by the completed server record. This cannot be undone.</string>
+    <string name="sync_rejected_timer_cancel_confirm">Resolve and sync</string>
+    <string name="sync_rejected_retry">Retry</string>
+    <string name="sync_rejected_discard">Discard</string>
+    <string name="sync_rejected_discard_title">Discard this change?</string>
+    <string name="sync_rejected_discard_message">This removes the local pending change permanently. The current local data is not deleted.</string>
+    <string name="sync_in_progress_status">Syncing…</string>
+
+    <!-- Account Status -->
+    <string name="account_logged_in">Logged in</string>
+    <string name="account_not_logged">Not logged in</string>
+
+    <!-- Logout Dialog -->
+    <string name="logout_confirm_title">Log Out</string>
+    <string name="logout_confirm_sync_message">Sync data before logging out?</string>
+    <string name="logout_confirm_direct_message">Local data will be cleared. Continue?</string>
+    <string name="logout_sync_then_logout">Sync &amp; Log Out</string>
+    <string name="logout_direct">Log Out Directly</string>
+
+    <!-- Active Timer Dialog -->
+    <string name="timer_active_dialog_title">Timer Running</string>
+    <string name="timer_active_dialog_habit_running">Habit \"%1$s\" is timing</string>
+    <string name="timer_active_dialog_elapsed">Elapsed: %1$s</string>
+    <string name="timer_active_dialog_complete_first">Please complete or stop the timer before continuing</string>
+
+    <!-- Config Management -->
+    <string name="config_export_hint">Export config as JSON file to share with other devices</string>
+
+    <!-- Export Dialog -->
+    <string name="export_progress_title">Exporting</string>
+    <string name="export_progress_message">Exporting configuration…</string>
+    <string name="export_success_title">Export Successful</string>
+    <string name="export_success_saved_to">Config saved to:</string>
+
+    <!-- Import Dialog -->
+    <string name="import_progress_title">Importing</string>
+    <string name="import_progress_message">Importing configuration…</string>
+    <string name="import_confirm_title">Confirm Import</string>
+    <string name="import_confirm_delete_section">Will delete local data:</string>
+    <string name="import_confirm_import_section">Will import new config:</string>
+    <string name="import_confirm_warning">This action cannot be undone!</string>
+    <string name="import_confirm_button">Confirm Import</string>
+    <string name="import_success_title">Import Successful</string>
+    <string name="import_success_message">Config imported successfully.</string>
+    <string name="import_success_sync_hint">To sync to server, trigger manual sync.</string>
+    <string name="import_error_hint">Local data was not modified.</string>
+    <string name="import_item_habits">%1$d habits</string>
+    <string name="import_item_metrics">%1$d metrics</string>
+    <string name="import_item_links">%1$d links</string>
+    <string name="import_item_completions">%1$d completion records</string>
+    <string name="import_item_timelogs">%1$d timer records</string>
+    <string name="import_item_metriclogs">%1$d metric records</string>
+
+    <!-- Counting Input Dialog -->
+
+    <!-- Goal Completion Dialog -->
+    <string name="dialog_goal_complete_title">Goal Complete!</string>
+    <string name="dialog_goal_complete_title_accessibility">Goal Complete</string>
+    <string name="dialog_goal_complete_message">\"%1$s\" completed %2$d/%3$d check-ins</string>
+    <string name="dialog_goal_complete_hint">Confirming will deactivate this habit.</string>
+    <string name="action_confirm_complete">Confirm Complete</string>
+    <string name="action_continue_checkin">Continue Check-in</string>
+
+    <!-- Export/Import -->
+    <string name="export_success">Export successful</string>
+    <string name="export_error">Export failed</string>
+    <string name="import_success">Import successful</string>
+    <string name="import_error">Import failed</string>
+    <string name="import_invalid_format">Invalid file format</string>
+
+    <!-- MainActivity Tabs -->
+    <string name="tab_nested">Nested</string>
+    <string name="tab_profile">Profile</string>
+    <string name="toast_press_again_exit">Press again to exit</string>
+
+    <!-- Habit Detail -->
+    <string name="habit_detail_title">Habit Detail</string>
+    <string name="habit_detail_history">History</string>
+    <string name="habit_detail_statistics">Statistics</string>
+    <string name="habit_detail_streak">Streak</string>
+    <string name="habit_detail_total_checkins">Total Check-ins</string>
+    <string name="habit_detail_completion_rate">Completion Rate</string>
+    <string name="habit_detail_active_days">Active Days</string>
+    <string name="habit_detail_this_week">This Week</string>
+    <string name="habit_detail_this_month">This Month</string>
+    <string name="habit_detail_active_status">Active Status</string>
+    <string name="habit_detail_completion_history">Completion History</string>
+    <string name="habit_detail_metrics_section">Metrics</string>
+    <string name="habit_detail_metric_tracked_days">Tracked %d days</string>
+    <string name="habit_detail_metric_progress">%1$d/%2$d days (%3$d%%)</string>
+    <string name="habit_detail_metric_current_value">Current: %1$s %2$s</string>
+
+    <!-- Content Descriptions -->
+    <string name="content_description_back">Back</string>
+    <string name="content_description_edit">Edit</string>
+    <string name="content_description_options">Options</string>
+    <string name="content_description_collapse">Collapse</string>
+    <string name="content_description_expand">Expand</string>
+
+    <!-- Reactivation Dialog (parameterized) -->
+    <string name="dialog_reactivate_habit_message">Reactivating habit \"%1$s\" will clear all history. This action cannot be undone.</string>
+    <string name="dialog_reactivate_confirm">Confirm Reactivation</string>
+
+    <!-- Time Units -->
+    <string name="time_minutes">minutes</string>
+    <string name="time_hours">hours</string>
+    <string name="time_seconds">seconds</string>
+
+    <!-- Metric Units -->
+    <string name="metric_unit_times">times</string>
+    <string name="metric_unit_minutes">min</string>
+    <string name="metric_unit_hours">hrs</string>
+    <string name="metric_unit_steps">steps</string>
+    <string name="metric_unit_ml">ml</string>
+    <string name="metric_unit_km">km</string>
+
+    <!-- Countdown -->
+    <string name="countdown_discard_title">Discard Countdown?</string>
+    <string name="countdown_discard_message">The countdown is still running. Discard it?</string>
+    <string name="countdown_complete_title">Countdown Complete!</string>
+    <string name="countdown_time_left">Time left: %1$s</string>
+
+    <!-- Reactivation -->
+    <string name="reactivation_title">Reactivate Habit</string>
+    <string name="reactivation_message">This habit was deactivated. Reactivate it?</string>
+
+    <!-- Format Strings -->
+    <string name="format_days">%1$d days</string>
+    <string name="format_times">%1$d times</string>
+    <string name="format_streak">🔥 %1$d day streak</string>
+    <string name="format_progress">%1$d / %2$d</string>
+    <string name="format_percentage">%1$d%%</string>
+
+    <!-- Plurals -->
+    <plurals name="days_count">
+        <item quantity="one">1 day</item>
+        <item quantity="other">%d days</item>
+    </plurals>
+
+    <plurals name="times_count">
+        <item quantity="one">1 time</item>
+        <item quantity="other">%d times</item>
+    </plurals>
+
+    <plurals name="habits_count">
+        <item quantity="one">1 habit</item>
+        <item quantity="other">%d habits</item>
+    </plurals>
+
+    <plurals name="minutes_count">
+        <item quantity="one">1 minute</item>
+        <item quantity="other">%d minutes</item>
+    </plurals>
+
+    <plurals name="hours_count">
+        <item quantity="one">1 hour</item>
+        <item quantity="other">%d hours</item>
+    </plurals>
+
+    <!-- Widget States -->
+    <string name="widget_configure_first">Configure widget first</string>
+    <string name="widget_habit_deleted">Habit deleted\nTap to reconfigure</string>
+    <string name="widget_today_progress">Today\'s Progress</string>
+    <string name="widget_best_streak">Best: %1$d days</string>
+    <string name="widget_today_status">%1$d / %2$d today</string>
+    <string name="widget_record">Record</string>
+    <string name="widget_start">Start</string>
+    <string name="widget_paused">(Paused)</string>
+    <string name="widget_target_minutes_format">Target %1$d min</string>
+    <string name="widget_remaining_time_format">%1$02d:%2$02d left</string>
+    <string name="widget_elapsed_time_format">%1$02d:%2$02d / %3$d min</string>
+    <string name="widget_remaining_simple">%1$02d:%2$02d left</string>
+
+    <!-- Widget Status Labels -->
+    <string name="widget_status_failed">Failed</string>
+    <string name="widget_status_completed">Completed</string>
+    <string name="widget_status_non_checkin">Non-check-in day</string>
+    <string name="widget_status_countdown_mode">Countdown</string>
+    <string name="widget_status_countdown_counting_mode">Countdown</string>
+
+    <!-- Motivation Messages -->
+    <string name="motivation_start_1">Start your habit journey!</string>
+    <string name="motivation_start_2">Every day is a new beginning</string>
+    <string name="motivation_3days_1">Great start!</string>
+    <string name="motivation_3days_2">Keep going!</string>
+    <string name="motivation_5days_1">Awesome!</string>
+    <string name="motivation_5days_2">You\'re doing great!</string>
+    <string name="motivation_7days_1">One week achieved!</string>
+    <string name="motivation_7days_2">You\'ve stuck with it for a week!</string>
+    <string name="motivation_14days_1">Two weeks achieved!</string>
+    <string name="motivation_14days_2">Habit is forming</string>
+    <string name="motivation_30days_1">One month achieved!</string>
+    <string name="motivation_30days_2">You\'re a habit master!</string>
+    <string name="motivation_default">Persistence is victory!</string>
+
+    <!-- Target Progress -->
+    <string name="target_completed_format">Completed %1$d</string>
+    <string name="target_label_format">Target: %1$d</string>
+
+    <!-- Linked Metrics -->
+    <string name="linked_metrics_title">Linked Metrics</string>
+
+    <!-- Post Check-in Dialog -->
+    <string name="post_checkin_title">Record Linked Metrics</string>
+    <string name="post_checkin_message">\"%1$s\" checked in. Record linked metrics?</string>
+    <string name="post_checkin_dont_ask_again">Don\'t ask again</string>
+    <string name="post_checkin_record">Record</string>
+    <string name="post_checkin_skip">Skip</string>
+
+    <!-- Unit Picker -->
+    <string name="unit_cat_weight">Weight</string>
+    <string name="unit_cat_money">Money</string>
+    <string name="unit_cat_time">Time</string>
+    <string name="unit_cat_count">Count</string>
+    <string name="unit_jin">jin</string>
+    <string name="unit_wan">wan</string>
+    <string name="unit_steps">steps</string>
+    <string name="unit_pages">pages</string>
+    <string name="unit_times">times</string>
+
+    <!-- Child Habit Row -->
+    <string name="child_habit_more_options">More options</string>
+    <string name="child_habit_edit">Edit</string>
+    <string name="child_habit_delete">Delete</string>
+
+    <!-- Profile Screen -->
+    <string name="profile_loading">Loading…</string>
+    <string name="profile_today_progress">Today\'s Progress</string>
+    <string name="profile_completed_format">%1$d/%2$d completed</string>
+    <string name="profile_settings">Settings</string>
+    <string name="profile_enter">Enter</string>
+
+    <!-- Time Format -->
+    <string name="time_just_now">Just now</string>
+    <string name="time_minutes_ago">%1$d min ago</string>
+    <string name="time_hours_ago">%1$d hrs ago</string>
+    <string name="time_days_ago">%1$d days ago</string>
+    <string name="time_never">Never</string>
+
+    <!-- Toast Messages -->
+    <string name="toast_habit_completed">Habit completed</string>
+    <string name="toast_goal_habit_cannot_deactivate">Cannot deactivate goal habit in progress</string>
+    <string name="toast_habit_reactivated">Habit reactivated, history cleared</string>
+    <string name="toast_clear_history_failed">Failed to clear history, check network connection</string>
+    <string name="toast_duplicate_habit_name">A habit with this name already exists</string>
+    <string name="dialog_duplicate_habit_message">A habit with this name already exists, please modify</string>
+    <string name="toast_metric_not_found">Metric not found</string>
+    <string name="toast_save_failed">Save failed: %1$s</string>
+    <string name="toast_notification_permission_denied">Notification permission denied, timer notifications may not appear</string>
+
+    <!-- Timer Service Notification -->
+    <string name="timer_notification_title_running">Timer Running</string>
+    <string name="timer_notification_title_paused">Timer Paused</string>
+    <string name="timer_notification_remaining_format">%1$02d:%2$02d left / %3$d min target</string>
+    <string name="timer_notification_elapsed_format">Elapsed %1$02d:%2$02d / %3$d min target</string>
+    <string name="timer_btn_resume">Resume</string>
+    <string name="timer_btn_pause">Pause</string>
+    <string name="timer_btn_stop">Stop</string>
+
+    <!-- Completion Calendar -->
+    <string name="completion_calendar_title">Completion History</string>
+    <string name="calendar_month_format">%1$d</string>
+    <string name="calendar_header_format">%1$d %2$d</string>
+    <string name="calendar_picker_year_format">%1$d</string>
+    <string name="calendar_picker_month_format">%1$d</string>
+    <string name="calendar_day_sun">Sun</string>
+    <string name="calendar_day_mon">Mon</string>
+    <string name="calendar_day_tue">Tue</string>
+    <string name="calendar_day_wed">Wed</string>
+    <string name="calendar_day_thu">Thu</string>
+    <string name="calendar_day_fri">Fri</string>
+    <string name="calendar_day_sat">Sat</string>
+    <string name="calendar_prev_month">Previous month</string>
+    <string name="calendar_next_month">Next month</string>
+    <string name="calendar_select_date">Select Date</string>
+    <string name="calendar_year_label">Year</string>
+    <string name="calendar_month_label">Month</string>
+    <string name="calendar_january">January</string>
+    <string name="calendar_february">February</string>
+    <string name="calendar_march">March</string>
+    <string name="calendar_april">April</string>
+    <string name="calendar_may">May</string>
+    <string name="calendar_june">June</string>
+    <string name="calendar_july">July</string>
+    <string name="calendar_august">August</string>
+    <string name="calendar_september">September</string>
+    <string name="calendar_october">October</string>
+    <string name="calendar_november">November</string>
+    <string name="calendar_december">December</string>
+
+    <!-- Goal Completion Activity -->
+    <string name="goal_completion_toast">Goal completed</string>
+    <string name="goal_completion_update_error">Unable to update the goal</string>
+
+    <!-- Error Messages -->
+    <string name="error_network_failed">Network connection failed, please check network</string>
+    <string name="error_sync_failed">Sync failed: %1$s</string>
+    <string name="error_cannot_open_file">Cannot open file</string>
+    <string name="error_duplicate_habit_names">Import file contains duplicate habit names: %1$s</string>
+    <string name="error_read_file_failed">Failed to read file: %1$s</string>
+    <string name="error_import_failed">Import failed: %1$s</string>
+    <string name="error_unknown_habit">Unknown habit</string>
+
+    <!-- Nested Screen -->
+    <string name="fab_create_goal_content_description">Create Goal</string>
+    <string name="nested_no_goal_title">No Goal Habits</string>
+    <string name="nested_goal_hint">Create a parent habit and add key results (child habits)</string>
+    <string name="toast_cannot_open_settings">Cannot open settings</string>
+    <string name="dialog_timer_switch_title">Timer Already Running</string>
+    <string name="nested_reactivation_message">Reactivating habit \"%1$s\" will clear all history. This action cannot be undone.</string>
+    <string name="action_confirm_activate">Confirm Activation</string>
+
+    <!-- ==================== Metric Internationalization ==================== -->
+
+    <!-- Metric Detail Screen -->
+    <string name="metric_detail_title">Metric Detail</string>
+    <string name="metric_not_found">Metric not found</string>
+    <string name="metric_no_records_yet">No records yet</string>
+    <string name="metric_details_section">Details</string>
+    <string name="metric_unit_label">Unit</string>
+    <string name="metric_decimal_places_label">Decimal Places</string>
+    <string name="metric_target_increase">Target (Increase)</string>
+    <string name="metric_target_decrease">Target (Decrease)</string>
+    <string name="metric_target_range">Target Range</string>
+    <string name="metric_target_label">Target</string>
+    <string name="metric_record_value">Record Value</string>
+    <string name="metric_trend_section">Trend</string>
+    <string name="metric_history_section">History</string>
+    <string name="metric_more_records">%1$d more records…</string>
+    <string name="metric_linked_habits_section">Linked Habits</string>
+    <string name="metric_no_linked_habits">No linked habits</string>
+    <string name="metric_unlink">Unlink</string>
+    <string name="metric_link_habit">Link Habit</string>
+    <string name="metric_delete_metric">Delete Metric</string>
+
+    <!-- Metric Delete Dialog -->
+    <string name="metric_delete_confirm_title">Delete Metric?</string>
+    <string name="metric_delete_confirm_message">This will permanently delete \"%1$s\" and all its records. This action cannot be undone.</string>
+
+    <!-- Metric Unlink Dialog -->
+    <string name="metric_unlink_confirm_title">Unlink Habit?</string>
+    <string name="metric_unlink_confirm_message">Remove link between \"%1$s\" and \"%2$s\"?</string>
+
+    <!-- Metric Link Habits Dialog -->
+    <string name="metric_link_habits_title">Link Habits</string>
+    <string name="metric_no_habits_to_link">No habits available to link</string>
+    <string name="metric_select_habits_to_link">Select habits to link to this metric:</string>
+    <string name="metric_already_linked">Already linked</string>
+
+    <!-- Metrics Screen -->
+    <string name="metrics_empty_title">No metrics yet</string>
+    <string name="metrics_empty_hint">Tap + to create your first metric</string>
+    <string name="metrics_fab_content_description">Create Metric</string>
+
+    <!-- Metric Card -->
+    <string name="metric_card_no_records">No records</string>
+    <string name="metric_card_last_recorded">Last recorded: %1$s</string>
+    <string name="metric_card_never_recorded">Never recorded</string>
+    <string name="metric_card_tap_details">Tap to view details</string>
+    <string name="metric_card_target_direction">Target: %1$s</string>
+
+    <!-- Metric Value Input -->
+    <string name="metric_input_title">Record Value</string>
+    <string name="metric_input_current">Current: %1$s %2$s</string>
+    <string name="metric_input_target_format">Target: %1$s %2$s</string>
+    <string name="metric_input_target_range_format">Target range: %1$s %2$s</string>
+    <string name="metric_input_enter_value">Enter value</string>
+    <string name="metric_input_note_optional">Note (optional)</string>
+    <string name="metric_input_note_hint">Optional note for this record</string>
+    <string name="metric_input_error_invalid_number">Please enter a valid number</string>
+    <string name="metric_input_error_whole_only">Only whole numbers allowed</string>
+    <string name="metric_input_error_max_decimals">Maximum %1$d decimal places allowed</string>
+    <string name="widget_counting_next_slot">%1$d completed, next slot %2$02d:%3$02d</string>
+    <string name="widget_counting_current_slot">Slot %1$d of %2$d</string>
+    <string name="widget_counting_completed_slots">%1$d of %2$d completed</string>
+    <string name="metric_input_current_target_combined">Current: %1$s %2$s | Target: %3$s %2$s</string>
+
+    <!-- Trend Chart -->
+    <string name="chart_7_days">7 Days</string>
+    <string name="chart_30_days">30 Days</string>
+    <string name="chart_daily_average">Daily Average</string>
+    <string name="chart_daily_total">Daily Total</string>
+    <string name="chart_all_records">All Records</string>
+    <string name="chart_no_data">No Data</string>
+    <string name="chart_target_line">Target</string>
+    <string name="chart_range_lower">Lower</string>
+    <string name="chart_range_upper">Upper</string>
+
+    <!-- Edit Metric Screen -->
+    <string name="edit_metric_screen_title">Edit Metric</string>
+    <string name="edit_metric_name_required">Name *</string>
+    <string name="edit_metric_description_label">Description</string>
+    <string name="edit_metric_unit_required">Unit *</string>
+    <string name="edit_metric_decimal_places_label">Decimal Places</string>
+    <string name="edit_metric_target_direction_label">Target Direction</string>
+    <string name="edit_metric_target_none">None</string>
+    <string name="edit_metric_target_increase">Increase</string>
+    <string name="edit_metric_target_decrease">Decrease</string>
+    <string name="edit_metric_target_range">Range</string>
+    <string name="edit_metric_lower_bound">Lower Bound</string>
+    <string name="edit_metric_upper_bound">Upper Bound</string>
+    <string name="edit_metric_target_value">Target Value</string>
+    <string name="edit_metric_icon_label">Icon</string>
+    <string name="edit_metric_color_label">Color</string>
+    <string name="edit_metric_active_label">Active</string>
+    <string name="edit_metric_active_desc">Inactive metrics are hidden from the main list</string>
+    <string name="edit_metric_save_changes">Save Changes</string>
+    <string name="edit_metric_select_unit">Select unit</string>
+    <string name="edit_metric_select_icon">Select icon</string>
+    <string name="edit_metric_select_color">Select color</string>
+    <string name="edit_metric_aggregation_type_label">Aggregation Method</string>
+    <string name="edit_metric_aggregation_average">Average</string>
+    <string name="edit_metric_aggregation_sum">Sum</string>
+    <string name="edit_metric_aggregation_by_time">By Time</string>
+
+    <!-- Color Picker HEX Input -->
+    <string name="color_picker_hex_label">HEX Color</string>
+    <string name="color_picker_hex_invalid">Invalid HEX format (e.g., #FF5500)</string>
+    <string name="color_picker_hex_preview">Preview</string>
+    <string name="color_picker_hex_clear">Clear HEX input</string>
+
+    <!-- Icon Picker Categories -->
+    <string name="icon_category_fitness">Fitness</string>
+    <string name="icon_category_health">Health</string>
+    <string name="icon_category_learning">Learning</string>
+    <string name="icon_category_mental">Mental</string>
+    <string name="icon_category_lifestyle">Lifestyle</string>
+    <string name="icon_category_todo">TODO</string>
+    <string name="icon_category_personal_hygiene">Personal Hygiene</string>
+    <string name="icon_category_social">Social</string>
+    <string name="icon_category_finance">Finance</string>
+    <string name="icon_category_creative">Creative</string>
+    <string name="icon_category_transportation">Transportation</string>
+    <string name="icon_category_entertainment">Entertainment</string>
+    <string name="icon_category_household">Household</string>
+    <string name="icon_category_outdoor">Outdoor</string>
+    <string name="icon_category_technology">Technology</string>
+
+    <!-- Create Temporary Task -->
+    <string name="create_temp_task_title">Create Temporary Task</string>
+    <string name="edit_habit_parent_habit_optional">Parent Habit (Optional)</string>
+    <string name="edit_habit_parent_none_independent">None (Independent)</string>
+    <string name="create_temp_task_save">Create</string>
+    <string name="toast_temp_task_created">Temporary task created</string>
+    <string name="toast_temp_task_completed">Temporary task completed</string>
+    <string name="edit_habit_no_parent_available">No GOAL habits available</string>
+
+    <!-- Metric Detail ViewModel Errors -->
+    <string name="metric_error_not_found">Metric not found</string>
+    <string name="metric_error_record_failed">Failed to record value: %1$s</string>
+    <string name="metric_error_aggregation_failed">Failed to update aggregation type: %1$s</string>
+    <string name="metric_error_delete_failed">Failed to delete metric: %1$s</string>
+    <string name="metric_error_unlink_failed">Failed to unlink habit: %1$s</string>
+    <string name="metric_error_link_failed">Failed to link habits: %1$s</string>
+    <string name="metric_error_unknown_habit">Unknown</string>
+
+    <!-- ==================== Missing Internationalization Fixes ==================== -->
+
+    <!-- Edit Habit Screen -->
+    <string name="edit_habit_screen_title">Edit Habit</string>
+    <string name="edit_habit_name_required">Name *</string>
+    <string name="edit_habit_description_optional">Description</string>
+    <string name="edit_habit_schedule_type">Schedule Type</string>
+    <string name="edit_habit_frequency_days">Frequency (every N days)</string>
+    <string name="edit_habit_frequency_max">Maximum: %1$d days</string>
+    <string name="edit_habit_day_of_month">Day of Month (1-31)</string>
+    <string name="edit_habit_daily_target_minutes">Daily Target (minutes)</string>
+    <string name="edit_habit_daily_target">Daily Target</string>
+    <string name="edit_habit_save_changes">Save Changes</string>
+    <string name="edit_habit_not_found">Habit not found</string>
+    <string name="edit_habit_not_found_hint">This habit may have been deleted</string>
+    <string name="edit_habit_parent_habit_label">Parent Habit</string>
+    <string name="edit_habit_none_top_level">None (Top-level)</string>
+    <string name="edit_habit_detach_parent">Detach from parent (make top-level)</string>
+
+    <!-- Best execution time (Phase 81) -->
+    <string name="edit_habit_best_time_label">Best execution time</string>
+    <string name="edit_habit_best_time_optional">(optional)</string>
+    <string name="edit_habit_best_time_hint">Set the optimal time to complete this habit</string>
+    <string name="edit_habit_best_time_none">No time set</string>
+
+    <!-- Create Habit Screen -->
+    <string name="create_habit_screen_title">Create Habit</string>
+    <string name="create_habit_preset_title">Quick Start: Choose a Preset</string>
+    <string name="create_habit_selected_preset">Selected: %1$s</string>
+    <string name="create_habit_habit_type">Habit Type</string>
+
+    <!-- Create Metric Screen -->
+    <string name="create_metric_screen_title">Create Metric</string>
+    <string name="create_metric_appearance_step">Appearance &amp; Links</string>
+    <string name="create_metric_next">Next</string>
+    <string name="create_metric_link_habits_optional">Link to Habits (Optional)</string>
+    <string name="create_metric_link_habits_hint">Selected habits will show this metric and prompt for recording on completion.</string>
+
+    <!-- Delete Confirmation Dialog -->
+    <string name="dialog_delete_habit_confirm_title">Delete Habit?</string>
+    <string name="dialog_delete_habit_confirm_message">Are you sure you want to delete \"%1$s\"? This action cannot be undone.</string>
+
+    <!-- Children Deletion Dialog -->
+    <string name="dialog_delete_habit_with_children_title">Delete Children Too?</string>
+    <string name="dialog_delete_habit_with_children_message">\"%1$s\" has %2$d child habit(s). Delete them as well?</string>
+    <string name="dialog_delete_habit_with_children">Delete children too</string>
+    <string name="dialog_delete_habit_keep_children">Keep children</string>
+    <string name="dialog_delete_habit_children_orphaned">Child habits moved to top level</string>
+
+    <!-- Preset Habit Selector -->
+    <string name="preset_choose_title">Choose a Preset</string>
+    <string name="preset_category_health">Health</string>
+    <string name="preset_category_mindfulness">Mindfulness</string>
+
+    <!-- Unit Picker -->
+    <string name="unit_picker_custom">Custom</string>
+    <string name="unit_picker_custom_unit">Custom unit</string>
+    <string name="unit_picker_enter_custom">Enter custom unit</string>
+    <string name="unit_picker_distance">Distance</string>
+    <string name="unit_picker_other">Other</string>
+
+    <!-- Content descriptions for accessibility -->
+    <string name="content_description_selected">Selected</string>
+    <string name="content_description_select">Select</string>
+
+    <!-- Card Color Style (CARD-10) -->
+    <string name="card_color_style_title">Card Color Style</string>
+    <string name="card_color_style_follow_theme">Follow Theme</string>
+    <string name="card_color_style_personalized">Personalized</string>
+    <string name="card_color_style_description">Choose how card colors appear</string>
+
+    <!-- Notification Settings (NOTIFY-04) -->
+    <string name="habit_notification_toggle_title">Reminder Notification</string>
+    <string name="habit_notification_toggle_desc">Receive notification at %s</string>
+    <string name="settings_notification_section">Notifications</string>
+    <string name="settings_global_notifications_title">Habit Reminders</string>
+    <string name="settings_global_notifications_desc">Receive notifications at your habit\'s scheduled time</string>
+
+    <!-- Admin Dashboard -->
+    <string name="admin_title">Admin Dashboard</string>
+    <string name="admin_create_user">Create account</string>
+    <string name="admin_grant_admin">Grant server administrator access</string>
+    <string name="admin_user_created_success">Account %1$s created</string>
+    <string name="admin_refresh">Refresh</string>
+    <string name="admin_badge_admin">Admin</string>
+    <string name="admin_badge_disabled">Disabled</string>
+    <string name="admin_reset_password">Reset Password</string>
+    <string name="admin_reset_password_title">Reset password for %s</string>
+    <string name="admin_new_password">New password</string>
+    <string name="admin_confirm">Confirm</string>
+    <string name="admin_password_reset_success">Password reset for %s</string>
+    <string name="admin_error_password_min_length">Password must be at least 8 characters</string>
+    <string name="admin_error_invalid_username">Username must be 3–32 letters, numbers, or underscores</string>
+    <string name="admin_error_username_exists">This username already exists</string>
+    <string name="admin_error_forbidden">Admin access required</string>
+    <string name="admin_error_user_not_found">User not found</string>
+    <string name="admin_error_unknown">Error: %s</string>
+    <string name="admin_user_tokens">Tokens for %s</string>
+
+    <!-- Token Screen -->
+    <string name="token_screen_title">API Tokens</string>
+    <string name="token_create">Create Token</string>
+    <string name="token_empty">No API tokens</string>
+    <string name="token_empty_hint">Create a token to access the API</string>
+    <string name="token_delete">Delete token</string>
+    <string name="token_delete_title">Delete Token</string>
+    <string name="token_delete_message">Delete token \"%1$s\"? This cannot be undone.</string>
+    <string name="token_created">Created: %1$s</string>
+    <string name="token_last_used">Last used: %1$s</string>
+    <string name="token_create_title">Create API Token</string>
+    <string name="token_name_label">Token Name</string>
+    <string name="token_expires_label">Expires In (days)</string>
+    <string name="token_expires_placeholder">Leave empty for no expiry</string>
+    <string name="action_create">Create</string>
+    <string name="token_created_title">Token Created</string>
+    <string name="token_created_message">Your new API token has been created. Copy it now — you won\'t see it again.</string>
+    <string name="token_copy">Copy token</string>
+    <string name="token_created_warning">Warning: This token will only be shown once. Make sure to copy it.</string>
+    <string name="sync_device_role_primary">This is the primary editing device</string>
+    <string name="sync_device_role_editor">This device is allowed to edit plans</string>
+    <string name="sync_device_role_facts_only">This device records check-ins, counts, metrics, and timers</string>
+    <string name="sync_device_make_primary">Make primary</string>
+    <string name="sync_device_role_failed">Could not update this device role</string>
+</resources>

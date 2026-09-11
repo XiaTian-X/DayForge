@@ -1,0 +1,230 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Foreground service for background timer -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Notification permission for Android 13+ -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Exact alarm permission for Android 12+ (habit reminders) -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+
+    <application
+        android:name=".DayForgeApplication"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.DayForge"
+        android:usesCleartextTraffic="true"
+        android:localeConfig="@xml/locales_config">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.DayForge">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Service for AppCompatDelegate.setApplicationLocales() persistence on API < 33 -->
+        <service
+            android:name="androidx.appcompat.app.AppLocalesMetadataHolderService"
+            android:enabled="false"
+            android:exported="false">
+            <meta-data
+                android:name="autoStoreLocales"
+                android:value="true" />
+        </service>
+
+        <!-- Widget update receiver - registered dynamically in DayForgeApplication -->
+        <!-- LocalBroadcastManager requires dynamic registration, not AndroidManifest -->
+
+        <!-- FocusWindowReceiver - receives AlarmManager broadcasts for FocusWidget refresh -->
+        <!-- Must be registered in AndroidManifest for AlarmManager (system broadcast) -->
+        <!-- Explicit PendingIntents allow this receiver to remain app-private. -->
+        <receiver
+            android:name=".widget.FocusWindowReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.dayforge.FOCUS_WINDOW_UPDATE" />
+            </intent-filter>
+        </receiver>
+
+        <!-- HabitReminderReceiver - receives AlarmManager broadcasts for habit reminder notifications -->
+        <!-- Per NOTIFY-01: Triggered at habit's bestTime (if set) -->
+        <!-- Explicit PendingIntents allow this receiver to remain app-private. -->
+        <receiver
+            android:name=".reminder.HabitReminderReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.dayforge.HABIT_REMINDER" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 1x1 Check-in Widget -->
+        <activity
+            android:name=".widget.checkin.CheckInWidgetConfigActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
+        <receiver
+            android:name=".widget.checkin.CheckInWidgetReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/checkin_widget_info" />
+        </receiver>
+
+        <!-- 2x2 Progress Widget -->
+        <receiver
+            android:name=".widget.progress.ProgressWidgetReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/progress_widget_info" />
+        </receiver>
+
+        <!-- Motivation Widget -->
+        <receiver
+            android:name=".widget.motivation.MotivationWidgetReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/motivation_widget_info" />
+        </receiver>
+
+        <!-- 2x2 Counting Widget -->
+        <activity
+            android:name=".widget.counting.CountingWidgetConfigActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
+        <receiver
+            android:name=".widget.counting.CountingWidgetReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/counting_widget_info" />
+        </receiver>
+
+        <!-- Timer Service for background timer execution -->
+        <service
+            android:name=".domain.service.TimerService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="timer" />
+        </service>
+
+        <!-- Timer notification action receiver -->
+        <receiver
+            android:name=".receiver.TimerActionReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.dayforge.timer.PAUSE" />
+                <action android:name="com.dayforge.timer.RESUME" />
+                <action android:name="com.dayforge.timer.STOP" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 2x2 Timer Widget -->
+        <activity
+            android:name=".widget.timer.TimerWidgetConfigActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
+        <!-- Timer confirmation dialog (shown when starting timer from widget with existing timer) -->
+        <activity
+            android:name=".widget.timer.TimerConfirmationActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- Countdown discard confirmation dialog (shown when stopping countdown before zero) -->
+        <activity
+            android:name=".widget.timer.CountdownDiscardActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true" />
+
+        <!-- Metric prompt dialog (shown after widget check-in with linked metrics) -->
+        <activity
+            android:name=".widget.checkin.MetricPromptActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- Goal completion dialog (shown when target cycles reached from widget) -->
+        <activity
+            android:name=".widget.checkin.GoalCompletionActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true" />
+
+        <!-- Reactivation dialog (shown when tapping failed/completed status in widget) -->
+        <activity
+            android:name=".widget.checkin.ReactivationActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true" />
+
+        <receiver
+            android:name=".widget.timer.TimerWidgetReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.dayforge.TIMER_WIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/timer_widget_info" />
+        </receiver>
+
+        <!-- FocusWidget - priority-based habit display -->
+        <activity
+            android:name=".widget.focus.FocusWidgetConfigActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
+        <receiver
+            android:name=".widget.focus.FocusWidgetReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/focus_widget_info" />
+        </receiver>
+    </application>
+</manifest>

@@ -1,0 +1,45 @@
+name: Development task
+description: Plan one bounded DayForge change
+title: "[Task] "
+labels: []
+body:
+  - type: textarea
+    id: reason
+    attributes:
+      label: Reason and goal
+      description: Why is this needed, and what observable outcome is required?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and non-goals
+      description: List what may change and what must remain untouched.
+    validations:
+      required: true
+  - type: checkboxes
+    id: impact
+    attributes:
+      label: Compatibility impact
+      options:
+        - label: API or OpenAPI contract
+        - label: Sync protocol or conflict semantics
+        - label: Android Room schema
+        - label: Backend Alembic schema
+        - label: Time, timezone, or timer semantics
+        - label: Authentication or account ownership
+        - label: Deployment, secrets, or signing
+  - type: textarea
+    id: invariants
+    attributes:
+      label: Invariants and risks
+      description: What must not break? Include data-loss and rollback risks.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance and rollback
+      description: Exact automated/manual checks and how to revert safely.
+    validations:
+      required: true

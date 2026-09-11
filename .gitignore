@@ -1,0 +1,54 @@
+# Operating systems and editors
+.DS_Store
+.idea/
+.vscode/
+*.iml
+
+# Local secrets and configuration
+.env
+.env.*
+!.env.example
+local.properties
+*.jks
+*.keystore
+google-services.json
+
+# Android / Gradle
+**/.gradle/
+**/build/
+**/.kotlin/
+**/captures/
+**/.externalNativeBuild/
+**/.cxx/
+*.apk
+*.aab
+*.hprof
+
+# Python
+**/__pycache__/
+*.py[cod]
+**/.venv/
+**/venv/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+**/.coverage
+**/.coverage.*
+**/htmlcov/
+**/*.egg-info/
+
+# Runtime data and backups
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.backup
+*.bak
+backups/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*~

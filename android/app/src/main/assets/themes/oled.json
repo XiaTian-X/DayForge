@@ -1,0 +1,8 @@
+{
+  "id": "oled",
+  "name": "OLED",
+  "seedColor": "#000000",
+  "suitableForLight": false,
+  "suitableForDark": true,
+  "isDefault": true
+}

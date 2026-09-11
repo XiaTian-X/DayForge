@@ -1,0 +1,8 @@
+{
+  "id": "coral",
+  "name": "Coral",
+  "seedColor": "#880E4F",
+  "suitableForLight": false,
+  "suitableForDark": true,
+  "isDefault": true
+}
