@@ -37,6 +37,7 @@ import java.io.IOException
 import java.util.UUID
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -568,8 +569,13 @@ class IncrementalSyncRepositoryTest {
 
     @Test
     fun `clean epoch change replaces local replica from new bootstrap`() = runTest {
-        val fixture = fixture(serverInstanceId = "server", syncEpoch = "old-epoch")
-        coEvery { fixture.api.identity() } returns identity(syncEpoch = "new-epoch")
+        val before = contractIdentity("server/identity-before-response.json")
+        val after = contractIdentity("server/identity-after-epoch-reset-response.json")
+        val fixture = fixture(
+            serverInstanceId = before.serverInstanceId,
+            syncEpoch = before.syncEpoch
+        )
+        coEvery { fixture.api.identity() } returns after
         coEvery { fixture.api.bootstrap("device-id") } returns SyncV2BootstrapResponse(
             changes = emptyList(),
             nextCursor = 0,
@@ -579,7 +585,7 @@ class IncrementalSyncRepositoryTest {
         fixture.repository.sync()
 
         coVerify(exactly = 1) {
-            fixture.tokenManager.resetReplicaForEpoch("server", "new-epoch")
+            fixture.tokenManager.resetReplicaForEpoch(after.serverInstanceId, after.syncEpoch)
         }
         coVerify(exactly = 1) { fixture.merger.replaceWithBootstrap(emptyList()) }
         coVerify(exactly = 0) { fixture.api.pull(any(), any(), any()) }
@@ -677,6 +683,12 @@ class IncrementalSyncRepositoryTest {
         protocolVersion = 4,
         capabilities = listOf("sync_v2", "timer_commands", "device_capabilities"),
         serverTime = "2026-08-14T00:00:00Z"
+    )
+
+    private fun contractIdentity(path: String): ServerIdentityResponse = Json.decodeFromString(
+        requireNotNull(javaClass.classLoader?.getResource("sync-v2/$path")) {
+            "Missing shared contract fixture: $path"
+        }.readText()
     )
 
     private fun preparedRow(id: Long, entityUuid: String, title: String): SyncOutboxEntity {

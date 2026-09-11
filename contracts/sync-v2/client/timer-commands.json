@@ -1,0 +1,44 @@
+{
+  "device_id": "00000000-0000-4000-8000-000000000001",
+  "commands": [
+    {
+      "command_id": "81000000-0000-4000-8000-000000000001",
+      "session_id": "80000000-0000-4000-8000-000000000001",
+      "sequence": 1,
+      "command_type": "start",
+      "occurred_at": "2026-08-03T15:59:30Z",
+      "expected_control_generation": 0,
+      "activity_uuid": "20000000-0000-4000-8000-000000000002",
+      "timezone": "Asia/Shanghai"
+    },
+    {
+      "command_id": "81000000-0000-4000-8000-000000000002",
+      "session_id": "80000000-0000-4000-8000-000000000001",
+      "sequence": 2,
+      "command_type": "pause",
+      "occurred_at": "2026-08-03T16:00:00Z",
+      "expected_control_generation": 1,
+      "expected_revision": 1,
+      "active_elapsed_ms": 30000
+    },
+    {
+      "command_id": "81000000-0000-4000-8000-000000000003",
+      "session_id": "80000000-0000-4000-8000-000000000001",
+      "sequence": 3,
+      "command_type": "resume",
+      "occurred_at": "2026-08-03T16:01:00Z",
+      "expected_control_generation": 1,
+      "expected_revision": 2
+    },
+    {
+      "command_id": "81000000-0000-4000-8000-000000000004",
+      "session_id": "80000000-0000-4000-8000-000000000001",
+      "sequence": 4,
+      "command_type": "stop",
+      "occurred_at": "2026-08-03T16:01:30Z",
+      "expected_control_generation": 1,
+      "expected_revision": 3,
+      "active_elapsed_ms": 60000
+    }
+  ]
+}

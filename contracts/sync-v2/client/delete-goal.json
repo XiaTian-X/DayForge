@@ -1,0 +1,15 @@
+{
+  "device_id": "00000000-0000-4000-8000-000000000001",
+  "operations": [
+    {
+      "operation_id": "70000000-0000-4000-8000-000000000008",
+      "entity_type": "plan_node",
+      "entity_uuid": "10000000-0000-4000-8000-000000000001",
+      "action": "delete",
+      "base_revision": 1,
+      "payload": {
+        "child_policy": "cascade_children"
+      }
+    }
+  ]
+}
