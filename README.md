@@ -20,4 +20,4 @@ DayForge 是面向家庭自托管场景的习惯与目标管理系统。Android 
 - [同步协议](docs/SYNC_PROTOCOL.md)
 - [部署与恢复](docs/DEPLOYMENT.md)
 
-当前基线尚未完成新仓库 CI 和全新环境复现，因此不能仅凭旧环境测试结果认定为正式发布版本。迁移证据和已知豁免见 [MIGRATION.md](MIGRATION.md)。
+新仓库的可复现构建与首个生产数据库基线已经建立；这不等同于正式发布，计时真机、外网代理、NAS 和发布镜像仍需按对应 Issue 验收。迁移证据和已知豁免见 [MIGRATION.md](MIGRATION.md)。

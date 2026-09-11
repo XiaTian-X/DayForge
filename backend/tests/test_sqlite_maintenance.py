@@ -23,7 +23,7 @@ def make_database(path: Path, *, active_timer: bool = False) -> None:
             """
             PRAGMA foreign_keys=ON;
             CREATE TABLE alembic_version(version_num TEXT PRIMARY KEY NOT NULL);
-            INSERT INTO alembic_version VALUES('20260814_revision_merge');
+            INSERT INTO alembic_version VALUES('000000000001');
             CREATE TABLE server_instances(
                 id INTEGER PRIMARY KEY,
                 instance_uuid TEXT NOT NULL UNIQUE,

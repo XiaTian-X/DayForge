@@ -77,7 +77,13 @@ def test_clean_database_upgrades_to_complete_v2_schema():
 
         with engine.connect() as connection:
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            assert revision == "20260814_revision_merge"
+            assert revision == "000000000001"
+            identity = connection.execute(
+                text("SELECT instance_uuid, sync_epoch, protocol_version FROM server_instances")
+            ).one()
+            assert len(identity.instance_uuid) == 36
+            assert len(identity.sync_epoch) == 36
+            assert identity.protocol_version == 4
     finally:
         os.unlink(database_path)
 
@@ -107,10 +113,10 @@ def test_sync_change_sequence_is_monotonic_after_delete():
                     """
                     INSERT INTO users
                         (public_id, username, password_hash, is_active, status,
-                         is_verified, is_admin, created_at, updated_at)
+                         is_verified, is_admin, auth_version, created_at, updated_at)
                     VALUES
                         ('00000000-0000-0000-0000-000000000001', 'migration-user',
-                         'hash', 1, 'active', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                         'hash', 1, 'active', 0, 0, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """
                 )
             )
