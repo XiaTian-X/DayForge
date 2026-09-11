@@ -12,22 +12,26 @@ import com.dayforge.data.local.dao.HabitMetricLinkDao
 import com.dayforge.data.local.dao.MetricDao
 import com.dayforge.data.local.dao.MetricLogDao
 import com.dayforge.data.local.dao.TimeLogDao
+import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.HabitRepository
 import com.dayforge.data.repository.MetricRepository
+import com.dayforge.domain.model.FilterMode
 import com.dayforge.domain.service.CheckInService
 import com.dayforge.domain.service.FailureChecker
 import com.dayforge.domain.service.HabitStatusCalculator
 import com.dayforge.domain.service.MetricOverviewProvider
 import com.dayforge.domain.service.StructuralEditGuard
 import com.dayforge.ui.metrics.LinkedMetricCoordinator
+import com.dayforge.util.DateTimeUtils
 import app.cash.turbine.test
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -58,6 +62,8 @@ class DashboardViewModelTest {
     private lateinit var context: Context
     private lateinit var checkInService: CheckInService
     private lateinit var mockPreferencesManager: PreferencesManager
+    private lateinit var filterModeFlow: MutableStateFlow<String>
+    private lateinit var pendingMetricHabitsFlow: MutableStateFlow<Set<Long>>
     private val testDispatcher = UnconfinedTestDispatcher()
 
     @Before
@@ -76,12 +82,14 @@ class DashboardViewModelTest {
         metricLogDao = database.metricLogDao()
         habitMetricLinkDao = database.habitMetricLinkDao()
         repository = HabitRepository(habitDao, completionDao, timeLogDao, database)
+        filterModeFlow = MutableStateFlow(FilterMode.ALL.value)
+        pendingMetricHabitsFlow = MutableStateFlow(emptySet())
         // Mock PreferencesManager - must mock dateChangeTrigger for combine to work
         mockPreferencesManager = mockk(relaxed = true) {
             every { hasShownBatteryGuidance } returns flowOf(false)
             every { dateChangeTrigger } returns flowOf(System.currentTimeMillis() / (24 * 60 * 60 * 1000L))
-            every { filterMode } returns flowOf("all")
-            every { pendingMetricHabits } returns flowOf(emptySet())
+            every { filterMode } returns filterModeFlow
+            every { pendingMetricHabits } returns pendingMetricHabitsFlow
             every { getNeverAskAgain(any()) } returns flowOf(false)
         }
         // Create a real CheckInService that uses the repository
@@ -101,7 +109,7 @@ class DashboardViewModelTest {
             context,
             repository,
             checkInService,
-            habitStatusCalculator,
+            DashboardHabitListBuilder(habitStatusCalculator),
             timeLogDao,
             habitDao,
             mockPreferencesManager,
@@ -456,6 +464,41 @@ class DashboardViewModelTest {
             assertFalse("Second habit should be inactive", habits[1].habit.isActive)
             assertEquals("Active habit should be first", "Active Habit", habits[0].habit.name)
             assertEquals("Inactive habit should be last", "Inactive Habit", habits[1].habit.name)
+        }
+    }
+
+    @Test
+    fun pendingMetricChange_recomputesCheckableTimerVisibility() = runTest {
+        filterModeFlow.value = FilterMode.CHECKABLE.value
+
+        viewModel.habitsWithStats.test {
+            assertTrue(awaitItem().isEmpty())
+
+            val habitId = repository.createHabit(
+                name = "Timer Habit",
+                description = "",
+                habitType = HabitType.TIMER,
+                iconResId = 1,
+                colorHex = "#2196F3",
+                schedule = HabitSchedule.Daily,
+                targetValue = 1
+            )
+            assertEquals(listOf(habitId), awaitItem().map { it.habit.id })
+
+            val now = System.currentTimeMillis()
+            timeLogDao.insert(
+                TimeLogEntity(
+                    habitId = habitId,
+                    startTime = now - 60_000,
+                    endTime = now,
+                    durationSeconds = 60,
+                    date = DateTimeUtils.startOfDayMillis()
+                )
+            )
+            assertTrue(awaitItem().isEmpty())
+
+            pendingMetricHabitsFlow.value = setOf(habitId)
+            assertEquals(listOf(habitId), awaitItem().map { it.habit.id })
         }
     }
 }
