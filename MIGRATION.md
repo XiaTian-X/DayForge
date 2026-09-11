@@ -41,6 +41,7 @@ Android 和后端分别从其最终 tag 使用 `git archive` 导入，因此没�
 - 复核发现旧依赖清单遗漏 SQLAlchemy 异步运行所需的 `greenlet`；新依赖通过 `sqlalchemy[asyncio]` 明确声明。
 - Android 删除 20 个无断言的占位测试及本地 Glance 仓库，并切换官方 Gradle、Google Maven 和 Maven Central 后，468 项有效单元测试、Lint 和 Debug 构建成功。
 - 本设备按用户要求不执行 Docker 镜像、Compose 或多架构验收。
-- GitHub 私有仓库已启用仅 squash merge 和合并后删除分支；当前账户套餐不支持私有仓库分支保护，因此 PR 与三项必需 CI 暂由流程规范约束，仓库保持私有。
+- GitHub 仓库公开前已对工作树和可达历史执行 Gitleaks 8.30.1 扫描，结果为零告警；仓库已启用秘密扫描、推送保护和依赖漏洞告警。
+- GitHub 仓库仅允许 squash merge 并在合并后删除分支；`main` 强制 PR、三项 CI、线性历史、已解决讨论，并禁止强推和删除。
 
 本文件只保留到新仓库首个稳定基线完成。之后迁移证据应放入对应 GitHub Release，文件可删除或归档。
