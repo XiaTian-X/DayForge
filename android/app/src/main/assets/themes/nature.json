@@ -1,0 +1,8 @@
+{
+  "id": "nature",
+  "name": "Nature",
+  "seedColor": "#4CAF50",
+  "suitableForLight": true,
+  "suitableForDark": false,
+  "isDefault": true
+}

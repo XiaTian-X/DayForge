@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+scope="${1:-all}"
+
+case "$scope" in
+  all|root|android|backend) ;;
+  *)
+    echo "Usage: tools/verify [all|root|android|backend]" >&2
+    exit 2
+    ;;
+esac
+
+verify_root() {
+  git -C "$repo_root" diff --check
+  git -C "$repo_root" diff --cached --check
+
+  if git -C "$repo_root" ls-files \
+    | grep -Ev '(^|/)\.env\.example$' \
+    | grep -Eq '(^|/)(\.env($|\.)|local\.properties$|.*\.(jks|keystore)$|.*\.(db|sqlite|sqlite3)$|\.forgejo/)'; then
+    echo "Forbidden secret, runtime database, or legacy CI file is tracked." >&2
+    exit 1
+  fi
+}
+
+find_java_home() {
+  if [[ -n "${JAVA_HOME:-}" && -x "$JAVA_HOME/bin/java" ]]; then
+    printf '%s\n' "$JAVA_HOME"
+    return
+  fi
+
+  if command -v brew >/dev/null 2>&1; then
+    local brew_jdk
+    brew_jdk="$(brew --prefix openjdk@17 2>/dev/null || true)"
+    if [[ -x "$brew_jdk/libexec/openjdk.jdk/Contents/Home/bin/java" ]]; then
+      printf '%s\n' "$brew_jdk/libexec/openjdk.jdk/Contents/Home"
+      return
+    fi
+    if [[ -x "$brew_jdk/bin/java" ]]; then
+      printf '%s\n' "$brew_jdk"
+      return
+    fi
+  fi
+
+  if java_home="$(/usr/libexec/java_home -v 17 2>/dev/null)" && [[ -x "$java_home/bin/java" ]]; then
+    printf '%s\n' "$java_home"
+    return
+  fi
+
+  echo "JDK 17 not found. Set JAVA_HOME or install openjdk@17." >&2
+  exit 1
+}
+
+verify_android() {
+  local java_home
+  java_home="$(find_java_home)"
+  (
+    cd "$repo_root/android"
+    JAVA_HOME="$java_home" ./gradlew testDebugUnitTest lintDebug assembleDebug
+  )
+}
+
+verify_backend() {
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "uv is required. Install the version used by backend/Dockerfile." >&2
+    exit 1
+  fi
+  (
+    cd "$repo_root/backend"
+    uv sync --frozen
+    uv run pytest
+    uv run python scripts/export_openapi.py --check
+  )
+}
+
+verify_root
+case "$scope" in
+  all)
+    verify_backend
+    verify_android
+    ;;
+  backend) verify_backend ;;
+  android) verify_android ;;
+  root) ;;
+esac

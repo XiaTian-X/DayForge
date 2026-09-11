@@ -1,0 +1,29 @@
+services:
+  backend:
+    container_name: dayforge-backend
+    restart: unless-stopped
+    image: dayforge-backend:${TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${DAYFORGE_PORT:-8000}:8000"
+    environment:
+      - DATABASE_TYPE=sqlite
+      # Runtime data lives outside the image and must be backed up before upgrades.
+      - SQLITE_DB_PATH=/app/data/dayforge-v2.db
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:?Set JWT_SECRET_KEY before deployment}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:?Set ADMIN_USERNAME before deployment}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?Set ADMIN_PASSWORD before deployment}
+      - DEBUG=${DEBUG:-false}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - CORS_ORIGINS=${CORS_ORIGINS:-[]}
+    user: "${PUID:-1000}:${PGID:-1000}"
+    volumes:
+      - ${DAYFORGE_DATA_DIR:-./data}:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

@@ -1,0 +1,1075 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App -->
+    <string name="app_name">习以成常</string>
+
+    <!-- Widget Descriptions -->
+    <string name="checkin_widget_description">快速打卡习惯</string>
+    <string name="progress_widget_description">今日习惯进度</string>
+    <string name="motivation_widget_description">激励与连胜</string>
+    <string name="counting_widget_description">计数型习惯追踪</string>
+    <string name="timer_widget_description">计时型习惯追踪</string>
+    <string name="widget_focus_description">显示当前时间窗口的首要习惯</string>
+    <string name="widget_focus_empty_state">当前时间窗口无习惯</string>
+    <string name="widget_focus_starting_in">%s后开始</string>
+    <string name="widget_focus_window_passed">时间窗口已过</string>
+    <string name="widget_focus_waiting">等待中</string>
+    <string name="widget_focus_next">下一个: %s</string>
+    <string name="widget_focus_next_now">下一个: %s (现在)</string>
+    <string name="widget_focus_next_in">下一个: %s (%s后)</string>
+
+    <!-- Common Actions -->
+    <string name="action_save">保存</string>
+    <string name="action_cancel">取消</string>
+    <string name="action_delete">删除</string>
+    <string name="action_confirm">确认</string>
+    <string name="action_back">返回</string>
+    <string name="action_check_in">打卡</string>
+    <string name="action_export">导出</string>
+    <string name="action_import">导入</string>
+    <string name="action_done">完成</string>
+    <string name="action_close">关闭</string>
+    <string name="action_retry">重试</string>
+    <string name="action_continue">继续</string>
+    <string name="action_pause">暂停</string>
+    <string name="action_stop">停止</string>
+    <string name="action_resume">继续</string>
+    <string name="action_start_timer">开始计时</string>
+    <string name="action_record_metrics">记录指标</string>
+    <string name="action_continue_timer">继续计时</string>
+    <string name="action_discard">放弃</string>
+
+    <!-- Common Labels -->
+    <string name="common_loading">加载中…</string>
+    <string name="common_error">错误</string>
+    <string name="common_success">成功</string>
+    <string name="common_empty">暂无数据</string>
+    <string name="common_required">必填</string>
+    <string name="common_optional">选填</string>
+    <string name="common_enabled">已启用</string>
+    <string name="common_disabled">已禁用</string>
+    <string name="common_yes">是</string>
+    <string name="common_no">否</string>
+    <string name="common_ok">确定</string>
+
+    <!-- Dashboard -->
+    <string name="dashboard_tab_habits">习惯</string>
+    <string name="dashboard_tab_metrics">指标</string>
+    <string name="dashboard_empty_state">还没有习惯，创建一个开始吧！</string>
+    <string name="dashboard_empty_metrics">还没有指标，从习惯详情页创建一个吧。</string>
+    <string name="dashboard_fab_content_description">创建习惯</string>
+
+    <!-- Dashboard - FAB Menu -->
+    <string name="fab_menu_habit">习惯</string>
+    <string name="fab_menu_temp_task">临时任务</string>
+    <string name="fab_menu_content_desc">创建选项</string>
+
+    <string name="dashboard_empty_hint">点击 + 创建第一个习惯</string>
+
+    <!-- Dashboard - Focus Mode -->
+    <string name="dashboard_focus_mode_toggle">切换聚焦模式</string>
+    <string name="dashboard_focus_mode_content_desc">切换聚焦模式</string>
+    <string name="dashboard_slot_progress_format">第 %1$d 个/共 %2$d 个</string>
+
+    <!-- Dashboard - Filter Mode -->
+    <string name="dashboard_filter_content_desc">筛选习惯</string>
+    <string name="filter_mode_all">全部</string>
+    <string name="filter_mode_time_window">时间窗口</string>
+    <string name="filter_mode_checkable">可打卡</string>
+    <string name="filter_mode_terminated">已结束</string>
+
+    <!-- Kanban column headers (Phase 91) -->
+    <string name="kanban_column_pending">待完成</string>
+    <string name="kanban_column_completed">已完成</string>
+
+    <!-- Dashboard - Empty State for Filter Modes -->
+    <string name="dashboard_empty_all">还没有习惯，创建一个开始吧！</string>
+    <string name="dashboard_empty_all_hint">点击 + 创建第一个习惯</string>
+    <string name="dashboard_empty_time_window">没有设置执行时间的习惯</string>
+    <string name="dashboard_empty_time_window_hint">在习惯编辑页面设置最佳执行时间</string>
+    <string name="dashboard_empty_checkable">没有可打卡的习惯</string>
+    <string name="dashboard_empty_checkable_hint">所有习惯都已打卡完成</string>
+    <string name="dashboard_empty_terminated">没有已结束的习惯</string>
+    <string name="dashboard_empty_terminated_hint">没有周期目标完成或失败的习惯</string>
+
+    <!-- Kanban empty states (Phase 91) -->
+    <string name="dashboard_empty_completed">暂无已完成的打卡记录</string>
+    <string name="dashboard_empty_completed_hint">打卡后习惯会显示在这里</string>
+
+    <!-- Dashboard - Battery Optimization -->
+    <string name="dialog_battery_optimization_title">后台计时需要您的授权</string>
+    <string name="dialog_battery_optimization_message">为确保计时器在后台稳定运行，请关闭电池优化。\n\n操作方法：点击下方按钮，在系统设置中选择「不优化」或「允许后台活动」。</string>
+    <string name="dialog_battery_optimization_settings">去设置</string>
+    <string name="dialog_battery_optimization_later">稍后再说</string>
+    <string name="dialog_settings_unavailable">无法打开设置</string>
+    <string name="dialog_notification_permission_denied">通知权限被拒绝，计时器通知可能无法显示</string>
+
+    <!-- Dashboard - Multi-Timer -->
+    <string name="dialog_multi_timer_title">已有计时正在进行</string>
+    <string name="dialog_multi_timer_message">已有计时正在进行，是否停止并开始新计时？</string>
+
+    <!-- Settings -->
+    <string name="settings_title">设置</string>
+    <string name="settings_sync_section">数据同步</string>
+    <string name="settings_account_section">账户管理</string>
+    <string name="settings_config_section">配置管理</string>
+    <string name="settings_language_section">语言设置</string>
+    <string name="settings_about_section">关于</string>
+    <string name="settings_server_address">服务器地址</string>
+    <string name="settings_server_address_hint">IP:端口 或 网址</string>
+    <string name="settings_token_validity">Token 有效期</string>
+    <string name="settings_token_validity_days">天</string>
+    <string name="settings_export_config">导出配置</string>
+    <string name="settings_import_config">导入配置</string>
+    <string name="settings_logout">退出登录</string>
+    <string name="settings_login">登录</string>
+    <string name="settings_admin_dashboard">管理后台</string>
+    <string name="settings_version">版本</string>
+    <string name="settings_language">语言</string>
+    <string name="settings_language_system">跟随系统</string>
+    <string name="settings_language_chinese">中文</string>
+    <string name="settings_language_english">English</string>
+
+    <!-- Theme -->
+    <string name="settings_theme_section">主题</string>
+    <string name="settings_theme">主题模式</string>
+    <string name="settings_theme_light">浅色</string>
+    <string name="settings_theme_dark">深色</string>
+    <string name="settings_theme_system">跟随系统</string>
+
+    <!-- Color Theme -->
+    <string name="color_theme_title">颜色主题</string>
+    <string name="color_theme_name_ocean">海洋</string>
+    <string name="color_theme_name_nature">自然</string>
+    <string name="color_theme_name_vibrant">活力</string>
+    <string name="color_theme_manage_custom">管理自定义主题</string>
+    <string name="color_theme_create">创建主题</string>
+    <string name="color_theme_edit">编辑主题</string>
+    <string name="color_theme_delete">删除主题</string>
+    <string name="color_theme_name_label">主题名称</string>
+    <string name="color_theme_delete_confirm">确定删除主题"%s"吗？</string>
+
+    <!-- Global Color Theme Names (THEME-21) -->
+    <string name="theme_name_ocean">海洋</string>
+    <string name="theme_name_nature">自然</string>
+    <string name="theme_name_vibrant">活力</string>
+    <string name="theme_name_dusk">暮霭</string>
+    <string name="theme_name_forest">深林</string>
+    <string name="theme_name_coral">珊瑚</string>
+    <string name="theme_name_oled">纯黑</string>
+
+    <!-- Theme Selection UI Strings (THEME-22) -->
+    <string name="settings_light_theme">浅色模式主题</string>
+    <string name="settings_dark_theme">深色模式主题</string>
+
+    <!-- Theme Import/Export -->
+    <string name="theme_import">导入主题</string>
+    <string name="theme_export">导出主题</string>
+    <string name="theme_delete">删除主题</string>
+    <string name="theme_custom">自定义</string>
+    <string name="theme_preset">预设</string>
+    <string name="theme_importing">正在导入主题…</string>
+    <string name="theme_import_success">主题导入成功</string>
+    <string name="theme_import_success_message">主题"%s"已成功导入。</string>
+    <string name="theme_import_error">导入失败</string>
+    <string name="theme_error_invalid_seed_color">无效的种子颜色格式：%s。应为 #RRGGBB</string>
+    <string name="theme_error_no_mode">主题必须至少适用于一种模式（浅色或深色）</string>
+    <string name="theme_error_invalid_colors">无效的颜色格式：%s</string>
+    <string name="theme_error_save_failed">保存主题失败</string>
+    <string name="theme_error_invalid_json">无效的JSON格式：%s</string>
+    <string name="theme_error_cannot_delete_preset">无法删除预设主题</string>
+    <string name="theme_exporting">正在导出主题…</string>
+    <string name="theme_export_success">主题导出成功</string>
+    <string name="theme_export_error">导出失败</string>
+    <string name="theme_delete_success">主题已删除</string>
+    <string name="theme_delete_error">删除失败</string>
+    <string name="theme_export_options_hint">选择导出格式：</string>
+    <string name="theme_export_original">导出原始配置</string>
+    <string name="theme_export_original_hint">最小字段，适合分享</string>
+    <string name="theme_export_template">导出完整模板</string>
+    <string name="theme_export_template_hint">包含全部25个颜色字段，用于完全自定义</string>
+
+    <!-- Permission Section -->
+    <string name="settings_permission_section">权限</string>
+    <string name="settings_permission">权限管理</string>
+    <string name="settings_permission_hint">管理通知和应用权限</string>
+
+    <!-- Permission Screen -->
+    <string name="permission_screen_title">权限管理</string>
+    <string name="permission_section_title">应用权限</string>
+    <string name="permission_notification_title">通知权限</string>
+    <string name="permission_notification_desc">用于计时器通知和提醒</string>
+    <string name="permission_status_granted">已授权</string>
+    <string name="permission_status_denied">未授权</string>
+    <string name="permission_status_not_required">已自动授权</string>
+    <string name="permission_status_not_required_reason">(Android 12 及以下)</string>
+    <string name="permission_request">请求权限</string>
+    <string name="permission_open_settings">打开设置</string>
+    <string name="permission_exact_alarm_title">精确闹钟</string>
+    <string name="permission_exact_alarm_desc">用于FocusWidget精准刷新。如未授权，刷新可能延迟最多1分钟。</string>
+    <string name="permission_reminder_title">习惯提醒</string>
+    <string name="permission_reminder_desc">用于在习惯预定时间发送提醒通知</string>
+
+    <!-- Notification Channel: Habit Reminders -->
+    <string name="notification_channel_habit_reminders">习惯提醒</string>
+    <string name="notification_channel_habit_reminders_desc">习惯打卡提醒通知</string>
+    <string name="notification_scheduled_time">预定时间: %s</string>
+    <string name="notification_slot_progress">第%d次/共%d次 (已完成%d次)</string>
+
+    <!-- Habit Card Status -->
+    <string name="habit_card_status_completed">已完成</string>
+    <string name="habit_card_status_failed">失败</string>
+    <string name="habit_card_status_inactive">未激活</string>
+    <string name="habit_card_status_goal">目标</string>
+    <string name="habit_card_status_non_checkin_day">非打卡日</string>
+    <string name="habit_card_status_countdown">倒计时</string>
+    <string name="habit_card_status_count_mode">计数模式</string>
+    <string name="habit_card_no_checkin_today">今日无需打卡</string>
+    <string name="habit_card_parent">父习惯</string>
+    <string name="habit_card_children">子习惯</string>
+    <string name="habit_card_status_countdown_counting">倒计数</string>
+    <string name="habit_card_status_success">成功</string>
+    <string name="habit_card_no_children">无子习惯</string>
+    <string name="habit_card_no_checkin_today_chip">今日无需打卡</string>
+
+    <!-- Edit Habit -->
+    <string name="edit_habit_title">编辑习惯</string>
+    <string name="create_habit_title">创建习惯</string>
+    <string name="edit_habit_name_label">名称</string>
+    <string name="edit_habit_name_hint">输入习惯名称</string>
+    <string name="edit_habit_description_label">描述</string>
+    <string name="edit_habit_icon_label">图标</string>
+    <string name="edit_habit_color_label">颜色</string>
+    <string name="edit_habit_frequency_label">频率</string>
+    <string name="edit_habit_type_label">类型</string>
+    <string name="edit_habit_type_checkin">打卡型</string>
+    <string name="edit_habit_type_timer">计时型</string>
+    <string name="edit_habit_type_counting">计数型</string>
+    <string name="edit_habit_target_label">目标</string>
+    <string name="edit_habit_target_hint">输入目标值</string>
+    <string name="edit_habit_parent_label">父习惯</string>
+    <string name="edit_habit_parent_none">无</string>
+    <string name="edit_habit_metric_label">关联指标</string>
+    <string name="edit_habit_delete">删除习惯</string>
+    <string name="edit_habit_activate">激活</string>
+    <string name="edit_habit_deactivate">停用</string>
+    <!-- Additional Edit/Create Habit strings -->
+    <string name="edit_habit_add_key_result">添加关键结果</string>
+    <string name="edit_habit_mode_timer">计时模式</string>
+    <string name="edit_habit_mode_counting">计数模式</string>
+    <string name="edit_habit_countup">正计时</string>
+    <string name="edit_habit_countdown">倒计时</string>
+    <string name="edit_habit_countup_counting">正计数</string>
+    <string name="edit_habit_countdown_counting">倒计数</string>
+    <string name="edit_habit_checkin_days">打卡星期</string>
+    <string name="edit_habit_day_mon">周一</string>
+    <string name="edit_habit_day_tue">周二</string>
+    <string name="edit_habit_day_wed">周三</string>
+    <string name="edit_habit_day_thu">周四</string>
+    <string name="edit_habit_day_fri">周五</string>
+    <string name="edit_habit_day_sat">周六</string>
+    <string name="edit_habit_day_sun">周日</string>
+    <string name="edit_habit_target_optional">目标次数 (可选)</string>
+    <string name="edit_habit_target_no_modify">已有打卡记录，不可修改</string>
+    <string name="edit_habit_target_unlimited">留空表示无限循环</string>
+    <string name="edit_habit_failure_mode">失败判定</string>
+    <string name="edit_habit_strict_mode">严格模式</string>
+    <string name="edit_habit_relaxed_mode">宽松模式</string>
+    <string name="edit_habit_strict_mode_desc">断签即失败：错过任意打卡日即判定失败</string>
+    <string name="edit_habit_relaxed_mode_desc">宽松模式：只需完成目标次数，无时间限制</string>
+    <string name="edit_habit_linked_metric_optional">关联指标（可选）</string>
+    <string name="edit_habit_linked_metric_hint">选中的指标将在习惯详情中显示，打卡后可记录数值</string>
+    <string name="edit_habit_selected_metrics_count">已选择 %d 个指标</string>
+    <string name="edit_habit_no_metrics_available">暂无可用指标</string>
+    <string name="edit_habit_select_days_optional">选择星期几（可选）</string>
+    <string name="edit_habit_select_days_hint">不选择则保持原每周打卡逻辑</string>
+    <!-- Dialogs -->
+    <string name="dialog_cannot_save">无法保存</string>
+    <string name="dialog_duplicate_habit_name">已存在同名习惯，请修改</string>
+    <string name="dialog_cannot_change_mode">无法更改模式</string>
+    <string name="dialog_timer_running_message">计时进行中，无法更改模式。请先结束计时。</string>
+    <string name="dialog_target_empty_title">目标值为空</string>
+    <string name="dialog_target_empty_message">目标值将设置为默认值 1，是否继续？</string>
+    <string name="dialog_value_empty_title">值为空</string>
+    <string name="dialog_value_empty_message">值将设置为默认值 1，是否继续？</string>
+    <string name="dialog_cannot_create">无法创建</string>
+    <string name="dialog_duplicate_metric_name">已存在同名指标，请修改</string>
+    <string name="dialog_cannot_save_title">无法保存</string>
+
+    <!-- Frequency Types -->
+    <string name="frequency_daily">每天</string>
+    <string name="frequency_weekly">每周</string>
+    <string name="frequency_monthly">每月</string>
+    <string name="frequency_custom">自定义</string>
+    <string name="frequency_days">天</string>
+
+    <!-- Edit Metric -->
+    <string name="edit_metric_title">编辑指标</string>
+    <string name="create_metric_title">创建指标</string>
+    <string name="edit_metric_name_label">名称</string>
+    <string name="edit_metric_name_hint">输入指标名称</string>
+    <string name="edit_metric_unit_label">单位</string>
+    <string name="edit_metric_unit_hint">如：次、分钟</string>
+    <string name="edit_metric_delete">删除指标</string>
+    <string name="edit_metric_linked_habits">关联习惯</string>
+    <string name="edit_metric_no_linked_habits">无关联习惯</string>
+
+    <!-- Edit Goal -->
+    <string name="edit_goal_title">编辑目标</string>
+    <string name="create_goal_title">创建目标</string>
+    <string name="create_goal_section_info">目标信息</string>
+    <string name="create_goal_target_cycles_label">目标周期数（可选）</string>
+    <string name="create_goal_target_cycles_hint">留空表示无限期追踪</string>
+    <string name="create_goal_key_results_section">关键结果</string>
+    <string name="create_goal_key_results_count">%1$d 个</string>
+    <string name="create_goal_no_key_results">暂无关键结果</string>
+    <string name="create_goal_add_key_results_hint">点击上方按钮添加关键结果</string>
+    <string name="create_goal_btn_create">创建目标</string>
+    <string name="create_goal_error_title">错误</string>
+    <string name="goal_type_label">目标</string>
+    <string name="edit_goal_target_label">目标值</string>
+    <string name="edit_goal_target_format">目标：%1$s</string>
+    <string name="edit_goal_period_label">周期</string>
+    <string name="edit_goal_period_daily">每天</string>
+    <string name="edit_goal_period_weekly">每周</string>
+    <string name="edit_goal_period_monthly">每月</string>
+    <string name="edit_goal_delete">删除目标</string>
+    <string name="goal_not_found">目标不存在</string>
+    <string name="goal_delete_failed">删除失败：%1$s</string>
+    <string name="goal_delete_confirm_title">确认删除</string>
+    <string name="goal_delete_confirm_message">确定要删除目标「%1$s」吗？子习惯将变为独立习惯。</string>
+
+    <!-- Login -->
+    <string name="login_title">登录</string>
+    <string name="login_username_label">用户名</string>
+    <string name="login_username_hint">输入用户名</string>
+    <string name="login_password_label">密码</string>
+    <string name="login_password_hint">输入密码</string>
+    <string name="login_button">登录</string>
+    <string name="login_custom_server">自定义服务器</string>
+    <string name="login_skip">跳过</string>
+    <string name="login_content_description_back">返回</string>
+    <string name="login_content_description_hide_password">隐藏密码</string>
+    <string name="login_content_description_show_password">显示密码</string>
+    <string name="login_content_description_expand">展开</string>
+    <string name="login_content_description_collapse">收起</string>
+    <string name="login_app_title">习以成常</string>
+    <string name="login_admin_managed_hint">账户由 DayForge 服务器管理员创建和管理。</string>
+    <string name="login_username">用户名</string>
+    <string name="login_server_settings">服务器设置</string>
+    <string name="login_server_address_label">服务器地址</string>
+    <string name="login_remote_server_address_label">外网 HTTPS 地址（可选）</string>
+    <string name="login_remote_server_address_hint">移动数据或局域网服务器不可达时使用</string>
+    <string name="login_server_address_hint">IP:端口 或 网址（留空使用默认）</string>
+    <string name="login_server_http_warning">HTTP 不加密，请仅在可信家庭局域网内使用；远程访问请优先配置 HTTPS。</string>
+    <string name="login_reset_default">恢复默认</string>
+    <string name="login_save">保存</string>
+    <string name="login_sync_data_title">同步数据？</string>
+    <string name="login_sync_data_message">是否上传本地修改，并从服务器下载最新数据？</string>
+    <string name="login_sync_data_hint">您可以稍后在设置中手动同步</string>
+    <string name="login_sync_button">同步</string>
+    <string name="login_sync_failed">同步失败：%1$s。您可以重试，或跳过后稍后在设置中同步。</string>
+    <string name="login_local_data_title">发现本地数据</string>
+    <string name="login_local_data_unowned_message">此设备上有尚未归属账户的数据。您可以将其合并到 %1$s、明确丢弃，或取消登录。</string>
+    <string name="login_local_data_other_account_message">此设备上有属于另一个账户的未同步数据，不能合并到当前账户。仅在确认不再需要时丢弃，或取消登录。</string>
+    <string name="login_local_data_merge">合并到当前账户</string>
+    <string name="login_local_data_discard">丢弃本地数据</string>
+    <!-- Login errors -->
+    <string name="login_error_enter_username">请输入用户名</string>
+    <string name="login_error_enter_password">请输入密码</string>
+    <string name="login_error_wrong_credentials">用户名或密码错误</string>
+    <string name="login_error_user_not_found">用户不存在</string>
+    <string name="login_error_network">网络连接失败，请检查网络</string>
+    <string name="login_error_unknown">登录失败：%1$s</string>
+    <string name="register_error_unknown">注册失败：%1$s</string>
+    <string name="server_error_invalid_address">请输入有效的地址（如 192.168.1.1:8080 或 api.example.com）</string>
+
+    <!-- Dialogs -->
+    <string name="dialog_delete_title">确认删除？</string>
+    <string name="dialog_delete_message">此操作无法撤销。</string>
+    <string name="dialog_delete_habit_message">删除此习惯？所有历史记录将丢失。</string>
+    <string name="dialog_delete_metric_message">删除此指标？关联的习惯数据将保留。</string>
+    <string name="dialog_reactivate_title">重新激活？</string>
+    <string name="dialog_reactivate_message">重新激活此习惯？</string>
+    <string name="dialog_error_save_title">无法保存</string>
+    <string name="dialog_error_target_empty">目标值为空</string>
+    <string name="dialog_error_name_empty">名称不能为空</string>
+    <string name="dialog_export_title">导出配置</string>
+    <string name="dialog_export_message">导出所有习惯、指标和目标？</string>
+    <string name="dialog_import_title">导入配置</string>
+    <string name="dialog_import_message">这将替换当前所有数据，确定继续？</string>
+
+    <!-- Timer Dialogs -->
+    <string name="dialog_timer_switch_message">「%1$s」正在计时中\n是否停止并开始「%2$s」的计时？</string>
+    <string name="dialog_timer_switch_fallback">已有计时正在进行，是否停止并开始新计时？</string>
+    <string name="dialog_discard_title">计时未达标</string>
+    <string name="dialog_discard_countdown_remaining">还剩 %02d:%02d，是否放弃本次计时？</string>
+    <string name="dialog_discard_countdown_fallback">是否放弃本次计时？</string>
+    <string name="dialog_discard_countup_elapsed">已计时 %02d:%02d，未达目标 %d分钟，是否放弃本次计时？</string>
+
+    <!-- Reactivation -->
+    <string name="dialog_reactivate_failed_title">重新激活习惯</string>
+    <string name="dialog_reactivate_completed_title">习惯已完成</string>
+    <string name="dialog_reactivate_failed_message">「%1$s」已失败\n\n重新激活将清空所有历史记录，重新开始追踪。</string>
+    <string name="dialog_reactivate_completed_message">「%1$s」已完成目标\n\n重新激活将清空所有历史记录，重新开始追踪。</string>
+    <string name="toast_reactivate_success">习惯已重新激活</string>
+    <string name="toast_reactivate_error">重新激活失败，请检查网络连接</string>
+    <string name="default_habit_name">习惯</string>
+
+    <!-- Timer Display Formats -->
+    <string name="timer_remaining_format">还剩 %02d:%02d / %3$d 分钟</string>
+    <string name="timer_elapsed_format">已计时 %02d:%02d / %3$d 分钟</string>
+    <string name="timer_remaining_paused_format">还剩 %02d:%02d / %3$d 分钟 (已暂停)</string>
+    <string name="timer_elapsed_paused_format">已计时 %02d:%02d / %3$d 分钟 (已暂停)</string>
+    <string name="timer_target_format">目标 %1$d 分钟</string>
+    <string name="timer_countdown_remaining">还剩 %1$d</string>
+    <string name="timer_countup_progress">%1$d/%2$d</string>
+
+    <!-- Component Progress -->
+    <string name="component_goal_day_progress">第 %1$d 天 / 共 %2$d 天</string>
+    <string name="component_children_completed">%1$d/%2$d 已完成</string>
+
+    <!-- Status Labels -->
+    <string name="status_goal_completed">目标已完成</string>
+    <string name="status_already_failed">已失败</string>
+
+    <!-- Next Check-in Hints -->
+    <string name="next_checkin_tomorrow">下一个打卡日：明天</string>
+    <string name="next_checkin_days">下一个打卡日：%1$d 天后</string>
+    <string name="next_checkin_date">下一个打卡日：%1$d/%2$d</string>
+
+    <!-- Timer Notifications -->
+    <string name="timer_notification_target_reached_title">计时目标达成</string>
+    <string name="timer_notification_target_reached_text">已达到今日目标时长！</string>
+    <string name="timer_notification_threshold_reached_title">计时限制达成</string>
+    <string name="timer_notification_threshold_reached_text">已达到时间限制！</string>
+    <string name="timer_notification_countdown_complete_title">倒计时完成</string>
+    <string name="timer_notification_countdown_complete_text">倒计时结束！</string>
+    <string name="timer_notification_running">计时进行中</string>
+    <string name="timer_notification_paused">计时已暂停</string>
+
+    <!-- Widget -->
+    <string name="widget_configure_title">配置小部件</string>
+    <string name="widget_select_habit">选择习惯</string>
+    <string name="widget_empty_habits">没有可配置的习惯</string>
+    <string name="widget_add_widget">添加小部件</string>
+
+    <!-- Widget Config Activities -->
+    <string name="widget_checkin_select_title">选择打卡习惯</string>
+    <string name="widget_counting_select_title">选择计数型习惯</string>
+    <string name="widget_timer_select_title">选择计时习惯</string>
+    <string name="widget_timer_start">启动计时</string>
+    <string name="widget_empty_checkin">暂无打卡型习惯</string>
+    <string name="widget_empty_counting">暂无计数型习惯</string>
+    <string name="widget_empty_timer">暂无计时型习惯</string>
+    <string name="widget_empty_checkin_hint">计数型习惯请使用 2x2 小组件</string>
+    <string name="widget_empty_counting_hint">请先在应用中创建计数型习惯</string>
+    <string name="widget_empty_timer_hint">请先在应用中创建计时型习惯</string>
+    <string name="widget_configuring">正在配置：%1$s</string>
+    <string name="widget_target_minutes">目标：%1$d 分钟</string>
+    <string name="widget_target_count">目标：%1$d</string>
+
+    <!-- Sync -->
+    <string name="sync_success">同步成功</string>
+    <string name="sync_error">同步失败</string>
+    <string name="sync_in_progress">同步中…</string>
+    <string name="sync_last_time">上次同步：%1$s</string>
+    <string name="sync_current_endpoint">当前入口：%1$s</string>
+    <string name="sync_never">从未同步</string>
+    <string name="sync_now_button">立即同步</string>
+    <string name="sync_need_login">需要登录</string>
+    <string name="sync_need_network">需要网络连接</string>
+    <string name="sync_downloading">下载服务器数据…</string>
+    <string name="sync_uploading_changes">上传修改… %1$d/%2$d</string>
+    <string name="sync_recovering">正在修复本地同步数据…</string>
+    <string name="sync_rejected_count">%1$d 条同步问题需要处理</string>
+    <string name="sync_rejected_title">同步问题</string>
+    <string name="sync_conflict_item">%1$s · %2$s 发生冲突</string>
+    <string name="sync_conflict_default_message">本地修改与服务器版本修改了相同内容</string>
+    <string name="sync_conflict_fields">冲突字段：%1$s</string>
+    <string name="sync_conflict_use_server">采用服务器版本</string>
+    <string name="sync_conflict_use_local">采用本地版本并重试</string>
+    <string name="sync_rejected_unknown_error">服务器拒绝了此修改。</string>
+    <string name="sync_rejected_timer_command">计时命令 %1$s · %2$s</string>
+    <string name="sync_rejected_timer_use_server">使用服务器状态</string>
+    <string name="sync_rejected_timer_cancel_title">按服务器状态解决？</string>
+    <string name="sync_rejected_timer_cancel_message">如果服务器上的该计时仍由本设备控制，会先取消服务器计时；随后清除被拒绝的本地计时记录，或用服务器已经完成的记录替换它。此操作无法撤销。</string>
+    <string name="sync_rejected_timer_cancel_confirm">解决并同步</string>
+    <string name="sync_rejected_retry">重试</string>
+    <string name="sync_rejected_discard">放弃</string>
+    <string name="sync_rejected_discard_title">放弃这条修改？</string>
+    <string name="sync_rejected_discard_message">这会永久移除待同步记录，但不会删除当前本地数据。</string>
+    <string name="sync_in_progress_status">同步中…</string>
+
+    <!-- Account Status -->
+    <string name="account_logged_in">已登录</string>
+    <string name="account_not_logged">未登录</string>
+
+    <!-- Logout Dialog -->
+    <string name="logout_confirm_title">退出登录</string>
+    <string name="logout_confirm_sync_message">是否同步数据后再退出？</string>
+    <string name="logout_confirm_direct_message">确定退出登录吗？本地数据将被清除</string>
+    <string name="logout_sync_then_logout">同步后退出</string>
+    <string name="logout_direct">直接退出</string>
+
+    <!-- Active Timer Dialog -->
+    <string name="timer_active_dialog_title">计时器运行中</string>
+    <string name="timer_active_dialog_habit_running">习惯「%1$s」正在计时</string>
+    <string name="timer_active_dialog_elapsed">已计时 %1$s</string>
+    <string name="timer_active_dialog_complete_first">请先完成或停止计时后再继续</string>
+
+    <!-- Config Management -->
+    <string name="config_export_hint">导出配置为JSON文件，可分享到其他设备导入</string>
+
+    <!-- Export Dialog -->
+    <string name="export_progress_title">导出中</string>
+    <string name="export_progress_message">正在导出配置…</string>
+    <string name="export_success_title">导出成功</string>
+    <string name="export_success_saved_to">配置已保存到：</string>
+
+    <!-- Import Dialog -->
+    <string name="import_progress_title">导入中</string>
+    <string name="import_progress_message">正在导入配置…</string>
+    <string name="import_confirm_title">确认导入</string>
+    <string name="import_confirm_delete_section">将删除本地数据：</string>
+    <string name="import_confirm_import_section">将导入新配置：</string>
+    <string name="import_confirm_warning">此操作不可撤销！</string>
+    <string name="import_confirm_button">确定导入</string>
+    <string name="import_success_title">导入成功</string>
+    <string name="import_success_message">配置已成功导入。</string>
+    <string name="import_success_sync_hint">如需同步到服务器，请手动触发同步。</string>
+    <string name="import_error_hint">本地数据未被修改。</string>
+    <string name="import_item_habits">%1$d 个习惯</string>
+    <string name="import_item_metrics">%1$d 个指标</string>
+    <string name="import_item_links">%1$d 个关联</string>
+    <string name="import_item_completions">%1$d 条打卡记录</string>
+    <string name="import_item_timelogs">%1$d 条计时记录</string>
+    <string name="import_item_metriclogs">%1$d 条指标记录</string>
+
+    <!-- Counting Input Dialog -->
+
+    <!-- Goal Completion Dialog -->
+    <string name="dialog_goal_complete_title">目标完成！</string>
+    <string name="dialog_goal_complete_title_accessibility">目标完成</string>
+    <string name="dialog_goal_complete_message">「%1$s」已完成 %2$d/%3$d 次打卡</string>
+    <string name="dialog_goal_complete_hint">确认完成后，习惯将设为非活跃状态。</string>
+    <string name="action_confirm_complete">确认完成</string>
+    <string name="action_continue_checkin">继续打卡</string>
+
+    <!-- Export/Import -->
+    <string name="export_success">导出成功</string>
+    <string name="export_error">导出失败</string>
+    <string name="import_success">导入成功</string>
+    <string name="import_error">导入失败</string>
+    <string name="import_invalid_format">文件格式无效</string>
+
+    <!-- MainActivity Tabs -->
+    <string name="tab_nested">层级</string>
+    <string name="tab_profile">我的</string>
+    <string name="toast_press_again_exit">再按一次退出应用</string>
+
+    <!-- Habit Detail -->
+    <string name="habit_detail_title">习惯详情</string>
+    <string name="habit_detail_history">历史记录</string>
+    <string name="habit_detail_statistics">统计</string>
+    <string name="habit_detail_streak">连续天数</string>
+    <string name="habit_detail_total_checkins">总打卡次数</string>
+    <string name="habit_detail_completion_rate">完成率</string>
+    <string name="habit_detail_active_days">活跃天数</string>
+    <string name="habit_detail_this_week">本周</string>
+    <string name="habit_detail_this_month">本月</string>
+    <string name="habit_detail_active_status">活跃状态</string>
+    <string name="habit_detail_completion_history">完成历史</string>
+    <string name="habit_detail_metrics_section">指标</string>
+    <string name="habit_detail_metric_tracked_days">已追踪 %d 天</string>
+    <string name="habit_detail_metric_progress">%1$d/%2$d 天 (%3$d%%)</string>
+    <string name="habit_detail_metric_current_value">当前: %1$s %2$s</string>
+
+    <!-- Content Descriptions -->
+    <string name="content_description_back">返回</string>
+    <string name="content_description_edit">编辑</string>
+    <string name="content_description_options">选项</string>
+    <string name="content_description_collapse">收起</string>
+    <string name="content_description_expand">展开</string>
+
+    <!-- Reactivation Dialog (parameterized) -->
+    <string name="dialog_reactivate_habit_message">重新激活习惯「%1$s」将清空所有历史记录。此操作无法撤销。</string>
+    <string name="dialog_reactivate_confirm">确认激活</string>
+
+    <!-- Time Units -->
+    <string name="time_minutes">分钟</string>
+    <string name="time_hours">小时</string>
+    <string name="time_seconds">秒</string>
+
+    <!-- Metric Units -->
+    <string name="metric_unit_times">次</string>
+    <string name="metric_unit_minutes">分钟</string>
+    <string name="metric_unit_hours">小时</string>
+    <string name="metric_unit_steps">步</string>
+    <string name="metric_unit_ml">毫升</string>
+    <string name="metric_unit_km">公里</string>
+
+    <!-- Countdown -->
+    <string name="countdown_discard_title">放弃倒计时？</string>
+    <string name="countdown_discard_message">倒计时仍在进行，确定放弃吗？</string>
+    <string name="countdown_complete_title">倒计时完成！</string>
+    <string name="countdown_time_left">剩余时间：%1$s</string>
+
+    <!-- Reactivation -->
+    <string name="reactivation_title">重新激活习惯</string>
+    <string name="reactivation_message">此习惯已停用，是否重新激活？</string>
+
+    <!-- Format Strings -->
+    <string name="format_days">%1$d 天</string>
+    <string name="format_times">%1$d 次</string>
+    <string name="format_streak">🔥 连续 %1$d 天</string>
+    <string name="format_progress">%1$d / %2$d</string>
+    <string name="format_percentage">%1$d%%</string>
+
+    <!-- Plurals -->
+    <plurals name="days_count">
+        <item quantity="one">1 天</item>
+        <item quantity="other">%d 天</item>
+    </plurals>
+
+    <plurals name="times_count">
+        <item quantity="one">1 次</item>
+        <item quantity="other">%d 次</item>
+    </plurals>
+
+    <plurals name="habits_count">
+        <item quantity="one">1 个习惯</item>
+        <item quantity="other">%d 个习惯</item>
+    </plurals>
+
+    <plurals name="minutes_count">
+        <item quantity="one">1 分钟</item>
+        <item quantity="other">%d 分钟</item>
+    </plurals>
+
+    <plurals name="hours_count">
+        <item quantity="one">1 小时</item>
+        <item quantity="other">%d 小时</item>
+    </plurals>
+
+    <!-- Widget States -->
+    <string name="widget_configure_first">请先配置小组件</string>
+    <string name="widget_habit_deleted">习惯已删除\n点击重新配置</string>
+    <string name="widget_today_progress">今日进度</string>
+    <string name="widget_best_streak">最佳：%1$d 天</string>
+    <string name="widget_today_status">%1$d / %2$d 今日</string>
+    <string name="widget_record">记录</string>
+    <string name="widget_start">开始</string>
+    <string name="widget_paused">(已暂停)</string>
+    <string name="widget_target_minutes_format">目标 %1$d 分钟</string>
+    <string name="widget_remaining_time_format">还剩 %1$02d:%2$02d</string>
+    <string name="widget_elapsed_time_format">%1$02d:%2$02d / %3$d 分钟</string>
+    <string name="widget_remaining_simple">还剩 %1$02d:%2$02d</string>
+
+    <!-- Widget Status Labels -->
+    <string name="widget_status_failed">失败</string>
+    <string name="widget_status_completed">完成</string>
+    <string name="widget_status_non_checkin">非打卡日</string>
+    <string name="widget_status_countdown_mode">倒计时</string>
+    <string name="widget_status_countdown_counting_mode">倒计数</string>
+
+    <!-- Motivation Messages -->
+    <string name="motivation_start_1">开始你的习惯之旅！</string>
+    <string name="motivation_start_2">每一天都是新的开始</string>
+    <string name="motivation_3days_1">很好的开始！</string>
+    <string name="motivation_3days_2">坚持下去！</string>
+    <string name="motivation_5days_1">太棒了！</string>
+    <string name="motivation_5days_2">你做得很好！</string>
+    <string name="motivation_7days_1">一周达成！</string>
+    <string name="motivation_7days_2">你已经坚持一周了！</string>
+    <string name="motivation_14days_1">两周达成！</string>
+    <string name="motivation_14days_2">习惯正在养成</string>
+    <string name="motivation_30days_1">一个月达成！</string>
+    <string name="motivation_30days_2">你已经是个习惯达人了！</string>
+    <string name="motivation_default">坚持就是胜利！</string>
+
+    <!-- Target Progress -->
+    <string name="target_completed_format">已完成 %1$d</string>
+    <string name="target_label_format">目标：%1$d</string>
+
+    <!-- Linked Metrics -->
+    <string name="linked_metrics_title">关联指标</string>
+
+    <!-- Post Check-in Dialog -->
+    <string name="post_checkin_title">记录关联指标</string>
+    <string name="post_checkin_message">「%1$s」已打卡，是否记录关联指标？</string>
+    <string name="post_checkin_dont_ask_again">不再询问</string>
+    <string name="post_checkin_record">记录</string>
+    <string name="post_checkin_skip">跳过</string>
+
+    <!-- Unit Picker -->
+    <string name="unit_cat_weight">重量</string>
+    <string name="unit_cat_money">金额</string>
+    <string name="unit_cat_time">时间</string>
+    <string name="unit_cat_count">计数</string>
+    <string name="unit_jin">斤</string>
+    <string name="unit_wan">万</string>
+    <string name="unit_steps">步</string>
+    <string name="unit_pages">页</string>
+    <string name="unit_times">次</string>
+
+    <!-- Child Habit Row -->
+    <string name="child_habit_more_options">更多选项</string>
+    <string name="child_habit_edit">编辑</string>
+    <string name="child_habit_delete">删除</string>
+
+    <!-- Profile Screen -->
+    <string name="profile_loading">加载中...</string>
+    <string name="profile_today_progress">今日进度</string>
+    <string name="profile_completed_format">%1$d/%2$d 已完成</string>
+    <string name="profile_settings">设置</string>
+    <string name="profile_enter">进入</string>
+
+    <!-- Time Format -->
+    <string name="time_just_now">刚刚</string>
+    <string name="time_minutes_ago">%1$d 分钟前</string>
+    <string name="time_hours_ago">%1$d 小时前</string>
+    <string name="time_days_ago">%1$d 天前</string>
+    <string name="time_never">从未</string>
+
+    <!-- Toast Messages -->
+    <string name="toast_habit_completed">习惯已完成</string>
+    <string name="toast_goal_habit_cannot_deactivate">有目标的习惯进行中不能设为非活跃</string>
+    <string name="toast_habit_reactivated">习惯已重新激活，历史记录已清空</string>
+    <string name="toast_clear_history_failed">清空历史失败，请检查网络连接</string>
+    <string name="toast_duplicate_habit_name">已存在同名习惯，请修改</string>
+    <string name="dialog_duplicate_habit_message">已存在同名习惯，请修改</string>
+    <string name="toast_metric_not_found">指标不存在</string>
+    <string name="toast_save_failed">保存失败：%1$s</string>
+    <string name="toast_notification_permission_denied">通知权限被拒绝，计时器通知可能无法显示</string>
+
+    <!-- Timer Service Notification -->
+    <string name="timer_notification_title_running">计时中</string>
+    <string name="timer_notification_title_paused">已暂停</string>
+    <string name="timer_notification_remaining_format">还剩 %1$02d:%2$02d / %3$d 分钟目标</string>
+    <string name="timer_notification_elapsed_format">已计时 %1$02d:%2$02d / %3$d 分钟目标</string>
+    <string name="timer_btn_resume">继续</string>
+    <string name="timer_btn_pause">暂停</string>
+    <string name="timer_btn_stop">停止</string>
+
+    <!-- Completion Calendar -->
+    <string name="completion_calendar_title">完成历史</string>
+    <string name="calendar_month_format">%1$d月</string>
+    <string name="calendar_header_format">%1$d年%2$d月</string>
+    <string name="calendar_picker_year_format">%1$d年</string>
+    <string name="calendar_picker_month_format">%1$d月</string>
+    <string name="calendar_day_sun">日</string>
+    <string name="calendar_day_mon">一</string>
+    <string name="calendar_day_tue">二</string>
+    <string name="calendar_day_wed">三</string>
+    <string name="calendar_day_thu">四</string>
+    <string name="calendar_day_fri">五</string>
+    <string name="calendar_day_sat">六</string>
+    <string name="calendar_prev_month">上月</string>
+    <string name="calendar_next_month">下月</string>
+    <string name="calendar_select_date">选择日期</string>
+    <string name="calendar_year_label">年</string>
+    <string name="calendar_month_label">月</string>
+    <string name="calendar_january">一月</string>
+    <string name="calendar_february">二月</string>
+    <string name="calendar_march">三月</string>
+    <string name="calendar_april">四月</string>
+    <string name="calendar_may">五月</string>
+    <string name="calendar_june">六月</string>
+    <string name="calendar_july">七月</string>
+    <string name="calendar_august">八月</string>
+    <string name="calendar_september">九月</string>
+    <string name="calendar_october">十月</string>
+    <string name="calendar_november">十一月</string>
+    <string name="calendar_december">十二月</string>
+
+    <!-- Goal Completion Activity -->
+    <string name="goal_completion_toast">习惯已完成</string>
+    <string name="goal_completion_update_error">无法更新目标状态</string>
+
+    <!-- Error Messages -->
+    <string name="error_network_failed">网络连接失败，请检查网络后重试</string>
+    <string name="error_sync_failed">同步失败：%1$s</string>
+    <string name="error_cannot_open_file">无法打开文件</string>
+    <string name="error_duplicate_habit_names">导入文件包含重复的习惯名称：%1$s</string>
+    <string name="error_read_file_failed">读取文件失败：%1$s</string>
+    <string name="error_import_failed">导入失败：%1$s</string>
+    <string name="error_unknown_habit">未知习惯</string>
+
+    <!-- Nested Screen -->
+    <string name="fab_create_goal_content_description">创建目标</string>
+    <string name="nested_no_goal_title">暂无目标习惯</string>
+    <string name="nested_goal_hint">请创建父习惯并添加关键结果（子习惯）</string>
+    <string name="toast_cannot_open_settings">无法打开设置</string>
+    <string name="dialog_timer_switch_title">已有计时正在进行</string>
+    <string name="nested_reactivation_message">重新激活习惯「%1$s」将清空所有历史记录。此操作无法撤销。</string>
+    <string name="action_confirm_activate">确认激活</string>
+
+    <!-- ==================== Metric Internationalization ==================== -->
+
+    <!-- Metric Detail Screen -->
+    <string name="metric_detail_title">指标详情</string>
+    <string name="metric_not_found">指标不存在</string>
+    <string name="metric_no_records_yet">暂无记录</string>
+    <string name="metric_details_section">详情</string>
+    <string name="metric_unit_label">单位</string>
+    <string name="metric_decimal_places_label">小数位数</string>
+    <string name="metric_target_increase">目标（增加）</string>
+    <string name="metric_target_decrease">目标（减少）</string>
+    <string name="metric_target_range">目标范围</string>
+    <string name="metric_target_label">目标</string>
+    <string name="metric_record_value">记录数值</string>
+    <string name="metric_trend_section">趋势</string>
+    <string name="metric_history_section">历史</string>
+    <string name="metric_more_records">还有 %1$d 条记录…</string>
+    <string name="metric_linked_habits_section">关联习惯</string>
+    <string name="metric_no_linked_habits">无关联习惯</string>
+    <string name="metric_unlink">取消关联</string>
+    <string name="metric_link_habit">关联习惯</string>
+    <string name="metric_delete_metric">删除指标</string>
+
+    <!-- Metric Delete Dialog -->
+    <string name="metric_delete_confirm_title">删除指标？</string>
+    <string name="metric_delete_confirm_message">这将永久删除「%1$s」及其所有记录。此操作无法撤销。</string>
+
+    <!-- Metric Unlink Dialog -->
+    <string name="metric_unlink_confirm_title">取消关联？</string>
+    <string name="metric_unlink_confirm_message">移除「%1$s」与「%2$s」之间的关联？</string>
+
+    <!-- Metric Link Habits Dialog -->
+    <string name="metric_link_habits_title">关联习惯</string>
+    <string name="metric_no_habits_to_link">没有可关联的习惯</string>
+    <string name="metric_select_habits_to_link">选择要关联到此指标的习惯：</string>
+    <string name="metric_already_linked">已关联</string>
+
+    <!-- Metrics Screen -->
+    <string name="metrics_empty_title">暂无指标</string>
+    <string name="metrics_empty_hint">点击 + 创建第一个指标</string>
+    <string name="metrics_fab_content_description">创建指标</string>
+
+    <!-- Metric Card -->
+    <string name="metric_card_no_records">无记录</string>
+    <string name="metric_card_last_recorded">最后记录：%1$s</string>
+    <string name="metric_card_never_recorded">从未记录</string>
+    <string name="metric_card_tap_details">点击查看详情</string>
+    <string name="metric_card_target_direction">目标：%1$s</string>
+
+    <!-- Metric Value Input -->
+    <string name="metric_input_title">记录数值</string>
+    <string name="metric_input_current">当前：%1$s %2$s</string>
+    <string name="metric_input_target_format">目标：%1$s %2$s</string>
+    <string name="metric_input_target_range_format">目标范围：%1$s %2$s</string>
+    <string name="metric_input_enter_value">输入数值</string>
+    <string name="metric_input_note_optional">备注（可选）</string>
+    <string name="metric_input_note_hint">为此记录添加备注</string>
+    <string name="metric_input_error_invalid_number">请输入有效的数字</string>
+    <string name="metric_input_error_whole_only">仅允许整数</string>
+    <string name="metric_input_error_max_decimals">最多保留 %1$d 位小数</string>
+    <string name="widget_counting_next_slot">已完成 %1$d 个，下一时段 %2$02d:%3$02d</string>
+    <string name="widget_counting_current_slot">第 %1$d 个/共 %2$d 个</string>
+    <string name="widget_counting_completed_slots">已完成 %1$d 个/共 %2$d 个</string>
+    <string name="metric_input_current_target_combined">当前：%1$s %2$s | 目标：%3$s %2$s</string>
+
+    <!-- Trend Chart -->
+    <string name="chart_7_days">7天</string>
+    <string name="chart_30_days">30天</string>
+    <string name="chart_daily_average">每日平均</string>
+    <string name="chart_daily_total">每日总计</string>
+    <string name="chart_all_records">所有记录</string>
+    <string name="chart_no_data">无数据</string>
+    <string name="chart_target_line">目标</string>
+    <string name="chart_range_lower">下限</string>
+    <string name="chart_range_upper">上限</string>
+
+    <!-- Edit Metric Screen -->
+    <string name="edit_metric_screen_title">编辑指标</string>
+    <string name="edit_metric_name_required">名称 *</string>
+    <string name="edit_metric_description_label">描述</string>
+    <string name="edit_metric_unit_required">单位 *</string>
+    <string name="edit_metric_decimal_places_label">小数位数</string>
+    <string name="edit_metric_target_direction_label">目标方向</string>
+    <string name="edit_metric_target_none">无</string>
+    <string name="edit_metric_target_increase">增加</string>
+    <string name="edit_metric_target_decrease">减少</string>
+    <string name="edit_metric_target_range">范围</string>
+    <string name="edit_metric_lower_bound">下限</string>
+    <string name="edit_metric_upper_bound">上限</string>
+    <string name="edit_metric_target_value">目标值</string>
+    <string name="edit_metric_icon_label">图标</string>
+    <string name="edit_metric_color_label">颜色</string>
+    <string name="edit_metric_active_label">启用</string>
+    <string name="edit_metric_active_desc">停用的指标将隐藏在主列表中</string>
+    <string name="edit_metric_save_changes">保存更改</string>
+    <string name="edit_metric_select_unit">选择单位</string>
+    <string name="edit_metric_select_icon">选择图标</string>
+    <string name="edit_metric_select_color">选择颜色</string>
+    <string name="edit_metric_aggregation_type_label">聚合方式</string>
+    <string name="edit_metric_aggregation_average">平均值</string>
+    <string name="edit_metric_aggregation_sum">总和</string>
+    <string name="edit_metric_aggregation_by_time">按时间</string>
+
+    <!-- Color Picker HEX Input -->
+    <string name="color_picker_hex_label">HEX 颜色</string>
+    <string name="color_picker_hex_invalid">无效的 HEX 格式（如 #FF5500）</string>
+    <string name="color_picker_hex_preview">预览</string>
+    <string name="color_picker_hex_clear">清除 HEX 输入</string>
+
+    <!-- Icon Picker Categories -->
+    <string name="icon_category_fitness">健身</string>
+    <string name="icon_category_health">健康</string>
+    <string name="icon_category_learning">学习</string>
+    <string name="icon_category_mental">心理</string>
+    <string name="icon_category_lifestyle">生活</string>
+    <string name="icon_category_todo">任务</string>
+    <string name="icon_category_personal_hygiene">个人卫生</string>
+    <string name="icon_category_social">社交</string>
+    <string name="icon_category_finance">财务</string>
+    <string name="icon_category_creative">创作</string>
+    <string name="icon_category_transportation">交通</string>
+    <string name="icon_category_entertainment">娱乐</string>
+    <string name="icon_category_household">家务</string>
+    <string name="icon_category_outdoor">户外</string>
+    <string name="icon_category_technology">科技</string>
+
+    <!-- 创建临时任务 -->
+    <string name="create_temp_task_title">创建临时任务</string>
+    <string name="edit_habit_parent_habit_optional">父习惯 (可选)</string>
+    <string name="edit_habit_parent_none_independent">无 (独立)</string>
+    <string name="create_temp_task_save">创建</string>
+    <string name="toast_temp_task_created">临时任务已创建</string>
+    <string name="toast_temp_task_completed">临时任务已完成</string>
+    <string name="edit_habit_no_parent_available">没有可用的目标型习惯</string>
+
+    <!-- Metric Detail ViewModel Errors -->
+    <string name="metric_error_not_found">指标不存在</string>
+    <string name="metric_error_record_failed">记录失败：%1$s</string>
+    <string name="metric_error_aggregation_failed">更新聚合类型失败：%1$s</string>
+    <string name="metric_error_delete_failed">删除失败：%1$s</string>
+    <string name="metric_error_unlink_failed">取消关联失败：%1$s</string>
+    <string name="metric_error_link_failed">关联失败：%1$s</string>
+    <string name="metric_error_unknown_habit">未知</string>
+
+    <!-- ==================== Missing Internationalization Fixes ==================== -->
+
+    <!-- Edit Habit Screen -->
+    <string name="edit_habit_screen_title">编辑习惯</string>
+    <string name="edit_habit_name_required">名称 *</string>
+    <string name="edit_habit_description_optional">描述</string>
+    <string name="edit_habit_schedule_type">周期类型</string>
+    <string name="edit_habit_frequency_days">频率（每 N 天）</string>
+    <string name="edit_habit_frequency_max">最大：%1$d 天</string>
+    <string name="edit_habit_day_of_month">每月第几天（1-31）</string>
+    <string name="edit_habit_daily_target_minutes">每日目标（分钟）</string>
+    <string name="edit_habit_daily_target">每日目标</string>
+    <string name="edit_habit_save_changes">保存更改</string>
+    <string name="edit_habit_not_found">习惯不存在</string>
+    <string name="edit_habit_not_found_hint">该习惯可能已被删除</string>
+    <string name="edit_habit_parent_habit_label">父习惯</string>
+    <string name="edit_habit_none_top_level">无（顶级习惯）</string>
+    <string name="edit_habit_detach_parent">解除父习惯关联（设为顶级）</string>
+
+    <!-- 最佳执行时间 (Phase 81) -->
+    <string name="edit_habit_best_time_label">最佳执行时间</string>
+    <string name="edit_habit_best_time_optional">(可选)</string>
+    <string name="edit_habit_best_time_hint">设置完成该习惯的最佳时间</string>
+    <string name="edit_habit_best_time_none">未设置时间</string>
+
+    <!-- Create Habit Screen -->
+    <string name="create_habit_screen_title">创建习惯</string>
+    <string name="create_habit_preset_title">快速开始：选择预设</string>
+    <string name="create_habit_selected_preset">已选择：%1$s</string>
+    <string name="create_habit_habit_type">习惯类型</string>
+
+    <!-- Create Metric Screen -->
+    <string name="create_metric_screen_title">创建指标</string>
+    <string name="create_metric_appearance_step">外观与关联</string>
+    <string name="create_metric_next">下一步</string>
+    <string name="create_metric_link_habits_optional">关联习惯（可选）</string>
+    <string name="create_metric_link_habits_hint">选中的习惯将显示此指标，并在完成时提示记录数值。</string>
+
+    <!-- Delete Confirmation Dialog -->
+    <string name="dialog_delete_habit_confirm_title">删除习惯？</string>
+    <string name="dialog_delete_habit_confirm_message">确定要删除「%1$s」吗？此操作无法撤销。</string>
+
+    <!-- Children Deletion Dialog -->
+    <string name="dialog_delete_habit_with_children_title">同时删除子习惯？</string>
+    <string name="dialog_delete_habit_with_children_message">「%1$s」有 %2$d 个子习惯。是否一并删除？</string>
+    <string name="dialog_delete_habit_with_children">连同子习惯一起删除</string>
+    <string name="dialog_delete_habit_keep_children">保留子习惯</string>
+    <string name="dialog_delete_habit_children_orphaned">子习惯已移至顶层</string>
+
+    <!-- Preset Habit Selector -->
+    <string name="preset_choose_title">选择预设</string>
+    <string name="preset_category_health">健康</string>
+    <string name="preset_category_mindfulness">冥想</string>
+
+    <!-- Unit Picker -->
+    <string name="unit_picker_custom">自定义</string>
+    <string name="unit_picker_custom_unit">自定义单位</string>
+    <string name="unit_picker_enter_custom">输入自定义单位</string>
+    <string name="unit_picker_distance">距离</string>
+    <string name="unit_picker_other">其他</string>
+
+    <!-- Content descriptions for accessibility -->
+    <string name="content_description_selected">已选择</string>
+    <string name="content_description_select">选择</string>
+
+    <!-- Card Color Style (CARD-10) -->
+    <string name="card_color_style_title">卡片配色风格</string>
+    <string name="card_color_style_follow_theme">跟随主题</string>
+    <string name="card_color_style_personalized">个性化配色</string>
+    <string name="card_color_style_description">选择卡片颜色的显示方式</string>
+
+    <!-- Notification Settings (NOTIFY-04) -->
+    <string name="habit_notification_toggle_title">提醒通知</string>
+    <string name="habit_notification_toggle_desc">在 %s 收到提醒</string>
+    <string name="settings_notification_section">通知</string>
+    <string name="settings_global_notifications_title">习惯提醒</string>
+    <string name="settings_global_notifications_desc">在习惯预定时间接收提醒通知</string>
+
+    <!-- Admin Dashboard -->
+    <string name="admin_title">管理后台</string>
+    <string name="admin_create_user">创建账户</string>
+    <string name="admin_grant_admin">授予服务器管理员权限</string>
+    <string name="admin_user_created_success">账户 %1$s 已创建</string>
+    <string name="admin_refresh">刷新</string>
+    <string name="admin_badge_admin">管理员</string>
+    <string name="admin_badge_disabled">已禁用</string>
+    <string name="admin_reset_password">重置密码</string>
+    <string name="admin_reset_password_title">重置 %s 的密码</string>
+    <string name="admin_new_password">新密码</string>
+    <string name="admin_confirm">确认</string>
+    <string name="admin_password_reset_success">已重置 %s 的密码</string>
+    <string name="admin_error_password_min_length">密码至少需要8个字符</string>
+    <string name="admin_error_invalid_username">用户名需为 3–32 位字母、数字或下划线</string>
+    <string name="admin_error_username_exists">该用户名已存在</string>
+    <string name="admin_error_forbidden">需要管理员权限</string>
+    <string name="admin_error_user_not_found">用户未找到</string>
+    <string name="admin_error_unknown">错误：%s</string>
+    <string name="admin_user_tokens">%s 的令牌</string>
+
+    <!-- Token Screen -->
+    <string name="token_screen_title">API 令牌</string>
+    <string name="token_create">创建令牌</string>
+    <string name="token_empty">暂无 API 令牌</string>
+    <string name="token_empty_hint">创建令牌以访问 API</string>
+    <string name="token_delete">删除令牌</string>
+    <string name="token_delete_title">删除令牌</string>
+    <string name="token_delete_message">删除令牌「%1$s」？此操作无法撤销。</string>
+    <string name="token_created">创建时间：%1$s</string>
+    <string name="token_last_used">最后使用：%1$s</string>
+    <string name="token_create_title">创建 API 令牌</string>
+    <string name="token_name_label">令牌名称</string>
+    <string name="token_expires_label">有效期（天）</string>
+    <string name="token_expires_placeholder">留空表示永不过期</string>
+    <string name="action_create">创建</string>
+    <string name="token_created_title">令牌已创建</string>
+    <string name="token_created_message">新的 API 令牌已创建。请立即复制 — 此后将无法再次查看。</string>
+    <string name="token_copy">复制令牌</string>
+    <string name="token_created_warning">注意：此令牌仅显示一次，请务必复制保存。</string>
+    <string name="sync_device_role_primary">这是主要编辑设备</string>
+    <string name="sync_device_role_editor">此设备已允许编辑目标和习惯</string>
+    <string name="sync_device_role_facts_only">此设备用于打卡、计数、指标和计时</string>
+    <string name="sync_device_make_primary">设为主要设备</string>
+    <string name="sync_device_role_failed">无法更新当前设备角色</string>
+</resources>

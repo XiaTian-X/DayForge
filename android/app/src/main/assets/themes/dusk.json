@@ -1,0 +1,8 @@
+{
+  "id": "dusk",
+  "name": "Dusk",
+  "seedColor": "#1A237E",
+  "suitableForLight": false,
+  "suitableForDark": true,
+  "isDefault": true
+}
