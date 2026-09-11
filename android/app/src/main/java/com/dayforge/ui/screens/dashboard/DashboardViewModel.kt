@@ -24,13 +24,10 @@ import com.dayforge.domain.model.FilterMode
 import com.dayforge.domain.model.MetricWithLatestValue
 import com.dayforge.domain.service.ActiveTimerStateProvider
 import com.dayforge.domain.service.CheckInService
-import com.dayforge.domain.service.HabitStatusCalculator
 import com.dayforge.domain.service.MetricOverviewProvider
 import com.dayforge.domain.service.TimerManager
 import com.dayforge.domain.service.TimerService
-import com.dayforge.domain.service.HabitPriorityCalculator
 import com.dayforge.domain.service.CountingSlotCalculator
-import com.dayforge.domain.service.TimeMatchResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.time.LocalDate
@@ -64,7 +61,7 @@ class DashboardViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val habitRepository: HabitRepository,
     private val checkInService: CheckInService,
-    private val habitStatusCalculator: HabitStatusCalculator,
+    private val dashboardHabitListBuilder: DashboardHabitListBuilder,
     private val timeLogDao: TimeLogDao,
     private val habitDao: com.dayforge.data.local.dao.HabitDao,
     private val preferencesManager: PreferencesManager,
@@ -157,150 +154,42 @@ class DashboardViewModel @Inject constructor(
             initialValue = emptySet()
         )
 
-    // Combine habits, completions, time logs, date change trigger, filter mode, and smart time tick
+    // Combine habits, completions, time logs, date change trigger, and filter mode.
     // For TIMER habits, todayCount and streaks come from TimeLogEntity, not CompletionEntity
     // Use getActiveTimeLogFlow() as trigger - it changes when timer starts (INSERT) or stops (UPDATE sets endTime)
     // Use dateChangeTrigger to refresh when date changes (user opens app on new day)
     // Use filterMode to switch between different display modes (all, time_window, checkable, terminated)
-    // Use smartTimeTickFlow for time-based refresh in TIME_WINDOW mode (triggers at window boundaries)
-    // Note: combine最多支持5个参数，使用两次combine串联实现6参数
     private val baseCombineFlow = combine(
         habitRepository.allHabits,
         allCompletions,
         timeLogDao.getActiveTimeLogFlow(),  // Triggers when timer state changes (start/stop)
         preferencesManager.dateChangeTrigger,  // Triggers when date changes
         preferencesManager.filterMode  // Triggers when filter mode changes
-    ) { habits, completions, activeTimeLog, _, filterModeValue ->
-        // 返回tuple供第二次combine使用
-        Tuple5(habits, completions, activeTimeLog, filterModeValue)
+    ) { habits, completions, _, _, filterModeValue ->
+        DashboardHabitListInput(
+            habits = habits,
+            completions = completions,
+            filterMode = FilterMode.fromValue(filterModeValue)
+        )
     }
 
     val habitsWithStats: StateFlow<List<HabitWithStats>> = combine(
         baseCombineFlow,
-        smartTimeTickFlow  // Triggers at window boundaries in TIME_WINDOW mode
-    ) { baseData, _ ->
-        val (habits, completions, _, filterModeValue) = baseData
-        Log.d(TAG, "habitsWithStats combine triggered: habits=${habits.size}, completions=${completions.size}, filterMode=$filterModeValue")
-
-        val currentTime = ZonedDateTime.now(ZoneId.systemDefault())
-        val currentFilterMode = FilterMode.fromValue(filterModeValue)
-
-        val habitsWithStatsList = habits.map { habit ->
-            // Use centralized status calculator
-            val stats = habitStatusCalculator.calculate(habit, completions, null)
-
-            // Calculate slot progress if time_window mode and COUNTING with bestTime
-            val slotProgress = if (currentFilterMode == FilterMode.TIME_WINDOW && habit.habitType == HabitType.COUNTING && habit.bestTime != null) {
-                val progress = CountingSlotCalculator.getSlotProgress(
-                    habit.bestTime,
-                    habit.targetValue,
-                    currentTime
-                )
-                if (progress != null) {
-                    "第 ${progress.first} 个/共 ${progress.second} 个"
-                } else null
-            } else null
-
-            // Return HabitWithStats with slot progress
-            stats.copy(slotProgress = slotProgress)
-        }
-
-        // Apply filtering and sorting based on filter mode
-        when (currentFilterMode) {
-            FilterMode.ALL -> {
-                // All mode: show all active habits
-                // Sorted by: active + checkInAllowed + !completedToday > active + checkInAllowed + completedToday > others
-                habitsWithStatsList.sortedByDescending {
-                    it.habit.isActive && it.isCheckInAllowed && !it.completedToday
-                }
-            }
-            FilterMode.TIME_WINDOW -> {
-                // Time window mode: only show habits with bestTime set, sorted by time-based priority
-                // Exclude failed/goal-completed habits (they belong to Terminated mode)
-                // Non-check-in day habits are placed at the end
-
-                // First filter to keep only habits that have bestTime configured and are not terminated
-                val habitsWithBestTime = habitsWithStatsList.filter {
-                    it.habit.bestTime != null && !it.hasFailed && !it.isGoalCompleted
-                }
-
-                // Split into check-in allowed and non-check-in day groups
-                val checkInAllowedHabits = habitsWithBestTime.filter { it.isCheckInAllowed }
-                val nonCheckInDayHabits = habitsWithBestTime.filter { !it.isCheckInAllowed }
-
-                // Calculate priorities for check-in allowed habits
-                // 使用todayCount而非completedToday布尔值（支持COUNTING的Slot级别完成判定）
-                val completedCountMap = checkInAllowedHabits.associate { it.habit.id to it.todayCount }
-                val pendingMetrics = pendingMetricHabits.value
-                val habitsEntitiesAllowed = habits.filter { habit ->
-                    habit.bestTime != null && checkInAllowedHabits.any { it.habit.id == habit.id }
-                }
-
-                val prioritiesAllowed = HabitPriorityCalculator.calculatePriorities(
-                    habitsEntitiesAllowed,
-                    currentTime,
-                    completedCountMap,
-                    pendingMetrics
-                )
-
-                // Calculate priorities for non-check-in day habits
-                val habitsEntitiesNonCheckIn = habits.filter { habit ->
-                    habit.bestTime != null && nonCheckInDayHabits.any { it.habit.id == habit.id }
-                }
-                val prioritiesNonCheckIn = HabitPriorityCalculator.calculatePriorities(
-                    habitsEntitiesNonCheckIn,
-                    currentTime,
-                    emptyMap(),  // No completion info needed for non-check-in days
-                    emptySet()   // No pending metrics for non-check-in days
-                )
-
-                // Combine: check-in allowed habits first (sorted by priority), then non-check-in day habits
-                val allowedSorted = prioritiesAllowed.mapNotNull { priority ->
-                    checkInAllowedHabits.find { it.habit.id == priority.habit.id }
-                }
-                val nonCheckInSorted = prioritiesNonCheckIn.mapNotNull { priority ->
-                    nonCheckInDayHabits.find { it.habit.id == priority.habit.id }
-                }
-
-                allowedSorted + nonCheckInSorted
-            }
-            FilterMode.CHECKABLE -> {
-                // Checkable mode: show only habits that can be checked in and are not completed
-                // Exclude GOAL type habits (they are containers for child habits, not checkable themselves)
-                // Exclude failed habits and goal-completed habits (they cannot be checked in)
-                val pendingMetrics = pendingMetricHabits.value
-                habitsWithStatsList.filter { habitWithStats ->
-                    val habit = habitWithStats.habit
-
-                    // Exclude GOAL type habits - they are parent containers, not directly checkable
-                    val isGoalType = habit.habitType == HabitType.GOAL
-
-                    // Exclude failed and goal-completed habits - they cannot be checked in
-                    val isTerminated = habitWithStats.hasFailed || habitWithStats.isGoalCompleted
-
-                    // Positive counting habits (isCountdown=false) always show when not terminated
-                    // because they can continue checking in after reaching target
-                    val isPositiveCounting = habit.habitType == HabitType.COUNTING && !habit.isCountdown && !isTerminated
-
-                    // TIMER habits with pending metric show (has "Record" button to process)
-                    // Only show if not terminated (failed or goal-completed)
-                    val hasPendingMetric = pendingMetrics.contains(habit.id) && habit.habitType == HabitType.TIMER && !isTerminated
-
-                    // Checkable conditions for other habits
-                    val isCheckable = !habitWithStats.completedToday &&
-                            habitWithStats.isCheckInAllowed &&
-                            habit.isActive &&
-                            !isTerminated
-
-                    // Show if: not GOAL type, and (positive counting OR has pending metric OR is checkable)
-                    !isGoalType && !isTerminated && (isPositiveCounting || hasPendingMetric || isCheckable)
-                }
-            }
-            FilterMode.TERMINATED -> {
-                // Terminated mode: show only failed or goal completed habits
-                habitsWithStatsList.filter { it.hasFailed || it.isGoalCompleted }
-            }
-        }
+        smartTimeTickFlow,
+        pendingMetricHabits
+    ) { input, _, pendingMetricHabitIds ->
+        Log.d(
+            TAG,
+            "habitsWithStats combine triggered: habits=${input.habits.size}, " +
+                "completions=${input.completions.size}, filterMode=${input.filterMode.value}"
+        )
+        dashboardHabitListBuilder.build(
+            habits = input.habits,
+            completions = input.completions,
+            filterMode = input.filterMode,
+            currentTime = ZonedDateTime.now(ZoneId.systemDefault()),
+            pendingMetricHabitIds = pendingMetricHabitIds
+        )
     }
         .onEach { _isInitialized.value = true }
         .stateIn(
@@ -919,12 +808,8 @@ data class ActiveTimerState(
     val targetMinutes: Int
 )
 
-/**
- * Helper tuple for combining multiple Flow values.
- */
-private data class Tuple5<T1, T2, T3, T4>(
-    val first: T1,
-    val second: T2,
-    val third: T3,
-    val fourth: T4
+private data class DashboardHabitListInput(
+    val habits: List<HabitEntity>,
+    val completions: List<CompletionEntity>,
+    val filterMode: FilterMode
 )
