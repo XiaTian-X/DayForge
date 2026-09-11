@@ -115,6 +115,7 @@ class DashboardViewModelMetricTest {
             repository,
             checkInService,
             DashboardHabitListBuilder(habitStatusCalculator),
+            DashboardTimeWindowTicker(repository, mockPreferencesManager),
             timeLogDao,
             habitDao,
             mockPreferencesManager,

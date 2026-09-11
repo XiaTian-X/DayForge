@@ -27,7 +27,6 @@ import com.dayforge.domain.service.CheckInService
 import com.dayforge.domain.service.MetricOverviewProvider
 import com.dayforge.domain.service.TimerManager
 import com.dayforge.domain.service.TimerService
-import com.dayforge.domain.service.CountingSlotCalculator
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.time.LocalDate
@@ -40,15 +39,12 @@ import com.dayforge.ui.metrics.LinkedMetricPromptState
 import com.dayforge.util.DateTimeUtils
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
@@ -62,6 +58,7 @@ class DashboardViewModel @Inject constructor(
     private val habitRepository: HabitRepository,
     private val checkInService: CheckInService,
     private val dashboardHabitListBuilder: DashboardHabitListBuilder,
+    private val dashboardTimeWindowTicker: DashboardTimeWindowTicker,
     private val timeLogDao: TimeLogDao,
     private val habitDao: com.dayforge.data.local.dao.HabitDao,
     private val preferencesManager: PreferencesManager,
@@ -79,39 +76,13 @@ class DashboardViewModel @Inject constructor(
 
     companion object {
         private const val TAG = "DashboardViewModel"
-        private const val MIN_REFRESH_DELAY_MS = 10_000L // 最小10秒刷新间隔
-        private const val MAX_REFRESH_DELAY_MS = 3600_000L // 最大1小时刷新间隔（无窗口时）
     }
 
     // Track if data has been loaded at least once
     private val _isInitialized = MutableStateFlow(false)
     val isInitialized: StateFlow<Boolean> = _isInitialized.asStateFlow()
 
-    // 智能时间tick：只在TIME_WINDOW模式启用，动态计算到下一个窗口边界的delay
-    // 使用filterMode作为触发源，当模式切换时立即响应
-    // 非TIME_WINDOW模式下emit一个初始值确保combine能正常工作
-    private val smartTimeTickFlow: Flow<Long> = preferencesManager.filterMode
-        .onEach { Log.d(TAG, "filterMode changed: $it") }
-        .flatMapLatest { filterMode ->
-            if (filterMode != FilterMode.TIME_WINDOW.value) {
-                // 非TIME_WINDOW模式：emit一个初始值，然后停止（不触发后续时间刷新）
-                flow { emit(System.currentTimeMillis()) }
-            } else {
-                // TIME_WINDOW模式：动态计算delay的时间tick
-                flow {
-                    while (true) {
-                        val habits = habitRepository.allHabits.first()
-                        val currentTime = ZonedDateTime.now(ZoneId.systemDefault())
-
-                        val nextRefreshDelay = calculateNextWindowBoundaryDelay(habits, currentTime)
-
-                        Log.d(TAG, "smartTimeTick: next refresh in ${nextRefreshDelay}ms")
-                        emit(System.currentTimeMillis())
-                        delay(nextRefreshDelay.coerceIn(MIN_REFRESH_DELAY_MS, MAX_REFRESH_DELAY_MS))
-                    }
-                }
-            }
-        }
+    private val timeWindowTickFlow = dashboardTimeWindowTicker.observe()
 
     init {
         // Process recovery: Restart TimerService if there was an active running timer
@@ -175,7 +146,7 @@ class DashboardViewModel @Inject constructor(
 
     val habitsWithStats: StateFlow<List<HabitWithStats>> = combine(
         baseCombineFlow,
-        smartTimeTickFlow,
+        timeWindowTickFlow,
         pendingMetricHabits
     ) { input, _, pendingMetricHabitIds ->
         Log.d(
@@ -721,75 +692,6 @@ class DashboardViewModel @Inject constructor(
         return dateMillis == today
     }
 
-    /**
-     * 计算到下一个窗口边界的延迟时间。
-     * 用于智能时间tick，只在TIME_WINDOW模式启用。
-     *
-     * 遍历所有习惯的窗口边界（开始和结束），找到最近的一个。
-     * COUNTING习惯考虑所有slot窗口。
-     *
-     * @param habits 所有习惯列表
-     * @param currentTime 当前时间
-     * @return 到下一个窗口边界的毫秒数
-     */
-    private fun calculateNextWindowBoundaryDelay(
-        habits: List<HabitEntity>,
-        currentTime: ZonedDateTime
-    ): Long {
-        val currentMinutes = currentTime.hour * 60 + currentTime.minute
-
-        // 收集所有窗口边界时间（分钟）
-        val windowBoundaries = mutableListOf<Int>()
-
-        for (habit in habits) {
-            if (!habit.isActive || habit.bestTime == null) continue
-            if (habit.habitType == HabitType.GOAL) continue
-
-            val bestTime = habit.bestTime.toInt()
-
-            if (habit.habitType == HabitType.COUNTING) {
-                // COUNTING习惯：计算所有slot窗口边界
-                val slots = CountingSlotCalculator.calculateSlots(habit.bestTime, habit.targetValue, currentTime)
-                for (slot in slots) {
-                    if (!slot.isPast) {
-                        // 收集窗口开始和结束时间
-                        windowBoundaries.add(slot.windowStart)
-                        windowBoundaries.add(slot.windowEnd)
-                    }
-                }
-            } else {
-                // CHECK_IN/TIMER习惯：单个窗口
-                val halfWidth = when (habit.habitType) {
-                    HabitType.TIMER -> habit.targetValue
-                    else -> 15
-                }
-                val windowStart = bestTime - halfWidth
-                val windowEnd = bestTime + halfWidth
-
-                // 只收集未来的边界
-                if (windowEnd > currentMinutes) {
-                    windowBoundaries.add(windowStart)
-                    windowBoundaries.add(windowEnd)
-                }
-            }
-        }
-
-        // 找到最近的边界时间
-        val nearestBoundary = windowBoundaries
-            .filter { it > currentMinutes }
-            .minByOrNull { it - currentMinutes }
-
-        if (nearestBoundary == null) {
-            // 无未来窗口边界：返回最大延迟（将在明天重新计算）
-            return MAX_REFRESH_DELAY_MS
-        }
-
-        // 计算到边界的毫秒数
-        val minutesUntilBoundary = nearestBoundary - currentMinutes
-        val secondsUntilBoundary = minutesUntilBoundary * 60 - currentTime.second
-
-        return (secondsUntilBoundary * 1000L).coerceAtLeast(MIN_REFRESH_DELAY_MS)
-    }
 }
 
 /**
