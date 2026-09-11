@@ -29,6 +29,7 @@ import com.dayforge.data.repository.MetricRepository
 import com.dayforge.domain.service.CheckInService
 import com.dayforge.domain.service.ActiveTimerStateProvider
 import com.dayforge.domain.service.FailureChecker
+import com.dayforge.domain.service.HabitCompletionCoordinator
 import com.dayforge.domain.service.HabitLifecycleCoordinator
 import com.dayforge.domain.service.HabitTimerCoordinator
 import com.dayforge.domain.service.TimerManager
@@ -123,6 +124,7 @@ class NestedViewModelTest {
             metricRepository = metricRepository,
             habitRepository = habitRepository
         )
+        val checkInService = CheckInService(habitRepository, completionDao, timeLogDao)
         viewModel = NestedViewModel(
             context = context,
             habitDao = habitDao,
@@ -134,7 +136,12 @@ class NestedViewModelTest {
                 timeLogDao,
                 FailureChecker(completionDao, timeLogDao)
             ),
-            checkInService = CheckInService(habitRepository, completionDao, timeLogDao),
+            completionCoordinator = HabitCompletionCoordinator(
+                context,
+                checkInService,
+                habitRepository,
+                metricRepository
+            ),
             preferencesManager = preferencesManager,
             metricCoordinator = metricCoordinator,
             lifecycleCoordinator = HabitLifecycleCoordinator(context, habitRepository),

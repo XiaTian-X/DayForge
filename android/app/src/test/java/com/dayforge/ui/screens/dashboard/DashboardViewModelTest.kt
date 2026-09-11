@@ -12,6 +12,7 @@ import com.dayforge.data.local.dao.HabitMetricLinkDao
 import com.dayforge.data.local.dao.MetricDao
 import com.dayforge.data.local.dao.MetricLogDao
 import com.dayforge.data.local.dao.TimeLogDao
+import com.dayforge.data.local.entity.MetricEntity
 import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.data.model.FailMode
 import com.dayforge.data.model.HabitSchedule
@@ -22,6 +23,7 @@ import com.dayforge.domain.model.FilterMode
 import com.dayforge.domain.service.CheckInService
 import com.dayforge.domain.service.ActiveTimerStateProvider
 import com.dayforge.domain.service.FailureChecker
+import com.dayforge.domain.service.HabitCompletionCoordinator
 import com.dayforge.domain.service.HabitStatusCalculator
 import com.dayforge.domain.service.HabitLifecycleCoordinator
 import com.dayforge.domain.service.HabitTimerCoordinator
@@ -36,6 +38,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
@@ -115,10 +118,12 @@ class DashboardViewModelTest {
         )
         val linkedMetricCoordinator =
             LinkedMetricCoordinator(context, mockPreferencesManager, metricRepository, repository)
+        val completionCoordinator =
+            HabitCompletionCoordinator(context, checkInService, repository, metricRepository)
         viewModel = DashboardViewModel(
             context,
             repository,
-            checkInService,
+            completionCoordinator,
             DashboardHabitListBuilder(habitStatusCalculator),
             DashboardTimeWindowTicker(repository, mockPreferencesManager),
             HabitLifecycleCoordinator(context, repository),
@@ -558,6 +563,76 @@ class DashboardViewModelTest {
             cancelAndIgnoreRemainingEvents()
         }
     }
+
+    @Test
+    fun temporaryTaskWithoutPromptMetrics_isDeletedAfterCheckIn() = runTest {
+        viewModel.habitsWithStats.test {
+            awaitItem()
+            val habitId = createTemporaryTask()
+            while (awaitItem().none { it.habit.id == habitId }) {
+                // Wait until the task is visible before invoking the ViewModel action.
+            }
+
+            viewModel.checkIn(habitId)
+            withContext(Dispatchers.Default.limitedParallelism(1)) {
+                withTimeout(5_000) {
+                    while (repository.getHabitById(habitId) != null) {
+                        delay(10)
+                    }
+                }
+            }
+
+            assertNull(repository.getHabitById(habitId))
+            assertFalse(viewModel.showGoalDialog.value)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun temporaryTaskWithPromptMetric_isKeptForMetricDialog() = runTest {
+        viewModel.habitsWithStats.test {
+            awaitItem()
+            val metricId = metricDao.insert(
+                MetricEntity(
+                    name = "Weight",
+                    unit = "kg",
+                    decimalPlaces = 1,
+                    iconResId = 1,
+                    colorHex = "#4CAF50"
+                )
+            )
+            val habitId = createTemporaryTask(selectedMetricIds = setOf(metricId))
+            while (awaitItem().none { it.habit.id == habitId }) {
+                // Wait until the task is visible before invoking the ViewModel action.
+            }
+
+            viewModel.checkIn(habitId)
+            val prompt = withContext(Dispatchers.Default.limitedParallelism(1)) {
+                withTimeout(5_000) {
+                    viewModel.postCheckInState.first { it?.habitId == habitId }
+                }
+            }
+
+            assertTrue(prompt?.isTempTask == true)
+            assertNotNull(repository.getHabitById(habitId))
+            assertFalse(viewModel.showGoalDialog.value)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    private suspend fun createTemporaryTask(selectedMetricIds: Set<Long> = emptySet()): Long =
+        repository.createHabit(
+            name = "Temporary task",
+            description = "",
+            habitType = HabitType.CHECK_IN,
+            iconResId = 53,
+            colorHex = "#2196F3",
+            schedule = HabitSchedule.Daily,
+            targetValue = 1,
+            targetCycles = 1,
+            failMode = FailMode.LOOSE,
+            selectedMetricIds = selectedMetricIds
+        )
 
     private suspend fun awaitGoalDialogVisibility(visible: Boolean) {
         withContext(Dispatchers.Default.limitedParallelism(1)) {

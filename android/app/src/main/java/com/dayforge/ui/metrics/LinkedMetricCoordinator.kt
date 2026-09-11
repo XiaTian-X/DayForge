@@ -67,9 +67,6 @@ class LinkedMetricCoordinator @Inject constructor(
         emit(emptyMap())
     }
 
-    suspend fun hasPromptMetrics(habitId: Long): Boolean =
-        metricRepository.getLinkedMetricSnapshots(habitId).any { it.promptOnComplete }
-
     suspend fun showPromptIfNeeded(
         habitId: Long,
         habitName: String,

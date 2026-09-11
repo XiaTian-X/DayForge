@@ -1,6 +1,8 @@
 package com.dayforge.ui.screens.dashboard
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.widget.Toast
 import androidx.lifecycle.ViewModel
@@ -12,7 +14,6 @@ import com.dayforge.data.local.dao.CompletionDao
 import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.TimeLogEntity
-import com.dayforge.data.model.CheckInResult
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.model.HabitWithStats
 import com.dayforge.data.repository.HabitRepository
@@ -21,7 +22,7 @@ import com.dayforge.domain.model.CardColorStyle
 import com.dayforge.domain.model.FilterMode
 import com.dayforge.domain.model.MetricWithLatestValue
 import com.dayforge.domain.model.ActiveTimerState
-import com.dayforge.domain.service.CheckInService
+import com.dayforge.domain.service.HabitCompletionCoordinator
 import com.dayforge.domain.service.HabitLifecycleCoordinator
 import com.dayforge.domain.service.HabitTimerCoordinator
 import com.dayforge.domain.service.MetricOverviewProvider
@@ -54,7 +55,7 @@ import javax.inject.Inject
 class DashboardViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val habitRepository: HabitRepository,
-    private val checkInService: CheckInService,
+    private val completionCoordinator: HabitCompletionCoordinator,
     private val dashboardHabitListBuilder: DashboardHabitListBuilder,
     private val dashboardTimeWindowTicker: DashboardTimeWindowTicker,
     private val lifecycleCoordinator: HabitLifecycleCoordinator,
@@ -503,89 +504,66 @@ class DashboardViewModel @Inject constructor(
                     context,
                     factDerivedTaskFinalization = true
                 )
-                Toast.makeText(context, context.getString(R.string.toast_temp_task_completed), Toast.LENGTH_SHORT).show()
+                Handler(Looper.getMainLooper()).post {
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.toast_temp_task_completed),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
             }
         }
     }
 
     /**
      * Check-in for a CHECK_IN habit.
-     * Uses CheckInService for consistent behavior with widgets.
+     * Uses the shared completion coordinator for consistent behavior across habit screens.
      * Per TARGET-15: Triggers goal completion dialog if targetCycles reached.
      * Triggers post-check-in dialog for linked metrics.
      * For temporary tasks: deletes after completion if no linked metrics.
      */
     fun checkIn(habitId: Long) {
         viewModelScope.launch {
-            val result = checkInService.toggleCheckIn(context, habitId)
-            val habit = habitsWithStats.value.find { it.habit.id == habitId }?.habit
-
-            // 检测临时任务：targetCycles=1 + failMode=LOOSE + habitType=CHECK_IN + iconResId=53(TaskAlt)
-            val isTempTask = habit?.let { h ->
-                h.targetCycles == 1 && h.failMode == com.dayforge.data.model.FailMode.LOOSE && h.habitType == HabitType.CHECK_IN && h.iconResId == 53
-            } ?: false
-
-            // Check for goal reached (TARGET-15)
-            if (result is CheckInResult.Success && result.goalReached) {
-                if (isTempTask) {
-                    // 临时任务完成：跳过目标完成对话框
-                    // 检查是否有关联指标需要提示
-                    val hasPromptMetrics = linkedMetricCoordinator.hasPromptMetrics(habitId)
-
-                    if (!hasPromptMetrics) {
-                        // 无关联指标 → 直接删除
-                        deleteTempTask(habitId)
-                    }
-                    // 有关联指标 → 等指标对话框关闭后删除（不调用 onGoalReached，避免两个对话框）
-                } else {
-                    onGoalReached(habitId, result.progress)
-                }
+            val outcome = completionCoordinator.checkIn(
+                habitId = habitId,
+                finalizeTemporaryTasks = true,
+                displayedHabit = { habitsWithStats.value.find { it.habit.id == habitId }?.habit }
+            )
+            outcome.goalProgress?.let { progress -> onGoalReached(habitId, progress) }
+            if (outcome.shouldDeleteTemporaryTask) {
+                deleteTempTask(habitId)
             }
-
-            // Trigger metric dialog for CHECK_IN habits
-            // 临时任务：只有当有指标且未删除时才显示指标对话框
-            // 普通习惯：正常显示指标对话框
-            if (habit != null && result is CheckInResult.Success && result.completed) {
-                if (isTempTask) {
-                    // 临时任务：检查是否有关联指标（已在上面判断是否删除）
-                    if (linkedMetricCoordinator.hasPromptMetrics(habitId)) {
-                        checkAndShowPostCheckInDialog(habitId, habit.name)
-                    }
-                } else {
-                    checkAndShowPostCheckInDialog(habitId, habit.name)
-                }
+            outcome.metricPromptHabit?.let { habit ->
+                checkAndShowPostCheckInDialog(habitId, habit.name)
             }
         }
     }
 
     fun logCompletion(habitId: Long, value: Int = 1) {
         viewModelScope.launch {
-            habitRepository.logCompletion(context, habitId, value)
+            completionCoordinator.recordCompletion(habitId, value)
         }
     }
 
     fun undoCompletion(completionId: Long) {
         viewModelScope.launch {
-            habitRepository.undoCompletion(context, completionId)
+            completionCoordinator.undoCompletion(completionId)
         }
     }
 
     /**
      * Increment count for a COUNTING habit.
-     * Uses CheckInService for consistent behavior with widgets.
+     * Uses the shared completion coordinator for consistent behavior across habit screens.
      * Triggers goal completion dialog if targetCycles reached.
      * Triggers post-check-in dialog for linked metrics.
      */
     fun incrementCount(habitId: Long) {
         viewModelScope.launch {
-            val result = checkInService.incrementCount(context, habitId)
-            // Check for goal reached (TARGET-08)
-            if (result is CheckInResult.Success && result.goalReached) {
-                onGoalReached(habitId, result.progress)
+            val outcome = completionCoordinator.incrementCount(habitId) {
+                habitsWithStats.value.find { it.habit.id == habitId }?.habit
             }
-            // Trigger metric dialog for COUNTING habits
-            val habit = habitsWithStats.value.find { it.habit.id == habitId }?.habit
-            if (habit != null) {
+            outcome.goalProgress?.let { progress -> onGoalReached(habitId, progress) }
+            outcome.metricPromptHabit?.let { habit ->
                 checkAndShowPostCheckInDialog(habitId, habit.name)
             }
         }
@@ -593,16 +571,13 @@ class DashboardViewModel @Inject constructor(
 
     /**
      * Decrement count for a COUNTING habit.
-     * Uses CheckInService for consistent behavior with widgets.
+     * Uses the shared completion coordinator for consistent behavior across habit screens.
      * Triggers goal completion dialog if targetCycles reached.
      */
     fun decrementCount(habitId: Long) {
         viewModelScope.launch {
-            val result = checkInService.decrementCount(context, habitId)
-            // Check for goal reached (TARGET-08)
-            if (result is CheckInResult.Success && result.goalReached) {
-                onGoalReached(habitId, result.progress)
-            }
+            completionCoordinator.decrementCount(habitId).goalProgress
+                ?.let { progress -> onGoalReached(habitId, progress) }
         }
     }
 

@@ -10,12 +10,11 @@ import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.dao.HabitDao
 import com.dayforge.data.local.dao.TimeLogDao
 import com.dayforge.data.local.entity.HabitEntity
-import com.dayforge.data.model.CheckInResult
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.HabitRepository
 import com.dayforge.domain.model.ActiveTimerState
 import com.dayforge.domain.model.CardColorStyle
-import com.dayforge.domain.service.CheckInService
+import com.dayforge.domain.service.HabitCompletionCoordinator
 import com.dayforge.domain.service.HabitLifecycleCoordinator
 import com.dayforge.domain.service.HabitTimerCoordinator
 import com.dayforge.domain.service.ReactivationResult
@@ -103,7 +102,7 @@ class NestedViewModel @Inject constructor(
     private val timeLogDao: TimeLogDao,
     private val habitRepository: HabitRepository,
     private val nestedHabitTreeBuilder: NestedHabitTreeBuilder,
-    private val checkInService: CheckInService,
+    private val completionCoordinator: HabitCompletionCoordinator,
     private val preferencesManager: PreferencesManager,
     private val metricCoordinator: LinkedMetricCoordinator,
     private val lifecycleCoordinator: HabitLifecycleCoordinator,
@@ -224,20 +223,19 @@ class NestedViewModel @Inject constructor(
 
     /**
      * Log a completion for a child habit.
-     * Uses CheckInService for consistent behavior with DashboardViewModel.
+     * Uses the shared completion coordinator for consistent behavior with DashboardViewModel.
      * Per TARGET-15: Triggers goal completion dialog if targetCycles reached.
      * Triggers post-check-in dialog for linked metrics.
      */
     fun logCompletion(habitId: Long, value: Int = 1) {
         viewModelScope.launch {
-            val result = checkInService.toggleCheckIn(context, habitId)
-            // Check for goal reached (TARGET-15)
-            if (result is CheckInResult.Success && result.goalReached) {
-                onGoalReached(habitId, result.progress)
-            }
-            // Trigger metric dialog only on successful check-in (not undo)
-            val habit = findHabitById(habitId)
-            if (habit != null && result is CheckInResult.Success && result.completed) {
+            val outcome = completionCoordinator.checkIn(
+                habitId = habitId,
+                finalizeTemporaryTasks = false,
+                displayedHabit = { findHabitById(habitId) }
+            )
+            outcome.goalProgress?.let { progress -> onGoalReached(habitId, progress) }
+            outcome.metricPromptHabit?.let { habit ->
                 checkAndShowPostCheckInDialog(habitId, habit.name)
             }
         }
@@ -248,25 +246,23 @@ class NestedViewModel @Inject constructor(
      */
     fun undoCompletion(completionId: Long) {
         viewModelScope.launch {
-            habitRepository.undoCompletion(context, completionId)
+            completionCoordinator.undoCompletion(completionId)
         }
     }
 
     /**
      * Increment count for a COUNTING habit.
-     * Uses CheckInService for consistent behavior with widgets.
+     * Uses the shared completion coordinator for consistent behavior across habit screens.
      * Triggers goal completion dialog if targetCycles reached.
      * Triggers post-check-in dialog for linked metrics.
      */
     fun incrementCount(habitId: Long) {
         viewModelScope.launch {
-            val result = checkInService.incrementCount(context, habitId)
-            // Check for goal reached (TARGET-08)
-            if (result is CheckInResult.Success && result.goalReached) {
-                onGoalReached(habitId, result.progress)
+            val outcome = completionCoordinator.incrementCount(habitId) {
+                findHabitById(habitId)
             }
-            val habit = findHabitById(habitId)
-            if (habit != null) {
+            outcome.goalProgress?.let { progress -> onGoalReached(habitId, progress) }
+            outcome.metricPromptHabit?.let { habit ->
                 checkAndShowPostCheckInDialog(habitId, habit.name)
             }
         }
@@ -274,15 +270,12 @@ class NestedViewModel @Inject constructor(
 
     /**
      * Decrement count for a COUNTING habit.
-     * Uses CheckInService for consistent behavior with widgets.
+     * Uses the shared completion coordinator for consistent behavior across habit screens.
      */
     fun decrementCount(habitId: Long) {
         viewModelScope.launch {
-            val result = checkInService.decrementCount(context, habitId)
-            // Check for goal reached (TARGET-08)
-            if (result is CheckInResult.Success && result.goalReached) {
-                onGoalReached(habitId, result.progress)
-            }
+            completionCoordinator.decrementCount(habitId).goalProgress
+                ?.let { progress -> onGoalReached(habitId, progress) }
         }
     }
 
