@@ -1,4 +1,4 @@
-package com.dayforge.ui.screens.nested
+package com.dayforge.ui.metrics
 
 import android.content.Context
 import android.content.Intent
@@ -7,7 +7,6 @@ import android.widget.Toast
 import com.dayforge.R
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.dao.LinkedMetricSnapshot
-import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.repository.MetricRepository
 import com.dayforge.data.repository.MetricValueDraft
 import com.dayforge.domain.service.TimerService
@@ -23,38 +22,56 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import javax.inject.Inject
 
-/** Coordinates linked-metric presentation behavior for the nested habit screen. */
-class NestedMetricCoordinator @Inject constructor(
+data class LinkedMetricPromptState(
+    val habitId: Long,
+    val habitName: String,
+    val linkedMetrics: List<LinkedMetricInfo>,
+    val show: Boolean = true,
+    val isTempTask: Boolean = false
+)
+
+/** Coordinates linked-metric card, prompt, and recording behavior for habit screens. */
+class LinkedMetricCoordinator @Inject constructor(
     @ApplicationContext private val context: Context,
     private val preferencesManager: PreferencesManager,
     private val metricRepository: MetricRepository
 ) {
     val pendingMetricHabits: Flow<Set<Long>> = preferencesManager.pendingMetricHabits
 
-    private val _postCheckInState = MutableStateFlow<PostCheckInState?>(null)
-    val postCheckInState: StateFlow<PostCheckInState?> = _postCheckInState
+    private val _postCheckInState = MutableStateFlow<LinkedMetricPromptState?>(null)
+    val postCheckInState: StateFlow<LinkedMetricPromptState?> = _postCheckInState
 
     /**
      * Observe card metrics without per-habit queries. The Room projection also makes changes made
      * by sync visible when links, metric metadata, or metric logs change.
      */
     fun observeLinkedMetrics(
-        habits: Flow<List<HabitEntity>>
+        habitIds: Flow<Set<Long>>,
+        onlyShownInHabitDetail: Boolean
     ): Flow<Map<Long, List<LinkedMetricInfo>>> = combine(
-        habits,
+        habitIds,
         metricRepository.observeLinkedMetricSnapshots()
-    ) { currentHabits, snapshots ->
-        val currentHabitIds = currentHabits.asSequence().map { it.id }.toSet()
+    ) { currentHabitIds, snapshots ->
         snapshots
             .asSequence()
-            .filter { it.habitId in currentHabitIds }
+            .filter { snapshot ->
+                snapshot.habitId in currentHabitIds &&
+                    (!onlyShownInHabitDetail || snapshot.showInHabitDetail)
+            }
             .groupBy(LinkedMetricSnapshot::habitId) { it.toLinkedMetricInfo() }
     }.catch { error ->
         Log.e(TAG, "Failed to observe linked metrics", error)
         emit(emptyMap())
     }
 
-    suspend fun showPromptIfNeeded(habitId: Long, habitName: String) {
+    suspend fun hasPromptMetrics(habitId: Long): Boolean =
+        metricRepository.getLinkedMetricSnapshots(habitId).any { it.promptOnComplete }
+
+    suspend fun showPromptIfNeeded(
+        habitId: Long,
+        habitName: String,
+        isTempTask: Boolean = false
+    ) {
         if (preferencesManager.getNeverAskAgain(habitId).first()) return
 
         val metricInfos = try {
@@ -70,11 +87,12 @@ class NestedMetricCoordinator @Inject constructor(
         }
 
         if (metricInfos.isNotEmpty()) {
-            _postCheckInState.value = PostCheckInState(
+            _postCheckInState.value = LinkedMetricPromptState(
                 habitId = habitId,
                 habitName = habitName,
                 linkedMetrics = metricInfos,
-                show = true
+                show = true,
+                isTempTask = isTempTask
             )
         }
     }
@@ -120,6 +138,6 @@ class NestedMetricCoordinator @Inject constructor(
     )
 
     private companion object {
-        const val TAG = "NestedMetricCoordinator"
+        const val TAG = "LinkedMetricCoordinator"
     }
 }

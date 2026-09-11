@@ -1,6 +1,7 @@
 package com.dayforge.ui.screens.dashboard
 
 import android.content.Context
+import androidx.lifecycle.viewModelScope
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.local.HabitDatabase
@@ -19,11 +20,15 @@ import com.dayforge.domain.service.CheckInService
 import com.dayforge.domain.service.FailureChecker
 import com.dayforge.domain.service.HabitStatusCalculator
 import com.dayforge.domain.service.StructuralEditGuard
+import com.dayforge.ui.metrics.LinkedMetricCoordinator
 import app.cash.turbine.test
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -75,6 +80,8 @@ class DashboardViewModelTest {
             every { hasShownBatteryGuidance } returns flowOf(false)
             every { dateChangeTrigger } returns flowOf(System.currentTimeMillis() / (24 * 60 * 60 * 1000L))
             every { filterMode } returns flowOf("all")
+            every { pendingMetricHabits } returns flowOf(emptySet())
+            every { getNeverAskAgain(any()) } returns flowOf(false)
         }
         // Create a real CheckInService that uses the repository
         checkInService = CheckInService(repository, completionDao, timeLogDao)
@@ -99,16 +106,19 @@ class DashboardViewModelTest {
             mockPreferencesManager,
             metricDao,
             metricLogDao,
-            habitMetricLinkDao,
             completionDao,
-            metricRepository
+            metricRepository,
+            LinkedMetricCoordinator(context, mockPreferencesManager, metricRepository)
         )
     }
 
     @After
-    fun teardown() {
+    fun teardown() = runBlocking {
+        if (::viewModel.isInitialized) {
+            viewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+        }
+        if (::database.isInitialized) database.close()
         Dispatchers.resetMain()
-        database.close()
     }
 
     @Test
