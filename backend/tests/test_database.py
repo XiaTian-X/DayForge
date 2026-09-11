@@ -1,7 +1,5 @@
 """Tests for database module."""
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import SQLModel, Field
 
 
 class TestDatabaseModule:
@@ -53,28 +51,17 @@ class TestAsyncSession:
     @pytest.mark.asyncio
     async def test_async_session_can_commit(self, async_session):
         """Test that async session can commit transactions."""
-        from sqlmodel import SQLModel, Field
-        from typing import Optional
-
-        # Create a test model
-        class TestModel(SQLModel, table=True):
-            __tablename__ = "test_models"
-            id: Optional[int] = Field(default=None, primary_key=True)
-            name: str = Field()
-
-        # Create the table
-        async with async_session.bind.begin() as conn:
-            await conn.run_sync(SQLModel.metadata.create_all)
+        from src.auth.models import User
 
         # Insert and commit
-        test_obj = TestModel(name="test")
+        test_obj = User(username="database-commit", password_hash="test-hash")
         async_session.add(test_obj)
         await async_session.commit()
 
         # Verify it was saved
-        result = await async_session.get(TestModel, test_obj.id)
+        result = await async_session.get(User, test_obj.id)
         assert result is not None
-        assert result.name == "test"
+        assert result.username == "database-commit"
 
 
 class TestEngineType:
@@ -85,48 +72,71 @@ class TestEngineType:
         from src.database import get_engine
 
         engine = get_engine()
-        # Check the dialect name
-        assert "sqlite" in str(engine.dialect.name).lower()
+        assert engine.url.drivername == "sqlite+aiosqlite"
 
     def test_sync_engine_url_conversion(self):
-        """Test that sync engine URL is correctly converted from async URL."""
-        from src.config import get_database_url
+        """Test that the adapter provides a synchronous Alembic URL."""
+        from src.config import get_database_url, get_migration_database_url
 
         async_url = get_database_url()
-        sync_url = async_url.replace("+aiosqlite", "")
+        sync_url = get_migration_database_url()
 
-        # For SQLite, the sync URL should not have +aiosqlite
+        assert async_url.startswith("sqlite+aiosqlite:///")
         assert "+aiosqlite" not in sync_url
-        assert "sqlite://" in sync_url or "sqlite:///" in sync_url
+        assert sync_url.startswith("sqlite:///")
+
+    def test_runtime_adapter_applies_required_sqlite_pragmas(self, tmp_path):
+        """Production engines must enforce integrity and bounded writer waiting."""
+        from sqlalchemy import text
+        from src.storage.database_adapter import build_database_adapter
+
+        adapter = build_database_adapter("sqlite", None, str(tmp_path / "adapter.db"))
+        engine = adapter.create_migration_engine()
+        try:
+            with engine.connect() as connection:
+                assert connection.execute(text("PRAGMA foreign_keys")).scalar_one() == 1
+                assert connection.execute(text("PRAGMA busy_timeout")).scalar_one() == 5000
+                assert connection.execute(text("PRAGMA journal_mode")).scalar_one() == "wal"
+        finally:
+            engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_async_adapter_applies_required_sqlite_pragmas(self, tmp_path):
+        from sqlalchemy import text
+        from src.storage.database_adapter import build_database_adapter
+
+        adapter = build_database_adapter("sqlite", None, str(tmp_path / "async-adapter.db"))
+        engine = adapter.create_async_engine()
+        try:
+            async with engine.connect() as connection:
+                assert (await connection.execute(text("PRAGMA foreign_keys"))).scalar_one() == 1
+                assert (await connection.execute(text("PRAGMA busy_timeout"))).scalar_one() == 5000
+                assert (await connection.execute(text("PRAGMA journal_mode"))).scalar_one() == "wal"
+        finally:
+            await engine.dispose()
 
 
 class TestCreateDbAndTables:
     """Test create_db_and_tables function."""
 
     @pytest.mark.asyncio
-    async def test_create_db_and_tables_creates_schema(self):
+    async def test_create_db_and_tables_creates_schema(self, tmp_path):
         """Test that create_db_and_tables creates all SQLModel tables."""
-        from src.database import create_db_and_tables, get_engine
-        from sqlmodel import SQLModel, Field
-        from typing import Optional
+        from sqlalchemy import text
+        from src.database import create_db_and_tables, get_engine, set_engine
+        from src.storage.database_adapter import build_database_adapter
 
-        # Define a test model
-        class TempModel(SQLModel, table=True):
-            __tablename__ = "temp_test_table"
-            id: Optional[int] = Field(default=None, primary_key=True)
-            value: str = Field()
-
-        # Create tables
-        await create_db_and_tables()
-
-        # Verify table was created
-        engine = get_engine()
-        async with engine.begin() as conn:
-            from sqlalchemy import text
-            result = await conn.execute(
-                text("SELECT name FROM sqlite_master WHERE type='table' AND name='temp_test_table'")
-            )
-            table = result.fetchone()
-
-        assert table is not None
-        assert table[0] == "temp_test_table"
+        previous_engine = get_engine()
+        adapter = build_database_adapter("sqlite", None, str(tmp_path / "create-all.db"))
+        isolated_engine = adapter.create_async_engine()
+        set_engine(isolated_engine)
+        try:
+            await create_db_and_tables()
+            async with isolated_engine.begin() as connection:
+                result = await connection.execute(
+                    text("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+                )
+                assert result.scalar_one() == "users"
+        finally:
+            set_engine(previous_engine)
+            await isolated_engine.dispose()

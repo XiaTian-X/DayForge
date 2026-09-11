@@ -40,8 +40,8 @@ from src.v2.models import (  # noqa: F401
     UserSyncPolicy,
 )
 
-# Import database URL configuration
-from src.config import get_database_url
+# Import the validated synchronous migration URL from the storage adapter.
+from src.config import get_migration_database_url
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -50,10 +50,7 @@ config = context.config
 # Set sqlalchemy.url from environment only if not already set in config
 # This allows tests to override the URL via config.set_main_option()
 if config.get_main_option("sqlalchemy.url") is None or config.get_main_option("sqlalchemy.url") == "driver://user:pass@localhost/dbname":
-    # Override sqlalchemy.url with the configured database URL
-    # For SQLite, replace +aiosqlite with empty string for sync engine
-    db_url = get_database_url().replace("+aiosqlite", "")
-    config.set_main_option("sqlalchemy.url", db_url)
+    config.set_main_option("sqlalchemy.url", get_migration_database_url())
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.

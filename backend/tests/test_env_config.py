@@ -43,13 +43,15 @@ async def test_settings_override_with_env(clean_env):
     """Set env var, create Settings, verify override."""
     # Set environment variable
     os.environ["JWT_SECRET_KEY"] = "custom-secret-key-from-env"
-    os.environ["DATABASE_TYPE"] = "postgresql"
+    os.environ["DATABASE_TYPE"] = "sqlite"
+    os.environ["SQLITE_DB_PATH"] = "./custom-env.db"
     os.environ["CORS_ORIGINS"] = '["https://example.com"]'
 
     settings = Settings()
 
     assert settings.JWT_SECRET_KEY == "custom-secret-key-from-env"
-    assert settings.DATABASE_TYPE == "postgresql"
+    assert settings.DATABASE_TYPE == "sqlite"
+    assert settings.SQLITE_DB_PATH == "./custom-env.db"
     assert settings.CORS_ORIGINS == ["https://example.com"]
 
 
