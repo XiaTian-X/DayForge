@@ -9,10 +9,10 @@ import com.dayforge.data.local.dao.HabitDao
 import com.dayforge.data.local.dao.HabitMetricLinkDao
 import com.dayforge.data.local.dao.MetricDao
 import com.dayforge.data.local.dao.MetricLogDao
-import com.dayforge.domain.service.StructuralEditGuard
 import com.dayforge.data.local.entity.HabitMetricLinkEntity
 import com.dayforge.data.local.entity.MetricEntity
 import com.dayforge.data.local.entity.MetricLogEntity
+import com.dayforge.data.repository.MetricRepository
 import com.dayforge.domain.util.isOnline
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -88,7 +88,7 @@ class MetricDetailViewModel @Inject constructor(
     private val metricLogDao: MetricLogDao,
     private val habitMetricLinkDao: HabitMetricLinkDao,
     private val habitDao: HabitDao,
-    private val structuralEditGuard: StructuralEditGuard,
+    private val metricRepository: MetricRepository,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
@@ -179,14 +179,7 @@ class MetricDetailViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                val log = com.dayforge.data.local.entity.MetricLogEntity(
-                    metricId = metric.id,
-                    date = System.currentTimeMillis(),
-                    value = value,
-                    unit = metric.unit,
-                    note = note
-                )
-                metricLogDao.insert(log)
+                metricRepository.recordValue(metric.id, value, note)
 
                 // Update UI state
                 _uiState.value = _uiState.value.copy(
@@ -212,12 +205,11 @@ class MetricDetailViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                structuralEditGuard.requireAllowed()
                 val updatedMetric = metric.copy(
                     aggregationType = aggregationType,
                     updatedAt = System.currentTimeMillis()
                 )
-                metricDao.update(updatedMetric)
+                metricRepository.updateMetric(updatedMetric)
                 // The UI will update automatically via observeMetric()
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
@@ -254,9 +246,8 @@ class MetricDetailViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                structuralEditGuard.requireAllowed()
                 // Offline-safe: Room cascades and the v2 outbox are committed together.
-                metricDao.delete(metric)
+                metricRepository.deleteMetric(metric)
                 _uiState.value = _uiState.value.copy(
                     isDeleted = true,
                     showDeleteConfirm = false
@@ -294,11 +285,7 @@ class MetricDetailViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                structuralEditGuard.requireAllowed()
-                val link = habitMetricLinkDao.getById(linkId)
-                if (link != null) {
-                    habitMetricLinkDao.delete(link)
-                }
+                metricRepository.unlinkHabit(linkId)
                 _uiState.value = _uiState.value.copy(showUnlinkConfirm = null)
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
@@ -377,19 +364,7 @@ class MetricDetailViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                structuralEditGuard.requireAllowed()
-                selectedIds.forEach { habitId ->
-                    val habit = habitDao.getHabitById(habitId) ?: return@forEach
-                    val link = HabitMetricLinkEntity(
-                        habitId = habitId,
-                        habitUuid = habit.uuid,
-                        metricId = metricId,
-                        metricUuid = metric.uuid,
-                        showInHabitDetail = true,
-                        promptOnComplete = true
-                    )
-                    habitMetricLinkDao.insert(link)
-                }
+                metricRepository.linkHabits(metric, selectedIds)
                 _uiState.value = _uiState.value.copy(
                     showLinkHabit = false,
                     availableHabits = emptyList(),

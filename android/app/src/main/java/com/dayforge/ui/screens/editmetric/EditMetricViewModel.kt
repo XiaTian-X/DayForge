@@ -5,10 +5,9 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.dayforge.R
-import com.dayforge.data.local.PreferencesManager
-import com.dayforge.domain.service.StructuralEditGuard
 import com.dayforge.data.local.dao.MetricDao
-import com.dayforge.data.local.entity.MetricEntity
+import com.dayforge.data.repository.DuplicateMetricNameException
+import com.dayforge.data.repository.MetricRepository
 import com.dayforge.util.NumericInputUtils
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -73,8 +72,7 @@ data class EditMetricUiState(
 class EditMetricViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val metricDao: MetricDao,
-    private val preferencesManager: PreferencesManager,
-    private val structuralEditGuard: StructuralEditGuard,
+    private val metricRepository: MetricRepository,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
@@ -269,7 +267,6 @@ class EditMetricViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                structuralEditGuard.requireAllowed()
                 val existingMetric = metricDao.getMetricById(metricId)
                 if (existingMetric == null) {
                     _uiState.value = _uiState.value.copy(
@@ -309,7 +306,7 @@ class EditMetricViewModel @Inject constructor(
                     updatedAt = System.currentTimeMillis()
                 )
 
-                metricDao.update(updatedMetric)
+                metricRepository.updateMetric(updatedMetric)
 
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,
@@ -317,6 +314,11 @@ class EditMetricViewModel @Inject constructor(
                     showIconPicker = false,
                     showColorPicker = false,
                     showUnitPicker = false
+                )
+            } catch (_: DuplicateMetricNameException) {
+                _uiState.value = _uiState.value.copy(
+                    isSaving = false,
+                    showDuplicateDialog = true
                 )
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(

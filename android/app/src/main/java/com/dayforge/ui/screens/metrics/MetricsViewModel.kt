@@ -7,8 +7,8 @@ import androidx.lifecycle.viewModelScope
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.dao.MetricDao
 import com.dayforge.data.local.dao.MetricLogDao
+import com.dayforge.data.repository.MetricRepository
 import com.dayforge.domain.model.CardColorStyle
-import com.dayforge.domain.service.StructuralEditGuard
 import com.dayforge.ui.screens.dashboard.MetricWithLatestValue
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -31,7 +31,7 @@ class MetricsViewModel @Inject constructor(
     private val metricDao: MetricDao,
     private val metricLogDao: MetricLogDao,
     private val preferencesManager: PreferencesManager,
-    private val structuralEditGuard: StructuralEditGuard
+    private val metricRepository: MetricRepository
 ) : ViewModel() {
 
     // Track if data has been loaded at least once
@@ -90,8 +90,7 @@ class MetricsViewModel @Inject constructor(
     fun updateAggregationType(metricId: Long, aggregationType: String) {
         viewModelScope.launch {
             runCatching {
-                structuralEditGuard.requireAllowed()
-                metricDao.updateAggregationType(metricId, aggregationType)
+                metricRepository.updateAggregationType(metricId, aggregationType)
             }.onFailure {
                 Toast.makeText(context, it.message ?: "当前设备不能修改指标配置", Toast.LENGTH_LONG).show()
             }

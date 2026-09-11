@@ -1,5 +1,6 @@
 package com.dayforge.domain.service
 
+import androidx.room.withTransaction
 import com.dayforge.data.export.ConfigMapper
 import com.dayforge.data.export.dto.ConfigExportDto
 import com.dayforge.data.local.HabitDatabase
@@ -23,7 +24,7 @@ import javax.inject.Singleton
  * 3. Insert in dependency order: metrics → habits → links
  * 4. Resolve UUID → local ID for links
  *
- * Import uses Room @Transaction for atomic rollback on failure.
+ * Import uses a Room database transaction for atomic rollback on failure.
  * Per IMPORT-05: Failed import leaves existing data unchanged.
  */
 @Singleton
@@ -77,7 +78,7 @@ class ConfigImportService @Inject constructor(
             }
 
             // 3. Execute import in transaction
-            executeImport(config)
+            database.withTransaction { executeImport(config) }
             Result.success(Unit)
         } catch (e: SerializationException) {
             Result.failure(IllegalArgumentException("Invalid JSON format: ${e.message}", e))
@@ -91,9 +92,8 @@ class ConfigImportService @Inject constructor(
     /**
      * Execute import within a transaction.
      * Per IMPORT-06: Insert in dependency order (metrics → habits → links).
-     * Room @Transaction ensures atomic rollback on failure.
+     * The caller's Room database transaction ensures atomic rollback on failure.
      */
-    @androidx.room.Transaction
     private suspend fun executeImport(config: ConfigExportDto) {
         // 1. Clear existing data (in dependency reverse order)
         linkDao.deleteAll()

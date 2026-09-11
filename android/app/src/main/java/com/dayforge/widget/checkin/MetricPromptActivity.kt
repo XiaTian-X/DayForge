@@ -11,7 +11,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.PreferencesManager
-import com.dayforge.data.local.entity.MetricLogEntity
+import com.dayforge.data.repository.MetricRepository
+import com.dayforge.data.repository.MetricValueDraft
 import com.dayforge.domain.service.TimerService
 import com.dayforge.ui.components.LinkedMetricInfo
 import com.dayforge.ui.components.PostCheckInDialog
@@ -37,6 +38,9 @@ class MetricPromptActivity : ComponentActivity() {
 
     @Inject
     lateinit var preferencesManager: PreferencesManager
+
+    @Inject
+    lateinit var metricRepository: MetricRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -90,21 +94,11 @@ class MetricPromptActivity : ComponentActivity() {
                             lifecycleScope.launch {
                                 try {
                                     withContext(Dispatchers.IO) {
-                                        val recordedAt = System.currentTimeMillis()
-                                        val logs = values.mapNotNull { input ->
-                                            val metric = habitDatabase.metricDao()
-                                                .getMetricById(input.metricId) ?: return@mapNotNull null
-                                            MetricLogEntity(
-                                                metricId = input.metricId,
-                                                date = recordedAt,
-                                                value = input.value,
-                                                unit = metric.unit,
-                                                note = input.note
-                                            )
-                                        }
-                                        if (logs.isNotEmpty()) {
-                                            habitDatabase.metricLogDao().insertAll(logs)
-                                        }
+                                        metricRepository.recordValues(
+                                            values.map { input ->
+                                                MetricValueDraft(input.metricId, input.value, input.note)
+                                            }
+                                        )
                                         if (neverAskAgain) {
                                             preferencesManager.setNeverAskAgain(habitId, true)
                                         }

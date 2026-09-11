@@ -2,7 +2,6 @@ package com.dayforge.ui.screens.edithabit
 
 import android.content.Context
 import android.database.sqlite.SQLiteConstraintException
-import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.dayforge.R
@@ -13,7 +12,6 @@ import com.dayforge.data.local.dao.HabitMetricLinkDao
 import com.dayforge.data.local.dao.MetricDao
 import com.dayforge.data.local.dao.TimeLogDao
 import com.dayforge.data.local.entity.HabitEntity
-import com.dayforge.data.local.entity.HabitMetricLinkEntity
 import com.dayforge.data.local.entity.MetricEntity
 import com.dayforge.data.model.FailMode
 import com.dayforge.data.model.HabitSchedule
@@ -505,54 +503,19 @@ class EditHabitViewModel @Inject constructor(
                     bestTime = _uiState.value.bestTime
                 )
                 if (updatedHabit != null) {
-                    habitRepository.updateHabit(updatedHabit, context)
+                    habitRepository.updateHabit(
+                        updatedHabit,
+                        context,
+                        selectedMetricIds = currentState.selectedMetricIds
+                    )
                     originalHabit = updatedHabit.copy(parentHabitId = currentState.selectedParentUuid)
-
-                    // Handle metric link delta AFTER successful habit update (separate try-catch)
-                    try {
-                        val selectedIds = currentState.selectedMetricIds
-                        val originalIds = currentState.originalLinkedMetricIds
-
-                        // Delete links for metrics no longer selected
-                        for (metricId in originalIds) {
-                            if (metricId !in selectedIds) {
-                                val link = habitMetricLinkDao.getLink(currentState.habitId, metricId)
-                                if (link != null) {
-                                    habitMetricLinkDao.delete(link)
-                                }
-                            }
-                        }
-
-                        // Insert new links for metrics added
-                        for (metricId in selectedIds) {
-                            if (metricId !in originalIds) {
-                                val metric = metricDao.getMetricById(metricId)
-                                if (metric != null) {
-                                    val link = HabitMetricLinkEntity(
-                                        habitId = currentState.habitId,
-                                        habitUuid = updatedHabit.uuid,
-                                        metricId = metricId,
-                                        metricUuid = metric.uuid,
-                                        coefficient = 1.0,
-                                        showInHabitDetail = true,
-                                        promptOnComplete = true
-                                    )
-                                    habitMetricLinkDao.insertOrIgnore(link)
-                                }
-                            }
-                        }
-
-                        // Update originalLinkedMetricIds to reflect saved state
-                        _uiState.value = _uiState.value.copy(originalLinkedMetricIds = selectedIds)
-                    } catch (e: Exception) {
-                        Log.w("EditHabitViewModel", "Failed to update metric links", e)
-                    }
 
                     _uiState.value = _uiState.value.copy(
                         isSaving = false,
                         hasChanges = false,
                         saved = true,
-                        parentHabitUuid = currentState.selectedParentUuid
+                        parentHabitUuid = currentState.selectedParentUuid,
+                        originalLinkedMetricIds = currentState.selectedMetricIds
                     )
                     onSaved()
                 } else {

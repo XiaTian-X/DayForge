@@ -8,6 +8,8 @@ import com.dayforge.data.local.dao.HabitDao
 import com.dayforge.data.local.dao.CompletionDao
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.CompletionEntity
+import com.dayforge.data.local.entity.HabitMetricLinkEntity
+import com.dayforge.data.local.entity.MetricEntity
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.service.StreakCalculator
@@ -188,6 +190,42 @@ class HabitRepositoryTest {
         repository.deleteHabit(habit)
 
         assertNull("Habit should be deleted locally", habitDao.getHabitById(habitId))
+    }
+
+    @Test
+    fun updateHabit_withMissingMetric_rollsBackHabitAndExistingLinks() = runTest {
+        val habitId = repository.createHabit(
+            name = "Original",
+            description = "",
+            habitType = HabitType.CHECK_IN,
+            iconResId = 1,
+            colorHex = "#2196F3",
+            schedule = HabitSchedule.Daily
+        )
+        val metricId = database.metricDao().insert(
+            MetricEntity(name = "Weight", unit = "kg", iconResId = 1, colorHex = "#2196F3")
+        )
+        val habit = habitDao.getHabitById(habitId)!!
+        val metric = database.metricDao().getMetricById(metricId)!!
+        database.habitMetricLinkDao().insert(
+            HabitMetricLinkEntity(
+                habitId = habitId,
+                habitUuid = habit.uuid,
+                metricId = metricId,
+                metricUuid = metric.uuid
+            )
+        )
+
+        val failure = runCatching {
+            repository.updateHabit(
+                habit.copy(name = "Changed"),
+                selectedMetricIds = setOf(metricId, Long.MAX_VALUE)
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is IllegalArgumentException)
+        assertEquals("Original", habitDao.getHabitById(habitId)?.name)
+        assertNotNull(database.habitMetricLinkDao().getLink(habitId, metricId))
     }
 
     @Test

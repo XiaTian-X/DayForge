@@ -4,14 +4,12 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.dayforge.R
-import com.dayforge.data.local.PreferencesManager
-import com.dayforge.domain.service.StructuralEditGuard
 import com.dayforge.data.local.dao.HabitDao
-import com.dayforge.data.local.dao.HabitMetricLinkDao
 import com.dayforge.data.local.dao.MetricDao
 import com.dayforge.data.local.entity.HabitEntity
-import com.dayforge.data.local.entity.HabitMetricLinkEntity
 import com.dayforge.data.local.entity.MetricEntity
+import com.dayforge.data.repository.DuplicateMetricNameException
+import com.dayforge.data.repository.MetricRepository
 import com.dayforge.util.NumericInputUtils
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -79,11 +77,9 @@ data class CreateMetricUiState(
 @HiltViewModel
 class CreateMetricViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val metricRepository: MetricRepository,
     private val metricDao: MetricDao,
-    private val habitDao: HabitDao,
-    private val habitMetricLinkDao: HabitMetricLinkDao,
-    private val preferencesManager: PreferencesManager,
-    private val structuralEditGuard: StructuralEditGuard
+    private val habitDao: HabitDao
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(CreateMetricUiState())
@@ -293,7 +289,6 @@ class CreateMetricViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                structuralEditGuard.requireAllowed()
                 // Check for duplicate name
                 val trimmedName = currentState.name.trim()
                 val existingMetric = metricDao.getMetricByName(trimmedName)
@@ -324,22 +319,7 @@ class CreateMetricViewModel @Inject constructor(
                     uuid = metricUuid
                 )
 
-                val metricId = metricDao.insert(metric)
-
-                // Create habit-metric links for selected habits (D-08, D-09)
-                currentState.selectedHabitIds.forEach { habitId ->
-                    val habit = habitDao.getHabitById(habitId) ?: return@forEach
-                    val link = HabitMetricLinkEntity(
-                        habitId = habitId,
-                        habitUuid = habit.uuid,
-                        metricId = metricId,
-                        metricUuid = metricUuid,
-                        coefficient = 1.0,  // D-11: Default coefficient
-                        showInHabitDetail = true,  // D-10: Default visibility
-                        promptOnComplete = true   // D-10: Default prompt
-                    )
-                    habitMetricLinkDao.insert(link)
-                }
+                val metricId = metricRepository.createMetric(metric, currentState.selectedHabitIds)
 
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,
@@ -347,6 +327,11 @@ class CreateMetricViewModel @Inject constructor(
                     showIconPicker = false,
                     showColorPicker = false,
                     showUnitPicker = false
+                )
+            } catch (_: DuplicateMetricNameException) {
+                _uiState.value = _uiState.value.copy(
+                    isSaving = false,
+                    showDuplicateDialog = true
                 )
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
