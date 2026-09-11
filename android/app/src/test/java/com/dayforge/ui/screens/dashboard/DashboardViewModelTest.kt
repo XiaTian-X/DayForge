@@ -13,6 +13,7 @@ import com.dayforge.data.local.dao.MetricDao
 import com.dayforge.data.local.dao.MetricLogDao
 import com.dayforge.data.local.dao.TimeLogDao
 import com.dayforge.data.local.entity.TimeLogEntity
+import com.dayforge.data.model.FailMode
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.HabitRepository
@@ -22,6 +23,7 @@ import com.dayforge.domain.service.CheckInService
 import com.dayforge.domain.service.ActiveTimerStateProvider
 import com.dayforge.domain.service.FailureChecker
 import com.dayforge.domain.service.HabitStatusCalculator
+import com.dayforge.domain.service.HabitLifecycleCoordinator
 import com.dayforge.domain.service.HabitTimerCoordinator
 import com.dayforge.domain.service.MetricOverviewProvider
 import com.dayforge.domain.service.StructuralEditGuard
@@ -35,12 +37,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -116,6 +121,7 @@ class DashboardViewModelTest {
             checkInService,
             DashboardHabitListBuilder(habitStatusCalculator),
             DashboardTimeWindowTicker(repository, mockPreferencesManager),
+            HabitLifecycleCoordinator(context, repository),
             HabitTimerCoordinator(
                 TimerManager(context, habitDao, timeLogDao),
                 ActiveTimerStateProvider(timeLogDao, repository, context)
@@ -509,6 +515,55 @@ class DashboardViewModelTest {
 
             pendingMetricHabitsFlow.value = setOf(habitId)
             assertEquals(listOf(habitId), awaitItem().map { it.habit.id })
+        }
+    }
+
+    @Test
+    fun goalAndReactivationDialogs_preserveLifecycleState() = runTest {
+        viewModel.habitsWithStats.test {
+            awaitItem()
+            val habitId = repository.createHabit(
+                name = "Target habit",
+                description = "",
+                habitType = HabitType.CHECK_IN,
+                iconResId = 1,
+                colorHex = "#2196F3",
+                schedule = HabitSchedule.Daily,
+                targetValue = 1,
+                targetCycles = 1
+            )
+            while (awaitItem().none { it.habit.id == habitId }) {
+                // Wait until the lazily shared dashboard state contains the new habit.
+            }
+
+            viewModel.checkIn(habitId)
+            awaitGoalDialogVisibility(visible = true)
+            assertEquals(habitId, viewModel.goalHabitId.value)
+            assertEquals(1, viewModel.goalProgress.value)
+            assertEquals(1, viewModel.goalTarget.value)
+
+            viewModel.dismissGoalDialog()
+            awaitGoalDialogVisibility(visible = false)
+            assertEquals(FailMode.LOOSE, repository.getHabitById(habitId)?.failMode)
+
+            viewModel.showReactivationDialog(habitId)
+            assertTrue(viewModel.showReactivationDialog.value)
+            assertEquals(habitId, viewModel.reactivationHabitId.value)
+            assertEquals("Target habit", viewModel.reactivationHabitName.value)
+
+            viewModel.dismissReactivationDialog()
+            assertFalse(viewModel.showReactivationDialog.value)
+            assertNull(viewModel.reactivationHabitId.value)
+            assertEquals("", viewModel.reactivationHabitName.value)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    private suspend fun awaitGoalDialogVisibility(visible: Boolean) {
+        withContext(Dispatchers.Default.limitedParallelism(1)) {
+            withTimeout(5_000) {
+                viewModel.showGoalDialog.first { it == visible }
+            }
         }
     }
 }
