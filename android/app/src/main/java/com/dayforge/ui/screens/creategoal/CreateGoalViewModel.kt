@@ -1,4 +1,4 @@
-package com.dayforge.ui.screens.creatgoal
+package com.dayforge.ui.screens.creategoal
 
 import android.content.Context
 import androidx.lifecycle.ViewModel
