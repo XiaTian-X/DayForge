@@ -1,6 +1,7 @@
 package com.dayforge.ui.screens.habitdetail
 
 import androidx.room.Room
+import androidx.lifecycle.ViewModelStore
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.local.HabitDatabase
@@ -23,7 +24,13 @@ import com.dayforge.data.repository.HabitRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.job
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -39,18 +46,17 @@ import java.util.TimeZone
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [26])
+@OptIn(ExperimentalCoroutinesApi::class)
 class HabitDetailViewModelTest {
 
-    private val testDispatcher = UnconfinedTestDispatcher()
+    private val testDispatcher = StandardTestDispatcher()
+    private val viewModelStore = ViewModelStore()
+    private val dataStoreScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private lateinit var dataStoreFile: File
 
     @Before
     fun setupDispatcher() {
         Dispatchers.setMain(testDispatcher)
-    }
-
-    @After
-    fun teardownDispatcher() {
-        Dispatchers.resetMain()
     }
 
     private lateinit var viewModel: HabitDetailViewModel
@@ -81,18 +87,23 @@ class HabitDetailViewModelTest {
         habitMetricLinkDao = database.habitMetricLinkDao()
 
         // Create test DataStore for PreferencesManager
-        testDataStore = PreferenceDataStoreFactory.create(
-            produceFile = { File(context.cacheDir, "test_habit_detail_preferences.preferences_pb") }
-        )
+        dataStoreFile = File(context.cacheDir, "habit_detail_${java.util.UUID.randomUUID()}.preferences_pb")
+        testDataStore = PreferenceDataStoreFactory.create(scope = dataStoreScope, produceFile = { dataStoreFile })
         preferencesManager = PreferencesManager(testDataStore)
 
         repository = HabitRepository(habitDao, completionDao, timeLogDao, database)
         viewModel = HabitDetailViewModel(context, repository, preferencesManager, timeLogDao, completionDao, habitDao, habitMetricLinkDao, metricDao, metricLogDao)
+        viewModelStore.put("detail", viewModel)
     }
 
     @After
     fun teardown() {
+        viewModelStore.clear()
+        testDispatcher.scheduler.runCurrent()
+        runBlocking { dataStoreScope.coroutineContext.job.cancelAndJoin() }
         database.close()
+        dataStoreFile.delete()
+        Dispatchers.resetMain()
     }
 
     @Test
@@ -109,9 +120,7 @@ class HabitDetailViewModelTest {
         )
 
         viewModel.loadHabit(habitId)
-        testDispatcher.scheduler.advanceUntilIdle()
-        delay(100)
-        testDispatcher.scheduler.advanceUntilIdle()
+        awaitState { !it.isLoading && it.habit?.id == habitId }
 
         val state = viewModel.uiState.value
         assertEquals("Habit ID should match", habitId, state.habitId)
@@ -134,15 +143,11 @@ class HabitDetailViewModelTest {
         )
 
         viewModel.loadHabit(habitId)
-        testDispatcher.scheduler.advanceUntilIdle()
-        delay(100)
-        testDispatcher.scheduler.advanceUntilIdle()
+        awaitState { !it.isLoading && it.habit?.id == habitId }
 
         // Log completion
         viewModel.logCompletion(1)
-        testDispatcher.scheduler.advanceUntilIdle()
-        delay(100)
-        testDispatcher.scheduler.advanceUntilIdle()
+        awaitState { it.lastCompletionId != null }
 
         val state = viewModel.uiState.value
         assertNotNull("lastCompletionId should be set after logging", state.lastCompletionId)
@@ -162,15 +167,11 @@ class HabitDetailViewModelTest {
         )
 
         viewModel.loadHabit(habitId)
-        testDispatcher.scheduler.advanceUntilIdle()
-        delay(100)
-        testDispatcher.scheduler.advanceUntilIdle()
+        awaitState { !it.isLoading && it.habit?.id == habitId }
 
         // Log completion
         viewModel.logCompletion(1)
-        testDispatcher.scheduler.advanceUntilIdle()
-        delay(100)
-        testDispatcher.scheduler.advanceUntilIdle()
+        awaitState { it.lastCompletionId != null }
 
         val loggedState = viewModel.uiState.value
         val completionId = loggedState.lastCompletionId
@@ -178,12 +179,11 @@ class HabitDetailViewModelTest {
 
         // Undo completion
         viewModel.undoCompletion()
-        testDispatcher.scheduler.advanceUntilIdle()
-        delay(100)
-        testDispatcher.scheduler.advanceUntilIdle()
+        awaitState { it.lastCompletionId == null && it.completions.isEmpty() }
 
         val undoneState = viewModel.uiState.value
         assertNull("lastCompletionId should be null after undo", undoneState.lastCompletionId)
+        assertNull("Undo must also delete the persisted record", completionDao.getCompletionById(completionId!!))
     }
 
     @Test
@@ -217,15 +217,22 @@ class HabitDetailViewModelTest {
         completionDao.insert(CompletionEntity(habitId = habitId, date = calendar.timeInMillis, value = 1))
 
         viewModel.loadHabit(habitId)
-        testDispatcher.scheduler.advanceUntilIdle()
-        delay(100)
-        testDispatcher.scheduler.advanceUntilIdle()
+        awaitState { !it.isLoading && it.completions.size == 3 }
 
         // Get streak stats
         val stats = viewModel.getStreakStats()
         assertNotNull("Streak stats should not be null", stats)
         assertEquals("Current streak should be 3", 3, stats?.currentStreak)
         assertEquals("Best streak should be 3", 3, stats?.bestStreak)
+    }
+
+    private suspend fun awaitState(predicate: (HabitDetailUiState) -> Boolean) = withTimeout(10_000) {
+        while (true) {
+            testDispatcher.scheduler.runCurrent()
+            if (predicate(viewModel.uiState.value)) break
+            // Room/DataStore use real I/O threads; wait for observable completion, not a fixed guess.
+            delay(10)
+        }
     }
 
     @Test

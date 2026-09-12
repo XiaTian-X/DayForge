@@ -71,7 +71,7 @@ fun MetricValueInput(
         val trimmed = input.trim()
 
         // Check for valid number format
-        val doubleValue = trimmed.toDoubleOrNull()
+        val doubleValue = NumericInputUtils.parseFiniteDouble(trimmed)
         if (doubleValue == null) {
             validationError = context.getString(R.string.metric_input_error_invalid_number)
             return null
