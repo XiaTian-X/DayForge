@@ -53,7 +53,7 @@ class TimerActionCallback : ActionCallback {
                 // Check if already completed today
                 val habit = database.habitDao().getHabitById(habitId)
                 val todayStart = DateTimeUtils.startOfDayMillis()
-                val todayEnd = todayStart + DateTimeUtils.MILLIS_PER_DAY
+                val todayEnd = DateTimeUtils.startOfNextDayMillis(todayStart)
                 val completedSeconds = database.timeLogDao().getCompletedDurationSecondsForDate(
                     habitId, java.time.LocalDate.now().toString(), todayStart, todayEnd
                 )

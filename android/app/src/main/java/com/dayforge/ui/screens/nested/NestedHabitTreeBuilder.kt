@@ -92,7 +92,7 @@ class NestedHabitTreeBuilder @Inject constructor(
                 timeLogDao.getAllTimeLogsForHabit(child.id)
             }
             val todayStart = DateTimeUtils.startOfDayMillis()
-            val todayEnd = todayStart + DateTimeUtils.MILLIS_PER_DAY
+            val todayEnd = DateTimeUtils.startOfNextDayMillis(todayStart)
             val todayLogs = allTimeLogs.filter { it.date in todayStart until todayEnd }
             val targetSeconds = child.targetValue * 60
             val completedDates = allTimeLogs

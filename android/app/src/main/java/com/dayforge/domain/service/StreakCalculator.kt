@@ -2,6 +2,9 @@ package com.dayforge.domain.service
 
 import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.util.DateTimeUtils
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
 
 object StreakCalculator {
 
@@ -34,19 +37,18 @@ object StreakCalculator {
      * @param dates List of timestamps (millis since epoch)
      * @return Number of consecutive days ending today or yesterday
      */
-    fun calculateCurrentStreakFromDates(dates: List<Long>): Int {
+    fun calculateCurrentStreakFromDates(dates: List<Long>, today: LocalDate = DateTimeUtils.today()): Int {
         if (dates.isEmpty()) return 0
 
         // Get distinct dates (normalized to day boundaries using local timezone) sorted descending
         val completedDays = dates
-            .map { DateTimeUtils.normalizeToDay(it) }
+            .map { Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate() }
             .distinct()
             .sortedDescending()
 
         if (completedDays.isEmpty()) return 0
 
-        val today = DateTimeUtils.startOfDayMillis()
-        val yesterday = today - DateTimeUtils.MILLIS_PER_DAY
+        val yesterday = today.minusDays(1)
 
         // Determine the starting day for streak calculation
         // Streak can start from today or yesterday
@@ -63,7 +65,7 @@ object StreakCalculator {
             when {
                 completedDay == expectedDay -> {
                     streak++
-                    expectedDay -= DateTimeUtils.MILLIS_PER_DAY
+                    expectedDay = expectedDay.minusDays(1)
                 }
                 completedDay < expectedDay -> {
                     // Gap found, streak ends
@@ -105,7 +107,7 @@ object StreakCalculator {
 
         // Get distinct dates (normalized to day boundaries using local timezone) sorted ascending
         val days = dates
-            .map { DateTimeUtils.normalizeToDay(it) }
+            .map { Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate() }
             .distinct()
             .sorted()
 
@@ -113,7 +115,7 @@ object StreakCalculator {
         var currentStreak = 1
 
         for (i in 1 until days.size) {
-            if (days[i] - days[i - 1] == DateTimeUtils.MILLIS_PER_DAY) {
+            if (days[i] == days[i - 1].plusDays(1)) {
                 currentStreak++
                 bestStreak = maxOf(bestStreak, currentStreak)
             } else {

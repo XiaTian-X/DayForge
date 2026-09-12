@@ -164,7 +164,7 @@ class TimerWidget : GlanceAppWidget() {
             // Calculate today's accumulated seconds (completed sessions only)
             // Use local timezone to match how TimeLogEntity.date is stored
             val today = DateTimeUtils.startOfDayMillis()
-            val tomorrow = today + DateTimeUtils.MILLIS_PER_DAY
+            val tomorrow = DateTimeUtils.startOfNextDayMillis(today)
 
             // Add current session elapsed time to accumulated if timer is running/paused
             val accumulatedFromCompleted = timeLogDao.getCompletedDurationSecondsForDate(
