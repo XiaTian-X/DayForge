@@ -30,6 +30,7 @@ import com.dayforge.domain.service.CheckInService
 import com.dayforge.domain.service.ActiveTimerStateProvider
 import com.dayforge.domain.service.FailureChecker
 import com.dayforge.domain.service.HabitCompletionCoordinator
+import com.dayforge.domain.service.HabitDeletionCoordinator
 import com.dayforge.domain.service.HabitLifecycleCoordinator
 import com.dayforge.domain.service.HabitTimerCoordinator
 import com.dayforge.domain.service.TimerManager
@@ -142,6 +143,7 @@ class NestedViewModelTest {
                 habitRepository,
                 metricRepository
             ),
+            deletionCoordinator = HabitDeletionCoordinator(context, habitRepository),
             preferencesManager = preferencesManager,
             metricCoordinator = metricCoordinator,
             lifecycleCoordinator = HabitLifecycleCoordinator(context, habitRepository),
