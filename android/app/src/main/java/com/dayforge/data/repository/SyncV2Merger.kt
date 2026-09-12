@@ -411,16 +411,23 @@ class SyncV2Merger(
             timeLogDao.replaceDayAllocations(change.entityUuid, allocations)
         } else {
             val existing = completionDao.getCompletionByUuid(change.entityUuid)
+            val (occurredAt, timezone, localDate) = factTime(change)
             completionDao.upsert(
                 CompletionEntity(
                     id = existing?.id ?: 0,
                     habitId = habit.id,
                     date = date,
                     value = payload.double("value")?.toInt() ?: 1,
-                    actualCompletedAt = payload.instantMillis("occurred_at"),
+                    actualCompletedAt = occurredAt,
                     uuid = change.entityUuid,
                     habitUuid = habit.uuid,
-                    createdAt = payload.instantMillis("created_at") ?: System.currentTimeMillis()
+                    createdAt = payload.instantMillis("created_at") ?: System.currentTimeMillis(),
+                    recordedTimezone = timezone,
+                    recordedLocalDate = localDate,
+                    timeMetadataSource = existing?.takeIf {
+                        (it.actualCompletedAt ?: it.date) == occurredAt &&
+                            it.recordedTimezone == timezone && it.recordedLocalDate == localDate
+                    }?.timeMetadataSource ?: "server"
                 )
             )
         }
@@ -457,21 +464,37 @@ class SyncV2Merger(
         val metric = metricDao.getMetricByUuid(metricUuid)
             ?: invalidChange(change, "metric dependency $metricUuid is missing")
         val existing = metricLogDao.getLogByUuid(change.entityUuid)
+        val (occurredAt, timezone, localDate) = factTime(change)
         metricLogDao.upsert(
             MetricLogEntity(
                 id = existing?.id ?: 0,
                 metricId = metric.id,
-                date = payload.instantMillis("occurred_at")
-                    ?: payload.localDateMillis("local_date")
-                    ?: System.currentTimeMillis(),
+                date = occurredAt,
                 value = payload.double("value") ?: invalidChange(change, "missing observation value"),
                 unit = payload.string("unit") ?: metric.unit,
                 note = payload.string("note") ?: "",
                 uuid = change.entityUuid,
                 createdAt = payload.instantMillis("created_at") ?: System.currentTimeMillis(),
-                updatedAt = payload.instantMillis("updated_at") ?: System.currentTimeMillis()
+                updatedAt = payload.instantMillis("updated_at") ?: System.currentTimeMillis(),
+                recordedTimezone = timezone,
+                recordedLocalDate = localDate,
+                timeMetadataSource = existing?.takeIf {
+                    it.date == occurredAt && it.recordedTimezone == timezone && it.recordedLocalDate == localDate
+                }?.timeMetadataSource ?: "server"
             )
         )
+    }
+
+    private fun factTime(change: SyncV2Change): Triple<Long, String, String> {
+        val occurredAt = change.payload.instantMillis("occurred_at") ?: invalidChange(change, "missing or invalid occurred_at")
+        val timezone = change.payload.string("timezone") ?: invalidChange(change, "missing timezone")
+        val localDate = change.payload.string("local_date") ?: invalidChange(change, "missing local_date")
+        val valid = runCatching {
+            timezone in ZoneId.getAvailableZoneIds() &&
+                Instant.ofEpochMilli(occurredAt).atZone(ZoneId.of(timezone)).toLocalDate() == LocalDate.parse(localDate)
+        }.getOrDefault(false)
+        if (!valid) invalidChange(change, "inconsistent fact time metadata")
+        return Triple(occurredAt, timezone, localDate)
     }
 
     private suspend fun upsertLink(change: SyncV2Change) {

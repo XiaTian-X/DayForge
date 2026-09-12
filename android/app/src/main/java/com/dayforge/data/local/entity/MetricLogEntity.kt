@@ -1,6 +1,7 @@
 package com.dayforge.data.local.entity
 
 import androidx.room.Entity
+import androidx.room.ColumnInfo
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -42,5 +43,12 @@ data class MetricLogEntity(
     val note: String = "",
     val uuid: String = UUID.randomUUID().toString(),
     val createdAt: Long = System.currentTimeMillis(),
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+    @ColumnInfo(defaultValue = "'UTC'")
+    val recordedTimezone: String = java.time.ZoneId.systemDefault().id,
+    @ColumnInfo(defaultValue = "''")
+    val recordedLocalDate: String = java.time.Instant.ofEpochMilli(date)
+        .atZone(java.time.ZoneId.of(recordedTimezone)).toLocalDate().toString(),
+    @ColumnInfo(defaultValue = "'captured'")
+    val timeMetadataSource: String = "captured"
 )

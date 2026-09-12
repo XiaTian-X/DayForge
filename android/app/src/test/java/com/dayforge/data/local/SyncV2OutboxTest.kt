@@ -274,6 +274,7 @@ class SyncV2OutboxTest {
                 put("unit", "kg")
                 put("occurred_at", occurredAt)
                 put("local_date", "2026-08-13")
+                put("timezone", "UTC")
             }
         )
 

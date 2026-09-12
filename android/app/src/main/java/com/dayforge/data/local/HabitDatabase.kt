@@ -29,10 +29,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * The first production-ready local schema.
+ * Production local schema, incrementally migrated from the version-1 baseline.
  *
  * Pre-baseline development databases used versions 3 through 24. They contain
- * test data only and are intentionally rebuilt through the downgrade fallback.
+ * test data only and have no supported migration path; they must be reset explicitly.
  */
 @Database(
     entities = [
@@ -50,7 +50,7 @@ import kotlinx.coroutines.withContext
         TimerSegmentEntity::class,
         TimeLogDayAllocationEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = true
 )
 @TypeConverters(HabitTypeConverter::class)

@@ -45,7 +45,9 @@ internal object SyncSchemaCallback : RoomDatabase.Callback() {
                 "COALESCE(NEW.habitUuid, (SELECT uuid FROM habits WHERE id = NEW.habitId))",
             updateCondition =
                 "OLD.date IS NOT NEW.date OR OLD.value IS NOT NEW.value OR " +
-                    "OLD.actualCompletedAt IS NOT NEW.actualCompletedAt"
+                    "OLD.actualCompletedAt IS NOT NEW.actualCompletedAt OR " +
+                    "OLD.recordedTimezone IS NOT NEW.recordedTimezone OR " +
+                    "OLD.recordedLocalDate IS NOT NEW.recordedLocalDate"
         )
         createSyncTrigger(
             database = database,
@@ -71,7 +73,9 @@ internal object SyncSchemaCallback : RoomDatabase.Callback() {
             newReferenceExpression = "(SELECT uuid FROM metrics WHERE id = NEW.metricId)",
             updateCondition =
                 "OLD.date IS NOT NEW.date OR OLD.value IS NOT NEW.value OR " +
-                    "OLD.unit IS NOT NEW.unit OR OLD.note IS NOT NEW.note"
+                    "OLD.unit IS NOT NEW.unit OR OLD.note IS NOT NEW.note OR " +
+                    "OLD.recordedTimezone IS NOT NEW.recordedTimezone OR " +
+                    "OLD.recordedLocalDate IS NOT NEW.recordedLocalDate"
         )
         createSyncTrigger(
             database = database,

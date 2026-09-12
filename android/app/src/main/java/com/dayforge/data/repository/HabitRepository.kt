@@ -398,6 +398,8 @@ class HabitRepository @Inject constructor(
      * @return The ID of the inserted completion
      */
     suspend fun logCompletion(context: Context, habitId: Long, value: Int = 1): Long {
+        val occurredAt = java.time.Instant.now()
+        val capturedZone = java.time.ZoneId.systemDefault()
         if (habitDao.getHabitById(habitId)?.isActive == false) {
             structuralEditGuard?.requireAllowed()
         }
@@ -410,10 +412,12 @@ class HabitRepository @Inject constructor(
 
             val completion = CompletionEntity(
                 habitId = habitId,
-                date = DateTimeUtils.startOfDayMillis(),
+                date = occurredAt.atZone(capturedZone).toLocalDate().atStartOfDay(capturedZone)
+                    .toInstant().toEpochMilli(),
                 value = value,
-                actualCompletedAt = System.currentTimeMillis(),  // Real completion time
-                habitUuid = habit?.uuid
+                actualCompletedAt = occurredAt.toEpochMilli(),
+                habitUuid = habit?.uuid,
+                recordedTimezone = capturedZone.id
             )
             val completionId = completionDao.insert(completion)
             updateActivityRate(habitId)
