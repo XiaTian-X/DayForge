@@ -103,7 +103,7 @@ class HabitStatusCalculator @Inject constructor(
         timeLogs: List<TimeLogEntity>
     ): HabitWithStats {
         val todayStart = DateTimeUtils.startOfDayMillis()
-        val todayEnd = todayStart + DateTimeUtils.MILLIS_PER_DAY
+        val todayEnd = DateTimeUtils.startOfNextDayMillis(todayStart)
 
         // Today's time logs
         val todayLogs = timeLogs.filter { it.date in todayStart until todayEnd }

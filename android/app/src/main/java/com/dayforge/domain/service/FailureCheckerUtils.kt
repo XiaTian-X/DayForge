@@ -73,7 +73,7 @@ object FailureCheckerUtils {
                     habit.id,
                     date.toString(),
                     dateMillis,
-                    dateMillis + DateTimeUtils.MILLIS_PER_DAY
+                    DateTimeUtils.startOfNextDayMillis(dateMillis)
                 )
                 completedSeconds >= targetSeconds
             }
@@ -81,7 +81,7 @@ object FailureCheckerUtils {
                 val completions = completionDao.getCompletionsInRange(
                     habit.id,
                     dateMillis,
-                    dateMillis + DateTimeUtils.MILLIS_PER_DAY
+                    DateTimeUtils.startOfNextDayMillis(dateMillis)
                 )
                 completions.sumOf { it.value } >= habit.targetValue
             }

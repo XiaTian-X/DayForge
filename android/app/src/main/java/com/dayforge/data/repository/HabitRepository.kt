@@ -433,7 +433,7 @@ class HabitRepository @Inject constructor(
      */
     suspend fun getTodayCompletionCount(habitId: Long): Int {
         val today = DateTimeUtils.startOfDayMillis()
-        val tomorrow = today + DateTimeUtils.MILLIS_PER_DAY
+        val tomorrow = DateTimeUtils.startOfNextDayMillis(today)
         val completions = completionDao.getCompletionsInRange(habitId, today, tomorrow)
         return completions.sumOf { it.value }
     }
@@ -476,7 +476,7 @@ class HabitRepository @Inject constructor(
      */
     suspend fun getTodayCompletionId(habitId: Long): Long? {
         val today = DateTimeUtils.startOfDayMillis()
-        val tomorrow = today + DateTimeUtils.MILLIS_PER_DAY
+        val tomorrow = DateTimeUtils.startOfNextDayMillis(today)
         return completionDao.getTodayCompletionId(habitId, today, tomorrow)
     }
 
