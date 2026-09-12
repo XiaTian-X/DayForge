@@ -10,9 +10,9 @@ import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.util.IconMapper
 import java.time.Instant
-import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -92,7 +92,7 @@ object SyncV2Mapper {
                 })
                 if (habit.bestTime != null) {
                     val minutes = habit.bestTime
-                    put("preferred_local_time", "%02d:%02d:00".format(minutes / 60, minutes % 60))
+                    put("preferred_local_time", "%02d:%02d:00".format(Locale.ROOT, minutes / 60, minutes % 60))
                 } else {
                     put("preferred_local_time", JsonNull)
                 }
@@ -112,7 +112,7 @@ object SyncV2Mapper {
                 put("type", "weekly")
                 put("interval", 1)
                 val weekdays = schedule.daysOfWeek.takeIf { it.isNotEmpty() }
-                    ?: listOf(LocalDate.now().dayOfWeek.value)
+                    ?: listOf(Instant.ofEpochMilli(habit.createdAt).atZone(zone).dayOfWeek.value)
                 put("weekdays", JsonArray(weekdays.distinct().sorted().map(::JsonPrimitive)))
             }
             is HabitSchedule.Monthly -> {
