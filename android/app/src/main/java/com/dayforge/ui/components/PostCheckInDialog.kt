@@ -137,10 +137,10 @@ fun PostCheckInDialog(
         },
         confirmButton = {
             Button(
-                enabled = inputStates.any { it.value.inputValue.toDoubleOrNull() != null },
+                enabled = inputStates.any { NumericInputUtils.parseFiniteDouble(it.value.inputValue) != null },
                 onClick = {
                     val values = inputStates.mapNotNull { state ->
-                        state.value.inputValue.toDoubleOrNull()?.let { value ->
+                        NumericInputUtils.parseFiniteDouble(state.value.inputValue)?.let { value ->
                             MetricValueInput(
                                 metricId = state.value.metricId,
                                 value = value,

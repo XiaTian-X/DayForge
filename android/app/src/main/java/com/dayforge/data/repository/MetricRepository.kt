@@ -66,6 +66,7 @@ class MetricRepository @Inject constructor(
     ): Long {
         structuralEditGuard?.requireAllowed()
         return database.withTransaction {
+            validateTargets(metric)
             ensureNameAvailable(metric.name)
             val metricId = metricDao.insert(metric)
             selectedHabitIds.forEach { habitId ->
@@ -91,6 +92,7 @@ class MetricRepository @Inject constructor(
     suspend fun updateMetric(metric: MetricEntity) {
         structuralEditGuard?.requireAllowed()
         database.withTransaction {
+            validateTargets(metric)
             requireNotNull(metricDao.getMetricById(metric.id)) {
                 "Metric no longer exists: ${metric.id}"
             }
@@ -155,6 +157,7 @@ class MetricRepository @Inject constructor(
         recordedAt: Long = System.currentTimeMillis()
     ): List<Long> = database.withTransaction {
         val logs = values.map { input ->
+            require(input.value.isFinite()) { "Metric value must be finite" }
             val metric = requireNotNull(metricDao.getMetricById(input.metricId)) {
                 "Metric no longer exists: ${input.metricId}"
             }
@@ -167,6 +170,17 @@ class MetricRepository @Inject constructor(
             )
         }
         if (logs.isEmpty()) emptyList() else metricLogDao.insertAll(logs)
+    }
+
+    private fun validateTargets(metric: MetricEntity) {
+        require(metric.targetValue?.isFinite() != false && metric.targetValueUpper?.isFinite() != false) {
+            "Metric targets must be finite"
+        }
+        if (metric.targetDirection == "range") {
+            val lower = requireNotNull(metric.targetValue) { "Range targets require a lower value" }
+            val upper = requireNotNull(metric.targetValueUpper) { "Range targets require an upper value" }
+            require(upper >= lower) { "Range upper target must not be less than lower target" }
+        }
     }
 
     private suspend fun ensureNameAvailable(name: String) {

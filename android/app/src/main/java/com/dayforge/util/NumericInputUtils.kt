@@ -8,6 +8,10 @@ package com.dayforge.util
  */
 object NumericInputUtils {
 
+    /** Reject overflow and non-finite values that cannot be synchronized as JSON numbers. */
+    fun parseFiniteDouble(input: String): Double? =
+        input.trim().toDoubleOrNull()?.takeIf { it.isFinite() }
+
     /**
      * Filter numeric input based on decimal places, preserving negative sign.
      *
