@@ -2,6 +2,7 @@ package com.dayforge.ui.screens.settings
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Uri
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
@@ -59,6 +60,8 @@ class SettingsViewModelTest {
 
     private lateinit var viewModel: SettingsViewModel
     private lateinit var tokenManager: TokenManager
+    private lateinit var preferencesManager: PreferencesManager
+    private lateinit var configWorkflow: SettingsConfigWorkflow
     private lateinit var testDataStore: DataStore<Preferences>
     private lateinit var mockSyncManager: SyncManager
     private lateinit var mockConnectivityManager: ConnectivityManager
@@ -109,7 +112,25 @@ class SettingsViewModelTest {
         val mockThemeImportService = ThemeImportService(mockCustomThemeRepository, mockThemeManager, context)
         val mockThemeExportService = ThemeExportService(mockThemeManager, mockCustomThemeRepository, context)
 
-        val preferencesManager = PreferencesManager(testDataStore)
+        preferencesManager = PreferencesManager(testDataStore)
+        configWorkflow = SettingsConfigWorkflow(
+            context = context,
+            habitDao = habitDao,
+            metricDao = metricDao,
+            timeLogDao = timeLogDao,
+            completionDao = completionDao,
+            metricLogDao = metricLogDao,
+            configExportService = mockConfigExportService,
+            configImportService = mockConfigImportService
+        )
+        val appearanceWorkflow = SettingsAppearanceWorkflow(
+            context = context,
+            preferencesManager = preferencesManager,
+            themeManager = mockThemeManager,
+            themeImportService = mockThemeImportService,
+            themeExportService = mockThemeExportService,
+            customThemeRepository = mockCustomThemeRepository
+        )
 
         viewModel = SettingsViewModel(
             context = context,
@@ -119,17 +140,9 @@ class SettingsViewModelTest {
             connectivityManager = mockConnectivityManager,
             habitRepository = habitRepository,
             habitDao = habitDao,
-            metricDao = metricDao,
             timeLogDao = timeLogDao,
-            completionDao = completionDao,
-            metricLogDao = metricLogDao,
-            linkDao = habitMetricLinkDao,
-            configExportService = mockConfigExportService,
-            configImportService = mockConfigImportService,
-            themeManager = mockThemeManager,
-            themeImportService = mockThemeImportService,
-            themeExportService = mockThemeExportService,
-            customThemeRepository = mockCustomThemeRepository,
+            configWorkflow = configWorkflow,
+            appearanceWorkflow = appearanceWorkflow,
             accountSessionCoordinator = AccountSessionCoordinator()
         )
     }
@@ -165,6 +178,43 @@ class SettingsViewModelTest {
             assertTrue(awaitItem())
             assertFalse(viewModel.isAdmin.first())
         }
+    }
+
+    @Test
+    fun `configuration preview reports imported and replaced habit counts`() = runTest {
+        habitDao.insert(
+            HabitEntity(
+                name = "Existing habit",
+                habitType = HabitType.CHECK_IN,
+                iconResId = 0,
+                colorHex = "#2196F3",
+                schedule = HabitSchedule.Daily,
+                targetValue = 1
+            )
+        )
+        val exportedJson = configWorkflow.exportConfigToJson()
+        assertNotNull(exportedJson)
+        val importFile = File(context.cacheDir, "settings-config-preview.json")
+        importFile.writeText(requireNotNull(exportedJson))
+
+        configWorkflow.prepareImport(Uri.fromFile(importFile))
+
+        val preview = configWorkflow.importConfirmData.value
+        assertNotNull(preview)
+        assertEquals(1, preview?.importHabitCount)
+        assertEquals(1, preview?.deleteHabitCount)
+        configWorkflow.cancelImport()
+        assertNull(configWorkflow.importConfirmData.value)
+        importFile.delete()
+    }
+
+    @Test
+    fun `appearance changes remain observable through settings contract`() = runTest {
+        viewModel.changeCardColorStyle("personalized")
+        viewModel.setGlobalNotificationsEnabled(false)
+
+        assertEquals("personalized", preferencesManager.cardColorStyle.first { it == "personalized" })
+        assertFalse(preferencesManager.globalNotificationsEnabled.first { !it })
     }
 
     @Test

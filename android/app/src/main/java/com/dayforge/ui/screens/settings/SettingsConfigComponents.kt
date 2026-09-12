@@ -218,7 +218,7 @@ internal fun ImportProgressDialog() {
  */
 @Composable
 internal fun ImportConfirmDialog(
-    data: SettingsViewModel.ImportConfirmData,
+    data: SettingsImportConfirmData,
     onConfirm: () -> Unit,
     onCancel: () -> Unit
 ) {
