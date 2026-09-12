@@ -25,6 +25,7 @@ import com.dayforge.util.DateTimeUtils
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -85,6 +86,7 @@ class HabitDetailViewModel @Inject constructor(
     val uiState: StateFlow<HabitDetailUiState> = _uiState.asStateFlow()
 
     private var currentHabitId: Long? = null
+    private var habitLoadJob: Job? = null
 
     fun loadHabit(habitId: Long) {
         // Reset if different habit to ensure fresh data load
@@ -92,9 +94,10 @@ class HabitDetailViewModel @Inject constructor(
             _uiState.value = HabitDetailUiState(habitId = habitId, isLoading = true)
         }
         if (currentHabitId == habitId) return
+        habitLoadJob?.cancel()
         currentHabitId = habitId
 
-        viewModelScope.launch {
+        habitLoadJob = viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, habitId = habitId)
 
             // Combine habit info, completions, and notification setting for reactive updates
@@ -329,9 +332,10 @@ class HabitDetailViewModel @Inject constructor(
     )
 
     fun logCompletion(value: Int = 1) {
+        val habitId = currentHabitId ?: return
         viewModelScope.launch {
-            currentHabitId?.let { habitId ->
-                val completionId = habitRepository.logCompletion(context, habitId, value)
+            val completionId = habitRepository.logCompletion(context, habitId, value)
+            if (currentHabitId == habitId) {
                 _uiState.value = _uiState.value.copy(
                     lastCompletionId = completionId
                 )
@@ -340,9 +344,11 @@ class HabitDetailViewModel @Inject constructor(
     }
 
     fun undoCompletion() {
+        val habitId = currentHabitId ?: return
+        val completionId = _uiState.value.lastCompletionId ?: return
         viewModelScope.launch {
-            _uiState.value.lastCompletionId?.let { completionId ->
-                habitRepository.undoCompletion(context, completionId)
+            habitRepository.undoCompletion(context, completionId)
+            if (currentHabitId == habitId && _uiState.value.lastCompletionId == completionId) {
                 _uiState.value = _uiState.value.copy(
                     lastCompletionId = null
                 )
