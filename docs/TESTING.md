@@ -33,6 +33,10 @@ Room schema、计时、后台任务或 Android 平台行为变化时还需要相
 
 同步协议的仓库级 JSON 样例位于 `contracts/sync-v2/`。后端的 `test_sync_contract_matrix.py` 和 Android 的 `SyncV2ContractFixtureTest` 必须读取这些共享文件，不能在各自模块复制一份。修改 `contracts/` 会同时触发两个 CI 模块，避免只验证单端。
 
+后端覆盖率必须同时跟踪 `thread` 与 `greenlet`（见 `backend/pyproject.toml`），
+否则 SQLAlchemy 异步数据库调用切换后的已执行代码可能被误报为未覆盖。
+修正统计配置产生的覆盖率变化不代表新增测试；仍需检查实际异常路径和断言。
+
 ## 必须长期覆盖的异常矩阵
 
 - 无网络、有移动网络但局域网服务器不可达、Wi-Fi 可用但端口不可达。
