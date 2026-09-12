@@ -41,7 +41,7 @@ class TimerManager @Inject constructor(
      */
     suspend fun startTimer(habitId: Long, targetMinutes: Int) {
         val todayStart = DateTimeUtils.startOfDayMillis()
-        val todayEnd = todayStart + DateTimeUtils.MILLIS_PER_DAY
+        val todayEnd = DateTimeUtils.startOfNextDayMillis(todayStart)
         val completedSeconds = timeLogDao.getCompletedDurationSecondsForDate(
             habitId, java.time.LocalDate.now().toString(), todayStart, todayEnd
         )

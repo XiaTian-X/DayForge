@@ -192,7 +192,7 @@ class HabitDetailViewModel @Inject constructor(
      */
     private suspend fun loadGoalHabitMetrics(habit: HabitEntity): List<MetricDisplayInfo> = withContext(Dispatchers.IO) {
         val todayStart = DateTimeUtils.startOfDayMillis()
-        val todayEnd = todayStart + DateTimeUtils.MILLIS_PER_DAY
+        val todayEnd = DateTimeUtils.startOfNextDayMillis(todayStart)
 
         // Get metric links for the goal habit itself
         val ownLinks = habitMetricLinkDao.getAllLinksForHabit(habit.id)
