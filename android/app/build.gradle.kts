@@ -1,4 +1,5 @@
 import java.util.Properties
+import java.time.Duration
 
 val localProperties = Properties().apply {
     val file = rootProject.file("local.properties")
@@ -79,6 +80,13 @@ android {
 ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
     arg("room.incremental", "true")
+}
+
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    timeout.set(Duration.ofMinutes(15))
+    if (providers.environmentVariable("CI").orNull == "true") {
+        testLogging.events("started", "failed", "skipped")
+    }
 }
 
 dependencies {
