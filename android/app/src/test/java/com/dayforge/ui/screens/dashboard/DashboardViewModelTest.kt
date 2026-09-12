@@ -24,6 +24,7 @@ import com.dayforge.domain.service.CheckInService
 import com.dayforge.domain.service.ActiveTimerStateProvider
 import com.dayforge.domain.service.FailureChecker
 import com.dayforge.domain.service.HabitCompletionCoordinator
+import com.dayforge.domain.service.HabitDeletionCoordinator
 import com.dayforge.domain.service.HabitStatusCalculator
 import com.dayforge.domain.service.HabitLifecycleCoordinator
 import com.dayforge.domain.service.HabitTimerCoordinator
@@ -124,6 +125,7 @@ class DashboardViewModelTest {
             context,
             repository,
             completionCoordinator,
+            HabitDeletionCoordinator(context, repository),
             DashboardHabitListBuilder(habitStatusCalculator),
             DashboardTimeWindowTicker(repository, mockPreferencesManager),
             HabitLifecycleCoordinator(context, repository),
@@ -620,6 +622,73 @@ class DashboardViewModelTest {
         }
     }
 
+    @Test
+    fun deleteLeafHabit_removesImmediatelyWithoutDialog() = runTest {
+        val habitId = repository.createHabit(
+            name = "Leaf habit",
+            description = "",
+            habitType = HabitType.CHECK_IN,
+            iconResId = 1,
+            colorHex = "#2196F3",
+            schedule = HabitSchedule.Daily
+        )
+        val habit = requireNotNull(repository.getHabitById(habitId))
+
+        viewModel.deleteHabit(habit)
+        awaitCondition { repository.getHabitById(habitId) == null }
+
+        assertNull(viewModel.showChildrenDialog.value)
+    }
+
+    @Test
+    fun deleteParentKeepChildren_orphansChildAndClearsDialog() = runTest {
+        val parentUuid = "parent-keep"
+        val parentId = createDeletionHabit("Parent", predefinedUuid = parentUuid)
+        val childId = createDeletionHabit("Child", parentHabitId = parentUuid)
+        val parent = requireNotNull(repository.getHabitById(parentId))
+
+        viewModel.deleteHabit(parent)
+        val pending = awaitDeleteDialog(parentId)
+        assertEquals(1, pending.childCount)
+
+        viewModel.deleteHabitKeepChildren()
+        awaitCondition {
+            repository.getHabitById(parentId) == null &&
+                repository.getHabitById(childId)?.parentHabitId == null &&
+                viewModel.showChildrenDialog.value == null
+        }
+
+        assertNull(viewModel.showChildrenDialog.value)
+    }
+
+    @Test
+    fun deleteParentWithChildren_removesDescendantsAndClearsDialog() = runTest {
+        val parentUuid = "parent-cascade"
+        val childUuid = "child-cascade"
+        val parentId = createDeletionHabit("Parent", predefinedUuid = parentUuid)
+        val childId = createDeletionHabit(
+            "Child",
+            predefinedUuid = childUuid,
+            parentHabitId = parentUuid
+        )
+        val grandchildId = createDeletionHabit("Grandchild", parentHabitId = childUuid)
+        val parent = requireNotNull(repository.getHabitById(parentId))
+
+        viewModel.deleteHabit(parent)
+        val pending = awaitDeleteDialog(parentId)
+        assertEquals(1, pending.childCount)
+
+        viewModel.deleteHabitWithChildren()
+        awaitCondition {
+            repository.getHabitById(parentId) == null &&
+                repository.getHabitById(childId) == null &&
+                repository.getHabitById(grandchildId) == null &&
+                viewModel.showChildrenDialog.value == null
+        }
+
+        assertNull(viewModel.showChildrenDialog.value)
+    }
+
     private suspend fun createTemporaryTask(selectedMetricIds: Set<Long> = emptySet()): Long =
         repository.createHabit(
             name = "Temporary task",
@@ -633,6 +702,36 @@ class DashboardViewModelTest {
             failMode = FailMode.LOOSE,
             selectedMetricIds = selectedMetricIds
         )
+
+    private suspend fun createDeletionHabit(
+        name: String,
+        predefinedUuid: String? = null,
+        parentHabitId: String? = null
+    ): Long = repository.createHabit(
+        name = name,
+        description = "",
+        habitType = HabitType.CHECK_IN,
+        iconResId = 1,
+        colorHex = "#2196F3",
+        schedule = HabitSchedule.Daily,
+        predefinedUuid = predefinedUuid,
+        parentHabitId = parentHabitId
+    )
+
+    private suspend fun awaitDeleteDialog(habitId: Long) =
+        withContext(Dispatchers.Default.limitedParallelism(1)) {
+            withTimeout(5_000) {
+                requireNotNull(viewModel.showChildrenDialog.first { it?.habit?.id == habitId })
+            }
+        }
+
+    private suspend fun awaitCondition(condition: suspend () -> Boolean) {
+        withContext(Dispatchers.Default.limitedParallelism(1)) {
+            withTimeout(5_000) {
+                while (!condition()) delay(10)
+            }
+        }
+    }
 
     private suspend fun awaitGoalDialogVisibility(visible: Boolean) {
         withContext(Dispatchers.Default.limitedParallelism(1)) {

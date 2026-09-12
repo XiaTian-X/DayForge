@@ -15,6 +15,7 @@ import com.dayforge.data.repository.HabitRepository
 import com.dayforge.domain.model.ActiveTimerState
 import com.dayforge.domain.model.CardColorStyle
 import com.dayforge.domain.service.HabitCompletionCoordinator
+import com.dayforge.domain.service.HabitDeletionCoordinator
 import com.dayforge.domain.service.HabitLifecycleCoordinator
 import com.dayforge.domain.service.HabitTimerCoordinator
 import com.dayforge.domain.service.ReactivationResult
@@ -103,6 +104,7 @@ class NestedViewModel @Inject constructor(
     private val habitRepository: HabitRepository,
     private val nestedHabitTreeBuilder: NestedHabitTreeBuilder,
     private val completionCoordinator: HabitCompletionCoordinator,
+    private val deletionCoordinator: HabitDeletionCoordinator,
     private val preferencesManager: PreferencesManager,
     private val metricCoordinator: LinkedMetricCoordinator,
     private val lifecycleCoordinator: HabitLifecycleCoordinator,
@@ -214,10 +216,7 @@ class NestedViewModel @Inject constructor(
     val reactivationHabitId: StateFlow<Long?> = lifecycleCoordinator.reactivationHabitId
     val reactivationHabitName: StateFlow<String> = lifecycleCoordinator.reactivationHabitName
 
-    // Children deletion dialog state
-    data class PendingDeleteInfo(val habit: HabitEntity, val childCount: Int)
-    private val _showChildrenDialog = MutableStateFlow<PendingDeleteInfo?>(null)
-    val showChildrenDialog: StateFlow<PendingDeleteInfo?> = _showChildrenDialog.asStateFlow()
+    val showChildrenDialog = deletionCoordinator.pendingDeletion
 
     // ========== Check-in Operations ==========
 
@@ -486,33 +485,24 @@ class NestedViewModel @Inject constructor(
      */
     fun deleteHabit(habit: HabitEntity) {
         viewModelScope.launch {
-            val children = habitRepository.getHabitChildren(habit.uuid)
-            if (children.isNotEmpty()) {
-                _showChildrenDialog.value = PendingDeleteInfo(habit, children.size)
-            } else {
-                habitRepository.deleteHabit(habit, context)
-            }
+            deletionCoordinator.requestDeletion(habit)
         }
     }
 
     fun deleteHabitWithChildren() {
         viewModelScope.launch {
-            val pending = _showChildrenDialog.value ?: return@launch
-            habitRepository.deleteHabitWithChildren(pending.habit, context)
-            _showChildrenDialog.value = null
+            deletionCoordinator.deleteWithChildren()
         }
     }
 
     fun deleteHabitKeepChildren() {
         viewModelScope.launch {
-            val pending = _showChildrenDialog.value ?: return@launch
-            habitRepository.deleteHabitOrphanChildren(pending.habit, context)
-            _showChildrenDialog.value = null
+            deletionCoordinator.deleteKeepingChildren()
         }
     }
 
     fun dismissChildrenDialog() {
-        _showChildrenDialog.value = null
+        deletionCoordinator.dismissDeletion()
     }
 
     // ========== Expand State Management ==========
