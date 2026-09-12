@@ -22,6 +22,10 @@ import com.dayforge.data.model.HabitType
 import com.dayforge.data.model.StreakStats
 import com.dayforge.data.repository.HabitRepository
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.MutableStateFlow
+import io.mockk.every
+import io.mockk.mockk
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -233,6 +237,55 @@ class HabitDetailViewModelTest {
             // Room/DataStore use real I/O threads; wait for observable completion, not a fixed guess.
             delay(10)
         }
+    }
+
+    @Test
+    fun switchingHabitCancelsPreviousSubscription() = runBlocking {
+        val firstId = 1L
+        val secondId = 2L
+        val first = MutableStateFlow<HabitEntity?>(HabitEntity(id = firstId, name = "First", habitType = HabitType.CHECK_IN,
+            iconResId = 1, colorHex = "#2196F3", schedule = HabitSchedule.Daily))
+        val second = MutableStateFlow(first.value!!.copy(id = secondId, name = "Second"))
+        val observingRepository = mockk<HabitRepository>()
+        every { observingRepository.getHabit(firstId) } returns first
+        every { observingRepository.getHabit(secondId) } returns second
+        every { observingRepository.getAllCompletions() } returns MutableStateFlow(emptyList())
+        viewModel = HabitDetailViewModel(context, observingRepository, preferencesManager, timeLogDao, completionDao,
+            habitDao, habitMetricLinkDao, metricDao, metricLogDao)
+        viewModelStore.put("detail", viewModel)
+        viewModel.loadHabit(firstId)
+        awaitState { !it.isLoading && it.habit?.id == firstId }
+        assertEquals(1, first.subscriptionCount.value)
+        viewModel.loadHabit(secondId)
+        awaitState { !it.isLoading && it.habit?.id == secondId }
+        assertEquals(0, first.subscriptionCount.value)
+        assertEquals(1, second.subscriptionCount.value)
+        first.value = first.value!!.copy(name = "Stale update")
+        testDispatcher.scheduler.runCurrent()
+        assertEquals(secondId, viewModel.uiState.value.habitId)
+    }
+
+    @Test
+    fun queuedCompletionKeepsOriginalHabitAndDoesNotInstallUndoOnNewSelection() = runBlocking {
+        val firstId = repository.createHabit(name = "First", description = "", habitType = HabitType.CHECK_IN,
+            iconResId = 1, colorHex = "#2196F3", schedule = HabitSchedule.Daily)
+        val secondId = repository.createHabit(name = "Second", description = "", habitType = HabitType.CHECK_IN,
+            iconResId = 1, colorHex = "#2196F3", schedule = HabitSchedule.Daily)
+        viewModel.loadHabit(firstId)
+        awaitState { !it.isLoading && it.habit?.id == firstId }
+        viewModel.logCompletion()
+        // The action has been queued but has not started on StandardTestDispatcher.
+        viewModel.loadHabit(secondId)
+        awaitState { !it.isLoading && it.habit?.id == secondId }
+        withTimeout(10_000) {
+            while (completionDao.getAllCompletions().first().none { it.habitId == firstId }) {
+                testDispatcher.scheduler.runCurrent()
+                delay(10)
+            }
+        }
+        testDispatcher.scheduler.runCurrent()
+        assertTrue(completionDao.getAllCompletions().first().none { it.habitId == secondId })
+        assertNull(viewModel.uiState.value.lastCompletionId)
     }
 
     @Test

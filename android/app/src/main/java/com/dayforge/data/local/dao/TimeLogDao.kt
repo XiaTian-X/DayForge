@@ -210,18 +210,8 @@ interface TimeLogDao {
     @Query("SELECT * FROM timelogs WHERE habitId = :habitId ORDER BY startTime DESC")
     fun getTimeLogsByHabit(habitId: Long): Flow<List<TimeLogEntity>>
 
-    /**
-     * Flow that triggers when any time log changes.
-     * Used to refresh UI when timer stops and time log is saved.
-     */
-    @Query("SELECT COUNT(*) FROM timelogs")
-    fun getTimeLogCountFlow(): Flow<Int>
-
     @Query("SELECT * FROM timelogs WHERE habitId = :habitId ORDER BY startTime DESC")
     suspend fun getAllTimeLogsForHabit(habitId: Long): List<TimeLogEntity>
-
-    @Query("SELECT * FROM timelogs WHERE habitId = :habitId AND date >= :start AND date < :end")
-    suspend fun getTimeLogsInRange(habitId: Long, start: Long, end: Long): List<TimeLogEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(timeLog: TimeLogEntity): Long
@@ -317,26 +307,6 @@ interface TimeLogDao {
         )
     """)
     suspend fun getTargetMetDayCount(habitId: Long, targetSeconds: Int): Int
-
-    /**
-     * Check if there's a time log on a specific date.
-     * Used for STRICT failure mode checking for TIMER habits.
-     * @param habitId The ID of the habit
-     * @param dateMillis The start of day timestamp in millis
-     * @return true if there's at least one timelog on that date
-     */
-    @Query("""
-        SELECT EXISTS(
-            SELECT 1 FROM timelog_day_allocations
-            WHERE habitId = :habitId AND localDate = :localDate
-            UNION ALL
-            SELECT 1 FROM timelogs t
-            WHERE habitId = :habitId AND date = :dateMillis AND endTime IS NOT NULL
-              AND NOT EXISTS(SELECT 1 FROM timelog_day_allocations a WHERE a.sessionUuid = t.uuid)
-            LIMIT 1
-        )
-    """)
-    suspend fun hasTimeLogOnDate(habitId: Long, dateMillis: Long, localDate: String): Boolean
 
     /**
      * Get the first time log date for a habit.
