@@ -134,8 +134,8 @@ object SyncV2Mapper {
         put("event_type", if (habit.habitType == HabitType.COUNTING) "count_snapshot" else "check_in")
         if (habit.habitType == HabitType.COUNTING) put("value", completion.value)
         put("occurred_at", isoInstant(occurredAt))
-        put("local_date", localDate(occurredAt))
-        put("timezone", zone.id)
+        put("local_date", completion.recordedLocalDate)
+        put("timezone", completion.recordedTimezone)
         put("source_type", "app")
     }
 
@@ -169,8 +169,8 @@ object SyncV2Mapper {
         put("value", log.value)
         put("unit", log.unit)
         put("occurred_at", isoInstant(log.date))
-        put("local_date", localDate(log.date))
-        put("timezone", zone.id)
+        put("local_date", log.recordedLocalDate)
+        put("timezone", log.recordedTimezone)
         put("note", log.note)
         put("source_type", "app")
     }

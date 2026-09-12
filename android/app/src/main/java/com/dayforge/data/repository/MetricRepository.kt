@@ -155,21 +155,25 @@ class MetricRepository @Inject constructor(
     suspend fun recordValues(
         values: List<MetricValueDraft>,
         recordedAt: Long = System.currentTimeMillis()
-    ): List<Long> = database.withTransaction {
-        val logs = values.map { input ->
-            require(input.value.isFinite()) { "Metric value must be finite" }
-            val metric = requireNotNull(metricDao.getMetricById(input.metricId)) {
-                "Metric no longer exists: ${input.metricId}"
+    ): List<Long> {
+        val capturedZone = java.time.ZoneId.systemDefault().id
+        return database.withTransaction {
+            val logs = values.map { input ->
+                require(input.value.isFinite()) { "Metric value must be finite" }
+                val metric = requireNotNull(metricDao.getMetricById(input.metricId)) {
+                    "Metric no longer exists: ${input.metricId}"
+                }
+                MetricLogEntity(
+                    metricId = input.metricId,
+                    date = recordedAt,
+                    value = input.value,
+                    unit = metric.unit,
+                    note = input.note,
+                    recordedTimezone = capturedZone
+                )
             }
-            MetricLogEntity(
-                metricId = input.metricId,
-                date = recordedAt,
-                value = input.value,
-                unit = metric.unit,
-                note = input.note
-            )
+            if (logs.isEmpty()) emptyList() else metricLogDao.insertAll(logs)
         }
-        if (logs.isEmpty()) emptyList() else metricLogDao.insertAll(logs)
     }
 
     private fun validateTargets(metric: MetricEntity) {

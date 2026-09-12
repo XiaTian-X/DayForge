@@ -44,7 +44,7 @@ class HabitDatabaseBaselineTest {
     }
 
     @Test
-    fun freshDatabaseMatchesVersionOneBaseline() {
+    fun freshDatabaseMatchesCurrentSchema() {
         val sqlite = database.openHelper.writableDatabase
         val tables = sqlite.query(
             "SELECT name FROM sqlite_master WHERE type = 'table'"
@@ -69,7 +69,7 @@ class HabitDatabaseBaselineTest {
             "timelog_day_allocations"
         )
 
-        assertEquals(1, sqlite.version)
+        assertEquals(2, sqlite.version)
         assertTrue(tables.containsAll(expectedTables))
         sqlite.query("SELECT suppressOutbox FROM sync_control WHERE id = 1").use { cursor ->
             assertTrue(cursor.moveToFirst())

@@ -16,8 +16,8 @@ object HabitDatabaseProvider {
 
     private fun build(context: Context): HabitDatabase =
         Room.databaseBuilder(context, HabitDatabase::class.java, DATABASE_NAME)
-            // Versions 3-24 were pre-production test schemas with no supported data path.
-            .fallbackToDestructiveMigrationOnDowngrade()
+            // Unsupported development schemas/downgrades must fail, never erase production data.
+            .addMigrations(FactTimeMigration)
             .addCallback(SyncSchemaCallback)
             .build()
 

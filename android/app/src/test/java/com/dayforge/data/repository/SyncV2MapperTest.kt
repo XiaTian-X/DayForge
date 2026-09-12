@@ -22,6 +22,32 @@ import org.junit.Test
 
 class SyncV2MapperTest {
     @Test
+    fun `captured dates survive DST folds negative zones and later edits`() {
+        val originalZone = TimeZone.getDefault()
+        try {
+            for ((captureZone, instantText, date) in listOf(
+                Triple("America/New_York", "2026-11-01T05:30:00Z", "2026-11-01"),
+                Triple("America/New_York", "2026-11-01T06:30:00Z", "2026-11-01"),
+                Triple("America/New_York", "2026-03-08T07:30:00Z", "2026-03-08"),
+                Triple("America/Los_Angeles", "2026-01-01T07:30:00Z", "2025-12-31")
+            )) {
+                TimeZone.setDefault(TimeZone.getTimeZone(captureZone))
+                val instant = Instant.parse(instantText).toEpochMilli()
+                val completion = CompletionEntity(habitId = 1, date = instant, actualCompletedAt = instant)
+                val observation = MetricLogEntity(metricId = 1, date = instant, value = 1.0, unit = "kg")
+                TimeZone.setDefault(TimeZone.getTimeZone("Asia/Shanghai"))
+                val payloads = listOf(SyncV2Mapper.completion(completion.copy(value = 2), habit(HabitType.COUNTING)),
+                    SyncV2Mapper.metricObservation(observation.copy(value = 2.0, note = "Edited"), "metric"))
+                payloads.forEach {
+                    assertEquals(captureZone, it.getValue("timezone").jsonPrimitive.content)
+                    assertEquals(date, it.getValue("local_date").jsonPrimitive.content)
+                    assertEquals(instantText, it.getValue("occurred_at").jsonPrimitive.content)
+                }
+            }
+        } finally { TimeZone.setDefault(originalZone) }
+    }
+
+    @Test
     fun `weekly default uses creation weekday rather than synchronization weekday`() {
         val originalZone = TimeZone.getDefault()
         try {
