@@ -42,6 +42,7 @@ import java.util.Locale
 fun CreateHabitScreen(
     viewModel: CreateHabitViewModel = hiltViewModel(),
     parentUuid: String? = null,
+    onSaveDraft: ((com.dayforge.data.model.HabitDraft) -> Unit)? = null,
     onNavigateBack: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -629,7 +630,7 @@ fun CreateHabitScreen(
             // Save button
             Button(
                 onClick = {
-                    viewModel.saveHabit()
+                    viewModel.saveHabit(onSaveDraft = onSaveDraft)
                 },
                 modifier = Modifier.fillMaxWidth(),
                 enabled = uiState.isValid && !uiState.isSaving
@@ -646,8 +647,8 @@ fun CreateHabitScreen(
         }
 
         // Navigate back after habit is saved
-        LaunchedEffect(uiState.savedHabitId) {
-            if (uiState.savedHabitId != null) {
+        LaunchedEffect(uiState.savedHabitId, uiState.savedDraft) {
+            if (uiState.savedHabitId != null || uiState.savedDraft) {
                 onNavigateBack()
                 viewModel.clearSavedHabit()
             }
@@ -705,7 +706,7 @@ fun CreateHabitScreen(
                     }
                 },
                 confirmButton = {
-                    TextButton(onClick = { viewModel.confirmDefaultTarget() }) {
+                    TextButton(onClick = { viewModel.confirmDefaultTarget(onSaveDraft) }) {
                         Text(stringResource(R.string.action_confirm))
                     }
                 }
@@ -724,7 +725,7 @@ fun CreateHabitScreen(
                     }
                 },
                 confirmButton = {
-                    TextButton(onClick = { viewModel.confirmDefaultSchedule() }) {
+                    TextButton(onClick = { viewModel.confirmDefaultSchedule(onSaveDraft) }) {
                         Text(stringResource(R.string.action_confirm))
                     }
                 }

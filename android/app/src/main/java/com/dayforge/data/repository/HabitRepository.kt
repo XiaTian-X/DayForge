@@ -12,6 +12,7 @@ import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.HabitMetricLinkEntity
 import com.dayforge.data.model.FailMode
+import com.dayforge.data.model.HabitDraft
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.model.StreakStats
@@ -107,6 +108,47 @@ class HabitRepository @Inject constructor(
             }
         }
         return id
+    }
+
+    /** Parent, children, metric links and their outbox entries commit together. */
+    suspend fun createGoal(goal: HabitDraft, children: List<HabitDraft>, context: Context? = null): Long {
+        structuralEditGuard?.requireAllowed()
+        require(goal.habitType == HabitType.GOAL && goal.selectedMetricIds.isEmpty())
+        require(children.all { it.habitType != HabitType.GOAL })
+        require((listOf(goal.id) + children.map { it.id }).distinct().size == children.size + 1)
+        val saved = database.withTransaction {
+            // A restored draft may have committed immediately before process death.
+            // Stable UUIDs make retrying the complete save safe without replacing rows.
+            val existing = habitDao.getHabitByUuid(goal.id)
+            if (existing != null) {
+                require(existing.habitType == HabitType.GOAL && existing.parentHabitId == null)
+                require(children.all { habitDao.getHabitByUuid(it.id)?.parentHabitId == goal.id })
+                return@withTransaction listOf(existing) + habitDao.getChildrenByParentUuidOnce(goal.id)
+            }
+            suspend fun insert(draft: HabitDraft, parent: String?): HabitEntity {
+                val id = createHabit(
+                    name = draft.name, description = draft.description, habitType = draft.habitType,
+                    iconResId = draft.iconResId, colorHex = draft.colorHex, schedule = draft.schedule,
+                    targetValue = draft.targetValue, isCountdown = draft.isCountdown,
+                    parentHabitId = parent, targetCycles = draft.targetCycles, failMode = draft.failMode,
+                    bestTime = draft.bestTime, predefinedUuid = draft.id,
+                    selectedMetricIds = draft.selectedMetricIds
+                )
+                return requireNotNull(habitDao.getHabitById(id))
+            }
+            listOf(insert(goal, null)) + children.map { insert(it, goal.id) }
+        }
+        // No externally visible side effects until the outer transaction commits.
+        context?.let { appContext ->
+            notifyWidgetUpdate(appContext)
+            saved.forEach { habit ->
+                if (habit.bestTime != null && habit.habitType != HabitType.GOAL) {
+                    HabitReminderScheduler.scheduleReminder(appContext, habit.id, habit.bestTime,
+                        habit.habitType, habit.targetValue)
+                }
+            }
+        }
+        return saved.first().id
     }
 
     suspend fun updateHabit(
