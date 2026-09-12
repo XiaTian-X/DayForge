@@ -1,6 +1,7 @@
 package com.dayforge.domain.service
 
 import android.content.Context
+import app.cash.turbine.test
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.model.FailMode
 import com.dayforge.data.model.HabitSchedule
@@ -11,6 +12,7 @@ import io.mockk.coJustRun
 import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.flow.combine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -38,6 +40,28 @@ class HabitLifecycleCoordinatorTest {
         assertEquals(7L, coordinator.goalHabitId.value)
         assertEquals(2, coordinator.goalProgress.value)
         assertEquals(3, coordinator.goalTarget.value)
+    }
+
+    @Test
+    fun `goal visibility is published after its payload`() = runTest {
+        combine(
+            coordinator.showGoalDialog,
+            coordinator.goalHabitId,
+            coordinator.goalProgress,
+            coordinator.goalTarget
+        ) { visible, habitId, progress, target ->
+            GoalDialogSnapshot(visible, habitId, progress, target)
+        }.test {
+            assertFalse(awaitItem().visible)
+
+            coordinator.showGoalCompletion(habit(targetCycles = 3), progress = 2)
+
+            val visible = awaitVisibleGoalSnapshot()
+            assertEquals(7L, visible.habitId)
+            assertEquals(2, visible.progress)
+            assertEquals(3, visible.target)
+            cancelAndIgnoreRemainingEvents()
+        }
     }
 
     @Test
@@ -87,6 +111,26 @@ class HabitLifecycleCoordinatorTest {
     }
 
     @Test
+    fun `reactivation visibility is published after its payload`() = runTest {
+        combine(
+            coordinator.showReactivationDialog,
+            coordinator.reactivationHabitId,
+            coordinator.reactivationHabitName
+        ) { visible, habitId, habitName ->
+            ReactivationDialogSnapshot(visible, habitId, habitName)
+        }.test {
+            assertFalse(awaitItem().visible)
+
+            coordinator.showReactivationDialog(habit(targetCycles = 1))
+
+            val visible = awaitVisibleReactivationSnapshot()
+            assertEquals(7L, visible.habitId)
+            assertEquals("Target habit", visible.habitName)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
     fun `reactivation failure is reported and clears dialog state`() = runTest {
         val habit = habit(targetCycles = 1)
         coordinator.showReactivationDialog(habit)
@@ -110,5 +154,34 @@ class HabitLifecycleCoordinatorTest {
         targetValue = 1,
         targetCycles = targetCycles,
         failMode = failMode
+    )
+
+    private suspend fun app.cash.turbine.ReceiveTurbine<GoalDialogSnapshot>.awaitVisibleGoalSnapshot():
+        GoalDialogSnapshot {
+        while (true) {
+            val snapshot = awaitItem()
+            if (snapshot.visible) return snapshot
+        }
+    }
+
+    private suspend fun app.cash.turbine.ReceiveTurbine<ReactivationDialogSnapshot>
+        .awaitVisibleReactivationSnapshot(): ReactivationDialogSnapshot {
+        while (true) {
+            val snapshot = awaitItem()
+            if (snapshot.visible) return snapshot
+        }
+    }
+
+    private data class GoalDialogSnapshot(
+        val visible: Boolean,
+        val habitId: Long?,
+        val progress: Int,
+        val target: Int
+    )
+
+    private data class ReactivationDialogSnapshot(
+        val visible: Boolean,
+        val habitId: Long?,
+        val habitName: String
     )
 }
