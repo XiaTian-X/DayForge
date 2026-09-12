@@ -9,6 +9,7 @@ import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.local.HabitDatabase
+import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.local.dao.CompletionDao
 import com.dayforge.data.local.dao.HabitDao
 import com.dayforge.data.local.entity.HabitEntity
@@ -62,7 +63,7 @@ class CheckInActionCallbackTest {
         ).build()
 
         // Inject the in-memory database so the callback uses it
-        HabitDatabase.setInstanceForTesting(database)
+        HabitDatabaseProvider.setInstanceForTesting(database)
 
         habitDao = database.habitDao()
         completionDao = database.completionDao()
@@ -73,7 +74,7 @@ class CheckInActionCallbackTest {
 
     @After
     fun teardown() {
-        HabitDatabase.clearInstanceForTesting()
+        HabitDatabaseProvider.clearInstanceForTesting()
         database.close()
     }
 

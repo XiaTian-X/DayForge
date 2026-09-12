@@ -7,7 +7,7 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
-import com.dayforge.data.local.HabitDatabase
+import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.domain.service.ActivityRateCalculator
 import com.dayforge.widget.checkin.CheckInWidget
 import com.dayforge.widget.focus.FocusWidget
@@ -50,7 +50,7 @@ class WidgetUpdateWorker(
      * Called at midnight to update rates based on sliding window.
      */
     private suspend fun refreshActivityRates() {
-        val database = HabitDatabase.getInstance(applicationContext)
+        val database = HabitDatabaseProvider.getInstance(applicationContext)
         val habitDao = database.habitDao()
         val completionDao = database.completionDao()
         val habits = habitDao.getAllHabitsOnce()

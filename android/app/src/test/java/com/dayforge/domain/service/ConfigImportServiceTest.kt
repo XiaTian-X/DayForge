@@ -4,6 +4,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.export.dto.ConfigExportDto
 import com.dayforge.data.export.dto.HabitMetricLinkConfigDto
 import com.dayforge.data.local.HabitDatabase
+import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.MetricEntity
 import com.dayforge.data.model.HabitSchedule
@@ -30,9 +31,9 @@ class ConfigImportServiceTest {
     @Before
     fun setup() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
-        HabitDatabase.clearInstanceForTesting()
+        HabitDatabaseProvider.clearInstanceForTesting()
         context.deleteDatabase("habit_database")
-        database = HabitDatabase.getInstance(context)
+        database = HabitDatabaseProvider.getInstance(context)
         service = ConfigImportService(
             database.habitDao(),
             database.metricDao(),
@@ -44,7 +45,7 @@ class ConfigImportServiceTest {
     @After
     fun teardown() {
         database.close()
-        HabitDatabase.clearInstanceForTesting()
+        HabitDatabaseProvider.clearInstanceForTesting()
     }
 
     @Test

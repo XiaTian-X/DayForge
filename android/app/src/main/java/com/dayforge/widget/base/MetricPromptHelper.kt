@@ -3,7 +3,7 @@ package com.dayforge.widget.base
 import android.content.Context
 import android.util.Log
 import com.dayforge.data.local.DataStoreProvider
-import com.dayforge.data.local.HabitDatabase
+import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.widget.checkin.MetricPromptActivity
 import kotlinx.coroutines.flow.first
@@ -30,7 +30,7 @@ object MetricPromptHelper {
     suspend fun checkAndShowMetricPrompt(context: Context, habitId: Long) {
         Log.d(TAG, "checkAndShowMetricPrompt: habitId=$habitId")
 
-        val database = HabitDatabase.getInstance(context.applicationContext)
+        val database = HabitDatabaseProvider.getInstance(context.applicationContext)
 
         // Use singleton DataStore provider for consistent access
         val dataStore = DataStoreProvider.get(context.applicationContext)

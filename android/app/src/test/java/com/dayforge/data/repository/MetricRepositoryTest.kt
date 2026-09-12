@@ -2,6 +2,7 @@ package com.dayforge.data.repository
 
 import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.local.HabitDatabase
+import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.HabitMetricLinkEntity
 import com.dayforge.data.local.entity.MetricEntity
@@ -32,9 +33,9 @@ class MetricRepositoryTest {
     @Before
     fun setup() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
-        HabitDatabase.clearInstanceForTesting()
+        HabitDatabaseProvider.clearInstanceForTesting()
         context.deleteDatabase("habit_database")
-        database = HabitDatabase.getInstance(context)
+        database = HabitDatabaseProvider.getInstance(context)
         repository = MetricRepository(
             database,
             database.metricDao(),
@@ -47,7 +48,7 @@ class MetricRepositoryTest {
     @After
     fun teardown() {
         database.close()
-        HabitDatabase.clearInstanceForTesting()
+        HabitDatabaseProvider.clearInstanceForTesting()
     }
 
     @Test

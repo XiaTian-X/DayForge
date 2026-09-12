@@ -8,6 +8,7 @@ import com.dayforge.data.api.SyncV2Api
 import com.dayforge.data.api.AuthApi
 import com.dayforge.data.local.DataStoreProvider
 import com.dayforge.data.local.HabitDatabase
+import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
 import com.dayforge.data.local.TokenCipher
@@ -41,7 +42,7 @@ abstract class DatabaseModule {
         @Provides
         @Singleton
         fun provideHabitDatabase(@ApplicationContext context: Context): HabitDatabase {
-            return HabitDatabase.getInstance(context)
+            return HabitDatabaseProvider.getInstance(context)
         }
 
         @Provides

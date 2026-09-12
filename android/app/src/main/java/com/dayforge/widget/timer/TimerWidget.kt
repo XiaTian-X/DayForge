@@ -25,6 +25,7 @@ import androidx.glance.unit.ColorProvider
 import androidx.glance.action.clickable
 import com.dayforge.data.local.DataStoreProvider
 import com.dayforge.data.local.HabitDatabase
+import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.domain.service.ScheduleValidator
 import com.dayforge.domain.service.TimerElapsedCalculator
@@ -105,7 +106,7 @@ class TimerWidget : GlanceAppWidget() {
          */
         suspend fun refreshWidgetData(context: Context, glanceId: GlanceId, habitId: Long) {
             val appContext = context.applicationContext
-            val database = HabitDatabase.getInstance(appContext)
+            val database = HabitDatabaseProvider.getInstance(appContext)
             val habit = database.habitDao().getHabitById(habitId)
 
             if (habit == null) {

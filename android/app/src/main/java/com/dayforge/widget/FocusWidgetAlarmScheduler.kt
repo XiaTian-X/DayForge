@@ -6,7 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
-import com.dayforge.data.local.HabitDatabase
+import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.service.HabitPriorityCalculator
 import com.dayforge.domain.service.TimeMatchResult
@@ -47,7 +47,7 @@ object FocusWidgetAlarmScheduler {
         val alarmManager = appContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager
 
         // Get all active habits with bestTime
-        val database = HabitDatabase.getInstance(appContext)
+        val database = HabitDatabaseProvider.getInstance(appContext)
         val currentTime = ZonedDateTime.now()
         val currentMinutes = currentTime.hour * 60 + currentTime.minute
         val activeHabits = database.habitDao().getAllHabitsOnce().filter {

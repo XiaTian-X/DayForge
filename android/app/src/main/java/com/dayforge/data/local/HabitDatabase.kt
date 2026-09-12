@@ -1,8 +1,6 @@
 package com.dayforge.data.local
 
-import android.content.Context
 import androidx.room.Database
-import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 import com.dayforge.data.local.dao.CompletionDao
@@ -80,37 +78,6 @@ abstract class HabitDatabase : RoomDatabase() {
             openHelper.writableDatabase.execSQL(
                 "INSERT OR REPLACE INTO sync_control(id, suppressOutbox) VALUES(1, 0)"
             )
-        }
-    }
-
-    companion object {
-        @Volatile
-        private var INSTANCE: HabitDatabase? = null
-
-        fun getInstance(context: Context): HabitDatabase {
-            return INSTANCE ?: synchronized(this) {
-                val instance = Room.databaseBuilder(
-                    context.applicationContext,
-                    HabitDatabase::class.java,
-                    "habit_database"
-                )
-                    // Versions 3-24 were pre-production test schemas with no supported data path.
-                    .fallbackToDestructiveMigrationOnDowngrade()
-                    .addCallback(SyncSchemaCallback)
-                    .build()
-                INSTANCE = instance
-                instance
-            }
-        }
-
-        @Suppress("unused")
-        fun setInstanceForTesting(database: HabitDatabase) {
-            INSTANCE = database
-        }
-
-        @Suppress("unused")
-        fun clearInstanceForTesting() {
-            INSTANCE = null
         }
     }
 }

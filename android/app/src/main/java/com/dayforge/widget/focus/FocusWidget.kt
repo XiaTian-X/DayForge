@@ -20,7 +20,7 @@ import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import com.dayforge.data.local.DataStoreProvider
-import com.dayforge.data.local.HabitDatabase
+import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.data.model.HabitType
@@ -129,7 +129,7 @@ class FocusWidget : GlanceAppWidget() {
          */
         suspend fun refreshWidgetData(context: Context, glanceId: GlanceId) {
             val appContext = context.applicationContext
-            val database = HabitDatabase.getInstance(appContext)
+            val database = HabitDatabaseProvider.getInstance(appContext)
             val currentTime = ZonedDateTime.now()
 
             // Create services manually (widgets don't use Hilt injection)

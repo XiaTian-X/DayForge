@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.local.HabitDatabase
+import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.model.HabitSchedule
@@ -39,12 +40,12 @@ class ProgressWidgetTest {
             context,
             HabitDatabase::class.java
         ).build()
-        HabitDatabase.setInstanceForTesting(database)
+        HabitDatabaseProvider.setInstanceForTesting(database)
     }
 
     @After
     fun teardown() {
-        HabitDatabase.clearInstanceForTesting()
+        HabitDatabaseProvider.clearInstanceForTesting()
         database.close()
     }
 

@@ -6,7 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
-import com.dayforge.data.local.HabitDatabase
+import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.service.CountingSlotCalculator
@@ -288,7 +288,7 @@ object HabitReminderScheduler {
      */
     suspend fun rescheduleAllReminders(context: Context) {
         val appContext = context.applicationContext
-        val database = HabitDatabase.getInstance(appContext)
+        val database = HabitDatabaseProvider.getInstance(appContext)
 
         // Query all habits with bestTime and filter
         val allHabits = database.habitDao().getAllHabitsOnce()

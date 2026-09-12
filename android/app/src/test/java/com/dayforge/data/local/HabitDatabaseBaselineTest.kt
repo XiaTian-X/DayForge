@@ -8,6 +8,7 @@ import com.dayforge.data.model.HabitType
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -26,15 +27,20 @@ class HabitDatabaseBaselineTest {
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
         context.deleteDatabase(TEST_DATABASE)
-        HabitDatabase.clearInstanceForTesting()
-        database = HabitDatabase.getInstance(context)
+        HabitDatabaseProvider.clearInstanceForTesting()
+        database = HabitDatabaseProvider.getInstance(context)
     }
 
     @After
     fun tearDown() {
         database.close()
-        HabitDatabase.clearInstanceForTesting()
+        HabitDatabaseProvider.clearInstanceForTesting()
         context.deleteDatabase(TEST_DATABASE)
+    }
+
+    @Test
+    fun providerReusesTheProcessDatabaseInstance() {
+        assertSame(database, HabitDatabaseProvider.getInstance(context))
     }
 
     @Test

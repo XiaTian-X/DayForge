@@ -40,15 +40,15 @@ class SyncV2OutboxTest {
     @Before
     fun setup() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
-        HabitDatabase.clearInstanceForTesting()
+        HabitDatabaseProvider.clearInstanceForTesting()
         context.deleteDatabase("habit_database")
-        database = HabitDatabase.getInstance(context)
+        database = HabitDatabaseProvider.getInstance(context)
     }
 
     @After
     fun teardown() {
         database.close()
-        HabitDatabase.clearInstanceForTesting()
+        HabitDatabaseProvider.clearInstanceForTesting()
     }
 
     @Test

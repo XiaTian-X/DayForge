@@ -8,6 +8,7 @@ import androidx.glance.action.ActionParameters
 import androidx.glance.appwidget.action.ActionCallback
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.dayforge.data.local.HabitDatabase
+import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.model.CheckInResult
 import com.dayforge.data.repository.HabitRepository
 import com.dayforge.domain.service.CheckInService
@@ -43,7 +44,7 @@ class CheckInActionCallback : ActionCallback {
         Log.d(TAG, "onAction: habitId=$habitId, action=$action")
 
         // Create CheckInService manually (widgets don't use Hilt)
-        val database = HabitDatabase.getInstance(context)
+        val database = HabitDatabaseProvider.getInstance(context)
         val completionDao = database.completionDao()
         val habitDao = database.habitDao()
         val timeLogDao = database.timeLogDao()
