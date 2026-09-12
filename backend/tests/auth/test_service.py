@@ -2,6 +2,7 @@
 import pytest
 from datetime import datetime, timedelta, timezone
 import jwt
+import bcrypt
 
 from src.auth.service import (
     verify_password,
@@ -9,6 +10,7 @@ from src.auth.service import (
     create_access_token,
     create_refresh_token,
     verify_token,
+    PASSWORD_HASH_PREFIX,
 )
 from src.config import settings
 
@@ -30,12 +32,26 @@ class TestPasswordHashing:
 
         assert verify_password("wrong_password", hashed) is False
 
-    def test_get_password_hash_returns_bcrypt_hash(self):
-        """Test get_password_hash returns bcrypt hash (starts with $2b$)."""
+    def test_get_password_hash_returns_versioned_bcrypt_hash(self):
+        """The explicit marker prevents confusing prehashed and raw credentials."""
         hashed = get_password_hash("test_password")
+        assert hashed.startswith(PASSWORD_HASH_PREFIX + "$2b$")
 
-        # bcrypt hashes start with $2a$, $2b$, or $2y$
-        assert hashed.startswith("$2")
+    @pytest.mark.parametrize("prefix", ["x" * 72, "习惯" * 12, "😀" * 18])
+    def test_password_suffix_beyond_72_bytes_is_significant(self, prefix):
+        hashed = get_password_hash(prefix + "original")
+        assert verify_password(prefix + "original", hashed)
+        assert not verify_password(prefix + "different", hashed)
+        assert not verify_password(prefix, hashed)
+
+    def test_legacy_hash_remains_verifiable(self):
+        hashed = bcrypt.hashpw(b"legacy password", bcrypt.gensalt()).decode()
+        assert verify_password("legacy password", hashed)
+        assert not verify_password("wrong password", hashed)
+
+    @pytest.mark.parametrize("hashed", ["", "$2b$broken", "$unknown$v2$abc", PASSWORD_HASH_PREFIX + "broken", "$2b$中文"])
+    def test_invalid_hash_fails_closed(self, hashed):
+        assert not verify_password("password", hashed)
 
     def test_password_hash_is_different_for_same_password(self):
         """Test that hashing same password produces different hashes (salt)."""
