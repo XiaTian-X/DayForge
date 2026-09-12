@@ -99,6 +99,59 @@ class TokenManagerTest {
         assertEquals("account-a", manager.syncAccountId.first())
     }
 
+    @Test
+    fun `refresh cannot restore a logged out session`() = runTest {
+        manager.saveTokens("a", "r", "member", "account-a", false)
+        val original = manager.authenticationSnapshot()!!
+        manager.clearTokens()
+        assertFalse(manager.saveRefreshedTokens(original, "new-a", "new-r", "member", "account-a", false))
+        assertNull(manager.authenticationSnapshot())
+    }
+
+    @Test
+    fun `old refresh success and failure cannot overwrite a new login`() = runTest {
+        for (nextAccount in listOf("account-a", "account-b")) {
+            manager.saveTokens("a", "r", "member", "account-a", false)
+            val original = manager.authenticationSnapshot()!!
+            // Identical tokens can be issued by the server within the same second.
+            manager.saveTokens("a", "r", "next", nextAccount, true)
+            assertFalse(manager.saveRefreshedTokens(original, "late-a", "late-r", "member", "account-a", false))
+            manager.clearRejectedRefresh(original)
+            assertEquals(nextAccount, manager.userId.first())
+            assertEquals("a", manager.accessToken.first())
+            assertTrue(manager.isAdmin.first())
+        }
+    }
+
+    @Test
+    fun `normal refresh keeps generation while stale rejection keeps new credentials`() = runTest {
+        manager.saveTokens("a", "r", "member", "account-a", false)
+        val original = manager.authenticationSnapshot()!!
+        assertTrue(manager.saveRefreshedTokens(original, "new-a", "r", "member", "account-a", false))
+        assertEquals(original.session, manager.authenticationSnapshot()!!.session)
+        manager.clearRejectedRefresh(original)
+        assertEquals("new-a", manager.accessToken.first())
+        assertFalse(manager.saveRefreshedTokens(original, "late-a", "late-r", "member", "account-a", false))
+        assertEquals("new-a", manager.accessToken.first())
+    }
+
+    @Test
+    fun `refresh response for another user is refused`() = runTest {
+        manager.saveTokens("a", "r", "member", "account-a", false)
+        val original = manager.authenticationSnapshot()!!
+        assertFalse(manager.saveRefreshedTokens(original, "b", "br", "other", "account-b", true))
+        assertEquals("a", manager.accessToken.first())
+    }
+
+    @Test
+    fun `current refresh rejection clears authentication but preserves sync ownership`() = runTest {
+        manager.saveTokens("a", "r", "member", "account-a", false)
+        manager.prepareSyncAccount("account-a")
+        manager.clearRejectedRefresh(manager.authenticationSnapshot()!!)
+        assertNull(manager.authenticationSnapshot())
+        assertEquals("account-a", manager.syncAccountId.first())
+    }
+
     private object TestTokenCipher : TokenCipher {
         override fun encrypt(value: String) = if (value.startsWith("encrypted:")) value else "encrypted:$value"
         override fun decrypt(value: String) = value.removePrefix("encrypted:")
