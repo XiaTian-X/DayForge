@@ -15,7 +15,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.dayforge.R
-import com.dayforge.domain.service.TimerService
+import com.dayforge.domain.service.TimerServiceController
 import dagger.hilt.android.AndroidEntryPoint
 
 /**
@@ -93,7 +93,7 @@ class CountdownDiscardActivity : ComponentActivity() {
                                     Button(
                                         onClick = {
                                             // Per TIMER-09: discard deletes TimeLogEntity
-                                            TimerService.discardTimer(
+                                            TimerServiceController.discardTimer(
                                                 this@CountdownDiscardActivity,
                                                 habitId,
                                                 targetMinutes

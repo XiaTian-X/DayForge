@@ -11,7 +11,7 @@ import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.action.ActionCallback
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.entity.TimeLogEntity
-import com.dayforge.domain.service.TimerService
+import com.dayforge.domain.service.TimerServiceController
 import com.dayforge.domain.service.TimerElapsedCalculator
 import com.dayforge.util.DateTimeUtils
 import com.dayforge.widget.base.MetricPromptHelper
@@ -74,19 +74,19 @@ class TimerActionCallback : ActionCallback {
                     showConfirmationDialog(context, habitId, targetMinutes, glanceId)
                 } else {
                     // No conflict, start directly
-                    TimerService.startTimer(context, habitId, targetMinutes, habit?.isCountdown ?: false)
+                    TimerServiceController.startTimer(context, habitId, targetMinutes, habit?.isCountdown ?: false)
                     TimerWidget.refreshWidgetData(context, glanceId, habitId)
                     TimerWidget().update(context, glanceId)
                 }
             }
             "pause" -> {
-                TimerService.pauseTimer(context, habitId, targetMinutes)
+                TimerServiceController.pauseTimer(context, habitId, targetMinutes)
                 // Immediately update widget UI
                 TimerWidget.refreshWidgetData(context, glanceId, habitId)
                 TimerWidget().update(context, glanceId)
             }
             "resume" -> {
-                TimerService.resumeTimer(context, habitId, targetMinutes)
+                TimerServiceController.resumeTimer(context, habitId, targetMinutes)
                 // Immediately update widget UI
                 TimerWidget.refreshWidgetData(context, glanceId, habitId)
                 TimerWidget().update(context, glanceId)
@@ -140,7 +140,7 @@ class TimerActionCallback : ActionCallback {
                     )
                 } else {
                     // Normal stop (completed or not active)
-                    TimerService.stopTimer(context, habitId, targetMinutes)
+                    TimerServiceController.stopTimer(context, habitId, targetMinutes)
                     // Stop updates database asynchronously, wait and refresh
                     delay(150)
                     TimerWidget.refreshWidgetData(context, glanceId, habitId)

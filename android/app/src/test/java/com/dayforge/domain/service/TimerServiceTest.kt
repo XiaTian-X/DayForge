@@ -1,8 +1,8 @@
 package com.dayforge.domain.service
 
 import android.content.Context
-import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
+import com.dayforge.R
 import com.dayforge.data.local.dao.HabitDao
 import com.dayforge.data.local.dao.HabitMetricLinkDao
 import com.dayforge.data.local.dao.TimeLogDao
@@ -57,12 +57,13 @@ class TimerServiceTest {
         val targetMinutes = 30
         val isCountdown = true
 
-        val intent = Intent(context, TimerService::class.java).apply {
-            action = TimerService.ACTION_START
-            putExtra(TimerService.EXTRA_HABIT_ID, habitId)
-            putExtra(TimerService.EXTRA_TARGET_MINUTES, targetMinutes)
-            putExtra(TimerService.EXTRA_IS_COUNTDOWN, isCountdown)
-        }
+        val intent = TimerServiceController.commandIntent(
+            context,
+            TimerService.ACTION_START,
+            habitId,
+            targetMinutes,
+            isCountdown
+        )
 
         assertEquals(TimerService.ACTION_START, intent.action)
         assertEquals(habitId, intent.getLongExtra(TimerService.EXTRA_HABIT_ID, -1))
@@ -75,11 +76,12 @@ class TimerServiceTest {
         val habitId = 456L
         val targetMinutes = 15
 
-        val intent = Intent(context, TimerService::class.java).apply {
-            action = TimerService.ACTION_PAUSE
-            putExtra(TimerService.EXTRA_HABIT_ID, habitId)
-            putExtra(TimerService.EXTRA_TARGET_MINUTES, targetMinutes)
-        }
+        val intent = TimerServiceController.commandIntent(
+            context,
+            TimerService.ACTION_PAUSE,
+            habitId,
+            targetMinutes
+        )
 
         assertEquals(TimerService.ACTION_PAUSE, intent.action)
         assertEquals(habitId, intent.getLongExtra(TimerService.EXTRA_HABIT_ID, -1))
@@ -90,11 +92,12 @@ class TimerServiceTest {
         val habitId = 789L
         val targetMinutes = 45
 
-        val intent = Intent(context, TimerService::class.java).apply {
-            action = TimerService.ACTION_RESUME
-            putExtra(TimerService.EXTRA_HABIT_ID, habitId)
-            putExtra(TimerService.EXTRA_TARGET_MINUTES, targetMinutes)
-        }
+        val intent = TimerServiceController.commandIntent(
+            context,
+            TimerService.ACTION_RESUME,
+            habitId,
+            targetMinutes
+        )
 
         assertEquals(TimerService.ACTION_RESUME, intent.action)
         assertEquals(habitId, intent.getLongExtra(TimerService.EXTRA_HABIT_ID, -1))
@@ -105,11 +108,12 @@ class TimerServiceTest {
         val habitId = 100L
         val targetMinutes = 60
 
-        val intent = Intent(context, TimerService::class.java).apply {
-            action = TimerService.ACTION_STOP
-            putExtra(TimerService.EXTRA_HABIT_ID, habitId)
-            putExtra(TimerService.EXTRA_TARGET_MINUTES, targetMinutes)
-        }
+        val intent = TimerServiceController.commandIntent(
+            context,
+            TimerService.ACTION_STOP,
+            habitId,
+            targetMinutes
+        )
 
         assertEquals(TimerService.ACTION_STOP, intent.action)
         assertEquals(habitId, intent.getLongExtra(TimerService.EXTRA_HABIT_ID, -1))
@@ -120,11 +124,12 @@ class TimerServiceTest {
         val habitId = 200L
         val targetMinutes = 20
 
-        val intent = Intent(context, TimerService::class.java).apply {
-            action = TimerService.ACTION_DISCARD
-            putExtra(TimerService.EXTRA_HABIT_ID, habitId)
-            putExtra(TimerService.EXTRA_TARGET_MINUTES, targetMinutes)
-        }
+        val intent = TimerServiceController.commandIntent(
+            context,
+            TimerService.ACTION_DISCARD,
+            habitId,
+            targetMinutes
+        )
 
         assertEquals(TimerService.ACTION_DISCARD, intent.action)
         assertEquals(habitId, intent.getLongExtra(TimerService.EXTRA_HABIT_ID, -1))
@@ -132,29 +137,28 @@ class TimerServiceTest {
 
     @Test
     fun formatTimeText_countupMode_displaysElapsedTime() = runTest {
-        // TimerService uses formatTimeText internally
-        // Countup mode: "已计时 MM:SS / 目标 N分钟"
-        val elapsedSeconds = 185 // 3:05
-        val targetMinutes = 10
-        val isCountdown = false
+        val factory = TimerNotificationFactory(context)
+        val text = factory.formatTimeText(185, 10, isCountdown = false)
 
-        // Expected: "已计时 03:05 / 目标 10分钟"
-        val expectedFormat = "已计时 03:05 / 目标 10分钟"
-        assertTrue("Countup format should contain '已计时'", expectedFormat.contains("已计时"))
-        assertTrue("Countup format should contain target minutes", expectedFormat.contains("10分钟"))
+        assertEquals(context.getString(R.string.timer_notification_elapsed_format, 3, 5, 10), text)
     }
 
     @Test
     fun formatTimeText_countdownMode_displaysRemainingTime() = runTest {
-        // Countdown mode: "还剩 MM:SS / 目标 N分钟"
-        val elapsedSeconds = 120 // 2:00 elapsed
-        val targetMinutes = 5 // 5 minutes = 300 seconds
-        val isCountdown = true
+        val factory = TimerNotificationFactory(context)
+        val text = factory.formatTimeText(120, 5, isCountdown = true)
 
-        // Remaining: 300 - 120 = 180 seconds = 3:00
-        val expectedFormat = "还剩 03:00 / 目标 5分钟"
-        assertTrue("Countdown format should contain '还剩'", expectedFormat.contains("还剩"))
-        assertTrue("Countdown format should contain target minutes", expectedFormat.contains("5分钟"))
+        assertEquals(context.getString(R.string.timer_notification_remaining_format, 3, 0, 5), text)
+    }
+
+    @Test
+    fun formatTimeText_countdownClampsAtZero() {
+        val factory = TimerNotificationFactory(context)
+
+        assertEquals(
+            context.getString(R.string.timer_notification_remaining_format, 0, 0, 1),
+            factory.formatTimeText(90, 1, isCountdown = true)
+        )
     }
 
     @Test

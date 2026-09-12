@@ -14,7 +14,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.dayforge.R
 import com.dayforge.data.local.HabitDatabase
-import com.dayforge.domain.service.TimerService
+import com.dayforge.domain.service.TimerServiceController
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
@@ -107,7 +107,7 @@ class TimerConfirmationActivity : ComponentActivity() {
                                     Button(
                                         onClick = {
                                             // Just start the new timer - TimerService.handleStart will stop the old one
-                                            TimerService.startTimer(
+                                            TimerServiceController.startTimer(
                                                 this@TimerConfirmationActivity,
                                                 habitId,
                                                 targetMinutes

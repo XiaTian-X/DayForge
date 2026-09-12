@@ -1,9 +1,6 @@
 package com.dayforge.domain.service
 
-import android.app.Notification
-import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -12,10 +9,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
 import android.util.Log
-import androidx.core.app.NotificationCompat
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
-import com.dayforge.MainActivity
-import com.dayforge.R
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
 import com.dayforge.data.api.SyncV2Api
@@ -26,7 +20,6 @@ import com.dayforge.data.local.dao.HabitMetricLinkDao
 import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.data.local.entity.TimerCommandEntity
 import com.dayforge.data.local.entity.TimerSegmentEntity
-import com.dayforge.receiver.TimerActionReceiver
 import com.dayforge.util.DateTimeUtils
 import com.dayforge.widget.WidgetUpdateReceiver
 import com.dayforge.widget.checkin.GoalCompletionActivity
@@ -89,71 +82,6 @@ class TimerService : Service() {
         const val THRESHOLD_MULTIPLIER = 3
         private const val HEARTBEAT_INTERVAL_MILLIS = 120_000L
 
-        /**
-         * Helper to start the timer service.
-         */
-        fun startTimer(context: Context, habitId: Long, targetMinutes: Int, isCountdown: Boolean = false) {
-            val intent = Intent(context, TimerService::class.java).apply {
-                action = ACTION_START
-                putExtra(EXTRA_HABIT_ID, habitId)
-                putExtra(EXTRA_TARGET_MINUTES, targetMinutes)
-                putExtra(EXTRA_IS_COUNTDOWN, isCountdown)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
-        }
-
-        /**
-         * Helper to pause the timer.
-         */
-        fun pauseTimer(context: Context, habitId: Long, targetMinutes: Int) {
-            val intent = Intent(context, TimerService::class.java).apply {
-                action = ACTION_PAUSE
-                putExtra(EXTRA_HABIT_ID, habitId)
-                putExtra(EXTRA_TARGET_MINUTES, targetMinutes)
-            }
-            context.startService(intent)
-        }
-
-        /**
-         * Helper to resume the timer.
-         */
-        fun resumeTimer(context: Context, habitId: Long, targetMinutes: Int) {
-            val intent = Intent(context, TimerService::class.java).apply {
-                action = ACTION_RESUME
-                putExtra(EXTRA_HABIT_ID, habitId)
-                putExtra(EXTRA_TARGET_MINUTES, targetMinutes)
-            }
-            context.startService(intent)
-        }
-
-        /**
-         * Helper to stop the timer.
-         */
-        fun stopTimer(context: Context, habitId: Long, targetMinutes: Int) {
-            val intent = Intent(context, TimerService::class.java).apply {
-                action = ACTION_STOP
-                putExtra(EXTRA_HABIT_ID, habitId)
-                putExtra(EXTRA_TARGET_MINUTES, targetMinutes)
-            }
-            context.startService(intent)
-        }
-
-        /**
-         * Helper to discard the timer without saving.
-         * Per TIMER-09: Discards incomplete countdown session, deletes TimeLogEntity.
-         */
-        fun discardTimer(context: Context, habitId: Long, targetMinutes: Int) {
-            val intent = Intent(context, TimerService::class.java).apply {
-                action = ACTION_DISCARD
-                putExtra(EXTRA_HABIT_ID, habitId)
-                putExtra(EXTRA_TARGET_MINUTES, targetMinutes)
-            }
-            context.startService(intent)
-        }
     }
 
     // Dependency injection
@@ -203,11 +131,13 @@ class TimerService : Service() {
     private var lastHeartbeatAttemptAt: Long = 0L
 
     private lateinit var notificationManager: NotificationManager
+    private lateinit var notificationFactory: TimerNotificationFactory
 
     override fun onCreate() {
         super.onCreate()
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        createNotificationChannel()
+        notificationFactory = TimerNotificationFactory(this)
+        notificationFactory.createChannel(notificationManager)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -278,7 +208,7 @@ class TimerService : Service() {
 
                             if (elapsedMinutes >= thresholdMinutes) {
                                 // Auto-stop: show notification and stop timer
-                                showThresholdReachedNotification(thresholdMinutes)
+                                showThresholdReachedNotification()
                                 handleStop()
                                 return@launch  // Exit ticker loop
                             }
@@ -328,29 +258,21 @@ class TimerService : Service() {
      * Per D-14, timer continues running after target is reached.
      */
     private fun showTargetReachedNotification() {
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(getString(R.string.timer_notification_target_reached_title))
-            .setContentText(getString(R.string.timer_notification_target_reached_text))
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setAutoCancel(true)
-            .build()
-
-        notificationManager.notify(TARGET_NOTIFICATION_ID, notification)
+        notificationManager.notify(
+            TARGET_NOTIFICATION_ID,
+            notificationFactory.createTargetReachedNotification()
+        )
     }
 
     /**
      * Shows a notification when the threshold duration is reached.
      * Per D-08, timer auto-stops when reaching threshold.
      */
-    private fun showThresholdReachedNotification(thresholdMinutes: Int) {
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(getString(R.string.timer_notification_threshold_reached_title))
-            .setContentText(getString(R.string.timer_notification_threshold_reached_text))
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setAutoCancel(true)
-            .build()
-
-        notificationManager.notify(THRESHOLD_NOTIFICATION_ID, notification)
+    private fun showThresholdReachedNotification() {
+        notificationManager.notify(
+            THRESHOLD_NOTIFICATION_ID,
+            notificationFactory.createThresholdReachedNotification()
+        )
     }
 
     /**
@@ -358,14 +280,10 @@ class TimerService : Service() {
      * Per TIMER-05: countdown auto-completes at zero and records TimeLogEntity.
      */
     private fun showCountdownCompleteNotification() {
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(getString(R.string.timer_notification_countdown_complete_title))
-            .setContentText(getString(R.string.timer_notification_countdown_complete_text))
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setAutoCancel(true)
-            .build()
-
-        notificationManager.notify(COUNTDOWN_COMPLETE_NOTIFICATION_ID, notification)
+        notificationManager.notify(
+            COUNTDOWN_COMPLETE_NOTIFICATION_ID,
+            notificationFactory.createCountdownCompleteNotification()
+        )
     }
 
     private fun handleStart(intent: Intent) {
@@ -1019,28 +937,17 @@ class TimerService : Service() {
     }
 
     /**
-     * Creates the notification channel for Android O+.
-     */
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Timer",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Background timer notifications"
-                setShowBadge(false)
-            }
-            notificationManager.createNotificationChannel(channel)
-        }
-    }
-
-    /**
      * Starts the foreground service with notification.
      */
     private fun startForegroundWithNotification() {
         val elapsedSeconds = calculateElapsedSeconds()
-        val notification = createNotification(elapsedSeconds, isPaused)
+        val notification = notificationFactory.createTimerNotification(
+            elapsedSeconds = elapsedSeconds,
+            isPaused = isPaused,
+            targetMinutes = targetMinutes,
+            isCountdown = isCountdown,
+            habitId = habitId
+        )
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             // Android 14+ requires foreground service type
@@ -1059,7 +966,13 @@ class TimerService : Service() {
      */
     private fun updateNotification() {
         val elapsedSeconds = calculateElapsedSeconds()
-        val notification = createNotification(elapsedSeconds, isPaused)
+        val notification = notificationFactory.createTimerNotification(
+            elapsedSeconds = elapsedSeconds,
+            isPaused = isPaused,
+            targetMinutes = targetMinutes,
+            isCountdown = isCountdown,
+            habitId = habitId
+        )
         notificationManager.notify(NOTIFICATION_ID, notification)
     }
 
@@ -1120,112 +1033,4 @@ class TimerService : Service() {
         }
     }
 
-    /**
-     * Creates the timer notification with action buttons.
-     */
-    private fun createNotification(elapsedSeconds: Int, isPaused: Boolean): Notification {
-        val contentTitle = if (isPaused) getString(R.string.timer_notification_title_paused) else getString(R.string.timer_notification_title_running)
-        val contentText = formatTimeText(elapsedSeconds, targetMinutes, isCountdown)
-
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(contentTitle)
-            .setContentText(contentText)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setOngoing(true)  // Cannot be swiped away
-            .setContentIntent(createPendingIntent())
-            .addAction(createPauseResumeAction(isPaused))
-            .addAction(createStopAction())
-            .build()
-    }
-
-    /**
-     * Formats the time display text based on timer mode.
-     * Per TIMER-03: countup mode displays "已计时 X:XX"
-     * Per TIMER-04: countdown mode displays "还剩 X:XX"
-     */
-    private fun formatTimeText(
-        elapsedSeconds: Int,
-        targetMinutes: Int,
-        isCountdown: Boolean
-    ): String {
-        val targetSeconds = targetMinutes * 60
-
-        return if (isCountdown) {
-            // Countdown mode: display remaining time
-            val remainingSeconds = (targetSeconds - elapsedSeconds).coerceAtLeast(0)
-            val minutes = remainingSeconds / 60
-            val seconds = remainingSeconds % 60
-            getString(R.string.timer_notification_remaining_format, minutes, seconds, targetMinutes)
-        } else {
-            // Countup mode: display elapsed time
-            val minutes = elapsedSeconds / 60
-            val seconds = elapsedSeconds % 60
-            getString(R.string.timer_notification_elapsed_format, minutes, seconds, targetMinutes)
-        }
-    }
-
-    /**
-     * Creates PendingIntent to open the app when notification is tapped.
-     */
-    private fun createPendingIntent(): PendingIntent {
-        val intent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
-        }
-        return PendingIntent.getActivity(
-            this,
-            0,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-    }
-
-    /**
-     * Creates pause/resume action button for notification.
-     */
-    private fun createPauseResumeAction(isPaused: Boolean): NotificationCompat.Action {
-        val action = if (isPaused) ACTION_RESUME else ACTION_PAUSE
-        val icon = android.R.drawable.ic_media_pause  // System icon for simplicity
-        val title = if (isPaused) getString(R.string.timer_btn_resume) else getString(R.string.timer_btn_pause)
-
-        // Send intent directly to TimerService
-        val intent = Intent(this, TimerService::class.java).apply {
-            this.action = action
-            putExtra(EXTRA_HABIT_ID, habitId)
-            putExtra(EXTRA_TARGET_MINUTES, targetMinutes)
-        }
-
-        val pendingIntent = PendingIntent.getService(
-            this,
-            action.hashCode(),
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        return NotificationCompat.Action.Builder(icon, title, pendingIntent).build()
-    }
-
-    /**
-     * Creates stop action button for notification.
-     */
-    private fun createStopAction(): NotificationCompat.Action {
-        // Send intent directly to TimerService
-        val intent = Intent(this, TimerService::class.java).apply {
-            action = ACTION_STOP
-            putExtra(EXTRA_HABIT_ID, habitId)
-            putExtra(EXTRA_TARGET_MINUTES, targetMinutes)
-        }
-
-        val pendingIntent = PendingIntent.getService(
-            this,
-            ACTION_STOP.hashCode(),
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        return NotificationCompat.Action.Builder(
-            android.R.drawable.ic_menu_close_clear_cancel,
-            getString(R.string.timer_btn_stop),
-            pendingIntent
-        ).build()
-    }
 }
