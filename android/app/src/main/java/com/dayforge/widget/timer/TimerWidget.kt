@@ -100,7 +100,7 @@ class TimerWidget : GlanceAppWidget() {
          *    - If activeTimer != null and activeTimer.isPaused -> PAUSED
          *    - Else -> NOT_RUNNING
          * 5. Calculate elapsed seconds if timer active (use System.currentTimeMillis() - startTime, accounting for pausedAt)
-         * 6. Calculate today's accumulated seconds: query timeLogDao.getTimeLogsInRange for today's completed sessions (endTime != null), sum durationSeconds
+         * 6. Calculate today's accumulated seconds through TimerProgressCalculator's day-allocation-aware query
          * 7. Check completion: accumulatedSeconds >= targetMinutes * 60
          * 8. Write all values to Glance state via updateAppWidgetState
          */

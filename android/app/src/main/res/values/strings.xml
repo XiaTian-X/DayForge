@@ -381,7 +381,6 @@
     <string name="login_error_user_not_found">User not found</string>
     <string name="login_error_network">Network connection failed, please check your network</string>
     <string name="login_error_unknown">Login failed: %1$s</string>
-    <string name="register_error_unknown">Registration failed: %1$s</string>
     <string name="server_error_invalid_address">Please enter a valid address (e.g., 192.168.1.1:8080 or api.example.com)</string>
 
     <!-- Dialogs -->

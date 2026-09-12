@@ -1,5 +1,5 @@
 """Database session management over the configured storage adapter."""
-from sqlmodel import SQLModel, Session
+from sqlmodel import SQLModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from typing import AsyncGenerator, Optional, Any
 
@@ -28,9 +28,6 @@ def set_engine(engine: Any) -> None:
     _engine = engine
 
 
-sync_engine = DATABASE_ADAPTER.create_migration_engine()
-
-
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     """Async database session dependency.
 
@@ -53,12 +50,6 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
-def get_sync_session() -> Session:
-    """Sync database session for migrations."""
-    with Session(sync_engine) as session:
-        yield session
-
-
 async def create_db_and_tables():
     """Create registered tables for isolated tests only.
 
@@ -75,7 +66,6 @@ __all__ = [
     "create_db_and_tables",
     "get_engine",
     "set_engine",
-    "sync_engine",
     "DATABASE_ADAPTER",
     "DATABASE_URL",
 ]
