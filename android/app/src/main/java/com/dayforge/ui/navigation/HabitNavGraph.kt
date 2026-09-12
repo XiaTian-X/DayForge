@@ -18,7 +18,7 @@ import androidx.navigation.navArgument
 import com.dayforge.data.local.TokenManager
 import com.dayforge.ui.screens.createhabit.CreateHabitScreen
 import com.dayforge.ui.screens.createtemptask.CreateTempTaskScreen
-import com.dayforge.ui.screens.creatgoal.CreateGoalScreen
+import com.dayforge.ui.screens.creategoal.CreateGoalScreen
 import com.dayforge.ui.screens.createmetric.CreateMetricScreen
 import com.dayforge.ui.screens.dashboard.DashboardScreen
 import com.dayforge.ui.screens.dashboard.DashboardViewModel
