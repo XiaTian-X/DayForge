@@ -44,9 +44,40 @@ class TestAsyncSession:
             )
             tables = [row[0] for row in result.fetchall()]
 
-        # The async_session fixture should have created some tables
-        # Even if no models defined, we should be able to query
+        assert {"users", "plan_nodes", "timer_sessions"}.issubset(tables)
         assert async_session.bind is not None
+
+    @pytest.mark.parametrize("fail", [False, True])
+    async def test_runtime_session_commits_or_rolls_back(self, tmp_path, fail):
+        """Exercise the actual dependency, not the test client's overridden session."""
+        from contextlib import asynccontextmanager
+        from sqlalchemy import text
+        from src.database import get_engine, get_session, set_engine
+        from src.storage.database_adapter import build_database_adapter
+
+        previous = get_engine()
+        adapter = build_database_adapter("sqlite", None, str(tmp_path / "session.db"))
+        engine = adapter.create_async_engine()
+        set_engine(engine)
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(text("CREATE TABLE session_probe (value INTEGER)"))
+            failure_observed = False
+            try:
+                async with asynccontextmanager(get_session)() as session:
+                    await session.execute(text("INSERT INTO session_probe VALUES (1)"))
+                    if fail:
+                        raise RuntimeError("injected transaction failure")
+            except RuntimeError as exc:
+                assert str(exc) == "injected transaction failure"
+                failure_observed = True
+            assert failure_observed is fail
+            async with engine.connect() as connection:
+                count = (await connection.execute(text("SELECT COUNT(*) FROM session_probe"))).scalar_one()
+                assert count == (0 if fail else 1)
+        finally:
+            set_engine(previous)
+            await engine.dispose()
 
     @pytest.mark.asyncio
     async def test_async_session_can_commit(self, async_session):
