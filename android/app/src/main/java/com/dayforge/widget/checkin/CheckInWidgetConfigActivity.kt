@@ -22,7 +22,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.dayforge.R
 import androidx.glance.appwidget.GlanceAppWidgetManager
-import com.dayforge.data.local.HabitDatabase
+import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.model.HabitType
 import kotlinx.coroutines.CoroutineScope
@@ -113,7 +113,7 @@ private fun HabitSelectionScreen(onHabitSelected: (HabitEntity) -> Unit) {
     val context = LocalContext.current
 
     LaunchedEffect(Unit) {
-        val database = HabitDatabase.getInstance(context)
+        val database = HabitDatabaseProvider.getInstance(context)
         val allHabits = database.habitDao().getAllHabits().first()
 
         val appWidgetManager = AppWidgetManager.getInstance(context)

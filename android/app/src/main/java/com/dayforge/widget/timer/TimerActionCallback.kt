@@ -9,7 +9,7 @@ import androidx.glance.GlanceId
 import androidx.glance.action.ActionParameters
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.action.ActionCallback
-import com.dayforge.data.local.HabitDatabase
+import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.domain.service.TimerServiceController
 import com.dayforge.domain.service.TimerElapsedCalculator
@@ -48,7 +48,7 @@ class TimerActionCallback : ActionCallback {
 
         when (action) {
             "start" -> {
-                val database = HabitDatabase.getInstance(context.applicationContext)
+                val database = HabitDatabaseProvider.getInstance(context.applicationContext)
 
                 // Check if already completed today
                 val habit = database.habitDao().getHabitById(habitId)
@@ -93,7 +93,7 @@ class TimerActionCallback : ActionCallback {
             }
             "stop" -> {
                 // Check if this is an incomplete session (countdown or countup)
-                val database = HabitDatabase.getInstance(context.applicationContext)
+                val database = HabitDatabaseProvider.getInstance(context.applicationContext)
                 val habit = database.habitDao().getHabitById(habitId)
                 val activeLog = database.timeLogDao().getActiveTimeLog()
 

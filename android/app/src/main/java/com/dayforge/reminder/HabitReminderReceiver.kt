@@ -7,7 +7,7 @@ import android.content.Intent
 import android.util.Log
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import com.dayforge.data.local.DataStoreProvider
-import com.dayforge.data.local.HabitDatabase
+import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.service.ScheduleValidator
 import com.dayforge.util.DateTimeUtils
@@ -60,7 +60,7 @@ class HabitReminderReceiver : BroadcastReceiver() {
             CoroutineScope(Dispatchers.IO).launch {
                 try {
                     // Query habit from database
-                    val database = HabitDatabase.getInstance(appContext)
+                    val database = HabitDatabaseProvider.getInstance(appContext)
                     val habit = database.habitDao().getHabitByIdSync(habitId)
 
                     if (habit == null) {

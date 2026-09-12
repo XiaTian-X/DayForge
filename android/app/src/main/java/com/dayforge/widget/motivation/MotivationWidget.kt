@@ -17,7 +17,7 @@ import androidx.glance.text.Text
 import androidx.glance.text.TextAlign
 import androidx.glance.text.TextStyle
 import com.dayforge.R
-import com.dayforge.data.local.HabitDatabase
+import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.service.FailureChecker
 import com.dayforge.domain.service.HabitStatusCalculator
@@ -38,7 +38,7 @@ class MotivationWidget : GlanceAppWidget() {
         val TOTAL_HABITS_KEY = intPreferencesKey("totalHabits")
 
         suspend fun refreshWidgetData(context: Context) {
-            val database = HabitDatabase.getInstance(context.applicationContext)
+            val database = HabitDatabaseProvider.getInstance(context.applicationContext)
             val habitDao = database.habitDao()
             val completionDao = database.completionDao()
             val timeLogDao = database.timeLogDao()

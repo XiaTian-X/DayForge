@@ -17,7 +17,7 @@ import androidx.glance.text.Text
 import androidx.glance.text.TextAlign
 import androidx.glance.text.TextStyle
 import com.dayforge.R
-import com.dayforge.data.local.HabitDatabase
+import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.HabitRepository
 import com.dayforge.domain.service.FailureChecker
@@ -36,7 +36,7 @@ class ProgressWidget : GlanceAppWidget() {
         val PROGRESS_KEY = floatPreferencesKey("progress")
 
         suspend fun refreshWidgetData(context: Context) {
-            val database = HabitDatabase.getInstance(context.applicationContext)
+            val database = HabitDatabaseProvider.getInstance(context.applicationContext)
             val habitDao = database.habitDao()
             val completionDao = database.completionDao()
             val timeLogDao = database.timeLogDao()
