@@ -43,7 +43,7 @@ class TargetMetCheckerTest {
         val result = TargetMetChecker.getTargetMetDates(completions, targetValue = 5)
 
         assertEquals(1, result.size)
-        assertTrue(result.contains(today))
+        assertTrue(result.contains(DateTimeUtils.today()))
     }
 
     @Test
@@ -74,7 +74,7 @@ class TargetMetCheckerTest {
             CompletionEntity(habitId = 1, date = today, value = 2)
         )
 
-        val result = TargetMetChecker.isTargetMetOnDate(completions, today, targetValue = 5)
+        val result = TargetMetChecker.isTargetMetOnDate(completions, DateTimeUtils.today(), targetValue = 5)
 
         assertTrue(result)
     }
@@ -86,7 +86,7 @@ class TargetMetCheckerTest {
             CompletionEntity(habitId = 1, date = today, value = 3)
         )
 
-        val result = TargetMetChecker.isTargetMetOnDate(completions, today, targetValue = 5)
+        val result = TargetMetChecker.isTargetMetOnDate(completions, DateTimeUtils.today(), targetValue = 5)
 
         assertFalse(result)
     }
@@ -99,7 +99,7 @@ class TargetMetCheckerTest {
             CompletionEntity(habitId = 1, date = today, value = 10)
         )
 
-        val result = TargetMetChecker.isTargetMetOnDate(completions, yesterday, targetValue = 5)
+        val result = TargetMetChecker.isTargetMetOnDate(completions, DateTimeUtils.today().minusDays(1), targetValue = 5)
 
         assertFalse(result)
     }

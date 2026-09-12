@@ -70,7 +70,7 @@ class ProgressWidgetTest {
         ))
 
         // Verify completion logic
-        val completions = database.completionDao().getCompletionsInRange(habitId, today, today + DateTimeUtils.MILLIS_PER_DAY)
+        val completions = database.completionDao().getCompletionsInRange(habitId, DateTimeUtils.today(), DateTimeUtils.today().plusDays(1))
         val todayCount = completions.sumOf { it.value }
         val isCompleted = todayCount > 0
 
@@ -108,7 +108,7 @@ class ProgressWidgetTest {
         ))
 
         // Verify completion logic
-        val completions = database.completionDao().getCompletionsInRange(habitId, today, today + DateTimeUtils.MILLIS_PER_DAY)
+        val completions = database.completionDao().getCompletionsInRange(habitId, DateTimeUtils.today(), DateTimeUtils.today().plusDays(1))
         val todayCount = completions.sumOf { it.value }
         val habit = database.habitDao().getHabitById(habitId)!!
         val isCompleted = todayCount >= habit.targetValue
@@ -140,7 +140,7 @@ class ProgressWidgetTest {
         }
 
         // Verify completion logic
-        val completions = database.completionDao().getCompletionsInRange(habitId, today, today + DateTimeUtils.MILLIS_PER_DAY)
+        val completions = database.completionDao().getCompletionsInRange(habitId, DateTimeUtils.today(), DateTimeUtils.today().plusDays(1))
         val todayCount = completions.sumOf { it.value }
         val habit = database.habitDao().getHabitById(habitId)!!
         val isCompleted = todayCount >= habit.targetValue
@@ -172,7 +172,7 @@ class ProgressWidgetTest {
         }
 
         // Verify completion logic
-        val completions = database.completionDao().getCompletionsInRange(habitId, today, today + DateTimeUtils.MILLIS_PER_DAY)
+        val completions = database.completionDao().getCompletionsInRange(habitId, DateTimeUtils.today(), DateTimeUtils.today().plusDays(1))
         val todayCount = completions.sumOf { it.value }
         val habit = database.habitDao().getHabitById(habitId)!!
         val isCompleted = todayCount >= habit.targetValue

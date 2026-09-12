@@ -1,29 +1,32 @@
 package com.dayforge.data.local.dao
 
 import androidx.room.*
+import com.dayforge.data.local.BusinessDateConverters
 import com.dayforge.data.local.entity.CompletionEntity
 import kotlinx.coroutines.flow.Flow
+import java.time.LocalDate
 
 @Dao
+@TypeConverters(BusinessDateConverters::class)
 interface CompletionDao {
 
-    @Query("SELECT * FROM completions WHERE habitId = :habitId ORDER BY date DESC")
+    @Query("SELECT * FROM completions WHERE habitId = :habitId ORDER BY recordedLocalDate DESC, COALESCE(actualCompletedAt, date) DESC, id DESC")
     fun getCompletionsByHabit(habitId: Long): Flow<List<CompletionEntity>>
 
-    @Query("SELECT * FROM completions ORDER BY date DESC")
+    @Query("SELECT * FROM completions ORDER BY recordedLocalDate DESC, COALESCE(actualCompletedAt, date) DESC, id DESC")
     fun getAllCompletions(): Flow<List<CompletionEntity>>
 
     @Query("SELECT * FROM completions WHERE id = :id")
     suspend fun getCompletionById(id: Long): CompletionEntity?
 
-    @Query("SELECT * FROM completions WHERE habitId = :habitId AND date >= :start AND date < :end")
-    suspend fun getCompletionsInRange(habitId: Long, start: Long, end: Long): List<CompletionEntity>
+    @Query("SELECT * FROM completions WHERE habitId = :habitId AND recordedLocalDate >= :start AND recordedLocalDate < :end")
+    suspend fun getCompletionsInRange(habitId: Long, start: LocalDate, end: LocalDate): List<CompletionEntity>
 
-    @Query("SELECT * FROM completions WHERE habitId = :habitId AND date >= :start AND date < :end")
-    fun getCompletionsInRangeSync(habitId: Long, start: Long, end: Long): List<CompletionEntity>
+    @Query("SELECT * FROM completions WHERE habitId = :habitId AND recordedLocalDate >= :start AND recordedLocalDate < :end")
+    fun getCompletionsInRangeSync(habitId: Long, start: LocalDate, end: LocalDate): List<CompletionEntity>
 
-    @Query("SELECT id FROM completions WHERE habitId = :habitId AND date >= :start AND date < :end ORDER BY id DESC LIMIT 1")
-    suspend fun getTodayCompletionId(habitId: Long, start: Long, end: Long): Long?
+    @Query("SELECT id FROM completions WHERE habitId = :habitId AND recordedLocalDate >= :start AND recordedLocalDate < :end ORDER BY id DESC LIMIT 1")
+    suspend fun getTodayCompletionId(habitId: Long, start: LocalDate, end: LocalDate): Long?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(completion: CompletionEntity): Long
@@ -34,7 +37,7 @@ interface CompletionDao {
     /**
      * Get all completions once (suspend version).
      */
-    @Query("SELECT * FROM completions ORDER BY date DESC")
+    @Query("SELECT * FROM completions ORDER BY recordedLocalDate DESC, COALESCE(actualCompletedAt, date) DESC, id DESC")
     suspend fun getAllCompletionsOnce(): List<CompletionEntity>
 
     @Query("SELECT * FROM completions WHERE uuid = :uuid LIMIT 1")
@@ -56,7 +59,7 @@ interface CompletionDao {
      * @param habitId The ID of the habit
      * @return Number of distinct days with at least one completion
      */
-    @Query("SELECT COUNT(DISTINCT date) FROM completions WHERE habitId = :habitId")
+    @Query("SELECT COUNT(DISTINCT recordedLocalDate) FROM completions WHERE habitId = :habitId")
     suspend fun getDistinctDayCount(habitId: Long): Int
 
     /**
@@ -69,9 +72,9 @@ interface CompletionDao {
      */
     @Query("""
         SELECT COUNT(*) FROM (
-            SELECT date FROM completions
+            SELECT recordedLocalDate FROM completions
             WHERE habitId = :habitId
-            GROUP BY date
+            GROUP BY recordedLocalDate
             HAVING SUM(value) >= :targetValue
         )
     """)
@@ -81,20 +84,20 @@ interface CompletionDao {
      * Check if there's a completion on a specific date.
      * Used for STRICT failure mode checking.
      * @param habitId The ID of the habit
-     * @param dateMillis The start of day timestamp in millis
+     * @param date The captured business date
      * @return true if there's at least one completion on that date
      */
-    @Query("SELECT EXISTS(SELECT 1 FROM completions WHERE habitId = :habitId AND date = :dateMillis LIMIT 1)")
-    suspend fun hasCompletionOnDate(habitId: Long, dateMillis: Long): Boolean
+    @Query("SELECT EXISTS(SELECT 1 FROM completions WHERE habitId = :habitId AND recordedLocalDate = :date LIMIT 1)")
+    suspend fun hasCompletionOnDate(habitId: Long, date: LocalDate): Boolean
 
     /**
      * Get the first completion date for a habit.
      * Used as the cycle start date for failure checking.
      * @param habitId The ID of the habit
-     * @return The earliest completion date in millis, or null if no completions
+     * @return The earliest captured business date, or null if no completions
      */
-    @Query("SELECT MIN(date) FROM completions WHERE habitId = :habitId")
-    suspend fun getFirstCompletionDate(habitId: Long): Long?
+    @Query("SELECT MIN(recordedLocalDate) FROM completions WHERE habitId = :habitId")
+    suspend fun getFirstCompletionDate(habitId: Long): LocalDate?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(completion: CompletionEntity): Long

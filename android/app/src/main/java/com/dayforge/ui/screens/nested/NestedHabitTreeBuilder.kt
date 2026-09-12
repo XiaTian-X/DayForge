@@ -85,7 +85,8 @@ class NestedHabitTreeBuilder @Inject constructor(
         completions: List<CompletionEntity>
     ): ChildHabitWithStats {
         val habitCompletions = completions.filter { it.habitId == child.id }
-        val todayCompletions = habitCompletions.filter { isToday(it.date) }
+        val today = DateTimeUtils.today().toString()
+        val todayCompletions = habitCompletions.filter { it.recordedLocalDate == today }
 
         val (todayCount, currentStreak, bestStreak) = if (child.habitType == HabitType.TIMER) {
             val allTimeLogs = withContext(Dispatchers.IO) {
@@ -133,13 +134,12 @@ class NestedHabitTreeBuilder @Inject constructor(
             false
         } else {
             withContext(Dispatchers.IO) {
-                val firstCompletionDateMillis = if (child.habitType == HabitType.TIMER) {
-                    timeLogDao.getFirstTimeLogDate(child.id)
+                val firstCompletionDate = if (child.habitType == HabitType.TIMER) {
+                    timeLogDao.getFirstTimeLogDate(child.id)?.let {
+                        Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate()
+                    }
                 } else {
                     completionDao.getFirstCompletionDate(child.id)
-                }
-                val firstCompletionDate = firstCompletionDateMillis?.let {
-                    Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate()
                 }
                 failureChecker.hasFailed(child, firstCompletionDate)
             }
@@ -168,7 +168,4 @@ class NestedHabitTreeBuilder @Inject constructor(
             hasFailed = hasFailed
         )
     }
-
-    private fun isToday(dateMillis: Long): Boolean =
-        dateMillis == DateTimeUtils.startOfDayMillis()
 }

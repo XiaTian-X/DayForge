@@ -96,8 +96,8 @@ class HabitReminderReceiver : BroadcastReceiver() {
 
                             // COUNTING habits with slot info: check if slot already completed
                             if (habit.habitType == HabitType.COUNTING && slotIndex >= 0 && targetValue > 1) {
-                                val todayStart = DateTimeUtils.startOfDayMillis()
-                                val todayEnd = DateTimeUtils.startOfNextDayMillis(todayStart)
+                                val todayStart = DateTimeUtils.today()
+                                val todayEnd = todayStart.plusDays(1)
                                 val todayCompletions = database.completionDao().getCompletionsInRangeSync(habitId, todayStart, todayEnd)
                                 val completedToday = todayCompletions.sumOf { it.value }
 

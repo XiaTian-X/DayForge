@@ -39,7 +39,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.dayforge.R
 import com.dayforge.data.local.entity.CompletionEntity
+import com.dayforge.data.local.businessDate
 import com.dayforge.util.DateTimeUtils
+import java.time.LocalDate
 import java.util.Calendar
 
 /**
@@ -60,7 +62,7 @@ fun CompletionCalendar(
     initialMonth: Long? = null
 ) {
     val cellSpacing = 4.dp
-    val completedDates = completions.map { DateTimeUtils.normalizeToDay(it.date) }.toSet()
+    val completedDates = completions.map { it.businessDate }.toSet()
 
     val todayCal = Calendar.getInstance()
     todayCal.timeInMillis = DateTimeUtils.startOfDayMillis()
@@ -77,7 +79,7 @@ fun CompletionCalendar(
 
     var displayedYear by remember { mutableStateOf(initialYear) }
     var displayedMonth by remember { mutableStateOf(initialMonthNum) }
-    val today = DateTimeUtils.startOfDayMillis()
+    val today = DateTimeUtils.today()
 
     // Picker state
     var showPicker by remember { mutableStateOf(false) }
@@ -178,9 +180,7 @@ fun CompletionCalendar(
                     if (dayOfMonth < 1 || dayOfMonth > daysInMonth) {
                         Spacer(modifier = Modifier.weight(1f).aspectRatio(1f))
                     } else {
-                        val cellCal = Calendar.getInstance()
-                        cellCal.set(displayedYear, displayedMonth, dayOfMonth)
-                        val cellDate = DateTimeUtils.normalizeToDay(cellCal.timeInMillis)
+                        val cellDate = LocalDate.of(displayedYear, displayedMonth + 1, dayOfMonth)
 
                         val hasCompletion = cellDate in completedDates
                         val isFuture = cellDate > today
@@ -199,7 +199,8 @@ fun CompletionCalendar(
                             contentAlignment = Alignment.Center
                         ) {
                             when {
-                                isFuture -> {
+                                // Travel can leave genuine captured history ahead of local today.
+                                isFuture && !hasCompletion -> {
                                     Text(
                                         text = dayOfMonth.toString(),
                                         style = MaterialTheme.typography.labelSmall,

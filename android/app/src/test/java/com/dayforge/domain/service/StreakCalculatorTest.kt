@@ -7,13 +7,11 @@ import org.junit.Test
 
 class StreakCalculatorTest {
 
-    private val timeZone = TimeZone.UTC
-
     @Test
     fun calculateCurrentStreak_emptyCompletions_returnsZero() {
         val completions = emptyList<CompletionEntity>()
 
-        val streak = StreakCalculator.calculateCurrentStreak(completions, timeZone)
+        val streak = StreakCalculator.calculateCurrentStreak(completions)
 
         assertEquals("Empty completions should return 0", 0, streak)
     }
@@ -25,7 +23,7 @@ class StreakCalculatorTest {
             createCompletion(date = today)
         )
 
-        val streak = StreakCalculator.calculateCurrentStreak(completions, timeZone)
+        val streak = StreakCalculator.calculateCurrentStreak(completions)
 
         assertEquals("Today only should return 1", 1, streak)
     }
@@ -42,7 +40,7 @@ class StreakCalculatorTest {
             createCompletion(date = twoDaysAgo)
         )
 
-        val streak = StreakCalculator.calculateCurrentStreak(completions, timeZone)
+        val streak = StreakCalculator.calculateCurrentStreak(completions)
 
         assertEquals("Three consecutive days should return 3", 3, streak)
     }
@@ -58,7 +56,7 @@ class StreakCalculatorTest {
             createCompletion(date = twoDaysAgo)
         )
 
-        val streak = StreakCalculator.calculateCurrentStreak(completions, timeZone)
+        val streak = StreakCalculator.calculateCurrentStreak(completions)
 
         assertEquals("Gap before today means streak is just today = 1", 1, streak)
     }
@@ -74,7 +72,7 @@ class StreakCalculatorTest {
             createCompletion(date = yesterday)
         )
 
-        val streak = StreakCalculator.calculateCurrentStreak(completions, timeZone)
+        val streak = StreakCalculator.calculateCurrentStreak(completions)
 
         assertEquals("Completed yesterday but not today means current streak is 1", 1, streak)
     }
@@ -91,7 +89,7 @@ class StreakCalculatorTest {
             createCompletion(date = twoDaysAgo)
         )
 
-        val streak = StreakCalculator.calculateCurrentStreak(completions, timeZone)
+        val streak = StreakCalculator.calculateCurrentStreak(completions)
 
         assertEquals("Consecutive days ending yesterday should return 2", 2, streak)
     }
@@ -108,7 +106,7 @@ class StreakCalculatorTest {
             createCompletion(date = threeDaysAgo)
         )
 
-        val streak = StreakCalculator.calculateCurrentStreak(completions, timeZone)
+        val streak = StreakCalculator.calculateCurrentStreak(completions)
 
         assertEquals("Not completed today or yesterday means streak is broken", 0, streak)
     }
@@ -117,7 +115,7 @@ class StreakCalculatorTest {
     fun calculateBestStreak_emptyCompletions_returnsZero() {
         val completions = emptyList<CompletionEntity>()
 
-        val streak = StreakCalculator.calculateBestStreak(completions, timeZone)
+        val streak = StreakCalculator.calculateBestStreak(completions)
 
         assertEquals("Empty completions should return 0", 0, streak)
     }
@@ -128,7 +126,7 @@ class StreakCalculatorTest {
             createCompletion(date = getStartOfDayMillis())
         )
 
-        val streak = StreakCalculator.calculateBestStreak(completions, timeZone)
+        val streak = StreakCalculator.calculateBestStreak(completions)
 
         assertEquals("Single completion should return 1", 1, streak)
     }
@@ -153,7 +151,7 @@ class StreakCalculatorTest {
             createCompletion(date = sixDaysAgo)
         )
 
-        val streak = StreakCalculator.calculateBestStreak(completions, timeZone)
+        val streak = StreakCalculator.calculateBestStreak(completions)
 
         assertEquals("Best of two 3-day streaks should return 3", 3, streak)
     }
@@ -177,7 +175,7 @@ class StreakCalculatorTest {
             createCompletion(date = fiveDaysAgo)
         )
 
-        val streak = StreakCalculator.calculateBestStreak(completions, timeZone)
+        val streak = StreakCalculator.calculateBestStreak(completions)
 
         assertEquals("6 consecutive days should return 6", 6, streak)
     }
@@ -193,7 +191,7 @@ class StreakCalculatorTest {
             createCompletion(date = today, value = 3)
         )
 
-        val streak = StreakCalculator.calculateCurrentStreak(completions, timeZone)
+        val streak = StreakCalculator.calculateCurrentStreak(completions)
 
         assertEquals("Multiple completions same day should count as 1", 1, streak)
     }
@@ -211,7 +209,7 @@ class StreakCalculatorTest {
             createCompletion(date = yesterday, value = 2)
         )
 
-        val streak = StreakCalculator.calculateBestStreak(completions, timeZone)
+        val streak = StreakCalculator.calculateBestStreak(completions)
 
         assertEquals("Multiple completions same day should count as 2-day streak", 2, streak)
     }
@@ -223,7 +221,7 @@ class StreakCalculatorTest {
         val completions = emptyList<CompletionEntity>()
         val targetValue = 5
 
-        val streak = StreakCalculator.calculateCurrentStreakWithTarget(completions, targetValue, timeZone)
+        val streak = StreakCalculator.calculateCurrentStreakWithTarget(completions, targetValue)
 
         assertEquals("Empty completions should return 0", 0, streak)
     }
@@ -238,7 +236,7 @@ class StreakCalculatorTest {
             createCompletion(date = today, value = 5)
         )
 
-        val streak = StreakCalculator.calculateCurrentStreakWithTarget(completions, targetValue, timeZone)
+        val streak = StreakCalculator.calculateCurrentStreakWithTarget(completions, targetValue)
 
         assertEquals("Target met today should return 1", 1, streak)
     }
@@ -253,7 +251,7 @@ class StreakCalculatorTest {
             createCompletion(date = today, value = 3)
         )
 
-        val streak = StreakCalculator.calculateCurrentStreakWithTarget(completions, targetValue, timeZone)
+        val streak = StreakCalculator.calculateCurrentStreakWithTarget(completions, targetValue)
 
         assertEquals("Target not met should return 0", 0, streak)
     }
@@ -272,7 +270,7 @@ class StreakCalculatorTest {
             createCompletion(date = yesterday, value = 4)
         )
 
-        val streak = StreakCalculator.calculateCurrentStreakWithTarget(completions, targetValue, timeZone)
+        val streak = StreakCalculator.calculateCurrentStreakWithTarget(completions, targetValue)
 
         assertEquals("Partial completions summing to target should return 2", 2, streak)
     }
@@ -291,7 +289,7 @@ class StreakCalculatorTest {
             createCompletion(date = twoDaysAgo, value = 5)
         )
 
-        val streak = StreakCalculator.calculateCurrentStreakWithTarget(completions, targetValue, timeZone)
+        val streak = StreakCalculator.calculateCurrentStreakWithTarget(completions, targetValue)
 
         assertEquals("Gap when target not met should break streak, returning 1", 1, streak)
     }
@@ -309,7 +307,7 @@ class StreakCalculatorTest {
             createCompletion(date = twoDaysAgo, value = 7)
         )
 
-        val streak = StreakCalculator.calculateCurrentStreakWithTarget(completions, targetValue, timeZone)
+        val streak = StreakCalculator.calculateCurrentStreakWithTarget(completions, targetValue)
 
         assertEquals("Three consecutive days all meeting target should return 3", 3, streak)
     }
@@ -327,7 +325,7 @@ class StreakCalculatorTest {
             createCompletion(date = yesterday, value = 10)
         )
 
-        val streak = StreakCalculator.calculateCurrentStreakWithTarget(completions, targetValue, timeZone)
+        val streak = StreakCalculator.calculateCurrentStreakWithTarget(completions, targetValue)
 
         assertEquals("Countdown mode reaching target should return 2", 2, streak)
     }
@@ -344,7 +342,7 @@ class StreakCalculatorTest {
             createCompletion(date = yesterday, value = 10)
         )
 
-        val streak = StreakCalculator.calculateCurrentStreakWithTarget(completions, targetValue, timeZone)
+        val streak = StreakCalculator.calculateCurrentStreakWithTarget(completions, targetValue)
 
         assertEquals("Partial countdown should not count, streak from yesterday only = 1", 1, streak)
     }
@@ -354,7 +352,7 @@ class StreakCalculatorTest {
         val completions = emptyList<CompletionEntity>()
         val targetValue = 5
 
-        val streak = StreakCalculator.calculateBestStreakWithTarget(completions, targetValue, timeZone)
+        val streak = StreakCalculator.calculateBestStreakWithTarget(completions, targetValue)
 
         assertEquals("Empty completions should return 0", 0, streak)
     }
@@ -368,7 +366,7 @@ class StreakCalculatorTest {
             createCompletion(date = today, value = 5)
         )
 
-        val streak = StreakCalculator.calculateBestStreakWithTarget(completions, targetValue, timeZone)
+        val streak = StreakCalculator.calculateBestStreakWithTarget(completions, targetValue)
 
         assertEquals("Single target-met day should return 1", 1, streak)
     }
@@ -396,7 +394,7 @@ class StreakCalculatorTest {
             createCompletion(date = sixDaysAgo, value = 5)
         )
 
-        val streak = StreakCalculator.calculateBestStreakWithTarget(completions, targetValue, timeZone)
+        val streak = StreakCalculator.calculateBestStreakWithTarget(completions, targetValue)
 
         assertEquals("Best of two 3-day target-met streaks should return 3", 3, streak)
     }
@@ -415,7 +413,7 @@ class StreakCalculatorTest {
             createCompletion(date = twoDaysAgo, value = 2)
         )
 
-        val streak = StreakCalculator.calculateBestStreakWithTarget(completions, targetValue, timeZone)
+        val streak = StreakCalculator.calculateBestStreakWithTarget(completions, targetValue)
 
         assertEquals("Only one day met target, best streak = 1", 1, streak)
     }

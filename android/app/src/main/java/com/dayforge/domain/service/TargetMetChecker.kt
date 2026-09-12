@@ -1,9 +1,11 @@
 package com.dayforge.domain.service
 
+import com.dayforge.data.local.businessDate
 import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.data.model.HabitType
 import com.dayforge.util.DateTimeUtils
+import java.time.LocalDate
 
 /**
  * Utility for checking if a habit has met its target on a given day.
@@ -26,13 +28,13 @@ object TargetMetChecker {
      *
      * @param completions List of completion entities
      * @param targetValue The minimum sum required for a day to count as "completed"
-     * @return List of normalized day timestamps where target was met
+     * @return Captured business dates where target was met
      */
-    fun getTargetMetDates(completions: List<CompletionEntity>, targetValue: Int): List<Long> {
+    fun getTargetMetDates(completions: List<CompletionEntity>, targetValue: Int): List<LocalDate> {
         if (completions.isEmpty() || targetValue <= 0) return emptyList()
 
         return completions
-            .groupBy { DateTimeUtils.normalizeToDay(it.date) }
+            .groupBy { it.businessDate }
             .filter { (_, dayCompletions) -> dayCompletions.sumOf { it.value } >= targetValue }
             .keys
             .toList()
@@ -53,14 +55,14 @@ object TargetMetChecker {
      * Check if the target was met on a specific date.
      *
      * @param completions List of completion entities
-     * @param dateMillis The normalized day timestamp to check
+     * @param date The business date to check
      * @param targetValue The minimum sum required
      * @return true if sum of values on that date >= targetValue
      */
-    fun isTargetMetOnDate(completions: List<CompletionEntity>, dateMillis: Long, targetValue: Int): Boolean {
+    fun isTargetMetOnDate(completions: List<CompletionEntity>, date: LocalDate, targetValue: Int): Boolean {
         if (targetValue <= 0) return false
 
-        val dayCompletions = completions.filter { DateTimeUtils.normalizeToDay(it.date) == dateMillis }
+        val dayCompletions = completions.filter { it.businessDate == date }
         return dayCompletions.sumOf { it.value } >= targetValue
     }
 

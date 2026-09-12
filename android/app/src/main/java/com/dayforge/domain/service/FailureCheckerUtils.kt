@@ -80,13 +80,13 @@ object FailureCheckerUtils {
             HabitType.COUNTING -> {
                 val completions = completionDao.getCompletionsInRange(
                     habit.id,
-                    dateMillis,
-                    DateTimeUtils.startOfNextDayMillis(dateMillis)
+                    date,
+                    date.plusDays(1)
                 )
                 completions.sumOf { it.value } >= habit.targetValue
             }
             HabitType.CHECK_IN -> {
-                completionDao.hasCompletionOnDate(habit.id, dateMillis)
+                completionDao.hasCompletionOnDate(habit.id, date)
             }
             HabitType.GOAL -> false
         }

@@ -5,6 +5,8 @@ import android.content.Intent
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import androidx.room.withTransaction
 import com.dayforge.data.local.HabitDatabase
+import com.dayforge.data.local.businessDate
+import com.dayforge.data.local.toDisplayMillis
 import com.dayforge.data.local.dao.CompletionDao
 import com.dayforge.data.local.dao.HabitDao
 import com.dayforge.data.local.dao.TimeLogDao
@@ -19,7 +21,6 @@ import com.dayforge.data.model.StreakStats
 import com.dayforge.domain.service.ActivityRateCalculator
 import com.dayforge.domain.service.StreakCalculator
 import com.dayforge.domain.service.StructuralEditGuard
-import com.dayforge.domain.service.TimeZone
 import com.dayforge.reminder.HabitReminderScheduler
 import com.dayforge.util.DateTimeUtils
 import com.dayforge.widget.WidgetUpdateReceiver
@@ -478,8 +479,8 @@ class HabitRepository @Inject constructor(
      * @return Sum of completion values for today
      */
     suspend fun getTodayCompletionCount(habitId: Long): Int {
-        val today = DateTimeUtils.startOfDayMillis()
-        val tomorrow = DateTimeUtils.startOfNextDayMillis(today)
+        val today = DateTimeUtils.today()
+        val tomorrow = today.plusDays(1)
         val completions = completionDao.getCompletionsInRange(habitId, today, tomorrow)
         return completions.sumOf { it.value }
     }
@@ -494,7 +495,7 @@ class HabitRepository @Inject constructor(
             .map { completions ->
                 val currentStreak = StreakCalculator.calculateCurrentStreak(completions)
                 val bestStreak = StreakCalculator.calculateBestStreak(completions)
-                val lastCompletionDate = completions.maxByOrNull { it.date }?.date
+                val lastCompletionDate = completions.maxOfOrNull { it.businessDate }?.toDisplayMillis()
                 StreakStats(currentStreak, bestStreak, lastCompletionDate)
             }
     }
@@ -521,8 +522,8 @@ class HabitRepository @Inject constructor(
      * @return Completion ID if completed today, null otherwise
      */
     suspend fun getTodayCompletionId(habitId: Long): Long? {
-        val today = DateTimeUtils.startOfDayMillis()
-        val tomorrow = DateTimeUtils.startOfNextDayMillis(today)
+        val today = DateTimeUtils.today()
+        val tomorrow = today.plusDays(1)
         return completionDao.getTodayCompletionId(habitId, today, tomorrow)
     }
 
@@ -565,7 +566,7 @@ class HabitRepository @Inject constructor(
         val newRate = ActivityRateCalculator.calculate(
             schedule = habit.schedule,
             createdAt = habit.createdAt,
-            completions = completions.map { it.date }
+            completions = completions.map { it.businessDate }
         )
         habitDao.updateActivityRate(habitId, newRate)
     }

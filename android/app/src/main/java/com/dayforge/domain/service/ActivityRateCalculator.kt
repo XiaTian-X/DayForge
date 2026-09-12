@@ -1,7 +1,6 @@
 package com.dayforge.domain.service
 
 import com.dayforge.data.model.HabitSchedule
-import com.dayforge.util.DateTimeUtils
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -58,14 +57,14 @@ object ActivityRateCalculator {
      *
      * @param schedule 习惯的 Schedule 类型
      * @param createdAt 习惯创建时间（毫秒）
-     * @param completions 打卡记录列表（毫秒）
+     * @param completions 打卡记录捕获的业务日期，不随设备时区变化
      * @param now 当前时间（毫秒）
      * @return 活跃度 (0-100)
      */
     fun calculate(
         schedule: HabitSchedule,
         createdAt: Long,
-        completions: List<Long>,
+        completions: List<LocalDate>,
         now: Long = System.currentTimeMillis()
     ): Int {
         // 1. 生成窗口内的应打卡日序列
@@ -75,8 +74,8 @@ object ActivityRateCalculator {
         val deduction = getDeductionPerMiss(schedule)
 
         // 3. 统计未完成的应打卡日数量
-        val completedDays = completions.map { DateTimeUtils.normalizeToDay(it) }.toSet()
-        val missedCount = windowDays.count { it !in completedDays }
+        val completedDays = completions.toSet()
+        val missedCount = windowDays.count { millisToLocalDate(it) !in completedDays }
 
         // 4. 计算活跃度
         val totalDeduction = missedCount * deduction

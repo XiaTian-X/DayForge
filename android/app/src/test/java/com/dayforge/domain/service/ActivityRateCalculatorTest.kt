@@ -88,7 +88,7 @@ class ActivityRateCalculatorTest {
         val rate = ActivityRateCalculator.calculate(
             schedule = HabitSchedule.Daily,
             createdAt = createdAt,
-            completions = completions,
+            completions = completions.map { java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate() },
             now = now
         )
 
@@ -108,7 +108,7 @@ class ActivityRateCalculatorTest {
         val rate = ActivityRateCalculator.calculate(
             schedule = HabitSchedule.Daily,
             createdAt = createdAt,
-            completions = completions,
+            completions = completions.map { java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate() },
             now = now
         )
 
@@ -128,7 +128,7 @@ class ActivityRateCalculatorTest {
         val rate = ActivityRateCalculator.calculate(
             schedule = HabitSchedule.Daily,
             createdAt = createdAt,
-            completions = completions,
+            completions = completions.map { java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate() },
             now = now
         )
 
@@ -146,7 +146,7 @@ class ActivityRateCalculatorTest {
         val rate = ActivityRateCalculator.calculate(
             schedule = HabitSchedule.Daily,
             createdAt = createdAt,
-            completions = completions,
+            completions = completions.map { java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate() },
             now = now
         )
 
@@ -167,7 +167,7 @@ class ActivityRateCalculatorTest {
         val rate = ActivityRateCalculator.calculate(
             schedule = HabitSchedule.Weekly(daysOfWeek = listOf(1, 3, 5)),
             createdAt = createdAt,
-            completions = completions,
+            completions = completions.map { java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate() },
             now = now
         )
 
@@ -185,7 +185,7 @@ class ActivityRateCalculatorTest {
         val rate = ActivityRateCalculator.calculate(
             schedule = HabitSchedule.Weekly(daysOfWeek = listOf(1, 3, 5)),
             createdAt = createdAt,
-            completions = completions,
+            completions = completions.map { java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate() },
             now = now
         )
 
@@ -210,7 +210,7 @@ class ActivityRateCalculatorTest {
         val rate = ActivityRateCalculator.calculate(
             schedule = HabitSchedule.Weekly(daysOfWeek = emptyList()),
             createdAt = createdAt,
-            completions = completions,
+            completions = completions.map { java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate() },
             now = now
         )
 
@@ -232,7 +232,7 @@ class ActivityRateCalculatorTest {
         val rate = ActivityRateCalculator.calculate(
             schedule = HabitSchedule.Weekly(daysOfWeek = emptyList()),
             createdAt = createdAt,
-            completions = completions,
+            completions = completions.map { java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate() },
             now = now
         )
 
@@ -253,7 +253,7 @@ class ActivityRateCalculatorTest {
         val rate = ActivityRateCalculator.calculate(
             schedule = HabitSchedule.Weekly(daysOfWeek = emptyList()),
             createdAt = createdAt,
-            completions = completions,
+            completions = completions.map { java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate() },
             now = now
         )
 
@@ -274,7 +274,7 @@ class ActivityRateCalculatorTest {
         val rate = ActivityRateCalculator.calculate(
             schedule = HabitSchedule.Monthly(dayOfMonth = 15),
             createdAt = createdAt,
-            completions = completions,
+            completions = completions.map { java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate() },
             now = now
         )
 
@@ -293,7 +293,7 @@ class ActivityRateCalculatorTest {
         val rate = ActivityRateCalculator.calculate(
             schedule = HabitSchedule.Monthly(dayOfMonth = 15),
             createdAt = createdAt,
-            completions = completions,
+            completions = completions.map { java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate() },
             now = now
         )
 
@@ -312,7 +312,7 @@ class ActivityRateCalculatorTest {
         val rate = ActivityRateCalculator.calculate(
             schedule = HabitSchedule.Monthly(dayOfMonth = 15),
             createdAt = createdAt,
-            completions = completions,
+            completions = completions.map { java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate() },
             now = now
         )
 
@@ -337,7 +337,7 @@ class ActivityRateCalculatorTest {
         val rate = ActivityRateCalculator.calculate(
             schedule = HabitSchedule.Custom(frequencyDays = 3),
             createdAt = createdAt,
-            completions = completions,
+            completions = completions.map { java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate() },
             now = now
         )
 
@@ -359,7 +359,7 @@ class ActivityRateCalculatorTest {
         val rate = ActivityRateCalculator.calculate(
             schedule = HabitSchedule.Custom(frequencyDays = 3),
             createdAt = createdAt,
-            completions = completions,
+            completions = completions.map { java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate() },
             now = now
         )
 
@@ -420,7 +420,7 @@ class ActivityRateCalculatorTest {
         val rate = ActivityRateCalculator.calculate(
             schedule = HabitSchedule.Daily,
             createdAt = createdAt,
-            completions = completions,
+            completions = completions.map { java.time.Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate() },
             now = now
         )
 
