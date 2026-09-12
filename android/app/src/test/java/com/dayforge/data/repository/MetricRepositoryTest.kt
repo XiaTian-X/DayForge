@@ -226,6 +226,25 @@ class MetricRepositoryTest {
         assertEquals(0, database.syncOutboxDao().count())
     }
 
+    @Test
+    fun `range target validation matches server contract and leaves no rejected mutations`() = runTest {
+        for ((lower, upper) in listOf(null to 1.0, 1.0 to null, 2.0 to 1.0)) {
+            val failure = runCatching {
+                repository.createMetric(testMetric().copy(targetDirection = "range", targetValue = lower, targetValueUpper = upper))
+            }.exceptionOrNull()
+            assertTrue(failure is IllegalArgumentException)
+            assertNull(database.metricDao().getMetricByName("Weight"))
+            assertEquals(0, database.syncOutboxDao().count())
+        }
+        val metricId = repository.createMetric(testMetric().copy(targetDirection = "range", targetValue = -1.0, targetValueUpper = -1.0))
+        val metric = database.metricDao().getMetricById(metricId)!!
+        clearOutbox()
+        val failure = runCatching { repository.updateMetric(metric.copy(targetValueUpper = -2.0)) }.exceptionOrNull()
+        assertTrue(failure is IllegalArgumentException)
+        assertEquals(-1.0, database.metricDao().getMetricById(metricId)!!.targetValueUpper!!, 0.0)
+        assertEquals(0, database.syncOutboxDao().count())
+    }
+
     private fun testHabit() = HabitEntity(
         name = "Walk",
         description = "",
