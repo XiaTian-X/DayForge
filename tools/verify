@@ -89,7 +89,7 @@ verify_android() {
   java_home="$(find_java_home)"
   (
     cd "$repo_root/android"
-    JAVA_HOME="$java_home" ./gradlew testDebugUnitTest lintDebug assembleDebug
+    JAVA_HOME="$java_home" ./gradlew testDebugUnitTest lintDebug assembleDebug createDebugUnitTestCoverageReport
   )
 }
 

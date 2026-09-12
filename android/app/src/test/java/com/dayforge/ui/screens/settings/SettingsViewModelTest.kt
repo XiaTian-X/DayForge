@@ -7,6 +7,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.room.Room
+import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
 import app.cash.turbine.test
 import com.dayforge.data.local.HabitDatabase
@@ -33,6 +34,11 @@ import com.dayforge.domain.service.ThemeExportService
 import com.dayforge.domain.repository.CustomThemeRepository
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.job
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -72,6 +78,9 @@ class SettingsViewModelTest {
     private lateinit var database: HabitDatabase
     private lateinit var context: Context
     private val testDispatcher = UnconfinedTestDispatcher()
+    private val viewModelStore = ViewModelStore()
+    private val dataStoreScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private lateinit var dataStoreFile: File
 
     @Before
     fun setup() {
@@ -79,9 +88,8 @@ class SettingsViewModelTest {
         context = ApplicationProvider.getApplicationContext()
 
         // Create test DataStore for TokenManager
-        testDataStore = PreferenceDataStoreFactory.create(
-            produceFile = { File(context.cacheDir, "test_settings_viewmodel.preferences_pb") }
-        )
+        dataStoreFile = File(context.cacheDir, "settings_${java.util.UUID.randomUUID()}.preferences_pb")
+        testDataStore = PreferenceDataStoreFactory.create(scope = dataStoreScope, produceFile = { dataStoreFile })
         tokenManager = TokenManager(testDataStore)
 
         // Create in-memory database
@@ -145,13 +153,17 @@ class SettingsViewModelTest {
             appearanceWorkflow = appearanceWorkflow,
             accountSessionCoordinator = AccountSessionCoordinator()
         )
+        viewModelStore.put("settings", viewModel)
     }
 
     @After
     fun teardown() {
-        Dispatchers.resetMain()
+        viewModelStore.clear()
+        testDispatcher.scheduler.runCurrent()
+        runBlocking { dataStoreScope.coroutineContext.job.cancelAndJoin() }
         database.close()
-        File(context.cacheDir, "test_settings_viewmodel.preferences_pb").delete()
+        dataStoreFile.delete()
+        Dispatchers.resetMain()
     }
 
     @Test

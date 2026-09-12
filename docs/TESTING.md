@@ -11,6 +11,10 @@ cd android
 ./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
 
+统一验证入口和 CI 还执行 AGP 的 `createDebugUnitTestCoverageReport`。HTML/XML 报告位于
+`android/app/build/reports/coverage/test/debug/`，包含 Kotlin 业务类。覆盖率不能代替异常路径断言；
+全项目汇总包含生成类，审查时应优先检查 domain、repository、sync 等业务包和具体分支。
+
 Room schema、计时、后台任务或 Android 平台行为变化时还需要相应 instrumentation/真机测试。仅含 TODO、没有断言或没有执行路径的测试不计为有效覆盖。
 
 ### 后端改动
