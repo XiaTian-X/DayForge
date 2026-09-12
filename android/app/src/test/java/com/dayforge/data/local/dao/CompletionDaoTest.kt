@@ -90,10 +90,12 @@ class CompletionDaoTest {
     @Test
     fun getCompletionsInRange_returnsCompletionsWithinDateRange() = runTest {
         val habitId = createTestHabit()
-        val beforeRange = createTestCompletion(habitId = habitId, date = 500L)
-        val inRange1 = createTestCompletion(habitId = habitId, date = 1000L)
-        val inRange2 = createTestCompletion(habitId = habitId, date = 1500L)
-        val afterRange = createTestCompletion(habitId = habitId, date = 2500L)
+        val start = LocalDate.of(2026, 3, 8)
+        fun day(date: LocalDate) = date.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val beforeRange = createTestCompletion(habitId = habitId, date = day(start.minusDays(1)))
+        val inRange1 = createTestCompletion(habitId = habitId, date = day(start))
+        val inRange2 = createTestCompletion(habitId = habitId, date = day(start.plusDays(1)))
+        val afterRange = createTestCompletion(habitId = habitId, date = day(start.plusDays(2)))
 
         completionDao.insert(beforeRange)
         completionDao.insert(inRange1)
@@ -102,13 +104,13 @@ class CompletionDaoTest {
 
         val completions = completionDao.getCompletionsInRange(
             habitId = habitId,
-            start = 1000L,
-            end = 2000L
+            start = start,
+            end = start.plusDays(2)
         )
 
         assertEquals("Should have two completions in range", 2, completions.size)
-        assertTrue("Should include inRange1", completions.any { it.date == 1000L })
-        assertTrue("Should include inRange2", completions.any { it.date == 1500L })
+        assertTrue("Should include inRange1", completions.any { it.uuid == inRange1.uuid })
+        assertTrue("Should include inRange2", completions.any { it.uuid == inRange2.uuid })
     }
 
     @Test
@@ -182,7 +184,7 @@ class CompletionDaoTest {
         habitDao.delete(habit!!)
 
         // Verify completions are cascade deleted
-        val completionsAfter = completionDao.getCompletionsInRange(habitId, 0L, Long.MAX_VALUE)
+        val completionsAfter = completionDao.getCompletionsInRange(habitId, LocalDate.of(1960, 1, 1), LocalDate.of(2100, 1, 1))
         assertTrue("Completions should be cascade deleted", completionsAfter.isEmpty())
     }
 

@@ -165,10 +165,10 @@ class HabitStatusCalculator @Inject constructor(
         habit: HabitEntity,
         completions: List<CompletionEntity>
     ): HabitWithStats {
-        val todayStart = DateTimeUtils.startOfDayMillis()
+        val today = DateTimeUtils.today().toString()
 
-        // Today's completions
-        val todayCompletions = completions.filter { it.date == todayStart }
+        // Captured business dates remain stable when the device changes zone.
+        val todayCompletions = completions.filter { it.recordedLocalDate == today }
         val todayCount = todayCompletions.sumOf { it.value }
 
         // Streaks - for COUNTING habits, only count days where target was met
@@ -219,8 +219,7 @@ class HabitStatusCalculator @Inject constructor(
         // Failure status
         val hasFailed = if (habit.targetCycles != null) {
             val firstDate = completionDao.getFirstCompletionDate(habit.id)
-            val firstLocalDate = firstDate?.let { millisToLocalDate(it) }
-            failureChecker.hasFailed(habit, firstLocalDate)
+            failureChecker.hasFailed(habit, firstDate)
         } else false
 
         return HabitWithStats(

@@ -8,6 +8,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.dayforge.data.local.HabitDatabaseProvider
+import com.dayforge.data.local.businessDate
 import com.dayforge.domain.service.ActivityRateCalculator
 import com.dayforge.widget.checkin.CheckInWidget
 import com.dayforge.widget.focus.FocusWidget
@@ -60,7 +61,7 @@ class WidgetUpdateWorker(
             val newRate = ActivityRateCalculator.calculate(
                 schedule = habit.schedule,
                 createdAt = habit.createdAt,
-                completions = completions.map { it.date }
+                completions = completions.map { it.businessDate }
             )
             habitDao.updateActivityRate(habit.id, newRate)
         }

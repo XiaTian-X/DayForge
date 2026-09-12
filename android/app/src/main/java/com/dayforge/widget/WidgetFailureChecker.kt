@@ -5,6 +5,7 @@ import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.service.FailureCheckerUtils
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 
 /**
@@ -33,12 +34,7 @@ object WidgetFailureChecker {
         if (!FailureCheckerUtils.isStrictMode(habit)) return false
 
         // Get first completion date
-        val firstDateMillis = getFirstCompletionDate(habit, database)
-        if (firstDateMillis == null) return false  // Cycle hasn't started
-
-        val firstDate = Instant.ofEpochMilli(firstDateMillis)
-            .atZone(ZoneId.systemDefault())
-            .toLocalDate()
+        val firstDate = getFirstCompletionDate(habit, database) ?: return false
 
         return FailureCheckerUtils.checkStrictFailure(
             habit,
@@ -54,9 +50,11 @@ object WidgetFailureChecker {
     private suspend fun getFirstCompletionDate(
         habit: HabitEntity,
         database: HabitDatabase
-    ): Long? {
+    ): LocalDate? {
         return if (habit.habitType == HabitType.TIMER) {
-            database.timeLogDao().getFirstTimeLogDate(habit.id)
+            database.timeLogDao().getFirstTimeLogDate(habit.id)?.let {
+                Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate()
+            }
         } else {
             database.completionDao().getFirstCompletionDate(habit.id)
         }

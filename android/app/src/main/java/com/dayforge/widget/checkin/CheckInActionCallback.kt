@@ -92,9 +92,9 @@ class CheckInActionCallback : ActionCallback {
                 val habit = database.habitDao().getHabitById(habitId)
                 if (habit?.isCountdown == true) {
                     // Countdown mode: check if remaining is already 0
-                    val startOfDay = DateTimeUtils.startOfDayMillis()
+                    val today = DateTimeUtils.today()
                     val todayCount = database.completionDao()
-                        .getCompletionsInRange(habitId, startOfDay, DateTimeUtils.startOfNextDayMillis(startOfDay))
+                        .getCompletionsInRange(habitId, today, today.plusDays(1))
                         .sumOf { it.value }
                     val remaining = habit.targetValue - todayCount
                     if (remaining <= 0) {

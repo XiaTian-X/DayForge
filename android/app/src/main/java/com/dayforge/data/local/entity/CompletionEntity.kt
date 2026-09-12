@@ -21,7 +21,7 @@ data class CompletionEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
     val habitId: Long,
-    val date: Long,  // Midnight local timestamp for day grouping
+    val date: Long,  // Legacy day projection; daily queries use recordedLocalDate instead.
     val value: Int = 1,
     // Actual timestamp for display purposes (real epoch millis)
     val actualCompletedAt: Long? = null,  // Real completion time for display/analysis

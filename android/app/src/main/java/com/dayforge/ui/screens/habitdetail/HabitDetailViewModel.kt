@@ -3,6 +3,8 @@ package com.dayforge.ui.screens.habitdetail
 import android.content.Context
 import android.widget.Toast
 import androidx.lifecycle.ViewModel
+import com.dayforge.data.local.businessDate
+import com.dayforge.data.local.toDisplayMillis
 import androidx.lifecycle.viewModelScope
 import com.dayforge.R
 import com.dayforge.data.local.PreferencesManager
@@ -154,7 +156,7 @@ class HabitDetailViewModel @Inject constructor(
                 } else {
                     val currentStreak = StreakCalculator.calculateCurrentStreak(habitCompletions)
                     val bestStreak = StreakCalculator.calculateBestStreak(habitCompletions)
-                    val lastCompletionDate = habitCompletions.maxByOrNull { it.date }?.date
+                    val lastCompletionDate = habitCompletions.maxOfOrNull { it.businessDate }?.toDisplayMillis()
                     val streakStats = StreakStats(currentStreak, bestStreak, lastCompletionDate)
 
                     LoadResult(habit, streakStats, habitCompletions, emptyList(), targetProgress, emptyList(), notificationEnabled)

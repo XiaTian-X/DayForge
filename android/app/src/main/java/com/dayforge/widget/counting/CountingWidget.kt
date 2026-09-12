@@ -94,8 +94,8 @@ class CountingWidget : GlanceAppWidget() {
                 return
             }
 
-            val today = DateTimeUtils.startOfDayMillis()
-            val tomorrow = DateTimeUtils.startOfNextDayMillis(today)
+            val today = DateTimeUtils.today()
+            val tomorrow = today.plusDays(1)
             val completions = database.completionDao().getCompletionsInRange(habitId, today, tomorrow)
             val completedToday = completions.sumOf { it.value }
             val isCompleted = completedToday >= habit.targetValue
