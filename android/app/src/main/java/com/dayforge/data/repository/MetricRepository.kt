@@ -66,6 +66,7 @@ class MetricRepository @Inject constructor(
     ): Long {
         structuralEditGuard?.requireAllowed()
         return database.withTransaction {
+            requireFiniteTargets(metric)
             ensureNameAvailable(metric.name)
             val metricId = metricDao.insert(metric)
             selectedHabitIds.forEach { habitId ->
@@ -91,6 +92,7 @@ class MetricRepository @Inject constructor(
     suspend fun updateMetric(metric: MetricEntity) {
         structuralEditGuard?.requireAllowed()
         database.withTransaction {
+            requireFiniteTargets(metric)
             requireNotNull(metricDao.getMetricById(metric.id)) {
                 "Metric no longer exists: ${metric.id}"
             }
@@ -155,6 +157,7 @@ class MetricRepository @Inject constructor(
         recordedAt: Long = System.currentTimeMillis()
     ): List<Long> = database.withTransaction {
         val logs = values.map { input ->
+            require(input.value.isFinite()) { "Metric value must be finite" }
             val metric = requireNotNull(metricDao.getMetricById(input.metricId)) {
                 "Metric no longer exists: ${input.metricId}"
             }
@@ -167,6 +170,12 @@ class MetricRepository @Inject constructor(
             )
         }
         if (logs.isEmpty()) emptyList() else metricLogDao.insertAll(logs)
+    }
+
+    private fun requireFiniteTargets(metric: MetricEntity) {
+        require(metric.targetValue?.isFinite() != false && metric.targetValueUpper?.isFinite() != false) {
+            "Metric targets must be finite"
+        }
     }
 
     private suspend fun ensureNameAvailable(name: String) {

@@ -192,6 +192,40 @@ class MetricRepositoryTest {
         database.syncOutboxDao().getAll().forEach { database.syncOutboxDao().deleteById(it.id) }
     }
 
+    @Test
+    fun `non finite observations roll back the entire batch and outbox`() = runTest {
+        val metricId = repository.createMetric(testMetric())
+        clearOutbox()
+        for (invalid in listOf(Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY)) {
+            val failure = runCatching {
+                repository.recordValues(listOf(MetricValueDraft(metricId, 1.0), MetricValueDraft(metricId, invalid)))
+            }.exceptionOrNull()
+            assertTrue(failure is IllegalArgumentException)
+            assertTrue(database.metricLogDao().getAllLogsForMetric(metricId).isEmpty())
+            assertEquals(0, database.syncOutboxDao().count())
+        }
+        repository.recordValues(listOf(MetricValueDraft(metricId, -1.5), MetricValueDraft(metricId, 0.0)))
+        assertEquals(2, database.metricLogDao().getAllLogsForMetric(metricId).size)
+        assertEquals(2, database.syncOutboxDao().count())
+    }
+
+    @Test
+    fun `non finite targets cannot create or overwrite a metric`() = runTest {
+        for (invalid in listOf(Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY)) {
+            val failure = runCatching { repository.createMetric(testMetric().copy(targetValue = invalid)) }.exceptionOrNull()
+            assertTrue(failure is IllegalArgumentException)
+            assertNull(database.metricDao().getMetricByName("Weight"))
+            assertEquals(0, database.syncOutboxDao().count())
+        }
+        val metricId = repository.createMetric(testMetric())
+        val metric = database.metricDao().getMetricById(metricId)!!
+        clearOutbox()
+        val failure = runCatching { repository.updateMetric(metric.copy(targetValueUpper = Double.POSITIVE_INFINITY)) }.exceptionOrNull()
+        assertTrue(failure is IllegalArgumentException)
+        assertNull(database.metricDao().getMetricById(metricId)!!.targetValueUpper)
+        assertEquals(0, database.syncOutboxDao().count())
+    }
+
     private fun testHabit() = HabitEntity(
         name = "Walk",
         description = "",
