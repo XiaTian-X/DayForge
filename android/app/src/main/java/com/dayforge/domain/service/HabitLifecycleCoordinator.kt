@@ -39,10 +39,12 @@ class HabitLifecycleCoordinator @Inject constructor(
 
     fun showGoalCompletion(habit: HabitEntity?, progress: Int) {
         val target = habit?.targetCycles ?: return
-        _showGoalDialog.value = true
         _goalHabitId.value = habit.id
         _goalProgress.value = progress
         _goalTarget.value = target
+        // Visibility is the commit signal consumed by the UI. Publish it only
+        // after the dialog payload is complete.
+        _showGoalDialog.value = true
     }
 
     suspend fun confirmGoalCompletion(): Boolean {
@@ -62,9 +64,10 @@ class HabitLifecycleCoordinator @Inject constructor(
 
     fun showReactivationDialog(habit: HabitEntity?) {
         habit ?: return
-        _showReactivationDialog.value = true
         _reactivationHabitId.value = habit.id
         _reactivationHabitName.value = habit.name
+        // Keep the visible state from exposing an empty/stale payload.
+        _showReactivationDialog.value = true
     }
 
     suspend fun confirmReactivation(habit: HabitEntity?): ReactivationResult {
