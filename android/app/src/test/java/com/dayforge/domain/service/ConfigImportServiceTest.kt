@@ -131,14 +131,21 @@ class ConfigImportServiceTest {
             valid.copy(habits = listOf(habit, habit.copy(uuid = java.util.UUID.randomUUID().toString(), name = "Child", parentHabitUuid = habit.uuid))),
             valid.copy(habits = listOf(habit.copy(parentHabitUuid = java.util.UUID.randomUUID().toString()))),
             valid.copy(habits = listOf(habit.copy(schedule = "{\"type\":\"custom\",\"frequencyDays\":0}"))),
+            valid.copy(habits = listOf(habit.copy(schedule = "{\"type\":\"custom\",\"frequencyDays\":3651}"))),
             valid.copy(habits = listOf(habit.copy(schedule = "{\"type\":\"weekly\",\"daysOfWeek\":[8]}"))),
             valid.copy(habits = listOf(habit.copy(schedule = "{\"type\":\"monthly\",\"dayOfMonth\":0}"))),
             valid.copy(habits = listOf(habit.copy(bestTime = 1440))),
             valid.copy(habits = listOf(habit.copy(type = "TIMER", targetValue = 0))),
+            valid.copy(habits = listOf(habit.copy(type = "TIMER", targetValue = 35_791_395))),
+            valid.copy(habits = listOf(habit.copy(isCountdown = true))),
+            valid.copy(habits = listOf(habit.copy(name = "x".repeat(101)))),
+            valid.copy(habits = listOf(habit.copy(description = "x".repeat(1001)))),
+            valid.copy(habits = listOf(habit.copy(color = "invalid"))),
             valid.copy(habits = listOf(habit.copy(targetCycles = 0))),
             valid.copy(metrics = listOf(metric.copy(targetDirection = "range", targetValue = 2.0, targetValueUpper = 1.0))),
             valid.copy(metrics = listOf(metric.copy(targetDirection = "range"))),
             valid.copy(metrics = listOf(metric.copy(decimalPlaces = 100))),
+            valid.copy(metrics = listOf(metric.copy(unit = "x".repeat(51)))),
             valid.copy(metrics = listOf(metric.copy(aggregationType = "unknown")))
         )
         invalid.forEachIndexed { index, config ->
@@ -146,6 +153,9 @@ class ConfigImportServiceTest {
             assertEquals(listOf("Original"), database.habitDao().getAllHabitsOnce().map { it.name })
             assertEquals(outbox, database.syncOutboxDao().getAll())
         }
+        val validBoundary = valid.copy(habits = listOf(habit.copy(name = "😀".repeat(100),
+            type = "TIMER", targetValue = 35_791_394, schedule = "{\"type\":\"custom\",\"frequencyDays\":3650}")))
+        assertTrue(service.importConfig(Json.encodeToString(validBoundary)).isSuccess)
     }
 
     @Test

@@ -19,11 +19,18 @@ internal object ConfigImportValidator {
         config.habits.forEach { dto ->
             val habit = ConfigMapper.dtoToHabitEntity(dto)
             require(habit.name.isNotBlank()) { "Habit name is required" }
+            validateLength(habit.name, 100)
+            validateLength(habit.description, 1000)
+            validateColor(habit.colorHex)
             require(habit.targetCycles == null || habit.targetCycles > 0) { "Target cycles must be positive" }
             require(habit.targetValue >= 0) { "Target value must not be negative" }
             if (habit.habitType == HabitType.COUNTING || habit.habitType == HabitType.TIMER) {
                 require(habit.targetValue > 0) { "Count and timer targets must be positive" }
             }
+            if (habit.habitType == HabitType.TIMER) {
+                require(habit.targetValue <= 35_791_394) { "Timer target exceeds supported seconds range" }
+            }
+            require(!habit.isCountdown || habit.habitType in setOf(HabitType.COUNTING, HabitType.TIMER)) { "Countdown requires count or timer habit" }
             require(habit.bestTime == null || habit.bestTime in 0..1439) { "Invalid preferred time" }
             if (habit.habitType == HabitType.GOAL) {
                 require(dto.parentHabitUuid == null) { "Goals must be top-level" }
@@ -36,7 +43,7 @@ internal object ConfigImportValidator {
                 HabitSchedule.Daily -> Unit
                 is HabitSchedule.Weekly -> require(schedule.daysOfWeek.all { it in 1..7 }) { "Invalid weekday" }
                 is HabitSchedule.Monthly -> require(schedule.dayOfMonth in 1..31) { "Invalid monthly day" }
-                is HabitSchedule.Custom -> require(schedule.frequencyDays > 0) { "Frequency must be positive" }
+                is HabitSchedule.Custom -> require(schedule.frequencyDays in 1..3650) { "Frequency must be within 1..3650 days" }
             }
             val visited = mutableSetOf(dto.uuid)
             var parentId = dto.parentHabitUuid
@@ -48,6 +55,10 @@ internal object ConfigImportValidator {
         }
         config.metrics.forEach { metric ->
             require(metric.name.isNotBlank() && metric.unit.isNotBlank()) { "Metric name and unit are required" }
+            validateLength(metric.name, 100)
+            validateLength(metric.description, 1000)
+            validateLength(metric.unit, 50)
+            validateColor(metric.color)
             require(metric.decimalPlaces in 0..6) { "Invalid decimal places" }
             require(metric.aggregationType in setOf("average", "sum", "by_time")) { "Invalid aggregation type" }
             require(metric.targetDirection == null || metric.targetDirection in setOf("increase", "decrease", "range")) { "Invalid target direction" }
@@ -72,5 +83,14 @@ internal object ConfigImportValidator {
             value
         }
         require(canonical.distinct().size == ids.size) { "Duplicate configuration UUIDs" }
+    }
+
+    private fun validateLength(value: String, maximum: Int) {
+        // Match the backend's Unicode code-point length, not UTF-16 code units.
+        require(value.codePointCount(0, value.length) <= maximum) { "Text exceeds $maximum characters" }
+    }
+
+    private fun validateColor(value: String) {
+        require(value.matches(Regex("#[0-9A-Fa-f]{6,8}"))) { "Invalid color" }
     }
 }
