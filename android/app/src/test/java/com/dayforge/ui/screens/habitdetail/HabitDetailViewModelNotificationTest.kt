@@ -4,6 +4,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.room.Room
+import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
 import app.cash.turbine.test
 import com.dayforge.data.local.HabitDatabase
@@ -22,7 +23,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.job
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -56,7 +62,9 @@ class HabitDetailViewModelNotificationTest {
     private lateinit var preferencesManager: PreferencesManager
     private lateinit var habitRepository: HabitRepository
     private lateinit var context: android.content.Context
-    private val testDispatcher = UnconfinedTestDispatcher()
+    private val testDispatcher = StandardTestDispatcher()
+    private val dataStoreScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private lateinit var dataStoreFile: File
 
     @Before
     fun setup() {
@@ -64,9 +72,8 @@ class HabitDetailViewModelNotificationTest {
         context = ApplicationProvider.getApplicationContext()
 
         // Create test DataStore
-        testDataStore = PreferenceDataStoreFactory.create(
-            produceFile = { File(context.cacheDir, "test_habit_notification.preferences_pb") }
-        )
+        dataStoreFile = File(context.cacheDir, "notification_${java.util.UUID.randomUUID()}.preferences_pb")
+        testDataStore = PreferenceDataStoreFactory.create(scope = dataStoreScope, produceFile = { dataStoreFile })
         preferencesManager = PreferencesManager(testDataStore)
 
         // Create in-memory database
@@ -86,9 +93,14 @@ class HabitDetailViewModelNotificationTest {
 
     @After
     fun teardown() {
-        Dispatchers.resetMain()
+        if (::viewModel.isInitialized) {
+            ViewModelStore().apply { put("detail", viewModel); clear() }
+            testDispatcher.scheduler.runCurrent()
+        }
+        runBlocking { dataStoreScope.coroutineContext.job.cancelAndJoin() }
         database.close()
-        File(context.cacheDir, "test_habit_notification.preferences_pb").delete()
+        dataStoreFile.delete()
+        Dispatchers.resetMain()
     }
 
     /**
@@ -96,7 +108,7 @@ class HabitDetailViewModelNotificationTest {
      * Per NOTIFY-04: Default notification setting is enabled.
      */
     @Test
-    fun notificationEnabled_defaultTrueForHabitWithBestTime() = runTest {
+    fun notificationEnabled_defaultTrueForHabitWithBestTime() = runBlocking {
         // Create habit with bestTime
         val habitId = habitDao.insert(
             HabitEntity(
@@ -123,7 +135,7 @@ class HabitDetailViewModelNotificationTest {
         )
 
         viewModel.loadHabit(habitId)
-        testDispatcher.scheduler.advanceUntilIdle()
+        awaitLoaded(habitId)
 
         val state = viewModel.uiState.value
         assertTrue("notificationEnabled should be true by default for habit with bestTime", state.notificationEnabled)
@@ -134,7 +146,7 @@ class HabitDetailViewModelNotificationTest {
      * Per NOTIFY-04: Even habits without bestTime have default enabled state.
      */
     @Test
-    fun notificationEnabled_defaultTrueForHabitWithoutBestTime() = runTest {
+    fun notificationEnabled_defaultTrueForHabitWithoutBestTime() = runBlocking {
         // Create habit without bestTime (null)
         val habitId = habitDao.insert(
             HabitEntity(
@@ -161,7 +173,7 @@ class HabitDetailViewModelNotificationTest {
         )
 
         viewModel.loadHabit(habitId)
-        testDispatcher.scheduler.advanceUntilIdle()
+        awaitLoaded(habitId)
 
         val state = viewModel.uiState.value
         // UI will only show toggle for habits with bestTime, but state still has default
@@ -200,7 +212,7 @@ class HabitDetailViewModelNotificationTest {
         )
 
         viewModel.loadHabit(habitId)
-        testDispatcher.scheduler.advanceUntilIdle()
+        awaitLoaded(habitId)
 
         // Toggle to disable
         viewModel.toggleNotificationEnabled(habitId, false)
@@ -244,7 +256,7 @@ class HabitDetailViewModelNotificationTest {
         )
 
         viewModel.loadHabit(habitId)
-        testDispatcher.scheduler.advanceUntilIdle()
+        awaitLoaded(habitId)
 
         // First disable
         viewModel.toggleNotificationEnabled(habitId, false)
@@ -265,13 +277,22 @@ class HabitDetailViewModelNotificationTest {
         assertTrue("Notification setting should persist as enabled", persisted)
     }
 
-    private suspend fun awaitNotificationState(enabled: Boolean): HabitDetailUiState {
-        repeat(200) {
-            testDispatcher.scheduler.advanceUntilIdle()
+    private suspend fun awaitLoaded(habitId: Long) = withTimeout(10_000) {
+        while (true) {
+            testDispatcher.scheduler.runCurrent()
             val state = viewModel.uiState.value
-            if (state.notificationEnabled == enabled) return state
+            if (!state.isLoading && state.habit?.id == habitId) break
             kotlinx.coroutines.delay(10)
         }
-        error("Timed out waiting for notificationEnabled=$enabled")
+    }
+
+    private suspend fun awaitNotificationState(enabled: Boolean): HabitDetailUiState = withTimeout(10_000) {
+        var state: HabitDetailUiState
+        do {
+            testDispatcher.scheduler.runCurrent()
+            state = viewModel.uiState.value
+            if (state.notificationEnabled != enabled) kotlinx.coroutines.delay(10)
+        } while (state.notificationEnabled != enabled)
+        state
     }
 }
