@@ -12,7 +12,6 @@ plugins {
     alias(libs.plugins.hilt.android)
     alias(libs.plugins.ksp)
     alias(libs.plugins.compose.compiler)
-    jacoco
 }
 
 android {
@@ -80,43 +79,6 @@ android {
 ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
     arg("room.incremental", "true")
-}
-
-jacoco {
-    toolVersion = "0.8.11"
-}
-
-tasks.withType<Test>().configureEach {
-    if (name == "testDebugUnitTest") {
-        finalizedBy("jacocoTestReport")
-    }
-}
-
-tasks.register("jacocoTestReport", JacocoReport::class) {
-    dependsOn("testDebugUnitTest")
-
-    reports {
-        xml.required = true
-        html.required = true
-    }
-
-    classDirectories.setFrom(
-        fileTree("${buildDir}/intermediates/javac/debug/classes") {
-            exclude(
-                "**/R.class",
-                "**/R\$*.class",
-                "**/BuildConfig.class",
-                "**/Manifest*.class",
-                "**/*_Factory.class",
-                "**/*_MembersInjector.class",
-                "**/Hilt_*.class",
-                "**/dagger/hilt/internal/**/*.class"
-            )
-        }
-    )
-
-    sourceDirectories.setFrom(files("src/main/java"))
-    executionData.setFrom(fileTree(buildDir).include("jacoco/testDebugUnitTest.exec"))
 }
 
 dependencies {
