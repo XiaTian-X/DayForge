@@ -19,6 +19,7 @@ import com.dayforge.data.local.TokenManager
 import com.dayforge.ui.screens.createhabit.CreateHabitScreen
 import com.dayforge.ui.screens.createtemptask.CreateTempTaskScreen
 import com.dayforge.ui.screens.creategoal.CreateGoalScreen
+import com.dayforge.ui.screens.creategoal.CreateGoalViewModel
 import com.dayforge.ui.screens.createmetric.CreateMetricScreen
 import com.dayforge.ui.screens.dashboard.DashboardScreen
 import com.dayforge.ui.screens.dashboard.DashboardViewModel
@@ -65,6 +66,7 @@ sealed class Screen(val route: String) {
     }
     object CreateMetric : Screen("create_metric")
     object CreateGoal : Screen("create_goal")
+    object CreateGoalChild : Screen("create_goal_child")
     object EditHabit : Screen("edit_habit/{habitId}") {
         fun createRoute(habitId: Long) = "edit_habit/$habitId"
     }
@@ -348,9 +350,20 @@ fun HabitNavGraph(
                 onNavigateBack = {
                     navController.popBackStack()
                 },
-                onCreateChildHabit = { parentUuid ->
-                    navController.navigate(Screen.CreateHabit.createRoute(parentUuid))
+                onCreateChildHabit = { _ ->
+                    navController.navigate(Screen.CreateGoalChild.route)
                 }
+            )
+        }
+
+        composable(Screen.CreateGoalChild.route) { childEntry ->
+            val goalEntry = remember(childEntry) { navController.getBackStackEntry(Screen.CreateGoal.route) }
+            val goalViewModel: CreateGoalViewModel = hiltViewModel(goalEntry)
+            val goalState by goalViewModel.uiState.collectAsStateWithLifecycle()
+            CreateHabitScreen(
+                parentUuid = goalState.parentUuid,
+                onSaveDraft = goalViewModel::addChildHabit,
+                onNavigateBack = { navController.popBackStack() }
             )
         }
 

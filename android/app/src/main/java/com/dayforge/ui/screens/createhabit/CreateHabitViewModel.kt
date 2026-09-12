@@ -11,6 +11,7 @@ import com.dayforge.data.local.dao.MetricDao
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.MetricEntity
 import com.dayforge.data.model.FailMode
+import com.dayforge.data.model.HabitDraft
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.HabitRepository
@@ -26,6 +27,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 import javax.inject.Inject
 
 data class CreateHabitUiState(
@@ -48,6 +50,7 @@ data class CreateHabitUiState(
     val isValid: Boolean = false,
     val isSaving: Boolean = false,
     val savedHabitId: Long? = null,
+    val savedDraft: Boolean = false,
     val showIconPicker: Boolean = false,
     val showColorPicker: Boolean = false,
     val selectedPresetName: String? = null,
@@ -264,9 +267,9 @@ class CreateHabitViewModel @Inject constructor(
         return name.isNotBlank() && name.length <= 50
     }
 
-    fun saveHabit(predefinedUuid: String? = null) {
+    fun saveHabit(predefinedUuid: String? = null, onSaveDraft: ((HabitDraft) -> Unit)? = null) {
         // Immediate synchronous check - prevents rapid clicks before StateFlow updates
-        if (isSavingInProgress) return
+        if (isSavingInProgress || _uiState.value.savedDraft) return
 
         val currentState = _uiState.value
         if (!currentState.isValid) return
@@ -312,6 +315,18 @@ class CreateHabitViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
+                if (onSaveDraft != null) {
+                    onSaveDraft(HabitDraft(
+                        name = currentState.name, description = currentState.description,
+                        habitType = currentState.habitType, iconResId = currentState.iconResId,
+                        colorHex = currentState.colorHex, schedule = finalSchedule,
+                        targetValue = currentState.targetValue ?: 1, isCountdown = currentState.isCountdown,
+                        targetCycles = currentState.targetCycles, failMode = currentState.failMode,
+                        bestTime = currentState.bestTime, selectedMetricIds = currentState.selectedMetricIds
+                    ))
+                    _uiState.value = _uiState.value.copy(isSaving = false, savedDraft = true)
+                    return@launch
+                }
                 val habitId = habitRepository.createHabit(
                     name = currentState.name,
                     description = currentState.description,
@@ -337,6 +352,9 @@ class CreateHabitViewModel @Inject constructor(
                     showColorPicker = false,
                     showPresetDialog = false
                 )
+            } catch (e: CancellationException) {
+                _uiState.value = _uiState.value.copy(isSaving = false)
+                throw e
             } catch (e: SQLiteConstraintException) {
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,
@@ -368,20 +386,20 @@ class CreateHabitViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(showDefaultTargetDialog = false)
     }
 
-    fun confirmDefaultTarget() {
+    fun confirmDefaultTarget(onSaveDraft: ((HabitDraft) -> Unit)? = null) {
         _uiState.value = _uiState.value.copy(
             targetValue = 1,
             showDefaultTargetDialog = false
         )
         // Continue saving
-        saveHabit()
+        saveHabit(onSaveDraft = onSaveDraft)
     }
 
     fun dismissDefaultScheduleDialog() {
         _uiState.value = _uiState.value.copy(showDefaultScheduleDialog = false)
     }
 
-    fun confirmDefaultSchedule() {
+    fun confirmDefaultSchedule(onSaveDraft: ((HabitDraft) -> Unit)? = null) {
         val currentState = _uiState.value
         // Set default values (Monthly=1, Custom=1) and continue saving
         val updatedState = when (currentState.schedule) {
@@ -397,7 +415,7 @@ class CreateHabitViewModel @Inject constructor(
         }
         _uiState.value = updatedState
         // Continue saving
-        saveHabit()
+        saveHabit(onSaveDraft = onSaveDraft)
     }
 
     fun resetState() {

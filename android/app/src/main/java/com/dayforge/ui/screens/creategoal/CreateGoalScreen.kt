@@ -40,20 +40,6 @@ fun CreateGoalScreen(
     onCreateChildHabit: (parentUuid: String) -> Unit  // Navigate to CreateHabitScreen with parentUuid
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-
-    // Refresh children when returning from CreateHabitScreen
-    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
-        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                viewModel.refreshChildren()
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
-    }
 
     Scaffold(
         topBar = {
@@ -332,7 +318,7 @@ fun CreateGoalScreen(
  */
 @Composable
 private fun ChildHabitDraftCard(
-    draft: ChildHabitDraft,
+    draft: com.dayforge.data.model.HabitDraft,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier
 ) {
