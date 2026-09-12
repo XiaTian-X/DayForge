@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import update
 from sqlmodel import select
 
 from src.auth.dependencies import get_current_user
@@ -10,6 +11,8 @@ from src.auth.schemas import Token, TokenRefresh, UserLogin, UserResponse
 from src.auth.service import (
     create_access_token,
     create_refresh_token,
+    get_password_hash,
+    password_hash_needs_upgrade,
     verify_password,
     verify_token,
 )
@@ -52,6 +55,22 @@ async def login(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account disabled",
         )
+    if password_hash_needs_upgrade(user.password_hash):
+        # Do not overwrite a password reset that won the race after the read.
+        result = await session.execute(
+            update(User)
+            .where(
+                User.id == user.id,
+                User.password_hash == user.password_hash,
+                User.auth_version == user.auth_version,
+                User.is_active.is_(True),
+                User.status == "active",
+            )
+            .values(password_hash=get_password_hash(credentials.password))
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            raise HTTPException(status_code=401, detail="Incorrect credentials")
     return _token_response(user)
 
 
