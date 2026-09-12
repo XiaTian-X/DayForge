@@ -13,7 +13,6 @@ import com.dayforge.data.local.entity.HabitMetricLinkEntity
 import com.dayforge.data.local.entity.MetricEntity
 import com.dayforge.data.local.entity.MetricLogEntity
 import com.dayforge.data.repository.MetricRepository
-import com.dayforge.domain.util.isOnline
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
