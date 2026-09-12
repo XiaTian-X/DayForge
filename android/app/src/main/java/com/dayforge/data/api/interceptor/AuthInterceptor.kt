@@ -1,7 +1,7 @@
 package com.dayforge.data.api.interceptor
 
 import com.dayforge.data.local.TokenManager
-import kotlinx.coroutines.flow.first
+import com.dayforge.data.local.AuthenticationSession
 import kotlinx.coroutines.runBlocking
 import okhttp3.Interceptor
 import okhttp3.Response
@@ -27,13 +27,13 @@ class AuthInterceptor @Inject constructor(
             return chain.proceed(request)
         }
 
-        // Use cached token (no blocking)
-        val token = runBlocking { tokenManager.accessToken.first() }
+        val credentials = runBlocking { tokenManager.authenticationSnapshot() }
 
         // Add Authorization header if token exists
-        val authenticatedRequest = if (token != null) {
+        val authenticatedRequest = if (credentials != null) {
             request.newBuilder()
-                .addHeader("Authorization", "Bearer $token")
+                .header("Authorization", "Bearer ${credentials.accessToken}")
+                .tag(AuthenticationSession::class.java, credentials.session)
                 .build()
         } else {
             request

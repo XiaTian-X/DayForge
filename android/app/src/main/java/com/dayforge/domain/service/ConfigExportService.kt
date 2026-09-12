@@ -6,6 +6,7 @@ import com.dayforge.data.local.dao.HabitDao
 import com.dayforge.data.local.dao.HabitMetricLinkDao
 import com.dayforge.data.local.dao.MetricDao
 import kotlinx.serialization.encodeToString
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import java.io.IOException
 import javax.inject.Inject
@@ -67,6 +68,8 @@ class ConfigExportService @Inject constructor(
             val jsonString = json.encodeToString(config)
 
             Result.success(jsonString)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(IOException("Export failed: ${e.message}", e))
         }
