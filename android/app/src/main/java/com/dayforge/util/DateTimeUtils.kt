@@ -66,6 +66,13 @@ object DateTimeUtils {
         return startOfDayMillis(millis)
     }
 
+    /** Exclusive end of the local calendar day; DST days need not be 24 hours long. */
+    fun startOfNextDayMillis(timestamp: Long): Long {
+        val zone = ZoneId.systemDefault()
+        return Instant.ofEpochMilli(timestamp).atZone(zone).toLocalDate()
+            .plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+    }
+
     /**
      * Returns the current LocalDate in the system default timezone.
      *

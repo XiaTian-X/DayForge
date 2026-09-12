@@ -309,7 +309,7 @@ class TimerService : Service() {
         // Check if already completed today (one completion per day)
         // Use local timezone to match how TimeLogEntity.date is stored
         val todayStart = DateTimeUtils.startOfDayMillis()
-        val todayEnd = todayStart + DateTimeUtils.MILLIS_PER_DAY
+        val todayEnd = DateTimeUtils.startOfNextDayMillis(todayStart)
         val completedSecondsToday = runBlocking {
             withContext(Dispatchers.IO) {
                 timeLogDao.getCompletedDurationSecondsForDate(
