@@ -97,4 +97,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
       - name: Test, lint, and assemble
         working-directory: android
-        run: ./gradlew testDebugUnitTest lintDebug assembleDebug
+        run: ./gradlew testDebugUnitTest lintDebug assembleDebug createDebugUnitTestCoverageReport
+      - name: Retain Android coverage report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: android-unit-test-coverage
+          path: android/app/build/reports/coverage/test/debug/
+          if-no-files-found: error
+          retention-days: 14
