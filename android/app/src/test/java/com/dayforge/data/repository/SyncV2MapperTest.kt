@@ -10,13 +10,49 @@ import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import java.time.Instant
 import java.time.ZoneId
+import java.time.LocalDate
+import java.util.Locale
+import java.util.TimeZone
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.jsonArray
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class SyncV2MapperTest {
+    @Test
+    fun `weekly default uses creation weekday rather than synchronization weekday`() {
+        val originalZone = TimeZone.getDefault()
+        try {
+            TimeZone.setDefault(TimeZone.getTimeZone("Asia/Shanghai"))
+            // Yesterday is always a different weekday, regardless of the date this runs.
+            val creationDate = LocalDate.now().minusDays(1)
+            val createdAt = creationDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+            val payload = SyncV2Mapper.planNode(habit(HabitType.CHECK_IN).copy(
+                schedule = HabitSchedule.Weekly(emptyList()), createdAt = createdAt
+            ))
+            val rule = payload["activity"]!!.jsonObject["recurrence_rule"]!!.jsonObject
+            assertEquals(listOf(creationDate.dayOfWeek.value), rule["weekdays"]!!.jsonArray.map { it.jsonPrimitive.content.toInt() })
+        } finally {
+            TimeZone.setDefault(originalZone)
+        }
+    }
+
+    @Test
+    fun `wire preferred time always uses ASCII digits`() {
+        val originalLocale = Locale.getDefault()
+        try {
+            for (language in listOf("ar-EG", "fa-IR", "en-US")) {
+                Locale.setDefault(Locale.forLanguageTag(language))
+                val payload = SyncV2Mapper.planNode(habit(HabitType.CHECK_IN).copy(bestTime = 487))
+                assertEquals("08:07:00", payload["activity"]!!.jsonObject["preferred_local_time"]!!.jsonPrimitive.content)
+            }
+        } finally {
+            Locale.setDefault(originalLocale)
+        }
+    }
+
     @Test
     fun `goal remains a top level goal node`() {
         val payload = SyncV2Mapper.planNode(habit(HabitType.GOAL))

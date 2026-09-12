@@ -25,9 +25,8 @@ androidxTestRunner = "1.6.2"
 androidxTestExtJunit = "1.2.1"
 robolectric = "4.14.1"
 mockk = "1.13.13"
-retrofit = "2.9.0"
+retrofit = "2.11.0"
 okhttp = "4.12.0"
-retrofitKotlinxSerialization = "0.8.0"
 glance = "1.1.0"
 localbroadcastmanager = "1.1.0"
 workManager = "2.9.0"
@@ -71,7 +70,7 @@ androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 retrofit = { group = "com.squareup.retrofit2", name = "retrofit", version.ref = "retrofit" }
-retrofit-kotlinx-serialization = { group = "com.jakewharton.retrofit", name = "retrofit2-kotlinx-serialization-converter", version.ref = "retrofitKotlinxSerialization" }
+retrofit-kotlinx-serialization = { group = "com.squareup.retrofit2", name = "converter-kotlinx-serialization", version.ref = "retrofit" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 okhttp-logging = { group = "com.squareup.okhttp3", name = "logging-interceptor", version.ref = "okhttp" }
 glance-appwidget = { group = "androidx.glance", name = "glance-appwidget", version.ref = "glance" }

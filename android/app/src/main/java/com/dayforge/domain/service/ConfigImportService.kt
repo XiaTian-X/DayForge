@@ -8,6 +8,7 @@ import com.dayforge.data.local.dao.HabitDao
 import com.dayforge.data.local.dao.HabitMetricLinkDao
 import com.dayforge.data.local.dao.MetricDao
 import kotlinx.serialization.SerializationException
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -77,9 +78,13 @@ class ConfigImportService @Inject constructor(
                 )
             }
 
+            ConfigImportValidator.validate(config)
+
             // 3. Execute import in transaction
             database.withTransaction { executeImport(config) }
             Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: SerializationException) {
             Result.failure(IllegalArgumentException("Invalid JSON format: ${e.message}", e))
         } catch (e: NullPointerException) {
