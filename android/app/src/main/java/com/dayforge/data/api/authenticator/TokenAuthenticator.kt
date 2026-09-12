@@ -7,7 +7,7 @@ import com.dayforge.data.api.dto.RefreshRequest
 import com.dayforge.data.api.interceptor.BaseUrlInterceptor
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
-import kotlinx.coroutines.flow.first
+import com.dayforge.data.local.AuthenticationSession
 import kotlinx.coroutines.runBlocking
 import okhttp3.Authenticator
 import okhttp3.OkHttpClient
@@ -17,7 +17,7 @@ import okhttp3.Route
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.HttpException
-import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
+import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.ExperimentalSerializationApi
 import okhttp3.MediaType.Companion.toMediaType
@@ -51,16 +51,19 @@ class TokenAuthenticator @Inject constructor(
 
         synchronized(this) {
             // A concurrent request may have refreshed while this request waited.
-            val currentAccessToken = runBlocking { tokenManager.accessToken.first() }
+            val originalSession = response.request.tag(AuthenticationSession::class.java) ?: return null
+            val credentials = runBlocking { tokenManager.authenticationSnapshot() } ?: return null
+            if (originalSession != credentials.session) return null
+            val currentAccessToken = credentials.accessToken
             val requestToken = response.request.header("Authorization")?.removePrefix("Bearer ")
-            if (currentAccessToken != null && requestToken != currentAccessToken) {
+            if (requestToken != currentAccessToken) {
                 return response.request.newBuilder()
                     .header("Authorization", "Bearer $currentAccessToken")
                     .build()
             }
 
             try {
-                val refreshToken = runBlocking { tokenManager.refreshToken.first() }
+                val refreshToken = credentials.refreshToken
 
                 if (refreshToken == null) return null
 
@@ -95,15 +98,17 @@ class TokenAuthenticator @Inject constructor(
                     authApi.refreshToken(RefreshRequest(refreshToken))
                 }
 
-                runBlocking {
-                    tokenManager.saveTokens(
+                val saved = runBlocking {
+                    tokenManager.saveRefreshedTokens(
+                        credentials,
                         refreshResponse.accessToken,
                         refreshResponse.refreshToken,
-                        email = refreshResponse.username,
+                        username = refreshResponse.username,
                         userId = refreshResponse.userId,
                         isAdmin = refreshResponse.isAdmin
                     )
                 }
+                if (!saved) return null
 
                 return response.request.newBuilder()
                     .header("Authorization", "Bearer ${refreshResponse.accessToken}")
@@ -117,7 +122,7 @@ class TokenAuthenticator @Inject constructor(
                     error.code() in DEFINITIVE_REFRESH_REJECTION_CODES
                 if (definitivelyRejected) {
                     runBlocking {
-                        tokenManager.clearAuthenticationTokens()
+                        tokenManager.clearRejectedRefresh(credentials)
                     }
                 }
                 return null

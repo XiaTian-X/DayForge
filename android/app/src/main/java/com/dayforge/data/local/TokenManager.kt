@@ -13,6 +13,15 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
+data class AuthenticationSession(val userId: String, val generation: String)
+
+/** No data-class toString: credentials must not appear in request-tag diagnostics. */
+class AuthenticationSnapshot(
+    val session: AuthenticationSession,
+    val accessToken: String,
+    val refreshToken: String?
+)
+
 /**
  * Manages authentication tokens using DataStore for persistent storage.
  * Provides secure storage for access and refresh tokens.
@@ -29,6 +38,7 @@ class TokenManager @Inject constructor(
         private val USER_EMAIL_KEY = stringPreferencesKey("user_email")
         private val USER_ID_KEY = stringPreferencesKey("user_public_id")
         private val IS_ADMIN_KEY = booleanPreferencesKey("is_admin")
+        private val AUTH_SESSION_KEY = stringPreferencesKey("auth_session_generation")
         private val INSTALLATION_ID_KEY = stringPreferencesKey("sync_installation_id")
         private val SYNC_ACCOUNT_ID_KEY = stringPreferencesKey("sync_account_id")
         private val SYNC_DEVICE_ID_KEY = stringPreferencesKey("sync_device_id")
@@ -97,6 +107,7 @@ class TokenManager @Inject constructor(
         isAdmin: Boolean
     ) {
         dataStore.edit { preferences ->
+            preferences[AUTH_SESSION_KEY] = UUID.randomUUID().toString()
             preferences[ACCESS_TOKEN_KEY] = tokenCipher.encrypt(accessToken)
             preferences[REFRESH_TOKEN_KEY] = tokenCipher.encrypt(refreshToken)
             if (email != null) {
@@ -104,6 +115,63 @@ class TokenManager @Inject constructor(
             }
             preferences[USER_ID_KEY] = userId
             preferences[IS_ADMIN_KEY] = isAdmin
+        }
+    }
+
+    /** Read request credentials and their account generation from one DataStore snapshot. */
+    suspend fun authenticationSnapshot(): AuthenticationSnapshot? =
+        snapshot(dataStore.data.first())
+
+    private fun snapshot(preferences: Preferences): AuthenticationSnapshot? {
+        val userId = preferences[USER_ID_KEY] ?: return null
+        val accessToken = preferences[ACCESS_TOKEN_KEY]?.let(tokenCipher::decrypt) ?: return null
+        return AuthenticationSnapshot(
+            AuthenticationSession(userId, preferences[AUTH_SESSION_KEY] ?: "legacy"),
+            accessToken,
+            preferences[REFRESH_TOKEN_KEY]?.let(tokenCipher::decrypt)
+        )
+    }
+
+    private fun matches(preferences: Preferences, expected: AuthenticationSnapshot): Boolean {
+        val current = snapshot(preferences) ?: return false
+        return current.session == expected.session && current.accessToken == expected.accessToken &&
+            current.refreshToken == expected.refreshToken
+    }
+
+    /** Refresh may update only the credentials that initiated it, never a subsequent login. */
+    suspend fun saveRefreshedTokens(
+        expected: AuthenticationSnapshot,
+        accessToken: String,
+        refreshToken: String,
+        username: String,
+        userId: String,
+        isAdmin: Boolean
+    ): Boolean {
+        if (userId != expected.session.userId) return false
+        var saved = false
+        dataStore.edit { preferences ->
+            if (matches(preferences, expected)) {
+                preferences[ACCESS_TOKEN_KEY] = tokenCipher.encrypt(accessToken)
+                preferences[REFRESH_TOKEN_KEY] = tokenCipher.encrypt(refreshToken)
+                preferences[USER_EMAIL_KEY] = username
+                preferences[IS_ADMIN_KEY] = isAdmin
+                saved = true
+            }
+        }
+        return saved
+    }
+
+    /** A rejected refresh cannot invalidate credentials created while it was in flight. */
+    suspend fun clearRejectedRefresh(expected: AuthenticationSnapshot) {
+        dataStore.edit { preferences ->
+            if (matches(preferences, expected)) {
+                preferences.remove(ACCESS_TOKEN_KEY)
+                preferences.remove(REFRESH_TOKEN_KEY)
+                preferences.remove(USER_EMAIL_KEY)
+                preferences.remove(USER_ID_KEY)
+                preferences.remove(IS_ADMIN_KEY)
+                preferences.remove(AUTH_SESSION_KEY)
+            }
         }
     }
 
@@ -212,6 +280,7 @@ class TokenManager @Inject constructor(
     /** Clear only credentials after refresh failure, retaining local-data ownership. */
     suspend fun clearAuthenticationTokens() {
         dataStore.edit { preferences ->
+            preferences.remove(AUTH_SESSION_KEY)
             preferences.remove(ACCESS_TOKEN_KEY)
             preferences.remove(REFRESH_TOKEN_KEY)
             preferences.remove(USER_EMAIL_KEY)
@@ -248,6 +317,7 @@ class TokenManager @Inject constructor(
      */
     suspend fun clearTokens() {
         dataStore.edit { preferences ->
+            preferences.remove(AUTH_SESSION_KEY)
             preferences.remove(ACCESS_TOKEN_KEY)
             preferences.remove(REFRESH_TOKEN_KEY)
             preferences.remove(USER_EMAIL_KEY)
