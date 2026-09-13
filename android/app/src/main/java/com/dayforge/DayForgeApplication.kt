@@ -114,7 +114,7 @@ class DayForgeApplication : Application() {
                 // No Activity exists yet, so this won't trigger recreate
                 // But it sets the Application locale for all future Activities
                 val localeList = if (savedLanguageCode != null) {
-                    LocaleListCompat.create(Locale(savedLanguageCode))
+                    LocaleListCompat.create(Locale.forLanguageTag(savedLanguageCode))
                 } else {
                     LocaleListCompat.getEmptyLocaleList()
                 }
