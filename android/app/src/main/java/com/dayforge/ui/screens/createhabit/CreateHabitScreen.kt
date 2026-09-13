@@ -8,11 +8,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.outlined.TrendingUp
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Timer
-import androidx.compose.material.icons.outlined.TrendingUp
 import androidx.compose.material3.*
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberTimePickerState
@@ -209,7 +209,7 @@ fun CreateHabitScreen(
                     onClick = { viewModel.updateHabitType(HabitType.COUNTING) },
                     label = { Text(stringResource(R.string.edit_habit_type_counting)) },
                     leadingIcon = if (uiState.habitType == HabitType.COUNTING) {
-                        { Icon(Icons.Outlined.TrendingUp, null, Modifier.size(18.dp)) }
+                        { Icon(Icons.AutoMirrored.Outlined.TrendingUp, null, Modifier.size(18.dp)) }
                     } else null
                 )
                 FilterChip(
