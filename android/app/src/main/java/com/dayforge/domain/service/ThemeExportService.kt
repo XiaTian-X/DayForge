@@ -12,7 +12,6 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import androidx.compose.ui.graphics.Color
 import com.dayforge.ui.theme.ColorSchemeGenerator
-import me.tatarka.google.material.scheme.Scheme
 
 private const val TAG = "ThemeExportService"
 
@@ -37,10 +36,10 @@ class ThemeExportService @Inject constructor(
     }
 
     /**
-     * Export a theme to JSON string (with all 25 color fields).
+     * Export a theme to JSON string (with all 27 color fields).
      *
      * @param themeId Theme ID to export
-     * @param includeGeneratedColors If true, generate all 25 colors from seedColor (for template export)
+     * @param includeGeneratedColors If true, generate all 27 colors from seedColor (for template export)
      * @return Result.success with JSON string, or Result.failure on error
      */
     suspend fun exportToJson(themeId: String, includeGeneratedColors: Boolean = false): Result<String> {
@@ -50,7 +49,7 @@ class ThemeExportService @Inject constructor(
             val theme = themeManager.getById(themeId)
             Log.d(TAG, "Got theme: id=${theme.id}, name=${theme.name}, isCustom=${theme.isCustom}, isDefault=${theme.isDefault}")
 
-            // 2. If includeGeneratedColors, generate complete theme with all 25 colors
+            // 2. If includeGeneratedColors, generate complete theme with all 27 colors
             if (includeGeneratedColors) {
                 val completeTheme = generateCompleteTheme(theme)
                 val jsonString = json.encodeToString(completeTheme)
@@ -95,7 +94,7 @@ class ThemeExportService @Inject constructor(
     }
 
     /**
-     * Generate a complete theme with all 25 color fields from seedColor.
+     * Generate a complete theme with all 27 color fields from seedColor.
      * Used for template export to provide a reference for customization.
      */
     private fun generateCompleteTheme(theme: GlobalColorTheme): GlobalColorTheme {
@@ -135,36 +134,36 @@ class ThemeExportService @Inject constructor(
 
         // Generate scheme from seedColor (use light scheme for reference)
         val argb = parseSeedColor(theme.seedColor)
-        val scheme = Scheme.light(argb)
+        val scheme = SeedColorPalette(argb)
 
         return theme.copy(
-            primary = Color(scheme.primary).toHexString(),
-            onPrimary = Color(scheme.onPrimary).toHexString(),
-            primaryContainer = Color(scheme.primaryContainer).toHexString(),
-            onPrimaryContainer = Color(scheme.onPrimaryContainer).toHexString(),
-            inversePrimary = Color(scheme.inversePrimary).toHexString(),
-            secondary = Color(scheme.secondary).toHexString(),
-            onSecondary = Color(scheme.onSecondary).toHexString(),
-            secondaryContainer = Color(scheme.secondaryContainer).toHexString(),
-            onSecondaryContainer = Color(scheme.onSecondaryContainer).toHexString(),
-            tertiary = Color(scheme.tertiary).toHexString(),
-            onTertiary = Color(scheme.onTertiary).toHexString(),
-            tertiaryContainer = Color(scheme.tertiaryContainer).toHexString(),
-            onTertiaryContainer = Color(scheme.onTertiaryContainer).toHexString(),
-            error = Color(scheme.error).toHexString(),
-            onError = Color(scheme.onError).toHexString(),
-            errorContainer = Color(scheme.errorContainer).toHexString(),
-            onErrorContainer = Color(scheme.onErrorContainer).toHexString(),
-            background = Color(scheme.background).toHexString(),
-            onBackground = Color(scheme.onBackground).toHexString(),
-            surface = Color(scheme.surface).toHexString(),
-            onSurface = Color(scheme.onSurface).toHexString(),
-            surfaceVariant = Color(scheme.surfaceVariant).toHexString(),
-            onSurfaceVariant = Color(scheme.onSurfaceVariant).toHexString(),
-            outline = Color(scheme.outline).toHexString(),
-            outlineVariant = Color(scheme.outlineVariant).toHexString(),
-            inverseSurface = Color(scheme.inverseSurface).toHexString(),
-            inverseOnSurface = Color(scheme.inverseOnSurface).toHexString()
+            primary = Color(scheme[SeedColorRole.PRIMARY]).toHexString(),
+            onPrimary = Color(scheme[SeedColorRole.ON_PRIMARY]).toHexString(),
+            primaryContainer = Color(scheme[SeedColorRole.PRIMARY_CONTAINER]).toHexString(),
+            onPrimaryContainer = Color(scheme[SeedColorRole.ON_PRIMARY_CONTAINER]).toHexString(),
+            inversePrimary = Color(scheme[SeedColorRole.INVERSE_PRIMARY]).toHexString(),
+            secondary = Color(scheme[SeedColorRole.SECONDARY]).toHexString(),
+            onSecondary = Color(scheme[SeedColorRole.ON_SECONDARY]).toHexString(),
+            secondaryContainer = Color(scheme[SeedColorRole.SECONDARY_CONTAINER]).toHexString(),
+            onSecondaryContainer = Color(scheme[SeedColorRole.ON_SECONDARY_CONTAINER]).toHexString(),
+            tertiary = Color(scheme[SeedColorRole.TERTIARY]).toHexString(),
+            onTertiary = Color(scheme[SeedColorRole.ON_TERTIARY]).toHexString(),
+            tertiaryContainer = Color(scheme[SeedColorRole.TERTIARY_CONTAINER]).toHexString(),
+            onTertiaryContainer = Color(scheme[SeedColorRole.ON_TERTIARY_CONTAINER]).toHexString(),
+            error = Color(scheme[SeedColorRole.ERROR]).toHexString(),
+            onError = Color(scheme[SeedColorRole.ON_ERROR]).toHexString(),
+            errorContainer = Color(scheme[SeedColorRole.ERROR_CONTAINER]).toHexString(),
+            onErrorContainer = Color(scheme[SeedColorRole.ON_ERROR_CONTAINER]).toHexString(),
+            background = Color(scheme[SeedColorRole.BACKGROUND]).toHexString(),
+            onBackground = Color(scheme[SeedColorRole.ON_BACKGROUND]).toHexString(),
+            surface = Color(scheme[SeedColorRole.SURFACE]).toHexString(),
+            onSurface = Color(scheme[SeedColorRole.ON_SURFACE]).toHexString(),
+            surfaceVariant = Color(scheme[SeedColorRole.SURFACE_VARIANT]).toHexString(),
+            onSurfaceVariant = Color(scheme[SeedColorRole.ON_SURFACE_VARIANT]).toHexString(),
+            outline = Color(scheme[SeedColorRole.OUTLINE]).toHexString(),
+            outlineVariant = Color(scheme[SeedColorRole.OUTLINE_VARIANT]).toHexString(),
+            inverseSurface = Color(scheme[SeedColorRole.INVERSE_SURFACE]).toHexString(),
+            inverseOnSurface = Color(scheme[SeedColorRole.INVERSE_ON_SURFACE]).toHexString()
         )
     }
 
@@ -188,7 +187,7 @@ class ThemeExportService @Inject constructor(
 
     /**
      * Serialize a theme to JSON, including all non-null custom colors.
-     * Uses kotlinx.serialization for reliable serialization of all 49 color fields.
+     * Uses kotlinx.serialization for reliable serialization of all 27 color fields.
      */
     private fun serializeTheme(theme: GlobalColorTheme): String {
         return json.encodeToString(theme)

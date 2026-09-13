@@ -6,7 +6,8 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.graphics.Color
 import com.dayforge.domain.model.GlobalColorTheme
-import me.tatarka.google.material.scheme.Scheme
+import com.dayforge.domain.service.SeedColorPalette
+import com.dayforge.domain.service.SeedColorRole
 
 private const val TAG = "ColorSchemeGenerator"
 
@@ -23,43 +24,43 @@ object ColorSchemeGenerator {
         }
 
         val argb = parseSeedColor(theme.seedColor)
-        val scheme = Scheme.light(argb)
+        val scheme = SeedColorPalette(argb)
 
         return lightColorScheme(
-            primary = theme.primary?.toColor() ?: Color(scheme.primary),
-            onPrimary = theme.onPrimary?.toColor() ?: Color(scheme.onPrimary),
-            primaryContainer = theme.primaryContainer?.toColor() ?: Color(scheme.primaryContainer),
-            onPrimaryContainer = theme.onPrimaryContainer?.toColor() ?: Color(scheme.onPrimaryContainer),
-            inversePrimary = theme.inversePrimary?.toColor() ?: Color(scheme.inversePrimary),
+            primary = theme.primary?.toColor() ?: Color(scheme[SeedColorRole.PRIMARY]),
+            onPrimary = theme.onPrimary?.toColor() ?: Color(scheme[SeedColorRole.ON_PRIMARY]),
+            primaryContainer = theme.primaryContainer?.toColor() ?: Color(scheme[SeedColorRole.PRIMARY_CONTAINER]),
+            onPrimaryContainer = theme.onPrimaryContainer?.toColor() ?: Color(scheme[SeedColorRole.ON_PRIMARY_CONTAINER]),
+            inversePrimary = theme.inversePrimary?.toColor() ?: Color(scheme[SeedColorRole.INVERSE_PRIMARY]),
 
-            secondary = theme.secondary?.toColor() ?: Color(scheme.secondary),
-            onSecondary = theme.onSecondary?.toColor() ?: Color(scheme.onSecondary),
-            secondaryContainer = theme.secondaryContainer?.toColor() ?: Color(scheme.secondaryContainer),
-            onSecondaryContainer = theme.onSecondaryContainer?.toColor() ?: Color(scheme.onSecondaryContainer),
+            secondary = theme.secondary?.toColor() ?: Color(scheme[SeedColorRole.SECONDARY]),
+            onSecondary = theme.onSecondary?.toColor() ?: Color(scheme[SeedColorRole.ON_SECONDARY]),
+            secondaryContainer = theme.secondaryContainer?.toColor() ?: Color(scheme[SeedColorRole.SECONDARY_CONTAINER]),
+            onSecondaryContainer = theme.onSecondaryContainer?.toColor() ?: Color(scheme[SeedColorRole.ON_SECONDARY_CONTAINER]),
 
-            tertiary = theme.tertiary?.toColor() ?: Color(scheme.tertiary),
-            onTertiary = theme.onTertiary?.toColor() ?: Color(scheme.onTertiary),
-            tertiaryContainer = theme.tertiaryContainer?.toColor() ?: Color(scheme.tertiaryContainer),
-            onTertiaryContainer = theme.onTertiaryContainer?.toColor() ?: Color(scheme.onTertiaryContainer),
+            tertiary = theme.tertiary?.toColor() ?: Color(scheme[SeedColorRole.TERTIARY]),
+            onTertiary = theme.onTertiary?.toColor() ?: Color(scheme[SeedColorRole.ON_TERTIARY]),
+            tertiaryContainer = theme.tertiaryContainer?.toColor() ?: Color(scheme[SeedColorRole.TERTIARY_CONTAINER]),
+            onTertiaryContainer = theme.onTertiaryContainer?.toColor() ?: Color(scheme[SeedColorRole.ON_TERTIARY_CONTAINER]),
 
-            error = theme.error?.toColor() ?: Color(scheme.error),
-            onError = theme.onError?.toColor() ?: Color(scheme.onError),
-            errorContainer = theme.errorContainer?.toColor() ?: Color(scheme.errorContainer),
-            onErrorContainer = theme.onErrorContainer?.toColor() ?: Color(scheme.onErrorContainer),
+            error = theme.error?.toColor() ?: Color(scheme[SeedColorRole.ERROR]),
+            onError = theme.onError?.toColor() ?: Color(scheme[SeedColorRole.ON_ERROR]),
+            errorContainer = theme.errorContainer?.toColor() ?: Color(scheme[SeedColorRole.ERROR_CONTAINER]),
+            onErrorContainer = theme.onErrorContainer?.toColor() ?: Color(scheme[SeedColorRole.ON_ERROR_CONTAINER]),
 
-            background = theme.background?.toColor() ?: Color(scheme.background),
-            onBackground = theme.onBackground?.toColor() ?: Color(scheme.onBackground),
+            background = theme.background?.toColor() ?: Color(scheme[SeedColorRole.BACKGROUND]),
+            onBackground = theme.onBackground?.toColor() ?: Color(scheme[SeedColorRole.ON_BACKGROUND]),
 
-            surface = theme.surface?.toColor() ?: Color(scheme.surface),
-            onSurface = theme.onSurface?.toColor() ?: Color(scheme.onSurface),
-            surfaceVariant = theme.surfaceVariant?.toColor() ?: Color(scheme.surfaceVariant),
-            onSurfaceVariant = theme.onSurfaceVariant?.toColor() ?: Color(scheme.onSurfaceVariant),
+            surface = theme.surface?.toColor() ?: Color(scheme[SeedColorRole.SURFACE]),
+            onSurface = theme.onSurface?.toColor() ?: Color(scheme[SeedColorRole.ON_SURFACE]),
+            surfaceVariant = theme.surfaceVariant?.toColor() ?: Color(scheme[SeedColorRole.SURFACE_VARIANT]),
+            onSurfaceVariant = theme.onSurfaceVariant?.toColor() ?: Color(scheme[SeedColorRole.ON_SURFACE_VARIANT]),
 
-            outline = theme.outline?.toColor() ?: Color(scheme.outline),
-            outlineVariant = theme.outlineVariant?.toColor() ?: Color(scheme.outlineVariant),
+            outline = theme.outline?.toColor() ?: Color(scheme[SeedColorRole.OUTLINE]),
+            outlineVariant = theme.outlineVariant?.toColor() ?: Color(scheme[SeedColorRole.OUTLINE_VARIANT]),
 
-            inverseSurface = theme.inverseSurface?.toColor() ?: Color(scheme.inverseSurface),
-            inverseOnSurface = theme.inverseOnSurface?.toColor() ?: Color(scheme.inverseOnSurface)
+            inverseSurface = theme.inverseSurface?.toColor() ?: Color(scheme[SeedColorRole.INVERSE_SURFACE]),
+            inverseOnSurface = theme.inverseOnSurface?.toColor() ?: Color(scheme[SeedColorRole.INVERSE_ON_SURFACE])
         )
     }
 
@@ -69,43 +70,43 @@ object ColorSchemeGenerator {
         }
 
         val argb = parseSeedColor(theme.seedColor)
-        val scheme = Scheme.dark(argb)
+        val scheme = SeedColorPalette(argb, dark = true)
 
         return darkColorScheme(
-            primary = theme.primary?.toColor() ?: Color(scheme.primary),
-            onPrimary = theme.onPrimary?.toColor() ?: Color(scheme.onPrimary),
-            primaryContainer = theme.primaryContainer?.toColor() ?: Color(scheme.primaryContainer),
-            onPrimaryContainer = theme.onPrimaryContainer?.toColor() ?: Color(scheme.onPrimaryContainer),
-            inversePrimary = theme.inversePrimary?.toColor() ?: Color(scheme.inversePrimary),
+            primary = theme.primary?.toColor() ?: Color(scheme[SeedColorRole.PRIMARY]),
+            onPrimary = theme.onPrimary?.toColor() ?: Color(scheme[SeedColorRole.ON_PRIMARY]),
+            primaryContainer = theme.primaryContainer?.toColor() ?: Color(scheme[SeedColorRole.PRIMARY_CONTAINER]),
+            onPrimaryContainer = theme.onPrimaryContainer?.toColor() ?: Color(scheme[SeedColorRole.ON_PRIMARY_CONTAINER]),
+            inversePrimary = theme.inversePrimary?.toColor() ?: Color(scheme[SeedColorRole.INVERSE_PRIMARY]),
 
-            secondary = theme.secondary?.toColor() ?: Color(scheme.secondary),
-            onSecondary = theme.onSecondary?.toColor() ?: Color(scheme.onSecondary),
-            secondaryContainer = theme.secondaryContainer?.toColor() ?: Color(scheme.secondaryContainer),
-            onSecondaryContainer = theme.onSecondaryContainer?.toColor() ?: Color(scheme.onSecondaryContainer),
+            secondary = theme.secondary?.toColor() ?: Color(scheme[SeedColorRole.SECONDARY]),
+            onSecondary = theme.onSecondary?.toColor() ?: Color(scheme[SeedColorRole.ON_SECONDARY]),
+            secondaryContainer = theme.secondaryContainer?.toColor() ?: Color(scheme[SeedColorRole.SECONDARY_CONTAINER]),
+            onSecondaryContainer = theme.onSecondaryContainer?.toColor() ?: Color(scheme[SeedColorRole.ON_SECONDARY_CONTAINER]),
 
-            tertiary = theme.tertiary?.toColor() ?: Color(scheme.tertiary),
-            onTertiary = theme.onTertiary?.toColor() ?: Color(scheme.onTertiary),
-            tertiaryContainer = theme.tertiaryContainer?.toColor() ?: Color(scheme.tertiaryContainer),
-            onTertiaryContainer = theme.onTertiaryContainer?.toColor() ?: Color(scheme.onTertiaryContainer),
+            tertiary = theme.tertiary?.toColor() ?: Color(scheme[SeedColorRole.TERTIARY]),
+            onTertiary = theme.onTertiary?.toColor() ?: Color(scheme[SeedColorRole.ON_TERTIARY]),
+            tertiaryContainer = theme.tertiaryContainer?.toColor() ?: Color(scheme[SeedColorRole.TERTIARY_CONTAINER]),
+            onTertiaryContainer = theme.onTertiaryContainer?.toColor() ?: Color(scheme[SeedColorRole.ON_TERTIARY_CONTAINER]),
 
-            error = theme.error?.toColor() ?: Color(scheme.error),
-            onError = theme.onError?.toColor() ?: Color(scheme.onError),
-            errorContainer = theme.errorContainer?.toColor() ?: Color(scheme.errorContainer),
-            onErrorContainer = theme.onErrorContainer?.toColor() ?: Color(scheme.onErrorContainer),
+            error = theme.error?.toColor() ?: Color(scheme[SeedColorRole.ERROR]),
+            onError = theme.onError?.toColor() ?: Color(scheme[SeedColorRole.ON_ERROR]),
+            errorContainer = theme.errorContainer?.toColor() ?: Color(scheme[SeedColorRole.ERROR_CONTAINER]),
+            onErrorContainer = theme.onErrorContainer?.toColor() ?: Color(scheme[SeedColorRole.ON_ERROR_CONTAINER]),
 
-            background = theme.background?.toColor() ?: Color(scheme.background),
-            onBackground = theme.onBackground?.toColor() ?: Color(scheme.onBackground),
+            background = theme.background?.toColor() ?: Color(scheme[SeedColorRole.BACKGROUND]),
+            onBackground = theme.onBackground?.toColor() ?: Color(scheme[SeedColorRole.ON_BACKGROUND]),
 
-            surface = theme.surface?.toColor() ?: Color(scheme.surface),
-            onSurface = theme.onSurface?.toColor() ?: Color(scheme.onSurface),
-            surfaceVariant = theme.surfaceVariant?.toColor() ?: Color(scheme.surfaceVariant),
-            onSurfaceVariant = theme.onSurfaceVariant?.toColor() ?: Color(scheme.onSurfaceVariant),
+            surface = theme.surface?.toColor() ?: Color(scheme[SeedColorRole.SURFACE]),
+            onSurface = theme.onSurface?.toColor() ?: Color(scheme[SeedColorRole.ON_SURFACE]),
+            surfaceVariant = theme.surfaceVariant?.toColor() ?: Color(scheme[SeedColorRole.SURFACE_VARIANT]),
+            onSurfaceVariant = theme.onSurfaceVariant?.toColor() ?: Color(scheme[SeedColorRole.ON_SURFACE_VARIANT]),
 
-            outline = theme.outline?.toColor() ?: Color(scheme.outline),
-            outlineVariant = theme.outlineVariant?.toColor() ?: Color(scheme.outlineVariant),
+            outline = theme.outline?.toColor() ?: Color(scheme[SeedColorRole.OUTLINE]),
+            outlineVariant = theme.outlineVariant?.toColor() ?: Color(scheme[SeedColorRole.OUTLINE_VARIANT]),
 
-            inverseSurface = theme.inverseSurface?.toColor() ?: Color(scheme.inverseSurface),
-            inverseOnSurface = theme.inverseOnSurface?.toColor() ?: Color(scheme.inverseOnSurface)
+            inverseSurface = theme.inverseSurface?.toColor() ?: Color(scheme[SeedColorRole.INVERSE_SURFACE]),
+            inverseOnSurface = theme.inverseOnSurface?.toColor() ?: Color(scheme[SeedColorRole.INVERSE_ON_SURFACE])
         )
     }
 

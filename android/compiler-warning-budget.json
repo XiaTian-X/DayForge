@@ -3,11 +3,6 @@
   "warnings": [
     {
       "kind": "kotlin",
-      "message": "'class Scheme : Any' is deprecated. Deprecated in Java.",
-      "max_count": 5
-    },
-    {
-      "kind": "kotlin",
       "message": "'var statusBarColor: Int' is deprecated. Deprecated in Java.",
       "max_count": 1
     }
