@@ -48,7 +48,10 @@ def _http_error(error: DomainError) -> HTTPException:
         "CLIENT_UPGRADE_REQUIRED": status.HTTP_426_UPGRADE_REQUIRED,
     }
     return HTTPException(
-        status_code=code_to_status.get(error.code, status.HTTP_400_BAD_REQUEST),
+        status_code=code_to_status.get(
+            error.code,
+            status.HTTP_409_CONFLICT if error.conflict else status.HTTP_400_BAD_REQUEST,
+        ),
         detail={"code": error.code, "message": error.message},
     )
 

@@ -325,6 +325,14 @@ async def test_takeover_fences_the_old_controller(test_client, async_session):
     )
     assert started.json()["results"][0]["status"] == "applied"
 
+    heartbeat = await test_client.post(
+        f"/api/v2/timers/{session_id}/heartbeat",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"device_id": first, "control_generation": 1},
+    )
+    assert heartbeat.status_code == 200
+    assert heartbeat.json()["accepted"] is True
+
     visible = await test_client.get(
         "/api/v2/timers/active",
         headers={"Authorization": f"Bearer {token}"},
@@ -370,6 +378,14 @@ async def test_takeover_fences_the_old_controller(test_client, async_session):
     assert result["status"] == "conflict"
     assert result["error_code"] == "CONTROL_LOST"
     assert result["session"]["controller_device_id"] == second
+
+    fenced_heartbeat = await test_client.post(
+        f"/api/v2/timers/{session_id}/heartbeat",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"device_id": first, "control_generation": 1},
+    )
+    assert fenced_heartbeat.status_code == 409
+    assert fenced_heartbeat.json()["detail"]["code"] == "CONTROL_LOST"
 
 
 @pytest.mark.asyncio

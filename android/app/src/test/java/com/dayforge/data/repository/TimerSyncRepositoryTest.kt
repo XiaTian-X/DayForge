@@ -10,6 +10,7 @@ import com.dayforge.data.local.entity.TimerCommandEntity
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
+import java.io.IOException
 import kotlinx.coroutines.test.runTest
 import io.mockk.slot
 import org.junit.Assert.assertEquals
@@ -41,6 +42,35 @@ class TimerSyncRepositoryTest {
 
         coVerify(exactly = 1) { dao.deleteTimerCommand(1) }
         coVerify(exactly = 1) { dao.deleteTimerCommand(2) }
+    }
+
+    @Test
+    fun `lost response retries the exact timer command until acknowledged`() = runTest {
+        val stop = command(2, 2, "stop")
+        coEvery { dao.getPendingTimerCommands(any()) } returnsMany listOf(
+            listOf(stop),
+            listOf(stop),
+            emptyList()
+        )
+        val requests = mutableListOf<com.dayforge.data.api.dto.TimerCommandBatchRequest>()
+        coEvery { api.pushTimerCommands(capture(requests)) } throws IOException("response lost") andThen
+            TimerCommandBatchResponse(
+                listOf(
+                    TimerCommandResult(
+                        stop.commandId,
+                        stop.sessionUuid,
+                        "already_applied"
+                    )
+                ),
+                "2026-08-14T00:00:00Z"
+            )
+
+        assertTrue(runCatching { repository.pushPending("device") }.exceptionOrNull() is IOException)
+        repository.pushPending("device")
+
+        assertEquals(2, requests.size)
+        assertEquals(requests[0].commands, requests[1].commands)
+        coVerify(exactly = 1) { dao.deleteTimerCommand(stop.id) }
     }
 
     @Test
