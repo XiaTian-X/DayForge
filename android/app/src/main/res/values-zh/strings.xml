@@ -16,7 +16,7 @@
     <string name="widget_focus_waiting">等待中</string>
     <string name="widget_focus_next">下一个: %s</string>
     <string name="widget_focus_next_now">下一个: %s (现在)</string>
-    <string name="widget_focus_next_in">下一个: %s (%s后)</string>
+    <string name="widget_focus_next_in">下一个: %1$s (%2$s后)</string>
 
     <!-- Common Actions -->
     <string name="action_save">保存</string>
@@ -214,7 +214,7 @@
     <string name="notification_channel_habit_reminders">习惯提醒</string>
     <string name="notification_channel_habit_reminders_desc">习惯打卡提醒通知</string>
     <string name="notification_scheduled_time">预定时间: %s</string>
-    <string name="notification_slot_progress">第%d次/共%d次 (已完成%d次)</string>
+    <string name="notification_slot_progress">第%1$d次/共%2$d次 (已完成%3$d次)</string>
 
     <!-- Habit Card Status -->
     <string name="habit_card_status_completed">已完成</string>
@@ -402,9 +402,9 @@
     <string name="dialog_timer_switch_message">「%1$s」正在计时中\n是否停止并开始「%2$s」的计时？</string>
     <string name="dialog_timer_switch_fallback">已有计时正在进行，是否停止并开始新计时？</string>
     <string name="dialog_discard_title">计时未达标</string>
-    <string name="dialog_discard_countdown_remaining">还剩 %02d:%02d，是否放弃本次计时？</string>
+    <string name="dialog_discard_countdown_remaining">还剩 %1$02d:%2$02d，是否放弃本次计时？</string>
     <string name="dialog_discard_countdown_fallback">是否放弃本次计时？</string>
-    <string name="dialog_discard_countup_elapsed">已计时 %02d:%02d，未达目标 %d分钟，是否放弃本次计时？</string>
+    <string name="dialog_discard_countup_elapsed">已计时 %1$02d:%2$02d，未达目标 %3$d分钟，是否放弃本次计时？</string>
 
     <!-- Reactivation -->
     <string name="dialog_reactivate_failed_title">重新激活习惯</string>
@@ -416,10 +416,10 @@
     <string name="default_habit_name">习惯</string>
 
     <!-- Timer Display Formats -->
-    <string name="timer_remaining_format">还剩 %02d:%02d / %3$d 分钟</string>
-    <string name="timer_elapsed_format">已计时 %02d:%02d / %3$d 分钟</string>
-    <string name="timer_remaining_paused_format">还剩 %02d:%02d / %3$d 分钟 (已暂停)</string>
-    <string name="timer_elapsed_paused_format">已计时 %02d:%02d / %3$d 分钟 (已暂停)</string>
+    <string name="timer_remaining_format">还剩 %1$02d:%2$02d / %3$d 分钟</string>
+    <string name="timer_elapsed_format">已计时 %1$02d:%2$02d / %3$d 分钟</string>
+    <string name="timer_remaining_paused_format">还剩 %1$02d:%2$02d / %3$d 分钟 (已暂停)</string>
+    <string name="timer_elapsed_paused_format">已计时 %1$02d:%2$02d / %3$d 分钟 (已暂停)</string>
     <string name="timer_target_format">目标 %1$d 分钟</string>
     <string name="timer_countdown_remaining">还剩 %1$d</string>
     <string name="timer_countup_progress">%1$d/%2$d</string>

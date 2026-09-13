@@ -2,46 +2,6 @@
   "version": 1,
   "warnings": [
     {
-      "kind": "android-resource",
-      "message": "Multiple substitutions specified in non-positional format of string resource string/dialog_discard_countdown_remaining. Did you mean to add the formatted=\"false\" attribute?",
-      "max_count": 1
-    },
-    {
-      "kind": "android-resource",
-      "message": "Multiple substitutions specified in non-positional format of string resource string/dialog_discard_countup_elapsed. Did you mean to add the formatted=\"false\" attribute?",
-      "max_count": 1
-    },
-    {
-      "kind": "android-resource",
-      "message": "Multiple substitutions specified in non-positional format of string resource string/notification_slot_progress. Did you mean to add the formatted=\"false\" attribute?",
-      "max_count": 2
-    },
-    {
-      "kind": "android-resource",
-      "message": "Multiple substitutions specified in non-positional format of string resource string/timer_elapsed_format. Did you mean to add the formatted=\"false\" attribute?",
-      "max_count": 1
-    },
-    {
-      "kind": "android-resource",
-      "message": "Multiple substitutions specified in non-positional format of string resource string/timer_elapsed_paused_format. Did you mean to add the formatted=\"false\" attribute?",
-      "max_count": 1
-    },
-    {
-      "kind": "android-resource",
-      "message": "Multiple substitutions specified in non-positional format of string resource string/timer_remaining_format. Did you mean to add the formatted=\"false\" attribute?",
-      "max_count": 1
-    },
-    {
-      "kind": "android-resource",
-      "message": "Multiple substitutions specified in non-positional format of string resource string/timer_remaining_paused_format. Did you mean to add the formatted=\"false\" attribute?",
-      "max_count": 1
-    },
-    {
-      "kind": "android-resource",
-      "message": "Multiple substitutions specified in non-positional format of string resource string/widget_focus_next_in. Did you mean to add the formatted=\"false\" attribute?",
-      "max_count": 2
-    },
-    {
       "kind": "kotlin",
       "message": "'class LocalBroadcastManager : Any' is deprecated. Deprecated in Java.",
       "max_count": 15
@@ -130,11 +90,6 @@
       "kind": "kotlin",
       "message": "'var statusBarColor: Int' is deprecated. Deprecated in Java.",
       "max_count": 1
-    },
-    {
-      "kind": "kotlin",
-      "message": "This declaration needs opt-in. Its usage should be marked with '@kotlinx.coroutines.ExperimentalCoroutinesApi' or '@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)'",
-      "max_count": 6
     }
   ]
 }
