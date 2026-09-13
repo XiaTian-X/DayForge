@@ -14,6 +14,8 @@ import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.service.StreakCalculator
 import com.dayforge.util.DateTimeUtils
+import com.dayforge.widget.WidgetRefreshScheduler
+import io.mockk.*
 import app.cash.turbine.test
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
@@ -40,6 +42,8 @@ class HabitRepositoryTest {
     @Before
     fun setup() {
         context = ApplicationProvider.getApplicationContext()
+        mockkObject(WidgetRefreshScheduler)
+        every { WidgetRefreshScheduler.request(context) } returns mockk()
         // Use in-memory database for test isolation
         database = Room.inMemoryDatabaseBuilder(
             context,
@@ -52,7 +56,36 @@ class HabitRepositoryTest {
 
     @After
     fun teardown() {
+        unmockkObject(WidgetRefreshScheduler)
         database.close()
+    }
+
+    @Test
+    fun `create edit delete and clear queue refresh after successful writes`() = runTest {
+        val id = repository.createHabit("Refresh", "", HabitType.CHECK_IN, 1, "#2196F3",
+            HabitSchedule.Daily, context = context)
+        verify(exactly = 1) { WidgetRefreshScheduler.request(context) }
+        val habit = requireNotNull(habitDao.getHabitById(id))
+        repository.updateHabit(habit.copy(name = "Renamed"), context)
+        assertEquals("Renamed", habitDao.getHabitById(id)?.name)
+        verify(exactly = 2) { WidgetRefreshScheduler.request(context) }
+        repository.deleteHabitWithChildren(habit, context)
+        assertNull(habitDao.getHabitById(id))
+        verify(exactly = 3) { WidgetRefreshScheduler.request(context) }
+        repository.clearAllData(context)
+        verify(exactly = 4) { WidgetRefreshScheduler.request(context) }
+    }
+
+    @Test
+    fun `subtree deletion schedules one refresh for all deleted descendants`() = runTest {
+        val goal = HabitEntity(name = "Goal", description = "", habitType = HabitType.GOAL,
+            iconResId = 1, colorHex = "#2196F3", schedule = HabitSchedule.Daily, targetValue = 1)
+        val goalId = habitDao.insert(goal)
+        repeat(3) { habitDao.insert(goal.copy(id = 0, uuid = java.util.UUID.randomUUID().toString(),
+            name = "Child $it", habitType = HabitType.CHECK_IN, parentHabitId = goal.uuid)) }
+        repository.deleteHabitWithChildren(goal.copy(id = goalId), context)
+        assertTrue(habitDao.getAllHabitsOnce().isEmpty())
+        verify(exactly = 1) { WidgetRefreshScheduler.request(context) }
     }
 
     @Test

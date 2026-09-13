@@ -1,12 +1,10 @@
 package com.dayforge.widget.checkin
 
 import android.content.Context
-import android.content.Intent
 import android.util.Log
 import androidx.glance.GlanceId
 import androidx.glance.action.ActionParameters
 import androidx.glance.appwidget.action.ActionCallback
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.model.CheckInResult
@@ -15,7 +13,6 @@ import com.dayforge.domain.service.CheckInService
 import com.dayforge.di.WidgetEntryPoint
 import dagger.hilt.android.EntryPointAccessors
 import com.dayforge.util.DateTimeUtils
-import com.dayforge.widget.WidgetUpdateReceiver
 import com.dayforge.widget.base.MetricPromptHelper
 
 /**
@@ -127,10 +124,7 @@ class CheckInActionCallback : ActionCallback {
             CheckInWidget.refreshWidgetData(context, glanceId, habitId)
             CheckInWidget().update(context, glanceId)
 
-            // Also refresh FocusWidget (SYS-05) via LocalBroadcast
-            val updateIntent = Intent(WidgetUpdateReceiver.ACTION_DATA_CHANGED)
-            LocalBroadcastManager.getInstance(context).sendBroadcast(updateIntent)
-
+            // Repository mutations have already queued the cross-widget refresh.
             Log.d(TAG, "Widget updated immediately after action")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to update widget immediately", e)

@@ -1,8 +1,6 @@
 package com.dayforge.data.repository
 
 import android.content.Context
-import android.content.Intent
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import androidx.room.withTransaction
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.businessDate
@@ -23,7 +21,7 @@ import com.dayforge.domain.service.StreakCalculator
 import com.dayforge.domain.service.StructuralEditGuard
 import com.dayforge.reminder.HabitReminderScheduler
 import com.dayforge.util.DateTimeUtils
-import com.dayforge.widget.WidgetUpdateReceiver
+import com.dayforge.widget.WidgetRefreshScheduler
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -168,7 +166,7 @@ class HabitRepository @Inject constructor(
             previous
         }
         // Notify widgets to update
-        context?.let { notifyWidgetUpdate(it, habit.id) }
+        context?.let { notifyWidgetUpdate(it) }
         // Handle reminder scheduling changes (NOTIFY-01)
         context?.let {
             val previousBestTime = previousHabit.bestTime
@@ -247,7 +245,7 @@ class HabitRepository @Inject constructor(
         habitDao.delete(habit)
 
         // Notify widgets to update progress and motivation, and mark checkin/counting widgets as deleted
-        context?.let { notifyWidgetUpdate(it, habit.id) }
+        context?.let { notifyWidgetUpdate(it) }
     }
 
     /**
@@ -275,8 +273,9 @@ class HabitRepository @Inject constructor(
                         deleted.targetValue
                     )
                 }
-                notifyWidgetUpdate(appContext, deleted.id)
             }
+            // One subtree deletion is one presentation invalidation, not one per child.
+            notifyWidgetUpdate(appContext)
         }
     }
 
@@ -305,7 +304,7 @@ class HabitRepository @Inject constructor(
                     habit.targetValue
                 )
             }
-            notifyWidgetUpdate(appContext, habit.id)
+            notifyWidgetUpdate(appContext)
         }
     }
 
@@ -365,7 +364,7 @@ class HabitRepository @Inject constructor(
         }
 
         // Notify widgets to update
-        notifyWidgetUpdate(context, habitId)
+        notifyWidgetUpdate(context)
 
         // The update trigger added it to the durable v2 outbox.
     }
@@ -387,13 +386,13 @@ class HabitRepository @Inject constructor(
         habitDao.updateFailMode(habitId, failMode)
 
         // Notify widgets to update
-        notifyWidgetUpdate(context, habitId)
+        notifyWidgetUpdate(context)
     }
 
     /**
      * Logs a completion for a habit and notifies widgets.
      * Automatically reactivates inactive habits when checked in.
-     * @param context Context for LocalBroadcastManager
+     * @param context Context for scheduling widget refresh
      * @param habitId The ID of the habit to log completion for
      * @param value The completion value (default 1 for check-in habits)
      * @return The ID of the inserted completion
@@ -426,7 +425,7 @@ class HabitRepository @Inject constructor(
         }
 
         // Notify widgets to update
-        notifyWidgetUpdate(context, habitId)
+        notifyWidgetUpdate(context)
 
         // Completion and any reactivation are both captured by the v2 outbox.
 
@@ -435,11 +434,11 @@ class HabitRepository @Inject constructor(
 
     /**
      * Undoes a completion by deleting it.
-     * @param context Context for LocalBroadcastManager
+     * @param context Context for scheduling widget refresh
      * @param completionId The ID of the completion to delete
      */
     suspend fun undoCompletion(context: Context, completionId: Long) {
-        val habitId = database.withTransaction {
+        database.withTransaction {
             val completion = completionDao.getCompletionById(completionId)
                 ?: return@withTransaction null
 
@@ -451,7 +450,7 @@ class HabitRepository @Inject constructor(
         } ?: return
 
         // Notify widgets
-        notifyWidgetUpdate(context, habitId)
+        notifyWidgetUpdate(context)
     }
 
     /**
@@ -470,7 +469,7 @@ class HabitRepository @Inject constructor(
         }
 
         // Notify widgets
-        notifyWidgetUpdate(context, habit.id)
+        notifyWidgetUpdate(context)
     }
 
     /**
@@ -546,13 +545,10 @@ class HabitRepository @Inject constructor(
     }
 
     /**
-     * Sends LocalBroadcast to notify widgets of data changes.
+     * Invalidates all widget presentations after a committed data change.
      */
-    private fun notifyWidgetUpdate(context: Context, habitId: Long? = null) {
-        val intent = Intent(WidgetUpdateReceiver.ACTION_DATA_CHANGED).apply {
-            habitId?.let { putExtra(WidgetUpdateReceiver.EXTRA_HABIT_ID, it) }
-        }
-        LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
+    private fun notifyWidgetUpdate(context: Context) {
+        WidgetRefreshScheduler.request(context)
     }
 
     /**

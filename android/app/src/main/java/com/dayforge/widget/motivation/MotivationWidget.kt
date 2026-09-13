@@ -37,7 +37,7 @@ class MotivationWidget : GlanceAppWidget() {
         val COMPLETED_TODAY_KEY = intPreferencesKey("completedToday")
         val TOTAL_HABITS_KEY = intPreferencesKey("totalHabits")
 
-        suspend fun refreshWidgetData(context: Context) {
+        suspend fun refreshWidgetData(context: Context, glanceId: GlanceId? = null) {
             val database = HabitDatabaseProvider.getInstance(context.applicationContext)
             val habitDao = database.habitDao()
             val completionDao = database.completionDao()
@@ -91,7 +91,7 @@ class MotivationWidget : GlanceAppWidget() {
             Log.d(TAG, "Motivation refresh: $completedCount / $totalCount (eligible from ${habits.size} total), bestStreak: $bestStreak")
 
             val manager = GlanceAppWidgetManager(context)
-            val glanceIds = manager.getGlanceIds(MotivationWidget::class.java)
+            val glanceIds = glanceId?.let { listOf(it) } ?: manager.getGlanceIds(MotivationWidget::class.java)
             for (id in glanceIds) {
                 updateAppWidgetState(context, id) { prefs ->
                     prefs[MESSAGE_KEY] = message

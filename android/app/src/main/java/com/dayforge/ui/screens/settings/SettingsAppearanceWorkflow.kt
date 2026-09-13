@@ -1,11 +1,9 @@
 package com.dayforge.ui.screens.settings
 
 import android.content.Context
-import android.content.Intent
 import android.net.Uri
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.os.LocaleListCompat
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.dayforge.R
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.domain.model.GlobalColorTheme
@@ -13,7 +11,7 @@ import com.dayforge.domain.repository.CustomThemeRepository
 import com.dayforge.domain.service.ThemeExportService
 import com.dayforge.domain.service.ThemeImportService
 import com.dayforge.domain.service.ThemeManager
-import com.dayforge.widget.WidgetUpdateReceiver
+import com.dayforge.widget.WidgetRefreshScheduler
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -140,7 +138,6 @@ class SettingsAppearanceWorkflow @Inject constructor(
     fun isPresetTheme(themeId: String): Boolean = themeManager.isPresetTheme(themeId)
 
     private fun notifyWidgetsToRefresh() {
-        val intent = Intent(WidgetUpdateReceiver.ACTION_DATA_CHANGED)
-        LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
+        WidgetRefreshScheduler.request(context)
     }
 }

@@ -157,8 +157,6 @@ dependencies {
     implementation(libs.glance.appwidget)
     implementation(libs.glance.material3)
 
-    // LocalBroadcastManager for widget updates
-    implementation(libs.localbroadcastmanager)
 
     // WorkManager for scheduled tasks
     implementation(libs.work.runtime.ktx)

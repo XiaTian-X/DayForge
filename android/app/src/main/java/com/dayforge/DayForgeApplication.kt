@@ -4,18 +4,16 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
-import android.content.IntentFilter
 import android.content.res.Configuration
 import android.os.Build
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.os.LocaleListCompat
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.dayforge.data.local.DataStoreProvider
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.reminder.HabitReminderReceiver
 import com.dayforge.reminder.HabitReminderScheduler
 import com.dayforge.sync.AutoSyncCoordinator
-import com.dayforge.widget.WidgetUpdateReceiver
+import com.dayforge.widget.WidgetRefreshScheduler
 import com.dayforge.widget.WidgetUpdateWorker
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
@@ -33,7 +31,6 @@ class DayForgeApplication : Application() {
     @Inject
     lateinit var autoSyncCoordinator: AutoSyncCoordinator
 
-    private lateinit var widgetUpdateReceiver: WidgetUpdateReceiver
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
@@ -50,14 +47,8 @@ class DayForgeApplication : Application() {
         // and let WorkManager provide retries across process restarts.
         autoSyncCoordinator.start()
 
-        // Register LocalBroadcast receiver for widget updates
-        // IMPORTANT: LocalBroadcastManager requires dynamic registration, not AndroidManifest
-        widgetUpdateReceiver = WidgetUpdateReceiver()
-        val filter = IntentFilter(WidgetUpdateReceiver.ACTION_DATA_CHANGED)
-        LocalBroadcastManager.getInstance(this).registerReceiver(widgetUpdateReceiver, filter)
-
-        // FocusWindowReceiver is registered in AndroidManifest.xml for AlarmManager (system broadcast)
-        // No need to register here with LocalBroadcastManager
+        // Recover presentation state after a process restart; work reads current Room data.
+        WidgetRefreshScheduler.request(this)
 
         // Create notification channel for habit reminders
         createReminderNotificationChannel()
@@ -125,12 +116,4 @@ class DayForgeApplication : Application() {
         }
     }
 
-    override fun onTerminate() {
-        super.onTerminate()
-        // Unregister receivers
-        if (::widgetUpdateReceiver.isInitialized) {
-            LocalBroadcastManager.getInstance(this).unregisterReceiver(widgetUpdateReceiver)
-        }
-        // FocusWindowReceiver is registered in AndroidManifest.xml, no need to unregister
-    }
 }

@@ -44,9 +44,6 @@
                 android:value="true" />
         </service>
 
-        <!-- Widget update receiver - registered dynamically in DayForgeApplication -->
-        <!-- LocalBroadcastManager requires dynamic registration, not AndroidManifest -->
-
         <!-- FocusWindowReceiver - receives AlarmManager broadcasts for FocusWidget refresh -->
         <!-- Must be registered in AndroidManifest for AlarmManager (system broadcast) -->
         <!-- Explicit PendingIntents allow this receiver to remain app-private. -->

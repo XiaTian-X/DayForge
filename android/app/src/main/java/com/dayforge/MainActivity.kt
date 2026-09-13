@@ -1,7 +1,6 @@
 package com.dayforge
 
 import android.app.Activity
-import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -39,7 +38,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
@@ -50,7 +48,7 @@ import com.dayforge.domain.service.ThemeManager
 import com.dayforge.ui.navigation.HabitNavGraph
 import com.dayforge.ui.navigation.Screen
 import com.dayforge.ui.theme.DayForgeTheme
-import com.dayforge.widget.WidgetUpdateReceiver
+import com.dayforge.widget.WidgetRefreshScheduler
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import java.time.LocalDate
@@ -130,9 +128,7 @@ fun MainScreen(
                     val dateChanged = preferencesManager.updateLastSeenDate(todayEpochDays)
                     if (dateChanged) {
                         // Notify widgets to refresh when date changes
-                        // Use LocalBroadcastManager since WidgetUpdateReceiver is registered with it
-                        val intent = Intent(WidgetUpdateReceiver.ACTION_DATA_CHANGED)
-                        LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
+                        WidgetRefreshScheduler.request(context)
                     }
                 }
             }

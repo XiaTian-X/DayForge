@@ -3,11 +3,6 @@
   "warnings": [
     {
       "kind": "kotlin",
-      "message": "'class LocalBroadcastManager : Any' is deprecated. Deprecated in Java.",
-      "max_count": 15
-    },
-    {
-      "kind": "kotlin",
       "message": "'class Scheme : Any' is deprecated. Deprecated in Java.",
       "max_count": 5
     },

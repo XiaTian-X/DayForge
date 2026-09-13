@@ -1,11 +1,12 @@
 package com.dayforge.widget.checkin
 
 import android.content.Context
-import android.content.Intent
 import androidx.glance.GlanceId
 import androidx.glance.action.ActionParameters
 import androidx.glance.action.actionParametersOf
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequest
+import androidx.work.WorkManager
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.local.HabitDatabase
@@ -17,8 +18,8 @@ import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.HabitRepository
 import com.dayforge.domain.service.CheckInService
-import com.dayforge.widget.WidgetUpdateReceiver
-import io.mockk.mockk
+import com.dayforge.widget.WidgetRefreshScheduler
+import io.mockk.*
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.*
@@ -51,10 +52,13 @@ class CheckInActionCallbackTest {
     private lateinit var repository: HabitRepository
     private lateinit var callback: CheckInActionCallback
     private lateinit var context: Context
+    private val workManager = mockk<WorkManager>(relaxed = true)
 
     @Before
     fun setup() {
         context = ApplicationProvider.getApplicationContext()
+        mockkStatic(WorkManager::class)
+        every { WorkManager.getInstance(context) } returns workManager
 
         // Use in-memory database for test isolation
         database = Room.inMemoryDatabaseBuilder(
@@ -74,6 +78,7 @@ class CheckInActionCallbackTest {
 
     @After
     fun teardown() {
+        unmockkStatic(WorkManager::class)
         HabitDatabaseProvider.clearInstanceForTesting()
         database.close()
     }
@@ -219,15 +224,8 @@ class CheckInActionCallbackTest {
         assertEquals("Should have 1 completion after default toggle", 1, count)
     }
 
-    // ==================== WIDGET-03: Widget-to-App sync verification ====================
-
-    /**
-     * WIDGET-03: Verify widget check-in intent is constructed correctly.
-     * This verifies the sync mechanism (LocalBroadcastManager) uses correct action and extras.
-     */
     @Test
-    fun testWidgetActionSendsBroadcast() = runTest {
-        // Create a test habit
+    fun `real toggle commits data and queues exactly one cross-widget refresh`() = runTest {
         val habitId = habitDao.insert(HabitEntity(
             name = "Test Habit",
             description = "Test",
@@ -238,27 +236,14 @@ class CheckInActionCallbackTest {
             targetValue = 1
         ))
 
-        // Verify the intent construction matches WIDGET-03 specification
-        // The CheckInActionCallback uses this pattern (lines 74-77):
-        val intent = Intent(WidgetUpdateReceiver.ACTION_DATA_CHANGED).apply {
-            putExtra(WidgetUpdateReceiver.EXTRA_HABIT_ID, habitId)
+        callback.onAction(context, mockk<GlanceId>(relaxed = true), actionParametersOf(
+            ActionParameters.Key<Long>("habitId") to habitId,
+            ActionParameters.Key<String>("action") to "toggle"
+        ))
+        assertEquals(1, repository.getTodayCompletionCount(habitId))
+        verify(exactly = 1) {
+            workManager.enqueueUniqueWork(WidgetRefreshScheduler.WORK_NAME,
+                ExistingWorkPolicy.APPEND_OR_REPLACE, any<OneTimeWorkRequest>())
         }
-
-        // Verify intent has correct action for widget-to-app sync
-        assertEquals("Action should be DATA_CHANGED for WIDGET-03 sync",
-            WidgetUpdateReceiver.ACTION_DATA_CHANGED, intent.action)
-
-        // Verify habitId is included for targeted widget refresh
-        val intentHabitId = intent.getLongExtra(WidgetUpdateReceiver.EXTRA_HABIT_ID, -1L)
-        assertEquals("HabitId extra should match for widget refresh", habitId, intentHabitId)
-
-        // Verify LocalBroadcastManager is available (used in CheckInActionCallback)
-        val localBroadcastManager = LocalBroadcastManager.getInstance(context)
-        assertNotNull("LocalBroadcastManager should be available", localBroadcastManager)
-
-        // Verify the broadcast can be sent (no exceptions)
-        localBroadcastManager.sendBroadcast(intent)
-        // Test passes if no exception is thrown
-        assertTrue("Broadcast should be sent without error", true)
     }
 }

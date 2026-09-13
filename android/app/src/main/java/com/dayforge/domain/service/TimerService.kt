@@ -9,7 +9,6 @@ import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
 import android.util.Log
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
 import com.dayforge.data.api.SyncV2Api
@@ -21,7 +20,7 @@ import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.data.local.entity.TimerCommandEntity
 import com.dayforge.data.local.entity.TimerSegmentEntity
 import com.dayforge.util.DateTimeUtils
-import com.dayforge.widget.WidgetUpdateReceiver
+import com.dayforge.widget.WidgetRefreshScheduler
 import com.dayforge.widget.checkin.GoalCompletionActivity
 import com.dayforge.widget.timer.CountdownDiscardActivity
 import com.dayforge.sync.AutoSyncCoordinator
@@ -802,10 +801,7 @@ class TimerService : Service() {
                 sendBroadcast(intent)
             }
             // Notify all widgets to update (Progress, Motivation, etc.)
-            val dataChangedIntent = Intent(WidgetUpdateReceiver.ACTION_DATA_CHANGED).apply {
-                putExtra(WidgetUpdateReceiver.EXTRA_HABIT_ID, stoppedHabitId)
-            }
-            LocalBroadcastManager.getInstance(this@TimerService).sendBroadcast(dataChangedIntent)
+            WidgetRefreshScheduler.request(this@TimerService)
         }
 
         clearState()
