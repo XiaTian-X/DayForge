@@ -204,7 +204,10 @@ class TestVerifyToken:
     def test_verify_token_returns_none_for_wrong_secret(self):
         """Test verify_token returns None when decoded with wrong secret."""
         data = {"sub": "user-123"}
-        token = jwt.encode(data, "wrong-secret-key", algorithm=settings.JWT_ALGORITHM)
+        # A valid-length but different key isolates signature rejection from key warnings.
+        wrong_secret = "wrong" * 8
+        assert wrong_secret != settings.JWT_SECRET_KEY
+        token = jwt.encode(data, wrong_secret, algorithm=settings.JWT_ALGORITHM)
 
         result = verify_token(token)
 

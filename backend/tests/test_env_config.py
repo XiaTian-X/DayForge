@@ -1,35 +1,32 @@
 """Tests for environment variable configuration loading."""
-import pytest
-import os
+import re
 import warnings
-from importlib import reload
+
+import pytest
 from pydantic import ValidationError
 
-from src.config import Settings, get_settings, get_database_url, DEFAULT_JWT_SECRET
+from src.config import Settings, DEFAULT_JWT_SECRET
 
 
-@pytest.fixture
-def clean_env():
-    """Fixture to clean environment variables before each test."""
-    # Save original environment
-    original_env = os.environ.copy()
-    yield
-    # Restore original environment
-    os.environ.clear()
-    os.environ.update(original_env)
-    # Reload settings module to pick up environment changes
-    reload(__import__('src.config', fromlist=['Settings']))
+DEFAULT_SECRET_WARNING = (
+    "WARNING: Using default JWT_SECRET_KEY. "
+    "This is allowed for local development only."
+)
+# Deliberately synthetic: enough bytes for HMAC tests, not a deployment secret.
+EXPLICIT_TEST_SECRET = "test" * 8
 
 
-@pytest.mark.asyncio
-async def test_settings_loads_defaults(clean_env):
-    """Settings() loads default values when no .env file."""
-    # Remove any potential env overrides
-    for key in ["DATABASE_TYPE", "DATABASE_URL", "JWT_SECRET_KEY", "CORS_ORIGINS"]:
-        os.environ.pop(key, None)
+pytestmark = pytest.mark.usefixtures("isolated_settings_env")
 
-    settings = Settings()
 
+def test_settings_loads_defaults(monkeypatch):
+    """Settings loads defaults without inherited environment or a local .env."""
+    monkeypatch.delenv("JWT_SECRET_KEY")
+    with pytest.warns(UserWarning, match=f"^{re.escape(DEFAULT_SECRET_WARNING)}$") as captured:
+        settings = Settings()
+
+    assert len(captured) == 1
+    assert settings.JWT_SECRET_KEY == DEFAULT_JWT_SECRET
     assert settings.DATABASE_TYPE == "sqlite"
     assert settings.SQLITE_DB_PATH == "./dev.db"
     assert settings.JWT_ALGORITHM == "HS256"
@@ -38,47 +35,70 @@ async def test_settings_loads_defaults(clean_env):
     assert "http://localhost:3000" in settings.CORS_ORIGINS
 
 
-@pytest.mark.asyncio
-async def test_settings_override_with_env(clean_env):
-    """Set env var, create Settings, verify override."""
-    # Set environment variable
-    os.environ["JWT_SECRET_KEY"] = "custom-secret-key-from-env"
-    os.environ["DATABASE_TYPE"] = "sqlite"
-    os.environ["SQLITE_DB_PATH"] = "./custom-env.db"
-    os.environ["CORS_ORIGINS"] = '["https://example.com"]'
+def test_settings_override_with_env(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET_KEY", EXPLICIT_TEST_SECRET)
+    monkeypatch.setenv("DATABASE_TYPE", "sqlite")
+    monkeypatch.setenv("SQLITE_DB_PATH", "./custom-env.db")
+    monkeypatch.setenv("CORS_ORIGINS", '["https://example.com"]')
 
     settings = Settings()
 
-    assert settings.JWT_SECRET_KEY == "custom-secret-key-from-env"
+    assert settings.JWT_SECRET_KEY == EXPLICIT_TEST_SECRET
     assert settings.DATABASE_TYPE == "sqlite"
     assert settings.SQLITE_DB_PATH == "./custom-env.db"
     assert settings.CORS_ORIGINS == ["https://example.com"]
 
 
-@pytest.mark.asyncio
-async def test_jwt_secret_key_warning(clean_env):
-    """If JWT_SECRET_KEY is default/missing, warning logged."""
-    # Ensure default secret is used
-    os.environ.pop("JWT_SECRET_KEY", None)
+def test_settings_dotenv_is_opt_in_for_isolated_tests(monkeypatch, tmp_path):
+    """Ignore ambient .env files while still exercising explicit dotenv loading."""
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        f"JWT_SECRET_KEY={EXPLICIT_TEST_SECRET}\nSQLITE_DB_PATH=./dotenv-test.db\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    assert Settings().SQLITE_DB_PATH == "./dev.db"
 
-    # Verify warning is raised with default secret
-    with warnings.catch_warnings(record=True) as w:
+    monkeypatch.delenv("JWT_SECRET_KEY")
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        settings = Settings(_env_file=dotenv)
+
+    assert not captured
+    assert settings.JWT_SECRET_KEY == EXPLICIT_TEST_SECRET
+    assert settings.SQLITE_DB_PATH == "./dotenv-test.db"
+
+
+@pytest.mark.parametrize("environment", ["development", "Development"])
+@pytest.mark.parametrize("explicit_default", [False, True])
+def test_jwt_secret_key_warning(monkeypatch, environment, explicit_default):
+    """Missing and explicitly configured development defaults both warn once."""
+    monkeypatch.setenv("ENVIRONMENT", environment)
+    if explicit_default:
+        monkeypatch.setenv("JWT_SECRET_KEY", DEFAULT_JWT_SECRET)
+    else:
+        monkeypatch.delenv("JWT_SECRET_KEY")
+
+    with pytest.warns(UserWarning, match=f"^{re.escape(DEFAULT_SECRET_WARNING)}$") as captured:
+        settings = Settings()
+
+    assert len(captured) == 1
+    assert settings.JWT_SECRET_KEY == DEFAULT_JWT_SECRET
+
+
+@pytest.mark.parametrize("environment", ["development", "production", "Production"])
+def test_explicit_jwt_secret_does_not_warn(monkeypatch, environment):
+    monkeypatch.setenv("ENVIRONMENT", environment)
+    monkeypatch.setenv("JWT_SECRET_KEY", EXPLICIT_TEST_SECRET)
+    with warnings.catch_warnings(record=True) as captured:
         warnings.simplefilter("always")
         settings = Settings()
 
-        # Check warning was raised
-        assert len(w) == 1
-        assert issubclass(w[-1].category, UserWarning)
-        assert "WARNING: Using default JWT_SECRET_KEY" in str(w[-1].message)
-        assert settings.JWT_SECRET_KEY == DEFAULT_JWT_SECRET
+    assert not captured
+    assert settings.JWT_SECRET_KEY == EXPLICIT_TEST_SECRET
 
 
-@pytest.mark.asyncio
-async def test_cors_origins_default(clean_env):
-    """Default CORS_ORIGINS includes localhost."""
-    # Remove any CORS env override
-    os.environ.pop("CORS_ORIGINS", None)
-
+def test_cors_origins_default():
     settings = Settings()
 
     assert len(settings.CORS_ORIGINS) > 0
@@ -86,22 +106,29 @@ async def test_cors_origins_default(clean_env):
     assert "http://localhost:3000" in settings.CORS_ORIGINS
 
 
-def test_production_rejects_default_jwt_secret(clean_env):
+@pytest.mark.parametrize("environment", ["production", "Production"])
+@pytest.mark.parametrize("explicit_default", [False, True])
+def test_production_rejects_default_jwt_secret(monkeypatch, environment, explicit_default):
+    monkeypatch.setenv("ENVIRONMENT", environment)
+    if explicit_default:
+        monkeypatch.setenv("JWT_SECRET_KEY", DEFAULT_JWT_SECRET)
+    else:
+        monkeypatch.delenv("JWT_SECRET_KEY")
     with pytest.raises(ValidationError, match="JWT_SECRET_KEY"):
-        Settings(ENVIRONMENT="production", JWT_SECRET_KEY=DEFAULT_JWT_SECRET)
+        Settings()
 
 
-def test_admin_credentials_must_be_complete_and_strong(clean_env):
+def test_admin_credentials_must_be_complete_and_strong():
     with pytest.raises(ValidationError, match="configured together"):
         Settings(ADMIN_USERNAME="admin", ADMIN_PASSWORD=None)
     with pytest.raises(ValidationError, match="at least 12"):
         Settings(ADMIN_USERNAME="admin", ADMIN_PASSWORD="short")
 
 
-def test_production_accepts_explicit_security_configuration(clean_env):
+def test_production_accepts_explicit_security_configuration():
     settings = Settings(
         ENVIRONMENT="production",
-        JWT_SECRET_KEY="a-production-secret-with-sufficient-entropy",
+        JWT_SECRET_KEY=EXPLICIT_TEST_SECRET,
         ADMIN_USERNAME="dayforge-admin",
         ADMIN_PASSWORD="a-strong-admin-password",
     )
