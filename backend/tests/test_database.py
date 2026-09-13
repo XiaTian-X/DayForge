@@ -105,7 +105,7 @@ class TestEngineType:
         engine = get_engine()
         assert engine.url.drivername == "sqlite+aiosqlite"
 
-    def test_sync_engine_url_conversion(self):
+    def test_sync_engine_url_conversion(self, isolated_settings_env):
         """Test that the adapter provides a synchronous Alembic URL."""
         from src.config import get_database_url, get_migration_database_url
 

@@ -1,21 +1,14 @@
 """Tests for admin auto-creation on first run."""
 import pytest
-import pytest_asyncio
 from sqlmodel import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.auth.models import User
 from src.auth.service import verify_password
 from src.main import _create_admin_if_missing
-from src.config import Settings, get_settings
+from src.config import get_settings
 
 
-@pytest.fixture(autouse=True)
-def clear_settings_cache():
-    """Clear the get_settings cache before each test."""
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
+pytestmark = pytest.mark.usefixtures("isolated_settings_env")
 
 
 @pytest.mark.asyncio

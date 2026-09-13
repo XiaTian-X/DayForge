@@ -1,16 +1,9 @@
 """Tests for config module."""
-import os
 import pytest
 from pydantic import ValidationError
 
 
-@pytest.fixture(autouse=True)
-def clear_settings_cache():
-    """Clear the get_settings cache before each test."""
-    from src.config import get_settings
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
+pytestmark = pytest.mark.usefixtures("isolated_settings_env")
 
 
 class TestSettings:
@@ -45,12 +38,14 @@ class TestSettings:
         assert settings.JWT_SECRET_KEY == "test-env-secret"
         assert settings.CORS_ORIGINS == ["http://example.com"]
 
-    def test_settings_jwt_secret_warning(self):
+    def test_settings_jwt_secret_warning(self, monkeypatch):
         """Test that warning is raised when using default JWT secret."""
         from src.config import Settings, DEFAULT_JWT_SECRET
 
-        # Using default should trigger warning
-        settings = Settings()
+        monkeypatch.delenv("JWT_SECRET_KEY")
+        with pytest.warns(UserWarning, match="^WARNING: Using default JWT_SECRET_KEY\\.") as captured:
+            settings = Settings()
+        assert len(captured) == 1
         assert settings.JWT_SECRET_KEY == DEFAULT_JWT_SECRET
 
 
@@ -59,7 +54,7 @@ class TestGetDatabaseUrl:
 
     def test_returns_sqlite_url_when_database_type_is_sqlite(self, monkeypatch):
         """Test get_database_url returns SQLite URL when DATABASE_TYPE=sqlite."""
-        from src.config import get_database_url, Settings
+        from src.config import get_database_url
 
         monkeypatch.setenv("DATABASE_TYPE", "sqlite")
         monkeypatch.setenv("SQLITE_DB_PATH", "./test.db")
@@ -108,11 +103,7 @@ class TestGetDatabaseUrl:
 
     def test_sqlite_url_default_path(self):
         """Test SQLite URL uses default path when not specified."""
-        from src.config import get_database_url, Settings
-
-        # Reset to defaults
-        os.environ.pop("DATABASE_TYPE", None)
-        os.environ.pop("SQLITE_DB_PATH", None)
+        from src.config import get_database_url
 
         url = get_database_url()
 

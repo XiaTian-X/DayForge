@@ -25,6 +25,23 @@ TEST_ALGORITHM = "HS256"
 TEST_DATABASE_URL = "sqlite+aiosqlite:///./test.db"
 
 
+@pytest.fixture
+def isolated_settings_env(monkeypatch):
+    """Isolate opt-in configuration tests without reloading application modules."""
+    import os
+    from src.config import Settings, get_settings
+
+    field_names = {name.lower() for name in Settings.model_fields}
+    for name in tuple(os.environ):
+        if name.lower() in field_names:
+            monkeypatch.delenv(name)
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    monkeypatch.setenv("JWT_SECRET_KEY", TEST_SECRET_KEY)
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 @pytest_asyncio.fixture(scope="function")
 async def async_engine():
     """Create async engine for test database."""
