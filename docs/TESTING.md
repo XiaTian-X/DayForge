@@ -21,6 +21,16 @@ Gradle 单测任务上限为 15 分钟；CI 的 Android 验证步骤上限为 20
 不能用延长时限掩盖未结束的协程或测试挂起。
 CI 还记录单测开始/失败/跳过事件，帮助定位未完成的用例；本地默认不增加逐用例日志。
 
+Android lint 使用官方 `android/app/lint-baseline.xml` 记录已有问题，并将所有未进入基线的
+warning 提升为 error。Kotlin、javac 与 Android 资源编译警告由
+`android/compiler-warning-budget.json` 按“类型、规范化消息、最大数量”登记，
+`./tools/verify android` 会拒绝未知警告和数量增长。编译任务可能命中缓存，因此只有干净、
+完整重编译后观察到的减少才可以用于下调预算；主机 SDK/命令行工具不匹配之类的环境提示
+不属于代码警告预算。
+`AndroidGradlePluginVersion` 和 `GradleDependency` 依赖实时仓库元数据，同一提交在不同缓存中
+会产生不同结果，因此不进入 lint 门禁；锁定版本的升级必须通过独立的工具链/依赖审查 PR，
+不能据此忽略编译、运行时弃用或其他静态分析问题。
+
 Room schema、计时、后台任务或 Android 平台行为变化时还需要相应 instrumentation/真机测试。仅含 TODO、没有断言或没有执行路径的测试不计为有效覆盖。
 
 ### 后端改动
@@ -36,6 +46,12 @@ Room schema、计时、后台任务或 Android 平台行为变化时还需要相
 后端覆盖率必须同时跟踪 `thread` 与 `greenlet`（见 `backend/pyproject.toml`），
 否则 SQLAlchemy 异步数据库调用切换后的已执行代码可能被误报为未覆盖。
 修正统计配置产生的覆盖率变化不代表新增测试；仍需检查实际异常路径和断言。
+
+统一验证入口通过 pytest 插件和 `backend/warning-budget.json` 登记已有 warning 的完整类别、
+规范化消息和最大数量。
+未知 warning 或数量增长会令测试失败；减少不会阻断单个增量测试，但完整测试确认减少后，
+必须在同一 PR 下调预算。任何预算增加都需要关联明确的问题和审查理由，不能用过滤、宽泛匹配
+或提高上限来掩盖可修复警告。lint 基线也只允许随修复缩小。
 
 ## 必须长期覆盖的异常矩阵
 

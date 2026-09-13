@@ -60,6 +60,15 @@ android {
         unitTests.isIncludeAndroidResources = true
     }
 
+    lint {
+        baseline = file("lint-baseline.xml")
+        warningsAsErrors = true
+        abortOnError = true
+        // Online version advisories are not reproducible across developer and CI caches.
+        // Locked dependency upgrades are reviewed explicitly under the toolchain roadmap.
+        disable += setOf("AndroidGradlePluginVersion", "GradleDependency")
+    }
+
     buildTypes {
         getByName("debug") {
             enableUnitTestCoverage = true
