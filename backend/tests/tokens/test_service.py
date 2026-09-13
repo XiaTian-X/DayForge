@@ -89,9 +89,9 @@ class TestVerifyTokenExpiry:
         assert verify_token_expiry(past) is False
 
     def test_naive_sqlite_future_expiry_is_treated_as_utc(self):
-        future = datetime.utcnow() + timedelta(days=1)
+        future = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=1)
         assert verify_token_expiry(future) is True
 
     def test_naive_sqlite_past_expiry_is_expired(self):
-        past = datetime.utcnow() - timedelta(days=1)
+        past = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)
         assert verify_token_expiry(past) is False

@@ -2,7 +2,9 @@
 
 import hashlib
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime
+
+from src.time_utils import as_utc, utc_now
 
 TOKEN_PREFIX = "df_"
 TOKEN_BYTES = 32
@@ -54,10 +56,4 @@ def verify_token_expiry(expires_at: datetime | None) -> bool:
     """
     if expires_at is None:
         return True
-    # SQLite reflects DateTime values without tzinfo. Token timestamps are UTC,
-    # so restore that contract before comparing them to an aware instant.
-    if expires_at.tzinfo is None or expires_at.utcoffset() is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-    else:
-        expires_at = expires_at.astimezone(timezone.utc)
-    return datetime.now(timezone.utc) < expires_at
+    return utc_now() < as_utc(expires_at)

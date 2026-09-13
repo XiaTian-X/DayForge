@@ -1,4 +1,4 @@
-"""Compatibility contract for token response serialization, independent of config syntax."""
+"""Canonical UTC response contract, preserving instants and public field projection."""
 
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -15,11 +15,15 @@ from src.tokens.schemas import TokenListResponse, TokenResponse
 @pytest.mark.parametrize(
     ("created_at", "serialized"),
     [
-        (datetime(2026, 9, 13, 8, 12, 34), "2026-09-13T08:12:34"),
+        (datetime(2026, 9, 13, 8, 12, 34), "2026-09-13T08:12:34Z"),
         (datetime(2026, 9, 13, 8, 12, 34, tzinfo=timezone.utc), "2026-09-13T08:12:34Z"),
         (
             datetime(2026, 9, 13, 8, 12, 34, tzinfo=timezone(timedelta(hours=8))),
-            "2026-09-13T08:12:34+08:00",
+            "2026-09-13T00:12:34Z",
+        ),
+        (
+            datetime(2026, 9, 13, 23, 12, 34, 123456, tzinfo=timezone(timedelta(hours=-7))),
+            "2026-09-14T06:12:34.123456Z",
         ),
     ],
 )
@@ -49,8 +53,9 @@ def test_response_preserves_fields_dates_and_filters_internal_data(
     if schema is TokenResponse:
         expected["token"] = "test-only-placeholder"
     assert response.model_dump(mode="json") == expected
-    assert response.created_at == created_at
-    assert response.created_at.tzinfo == created_at.tzinfo
+    original_instant = created_at if created_at.tzinfo else created_at.replace(tzinfo=timezone.utc)
+    assert response.created_at == original_instant
+    assert response.created_at.tzinfo == timezone.utc
 
 
 @pytest.mark.parametrize("schema", [TokenResponse, TokenListResponse])
@@ -96,7 +101,7 @@ def test_sqlmodel_list_serialization_exposes_only_public_fields():
             "id": 7,
             "name": "test",
             "prefix": "public-part",
-            "created_at": "2026-09-13T00:00:00",
+            "created_at": "2026-09-13T00:00:00Z",
             "last_used_at": None,
             "expires_at": None,
         }

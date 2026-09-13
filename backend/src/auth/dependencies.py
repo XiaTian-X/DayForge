@@ -10,7 +10,7 @@ from src.auth.models import User
 from src.auth.service import verify_token
 from src.tokens.models import ApiToken
 from src.tokens.service import hash_token, verify_token_expiry
-from datetime import datetime, timezone
+from src.time_utils import utc_now
 
 
 # OAuth2 scheme for token extraction
@@ -105,7 +105,7 @@ async def get_current_user(
             raise credentials_exception
 
         # Update last_used_at
-        api_token.last_used_at = datetime.now(timezone.utc)
+        api_token.last_used_at = utc_now()
         # Keep authentication inside the request transaction. The session
         # dependency owns the final commit/rollback boundary.
         await session.flush()

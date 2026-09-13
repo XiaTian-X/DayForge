@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from src.time_utils import as_utc
 
 
 def require_iana_timezone(value: str) -> str:
@@ -15,13 +17,6 @@ def require_iana_timezone(value: str) -> str:
     except (ZoneInfoNotFoundError, ValueError) as exc:
         raise ValueError("timezone must be a valid IANA zone name") from exc
     return value
-
-
-def as_utc(value: datetime) -> datetime:
-    """Normalize an aware instant, treating SQLite's naive reads as stored UTC."""
-    if value.tzinfo is None or value.utcoffset() is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
 
 
 def local_date_at(value: datetime, timezone_name: str) -> date:

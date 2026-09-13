@@ -4,6 +4,8 @@ from datetime import datetime
 from typing import Optional
 from sqlmodel import Field, SQLModel
 
+from src.time_utils import utc_now
+
 
 class ApiToken(SQLModel, table=True):
     """API token for programmatic access."""
@@ -17,4 +19,4 @@ class ApiToken(SQLModel, table=True):
     prefix: str = Field(max_length=11)
     last_used_at: Optional[datetime] = Field(default=None)
     expires_at: Optional[datetime] = Field(default=None)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)

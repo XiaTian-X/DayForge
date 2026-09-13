@@ -4,7 +4,7 @@ The V2 schema is the canonical habit, activity and metric data model. Public
 APIs use UUIDs; integer IDs are internal only.
 """
 
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time
 from decimal import Decimal
 from enum import Enum
 from typing import Optional
@@ -13,10 +13,7 @@ import uuid
 from sqlalchemy import CheckConstraint, Index, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
 
-
-def utc_now() -> datetime:
-    """Return an aware UTC timestamp for newly written rows."""
-    return datetime.now(timezone.utc)
+from src.time_utils import utc_now
 
 
 def new_uuid() -> str:

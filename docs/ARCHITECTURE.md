@@ -122,6 +122,13 @@ FastAPI Router -> Service/Domain -> SQLModel/SQLAlchemy -> SQLite
 - 记录所属日期使用事件发生时捕获的时区计算，而不是服务器时区。
 - 计时跨日仍是一个完整区间；展示和统计可以按本地日期切分，但不能篡改原始开始、结束时刻。
 
+账户与 API 令牌的新建、更新时间由共享 `src/time_utils.py` 的带时区 UTC 工厂生成。
+SQLite 当前 DateTime 列读取后仍可能不带 tzinfo；这些已知以 UTC 写入的值在比较和响应边界
+恢复 UTC，不能按服务器本地时间转换。带偏移值必须转换为同一 UTC 瞬时值，不能仅替换 tzinfo。
+`AdminUserResponse` 的 created_at/updated_at 和令牌响应的 created_at/expires_at/last_used_at
+统一输出带 `Z` 的 UTC 字符串，保留微秒及 null。归一化只用于服务端响应，不放宽同步输入的
+时区校验；不重写存量数据或改变 SQLite 列类型。未来数据库适配器必须在存取边界保证同一瞬时值。
+
 ## 未来扩展
 
 - iOS 恢复开发时直接增加 `ios/` 模块并复用服务端契约，不复制 Android 的实现细节。

@@ -281,6 +281,7 @@
         "description": "Admin user response schema with all fields.",
         "properties": {
           "created_at": {
+            "description": "UTC instant serialized with Z; fractional seconds are preserved.",
             "format": "date-time",
             "title": "Created At",
             "type": "string"
@@ -333,6 +334,7 @@
             "type": "string"
           },
           "updated_at": {
+            "description": "UTC instant serialized with Z; fractional seconds are preserved.",
             "format": "date-time",
             "title": "Updated At",
             "type": "string"
@@ -1117,6 +1119,7 @@
         "description": "Response schema for listing tokens (excludes the raw token).",
         "properties": {
           "created_at": {
+            "description": "UTC instant serialized with Z; fractional seconds are preserved.",
             "format": "date-time",
             "title": "Created At",
             "type": "string"
@@ -1124,6 +1127,7 @@
           "expires_at": {
             "anyOf": [
               {
+                "description": "UTC instant serialized with Z; fractional seconds are preserved.",
                 "format": "date-time",
                 "type": "string"
               },
@@ -1140,6 +1144,7 @@
           "last_used_at": {
             "anyOf": [
               {
+                "description": "UTC instant serialized with Z; fractional seconds are preserved.",
                 "format": "date-time",
                 "type": "string"
               },
@@ -1185,6 +1190,7 @@
         "description": "Response schema for token creation (includes the raw token).",
         "properties": {
           "created_at": {
+            "description": "UTC instant serialized with Z; fractional seconds are preserved.",
             "format": "date-time",
             "title": "Created At",
             "type": "string"
@@ -1192,6 +1198,7 @@
           "expires_at": {
             "anyOf": [
               {
+                "description": "UTC instant serialized with Z; fractional seconds are preserved.",
                 "format": "date-time",
                 "type": "string"
               },
@@ -1208,6 +1215,7 @@
           "last_used_at": {
             "anyOf": [
               {
+                "description": "UTC instant serialized with Z; fractional seconds are preserved.",
                 "format": "date-time",
                 "type": "string"
               },

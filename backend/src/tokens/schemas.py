@@ -1,9 +1,10 @@
 """Pydantic schemas for API token endpoints."""
 
-from datetime import datetime
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from src.time_utils import UTCResponseDatetime
 
 
 class TokenCreate(BaseModel):
@@ -20,9 +21,9 @@ class TokenResponse(BaseModel):
     name: str
     prefix: str
     token: str
-    last_used_at: Optional[datetime] = None
-    created_at: datetime
-    expires_at: Optional[datetime] = None
+    last_used_at: Optional[UTCResponseDatetime] = None
+    created_at: UTCResponseDatetime
+    expires_at: Optional[UTCResponseDatetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -33,9 +34,9 @@ class TokenListResponse(BaseModel):
     id: int
     name: str
     prefix: str
-    last_used_at: Optional[datetime] = None
-    created_at: datetime
-    expires_at: Optional[datetime] = None
+    last_used_at: Optional[UTCResponseDatetime] = None
+    created_at: UTCResponseDatetime
+    expires_at: Optional[UTCResponseDatetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 
