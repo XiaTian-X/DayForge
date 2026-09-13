@@ -8,13 +8,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Timer
-import androidx.compose.material.icons.outlined.TrendingUp
 import androidx.compose.material3.*
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberTimePickerState
@@ -420,7 +419,7 @@ fun EditHabitScreen(
                                     MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Icon(Icons.Default.ArrowForward, null)
+                            Icon(Icons.AutoMirrored.Filled.ArrowForward, null)
                         }
                     }
                 }
@@ -439,7 +438,7 @@ fun EditHabitScreen(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(stringResource(R.string.edit_habit_icon_label), style = MaterialTheme.typography.bodyLarge)
-                        Icon(Icons.Default.ArrowForward, null)
+                        Icon(Icons.AutoMirrored.Filled.ArrowForward, null)
                     }
                 }
 
@@ -465,7 +464,7 @@ fun EditHabitScreen(
                                     shape = MaterialTheme.shapes.small
                                 )
                         )
-                        Icon(Icons.Default.ArrowForward, null)
+                        Icon(Icons.AutoMirrored.Filled.ArrowForward, null)
                     }
                 }
 
@@ -509,7 +508,7 @@ fun EditHabitScreen(
                                 }
                             }
                             Icon(
-                                if (metricSectionExpanded) Icons.Default.ExpandMore else Icons.Default.ArrowForward,
+                                if (metricSectionExpanded) Icons.Default.ExpandMore else Icons.AutoMirrored.Filled.ArrowForward,
                                 contentDescription = stringResource(R.string.content_description_expand),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )

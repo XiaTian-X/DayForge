@@ -5,6 +5,11 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.Chat
+import androidx.compose.material.icons.automirrored.rounded.DirectionsBike
+import androidx.compose.material.icons.automirrored.rounded.DirectionsRun
+import androidx.compose.material.icons.automirrored.rounded.DirectionsWalk
+import androidx.compose.material.icons.automirrored.rounded.MenuBook
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
@@ -45,14 +50,14 @@ enum class IconCategory(val stringResId: Int) {
 
 // Fitness icons (IDs 1-2, 9-17)
 val FITNESS_ICONS = listOf(
-    IconOption("exercise", Icons.Rounded.DirectionsRun, 2),
+    IconOption("exercise", Icons.AutoMirrored.Rounded.DirectionsRun, 2),
     IconOption("fitness_center", Icons.Rounded.FitnessCenter, 9),
-    IconOption("directions_bike", Icons.Rounded.DirectionsBike, 10),
+    IconOption("directions_bike", Icons.AutoMirrored.Rounded.DirectionsBike, 10),
     IconOption("sports_gymnastics", Icons.Rounded.SportsGymnastics, 11),
     IconOption("sports", Icons.Rounded.Sports, 12),
     IconOption("pool", Icons.Rounded.Pool, 13),
     IconOption("hiking", Icons.Rounded.Hiking, 14),
-    IconOption("directions_walk", Icons.Rounded.DirectionsWalk, 15),
+    IconOption("directions_walk", Icons.AutoMirrored.Rounded.DirectionsWalk, 15),
     IconOption("sports_soccer", Icons.Rounded.SportsSoccer, 16),
     IconOption("sports_basketball", Icons.Rounded.SportsBasketball, 17)
 )
@@ -77,7 +82,7 @@ val HEALTH_ICONS = listOf(
 val LEARNING_ICONS = listOf(
     IconOption("book", Icons.Rounded.AutoStories, 5),
     IconOption("school", Icons.Rounded.School, 26),
-    IconOption("menu_book", Icons.Rounded.MenuBook, 27),
+    IconOption("menu_book", Icons.AutoMirrored.Rounded.MenuBook, 27),
     IconOption("lightbulb", Icons.Rounded.Lightbulb, 28),
     IconOption("calculate", Icons.Rounded.Calculate, 29),
     IconOption("translate", Icons.Rounded.Translate, 30),
@@ -136,7 +141,7 @@ val PERSONAL_HYGIENE_ICONS = listOf(
 val SOCIAL_ICONS = listOf(
     IconOption("people", Icons.Rounded.People, 62),
     IconOption("group", Icons.Rounded.Group, 63),
-    IconOption("chat", Icons.Rounded.Chat, 64),
+    IconOption("chat", Icons.AutoMirrored.Rounded.Chat, 64),
     IconOption("forum", Icons.Rounded.Forum, 65),
     IconOption("handshake", Icons.Rounded.Handshake, 66)
 )

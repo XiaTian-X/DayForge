@@ -4,6 +4,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.Login
+import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -344,7 +346,7 @@ internal fun AccountSection(
                         .height(48.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.Logout,
+                        imageVector = Icons.AutoMirrored.Rounded.Logout,
                         contentDescription = null,
                         modifier = Modifier.size(18.dp)
                     )
@@ -359,7 +361,7 @@ internal fun AccountSection(
                         .height(48.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.Login,
+                        imageVector = Icons.AutoMirrored.Rounded.Login,
                         contentDescription = null,
                         modifier = Modifier.size(18.dp)
                     )
@@ -456,7 +458,7 @@ internal fun LogoutSyncConfirmationDialog(
         onDismissRequest = onDismiss,
         icon = {
             Icon(
-                imageVector = Icons.Rounded.Logout,
+                imageVector = Icons.AutoMirrored.Rounded.Logout,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.error
             )

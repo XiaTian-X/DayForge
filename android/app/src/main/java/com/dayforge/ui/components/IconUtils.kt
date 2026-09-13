@@ -1,6 +1,11 @@
 package com.dayforge.ui.components
 
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.Chat
+import androidx.compose.material.icons.automirrored.rounded.DirectionsBike
+import androidx.compose.material.icons.automirrored.rounded.DirectionsRun
+import androidx.compose.material.icons.automirrored.rounded.DirectionsWalk
+import androidx.compose.material.icons.automirrored.rounded.MenuBook
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -19,7 +24,7 @@ fun getIconForResId(iconResId: Int): ImageVector {
     return when (iconResId) {
         // Legacy icons 1-8
         1 -> Icons.Rounded.WaterDrop
-        2 -> Icons.Rounded.DirectionsRun
+        2 -> Icons.AutoMirrored.Rounded.DirectionsRun
         3 -> Icons.Rounded.Bedtime
         4 -> Icons.Rounded.LunchDining
         5 -> Icons.Rounded.AutoStories
@@ -28,12 +33,12 @@ fun getIconForResId(iconResId: Int): ImageVector {
         8 -> Icons.Filled.Favorite
         // Fitness icons (9-17)
         9 -> Icons.Rounded.FitnessCenter
-        10 -> Icons.Rounded.DirectionsBike
+        10 -> Icons.AutoMirrored.Rounded.DirectionsBike
         11 -> Icons.Rounded.SportsGymnastics
         12 -> Icons.Rounded.Sports
         13 -> Icons.Rounded.Pool
         14 -> Icons.Rounded.Hiking
-        15 -> Icons.Rounded.DirectionsWalk
+        15 -> Icons.AutoMirrored.Rounded.DirectionsWalk
         16 -> Icons.Rounded.SportsSoccer
         17 -> Icons.Rounded.SportsBasketball
         // Health icons (18-25)
@@ -47,7 +52,7 @@ fun getIconForResId(iconResId: Int): ImageVector {
         25 -> Icons.Rounded.Vaccines
         // Learning icons (26-34)
         26 -> Icons.Rounded.School
-        27 -> Icons.Rounded.MenuBook
+        27 -> Icons.AutoMirrored.Rounded.MenuBook
         28 -> Icons.Rounded.Lightbulb
         29 -> Icons.Rounded.Calculate
         30 -> Icons.Rounded.Translate
@@ -89,7 +94,7 @@ fun getIconForResId(iconResId: Int): ImageVector {
         // Social icons (62-66)
         62 -> Icons.Rounded.People
         63 -> Icons.Rounded.Group
-        64 -> Icons.Rounded.Chat
+        64 -> Icons.AutoMirrored.Rounded.Chat
         65 -> Icons.Rounded.Forum
         66 -> Icons.Rounded.Handshake
         // Finance icons (67-71)
