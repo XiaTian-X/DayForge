@@ -558,7 +558,6 @@ fun SettingsScreen(
     if (showLogoutDialog) {
         LogoutSyncConfirmationDialog(
             isLoggedIn = isLoggedIn,
-            isOnline = isOnline,
             isLoggingOut = isLoggingOut,
             onSyncAndLogout = {
                 showLogoutDialog = false

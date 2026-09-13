@@ -448,7 +448,6 @@ internal fun SyncErrorDialog(
 @Composable
 internal fun LogoutSyncConfirmationDialog(
     isLoggedIn: Boolean,
-    isOnline: Boolean,
     isLoggingOut: Boolean,
     onSyncAndLogout: () -> Unit,
     onDirectLogout: () -> Unit,
@@ -478,7 +477,7 @@ internal fun LogoutSyncConfirmationDialog(
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(stringResource(R.string.sync_in_progress_status))
                 }
-            } else if (isLoggedIn && isOnline) {
+            } else if (isLoggedIn) {
                 Text(stringResource(R.string.logout_confirm_sync_message))
             } else {
                 Text(stringResource(R.string.logout_confirm_direct_message))
@@ -487,13 +486,13 @@ internal fun LogoutSyncConfirmationDialog(
         confirmButton = {
             if (isLoggingOut) {
                 // No buttons during logout
-            } else if (isLoggedIn && isOnline) {
+            } else if (isLoggedIn) {
                 // Primary action: Sync then logout
                 Button(onClick = onSyncAndLogout) {
                     Text(stringResource(R.string.logout_sync_then_logout))
                 }
             } else {
-                // Not logged in or offline: just logout
+                // No authenticated session to sync.
                 TextButton(
                     onClick = onDirectLogout,
                     colors = ButtonDefaults.textButtonColors(
@@ -507,7 +506,7 @@ internal fun LogoutSyncConfirmationDialog(
         dismissButton = {
             if (isLoggingOut) {
                 // No dismiss during logout
-            } else if (isLoggedIn && isOnline) {
+            } else if (isLoggedIn) {
                 // Two options: Direct logout and Cancel
                 Row {
                     TextButton(

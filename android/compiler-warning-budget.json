@@ -13,11 +13,6 @@
     },
     {
       "kind": "kotlin",
-      "message": "'val allNetworks: (Array<Network!>..Array<out Network!>)' is deprecated. Deprecated in Java.",
-      "max_count": 3
-    },
-    {
-      "kind": "kotlin",
       "message": "'var statusBarColor: Int' is deprecated. Deprecated in Java.",
       "max_count": 1
     }
