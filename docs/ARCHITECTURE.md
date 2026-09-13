@@ -84,6 +84,22 @@ Android 没有初始网络枚举完成通知，地址选择仅在进程监控器
 中性色、边界值和固定随机样本。后续升级色彩库必须先比对该基线；不能自动重建基线来消除失败。
 若要采用新的动态配色策略，应作为明确的外观变更单独评审。
 
+### 主窗口与系统栏
+
+`DayForgeTheme` 只提供 Compose 主题，不访问 Activity。`MainActivity` 显式持有 `DayForgeWindow`，
+由 AndroidX `enableEdgeToEdge` 设置透明状态栏；Compose 在真实 statusBars 高度内绘制既有 primary
+保护色。状态栏和导航栏分别按其实际背景选择黑/白图标，不依赖系统明暗模式，也不假定浅色主题
+的 primary 一定浅。透明自定义颜色先合成到窗口背景，透明窗口背景以黑色兜底。
+
+主页导航栏使用 Material3 默认容器色，无底栏页面使用窗口背景。Android 10+ 保留平台的三键导航
+对比度保护；旧系统使用该导航背景作为保护色。应用内弹窗仍由各自的 Compose Dialog 窗口管理，
+小组件独立 Activity 不经过此主窗口宿主，不能把主窗口测试当作其验收。
+
+主窗口声明 adjustResize，并先消费 IME 边距；外层 Scaffold 处理剩余 safeDrawing（含状态栏、
+导航栏、刘海及窗口标题栏）。导航内容必须同时应用和消费外层 padding，内层 Scaffold/TopAppBar
+只处理未消费部分。底部 NavigationBar 自行处理其系统边距，键盘出现时随主窗口上移，不能再次累加
+导航栏高度。状态栏保护层只绘制，不预留或消费内容空间。新增页面不得绕过这一边距所有权。
+
 ## 后端边界
 
 后端使用：

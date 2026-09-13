@@ -6,10 +6,9 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.lifecycle.lifecycleScope
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
@@ -19,9 +18,9 @@ import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.material3.windowsizeclass.WindowSizeClass
 import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
 import androidx.compose.material3.Icon
-import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.Scaffold
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -32,7 +31,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.collectAsState
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.Lifecycle
@@ -48,6 +46,8 @@ import com.dayforge.domain.service.ThemeManager
 import com.dayforge.ui.navigation.HabitNavGraph
 import com.dayforge.ui.navigation.Screen
 import com.dayforge.ui.theme.DayForgeTheme
+import com.dayforge.ui.theme.DayForgeWindow
+import com.dayforge.ui.theme.DayForgeNavigationBar
 import com.dayforge.widget.WidgetRefreshScheduler
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
@@ -68,7 +68,7 @@ class MainActivity : AppCompatActivity() {
     lateinit var themeManager: ThemeManager
 
     @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
-override fun onCreate(savedInstanceState: Bundle?) {
+    override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
@@ -96,6 +96,7 @@ override fun onCreate(savedInstanceState: Bundle?) {
             ) {
                 val navController = rememberNavController()
                 MainScreen(
+                    activity = this@MainActivity,
                     navController = navController,
                     tokenManager = tokenManager,
                     preferencesManager = preferencesManager,
@@ -108,6 +109,7 @@ override fun onCreate(savedInstanceState: Bundle?) {
 
 @Composable
 fun MainScreen(
+    activity: ComponentActivity,
     navController: NavHostController,
     tokenManager: TokenManager,
     preferencesManager: PreferencesManager,
@@ -171,11 +173,14 @@ fun MainScreen(
         selectedTab = 0
     }
 
-    Scaffold(
+    DayForgeWindow(
+        activity = activity,
+        navigationBarColor = if (isOnMainTab) NavigationBarDefaults.containerColor
+            else MaterialTheme.colorScheme.background,
         bottomBar = {
             // Hide bottom bar on detail screens
             if (isOnMainTab) {
-                NavigationBar {
+                DayForgeNavigationBar {
                     NavigationBarItem(
                         selected = selectedTab == 0,
                         onClick = { selectedTab = 0 },
@@ -203,16 +208,14 @@ fun MainScreen(
                 }
             }
         }
-    ) { padding ->
+    ) { contentModifier ->
         HabitNavGraph(
             navController = navController,
             tokenManager = tokenManager,
             selectedTab = selectedTab,
             onTabSelected = { selectedTab = it },
             windowSizeClass = windowSizeClass,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
+            modifier = contentModifier
         )
     }
 }

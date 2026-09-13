@@ -89,6 +89,10 @@ class DashboardViewModelTest {
             context,
             HabitDatabase::class.java
         ).build()
+        // Finish lazy Room initialization before starting ViewModel queries. Cancellation can
+        // finish before a blocking query returns; closing while its first open is in progress
+        // reverses Room's close lock / SQLite open lock order and can deadlock this fixture.
+        runBlocking(Dispatchers.IO) { database.openHelper.writableDatabase }
         habitDao = database.habitDao()
         completionDao = database.completionDao()
         timeLogDao = database.timeLogDao()

@@ -1,10 +1,4 @@
 {
   "version": 1,
-  "warnings": [
-    {
-      "kind": "kotlin",
-      "message": "'var statusBarColor: Int' is deprecated. Deprecated in Java.",
-      "max_count": 1
-    }
-  ]
+  "warnings": []
 }
