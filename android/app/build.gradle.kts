@@ -132,6 +132,7 @@ dependencies {
     // ViewModel & Lifecycle
     implementation(libs.viewmodel.ktx)
     implementation(libs.lifecycle.runtime.ktx)
+    implementation(libs.lifecycle.runtime.compose)
 
     // Navigation
     implementation(libs.navigation.compose)

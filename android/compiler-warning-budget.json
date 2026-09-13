@@ -18,16 +18,6 @@
     },
     {
       "kind": "kotlin",
-      "message": "'fun Modifier.menuAnchor(): Modifier' is deprecated. Use overload that takes MenuAnchorType and enabled parameters.",
-      "max_count": 3
-    },
-    {
-      "kind": "kotlin",
-      "message": "'val LocalLifecycleOwner: ProvidableCompositionLocal<LifecycleOwner>' is deprecated. Moved to lifecycle-runtime-compose library in androidx.lifecycle.compose package.",
-      "max_count": 1
-    },
-    {
-      "kind": "kotlin",
       "message": "'val allNetworks: (Array<Network!>..Array<out Network!>)' is deprecated. Deprecated in Java.",
       "max_count": 3
     },
