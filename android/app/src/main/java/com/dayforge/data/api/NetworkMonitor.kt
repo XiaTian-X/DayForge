@@ -108,7 +108,10 @@ class NetworkMonitor @Inject constructor(private val connectivity: ConnectivityM
         }
 
         override fun onLost(network: Network) = synchronized(lock) {
-            if (!closed && networks.remove(network) != null) publish()
+            if (!closed && networks.remove(network) != null) {
+                if (defaultNetwork == network) defaultNetwork = null
+                publish()
+            }
         }
     }
 

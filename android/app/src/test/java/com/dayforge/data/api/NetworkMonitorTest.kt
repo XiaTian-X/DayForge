@@ -220,10 +220,17 @@ class NetworkMonitorTest {
 
     @Test fun `default subscription failure leaves all-network observation usable`() {
         every { connectivity.registerDefaultNetworkCallback(any<ConnectivityManager.NetworkCallback>()) } throws SecurityException("denied")
+        val seeded = ShadowNetwork.newInstance(1)
+        every { connectivity.activeNetwork } returns seeded
+        every { connectivity.getNetworkCapabilities(seeded) } returns caps(NetworkCapabilities.TRANSPORT_WIFI)
         start()
         val wifi = available(1, NetworkCapabilities.TRANSPORT_WIFI)
         assertTrue(monitor.state.value.monitoring)
         assertEquals(listOf(wifi), monitor.state.value.localNetworks)
+        assertEquals(wifi, monitor.state.value.defaultNetwork)
+        callback.captured.onLost(wifi)
+        assertNull(monitor.state.value.defaultNetwork)
+        assertFalse(monitor.state.value.mayBeConnected)
         monitor.close()
         verify(exactly = 1) { connectivity.unregisterNetworkCallback(callback.captured) }
     }
