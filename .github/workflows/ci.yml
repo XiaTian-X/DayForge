@@ -77,15 +77,8 @@ jobs:
           version: "0.12.13"
           enable-cache: true
           cache-dependency-glob: backend/uv.lock
-      - name: Install locked dependencies
-        working-directory: backend
-        run: uv sync --frozen
-      - name: Run backend tests
-        working-directory: backend
-        run: uv run pytest
-      - name: Verify OpenAPI contract
-        working-directory: backend
-        run: uv run python scripts/export_openapi.py --check
+      - name: Test backend and enforce warning budget
+        run: ./tools/verify backend
 
   android:
     needs: changes
@@ -99,10 +92,9 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
-      - name: Test, lint, and assemble
+      - name: Test, lint, assemble, and enforce warning budget
         timeout-minutes: 20
-        working-directory: android
-        run: ./gradlew testDebugUnitTest lintDebug assembleDebug createDebugUnitTestCoverageReport
+        run: ./tools/verify android
       - name: Retain Android coverage report
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

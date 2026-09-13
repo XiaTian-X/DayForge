@@ -15,6 +15,8 @@ esac
 verify_root() {
   git -C "$repo_root" diff --check
   git -C "$repo_root" diff --cached --check
+  PYTHONPATH="$repo_root" python3 -m unittest discover \
+    -s "$repo_root/tools/tests" -p 'test_*.py'
 
   local tracked_ignored
   tracked_ignored="$(git -C "$repo_root" ls-files -ci --exclude-standard)"
@@ -86,11 +88,22 @@ find_java_home() {
 
 verify_android() {
   local java_home
+  local warning_log
   java_home="$(find_java_home)"
-  (
-    cd "$repo_root/android"
-    JAVA_HOME="$java_home" ./gradlew testDebugUnitTest lintDebug assembleDebug createDebugUnitTestCoverageReport
-  )
+  warning_log="$(mktemp "${TMPDIR:-/tmp}/dayforge-android-warnings.XXXXXX")"
+  if ! (
+      cd "$repo_root/android"
+      JAVA_HOME="$java_home" ./gradlew \
+        testDebugUnitTest lintDebug assembleDebug createDebugUnitTestCoverageReport
+    ) 2>&1 | tee "$warning_log"; then
+    rm -f "$warning_log"
+    return 1
+  fi
+  if ! python3 "$repo_root/tools/check_android_warnings.py" "$warning_log"; then
+    rm -f "$warning_log"
+    return 1
+  fi
+  rm -f "$warning_log"
 }
 
 verify_backend() {
@@ -101,7 +114,7 @@ verify_backend() {
   (
     cd "$repo_root/backend"
     uv sync --frozen
-    uv run pytest
+    uv run python -m pytest -p tests.warning_budget
     uv run python scripts/export_openapi.py --check
   )
 }

@@ -1,0 +1,140 @@
+{
+  "version": 1,
+  "warnings": [
+    {
+      "kind": "android-resource",
+      "message": "Multiple substitutions specified in non-positional format of string resource string/dialog_discard_countdown_remaining. Did you mean to add the formatted=\"false\" attribute?",
+      "max_count": 1
+    },
+    {
+      "kind": "android-resource",
+      "message": "Multiple substitutions specified in non-positional format of string resource string/dialog_discard_countup_elapsed. Did you mean to add the formatted=\"false\" attribute?",
+      "max_count": 1
+    },
+    {
+      "kind": "android-resource",
+      "message": "Multiple substitutions specified in non-positional format of string resource string/notification_slot_progress. Did you mean to add the formatted=\"false\" attribute?",
+      "max_count": 2
+    },
+    {
+      "kind": "android-resource",
+      "message": "Multiple substitutions specified in non-positional format of string resource string/timer_elapsed_format. Did you mean to add the formatted=\"false\" attribute?",
+      "max_count": 1
+    },
+    {
+      "kind": "android-resource",
+      "message": "Multiple substitutions specified in non-positional format of string resource string/timer_elapsed_paused_format. Did you mean to add the formatted=\"false\" attribute?",
+      "max_count": 1
+    },
+    {
+      "kind": "android-resource",
+      "message": "Multiple substitutions specified in non-positional format of string resource string/timer_remaining_format. Did you mean to add the formatted=\"false\" attribute?",
+      "max_count": 1
+    },
+    {
+      "kind": "android-resource",
+      "message": "Multiple substitutions specified in non-positional format of string resource string/timer_remaining_paused_format. Did you mean to add the formatted=\"false\" attribute?",
+      "max_count": 1
+    },
+    {
+      "kind": "android-resource",
+      "message": "Multiple substitutions specified in non-positional format of string resource string/widget_focus_next_in. Did you mean to add the formatted=\"false\" attribute?",
+      "max_count": 2
+    },
+    {
+      "kind": "kotlin",
+      "message": "'class LocalBroadcastManager : Any' is deprecated. Deprecated in Java.",
+      "max_count": 15
+    },
+    {
+      "kind": "kotlin",
+      "message": "'class Scheme : Any' is deprecated. Deprecated in Java.",
+      "max_count": 5
+    },
+    {
+      "kind": "kotlin",
+      "message": "'constructor(p0: String!): Locale' is deprecated. Deprecated in Java.",
+      "max_count": 1
+    },
+    {
+      "kind": "kotlin",
+      "message": "'fun Modifier.menuAnchor(): Modifier' is deprecated. Use overload that takes MenuAnchorType and enabled parameters.",
+      "max_count": 3
+    },
+    {
+      "kind": "kotlin",
+      "message": "'val Icons.Filled.ArrowForward: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Filled.ArrowForward.",
+      "max_count": 4
+    },
+    {
+      "kind": "kotlin",
+      "message": "'val Icons.Filled.HelpOutline: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Filled.HelpOutline.",
+      "max_count": 2
+    },
+    {
+      "kind": "kotlin",
+      "message": "'val Icons.Outlined.TrendingUp: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Outlined.TrendingUp.",
+      "max_count": 1
+    },
+    {
+      "kind": "kotlin",
+      "message": "'val Icons.Rounded.ArrowBack: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Rounded.ArrowBack.",
+      "max_count": 2
+    },
+    {
+      "kind": "kotlin",
+      "message": "'val Icons.Rounded.Chat: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Rounded.Chat.",
+      "max_count": 2
+    },
+    {
+      "kind": "kotlin",
+      "message": "'val Icons.Rounded.DirectionsBike: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Rounded.DirectionsBike.",
+      "max_count": 2
+    },
+    {
+      "kind": "kotlin",
+      "message": "'val Icons.Rounded.DirectionsRun: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Rounded.DirectionsRun.",
+      "max_count": 2
+    },
+    {
+      "kind": "kotlin",
+      "message": "'val Icons.Rounded.DirectionsWalk: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Rounded.DirectionsWalk.",
+      "max_count": 2
+    },
+    {
+      "kind": "kotlin",
+      "message": "'val Icons.Rounded.Login: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Rounded.Login.",
+      "max_count": 1
+    },
+    {
+      "kind": "kotlin",
+      "message": "'val Icons.Rounded.Logout: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Rounded.Logout.",
+      "max_count": 2
+    },
+    {
+      "kind": "kotlin",
+      "message": "'val Icons.Rounded.MenuBook: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Rounded.MenuBook.",
+      "max_count": 2
+    },
+    {
+      "kind": "kotlin",
+      "message": "'val LocalLifecycleOwner: ProvidableCompositionLocal<LifecycleOwner>' is deprecated. Moved to lifecycle-runtime-compose library in androidx.lifecycle.compose package.",
+      "max_count": 1
+    },
+    {
+      "kind": "kotlin",
+      "message": "'val allNetworks: (Array<Network!>..Array<out Network!>)' is deprecated. Deprecated in Java.",
+      "max_count": 3
+    },
+    {
+      "kind": "kotlin",
+      "message": "'var statusBarColor: Int' is deprecated. Deprecated in Java.",
+      "max_count": 1
+    },
+    {
+      "kind": "kotlin",
+      "message": "This declaration needs opt-in. Its usage should be marked with '@kotlinx.coroutines.ExperimentalCoroutinesApi' or '@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)'",
+      "max_count": 6
+    }
+  ]
+}
