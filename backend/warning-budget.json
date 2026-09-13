@@ -2,11 +2,6 @@
   "version": 1,
   "warnings": [
     {
-      "category": "builtins.DeprecationWarning",
-      "message": "datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).",
-      "max_count": 322
-    },
-    {
       "category": "builtins.UserWarning",
       "message": "WARNING: Using default JWT_SECRET_KEY. This is allowed for local development only.",
       "max_count": 1

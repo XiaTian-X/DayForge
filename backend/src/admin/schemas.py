@@ -4,6 +4,8 @@ from typing import Literal, Optional
 from datetime import datetime
 from uuid import UUID
 
+from src.time_utils import UTCResponseDatetime
+
 
 class AdminUserCreate(BaseModel):
     """Create a local account managed by an administrator."""
@@ -33,8 +35,8 @@ class AdminUserResponse(BaseModel):
     is_verified: bool
     is_admin: bool
     status: str
-    created_at: datetime
-    updated_at: datetime
+    created_at: UTCResponseDatetime
+    updated_at: UTCResponseDatetime
 
     model_config = ConfigDict(from_attributes=True)
 

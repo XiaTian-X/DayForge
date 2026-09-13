@@ -1,6 +1,6 @@
 """User token management router."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -13,6 +13,7 @@ from src.database import get_session
 from src.tokens.models import ApiToken
 from src.tokens.schemas import TokenCreate, TokenListResponse, TokenResponse
 from src.tokens.service import generate_token, get_token_prefix, hash_token
+from src.time_utils import utc_now
 
 router = APIRouter(prefix="/auth/tokens", tags=["User Tokens"])
 
@@ -30,7 +31,7 @@ async def create_token(
 
     expires_at = None
     if token_data.expires_in_days is not None:
-        expires_at = datetime.now(timezone.utc) + timedelta(days=token_data.expires_in_days)
+        expires_at = utc_now() + timedelta(days=token_data.expires_in_days)
 
     api_token = ApiToken(
         user_id=current_user.id,

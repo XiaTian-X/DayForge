@@ -4,6 +4,8 @@ from datetime import datetime
 from typing import Optional
 import uuid
 
+from src.time_utils import utc_now
+
 
 class User(SQLModel, table=True):
     """User database model."""
@@ -25,8 +27,8 @@ class User(SQLModel, table=True):
     is_verified: bool = Field(default=False)
     is_admin: bool = Field(default=False)
     auth_version: int = Field(default=1)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column_kwargs={'onupdate': datetime.utcnow}
+        default_factory=utc_now,
+        sa_column_kwargs={'onupdate': utc_now}
     )
