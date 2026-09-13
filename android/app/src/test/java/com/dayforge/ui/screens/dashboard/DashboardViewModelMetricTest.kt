@@ -38,6 +38,7 @@ import com.dayforge.ui.metrics.LinkedMetricCoordinator
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
@@ -63,6 +64,7 @@ import org.robolectric.annotation.Config
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [26])
+@OptIn(ExperimentalCoroutinesApi::class)
 class DashboardViewModelMetricTest {
 
     private lateinit var viewModel: DashboardViewModel
