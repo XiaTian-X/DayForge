@@ -13,11 +13,6 @@
     },
     {
       "kind": "kotlin",
-      "message": "'constructor(p0: String!): Locale' is deprecated. Deprecated in Java.",
-      "max_count": 1
-    },
-    {
-      "kind": "kotlin",
       "message": "'val allNetworks: (Array<Network!>..Array<out Network!>)' is deprecated. Deprecated in Java.",
       "max_count": 3
     },
