@@ -3,52 +3,30 @@ package com.dayforge.domain.service
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.dayforge.R
-import com.dayforge.data.local.dao.HabitDao
-import com.dayforge.data.local.dao.HabitMetricLinkDao
-import com.dayforge.data.local.dao.TimeLogDao
-import com.dayforge.data.local.PreferencesManager
-import io.mockk.every
-import io.mockk.mockk
-import io.mockk.verify
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * Unit tests for TimerService.
+ * Intent and notification contracts used by [TimerService].
  *
- * Tests cover:
- * - TIMER-01: Service starts with correct habit ID and target
- * - TIMER-02: Countup mode tracks elapsed time correctly
- * - TIMER-03: Countup mode displays "已计时 X:XX"
- * - TIMER-04: Countdown mode displays "还剩 X:XX"
- * - TIMER-05: Countdown auto-completes at zero
- * - TIMER-06: Countdown cannot exceed target
- * - TIMER-07: Countup continues past target
- * - TIMER-08: Threshold auto-stop at target × 3
+ * Persisted state transitions are covered by TimerTransitionDaoTest and
+ * process-recovery dispatch by TimerManagerTest. Android lifecycle/background
+ * behavior still requires the device acceptance described in docs/TESTING.md.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [26])
 class TimerServiceTest {
 
     private lateinit var context: Context
-    private lateinit var mockTimeLogDao: TimeLogDao
-    private lateinit var mockHabitDao: HabitDao
-    private lateinit var mockHabitMetricLinkDao: HabitMetricLinkDao
-    private lateinit var mockPreferencesManager: PreferencesManager
 
     @Before
     fun setup() {
         context = ApplicationProvider.getApplicationContext()
-        mockTimeLogDao = mockk(relaxed = true)
-        mockHabitDao = mockk(relaxed = true)
-        mockHabitMetricLinkDao = mockk(relaxed = true)
-        mockPreferencesManager = mockk(relaxed = true)
     }
 
     @Test

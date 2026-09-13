@@ -142,17 +142,6 @@
                 android:value="timer" />
         </service>
 
-        <!-- Timer notification action receiver -->
-        <receiver
-            android:name=".receiver.TimerActionReceiver"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.dayforge.timer.PAUSE" />
-                <action android:name="com.dayforge.timer.RESUME" />
-                <action android:name="com.dayforge.timer.STOP" />
-            </intent-filter>
-        </receiver>
-
         <!-- 2x2 Timer Widget -->
         <activity
             android:name=".widget.timer.TimerWidgetConfigActivity"

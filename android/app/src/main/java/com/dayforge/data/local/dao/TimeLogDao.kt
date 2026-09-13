@@ -142,7 +142,7 @@ interface TimeLogDao {
         activeElapsedMillis: Long,
         elapsedRealtimeAnchor: Long?,
         bootCount: Int?
-    )
+    ): Int
 
     @Transaction
     suspend fun updatePauseAndQueue(
@@ -158,10 +158,11 @@ interface TimeLogDao {
         command: TimerCommandEntity,
         resumedSegment: TimerSegmentEntity? = null
     ) {
-        updateSyncedPauseState(
+        val updated = updateSyncedPauseState(
             id, isPaused, pausedAt, accumulatedPauseMillis, nextSequence, commandAt,
             activeElapsedMillis, elapsedRealtimeAnchor, bootCount
         )
+        check(updated == 1) { "Active timer changed before pause transition" }
         insertTimerCommand(command)
         if (isPaused) {
             closeOpenTimerSegment(command.sessionUuid, commandAt)
@@ -171,7 +172,7 @@ interface TimeLogDao {
         }
     }
 
-    @Query("UPDATE timelogs SET endTime = :endTime, durationSeconds = :durationSeconds, isPaused = 0, pausedAt = NULL, accumulatedPauseMillis = :accumulatedPauseMillis, timerNextCommandSequence = :nextSequence, timerLastCommandAt = :endTime, timerActiveElapsedMillis = :activeElapsedMillis, timerElapsedRealtimeAnchor = NULL, updatedAt = :endTime WHERE id = :id")
+    @Query("UPDATE timelogs SET endTime = :endTime, durationSeconds = :durationSeconds, isPaused = 0, pausedAt = NULL, accumulatedPauseMillis = :accumulatedPauseMillis, timerNextCommandSequence = :nextSequence, timerLastCommandAt = :endTime, timerActiveElapsedMillis = :activeElapsedMillis, timerElapsedRealtimeAnchor = NULL, updatedAt = :endTime WHERE id = :id AND endTime IS NULL")
     suspend fun finishSyncedTimer(
         id: Long,
         endTime: Long,
@@ -179,7 +180,7 @@ interface TimeLogDao {
         accumulatedPauseMillis: Long,
         nextSequence: Int,
         activeElapsedMillis: Long
-    )
+    ): Int
 
     @Transaction
     suspend fun finishTimerAndQueue(
@@ -192,17 +193,20 @@ interface TimeLogDao {
         command: TimerCommandEntity,
         wasPaused: Boolean
     ) {
-        finishSyncedTimer(
+        val updated = finishSyncedTimer(
             id, endTime, durationSeconds, accumulatedPauseMillis, nextSequence,
             activeElapsedMillis
         )
+        check(updated == 1) { "Active timer changed before stop transition" }
         insertTimerCommand(command)
         if (!wasPaused) closeOpenTimerSegment(command.sessionUuid, endTime)
     }
 
     @Transaction
     suspend fun deleteTimerAndQueue(log: TimeLogEntity, command: TimerCommandEntity) {
-        delete(log)
+        check(log.endTime == null) { "Only an active timer can be cancelled" }
+        val deleted = delete(log)
+        check(deleted == 1) { "Active timer changed before cancel transition" }
         deleteTimerSegments(log.uuid)
         deleteDayAllocations(log.uuid)
         insertTimerCommand(command)
@@ -217,7 +221,7 @@ interface TimeLogDao {
     suspend fun insert(timeLog: TimeLogEntity): Long
 
     @Delete
-    suspend fun delete(timeLog: TimeLogEntity)
+    suspend fun delete(timeLog: TimeLogEntity): Int
 
     @Query("SELECT * FROM timelogs WHERE uuid = :uuid LIMIT 1")
     suspend fun getTimeLogByUuid(uuid: String): TimeLogEntity?

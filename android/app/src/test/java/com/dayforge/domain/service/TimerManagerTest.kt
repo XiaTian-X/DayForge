@@ -11,11 +11,9 @@ import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.widget.timer.CountdownDiscardActivity
 import io.mockk.coEvery
-import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -84,14 +82,17 @@ class TimerManagerTest {
     }
 
     @Test
-    fun `recoverRunningTimer leaves persisted paused timer stopped`() = runTest {
+    fun `recoverRunningTimer restores persisted paused timer notification`() = runTest {
         coEvery { timeLogDao.getActiveTimeLog() } returns
             activeLog(habitId = 7L, startTime = System.currentTimeMillis()).copy(isPaused = true)
+        coEvery { habitDao.getHabitById(7L) } returns timerHabit(id = 7L, isCountdown = true)
 
         manager.recoverRunningTimer()
 
-        assertNull(shadowOf(context as Application).nextStartedService)
-        coVerify(exactly = 0) { habitDao.getHabitById(any()) }
+        val intent = shadowOf(context as Application).nextStartedService
+        assertEquals(TimerService.ACTION_START, intent.action)
+        assertEquals(7L, intent.getLongExtra(TimerService.EXTRA_HABIT_ID, -1L))
+        assertTrue(intent.getBooleanExtra(TimerService.EXTRA_IS_COUNTDOWN, false))
     }
 
     @Test

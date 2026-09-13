@@ -20,16 +20,15 @@ class TimerManager @Inject constructor(
     private val habitDao: HabitDao,
     private val timeLogDao: TimeLogDao
 ) {
-    /** Restarts foreground execution for a persisted running timer after process recreation. */
+    /** Restores foreground execution for a persisted running or paused timer. */
     suspend fun recoverRunningTimer() {
         val activeLog = timeLogDao.getActiveTimeLog() ?: return
-        if (activeLog.isPaused) return
-
         val habit = habitDao.getHabitById(activeLog.habitId) ?: return
         val intent = Intent(context, TimerService::class.java).apply {
             action = TimerService.ACTION_START
             putExtra(TimerService.EXTRA_HABIT_ID, activeLog.habitId)
             putExtra(TimerService.EXTRA_TARGET_MINUTES, habit.targetValue)
+            putExtra(TimerService.EXTRA_IS_COUNTDOWN, habit.isCountdown)
         }
         ContextCompat.startForegroundService(context, intent)
     }
@@ -47,7 +46,7 @@ class TimerManager @Inject constructor(
         )
         val targetSeconds = targetMinutes * 60
 
-        if (completedSeconds >= targetSeconds) {
+        if (targetSeconds > 0 && completedSeconds >= targetSeconds) {
             return
         }
 

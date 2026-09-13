@@ -34,9 +34,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.time.ZoneId
 import java.util.UUID
 import javax.inject.Inject
@@ -108,6 +108,7 @@ class TimerService : Service() {
 
     // Coroutine scope for database operations
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val commandMutex = Mutex()
     private var tickerJob: Job? = null  // Periodic check for target notification
 
     // Timer state (persisted to TimeLogEntity for process recovery)
@@ -141,12 +142,29 @@ class TimerService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_START -> handleStart(intent)
-            ACTION_PAUSE -> handlePause()
-            ACTION_RESUME -> handleResume()
-            ACTION_STOP -> handleStop()
-            ACTION_DISCARD -> handleDiscard()
+        // A service promoted with startForegroundService must enter the foreground
+        // before Room recovery can run. The placeholder is replaced as soon as
+        // persisted state has been restored on the IO dispatcher.
+        startForegroundWithNotification()
+        val action = intent?.action
+        val expectedHabitId = intent?.getLongExtra(EXTRA_HABIT_ID, 0L)?.takeIf { it > 0 }
+        serviceScope.launch {
+            commandMutex.withLock {
+                runCatching {
+                    when (action) {
+                        ACTION_START -> handleStart(intent)
+                        ACTION_PAUSE -> handlePause(expectedHabitId)
+                        ACTION_RESUME -> handleResume(expectedHabitId)
+                        ACTION_STOP -> handleStop(expectedHabitId)
+                        ACTION_DISCARD -> handleDiscard(expectedHabitId)
+                        null -> recoverPersistedTimer()
+                        else -> stopIfNoPersistedTimer()
+                    }
+                }.onFailure { error ->
+                    Log.e(TAG, "Timer command failed: $action", error)
+                    stopIfNoPersistedTimer()
+                }
+            }
         }
         return START_STICKY
     }
@@ -164,6 +182,7 @@ class TimerService : Service() {
      * Checks every second when timer is running (not paused).
      */
     private fun startTicker() {
+        tickerJob?.cancel()
         tickerJob = serviceScope.launch {
             while (isActive) {
                 delay(1000)  // Check every second
@@ -184,7 +203,7 @@ class TimerService : Service() {
                         if (remainingSeconds <= 0) {
                             // Per TIMER-05: countdown auto-completes at zero and records TimeLogEntity
                             showCountdownCompleteNotification()
-                            handleStop()
+                            launchTerminalStop()
                             return@launch  // Exit ticker loop
                         }
                     } else {
@@ -209,13 +228,22 @@ class TimerService : Service() {
                             if (elapsedMinutes >= thresholdMinutes) {
                                 // Auto-stop: show notification and stop timer
                                 showThresholdReachedNotification()
-                                handleStop()
+                                launchTerminalStop()
                                 return@launch  // Exit ticker loop
                             }
                         }
                     }
                 }
                 maybeHeartbeat()
+            }
+        }
+    }
+
+    private fun launchTerminalStop() {
+        serviceScope.launch {
+            commandMutex.withLock {
+                runCatching { handleStop(habitId.takeIf { it > 0 }) }
+                    .onFailure { Log.e(TAG, "Automatic timer stop failed", it) }
             }
         }
     }
@@ -244,10 +272,14 @@ class TimerService : Service() {
      * Per D-16: broadcasts stop when timer stops (ticker is cancelled).
      */
     private fun notifyWidgetUpdate() {
-        if (habitId == 0L) return  // No active timer
+        notifyWidgetUpdate(habitId)
+    }
+
+    private fun notifyWidgetUpdate(updatedHabitId: Long) {
+        if (updatedHabitId == 0L) return
 
         val intent = Intent(ACTION_WIDGET_UPDATE).apply {
-            putExtra(EXTRA_HABIT_ID, habitId)
+            putExtra(EXTRA_HABIT_ID, updatedHabitId)
             setPackage(packageName)
         }
         sendBroadcast(intent)
@@ -286,204 +318,182 @@ class TimerService : Service() {
         )
     }
 
-    private fun handleStart(intent: Intent) {
-        habitId = intent.getLongExtra(EXTRA_HABIT_ID, 0L)
-        targetMinutes = intent.getIntExtra(EXTRA_TARGET_MINUTES, 0)
-
-        // CRITICAL: Start foreground immediately to avoid ForegroundServiceDidNotStartInTimeException
-        // Android requires startForeground() to be called within 5 seconds of startForegroundService()
-        startForegroundWithNotification()
-
-        // Read isCountdown from intent, or query habit from database
-        isCountdown = if (intent.hasExtra(EXTRA_IS_COUNTDOWN)) {
-            intent.getBooleanExtra(EXTRA_IS_COUNTDOWN, false)
-        } else {
-            // Query habit from database if isCountdown not provided in intent
-            runBlocking {
-                withContext(Dispatchers.IO) {
-                    habitDao.getHabitByIdSync(habitId)?.isCountdown ?: false
-                }
-            }
-        }
-
-        // Check if already completed today (one completion per day)
-        // Use local timezone to match how TimeLogEntity.date is stored
-        val todayStart = DateTimeUtils.startOfDayMillis()
-        val todayEnd = DateTimeUtils.startOfNextDayMillis(todayStart)
-        val completedSecondsToday = runBlocking {
-            withContext(Dispatchers.IO) {
-                timeLogDao.getCompletedDurationSecondsForDate(
-                    habitId, java.time.LocalDate.now().toString(), todayStart, todayEnd
-                )
-            }
-        }
-        val targetSeconds = targetMinutes * 60
-        val alreadyCompletedToday = completedSecondsToday >= targetSeconds
-
-        if (alreadyCompletedToday) {
-            // Already completed today, don't start a new timer
-            Log.d(TAG, "handleStart: habit $habitId already completed today, not starting timer")
-            stopSelf()
+    private suspend fun handleStart(intent: Intent) {
+        val requestedHabitId = intent.getLongExtra(EXTRA_HABIT_ID, 0L)
+        if (requestedHabitId <= 0L) {
+            stopIfNoPersistedTimer()
             return
         }
 
-        // Check for existing active TimeLogEntity (recovery case)
-        // Per D-04: restore state from existing entity
-        val existingLog = runBlocking {
-            withContext(Dispatchers.IO) {
-                timeLogDao.getActiveTimeLog()
+        // Recovery must win over the daily-completion guard. Otherwise a
+        // process-recreated timer can be orphaned merely because an earlier
+        // session already met today's target.
+        val existingLog = timeLogDao.getActiveTimeLog()
+        if (existingLog?.habitId == requestedHabitId) {
+            if (!restoreState(existingLog)) {
+                stopServiceAndClearNotification()
+                return
             }
+            updateNotification()
+            autoSyncCoordinator.enqueueNow()
+            startTicker()
+            return
         }
 
-        if (existingLog != null && existingLog.habitId == habitId) {
-            // Recovery: restore state from existing TimeLogEntity for same habit
-            currentLogId = existingLog.id
-            startTime = existingLog.startTime
-            isPaused = existingLog.isPaused
-            pausedAt = existingLog.pausedAt
-            accumulatedPauseDuration = existingLog.accumulatedPauseMillis
-            timerSessionUuid = existingLog.uuid
-            nextCommandSequence = existingLog.timerNextCommandSequence
-            controlGeneration = existingLog.timerControlGeneration
-            lastCommandAt = existingLog.timerLastCommandAt
-            timerTimezone = existingLog.timerTimezone
-            activeElapsedAtAnchor = existingLog.timerActiveElapsedMillis
-            elapsedRealtimeAnchor = existingLog.timerElapsedRealtimeAnchor
-            timerBootCount = existingLog.timerBootCount
-
-            // If timer was paused, we restore paused state
-            // If timer was running, it continues from where it left off
-        } else {
-            // Stop any existing active timer for a different habit
-            // Only one timer can be active at a time
-            if (existingLog != null && existingLog.habitId != habitId) {
-                val stoppedHabitId = existingLog.habitId
-                val existingElapsed = calculateElapsedSecondsForLog(existingLog)
-
-                // Get the habit being interrupted to check isCountdown and targetValue
-                val interruptedHabit = runBlocking {
-                    withContext(Dispatchers.IO) {
-                        habitDao.getHabitByIdSync(stoppedHabitId)
-                    }
-                }
-
-                // Determine whether to save or discard the interrupted timer
-                // Rule: Countdown -> always discard
-                // Rule: Countup -> save if target reached, discard otherwise
-                val shouldSave = if (interruptedHabit?.isCountdown == true) {
-                    // Countdown mode: always discard when interrupted
-                    Log.d(TAG, "Interrupted countdown timer for habit $stoppedHabitId, discarding")
-                    false
-                } else {
-                    // Countup mode: save only if target reached
-                    val targetSeconds = (interruptedHabit?.targetValue ?: 0) * 60
-                    val targetReached = targetSeconds > 0 && existingElapsed >= targetSeconds
-                    Log.d(TAG, "Interrupted countup timer for habit $stoppedHabitId, elapsed=$existingElapsed, target=$targetSeconds, save=$targetReached")
-                    targetReached
-                }
-
-                runBlocking {
-                    withContext(Dispatchers.IO) {
-                        if (shouldSave) {
-                            // Clamp duration to safe limit to prevent abnormal values
-                            val interruptedTargetMinutes = interruptedHabit?.targetValue ?: 0
-                            val safeLimit = calculateSafeDurationLimit(
-                                interruptedHabit?.isCountdown ?: false,
-                                interruptedTargetMinutes
-                            )
-                            val safeElapsed = existingElapsed.coerceAtMost(safeLimit)
-
-                            if (existingElapsed > safeLimit) {
-                                Log.w(TAG, "Interrupted timer duration clamped: raw=$existingElapsed, limit=$safeLimit")
-                            }
-
-                            // Save the timer with clamped duration
-                            finishInterruptedTimer(existingLog, safeElapsed)
-                        } else {
-                            cancelInterruptedTimer(existingLog)
-                        }
-                    }
-                }
-
-                // Broadcast widget update for stopped habit
-                val updateIntent = Intent(ACTION_WIDGET_UPDATE).apply {
-                    putExtra(EXTRA_HABIT_ID, stoppedHabitId)
-                    setPackage(packageName)
-                }
-                sendBroadcast(updateIntent)
-
-                // Cancel old ticker if running
-                tickerJob?.cancel()
-                tickerJob = null
-            }
-
-            // New timer: create fresh state
-            startTime = System.currentTimeMillis()  // Actual start time
-            isPaused = false
-            pausedAt = null
-            accumulatedPauseDuration = 0L
-            nextCommandSequence = 2
-            controlGeneration = 1
-            lastCommandAt = startTime
-            timerTimezone = ZoneId.systemDefault().id
-            activeElapsedAtAnchor = 0L
-            elapsedRealtimeAnchor = SystemClock.elapsedRealtime()
-            timerBootCount = currentBootCount()
-
-            // Create and persist TimeLogEntity for process recovery
-            // Use runBlocking to ensure currentLogId is set before continuing
-            // Use local timezone for date field to match other habit types
-            val dateMidnight = DateTimeUtils.startOfDayMillis()
-
-            currentLogId = runBlocking {
-                withContext(Dispatchers.IO) {
-                    val habit = habitDao.getHabitByIdSync(habitId)
-                        ?: error("Timer habit no longer exists")
-                    val sessionUuid = UUID.randomUUID().toString()
-                    val capturedTimezone = requireNotNull(timerTimezone)
-                    timerSessionUuid = sessionUuid
-                    val timeLog = TimeLogEntity(
-                        habitId = habitId,
-                        startTime = startTime,  // Actual start time
-                        endTime = null,  // null means timer is active
-                        durationSeconds = 0,  // Will be calculated on stop
-                        isPaused = false,
-                        pausedAt = null,
-                        accumulatedPauseMillis = 0,
-                        timerNextCommandSequence = 2,
-                        timerControlGeneration = 1,
-                        timerLastCommandAt = startTime,
-                        timerTimezone = capturedTimezone,
-                        timerActiveElapsedMillis = 0,
-                        timerElapsedRealtimeAnchor = elapsedRealtimeAnchor,
-                        timerBootCount = timerBootCount,
-                        date = dateMidnight,
-                        uuid = sessionUuid
-                    )
-                    timeLogDao.insertSyncedTimer(
-                        timeLog,
-                        timerCommand(
-                            sessionUuid = sessionUuid,
-                            sequence = 1,
-                            type = "start",
-                            occurredAt = startTime,
-                            generation = 0,
-                            activityUuid = habit.uuid,
-                            timezone = capturedTimezone
-                        ),
-                        TimerSegmentEntity(
-                            sessionUuid = sessionUuid,
-                            sequence = 1,
-                            startedAt = startTime
-                        )
-                    )
-                }
-            }
+        val requestedHabit = habitDao.getHabitByIdSync(requestedHabitId)
+        if (requestedHabit == null) {
+            stopIfNoPersistedTimer()
+            return
         }
 
-        // Foreground already started at the beginning of handleStart
+        val todayStart = DateTimeUtils.startOfDayMillis()
+        val todayEnd = DateTimeUtils.startOfNextDayMillis(todayStart)
+        val completedSecondsToday = timeLogDao.getCompletedDurationSecondsForDate(
+            requestedHabitId,
+            java.time.LocalDate.now().toString(),
+            todayStart,
+            todayEnd
+        )
+        val targetSeconds = requestedHabit.targetValue * 60
+        if (targetSeconds > 0 && completedSecondsToday >= targetSeconds) {
+            Log.d(TAG, "handleStart: habit $requestedHabitId already completed today")
+            if (existingLog != null && restoreState(existingLog)) {
+                updateNotification()
+                startTicker()
+            } else {
+                clearState()
+                stopServiceAndClearNotification()
+            }
+            return
+        }
+
+        if (existingLog != null) {
+            interruptTimer(existingLog)
+        }
+
+        habitId = requestedHabitId
+        targetMinutes = requestedHabit.targetValue
+        isCountdown = requestedHabit.isCountdown
+
+        startTime = System.currentTimeMillis()
+        isPaused = false
+        pausedAt = null
+        accumulatedPauseDuration = 0L
+        nextCommandSequence = 2
+        controlGeneration = 1
+        lastCommandAt = startTime
+        timerTimezone = ZoneId.systemDefault().id
+        activeElapsedAtAnchor = 0L
+        elapsedRealtimeAnchor = SystemClock.elapsedRealtime()
+        timerBootCount = currentBootCount()
+
+        val sessionUuid = UUID.randomUUID().toString()
+        timerSessionUuid = sessionUuid
+        val capturedTimezone = requireNotNull(timerTimezone)
+        currentLogId = timeLogDao.insertSyncedTimer(
+            TimeLogEntity(
+                habitId = habitId,
+                startTime = startTime,
+                endTime = null,
+                durationSeconds = 0,
+                isPaused = false,
+                pausedAt = null,
+                accumulatedPauseMillis = 0,
+                timerNextCommandSequence = nextCommandSequence,
+                timerControlGeneration = controlGeneration,
+                timerLastCommandAt = startTime,
+                timerTimezone = capturedTimezone,
+                timerActiveElapsedMillis = 0,
+                timerElapsedRealtimeAnchor = elapsedRealtimeAnchor,
+                timerBootCount = timerBootCount,
+                date = DateTimeUtils.startOfDayMillis(),
+                uuid = sessionUuid
+            ),
+            timerCommand(
+                sessionUuid = sessionUuid,
+                sequence = 1,
+                type = "start",
+                occurredAt = startTime,
+                generation = 0,
+                activityUuid = requestedHabit.uuid,
+                timezone = capturedTimezone
+            ),
+            TimerSegmentEntity(
+                sessionUuid = sessionUuid,
+                sequence = 1,
+                startedAt = startTime
+            )
+        )
+        updateNotification()
         autoSyncCoordinator.enqueueNow()
         startTicker()
+    }
+
+    private suspend fun recoverPersistedTimer() {
+        val existingLog = timeLogDao.getActiveTimeLog()
+        if (existingLog == null || !restoreState(existingLog)) {
+            stopServiceAndClearNotification()
+            return
+        }
+        updateNotification()
+        startTicker()
+    }
+
+    private suspend fun restoreState(log: TimeLogEntity): Boolean {
+        val habit = habitDao.getHabitByIdSync(log.habitId) ?: return false
+        currentLogId = log.id
+        habitId = log.habitId
+        targetMinutes = habit.targetValue
+        isCountdown = habit.isCountdown
+        startTime = log.startTime
+        isPaused = log.isPaused
+        pausedAt = log.pausedAt
+        accumulatedPauseDuration = log.accumulatedPauseMillis
+        timerSessionUuid = log.uuid
+        nextCommandSequence = log.timerNextCommandSequence
+        controlGeneration = log.timerControlGeneration
+        lastCommandAt = log.timerLastCommandAt
+        timerTimezone = log.timerTimezone
+        activeElapsedAtAnchor = log.timerActiveElapsedMillis
+        elapsedRealtimeAnchor = log.timerElapsedRealtimeAnchor
+        timerBootCount = log.timerBootCount
+        targetReachedNotified = targetMinutes > 0 &&
+            calculateElapsedSeconds() >= targetMinutes * 60
+        return true
+    }
+
+    private suspend fun ensureRestoredState(expectedHabitId: Long?): Boolean {
+        val inMemoryMatches = currentLogId > 0L && timerSessionUuid != null &&
+            (expectedHabitId == null || habitId == expectedHabitId)
+        if (inMemoryMatches) return true
+
+        val active = timeLogDao.getActiveTimeLog() ?: return false
+        if (expectedHabitId != null && active.habitId != expectedHabitId) {
+            Log.w(TAG, "Ignoring stale timer command for habit $expectedHabitId")
+            return false
+        }
+        return restoreState(active)
+    }
+
+    private suspend fun interruptTimer(log: TimeLogEntity) {
+        val interruptedHabit = habitDao.getHabitByIdSync(log.habitId)
+        val elapsedSeconds = calculateElapsedSecondsForLog(log)
+        val targetSeconds = (interruptedHabit?.targetValue ?: 0) * 60
+        val shouldSave = interruptedHabit?.isCountdown != true &&
+            targetSeconds > 0 && elapsedSeconds >= targetSeconds
+
+        if (shouldSave) {
+            val safeElapsed = elapsedSeconds.coerceAtMost(
+                calculateSafeDurationLimit(false, interruptedHabit?.targetValue ?: 0)
+            )
+            finishInterruptedTimer(log, safeElapsed)
+        } else {
+            cancelInterruptedTimer(log)
+        }
+        notifyWidgetUpdate(log.habitId)
+        tickerJob?.cancel()
+        tickerJob = null
+        clearState()
     }
 
     /**
@@ -585,98 +595,93 @@ class TimerService : Service() {
         activeElapsedMillis = activeElapsedMillis
     )
 
-    private fun handlePause() {
-        if (!isPaused) {
-            val activeElapsed = calculateElapsedMillis()
-            val commandAt = nextRunningBoundary(activeElapsed)
-            activeElapsedAtAnchor = activeElapsed
-            elapsedRealtimeAnchor = null
-            isPaused = true
-            pausedAt = commandAt
-
-            // Commit state and command before accepting another service action.
-            runBlocking {
-                withContext(Dispatchers.IO) {
-                    if (currentLogId > 0) {
-                        val sessionUuid = requireNotNull(timerSessionUuid)
-                        val sequence = nextCommandSequence++
-                        timeLogDao.updatePauseAndQueue(
-                            id = currentLogId,
-                            isPaused = true,
-                            pausedAt = pausedAt,
-                            accumulatedPauseMillis = accumulatedPauseDuration,
-                            nextSequence = nextCommandSequence,
-                            commandAt = requireNotNull(pausedAt),
-                            activeElapsedMillis = activeElapsedAtAnchor,
-                            elapsedRealtimeAnchor = null,
-                            bootCount = timerBootCount,
-                            command = timerCommand(
-                                sessionUuid, sequence, "pause", requireNotNull(pausedAt),
-                                activeElapsedMillis = activeElapsedAtAnchor
-                            ),
-                            resumedSegment = null
-                        )
-                        // Broadcast widget update after database is updated
-                        notifyWidgetUpdate()
-                    }
-                }
-            }
-
-            autoSyncCoordinator.enqueueNow()
-
-            updateNotification()
+    private suspend fun handlePause(expectedHabitId: Long?) {
+        if (!ensureRestoredState(expectedHabitId)) {
+            stopIfNoPersistedTimer()
+            return
         }
+        if (isPaused) return
+
+        val activeElapsed = calculateElapsedMillis()
+        val commandAt = nextRunningBoundary(activeElapsed)
+        val sessionUuid = requireNotNull(timerSessionUuid)
+        val sequence = nextCommandSequence
+        timeLogDao.updatePauseAndQueue(
+            id = currentLogId,
+            isPaused = true,
+            pausedAt = commandAt,
+            accumulatedPauseMillis = accumulatedPauseDuration,
+            nextSequence = sequence + 1,
+            commandAt = commandAt,
+            activeElapsedMillis = activeElapsed,
+            elapsedRealtimeAnchor = null,
+            bootCount = timerBootCount,
+            command = timerCommand(
+                sessionUuid, sequence, "pause", commandAt,
+                activeElapsedMillis = activeElapsed
+            ),
+            resumedSegment = null
+        )
+
+        activeElapsedAtAnchor = activeElapsed
+        elapsedRealtimeAnchor = null
+        isPaused = true
+        pausedAt = commandAt
+        nextCommandSequence = sequence + 1
+        notifyWidgetUpdate()
+        autoSyncCoordinator.enqueueNow()
+        updateNotification()
     }
 
-    private fun handleResume() {
-        if (isPaused && pausedAt != null) {
-            // Calculate how long we were paused and add to accumulated duration
-            val resumedAt = nextCommandTime()
-            val pauseDuration = resumedAt - (pausedAt ?: 0L)
-            accumulatedPauseDuration += pauseDuration
-
-            isPaused = false
-            pausedAt = null
-            elapsedRealtimeAnchor = SystemClock.elapsedRealtime()
-            timerBootCount = currentBootCount()
-
-            runBlocking {
-                withContext(Dispatchers.IO) {
-                    if (currentLogId > 0) {
-                        val sessionUuid = requireNotNull(timerSessionUuid)
-                        val sequence = nextCommandSequence++
-                        timeLogDao.updatePauseAndQueue(
-                            id = currentLogId,
-                            isPaused = false,
-                            pausedAt = null,
-                            accumulatedPauseMillis = accumulatedPauseDuration,
-                            nextSequence = nextCommandSequence,
-                            commandAt = resumedAt,
-                            activeElapsedMillis = activeElapsedAtAnchor,
-                            elapsedRealtimeAnchor = elapsedRealtimeAnchor,
-                            bootCount = timerBootCount,
-                            command = timerCommand(
-                                sessionUuid, sequence, "resume", resumedAt
-                            ),
-                            resumedSegment = TimerSegmentEntity(
-                                sessionUuid = sessionUuid,
-                                sequence = sequence,
-                                startedAt = resumedAt
-                            )
-                        )
-                        // Broadcast widget update after database is updated
-                        notifyWidgetUpdate()
-                    }
-                }
-            }
-
-            autoSyncCoordinator.enqueueNow()
-
-            updateNotification()
+    private suspend fun handleResume(expectedHabitId: Long?) {
+        if (!ensureRestoredState(expectedHabitId)) {
+            stopIfNoPersistedTimer()
+            return
         }
+        val previousPausedAt = pausedAt
+        if (!isPaused || previousPausedAt == null) return
+
+        val resumedAt = nextCommandTime()
+        val resumedAccumulatedPause = accumulatedPauseDuration +
+            (resumedAt - previousPausedAt).coerceAtLeast(0L)
+        val resumedElapsedAnchor = SystemClock.elapsedRealtime()
+        val resumedBootCount = currentBootCount()
+        val sessionUuid = requireNotNull(timerSessionUuid)
+        val sequence = nextCommandSequence
+        timeLogDao.updatePauseAndQueue(
+            id = currentLogId,
+            isPaused = false,
+            pausedAt = null,
+            accumulatedPauseMillis = resumedAccumulatedPause,
+            nextSequence = sequence + 1,
+            commandAt = resumedAt,
+            activeElapsedMillis = activeElapsedAtAnchor,
+            elapsedRealtimeAnchor = resumedElapsedAnchor,
+            bootCount = resumedBootCount,
+            command = timerCommand(sessionUuid, sequence, "resume", resumedAt),
+            resumedSegment = TimerSegmentEntity(
+                sessionUuid = sessionUuid,
+                sequence = sequence,
+                startedAt = resumedAt
+            )
+        )
+
+        accumulatedPauseDuration = resumedAccumulatedPause
+        isPaused = false
+        pausedAt = null
+        elapsedRealtimeAnchor = resumedElapsedAnchor
+        timerBootCount = resumedBootCount
+        nextCommandSequence = sequence + 1
+        notifyWidgetUpdate()
+        autoSyncCoordinator.enqueueNow()
+        updateNotification()
     }
 
-    private fun handleStop() {
+    private suspend fun handleStop(expectedHabitId: Long?) {
+        if (!ensureRestoredState(expectedHabitId)) {
+            stopIfNoPersistedTimer()
+            return
+        }
         // Per TIMER-08: Check if timer is incomplete before stopping
         // Countdown: incomplete if remaining > 0
         // Countup: incomplete if elapsed < target
@@ -711,23 +716,9 @@ class TimerService : Service() {
         tickerJob?.cancel()
         tickerJob = null
 
-        // Save habitId for widget broadcast before clearing state
         val stoppedHabitId = habitId
-
-        // If currentLogId is 0, try to get the active timer from database
-        // This can happen if the service was restarted or insert wasn't complete
-        val logIdToStop = if (currentLogId > 0) {
-            currentLogId
-        } else {
-            runBlocking {
-                withContext(Dispatchers.IO) {
-                    timeLogDao.getActiveTimeLog()?.id ?: 0L
-                }
-            }
-        }
-
-        // Calculate final duration if we have a valid log
-        if (logIdToStop > 0) {
+        val logIdToStop = currentLogId
+        if (logIdToStop > 0L) {
             val rawActiveElapsedMillis = calculateElapsedMillis()
             val rawDurationSeconds = (rawActiveElapsedMillis / 1_000L)
                 .coerceIn(0, Int.MAX_VALUE.toLong()).toInt()
@@ -748,42 +739,32 @@ class TimerService : Service() {
                 Log.w(TAG, "Duration clamped: raw=$rawDurationSeconds, limit=$safeDurationLimit, isCountdown=$isCountdown")
             }
 
-            // Persist final state to database synchronously to ensure completion before stopSelf()
-            // Using runBlocking instead of serviceScope.launch to avoid race condition with onDestroy()
-            runBlocking {
-                withContext(Dispatchers.IO) {
-                    val sessionUuid = requireNotNull(timerSessionUuid)
-                    val sequence = nextCommandSequence++
-                    timeLogDao.finishTimerAndQueue(
-                        id = logIdToStop,
-                        endTime = endTime,
-                        durationSeconds = durationSeconds,
-                        accumulatedPauseMillis = accumulatedPauseDuration,
-                        nextSequence = nextCommandSequence,
-                        activeElapsedMillis = activeElapsedMillis,
-                        command = timerCommand(
-                            sessionUuid, sequence, "stop", endTime,
-                            activeElapsedMillis = activeElapsedMillis
-                        ),
-                        wasPaused = isPaused
-                    )
-                    persistDayAllocations(logIdToStop)
-                }
-            }
+            val sessionUuid = requireNotNull(timerSessionUuid)
+            val sequence = nextCommandSequence
+            timeLogDao.finishTimerAndQueue(
+                id = logIdToStop,
+                endTime = endTime,
+                durationSeconds = durationSeconds,
+                accumulatedPauseMillis = accumulatedPauseDuration,
+                nextSequence = sequence + 1,
+                activeElapsedMillis = activeElapsedMillis,
+                command = timerCommand(
+                    sessionUuid, sequence, "stop", endTime,
+                    activeElapsedMillis = activeElapsedMillis
+                ),
+                wasPaused = isPaused
+            )
+            nextCommandSequence = sequence + 1
+            persistDayAllocations(logIdToStop)
             autoSyncCoordinator.enqueueNow()
 
             // Check if this habit has linked metrics with promptOnComplete=true
             // If so, add to pending metric habits set
             if (stoppedHabitId != 0L) {
-                runBlocking {
-                    withContext(Dispatchers.IO) {
-                        val links = habitMetricLinkDao.getLinksByHabitSync(stoppedHabitId)
-                        val hasPromptMetrics = links.any { it.promptOnComplete }
-                        if (hasPromptMetrics) {
-                            Log.d(TAG, "Habit $stoppedHabitId has prompt metrics, adding to pending set")
-                            preferencesManager.addPendingMetricHabit(stoppedHabitId)
-                        }
-                    }
+                val links = habitMetricLinkDao.getLinksByHabitSync(stoppedHabitId)
+                if (links.any { it.promptOnComplete }) {
+                    Log.d(TAG, "Habit $stoppedHabitId has prompt metrics, adding to pending set")
+                    preferencesManager.addPendingMetricHabit(stoppedHabitId)
                 }
             }
 
@@ -791,27 +772,23 @@ class TimerService : Service() {
             // TIMER habits use timelogs for progress calculation
             // Only count days where duration target was met
             if (stoppedHabitId != 0L) {
-                runBlocking {
-                    withContext(Dispatchers.IO) {
-                        val habit = habitDao.getHabitById(stoppedHabitId)
-                        if (habit?.targetCycles != null) {
-                            // Use target-met day count (days where duration >= targetSeconds)
-                            val targetSeconds = habit.targetValue * 60
-                            val progress = timeLogDao.getTargetMetDayCount(stoppedHabitId, targetSeconds)
-                            val goalReached = progress >= habit.targetCycles
-                            Log.d(TAG, "Goal check for habit $stoppedHabitId: progress=$progress, target=${habit.targetCycles}, goalReached=$goalReached")
-                            if (goalReached) {
-                                // Launch GoalCompletionActivity to show dialog
-                                val intent = GoalCompletionActivity.createIntent(
-                                    this@TimerService,
-                                    stoppedHabitId,
-                                    habit.name,
-                                    progress,
-                                    habit.targetCycles
-                                )
-                                startActivity(intent)
-                            }
-                        }
+                val habit = habitDao.getHabitById(stoppedHabitId)
+                if (habit?.targetCycles != null) {
+                    val dailyTargetSeconds = habit.targetValue * 60
+                    val progress = timeLogDao.getTargetMetDayCount(
+                        stoppedHabitId,
+                        dailyTargetSeconds
+                    )
+                    if (progress >= habit.targetCycles) {
+                        startActivity(
+                            GoalCompletionActivity.createIntent(
+                                this@TimerService,
+                                stoppedHabitId,
+                                habit.name,
+                                progress,
+                                habit.targetCycles
+                            )
+                        )
                     }
                 }
             }
@@ -831,28 +808,8 @@ class TimerService : Service() {
             LocalBroadcastManager.getInstance(this@TimerService).sendBroadcast(dataChangedIntent)
         }
 
-        // Clear state
-        currentLogId = 0L
-        habitId = 0L
-        targetMinutes = 0
-        isCountdown = false
-        startTime = 0L
-        isPaused = false
-        pausedAt = null
-        accumulatedPauseDuration = 0L
-        timerSessionUuid = null
-        nextCommandSequence = 1
-        controlGeneration = 0
-        lastCommandAt = null
-        timerTimezone = null
-        activeElapsedAtAnchor = 0L
-        elapsedRealtimeAnchor = null
-        timerBootCount = null
-        targetReachedNotified = false
-
-        // Stop foreground service
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        clearState()
+        stopServiceAndClearNotification()
     }
 
     /**
@@ -860,7 +817,11 @@ class TimerService : Service() {
      * Per TIMER-09: Deletes TimeLogEntity instead of saving duration.
      * Called when user confirms to abandon an incomplete countdown session.
      */
-    private fun handleDiscard() {
+    private suspend fun handleDiscard(expectedHabitId: Long?) {
+        if (!ensureRestoredState(expectedHabitId)) {
+            stopIfNoPersistedTimer()
+            return
+        }
         Log.d(TAG, "handleDiscard: discarding timer for habitId=$habitId")
 
         // Stop the ticker first
@@ -871,35 +832,59 @@ class TimerService : Service() {
         val stoppedHabitId = habitId
         val logIdToDelete = currentLogId
 
-        // Delete the TimeLogEntity synchronously BEFORE stopping service
-        // This is critical because stopSelf() triggers onDestroy() which cancels serviceScope
         if (logIdToDelete > 0) {
-            runBlocking {
-                withContext(Dispatchers.IO) {
-                    val logToDelete = timeLogDao.getById(logIdToDelete)
-                    if (logToDelete != null) {
-                        val commandAt = maxOf(
-                            System.currentTimeMillis(),
-                            (logToDelete.timerLastCommandAt ?: logToDelete.startTime) + 1
-                        )
-                        timeLogDao.deleteTimerAndQueue(
-                            logToDelete,
-                            timerCommand(
-                                logToDelete.uuid,
-                                logToDelete.timerNextCommandSequence,
-                                "cancel",
-                                commandAt,
-                                logToDelete.timerControlGeneration
-                            )
-                        )
-                        Log.d(TAG, "handleDiscard: deleted TimeLogEntity id=$logIdToDelete")
-                    }
-                }
+            val logToDelete = timeLogDao.getById(logIdToDelete)
+            if (logToDelete != null && logToDelete.endTime == null) {
+                val commandAt = maxOf(
+                    System.currentTimeMillis(),
+                    (logToDelete.timerLastCommandAt ?: logToDelete.startTime) + 1
+                )
+                timeLogDao.deleteTimerAndQueue(
+                    logToDelete,
+                    timerCommand(
+                        logToDelete.uuid,
+                        logToDelete.timerNextCommandSequence,
+                        "cancel",
+                        commandAt,
+                        logToDelete.timerControlGeneration
+                    )
+                )
             }
             autoSyncCoordinator.enqueueNow()
         }
 
-        // Clear state
+        // Broadcast widget update
+        if (stoppedHabitId != 0L) {
+            val intent = Intent(ACTION_WIDGET_UPDATE).apply {
+                putExtra(EXTRA_HABIT_ID, stoppedHabitId)
+                setPackage(packageName)
+            }
+            sendBroadcast(intent)
+        }
+
+        clearState()
+        stopServiceAndClearNotification()
+    }
+
+    private suspend fun stopIfNoPersistedTimer() {
+        val persisted = timeLogDao.getActiveTimeLog()
+        if (persisted != null && restoreState(persisted)) {
+            updateNotification()
+            startTicker()
+        } else {
+            stopServiceAndClearNotification()
+        }
+    }
+
+    private fun stopServiceAndClearNotification() {
+        tickerJob?.cancel()
+        tickerJob = null
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        notificationManager.cancel(NOTIFICATION_ID)
+        stopSelf()
+    }
+
+    private fun clearState() {
         currentLogId = 0L
         habitId = 0L
         targetMinutes = 0
@@ -917,23 +902,7 @@ class TimerService : Service() {
         elapsedRealtimeAnchor = null
         timerBootCount = null
         targetReachedNotified = false
-
-        // Cancel the notification
-        notificationManager.cancel(NOTIFICATION_ID)
-
-        // Broadcast widget update
-        if (stoppedHabitId != 0L) {
-            val intent = Intent(ACTION_WIDGET_UPDATE).apply {
-                putExtra(EXTRA_HABIT_ID, stoppedHabitId)
-                setPackage(packageName)
-            }
-            sendBroadcast(intent)
-        }
-
-        // Stop foreground and service
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
-        Log.d(TAG, "handleDiscard: service stopped")
+        lastHeartbeatAttemptAt = 0L
     }
 
     /**

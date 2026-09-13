@@ -54,4 +54,55 @@ class DurationDayAllocatorTest {
 
         assertEquals(23L * 60 * 60 * 1_000, result.single().durationMillis)
     }
+
+    @Test
+    fun `dst fall day uses real 25 hour boundary`() {
+        val zone = ZoneId.of("America/New_York")
+        val day = LocalDate.of(2026, 11, 1)
+        val start = day.atStartOfDay(zone).toInstant().toEpochMilli()
+        val end = day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+
+        val result = DurationDayAllocator.allocate(
+            "session", 1, zone.id,
+            listOf(
+                TimerSegmentEntity(
+                    sessionUuid = "session",
+                    sequence = 1,
+                    startedAt = start,
+                    endedAt = end
+                )
+            )
+        )
+
+        assertEquals(25L * 60 * 60 * 1_000, result.single().durationMillis)
+    }
+
+    @Test
+    fun `maximum duration clamps across ordered running segments`() {
+        val zone = ZoneId.of("UTC")
+        fun at(day: Int, hour: Int) =
+            ZonedDateTime.of(2026, 8, day, hour, 0, 0, 0, zone).toInstant().toEpochMilli()
+
+        val result = DurationDayAllocator.allocate(
+            "session", 1, zone.id,
+            listOf(
+                TimerSegmentEntity(
+                    sessionUuid = "session",
+                    sequence = 1,
+                    startedAt = at(14, 23),
+                    endedAt = at(15, 0)
+                ),
+                TimerSegmentEntity(
+                    sessionUuid = "session",
+                    sequence = 3,
+                    startedAt = at(15, 1),
+                    endedAt = at(15, 2)
+                )
+            ),
+            maximumDurationMillis = 90L * 60 * 1_000
+        )
+
+        assertEquals(listOf("2026-08-14", "2026-08-15"), result.map { it.localDate })
+        assertEquals(listOf(60L * 60 * 1_000, 30L * 60 * 1_000), result.map { it.durationMillis })
+    }
 }
