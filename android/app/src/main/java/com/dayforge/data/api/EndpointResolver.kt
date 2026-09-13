@@ -1,18 +1,17 @@
 package com.dayforge.data.api
 
-import android.content.Context
-import android.net.ConnectivityManager
 import android.net.Network
-import android.net.NetworkCapabilities
 import com.dayforge.data.api.dto.ServerIdentityResponse
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
-import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.coroutineContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -24,15 +23,12 @@ import okhttp3.Request
 /** Selects one verified endpoint for an entire sync attempt. */
 @Singleton
 class EndpointResolver @Inject constructor(
-    @ApplicationContext context: Context,
+    private val networks: NetworkMonitor,
     private val preferences: PreferencesManager,
     private val tokens: TokenManager,
     private val json: Json,
     private val selectedTransport: SelectedNetworkTransport
 ) {
-    private val connectivity =
-        context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-
     suspend fun resolve(): ServerIdentityResponse? = withContext(Dispatchers.IO) {
         val local = preferences.serverUrl.first()?.takeIf { it.isNotBlank() }
         val remote = preferences.remoteServerUrl.first()?.takeIf { it.isNotBlank() }
@@ -42,24 +38,23 @@ class EndpointResolver @Inject constructor(
             return@withContext null
         }
 
-        val localNetwork = findLocalNetwork()
-        val ordered = if (localNetwork != null) {
-            listOfNotNull(
-                local?.let { Candidate(it, localNetwork, requireHttps = false) },
-                remote?.let { Candidate(it, null, requireHttps = true) }
-            )
-        } else {
-            listOfNotNull(
-                remote?.let { Candidate(it, null, requireHttps = true) },
-                local?.let { Candidate(it, null, requireHttps = false) }
-            )
+        val localNetworks = if (local != null) networks.localNetworks() else emptyList()
+        val ordered = buildList {
+            if (local != null) {
+                localNetworks.forEach { add(Candidate(local, it, requireHttps = false)) }
+            }
+            remote?.let { add(Candidate(it, null, requireHttps = true)) }
+            // Default-route fallback also supports VPN, loopback, callback failure and late discovery.
+            local?.let { add(Candidate(it, null, requireHttps = false)) }
         }
         val knownInstance = tokens.serverInstanceId.first()
         var identityMismatch = false
         var lastFailure: Throwable? = null
         ordered.forEach { candidate ->
+            coroutineContext.ensureActive()
             try {
                 val identity = probe(candidate)
+                coroutineContext.ensureActive()
                 if (knownInstance != null && identity.serverInstanceId != knownInstance) {
                     identityMismatch = true
                     return@forEach
@@ -67,6 +62,8 @@ class EndpointResolver @Inject constructor(
                 selectedTransport.select(candidate.network)
                 preferences.setActiveServerUrl(candidate.url)
                 return@withContext identity
+            } catch (error: CancellationException) {
+                throw error
             } catch (error: Exception) {
                 lastFailure = error
             }
@@ -77,12 +74,6 @@ class EndpointResolver @Inject constructor(
         }
         selectedTransport.select(null)
         throw IOException("无法连接已配置的 DayForge 服务器", lastFailure)
-    }
-
-    private fun findLocalNetwork(): Network? = connectivity.allNetworks.firstOrNull { network ->
-        val capabilities = connectivity.getNetworkCapabilities(network) ?: return@firstOrNull false
-        capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
     }
 
     private fun probe(candidate: Candidate): ServerIdentityResponse {

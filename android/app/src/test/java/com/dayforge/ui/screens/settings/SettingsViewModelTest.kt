@@ -1,7 +1,12 @@
 package com.dayforge.ui.screens.settings
 
 import android.content.Context
-import android.net.ConnectivityManager
+import android.net.Network
+import com.dayforge.data.api.NetworkMonitor
+import io.mockk.every
+import io.mockk.coEvery
+import io.mockk.coVerify
+import kotlinx.coroutines.flow.MutableStateFlow
 import android.net.Uri
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
@@ -70,7 +75,8 @@ class SettingsViewModelTest {
     private lateinit var configWorkflow: SettingsConfigWorkflow
     private lateinit var testDataStore: DataStore<Preferences>
     private lateinit var mockSyncManager: SyncManager
-    private lateinit var mockConnectivityManager: ConnectivityManager
+    private val networkState = MutableStateFlow(NetworkMonitor.Snapshot())
+    private lateinit var networkMonitor: NetworkMonitor
     private lateinit var habitRepository: HabitRepository
     private lateinit var habitDao: HabitDao
     private lateinit var completionDao: CompletionDao
@@ -107,8 +113,8 @@ class SettingsViewModelTest {
         habitRepository = HabitRepository(habitDao, completionDao, timeLogDao, database)
         mockSyncManager = mockk(relaxed = true)
 
-        // Get real ConnectivityManager from context
-        mockConnectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        networkMonitor = mockk()
+        every { networkMonitor.state } returns networkState
 
         // Create mock config services
         val mockConfigExportService = ConfigExportService(habitDao, metricDao, habitMetricLinkDao)
@@ -145,7 +151,7 @@ class SettingsViewModelTest {
             syncManager = mockSyncManager,
             tokenManager = tokenManager,
             preferencesManager = preferencesManager,
-            connectivityManager = mockConnectivityManager,
+            networkMonitor = networkMonitor,
             habitRepository = habitRepository,
             habitDao = habitDao,
             timeLogDao = timeLogDao,
@@ -164,6 +170,31 @@ class SettingsViewModelTest {
         database.close()
         dataStoreFile.delete()
         Dispatchers.resetMain()
+    }
+
+    @Test
+    fun `settings follows shared connectivity and callback failure remains unknown`() = runTest {
+        assertFalse(viewModel.isOnline.value)
+        networkState.value = NetworkMonitor.Snapshot(listOf(NetworkMonitor.Path(mockk<Network>(), true, false)))
+        assertTrue(viewModel.isOnline.value)
+        networkState.value = NetworkMonitor.Snapshot()
+        assertFalse(viewModel.isOnline.value)
+        networkState.value = NetworkMonitor.Snapshot(monitoring = false)
+        assertTrue(viewModel.isOnline.value)
+    }
+
+    @Test
+    fun `sync before logout probes despite empty network hints and preserves account on failure`() = runTest {
+        tokenManager.saveTokens("access", "refresh", "member", "account", false)
+        coEvery { mockSyncManager.syncAndThen(any()) } returns Result.failure(java.io.IOException("offline"))
+        var completed = false
+        viewModel.syncAndLogout { completed = true }
+        withContext(Dispatchers.Default) {
+            withTimeout(5_000) { viewModel.showSyncError.first { it } }
+        }
+        coVerify(exactly = 1) { mockSyncManager.syncAndThen(any()) }
+        assertFalse(completed)
+        assertEquals("access", tokenManager.accessToken.first())
     }
 
     @Test

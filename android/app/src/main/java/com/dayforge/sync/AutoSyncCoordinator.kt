@@ -1,10 +1,7 @@
 package com.dayforge.sync
 
 import android.content.Context
-import android.net.ConnectivityManager
-import android.net.Network
-import android.net.NetworkCapabilities
-import android.net.NetworkRequest
+import com.dayforge.data.api.NetworkMonitor
 import androidx.work.BackoffPolicy
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
@@ -22,7 +19,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -34,40 +30,35 @@ import kotlinx.coroutines.launch
  * reachable through a Wi-Fi LAN that Android does not classify as internet-capable.
  */
 @Singleton
-class AutoSyncCoordinator @Inject constructor(
-    @ApplicationContext private val context: Context,
+class AutoSyncCoordinator internal constructor(
+    private val context: Context,
     private val outboxDao: SyncOutboxDao,
-    private val timeLogDao: TimeLogDao
+    private val timeLogDao: TimeLogDao,
+    private val networkMonitor: NetworkMonitor,
+    private val scope: CoroutineScope
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    @Inject constructor(
+        @ApplicationContext context: Context,
+        outboxDao: SyncOutboxDao,
+        timeLogDao: TimeLogDao,
+        networkMonitor: NetworkMonitor
+    ) : this(context, outboxDao, timeLogDao, networkMonitor,
+        CoroutineScope(SupervisorJob() + Dispatchers.Default))
+
     private val started = AtomicBoolean(false)
-    @Volatile private var networkDebounceJob: Job? = null
     private val workManager by lazy { WorkManager.getInstance(context) }
-    private val connectivityManager by lazy {
-        context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-    }
-
-    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) = enqueueAfterNetworkSettles()
-
-        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
-            enqueueAfterNetworkSettles()
-        }
-    }
-
-    @Synchronized
-    private fun enqueueAfterNetworkSettles() {
-        networkDebounceJob?.cancel()
-        networkDebounceJob = scope.launch {
-            delay(NETWORK_DEBOUNCE_MILLIS)
-            enqueueNow()
-        }
-    }
 
     fun start() {
         if (!started.compareAndSet(false, true)) return
         schedulePeriodicSafetyNet()
-        registerAllNetworkCallback()
+        scope.launch {
+            networkMonitor.state.collectLatest { snapshot ->
+                if (snapshot.mayBeConnected) {
+                    delay(NETWORK_DEBOUNCE_MILLIS)
+                    enqueueNow()
+                }
+            }
+        }
         enqueueNow()
         scope.launch {
             combine(
@@ -100,14 +91,6 @@ class AutoSyncCoordinator @Inject constructor(
             ExistingWorkPolicy.REPLACE,
             request
         )
-    }
-
-    private fun registerAllNetworkCallback() {
-        // The builder does not require NET_CAPABILITY_INTERNET by default, so
-        // this still observes a LAN-only Wi-Fi network on Android 8+. Avoid
-        // clearCapabilities(), which was added only in API 30.
-        val request = NetworkRequest.Builder().build()
-        runCatching { connectivityManager.registerNetworkCallback(request, networkCallback) }
     }
 
     private fun schedulePeriodicSafetyNet() {

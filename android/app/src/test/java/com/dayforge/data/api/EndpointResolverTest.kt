@@ -1,6 +1,12 @@
 package com.dayforge.data.api
 
 import android.content.Context
+import android.net.Network
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.every
+import io.mockk.mockk
+import kotlinx.coroutines.CancellationException
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
@@ -34,6 +40,7 @@ class EndpointResolverTest {
     private lateinit var selectedTransport: SelectedNetworkTransport
     private lateinit var server: ServerSocket
     private lateinit var serverThread: Thread
+    private lateinit var networks: NetworkMonitor
 
     @Before
     fun setup() {
@@ -43,10 +50,12 @@ class EndpointResolverTest {
         preferences = PreferencesManager(store)
         tokens = TokenManager(store)
         selectedTransport = SelectedNetworkTransport()
+        networks = mockk()
+        coEvery { networks.localNetworks() } returns listOf(route())
         server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
         serverThread = Thread {
             runCatching {
-                server.accept().use { socket ->
+                while (!server.isClosed) server.accept().use { socket ->
                     val reader = socket.getInputStream().bufferedReader()
                     while (!reader.readLine().isNullOrEmpty()) Unit
                     val body = IDENTITY.toByteArray()
@@ -94,6 +103,66 @@ class EndpointResolverTest {
     }
 
     @Test
+    fun `a failed wifi route falls through to working ethernet`() = runTest {
+        val broken = mockk<Network>()
+        every { broken.socketFactory } throws java.io.IOException("network disappeared")
+        val working = route()
+        coEvery { networks.localNetworks() } returns listOf(broken, working)
+        preferences.setServerUrl("http://127.0.0.1:${server.localPort}")
+        assertEquals(SERVER_ID, resolver().resolve()?.serverInstanceId)
+        assertEquals(working, selectedTransport.currentNetwork())
+    }
+
+    @Test
+    fun `failed bound paths fall through to the default VPN route`() = runTest {
+        val broken = mockk<Network>()
+        every { broken.socketFactory } throws java.io.IOException("network disappeared")
+        coEvery { networks.localNetworks() } returns listOf(broken)
+        preferences.setServerUrl("http://127.0.0.1:${server.localPort}")
+        assertEquals(SERVER_ID, resolver().resolve()?.serverInstanceId)
+        assertNull(selectedTransport.currentNetwork())
+    }
+
+    @Test
+    fun `unknown or empty network observation does not block local server probing`() = runTest {
+        coEvery { networks.localNetworks() } returns emptyList()
+        preferences.setServerUrl("http://127.0.0.1:${server.localPort}")
+        assertEquals(SERVER_ID, resolver().resolve()?.serverInstanceId)
+        assertNull(selectedTransport.currentNetwork())
+    }
+
+    @Test
+    fun `cancellation during a probe never selects or falls back to another route`() = runTest {
+        val cancelled = mockk<Network>()
+        every { cancelled.socketFactory } throws CancellationException("cancelled")
+        coEvery { networks.localNetworks() } returns listOf(cancelled, route())
+        preferences.setServerUrl("http://127.0.0.1:${server.localPort}")
+        assertTrue(runCatching { resolver().resolve() }.exceptionOrNull() is CancellationException)
+        assertNull(preferences.activeServerUrl.first())
+        assertNull(selectedTransport.currentNetwork())
+    }
+
+    @Test
+    fun `no configured address clears selection without waiting for network discovery`() = runTest {
+        selectedTransport.select(route())
+        preferences.setActiveServerUrl("http://example.invalid")
+        assertNull(resolver().resolve())
+        assertNull(selectedTransport.currentNetwork())
+        assertNull(preferences.activeServerUrl.first())
+        coVerify(exactly = 0) { networks.localNetworks() }
+    }
+
+    @Test
+    fun `all failed candidates clear a previously selected network`() = runTest {
+        val port = server.localPort
+        server.close()
+        selectedTransport.select(route())
+        preferences.setServerUrl("http://127.0.0.1:$port")
+        assertTrue(runCatching { resolver().resolve() }.exceptionOrNull() is java.io.IOException)
+        assertNull(selectedTransport.currentNetwork())
+    }
+
+    @Test
     fun `remote endpoint refuses cleartext even when reachable`() = runTest {
         preferences.setRemoteServerUrl("http://127.0.0.1:${server.localPort}")
 
@@ -101,15 +170,21 @@ class EndpointResolverTest {
 
         assertTrue(error is java.io.IOException)
         assertNull(preferences.activeServerUrl.first())
+        coVerify(exactly = 0) { networks.localNetworks() }
     }
 
     private fun resolver() = EndpointResolver(
-        ApplicationProvider.getApplicationContext(),
+        networks,
         preferences,
         tokens,
         Json { ignoreUnknownKeys = true },
         selectedTransport
     )
+
+    private fun route(): Network = mockk<Network>().also { network ->
+        every { network.socketFactory } returns javax.net.SocketFactory.getDefault()
+        every { network.getAllByName(any()) } answers { InetAddress.getAllByName(firstArg()) }
+    }
 
     private companion object {
         const val SERVER_ID = "00000000-0000-4000-8000-000000000001"

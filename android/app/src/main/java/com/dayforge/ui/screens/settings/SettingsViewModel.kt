@@ -1,9 +1,7 @@
 package com.dayforge.ui.screens.settings
 
 import android.content.Context
-import android.net.ConnectivityManager
-import android.net.Network
-import android.net.NetworkRequest
+import com.dayforge.data.api.NetworkMonitor
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -48,7 +46,7 @@ class SettingsViewModel @Inject constructor(
     private val syncManager: SyncManager,
     private val tokenManager: TokenManager,
     private val preferencesManager: PreferencesManager,
-    private val connectivityManager: ConnectivityManager,
+    private val networkMonitor: NetworkMonitor,
     private val habitRepository: HabitRepository,
     private val habitDao: HabitDao,
     private val timeLogDao: TimeLogDao,
@@ -61,8 +59,9 @@ class SettingsViewModel @Inject constructor(
     private val _syncProgress = MutableStateFlow<SyncProgress>(SyncProgress.Idle)
     val syncProgress: StateFlow<SyncProgress> = _syncProgress.asStateFlow()
 
-    private val _isOnline = MutableStateFlow(checkInitialNetworkState())
-    val isOnline: StateFlow<Boolean> = _isOnline.asStateFlow()
+    val isOnline: StateFlow<Boolean> = networkMonitor.state
+        .map { it.mayBeConnected }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, networkMonitor.state.value.mayBeConnected)
 
     private val _showSyncSuccess = MutableStateFlow(false)
     val showSyncSuccess: StateFlow<Boolean> = _showSyncSuccess.asStateFlow()
@@ -159,24 +158,7 @@ class SettingsViewModel @Inject constructor(
     val allLightThemes: StateFlow<List<GlobalColorTheme>> = appearanceWorkflow.allLightThemes
     val allDarkThemes: StateFlow<List<GlobalColorTheme>> = appearanceWorkflow.allDarkThemes
 
-    // Network callback for real-time network state
-    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) {
-            _isOnline.value = true
-        }
-
-        override fun onLost(network: Network) {
-            _isOnline.value = connectivityManager.allNetworks.any { it != network }
-        }
-    }
-
     init {
-        // Register network callback
-        // No INTERNET capability is requested: a NAS may be reachable on a
-        // Wi-Fi LAN without internet access. This API works from minSdk 26.
-        val networkRequest = NetworkRequest.Builder().build()
-        connectivityManager.registerNetworkCallback(networkRequest, networkCallback)
-
         // Observe sync progress from SyncManager
         viewModelScope.launch {
             syncManager.syncProgress.collect { progress ->
@@ -207,11 +189,6 @@ class SettingsViewModel @Inject constructor(
                 }
             }
         }
-    }
-
-    override fun onCleared() {
-        super.onCleared()
-        connectivityManager.unregisterNetworkCallback(networkCallback)
     }
 
     /**
@@ -331,13 +308,6 @@ class SettingsViewModel @Inject constructor(
      * Called when user chooses "Sync then logout" option.
      */
     fun syncAndLogout(onComplete: () -> Unit) {
-        if (!_isOnline.value) {
-            // Not online - show error, don't logout
-            _syncErrorMessage.value = context.getString(R.string.error_network_failed)
-            _showSyncError.value = true
-            return
-        }
-
         viewModelScope.launch {
             if (showActiveTimerWarningIfNeeded()) return@launch
             _isLoggingOut.value = true
@@ -421,13 +391,6 @@ class SettingsViewModel @Inject constructor(
                 format.format(Date(timestamp))
             }
         }
-    }
-
-    /**
-     * Checks initial network state on ViewModel creation.
-     */
-    private fun checkInitialNetworkState(): Boolean {
-        return connectivityManager.allNetworks.isNotEmpty()
     }
 
     // ==================== Export/Import Config ====================
