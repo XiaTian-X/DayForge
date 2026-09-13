@@ -23,7 +23,8 @@ class NetworkMonitor @Inject constructor(private val connectivity: ConnectivityM
     data class Snapshot(
         val paths: List<Path> = emptyList(),
         val monitoring: Boolean = true,
-        val revision: Long = 0
+        val revision: Long = 0,
+        val defaultNetwork: Network? = null
     ) {
         // Observation failure is unknown, not proof that a server cannot be reached.
         val mayBeConnected: Boolean get() = !monitoring || paths.any { !it.blocked }
@@ -42,7 +43,26 @@ class NetworkMonitor @Inject constructor(private val connectivity: ConnectivityM
     val state = mutableState.asStateFlow()
     private val startedAt = SystemClock.elapsedRealtime()
     private var registered = false
+    private var defaultRegistered = false
+    private var defaultNetwork: Network? = null
     private var closed = false
+
+    private val defaultCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = synchronized(lock) {
+            if (!closed && defaultNetwork != network) {
+                defaultNetwork = network
+                publish()
+            }
+        }
+
+        override fun onLost(network: Network) = synchronized(lock) {
+            // Loss of default status does not mean the underlying network disconnected.
+            if (!closed && defaultNetwork == network) {
+                defaultNetwork = null
+                publish()
+            }
+        }
+    }
 
     private val callback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) = synchronized(lock) {
@@ -105,10 +125,17 @@ class NetworkMonitor @Inject constructor(private val connectivity: ConnectivityM
             } catch (error: RuntimeException) {
                 Log.w(TAG, "Network callbacks unavailable; endpoint probing remains enabled", error)
             }
+            try {
+                connectivity.registerDefaultNetworkCallback(defaultCallback)
+                defaultRegistered = true
+            } catch (error: RuntimeException) {
+                Log.w(TAG, "Default-route callbacks unavailable", error)
+            }
             // A best-effort default-network seed makes the UI useful immediately.
             // Subsequent updates use callback payloads, never synchronous queries in callbacks.
             try {
                 connectivity.activeNetwork?.let { network ->
+                    defaultNetwork = network
                     connectivity.getNetworkCapabilities(network)?.let { capabilities ->
                         networks[network] = Entry(capabilities = NetworkCapabilities(capabilities))
                     }
@@ -143,7 +170,8 @@ class NetworkMonitor @Inject constructor(private val connectivity: ConnectivityM
                 Path(network, local, entry.blocked)
             },
             monitoring = monitoring,
-            revision = mutableState.value.revision + 1
+            revision = mutableState.value.revision + 1,
+            defaultNetwork = defaultNetwork
         )
     }
 
@@ -152,6 +180,7 @@ class NetworkMonitor @Inject constructor(private val connectivity: ConnectivityM
         if (closed) return@synchronized
         closed = true
         networks.clear()
+        defaultNetwork = null
         publish(monitoring = false)
         if (registered) {
             registered = false
@@ -159,6 +188,14 @@ class NetworkMonitor @Inject constructor(private val connectivity: ConnectivityM
                 connectivity.unregisterNetworkCallback(callback)
             } catch (error: RuntimeException) {
                 Log.w(TAG, "Network callback cleanup failed", error)
+            }
+        }
+        if (defaultRegistered) {
+            defaultRegistered = false
+            try {
+                connectivity.unregisterNetworkCallback(defaultCallback)
+            } catch (error: RuntimeException) {
+                Log.w(TAG, "Default-route callback cleanup failed", error)
             }
         }
     }

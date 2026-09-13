@@ -27,6 +27,7 @@ import org.robolectric.annotation.Config
 class NetworkMonitorTest {
     private lateinit var connectivity: ConnectivityManager
     private val callback = slot<ConnectivityManager.NetworkCallback>()
+    private val defaultCallback = slot<ConnectivityManager.NetworkCallback>()
     private val request = slot<NetworkRequest>()
     private lateinit var monitor: NetworkMonitor
 
@@ -34,6 +35,7 @@ class NetworkMonitorTest {
         connectivity = mockk(relaxed = true)
         every { connectivity.activeNetwork } returns null
         every { connectivity.registerNetworkCallback(capture(request), capture(callback)) } just Runs
+        every { connectivity.registerDefaultNetworkCallback(capture(defaultCallback)) } just Runs
     }
 
     @After fun teardown() {
@@ -168,6 +170,7 @@ class NetworkMonitorTest {
 
     @Test fun `registration failure is unknown and discovery returns without waiting`() = runTest {
         every { connectivity.registerNetworkCallback(any<NetworkRequest>(), any<ConnectivityManager.NetworkCallback>()) } throws SecurityException("denied")
+        every { connectivity.registerDefaultNetworkCallback(any<ConnectivityManager.NetworkCallback>()) } throws SecurityException("denied")
         start()
         assertFalse(monitor.state.value.monitoring)
         assertTrue(monitor.state.value.mayBeConnected)
@@ -193,6 +196,35 @@ class NetworkMonitorTest {
         callback.captured.onCapabilitiesChanged(wifi, caps(NetworkCapabilities.TRANSPORT_WIFI))
         monitor.close()
         assertEquals(snapshot, monitor.state.value)
+        verify(exactly = 1) { connectivity.unregisterNetworkCallback(callback.captured) }
+        verify(exactly = 1) { connectivity.unregisterNetworkCallback(defaultCallback.captured) }
+    }
+
+    @Test fun `default route switches wake observers without removing connected paths`() {
+        start()
+        val mobile = available(1, NetworkCapabilities.TRANSPORT_CELLULAR)
+        val wifi = available(2, NetworkCapabilities.TRANSPORT_WIFI)
+        defaultCallback.captured.onAvailable(mobile)
+        val before = monitor.state.value.revision
+        defaultCallback.captured.onAvailable(wifi)
+        assertTrue(monitor.state.value.revision > before)
+        assertEquals(wifi, monitor.state.value.defaultNetwork)
+        defaultCallback.captured.onLost(mobile)
+        assertEquals(wifi, monitor.state.value.defaultNetwork)
+        assertEquals(2, monitor.state.value.paths.size)
+        defaultCallback.captured.onLost(wifi)
+        assertNull(monitor.state.value.defaultNetwork)
+        assertEquals(listOf(wifi), monitor.state.value.localNetworks)
+        assertTrue(monitor.state.value.mayBeConnected)
+    }
+
+    @Test fun `default subscription failure leaves all-network observation usable`() {
+        every { connectivity.registerDefaultNetworkCallback(any<ConnectivityManager.NetworkCallback>()) } throws SecurityException("denied")
+        start()
+        val wifi = available(1, NetworkCapabilities.TRANSPORT_WIFI)
+        assertTrue(monitor.state.value.monitoring)
+        assertEquals(listOf(wifi), monitor.state.value.localNetworks)
+        monitor.close()
         verify(exactly = 1) { connectivity.unregisterNetworkCallback(callback.captured) }
     }
 
