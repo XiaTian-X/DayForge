@@ -69,7 +69,7 @@ class CheckInService @Inject constructor(
     /**
      * Toggles check-in status for a CHECK_IN habit.
      * Per TARGET-03/08: Undo operations do NOT trigger goalReached.
-     * @param context Context for LocalBroadcastManager notifications
+     * @param context Context for scheduling widget refresh
      * @param habitId The ID of the habit
      * @return CheckInResult.Success with completed, progress, goalReached; or CheckInResult.Error
      */
@@ -109,7 +109,7 @@ class CheckInService @Inject constructor(
 
     /**
      * Increments count for a COUNTING habit.
-     * @param context Context for LocalBroadcastManager notifications
+     * @param context Context for scheduling widget refresh
      * @param habitId The ID of the habit
      * @return CheckInResult.Success with completed (today count status), progress, goalReached
      */
@@ -134,7 +134,7 @@ class CheckInService @Inject constructor(
      * Decrements count for a COUNTING habit.
      * Minimum value is 0.
      * Per TARGET-03: Decrement does NOT trigger goalReached (undo operation).
-     * @param context Context for LocalBroadcastManager notifications
+     * @param context Context for scheduling widget refresh
      * @param habitId The ID of the habit
      * @return CheckInResult.Success with completed (today count status), progress, goalReached=false
      */

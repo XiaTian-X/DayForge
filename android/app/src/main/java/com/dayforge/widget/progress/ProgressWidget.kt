@@ -35,7 +35,7 @@ class ProgressWidget : GlanceAppWidget() {
         val TOTAL_COUNT_KEY = intPreferencesKey("totalCount")
         val PROGRESS_KEY = floatPreferencesKey("progress")
 
-        suspend fun refreshWidgetData(context: Context) {
+        suspend fun refreshWidgetData(context: Context, glanceId: GlanceId? = null) {
             val database = HabitDatabaseProvider.getInstance(context.applicationContext)
             val habitDao = database.habitDao()
             val completionDao = database.completionDao()
@@ -62,7 +62,7 @@ class ProgressWidget : GlanceAppWidget() {
             Log.d(TAG, "Progress refresh: $completedCount / $totalCount (eligible from ${habits.size} total)")
 
             val manager = GlanceAppWidgetManager(context)
-            val glanceIds = manager.getGlanceIds(ProgressWidget::class.java)
+            val glanceIds = glanceId?.let { listOf(it) } ?: manager.getGlanceIds(ProgressWidget::class.java)
             for (id in glanceIds) {
                 updateAppWidgetState(context, id) { prefs ->
                     prefs[COMPLETED_COUNT_KEY] = completedCount

@@ -1,7 +1,7 @@
 package com.dayforge.widget
 
 import android.content.Context
-import androidx.glance.appwidget.updateAll
+import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
@@ -10,10 +10,8 @@ import androidx.work.WorkerParameters
 import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.local.businessDate
 import com.dayforge.domain.service.ActivityRateCalculator
-import com.dayforge.widget.checkin.CheckInWidget
-import com.dayforge.widget.focus.FocusWidget
-import com.dayforge.widget.motivation.MotivationWidget
-import com.dayforge.widget.progress.ProgressWidget
+import androidx.work.await
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
@@ -30,20 +28,23 @@ class WidgetUpdateWorker(
     params: WorkerParameters
 ) : CoroutineWorker(context, params) {
 
-    override suspend fun doWork(): Result {
+    override suspend fun doWork(): Result = try {
         val appContext = applicationContext
 
         // Refresh activity rates for all habits (handles day boundary)
         refreshActivityRates()
 
-        // Update all widgets at midnight
-        CheckInWidget().updateAll(appContext)
-        ProgressWidget().updateAll(appContext)
-        MotivationWidget().updateAll(appContext)
-        // FocusWidget - recalculate priorities for new day (WIDGET-09)
-        FocusWidget().updateAll(appContext)
+        // Use the same serial queue as data changes, including counting and timer widgets.
+        val operation = WidgetRefreshScheduler.request(appContext)
+            ?: throw IllegalStateException("Widget refresh was not enqueued")
+        operation.await()
 
-        return Result.success()
+        Result.success()
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        Log.e("WidgetUpdateWorker", "Midnight refresh failed", error)
+        if (runAttemptCount < 2) Result.retry() else Result.failure()
     }
 
     /**

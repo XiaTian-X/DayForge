@@ -108,7 +108,7 @@ class FocusWidget : GlanceAppWidget() {
 
         /**
          * Refresh all FocusWidget instances without requiring glanceId.
-         * Used by WidgetUpdateReceiver when data changes in app.
+         * Used by platform refresh paths when all instances need fresh data.
          */
         suspend fun refreshWidgetData(context: Context) {
             val manager = GlanceAppWidgetManager(context)
