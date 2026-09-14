@@ -13,7 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from src.auth.models import User
+from src.v2.change_log import append_change
 from src.v2.encoding import canonical_json, parse_json
+from src.v2.entity_snapshots import serialize_activity_event_with_allocations
 from src.v2.errors import DomainError
 from src.v2.models import (
     ActivityDetail,
@@ -35,11 +37,7 @@ from src.v2.schemas import (
     TimerHeartbeatResponse,
     TimerSessionResponse,
 )
-from src.v2.service import (
-    _append_change,
-    require_device,
-    serialize_activity_event_with_allocations,
-)
+from src.v2.service import require_device
 from src.v2.time_utils import as_utc, local_date_at
 
 
@@ -354,7 +352,7 @@ async def _complete(
         (await db.get(PlanNode, timer.activity_node_id)).public_id,
         None,
     )
-    await _append_change(
+    await append_change(
         db,
         user_id=user.id,
         device_id=device.id,

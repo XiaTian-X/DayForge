@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
-import hashlib
 from typing import Any, Optional
 
 from pydantic import ValidationError
@@ -14,7 +13,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from src.auth.models import User
-from src.v2.encoding import canonical_json, jsonable_utc, operation_hash, parse_json
+from src.v2.change_log import append_change
+from src.v2.entity_snapshots import (
+    current_entity_snapshot,
+    serialize_activity_event_with_allocations,
+    serialize_link,
+    serialize_metric,
+    serialize_observation,
+    serialize_plan_node,
+)
+from src.v2.encoding import canonical_json, operation_hash, parse_json
 from src.v2.errors import DomainError
 from src.v2.merge import MERGE_PATHS, merge_structural_payload
 from src.v2.device_service import (
@@ -29,7 +37,6 @@ from src.v2.models import (
     ActivityEvent,
     ActivityMetricLinkV2,
     ClientDevice,
-    DurationDayAllocation,
     EntityRevisionSnapshot,
     GoalDetail,
     MetricObservation,
@@ -165,255 +172,6 @@ async def _get_metric(
     return result.scalar_one_or_none()
 
 
-async def serialize_plan_node(session: AsyncSession, node: PlanNode) -> dict[str, Any]:
-    parent_uuid = None
-    if node.parent_node_id is not None:
-        parent = await session.get(PlanNode, node.parent_node_id)
-        parent_uuid = parent.public_id if parent else None
-
-    result: dict[str, Any] = {
-        "public_id": node.public_id,
-        "revision": node.revision,
-        "created_at": node.created_at,
-        "updated_at": node.updated_at,
-        "deleted_at": node.deleted_at,
-        "node_kind": node.node_kind,
-        "title": node.title,
-        "description": node.description,
-        "icon": node.icon,
-        "color_hex": node.color_hex,
-        "status": node.status,
-        "visibility": node.visibility,
-        "sort_order": node.sort_order,
-        "parent_uuid": parent_uuid,
-        "goal": None,
-        "activity": None,
-    }
-    if node.node_kind == "goal":
-        detail = await session.get(GoalDetail, node.id)
-        if detail:
-            result["goal"] = {
-                "start_date": detail.start_date,
-                "due_date": detail.due_date,
-                "target_cycles": detail.target_cycles,
-                "failure_policy": parse_json(detail.failure_policy_json),
-                "evaluation_policy": parse_json(detail.evaluation_policy_json),
-                "manual_result": detail.manual_result,
-            }
-    else:
-        detail = await session.get(ActivityDetail, node.id)
-        if detail:
-            result["activity"] = {
-                "tracking_mode": detail.tracking_mode,
-                "is_countdown": detail.is_countdown,
-                "recurrence_rule": parse_json(detail.recurrence_rule_json),
-                "completion_policy": detail.completion_policy,
-                "target_value": detail.target_value,
-                "target_unit": detail.target_unit,
-                "target_cycles": detail.target_cycles,
-                "failure_policy": parse_json(detail.failure_policy_json),
-                "preferred_local_time": detail.preferred_local_time,
-                "timezone": detail.timezone,
-                "origin_assignment_id": detail.origin_assignment_id,
-            }
-    return jsonable_utc(result)
-
-
-def serialize_activity_event(event: ActivityEvent, activity_uuid: str, revert_uuid: Optional[str]) -> dict[str, Any]:
-    return jsonable_utc(
-        {
-            "public_id": event.public_id,
-            "revision": event.revision,
-            "created_at": event.created_at,
-            "updated_at": event.updated_at,
-            "deleted_at": event.deleted_at,
-            "activity_uuid": activity_uuid,
-            "event_type": event.event_type,
-            "value": event.value,
-            "duration_seconds": event.duration_seconds,
-            "duration_milliseconds": event.duration_milliseconds,
-            "started_at": event.started_at,
-            "ended_at": event.ended_at,
-            "occurred_at": event.occurred_at,
-            "local_date": event.local_date,
-            "timezone": event.timezone,
-            "note": event.note,
-            "source_type": event.source_type,
-            "source_device_id": event.source_device_public_id,
-            "external_event_id": event.external_event_id,
-            "reverts_event_uuid": revert_uuid,
-            "metadata": parse_json(event.payload_json),
-            "received_at": event.received_at,
-        }
-    )
-
-
-async def serialize_activity_event_with_allocations(
-    session: AsyncSession,
-    event: ActivityEvent,
-    activity_uuid: str,
-    revert_uuid: Optional[str],
-) -> dict[str, Any]:
-    payload = serialize_activity_event(event, activity_uuid, revert_uuid)
-    if event.event_type != "duration_session":
-        return payload
-    result = await session.execute(
-        select(DurationDayAllocation)
-        .where(DurationDayAllocation.activity_event_id == event.id)
-        .order_by(DurationDayAllocation.local_date)
-    )
-    payload["day_allocations"] = [
-        {
-            "local_date": allocation.local_date.isoformat(),
-            "timezone": allocation.timezone,
-            "duration_milliseconds": allocation.duration_ms,
-        }
-        for allocation in result.scalars().all()
-    ]
-    return payload
-
-
-def serialize_metric(metric: TrackedMetric) -> dict[str, Any]:
-    return jsonable_utc(
-        {
-            "public_id": metric.public_id,
-            "revision": metric.revision,
-            "created_at": metric.created_at,
-            "updated_at": metric.updated_at,
-            "deleted_at": metric.deleted_at,
-            "name": metric.name,
-            "description": metric.description,
-            "unit": metric.unit,
-            "decimal_places": metric.decimal_places,
-            "aggregation_type": metric.aggregation_type,
-            "target_direction": metric.target_direction,
-            "target_value": metric.target_value,
-            "target_value_upper": metric.target_value_upper,
-            "icon": metric.icon,
-            "color_hex": metric.color_hex,
-            "status": metric.status,
-        }
-    )
-
-
-def serialize_observation(observation: MetricObservation, metric_uuid: str) -> dict[str, Any]:
-    return jsonable_utc(
-        {
-            "public_id": observation.public_id,
-            "revision": observation.revision,
-            "created_at": observation.created_at,
-            "updated_at": observation.updated_at,
-            "deleted_at": observation.deleted_at,
-            "metric_uuid": metric_uuid,
-            "value": observation.value,
-            "unit": observation.unit,
-            "occurred_at": observation.occurred_at,
-            "local_date": observation.local_date,
-            "timezone": observation.timezone,
-            "note": observation.note,
-            "source_type": observation.source_type,
-            "source_device_id": observation.source_device_public_id,
-            "external_event_id": observation.external_event_id,
-            "metadata": parse_json(observation.payload_json),
-            "received_at": observation.received_at,
-        }
-    )
-
-
-def serialize_link(link: ActivityMetricLinkV2, activity_uuid: str, metric_uuid: str) -> dict[str, Any]:
-    return jsonable_utc(
-        {
-            "public_id": link.public_id,
-            "revision": link.revision,
-            "created_at": link.created_at,
-            "updated_at": link.updated_at,
-            "deleted_at": link.deleted_at,
-            "activity_uuid": activity_uuid,
-            "metric_uuid": metric_uuid,
-            "coefficient": link.coefficient,
-            "show_in_activity_detail": link.show_in_activity_detail,
-            "prompt_on_complete": link.prompt_on_complete,
-            "is_active": link.is_active,
-        }
-    )
-
-
-async def _current_entity_snapshot(
-    session: AsyncSession,
-    user_id: int,
-    operation: SyncOperationRequest,
-) -> tuple[Optional[int], Optional[dict[str, Any]]]:
-    """Load the authoritative entity for a conflict response.
-
-    Every conflict must be actionable by a sync client. Returning only an
-    error code would be cached by operation-id idempotency and leave the
-    client unable to advance or merge the server revision.
-    """
-    entity_uuid = str(operation.entity_uuid)
-    if operation.entity_type == "plan_node":
-        result = await session.execute(
-            select(PlanNode)
-            .where(PlanNode.owner_user_id == user_id, PlanNode.public_id == entity_uuid)
-            .execution_options(populate_existing=True)
-        )
-        entity = result.scalar_one_or_none()
-        return (entity.revision, await serialize_plan_node(session, entity)) if entity else (None, None)
-
-    if operation.entity_type == "activity_event":
-        result = await session.execute(
-            select(ActivityEvent)
-            .where(ActivityEvent.owner_user_id == user_id, ActivityEvent.public_id == entity_uuid)
-            .execution_options(populate_existing=True)
-        )
-        entity = result.scalar_one_or_none()
-        if entity is None:
-            return None, None
-        activity = await session.get(PlanNode, entity.activity_node_id)
-        revert = await session.get(ActivityEvent, entity.reverts_event_id) if entity.reverts_event_id else None
-        return entity.revision, await serialize_activity_event_with_allocations(
-            session,
-            entity,
-            activity.public_id,
-            revert.public_id if revert else None,
-        )
-
-    if operation.entity_type == "metric":
-        result = await session.execute(
-            select(TrackedMetric)
-            .where(TrackedMetric.owner_user_id == user_id, TrackedMetric.public_id == entity_uuid)
-            .execution_options(populate_existing=True)
-        )
-        entity = result.scalar_one_or_none()
-        return (entity.revision, serialize_metric(entity)) if entity else (None, None)
-
-    if operation.entity_type == "metric_observation":
-        result = await session.execute(
-            select(MetricObservation)
-            .where(MetricObservation.owner_user_id == user_id, MetricObservation.public_id == entity_uuid)
-            .execution_options(populate_existing=True)
-        )
-        entity = result.scalar_one_or_none()
-        if entity is None:
-            return None, None
-        metric = await session.get(TrackedMetric, entity.metric_id)
-        return entity.revision, serialize_observation(entity, metric.public_id)
-
-    if operation.entity_type == "activity_metric_link":
-        result = await session.execute(
-            select(ActivityMetricLinkV2)
-            .where(ActivityMetricLinkV2.owner_user_id == user_id, ActivityMetricLinkV2.public_id == entity_uuid)
-            .execution_options(populate_existing=True)
-        )
-        entity = result.scalar_one_or_none()
-        if entity is None:
-            return None, None
-        activity = await session.get(PlanNode, entity.activity_node_id)
-        metric = await session.get(TrackedMetric, entity.metric_id)
-        return entity.revision, serialize_link(entity, activity.public_id, metric.public_id)
-
-    return None, None
-
-
 async def _prepare_three_way_merge(
     session: AsyncSession,
     user_id: int,
@@ -422,7 +180,7 @@ async def _prepare_three_way_merge(
     if operation.entity_type not in MERGE_PATHS or operation.action != "upsert" or not operation.base_revision:
         return operation, None
 
-    current_revision, server_payload = await _current_entity_snapshot(session, user_id, operation)
+    current_revision, server_payload = await current_entity_snapshot(session, user_id, operation)
     if current_revision is None or server_payload is None or current_revision == operation.base_revision:
         return operation, None
     if server_payload.get("deleted_at") is not None:
@@ -443,47 +201,6 @@ async def _prepare_three_way_merge(
         server_payload=server_payload,
         base_snapshot_json=base_snapshot.payload_json if base_snapshot is not None else None,
     )
-
-
-async def _append_change(
-    session: AsyncSession,
-    *,
-    user_id: int,
-    device_id: Optional[int],
-    operation_id: Optional[str],
-    entity_type: str,
-    entity_uuid: str,
-    operation: str,
-    revision: int,
-    payload: dict[str, Any],
-) -> SyncChange:
-    payload_json = canonical_json(payload)
-    snapshot = EntityRevisionSnapshot(
-        owner_user_id=user_id,
-        entity_type=entity_type,
-        entity_uuid=entity_uuid,
-        revision=revision,
-        operation=operation,
-        payload_json=payload_json,
-        payload_hash=hashlib.sha256(payload_json.encode("utf-8")).hexdigest(),
-        origin_device_id=device_id,
-        origin_operation_id=operation_id,
-    )
-    session.add(snapshot)
-    change = SyncChange(
-        recipient_user_id=user_id,
-        entity_type=entity_type,
-        entity_uuid=entity_uuid,
-        operation=operation,
-        revision=revision,
-        payload_json=payload_json,
-        origin_user_id=user_id,
-        origin_device_id=device_id,
-        origin_operation_id=operation_id,
-    )
-    session.add(change)
-    await session.flush()
-    return change
 
 
 async def _resolve_parent(
@@ -563,7 +280,7 @@ async def _mutate_plan_node(
                 if policy == "cascade_children":
                     child.deleted_at = now
                     child_payload = await serialize_plan_node(session, child)
-                    await _append_change(
+                    await append_change(
                         session,
                         user_id=user_id,
                         device_id=device.id,
@@ -577,7 +294,7 @@ async def _mutate_plan_node(
                 else:
                     child.parent_node_id = None
                     child_payload = await serialize_plan_node(session, child)
-                    await _append_change(
+                    await append_change(
                         session,
                         user_id=user_id,
                         device_id=device.id,
@@ -608,7 +325,7 @@ async def _mutate_plan_node(
         await session.flush()
         existing = await _get_plan_node(session, user_id, str(operation.entity_uuid))
         entity = await serialize_plan_node(session, existing)
-        await _append_change(
+        await append_change(
             session,
             user_id=user_id,
             device_id=device.id,
@@ -694,7 +411,7 @@ async def _mutate_plan_node(
             )
         await session.flush()
         entity = await serialize_plan_node(session, node)
-        await _append_change(
+        await append_change(
             session,
             user_id=user_id,
             device_id=device.id,
@@ -796,7 +513,7 @@ async def _mutate_plan_node(
     await session.flush()
     existing = await _get_plan_node(session, user_id, str(operation.entity_uuid))
     entity = await serialize_plan_node(session, existing)
-    await _append_change(
+    await append_change(
         session,
         user_id=user_id,
         device_id=device.id,
@@ -931,7 +648,7 @@ async def _mutate_activity_event(
     entity = await serialize_activity_event_with_allocations(
         session, event, activity.public_id, revert_event.public_id if revert_event else None
     )
-    await _append_change(
+    await append_change(
         session,
         user_id=user_id,
         device_id=device.id,
@@ -982,7 +699,7 @@ async def _mutate_metric(
         await session.flush()
         existing = await _get_metric(session, user_id, str(operation.entity_uuid))
         entity = serialize_metric(existing)
-        await _append_change(
+        await append_change(
             session,
             user_id=user_id,
             device_id=device.id,
@@ -1048,7 +765,7 @@ async def _mutate_metric(
         metric = await _get_metric(session, user_id, str(operation.entity_uuid))
 
     entity = serialize_metric(metric)
-    await _append_change(
+    await append_change(
         session,
         user_id=user_id,
         device_id=device.id,
@@ -1093,7 +810,7 @@ async def _mutate_observation(
         existing.deleted_at = existing.updated_at
         metric = await session.get(TrackedMetric, existing.metric_id)
         entity = serialize_observation(existing, metric.public_id)
-        await _append_change(
+        await append_change(
             session,
             user_id=user_id,
             device_id=device.id,
@@ -1150,7 +867,7 @@ async def _mutate_observation(
             raise DomainError("DUPLICATE_EXTERNAL_EVENT", "This source observation was already recorded") from exc
         raise DomainError("CONSTRAINT_VIOLATION", "The observation violated a database constraint") from exc
     entity = serialize_observation(observation, metric.public_id)
-    await _append_change(
+    await append_change(
         session,
         user_id=user_id,
         device_id=device.id,
@@ -1195,7 +912,7 @@ async def _mutate_link(
         existing.updated_at = utc_now()
         existing.deleted_at = existing.updated_at
         entity = serialize_link(existing, activity.public_id, metric.public_id)
-        await _append_change(
+        await append_change(
             session,
             user_id=user_id,
             device_id=device.id,
@@ -1263,7 +980,7 @@ async def _mutate_link(
         existing.updated_at = utc_now()
         link = existing
     entity = serialize_link(link, activity.public_id, metric.public_id)
-    await _append_change(
+    await append_change(
         session,
         user_id=user_id,
         device_id=device.id,
@@ -1474,7 +1191,7 @@ async def process_push(
             operation_record.status = "applied"
         except DomainError as exc:
             if exc.conflict and (exc.revision is None or exc.entity is None):
-                current_revision, current_entity = await _current_entity_snapshot(
+                current_revision, current_entity = await current_entity_snapshot(
                     session,
                     user.id,
                     operation,
