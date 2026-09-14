@@ -37,7 +37,7 @@ from src.v2.schemas import (
     TimerHeartbeatResponse,
     TimerSessionResponse,
 )
-from src.v2.service import require_device
+from src.v2.device_service import require_device
 from src.v2.time_utils import as_utc, local_date_at
 
 

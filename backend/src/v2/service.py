@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any, Optional
 
 from sqlalchemy import func
@@ -29,9 +28,8 @@ from src.v2.link_mutations import mutate_link
 from src.v2.device_service import (
     STRUCTURAL_ENTITY_TYPES,
     STRUCTURE_CAPABILITY,
-    assign_first_primary,
     capabilities_for_device,
-    to_device_response,
+    require_device,
 )
 from src.v2.models import (
     ActivityDetail,
@@ -48,8 +46,6 @@ from src.v2.models import (
     utc_now,
 )
 from src.v2.schemas import (
-    DeviceRegisterRequest,
-    DeviceResponse,
     SyncBootstrapResponse,
     SyncChangeResponse,
     SyncOperationRequest,
@@ -58,79 +54,6 @@ from src.v2.schemas import (
     SyncPushRequest,
     SyncPushResponse,
 )
-
-
-async def register_device(
-    user: User,
-    request: DeviceRegisterRequest,
-    session: AsyncSession,
-) -> DeviceResponse:
-    if request.protocol_version < 4 or "protocol_version" not in request.model_fields_set:
-        raise DomainError(
-            "CLIENT_UPGRADE_REQUIRED",
-            "This DayForge client must be upgraded before it can synchronize",
-        )
-    result = await session.execute(
-        select(ClientDevice).where(
-            ClientDevice.user_id == user.id,
-            ClientDevice.installation_id == request.installation_id,
-        )
-    )
-    device = result.scalar_one_or_none()
-    now = utc_now()
-    if device is None:
-        if request.device_class != "interactive":
-            raise DomainError(
-                "DEVICE_PROVISIONING_REQUIRED",
-                "Hardware and automation devices must be provisioned by an administrator",
-            )
-        device = ClientDevice(
-            user_id=user.id,
-            installation_id=request.installation_id,
-            platform=request.platform,
-            device_class=request.device_class,
-            app_version=request.app_version,
-            display_name=request.display_name,
-            last_seen_at=now,
-        )
-        session.add(device)
-    else:
-        if device.revoked_at is not None:
-            raise DomainError(
-                "DEVICE_REVOKED",
-                "This device was revoked and must be re-enabled by an administrator",
-            )
-        if device.platform != request.platform or device.device_class != request.device_class:
-            raise DomainError(
-                "DEVICE_IDENTITY_MISMATCH",
-                "A registered device cannot change its platform or device class",
-            )
-        device.app_version = request.app_version
-        device.display_name = request.display_name
-        device.last_seen_at = now
-    await session.flush()
-    await assign_first_primary(session, device)
-    await session.flush()
-    return await to_device_response(session, device)
-
-
-async def require_device(
-    user_id: int,
-    device_public_id: str,
-    session: AsyncSession,
-) -> ClientDevice:
-    result = await session.execute(
-        select(ClientDevice).where(
-            ClientDevice.user_id == user_id,
-            ClientDevice.public_id == device_public_id,
-            ClientDevice.revoked_at.is_(None),
-        )
-    )
-    device = result.scalar_one_or_none()
-    if device is None:
-        raise DomainError("DEVICE_NOT_FOUND", "Device is not registered or has been revoked")
-    device.last_seen_at = utc_now()
-    return device
 
 
 async def _prepare_three_way_merge(
@@ -646,6 +569,4 @@ __all__ = [
     "bootstrap",
     "process_push",
     "pull_changes",
-    "register_device",
-    "require_device",
 ]

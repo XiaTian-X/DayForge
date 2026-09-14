@@ -27,8 +27,8 @@ from src.v2.schemas import (
 )
 from src.v2.encoding import canonical_json
 from src.v2.errors import DomainError
-from src.v2.service import bootstrap, process_push, pull_changes, register_device
-from src.v2.device_service import make_primary, revoke, set_structural_editing, to_device_response
+from src.v2.service import bootstrap, process_push, pull_changes
+from src.v2.device_service import make_primary, register_device, revoke, set_structural_editing, to_device_response
 from src.v2.system_service import server_identity_response
 from src.v2.timer_service import (
     get_active_timer,
