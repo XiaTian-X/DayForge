@@ -122,8 +122,11 @@ FastAPI Router -> Service/Domain -> SQLModel/SQLAlchemy -> SQLite
 这两个模块使用调用方的会话，不创建会话或提交事务。
 `src/v2/metric_mutations.py` 承载指标配置、不可变指标记录的变更及按账户查询指标；
 指标关联处理直接复用该查询。处理函数依赖共享快照与日志模块，不反向依赖同步编排服务。
+`src/v2/plan_node_mutations.py` 承载目标／习惯结构变更、父节点解析和同账户标题校验；
+事实记录及指标关联直接复用其中的节点查询。删除目标时，子习惯的级联删除或解除关联及其
+revision／日志与父目标同处调用方保存点，任一步失败必须整体回滚，不允许部分完成。
 权限校验、三方合并准备、操作分发、保存点和幂等结果仍由 `service.py` 负责；
-指标处理函数不自行提交事务，也不提供绕过同步入口的新 API。
+实体处理函数不自行提交事务，也不提供绕过同步入口的新 API。
 实体写入、revision、快照、变更日志及幂等结果仍由同一外层事务持有。
 
 数据库连接由 `src/storage/database_adapter.py` 提供。SQLite 的同步/异步引擎 URL、连接参数和 PRAGMA 均封装在该边界，备份与物理恢复继续封装在 `sqlite_maintenance.py`；领域 service 和同步 API 不直接选择数据库。
