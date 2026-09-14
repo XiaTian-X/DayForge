@@ -105,7 +105,9 @@ async def mutate_plan_node(
             )
             children = list(children_result.scalars().all())
             policy = operation.payload.get("child_policy")
-            if children and policy not in {"cascade_children", "detach_children"}:
+            if children and (
+                not isinstance(policy, str) or policy not in {"cascade_children", "detach_children"}
+            ):
                 raise DomainError(
                     "CHILD_POLICY_REQUIRED",
                     "Deleting a goal with children requires child_policy",
