@@ -110,6 +110,14 @@ FastAPI Router -> Service/Domain -> SQLModel/SQLAlchemy -> SQLite
 
 当前规模下不增加只有转发作用的 Repository 层。当前发布版只支持 SQLite 和单应用 worker；`DATABASE_TYPE` 的唯一合法值是 `sqlite`，显式 `DATABASE_URL` 必须使用 `sqlite+aiosqlite`。不能把仅能拼接 URL、但没有驱动与验证矩阵的配置称为受支持数据库。
 
+同步的确定性 JSON 编码集中在 `src/v2/encoding.py`，请求幂等哈希始终使用原始已解析请求，
+不能改为合并后的 payload。`src/v2/merge.py` 提供纯三方合并：仅目标/习惯、指标和指标关联
+参与结构字段合并，字段是否显式提交参与变更判断；无变化时复用服务端 revision，
+重叠修改返回稳定的字段冲突和三份数据。共享错误类型位于 `src/v2/errors.py`。
+`service.py` 负责判断是否进入合并，并按认证账户、实体及基准 revision 读取快照；
+纯合并模块不访问数据库、不自行提交，也不改变墓碑和事实记录的处理路径。
+实体写入、revision、快照、变更日志及幂等结果仍由同一外层事务持有。
+
 数据库连接由 `src/storage/database_adapter.py` 提供。SQLite 的同步/异步引擎 URL、连接参数和 PRAGMA 均封装在该边界，备份与物理恢复继续封装在 `sqlite_maintenance.py`；领域 service 和同步 API 不直接选择数据库。
 
 新增数据库适配器前必须同时具备：锁定的运行驱动、异步应用引擎、同步 Alembic 引擎、从空库升级和模型一致性测试、同步事务/幂等/冲突矩阵、并发写入策略、备份恢复及逻辑归档往返验证。只有这些检查进入 CI 后，才能开放对应配置值；数据库迁移不得改变账户归属、公共 ID、revision、墓碑、UTC/IANA 时间和计时状态机语义。
