@@ -103,6 +103,30 @@ def _same_merge_projection(
     return all(_get_path(left, path) == _get_path(right, path) for path in paths)
 
 
+def _inherit_omitted_recurrence_dates(
+    local_full: dict[str, Any],
+    local_set: dict[str, Any],
+    base_payload: dict[str, Any],
+) -> None:
+    """Apply the existing same-type recurrence update rule to local intent.
+
+    Optional dates omitted by a client retain their base values; explicit null
+    clears them. Use the base, not the current server, so this does not merge
+    concurrent edits within an otherwise atomic recurrence policy.
+    """
+    path = ("activity", "recurrence_rule")
+    local_rule = _get_path(local_full, path)
+    submitted_rule = _get_path(local_set, path)
+    base_rule = _get_path(base_payload, path)
+    if not all(isinstance(rule, dict) for rule in (local_rule, submitted_rule, base_rule)):
+        return
+    if local_rule.get("type") != base_rule.get("type"):
+        return
+    for field in ("start_date", "due_date"):
+        if field in local_rule and field not in submitted_rule and field in base_rule:
+            local_rule[field] = deepcopy(base_rule[field])
+
+
 def merge_structural_payload(
     operation: SyncOperationRequest,
     *,
@@ -131,13 +155,17 @@ def merge_structural_payload(
         )
 
     base_payload = parse_json(base_snapshot_json)
+    _inherit_omitted_recurrence_dates(local_full, local_set, base_payload)
     local_changes: set[tuple[str, ...]] = set()
     remote_changes: set[tuple[str, ...]] = set()
     for path in paths:
-        local_value = _get_path(local_set, path)
+        # Presence is sparse, but values must use the same normalized defaults
+        # as snapshots. Comparing sparse nested dictionaries fabricates edits.
+        submitted = _get_path(local_set, path) is not _MISSING
+        local_value = _get_path(local_full, path)
         base_value = _get_path(base_payload, path)
         server_value = _get_path(server_payload, path)
-        if local_value is not _MISSING and local_value != base_value:
+        if submitted and local_value != base_value:
             local_changes.add(path)
         if server_value != base_value:
             remote_changes.add(path)
