@@ -13,6 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from src.auth.models import User
+from src.v2.encoding import canonical_json, parse_json
+from src.v2.errors import DomainError
 from src.v2.models import (
     ActivityDetail,
     ActivityEvent,
@@ -34,10 +36,7 @@ from src.v2.schemas import (
     TimerSessionResponse,
 )
 from src.v2.service import (
-    DomainError,
     _append_change,
-    canonical_json,
-    parse_json,
     require_device,
     serialize_activity_event_with_allocations,
 )
