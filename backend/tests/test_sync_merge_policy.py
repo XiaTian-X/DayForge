@@ -19,8 +19,6 @@ def base_activity():
     operation["base_revision"] = 1
     request = SyncOperationRequest.model_validate(operation)
     snapshot = jsonable_utc(PlanNodePayload.model_validate(request.payload).model_dump())
-    # Use a complete nested rule here to isolate copying and conflict granularity.
-    request.payload["activity"]["recurrence_rule"] = deepcopy(snapshot["activity"]["recurrence_rule"])
     return request, snapshot
 
 
@@ -68,4 +66,28 @@ def test_nested_recurrence_rule_is_one_conflict_field_not_a_recursive_dict_merge
     assert error.local_entity["activity"]["recurrence_rule"]["start_date"] == "2026-09-14"
     assert error.entity["activity"]["recurrence_rule"]["weekdays"] == [2, 4]
     assert operation.model_dump() == original_request
+    assert server == original_server
+
+
+def test_inherited_date_does_not_mutate_the_sparse_request_or_base_snapshot():
+    operation, base = base_activity()
+    base["activity"]["recurrence_rule"]["start_date"] = "2026-09-01"
+    operation.payload["title"] = "Local title"
+    server = deepcopy(base)
+    server["description"] = "Remote description"
+    original_request = operation.model_dump()
+    original_base = deepcopy(base)
+    original_server = deepcopy(server)
+
+    prepared, no_op = merge_structural_payload(
+        operation, current_revision=2, server_payload=server,
+        base_snapshot_json=canonical_json(base),
+    )
+    assert no_op is None
+    assert prepared.payload["activity"]["recurrence_rule"]["start_date"] == "2026-09-01"
+    assert prepared.payload["title"] == "Local title"
+    assert prepared.payload["description"] == "Remote description"
+    assert "start_date" not in operation.payload["activity"]["recurrence_rule"]
+    assert operation.model_dump() == original_request
+    assert base == original_base
     assert server == original_server
