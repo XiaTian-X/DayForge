@@ -3,17 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from decimal import Decimal
 from typing import Any, Optional
 
-from pydantic import ValidationError
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from src.auth.models import User
-from src.v2.change_log import append_change
 from src.v2.entity_snapshots import (
     current_entity_snapshot,
     serialize_activity_event_with_allocations,
@@ -25,8 +22,10 @@ from src.v2.entity_snapshots import (
 from src.v2.encoding import canonical_json, operation_hash, parse_json
 from src.v2.errors import DomainError
 from src.v2.merge import MERGE_PATHS, merge_structural_payload
-from src.v2.metric_mutations import get_metric, mutate_metric, mutate_observation
-from src.v2.plan_node_mutations import get_plan_node, mutate_plan_node
+from src.v2.metric_mutations import mutate_metric, mutate_observation
+from src.v2.plan_node_mutations import mutate_plan_node
+from src.v2.event_mutations import mutate_activity_event
+from src.v2.link_mutations import mutate_link
 from src.v2.device_service import (
     STRUCTURAL_ENTITY_TYPES,
     STRUCTURE_CAPABILITY,
@@ -49,8 +48,6 @@ from src.v2.models import (
     utc_now,
 )
 from src.v2.schemas import (
-    ActivityEventPayload,
-    ActivityMetricLinkPayload,
     DeviceRegisterRequest,
     DeviceResponse,
     SyncBootstrapResponse,
@@ -167,254 +164,6 @@ async def _prepare_three_way_merge(
     )
 
 
-async def _mutate_activity_event(
-    session: AsyncSession,
-    user_id: int,
-    device: ClientDevice,
-    operation: SyncOperationRequest,
-) -> tuple[int, dict[str, Any]]:
-    result = await session.execute(
-        select(ActivityEvent).where(
-            ActivityEvent.owner_user_id == user_id,
-            ActivityEvent.public_id == str(operation.entity_uuid),
-        )
-    )
-    existing = result.scalar_one_or_none()
-    if operation.action == "delete":
-        raise DomainError("USE_REVERT_EVENT", "Activity events are immutable; append a revert event")
-    if existing is not None:
-        activity = await session.get(PlanNode, existing.activity_node_id)
-        revert = await session.get(ActivityEvent, existing.reverts_event_id) if existing.reverts_event_id else None
-        entity = await serialize_activity_event_with_allocations(
-            session, existing, activity.public_id, revert.public_id if revert else None
-        )
-        raise DomainError(
-            "ENTITY_ALREADY_EXISTS",
-            "An event with this UUID already exists",
-            conflict=True,
-            revision=existing.revision,
-            entity=entity,
-        )
-    if operation.base_revision not in (None, 0):
-        raise DomainError("INVALID_BASE_REVISION", "New events must not have a positive base revision")
-    try:
-        payload = ActivityEventPayload.model_validate(operation.payload)
-    except ValidationError as exc:
-        raise DomainError("INVALID_PAYLOAD", str(exc)) from exc
-
-    activity = await get_plan_node(session, user_id, str(payload.activity_uuid), include_deleted=False)
-    if activity is None or activity.node_kind != "activity":
-        raise DomainError("ACTIVITY_NOT_FOUND", "Activity was not found")
-    detail = await session.get(ActivityDetail, activity.id)
-    allowed_types = {
-        "check": {"check_in", "revert"},
-        "count": {"count_delta", "count_snapshot", "revert"},
-        "duration": {"duration_session", "revert"},
-    }[detail.tracking_mode]
-    if payload.event_type not in allowed_types:
-        raise DomainError("EVENT_TYPE_MISMATCH", "Event type does not match activity tracking mode")
-    if payload.event_type == "duration_session":
-        raise DomainError(
-            "TIMER_COMMAND_REQUIRED",
-            "Timer sessions must be completed through the timer command protocol",
-        )
-    if (
-        detail.tracking_mode == "count"
-        and payload.value is not None
-        and (
-            payload.value != payload.value.to_integral_value()
-            or payload.value < -2_147_483_648
-            or payload.value > 2_147_483_647
-        )
-    ):
-        raise DomainError("INVALID_COUNT_VALUE", "Count events must use Android-range whole numbers")
-
-    revert_event = None
-    if payload.reverts_event_uuid:
-        revert_result = await session.execute(
-            select(ActivityEvent).where(
-                ActivityEvent.owner_user_id == user_id,
-                ActivityEvent.public_id == str(payload.reverts_event_uuid),
-                ActivityEvent.deleted_at.is_(None),
-            )
-        )
-        revert_event = revert_result.scalar_one_or_none()
-        if revert_event is None or revert_event.activity_node_id != activity.id:
-            raise DomainError("REVERT_TARGET_NOT_FOUND", "Revert target was not found for this activity")
-        duplicate_revert = await session.execute(
-            select(ActivityEvent).where(
-                ActivityEvent.owner_user_id == user_id,
-                ActivityEvent.reverts_event_id == revert_event.id,
-                ActivityEvent.deleted_at.is_(None),
-            )
-        )
-        if duplicate_revert.scalar_one_or_none() is not None:
-            raise DomainError("EVENT_ALREADY_REVERTED", "The target event has already been reverted")
-
-    source_device_id = str(payload.source_device_id) if payload.source_device_id else device.public_id
-    if source_device_id != device.public_id:
-        raise DomainError("SOURCE_DEVICE_MISMATCH", "A client may not impersonate another device")
-
-    event = ActivityEvent(
-        public_id=str(operation.entity_uuid),
-        owner_user_id=user_id,
-        activity_node_id=activity.id,
-        event_type=payload.event_type,
-        value=payload.value if payload.value is not None else (Decimal("1") if payload.event_type == "check_in" else None),
-        duration_seconds=payload.duration_seconds,
-        duration_milliseconds=payload.duration_milliseconds,
-        started_at=payload.started_at,
-        ended_at=payload.ended_at,
-        occurred_at=payload.occurred_at,
-        local_date=payload.local_date,
-        timezone=payload.timezone,
-        note=payload.note,
-        source_type=payload.source_type,
-        source_device_public_id=source_device_id,
-        external_event_id=payload.external_event_id,
-        recorded_by_user_id=user_id,
-        reverts_event_id=revert_event.id if revert_event else None,
-        payload_json=canonical_json(payload.metadata),
-    )
-    session.add(event)
-    try:
-        await session.flush()
-    except IntegrityError as exc:
-        if payload.event_type == "revert":
-            raise DomainError("EVENT_ALREADY_REVERTED", "The target event has already been reverted") from exc
-        if payload.external_event_id:
-            raise DomainError("DUPLICATE_EXTERNAL_EVENT", "This source event was already recorded") from exc
-        raise DomainError("CONSTRAINT_VIOLATION", "The activity event violated a database constraint") from exc
-    entity = await serialize_activity_event_with_allocations(
-        session, event, activity.public_id, revert_event.public_id if revert_event else None
-    )
-    await append_change(
-        session,
-        user_id=user_id,
-        device_id=device.id,
-        operation_id=str(operation.operation_id),
-        entity_type="activity_event",
-        entity_uuid=event.public_id,
-        operation="upsert",
-        revision=event.revision,
-        payload=entity,
-    )
-    return event.revision, entity
-
-
-async def _mutate_link(
-    session: AsyncSession,
-    user_id: int,
-    device: ClientDevice,
-    operation: SyncOperationRequest,
-) -> tuple[int, dict[str, Any]]:
-    result = await session.execute(
-        select(ActivityMetricLinkV2).where(
-            ActivityMetricLinkV2.owner_user_id == user_id,
-            ActivityMetricLinkV2.public_id == str(operation.entity_uuid),
-        )
-    )
-    existing = result.scalar_one_or_none()
-    if operation.action == "delete":
-        if existing is None:
-            raise DomainError("ENTITY_NOT_FOUND", "Activity-metric link was not found")
-        activity = await session.get(PlanNode, existing.activity_node_id)
-        metric = await session.get(TrackedMetric, existing.metric_id)
-        if existing.deleted_at is not None:
-            return existing.revision, serialize_link(existing, activity.public_id, metric.public_id)
-        if operation.base_revision != existing.revision:
-            raise DomainError(
-                "REVISION_CONFLICT",
-                "Link changed on another client",
-                conflict=True,
-                revision=existing.revision,
-            )
-        existing.revision += 1
-        existing.updated_at = utc_now()
-        existing.deleted_at = existing.updated_at
-        entity = serialize_link(existing, activity.public_id, metric.public_id)
-        await append_change(
-            session,
-            user_id=user_id,
-            device_id=device.id,
-            operation_id=str(operation.operation_id),
-            entity_type="activity_metric_link",
-            entity_uuid=existing.public_id,
-            operation="delete",
-            revision=existing.revision,
-            payload=entity,
-        )
-        return existing.revision, entity
-
-    try:
-        payload = ActivityMetricLinkPayload.model_validate(operation.payload)
-    except ValidationError as exc:
-        raise DomainError("INVALID_PAYLOAD", str(exc)) from exc
-    activity = await get_plan_node(session, user_id, str(payload.activity_uuid), include_deleted=False)
-    if activity is None or activity.node_kind != "activity":
-        raise DomainError("ACTIVITY_NOT_FOUND", "Activity was not found")
-    metric = await get_metric(session, user_id, str(payload.metric_uuid), include_deleted=False)
-    if metric is None:
-        raise DomainError("METRIC_NOT_FOUND", "Metric was not found")
-
-    if existing is None:
-        if operation.base_revision not in (None, 0):
-            raise DomainError("ENTITY_NOT_FOUND", "Cannot update a link that does not exist")
-        link = ActivityMetricLinkV2(
-            public_id=str(operation.entity_uuid),
-            owner_user_id=user_id,
-            activity_node_id=activity.id,
-            metric_id=metric.id,
-            coefficient=payload.coefficient,
-            show_in_activity_detail=payload.show_in_activity_detail,
-            prompt_on_complete=payload.prompt_on_complete,
-            is_active=payload.is_active,
-        )
-        session.add(link)
-        try:
-            await session.flush()
-        except IntegrityError as exc:
-            raise DomainError("LINK_ALREADY_EXISTS", "This activity and metric are already linked") from exc
-    else:
-        if existing.deleted_at is not None:
-            raise DomainError(
-                "ENTITY_DELETED",
-                "Deleted links cannot be implicitly restored",
-                conflict=True,
-                revision=existing.revision,
-                conflict_kind="deleted_conflict",
-            )
-        if operation.base_revision != existing.revision:
-            raise DomainError(
-                "REVISION_CONFLICT",
-                "Link changed on another client",
-                conflict=True,
-                revision=existing.revision,
-            )
-        if existing.activity_node_id != activity.id or existing.metric_id != metric.id:
-            raise DomainError("IMMUTABLE_LINK_ENDPOINTS", "Link endpoints cannot be changed")
-        existing.coefficient = payload.coefficient
-        existing.show_in_activity_detail = payload.show_in_activity_detail
-        existing.prompt_on_complete = payload.prompt_on_complete
-        existing.is_active = payload.is_active
-        existing.revision += 1
-        existing.updated_at = utc_now()
-        link = existing
-    entity = serialize_link(link, activity.public_id, metric.public_id)
-    await append_change(
-        session,
-        user_id=user_id,
-        device_id=device.id,
-        operation_id=str(operation.operation_id),
-        entity_type="activity_metric_link",
-        entity_uuid=link.public_id,
-        operation="upsert",
-        revision=link.revision,
-        payload=entity,
-    )
-    return link.revision, entity
-
-
 async def _dispatch_operation(
     session: AsyncSession,
     user_id: int,
@@ -423,10 +172,10 @@ async def _dispatch_operation(
 ) -> tuple[int, dict[str, Any]]:
     handlers = {
         "plan_node": mutate_plan_node,
-        "activity_event": _mutate_activity_event,
+        "activity_event": mutate_activity_event,
         "metric": mutate_metric,
         "metric_observation": mutate_observation,
-        "activity_metric_link": _mutate_link,
+        "activity_metric_link": mutate_link,
     }
     return await handlers[operation.entity_type](session, user_id, device, operation)
 
