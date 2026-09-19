@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 from sqlmodel import select
 
 from src.auth.models import User
@@ -115,15 +116,51 @@ async def _is_fact_derived_one_time_delete(
     if row is None:
         return False
     node, _ = row
+    revert = aliased(ActivityEvent)
+    has_revert = select(revert.id).where(
+        revert.owner_user_id == user_id,
+        revert.reverts_event_id == ActivityEvent.id,
+        revert.event_type == "revert",
+        revert.deleted_at.is_(None),
+    ).correlate(ActivityEvent).exists()
     event_result = await session.execute(
         select(ActivityEvent.id).where(
             ActivityEvent.owner_user_id == user_id,
             ActivityEvent.activity_node_id == node.id,
             ActivityEvent.event_type == "check_in",
             ActivityEvent.deleted_at.is_(None),
+            ~has_revert,
         )
     )
     return event_result.first() is not None
+
+
+def _replay_result(
+    operation: SyncOperationRequest,
+    previous: SyncOperation,
+    request_hash: str,
+) -> SyncOperationResult:
+    """Apply identical replay rules to normal lookups and unique-insert races."""
+    if previous.request_hash != request_hash:
+        return SyncOperationResult(
+            operation_id=operation.operation_id,
+            entity_type=operation.entity_type,
+            entity_uuid=operation.entity_uuid,
+            status="rejected",
+            error_code="OPERATION_ID_REUSED",
+            message="operation_id was already used with a different request",
+        )
+    stored = parse_json(previous.result_json)
+    if not stored or previous.status == "processing":
+        # Abort the outer request, including earlier batch items, so the client
+        # keeps its outbox and retries after the winning transaction completes.
+        raise DomainError(
+            "OPERATION_IN_PROGRESS",
+            "The same operation is still being processed; retry later",
+        )
+    if stored.get("status") == "applied":
+        stored["status"] = "already_applied"
+    return SyncOperationResult.model_validate(stored)
 
 
 async def process_push(
@@ -146,25 +183,9 @@ async def process_push(
         )
         previous = previous_result.scalar_one_or_none()
         if previous is not None:
-            if previous.request_hash != request_hash:
-                results.append(
-                    SyncOperationResult(
-                        operation_id=operation.operation_id,
-                        entity_type=operation.entity_type,
-                        entity_uuid=operation.entity_uuid,
-                        status="rejected",
-                        error_code="OPERATION_ID_REUSED",
-                        message="operation_id was already used with a different request",
-                    )
-                )
-            else:
-                stored = parse_json(previous.result_json)
-                if stored.get("status") == "applied":
-                    stored["status"] = "already_applied"
-                results.append(SyncOperationResult.model_validate(stored))
+            results.append(_replay_result(operation, previous, request_hash))
             continue
 
-        operation_record: Optional[SyncOperation] = None
         try:
             # The initial lookup and insert are necessarily racy. Isolate the
             # unique-key insert in a savepoint so a simultaneous retry can be
@@ -203,35 +224,9 @@ async def process_push(
                         message="The operation record violated a database constraint",
                     )
                 )
-            elif raced.request_hash != request_hash:
-                results.append(
-                    SyncOperationResult(
-                        operation_id=operation.operation_id,
-                        entity_type=operation.entity_type,
-                        entity_uuid=operation.entity_uuid,
-                        status="rejected",
-                        error_code="OPERATION_ID_REUSED",
-                        message="operation_id was already used with a different request",
-                    )
-                )
             else:
-                stored = parse_json(raced.result_json)
-                if not stored or raced.status == "processing":
-                    # This is transient, not a permanently invalid operation.
-                    # Abort the batch so clients retain every outbox row and
-                    # can retry once the winning transaction has committed.
-                    raise DomainError(
-                        "OPERATION_IN_PROGRESS",
-                        "The same operation is still being processed; retry later",
-                    )
-                else:
-                    if stored.get("status") == "applied":
-                        stored["status"] = "already_applied"
-                    results.append(SyncOperationResult.model_validate(stored))
+                results.append(_replay_result(operation, raced, request_hash))
             continue
-
-        if operation_record is None:  # Defensive guard for static type safety.
-            raise RuntimeError("sync operation record was not created")
 
         try:
             async with session.begin_nested():
