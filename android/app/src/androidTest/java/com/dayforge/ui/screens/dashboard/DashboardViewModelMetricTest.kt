@@ -1,8 +1,8 @@
 package com.dayforge.ui.screens.dashboard
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import android.content.Context
 import androidx.lifecycle.viewModelScope
-import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import app.cash.turbine.test
 import com.dayforge.data.local.HabitDatabase
@@ -55,17 +55,15 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
 /**
  * Tests for DashboardViewModel metric-related state and functions.
  * Part of Phase 27-01: Main Screen Integration.
  */
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 @OptIn(ExperimentalCoroutinesApi::class)
 class DashboardViewModelMetricTest {
+    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
 
     private lateinit var viewModel: DashboardViewModel
     private lateinit var repository: HabitRepository
@@ -85,11 +83,7 @@ class DashboardViewModelMetricTest {
     fun setup() {
         Dispatchers.setMain(testDispatcher)
         context = ApplicationProvider.getApplicationContext()
-        // Use in-memory database for test isolation
-        database = Room.inMemoryDatabaseBuilder(
-            context,
-            HabitDatabase::class.java
-        ).build()
+        database = storage.database
         // Match DashboardViewModelTest: finish the blocking first open before ViewModel
         // queries start, so an initial-value-only test cannot race Room close against open.
         runBlocking(Dispatchers.IO) { database.openHelper.writableDatabase }

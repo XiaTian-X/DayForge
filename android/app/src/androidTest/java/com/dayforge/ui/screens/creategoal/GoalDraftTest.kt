@@ -1,12 +1,11 @@
 package com.dayforge.ui.screens.creategoal
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import android.content.Context
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModelStore
-import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.local.HabitDatabase
-import com.dayforge.data.local.SyncSchemaCallback
 import com.dayforge.data.local.entity.MetricEntity
 import com.dayforge.data.model.HabitDraft
 import com.dayforge.data.model.HabitSchedule
@@ -27,13 +26,11 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
 @OptIn(ExperimentalCoroutinesApi::class)
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 class GoalDraftTest {
+    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
     private val dispatcher = StandardTestDispatcher()
     private val store = ViewModelStore()
     private lateinit var db: HabitDatabase
@@ -43,8 +40,7 @@ class GoalDraftTest {
     @Before fun setup() {
         Dispatchers.setMain(dispatcher)
         context = ApplicationProvider.getApplicationContext()
-        db = Room.inMemoryDatabaseBuilder(context, HabitDatabase::class.java)
-            .addCallback(SyncSchemaCallback).build()
+        db = storage.database
         repository = HabitRepository(db.habitDao(), db.completionDao(), db.timeLogDao(), db)
     }
 

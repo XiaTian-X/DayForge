@@ -1,5 +1,6 @@
 package com.dayforge.ui.screens.login
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import android.content.Context
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.test.core.app.ApplicationProvider
@@ -25,7 +26,10 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.runBlocking
+import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -37,12 +41,9 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
 @OptIn(ExperimentalCoroutinesApi::class)
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 class LoginViewModelTest {
     private lateinit var context: Context
     private lateinit var file: File
@@ -93,13 +94,16 @@ class LoginViewModelTest {
 
     @After
     fun teardown() {
+        runBlocking {
+            if (::viewModel.isInitialized) viewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+            storeScope.coroutineContext[Job]?.cancelAndJoin()
+        }
+        assertTrue(file.delete() || !file.exists())
         Dispatchers.resetMain()
-        storeScope.cancel()
-        file.delete()
     }
 
     @Test
-    fun `login persists server identity and authoritative admin role`() = runTest(dispatcher.scheduler) {
+    fun login_persists_server_identity_and_authoritative_admin_role() = runTest(dispatcher.scheduler) {
         viewModel.onUsernameChange("member")
         viewModel.onPasswordChange("password123")
         viewModel.onLoginClick()
@@ -111,7 +115,7 @@ class LoginViewModelTest {
     }
 
     @Test
-    fun `switching account clears old cache before credentials become active`() = runTest(dispatcher.scheduler) {
+    fun switching_account_clears_old_cache_before_credentials_become_active() = runTest(dispatcher.scheduler) {
         tokenManager.prepareSyncAccount("old-account")
         preferences.setNeverAskAgain(42L, true)
         preferences.setHabitNotificationEnabled(42L, false)
@@ -131,7 +135,7 @@ class LoginViewModelTest {
     }
 
     @Test
-    fun `legacy unowned local changes require a decision and can be merged`() = runTest(dispatcher.scheduler) {
+    fun legacy_unowned_local_changes_require_a_decision_and_can_be_merged() = runTest(dispatcher.scheduler) {
         coEvery { syncManager.hasLocalData() } returns true
         viewModel.onUsernameChange("member")
         viewModel.onPasswordChange("password123")
@@ -154,7 +158,7 @@ class LoginViewModelTest {
     }
 
     @Test
-    fun `changes owned by another account cannot be merged and need explicit discard`() = runTest(dispatcher.scheduler) {
+    fun changes_owned_by_another_account_cannot_be_merged_and_need_explicit_discard() = runTest(dispatcher.scheduler) {
         tokenManager.prepareSyncAccount("old-account")
         coEvery { syncManager.hasLocalData() } returns true
         viewModel.onUsernameChange("member")
@@ -180,7 +184,7 @@ class LoginViewModelTest {
     }
 
     @Test
-    fun `cancelling account switch preserves the active account and local changes`() = runTest(dispatcher.scheduler) {
+    fun cancelling_account_switch_preserves_the_active_account_and_local_changes() = runTest(dispatcher.scheduler) {
         tokenManager.saveTokens("old-access", "old-refresh", "old-member", "old-account", false)
         tokenManager.prepareSyncAccount("old-account")
         coEvery { syncManager.hasLocalData() } returns true
@@ -200,7 +204,7 @@ class LoginViewModelTest {
     }
 
     @Test
-    fun `failed initial sync stays on login and retry succeeds`() = runTest(dispatcher.scheduler) {
+    fun failed_initial_sync_stays_on_login_and_retry_succeeds() = runTest(dispatcher.scheduler) {
         viewModel.onUsernameChange("member")
         viewModel.onPasswordChange("password123")
         viewModel.onLoginClick()
@@ -225,7 +229,7 @@ class LoginViewModelTest {
     }
 
     @Test
-    fun `unhealthy server never stores credentials`() = runTest(dispatcher.scheduler) {
+    fun unhealthy_server_never_stores_credentials() = runTest(dispatcher.scheduler) {
         healthStatus = "starting"
         viewModel.onUsernameChange("member")
         viewModel.onPasswordChange("password123")
@@ -234,6 +238,36 @@ class LoginViewModelTest {
 
         assertNull(tokenManager.accessToken.first())
         assertNotNull(viewModel.errorMessage.value)
+    }
+
+    @Test
+    fun failedCacheClearNeverActivatesNewCredentialsAndRetryCanComplete() = runTest(dispatcher.scheduler) {
+        tokenManager.saveTokens("old-access", "old-refresh", "old-member", "old-account", false)
+        tokenManager.prepareSyncAccount("old-account")
+        preferences.setNeverAskAgain(42L, true)
+        var tokenAtCacheClear: String? = "not-called"
+        coEvery { repository.clearAllData(context) } coAnswers {
+            tokenAtCacheClear = tokenManager.accessToken.first()
+            throw IllegalStateException("cache unavailable")
+        }
+        viewModel.onUsernameChange("member")
+        viewModel.onPasswordChange("password123")
+        viewModel.onLoginClick()
+        awaitNotLoading()
+        assertNull("The old session must be invalidated before cache removal", tokenAtCacheClear)
+        assertNull(tokenManager.accessToken.first())
+        assertNull(tokenManager.userId.first())
+        assertEquals("old-account", tokenManager.syncAccountId.first())
+        assertTrue(preferences.getNeverAskAgain(42L).first())
+        assertEquals("cache unavailable", viewModel.errorMessage.value)
+        assertFalse(viewModel.showSyncPrompt.value)
+        coEvery { repository.clearAllData(context) } returns Unit
+        viewModel.onLoginClick()
+        awaitNotLoading()
+        assertEquals("new-account", tokenManager.userId.first())
+        assertFalse(preferences.getNeverAskAgain(42L).first())
+        assertTrue(viewModel.showSyncPrompt.value)
+        coVerify(exactly = 2) { repository.clearAllData(context) }
     }
 
     private suspend fun awaitNotLoading() {

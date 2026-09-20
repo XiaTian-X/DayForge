@@ -1,8 +1,10 @@
 package com.dayforge.ui.screens.createhabit
 
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.cancelAndJoin
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import android.content.Context
 import android.database.sqlite.SQLiteConstraintException
-import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.PreferencesManager
@@ -29,13 +31,11 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
 @OptIn(ExperimentalCoroutinesApi::class)
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 class CreateHabitViewModelTest {
+    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
 
     private lateinit var viewModel: CreateHabitViewModel
     private lateinit var repository: HabitRepository
@@ -46,25 +46,24 @@ class CreateHabitViewModelTest {
     private lateinit var context: Context
     private lateinit var testDataStore: DataStore<Preferences>
     private lateinit var preferencesManager: PreferencesManager
+    private val storeJob = kotlinx.coroutines.SupervisorJob()
+    private lateinit var storeFile: File
     private val testDispatcher = UnconfinedTestDispatcher()
 
     @Before
     fun setup() {
         Dispatchers.setMain(testDispatcher)
         context = ApplicationProvider.getApplicationContext()
-        // Use in-memory database for test isolation
-        // allowMainThreadQueries() makes Room execute synchronously on main thread
-        database = Room.inMemoryDatabaseBuilder(
-            context,
-            HabitDatabase::class.java
-        ).allowMainThreadQueries().build()
+        database = storage.database
         habitDao = database.habitDao()
         completionDao = database.completionDao()
         metricDao = database.metricDao()
 
         // Create test DataStore for PreferencesManager
+        storeFile = File(context.cacheDir, "viewmodel-${java.util.UUID.randomUUID()}.preferences_pb")
         testDataStore = PreferenceDataStoreFactory.create(
-            produceFile = { File(context.cacheDir, "test_create_habit_preferences.preferences_pb") }
+            scope = kotlinx.coroutines.CoroutineScope(storeJob + Dispatchers.IO),
+            produceFile = { storeFile }
         )
         preferencesManager = PreferencesManager(testDataStore)
 
@@ -74,8 +73,13 @@ class CreateHabitViewModelTest {
 
     @After
     fun teardown() {
-        Dispatchers.resetMain()
+        kotlinx.coroutines.runBlocking {
+            if (::viewModel.isInitialized) viewModel.viewModelScope.coroutineContext[kotlinx.coroutines.Job]?.cancelAndJoin()
+            storeJob.cancelAndJoin()
+        }
         database.close()
+        if (::storeFile.isInitialized) assertTrue(storeFile.delete() || !storeFile.exists())
+        Dispatchers.resetMain()
     }
 
     @Test
@@ -235,6 +239,12 @@ class CreateHabitViewModelTest {
         assertFalse("isSaving should be false after save", completedState.isSaving)
         assertNotNull("savedHabitId should be set after successful save", completedState.savedHabitId)
         assertTrue("savedHabitId should be greater than 0", completedState.savedHabitId!! > 0)
+        val saved = requireNotNull(habitDao.getHabitById(completedState.savedHabitId!!))
+        assertEquals("Test Habit", saved.name)
+        assertEquals("Test Description", saved.description)
+        assertEquals(HabitType.COUNTING, saved.habitType)
+        assertEquals(8, saved.targetValue)
+        assertEquals(1, database.syncOutboxDao().count())
     }
 
     @Test
@@ -309,6 +319,8 @@ class CreateHabitViewModelTest {
         )
         assertFalse("Should not be saving", errorState.isSaving)
         assertNull("savedHabitId should be null", errorState.savedHabitId)
+        assertEquals(listOf("Duplicate Habit"), habitDao.getAllHabitsOnce().map { it.name })
+        assertEquals(1, database.syncOutboxDao().count())
     }
 
     @Test
@@ -332,6 +344,36 @@ class CreateHabitViewModelTest {
         viewModel.updateName("Different Habit Name")
         val clearedState = viewModel.uiState.value
         assertNull("Error should be cleared after name update", clearedState.errorMessage)
+    }
+
+    @Test
+    fun outboxFailureDoesNotReportSaveSuccessAndRetryPersistsOneHabit() = runBlocking {
+        database.openHelper.writableDatabase.execSQL("""
+            CREATE TRIGGER fail_viewmodel_outbox BEFORE INSERT ON sync_outbox
+            BEGIN SELECT RAISE(ABORT, 'test outbox failure'); END
+        """.trimIndent())
+        viewModel.updateName("Retry after storage failure")
+        viewModel.saveHabit()
+        val failure = awaitSaveResult()
+        assertNull(failure.savedHabitId)
+        assertNotNull(failure.errorMessage)
+        assertFalse(failure.isSaving)
+        assertTrue(habitDao.getAllHabitsOnce().isEmpty())
+        assertEquals(0, database.syncOutboxDao().count())
+        database.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_viewmodel_outbox")
+        viewModel.updateName("Retry after storage failure")
+        viewModel.saveHabit()
+        val retryState = viewModel.uiState.value
+        assertTrue("Retry must start or finish after a failed save", retryState.isSaving || retryState.savedHabitId != null)
+        val success = awaitSaveResult()
+        assertNotNull(success.savedHabitId)
+        assertFalse(success.isSaving)
+        viewModel.viewModelScope.coroutineContext[kotlinx.coroutines.Job]?.cancelAndJoin()
+        database = storage.reopen()
+        habitDao = database.habitDao()
+        assertEquals(listOf("Retry after storage failure"), habitDao.getAllHabitsOnce().map { it.name })
+        assertEquals(success.savedHabitId, habitDao.getAllHabitsOnce().single().id)
+        assertEquals(1, database.syncOutboxDao().count())
     }
 
     private suspend fun awaitSaveResult(): CreateHabitUiState {

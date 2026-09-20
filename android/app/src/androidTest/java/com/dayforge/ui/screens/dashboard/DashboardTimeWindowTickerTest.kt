@@ -1,5 +1,7 @@
 package com.dayforge.ui.screens.dashboard
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.runner.RunWith
 import app.cash.turbine.test
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.entity.HabitEntity
@@ -19,6 +21,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
+@RunWith(AndroidJUnit4::class)
 class DashboardTimeWindowTickerTest {
     @Test
     fun nonTimeWindowMode_emitsOnceWithoutReadingHabits() = runTest {
@@ -82,7 +85,7 @@ class DashboardTimeWindowTickerTest {
             currentTime
         )
 
-        assertEquals(DashboardTimeWindowRefreshCalculator.MIN_REFRESH_DELAY_MS, delay)
+        assertEquals(10_000L, delay)
     }
 
     @Test
@@ -95,7 +98,7 @@ class DashboardTimeWindowTickerTest {
             currentTime
         )
 
-        assertEquals(DashboardTimeWindowRefreshCalculator.MAX_REFRESH_DELAY_MS, delay)
+        assertEquals(3_600_000L, delay)
     }
 
     @Test
@@ -111,7 +114,7 @@ class DashboardTimeWindowTickerTest {
             time(hour = 9)
         )
 
-        assertEquals(DashboardTimeWindowRefreshCalculator.MAX_REFRESH_DELAY_MS, delay)
+        assertEquals(3_600_000L, delay)
     }
 
     private fun habit(

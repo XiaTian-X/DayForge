@@ -1,11 +1,14 @@
 package com.dayforge.ui.screens.nested
 
+import android.os.Handler
+import android.os.Looper
+import kotlinx.coroutines.android.asCoroutineDispatcher
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import android.content.Context
 import androidx.lifecycle.viewModelScope
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
-import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.PreferencesManager
@@ -60,8 +63,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 import java.io.File
 
 /**
@@ -70,9 +71,9 @@ import java.io.File
  * private implementation.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 class NestedViewModelTest {
+    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
 
     private lateinit var context: Context
     private lateinit var database: HabitDatabase
@@ -94,7 +95,7 @@ class NestedViewModelTest {
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
         context = ApplicationProvider.getApplicationContext()
-        database = Room.inMemoryDatabaseBuilder(context, HabitDatabase::class.java).build()
+        database = storage.database
         habitDao = database.habitDao()
         completionDao = database.completionDao()
         timeLogDao = database.timeLogDao()
@@ -103,7 +104,7 @@ class NestedViewModelTest {
         linkDao = database.habitMetricLinkDao()
         habitRepository = HabitRepository(habitDao, completionDao, timeLogDao, database)
 
-        preferencesFile = File(context.cacheDir, "nested_viewmodel_test.preferences_pb")
+        preferencesFile = File(context.cacheDir, "nested-${java.util.UUID.randomUUID()}.preferences_pb")
         preferencesFile.delete()
         dataStoreScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
@@ -168,7 +169,7 @@ class NestedViewModelTest {
     }
 
     @Test
-    fun `hierarchy keeps one parent relationship and hides standalone leaf habits`() = runTest {
+    fun hierarchy_keeps_one_parent_relationship_and_hides_standalone_leaf_habits() = runTest {
         val firstGoal = habit(HabitType.GOAL, "First goal", uuid = "goal-1")
         val secondGoal = habit(HabitType.GOAL, "Second goal", uuid = "goal-2")
         val child = habit(
@@ -198,7 +199,7 @@ class NestedViewModelTest {
     }
 
     @Test
-    fun `child completion updates parent progress without changing hierarchy`() = runTest {
+    fun child_completion_updates_parent_progress_without_changing_hierarchy() = runTest {
         val parent = habit(HabitType.GOAL, "Goal", uuid = "goal")
         habitDao.insert(parent)
         val childId = habitDao.insert(
@@ -223,7 +224,7 @@ class NestedViewModelTest {
     }
 
     @Test
-    fun `counting child completes only after today's values reach its target`() = runTest {
+    fun counting_child_completes_only_after_today_s_values_reach_its_target() = runTest {
         val parent = habit(HabitType.GOAL, "Goal", uuid = "goal")
         habitDao.insert(parent)
         val child = habit(
@@ -266,7 +267,7 @@ class NestedViewModelTest {
     }
 
     @Test
-    fun `completed timer child exposes seconds streak and target-cycle progress`() = runTest {
+    fun completed_timer_child_exposes_seconds_streak_and_target_cycle_progress() = runTest {
         val parent = habit(HabitType.GOAL, "Goal", uuid = "goal")
         habitDao.insert(parent)
         val child = habit(
@@ -303,7 +304,7 @@ class NestedViewModelTest {
     }
 
     @Test
-    fun `metric prompt contains only active prompt links and their latest values`() = runTest {
+    fun metric_prompt_contains_only_active_prompt_links_and_their_latest_values() = runTest {
         val habit = habit(HabitType.CHECK_IN, "Linked habit", uuid = "habit")
         val habitId = habitDao.insert(habit)
         val promptedMetric = metric("Weight", "kg", 1, uuid = "metric-prompted")
@@ -348,7 +349,7 @@ class NestedViewModelTest {
     }
 
     @Test
-    fun `dismiss and never ask preference prevent a metric prompt from reopening`() = runTest {
+    fun dismiss_and_never_ask_preference_prevent_a_metric_prompt_from_reopening() = runTest {
         val habit = habit(HabitType.CHECK_IN, "Linked habit", uuid = "habit")
         val habitId = habitDao.insert(habit)
         val metric = metric("Weight", "kg", 1, uuid = "metric")
@@ -367,7 +368,7 @@ class NestedViewModelTest {
     }
 
     @Test
-    fun `linked metric cards refresh when latest value changes`() = runTest {
+    fun linked_metric_cards_refresh_when_latest_value_changes() = runTest {
         val habit = habit(HabitType.CHECK_IN, "Linked habit", uuid = "habit")
         val habitId = habitDao.insert(habit)
         val metric = metric("Weight", "kg", 1, uuid = "metric")
@@ -393,7 +394,7 @@ class NestedViewModelTest {
     }
 
     @Test
-    fun `recording linked values clears only the handled pending habit`() = runTest {
+    fun recording_linked_values_clears_only_the_handled_pending_habit() = runTest {
         val firstHabitId = 11L
         val otherHabitId = 12L
         val firstMetricId = metricDao.insert(metric("Weight", "kg", 1, uuid = "weight"))
@@ -417,18 +418,21 @@ class NestedViewModelTest {
     }
 
     @Test
-    fun `invalid linked value submission saves nothing and keeps pending habit`() = runTest {
+    fun invalid_linked_value_submission_saves_nothing_and_keeps_pending_habit() = runTest {
         val habitId = 11L
         val validMetricId = metricDao.insert(metric("Weight", "kg", 1, uuid = "weight"))
         preferencesManager.addPendingMetricHabit(habitId)
 
-        val recorded = viewModel.recordMetricValues(
+        // This suspend UI operation displays a real Toast on failure.
+        val recorded = withContext(Handler(Looper.getMainLooper()).asCoroutineDispatcher()) {
+            viewModel.recordMetricValues(
             habitId,
             listOf(
                 MetricValueInput(validMetricId, 70.2),
                 MetricValueInput(Long.MAX_VALUE, 99.9)
             )
-        )
+            )
+        }
 
         assertFalse(recorded)
         assertNull(metricLogDao.getLatestLog(validMetricId))
@@ -436,7 +440,7 @@ class NestedViewModelTest {
     }
 
     @Test
-    fun `goal and reactivation dialogs preserve child lifecycle state`() = runTest {
+    fun goal_and_reactivation_dialogs_preserve_child_lifecycle_state() = runTest {
         val parent = habit(HabitType.GOAL, "Goal", uuid = "goal")
         habitDao.insert(parent)
         val childId = habitDao.insert(

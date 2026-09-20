@@ -1,8 +1,8 @@
 package com.dayforge.ui.screens.dashboard
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import android.content.Context
 import androidx.lifecycle.viewModelScope
-import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.PreferencesManager
@@ -56,13 +56,11 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 @OptIn(ExperimentalCoroutinesApi::class)
 class DashboardViewModelTest {
+    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
 
     private lateinit var viewModel: DashboardViewModel
     private lateinit var repository: HabitRepository
@@ -84,11 +82,7 @@ class DashboardViewModelTest {
     fun setup() {
         Dispatchers.setMain(testDispatcher)
         context = ApplicationProvider.getApplicationContext()
-        // Use in-memory database for test isolation
-        database = Room.inMemoryDatabaseBuilder(
-            context,
-            HabitDatabase::class.java
-        ).build()
+        database = storage.database
         // Finish lazy Room initialization before starting ViewModel queries. Cancellation can
         // finish before a blocking query returns; closing while its first open is in progress
         // reverses Room's close lock / SQLite open lock order and can deadlock this fixture.
@@ -649,7 +643,7 @@ class DashboardViewModelTest {
     @Test
     fun deleteParentKeepChildren_orphansChildAndClearsDialog() = runTest {
         val parentUuid = "parent-keep"
-        val parentId = createDeletionHabit("Parent", predefinedUuid = parentUuid)
+        val parentId = createDeletionHabit("Parent", predefinedUuid = parentUuid, habitType = HabitType.GOAL)
         val childId = createDeletionHabit("Child", parentHabitId = parentUuid)
         val parent = requireNotNull(repository.getHabitById(parentId))
 
@@ -671,24 +665,24 @@ class DashboardViewModelTest {
     fun deleteParentWithChildren_removesDescendantsAndClearsDialog() = runTest {
         val parentUuid = "parent-cascade"
         val childUuid = "child-cascade"
-        val parentId = createDeletionHabit("Parent", predefinedUuid = parentUuid)
+        val parentId = createDeletionHabit("Parent", predefinedUuid = parentUuid, habitType = HabitType.GOAL)
         val childId = createDeletionHabit(
             "Child",
             predefinedUuid = childUuid,
             parentHabitId = parentUuid
         )
-        val grandchildId = createDeletionHabit("Grandchild", parentHabitId = childUuid)
+        val secondChildId = createDeletionHabit("Second child", parentHabitId = parentUuid)
         val parent = requireNotNull(repository.getHabitById(parentId))
 
         viewModel.deleteHabit(parent)
         val pending = awaitDeleteDialog(parentId)
-        assertEquals(1, pending.childCount)
+        assertEquals(2, pending.childCount)
 
         viewModel.deleteHabitWithChildren()
         awaitCondition {
             repository.getHabitById(parentId) == null &&
                 repository.getHabitById(childId) == null &&
-                repository.getHabitById(grandchildId) == null &&
+                repository.getHabitById(secondChildId) == null &&
                 viewModel.showChildrenDialog.value == null
         }
 
@@ -712,11 +706,12 @@ class DashboardViewModelTest {
     private suspend fun createDeletionHabit(
         name: String,
         predefinedUuid: String? = null,
-        parentHabitId: String? = null
+        parentHabitId: String? = null,
+        habitType: HabitType = HabitType.CHECK_IN
     ): Long = repository.createHabit(
         name = name,
         description = "",
-        habitType = HabitType.CHECK_IN,
+        habitType = habitType,
         iconResId = 1,
         colorHex = "#2196F3",
         schedule = HabitSchedule.Daily,

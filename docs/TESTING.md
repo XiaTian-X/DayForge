@@ -264,3 +264,11 @@ assets 读取同一份 `contracts/sync-v2` 样例，不复制或自动生成测�
 设计值，禁止调用被测颜色生成器生成导出预期；非空断言不能代替实际颜色相等。
 格式化资源使用固定结果检查参数顺序与补零。详细记录见
 [主题与资源报告](reviews/2026-09-20-theme-resource-device.md)。
+
+## ViewModel 真机回归（Issue #141）
+
+ViewModel 的真实存储测试使用生产 Room 入口；唯一 DataStore 文件及其 scope 必须在清理前取消并等待结束。
+UI 保存成功必须同时检查持久化字段/outbox；失败必须检查无部分数据、无成功状态且可重试。
+测试夹具遵守 D-003，不用已废弃的普通父节点/孙节点替代当前删除行为。会显示 Toast 的 suspend UI 操作
+应在真实 Android 主 Looper 上测试，不能依靠 Robolectric 宽松线程行为。详细记录见
+[ViewModel 报告](reviews/2026-09-20-viewmodel-device.md)。

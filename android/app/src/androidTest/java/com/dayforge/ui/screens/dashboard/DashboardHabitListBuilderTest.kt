@@ -1,5 +1,7 @@
 package com.dayforge.ui.screens.dashboard
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.runner.RunWith
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
@@ -12,6 +14,7 @@ import java.time.ZonedDateTime
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
+@RunWith(AndroidJUnit4::class)
 class DashboardHabitListBuilderTest {
     private val builder = DashboardHabitListBuilder(mockk<HabitStatusCalculator>())
     private val currentTime = ZonedDateTime.of(
