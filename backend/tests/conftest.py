@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 # Import models BEFORE creating engine to register them with SQLModel.metadata
 from src.auth.models import User  # noqa: F401
-from src.auth.service import get_password_hash
+from tests.account_fixtures import TEST_ACCOUNT_PASSWORD, account_password_hash
 
 from src.main import app
 from src.database import set_engine
@@ -114,13 +114,13 @@ async def auth_tokens(test_client, async_session):
     """
     user = User(
         username="testuser",
-        password_hash=get_password_hash("TestPassword123!"),
+        password_hash=account_password_hash(),
     )
     async_session.add(user)
     await async_session.commit()
     response = await test_client.post(
         "/api/v1/auth/login",
-        json={"username": "testuser", "password": "TestPassword123!"},
+        json={"username": "testuser", "password": TEST_ACCOUNT_PASSWORD},
     )
     assert response.status_code == 200
     tokens = response.json()

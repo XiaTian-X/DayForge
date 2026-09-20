@@ -5,16 +5,13 @@ from uuid import uuid4
 import pytest
 
 from src.auth.models import User
-from src.auth.service import get_password_hash
-
-
-PASSWORD = "TestPassword123!"
+from tests.account_fixtures import TEST_ACCOUNT_PASSWORD as PASSWORD, account_password_hash
 
 
 async def account(test_client, async_session, username: str, *, admin: bool = False) -> dict:
     user = User(
         username=username,
-        password_hash=get_password_hash(PASSWORD),
+        password_hash=account_password_hash(),
         is_admin=admin,
     )
     async_session.add(user)

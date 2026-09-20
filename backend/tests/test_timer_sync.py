@@ -7,15 +7,12 @@ import pytest
 from sqlmodel import select
 
 from src.auth.models import User
-from src.auth.service import get_password_hash
+from tests.account_fixtures import TEST_ACCOUNT_PASSWORD as PASSWORD, account_password_hash
 from src.v2.models import DurationDayAllocation, TimerSession
 
 
-PASSWORD = "TestPassword123!"
-
-
 async def register_account(test_client, async_session, username: str) -> dict[str, str]:
-    async_session.add(User(username=username, password_hash=get_password_hash(PASSWORD)))
+    async_session.add(User(username=username, password_hash=account_password_hash()))
     await async_session.commit()
     response = await test_client.post(
         "/api/v1/auth/login",
