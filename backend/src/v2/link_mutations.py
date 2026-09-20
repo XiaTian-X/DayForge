@@ -7,11 +7,12 @@ from typing import Any
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
+from sqlmodel import col, select
 
 from src.v2.change_log import append_change
 from src.v2.entity_snapshots import serialize_link
 from src.v2.errors import DomainError
+from src.v2.invariants import require_internal
 from src.v2.metric_mutations import get_metric
 from src.v2.models import (
     ActivityMetricLinkV2,
@@ -32,19 +33,23 @@ async def mutate_link(
 ) -> tuple[int, dict[str, Any]]:
     result = await session.execute(
         select(ActivityMetricLinkV2).where(
-            ActivityMetricLinkV2.owner_user_id == user_id,
-            ActivityMetricLinkV2.public_id == str(operation.entity_uuid),
+            col(ActivityMetricLinkV2.owner_user_id) == user_id,
+            col(ActivityMetricLinkV2.public_id) == str(operation.entity_uuid),
         )
     )
     existing = result.scalar_one_or_none()
     if operation.action == "delete":
         if existing is None:
             raise DomainError("ENTITY_NOT_FOUND", "Activity-metric link was not found")
-        activity = await session.get(PlanNode, existing.activity_node_id)
-        metric = await session.get(TrackedMetric, existing.metric_id)
+        existing_activity = require_internal(
+            await session.get(PlanNode, existing.activity_node_id), "PlanNode"
+        )
+        existing_metric = require_internal(
+            await session.get(TrackedMetric, existing.metric_id), "TrackedMetric"
+        )
         if existing.deleted_at is not None:
             return existing.revision, serialize_link(
-                existing, activity.public_id, metric.public_id
+                existing, existing_activity.public_id, existing_metric.public_id
             )
         if operation.base_revision != existing.revision:
             raise DomainError(
@@ -56,7 +61,9 @@ async def mutate_link(
         existing.revision += 1
         existing.updated_at = utc_now()
         existing.deleted_at = existing.updated_at
-        entity = serialize_link(existing, activity.public_id, metric.public_id)
+        entity = serialize_link(
+            existing, existing_activity.public_id, existing_metric.public_id
+        )
         await append_change(
             session,
             user_id=user_id,

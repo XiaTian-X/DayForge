@@ -51,6 +51,10 @@ def type_cache(tmp_path_factory):
             "from src.admin.schemas import AdminHouseholdResponse\ndef wrong(value: AdminHouseholdResponse) -> str:\n    return value.created_by_user_id\n",
             "return-value",
         ),
+        (
+            "from sqlalchemy.ext.asyncio import AsyncSession\nfrom src.v2.models import TimerSession\nfrom src.v2.timer_service import serialize_timer_session\nasync def wrong(db: AsyncSession, timer: TimerSession) -> str:\n    return (await serialize_timer_session(db, timer)).session_id\n",
+            "return-value",
+        ),
     ],
 )
 def test_type_gate_rejects_invalid_contracts(source, diagnostic, type_cache):
@@ -147,28 +151,7 @@ def test_admin_and_device_boundaries_return_typed_models(type_cache):
 
 def test_type_gate_scope_is_explicit_without_error_or_import_suppression():
     config = tomllib.loads((BACKEND / "pyproject.toml").read_text())["tool"]["mypy"]
-    assert set(config["files"]) == {
-        "src/storage",
-        "src/config.py",
-        "src/database.py",
-        "src/time_utils.py",
-        "src/v2/time_utils.py",
-        "src/v2/schemas.py",
-        "src/v2/encoding.py",
-        "src/v2/merge.py",
-        "src/v2/errors.py",
-        "src/auth",
-        "src/tokens/models.py",
-        "src/tokens/schemas.py",
-        "src/tokens/service.py",
-        "src/tokens/router.py",
-        "src/tokens/admin_router.py",
-        "src/admin",
-        "src/v2/device_service.py",
-        "src/v2/invariants.py",
-        "src/v2/entity_snapshots.py",
-        "src/v2/read_service.py",
-    }
+    assert config["files"] == ["src"]
     assert config["check_untyped_defs"] is True
     assert not config.get("ignore_errors", False)
     assert not config.get("ignore_missing_imports", False)

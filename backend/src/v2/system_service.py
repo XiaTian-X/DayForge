@@ -2,7 +2,7 @@
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
+from sqlmodel import col, select
 
 from src.v2.models import ServerInstance, utc_now
 from src.v2.schemas import ServerIdentityResponse
@@ -31,7 +31,7 @@ async def get_or_create_server_identity(session: AsyncSession) -> ServerInstance
             await session.flush()
     except IntegrityError:
         result = await session.execute(
-            select(ServerInstance).where(ServerInstance.id == 1)
+            select(ServerInstance).where(col(ServerInstance.id) == 1)
         )
         identity = result.scalar_one()
     return identity
@@ -39,12 +39,14 @@ async def get_or_create_server_identity(session: AsyncSession) -> ServerInstance
 
 async def server_identity_response(session: AsyncSession) -> ServerIdentityResponse:
     identity = await get_or_create_server_identity(session)
-    return ServerIdentityResponse(
-        server_instance_id=identity.instance_uuid,
-        sync_epoch=identity.sync_epoch,
-        protocol_version=identity.protocol_version,
-        capabilities=CAPABILITIES,
-        server_time=utc_now(),
+    return ServerIdentityResponse.model_validate(
+        {
+            "server_instance_id": identity.instance_uuid,
+            "sync_epoch": identity.sync_epoch,
+            "protocol_version": identity.protocol_version,
+            "capabilities": CAPABILITIES,
+            "server_time": utc_now(),
+        }
     )
 
 

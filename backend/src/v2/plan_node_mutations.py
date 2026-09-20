@@ -12,12 +12,13 @@ from typing import Any, Optional
 from pydantic import ValidationError
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
+from sqlmodel import col, select
 
 from src.v2.change_log import append_change
 from src.v2.encoding import canonical_json, parse_json
 from src.v2.entity_snapshots import serialize_plan_node
 from src.v2.errors import DomainError
+from src.v2.invariants import require_internal
 from src.v2.models import ActivityDetail, ClientDevice, GoalDetail, PlanNode, utc_now
 from src.v2.schemas import GoalPayload, PlanNodePayload, SyncOperationRequest
 
@@ -30,11 +31,11 @@ async def get_plan_node(
     include_deleted: bool = True,
 ) -> Optional[PlanNode]:
     query = select(PlanNode).where(
-        PlanNode.owner_user_id == owner_user_id,
-        PlanNode.public_id == public_id,
+        col(PlanNode.owner_user_id) == owner_user_id,
+        col(PlanNode.public_id) == public_id,
     )
     if not include_deleted:
-        query = query.where(PlanNode.deleted_at.is_(None))
+        query = query.where(col(PlanNode.deleted_at).is_(None))
     result = await session.execute(query)
     return result.scalar_one_or_none()
 
@@ -62,13 +63,13 @@ async def _ensure_unique_plan_node_title(
     title: str,
     existing_id: Optional[int],
 ) -> None:
-    statement = select(PlanNode.id).where(
-        PlanNode.owner_user_id == user_id,
-        PlanNode.title == title,
-        PlanNode.deleted_at.is_(None),
+    statement = select(col(PlanNode.id)).where(
+        col(PlanNode.owner_user_id) == user_id,
+        col(PlanNode.title) == title,
+        col(PlanNode.deleted_at).is_(None),
     )
     if existing_id is not None:
-        statement = statement.where(PlanNode.id != existing_id)
+        statement = statement.where(col(PlanNode.id) != existing_id)
     if (await session.execute(statement.limit(1))).scalar_one_or_none() is not None:
         raise DomainError(
             "DUPLICATE_TITLE", "An active habit or goal with this title already exists"
@@ -102,9 +103,9 @@ async def mutate_plan_node(
         if existing.node_kind == "goal":
             children_result = await session.execute(
                 select(PlanNode).where(
-                    PlanNode.owner_user_id == user_id,
-                    PlanNode.parent_node_id == existing.id,
-                    PlanNode.deleted_at.is_(None),
+                    col(PlanNode.owner_user_id) == user_id,
+                    col(PlanNode.parent_node_id) == existing.id,
+                    col(PlanNode.deleted_at).is_(None),
                 )
             )
             children = list(children_result.scalars().all())
@@ -152,13 +153,13 @@ async def mutate_plan_node(
         result = await session.execute(
             update(PlanNode)
             .where(
-                PlanNode.id == existing.id,
-                PlanNode.owner_user_id == user_id,
-                PlanNode.revision == operation.base_revision,
-                PlanNode.deleted_at.is_(None),
+                col(PlanNode.id) == existing.id,
+                col(PlanNode.owner_user_id) == user_id,
+                col(PlanNode.revision) == operation.base_revision,
+                col(PlanNode.deleted_at).is_(None),
             )
             .values(
-                revision=PlanNode.revision + 1,
+                revision=col(PlanNode.revision) + 1,
                 updated_at=now,
                 deleted_at=now,
             )
@@ -168,7 +169,10 @@ async def mutate_plan_node(
                 "REVISION_CONFLICT", "Plan node changed concurrently", conflict=True
             )
         await session.flush()
-        existing = await get_plan_node(session, user_id, str(operation.entity_uuid))
+        existing = require_internal(
+            await get_plan_node(session, user_id, str(operation.entity_uuid)),
+            "updated PlanNode",
+        )
         entity = await serialize_plan_node(session, existing)
         await append_change(
             session,
@@ -226,43 +230,45 @@ async def mutate_plan_node(
         session.add(node)
         await session.flush()
         if payload.node_kind == "goal":
-            detail = payload.goal
+            created_goal = require_internal(payload.goal, "validated goal payload")
             session.add(
                 GoalDetail(
                     node_id=node.id,
-                    start_date=detail.start_date,
-                    due_date=detail.due_date,
-                    target_cycles=detail.target_cycles,
+                    start_date=created_goal.start_date,
+                    due_date=created_goal.due_date,
+                    target_cycles=created_goal.target_cycles,
                     failure_policy_json=canonical_json(
-                        detail.failure_policy.model_dump(mode="json")
+                        created_goal.failure_policy.model_dump(mode="json")
                     ),
                     evaluation_policy_json=canonical_json(
-                        detail.evaluation_policy.model_dump(mode="json")
+                        created_goal.evaluation_policy.model_dump(mode="json")
                     ),
-                    manual_result=detail.manual_result,
+                    manual_result=created_goal.manual_result,
                 )
             )
         else:
-            detail = payload.activity
+            created_activity = require_internal(
+                payload.activity, "validated activity payload"
+            )
             session.add(
                 ActivityDetail(
                     node_id=node.id,
-                    tracking_mode=detail.tracking_mode,
-                    is_countdown=detail.is_countdown,
+                    tracking_mode=created_activity.tracking_mode,
+                    is_countdown=created_activity.is_countdown,
                     recurrence_rule_json=canonical_json(
-                        detail.recurrence_rule.model_dump(mode="json")
+                        created_activity.recurrence_rule.model_dump(mode="json")
                     ),
-                    completion_policy=detail.completion_policy,
-                    target_value=detail.target_value,
-                    target_unit=detail.target_unit,
-                    target_cycles=detail.target_cycles,
+                    completion_policy=created_activity.completion_policy,
+                    target_value=created_activity.target_value,
+                    target_unit=created_activity.target_unit,
+                    target_cycles=created_activity.target_cycles,
                     failure_policy_json=canonical_json(
-                        detail.failure_policy.model_dump(mode="json")
+                        created_activity.failure_policy.model_dump(mode="json")
                     ),
-                    preferred_local_time=detail.preferred_local_time,
-                    timezone=detail.timezone,
-                    origin_assignment_id=str(detail.origin_assignment_id)
-                    if detail.origin_assignment_id
+                    preferred_local_time=created_activity.preferred_local_time,
+                    timezone=created_activity.timezone,
+                    origin_assignment_id=str(created_activity.origin_assignment_id)
+                    if created_activity.origin_assignment_id
                     else None,
                 )
             )
@@ -305,13 +311,16 @@ async def mutate_plan_node(
 
     goal_payload = None
     if existing.node_kind == "goal":
-        detail = await session.get(GoalDetail, existing.id)
-        goal_values = payload.goal.model_dump()
+        previous_goal = require_internal(
+            await session.get(GoalDetail, existing.id), "GoalDetail"
+        )
+        input_goal = require_internal(payload.goal, "validated goal payload")
+        goal_values = input_goal.model_dump()
         # Validate the actual resulting range, not just the sparse input. An
         # omitted endpoint is retained; explicit null still clears it.
         for field in ("start_date", "due_date"):
-            if field not in payload.goal.model_fields_set:
-                goal_values[field] = getattr(detail, field)
+            if field not in input_goal.model_fields_set:
+                goal_values[field] = getattr(previous_goal, field)
         try:
             goal_payload = GoalPayload.model_validate(goal_values)
         except ValidationError as exc:
@@ -326,7 +335,7 @@ async def mutate_plan_node(
         "color_hex": payload.color_hex,
         "status": payload.status,
         "visibility": payload.visibility,
-        "revision": PlanNode.revision + 1,
+        "revision": col(PlanNode.revision) + 1,
         "updated_at": now,
     }
     if "sort_order" in payload.model_fields_set:
@@ -334,10 +343,10 @@ async def mutate_plan_node(
     result = await session.execute(
         update(PlanNode)
         .where(
-            PlanNode.id == existing.id,
-            PlanNode.owner_user_id == user_id,
-            PlanNode.revision == operation.base_revision,
-            PlanNode.deleted_at.is_(None),
+            col(PlanNode.id) == existing.id,
+            col(PlanNode.owner_user_id) == user_id,
+            col(PlanNode.revision) == operation.base_revision,
+            col(PlanNode.deleted_at).is_(None),
         )
         .values(**node_values)
     )
@@ -347,24 +356,31 @@ async def mutate_plan_node(
         )
 
     if existing.node_kind == "goal":
-        detail = await session.get(GoalDetail, existing.id)
-        detail.start_date = goal_payload.start_date
-        detail.due_date = goal_payload.due_date
-        detail.target_cycles = goal_payload.target_cycles
-        detail.failure_policy_json = canonical_json(
+        goal_payload = require_internal(goal_payload, "validated merged goal payload")
+        stored_goal = require_internal(
+            await session.get(GoalDetail, existing.id), "GoalDetail"
+        )
+        stored_goal.start_date = goal_payload.start_date
+        stored_goal.due_date = goal_payload.due_date
+        stored_goal.target_cycles = goal_payload.target_cycles
+        stored_goal.failure_policy_json = canonical_json(
             goal_payload.failure_policy.model_dump(mode="json")
         )
-        detail.evaluation_policy_json = canonical_json(
+        stored_goal.evaluation_policy_json = canonical_json(
             goal_payload.evaluation_policy.model_dump(mode="json")
         )
-        detail.manual_result = goal_payload.manual_result
+        stored_goal.manual_result = goal_payload.manual_result
     else:
-        detail = await session.get(ActivityDetail, existing.id)
-        activity_payload = payload.activity
-        detail.tracking_mode = activity_payload.tracking_mode
-        detail.is_countdown = activity_payload.is_countdown
+        stored_activity = require_internal(
+            await session.get(ActivityDetail, existing.id), "ActivityDetail"
+        )
+        activity_payload = require_internal(
+            payload.activity, "validated activity payload"
+        )
+        stored_activity.tracking_mode = activity_payload.tracking_mode
+        stored_activity.is_countdown = activity_payload.is_countdown
         recurrence_rule = activity_payload.recurrence_rule.model_dump(mode="json")
-        previous_recurrence_rule = parse_json(detail.recurrence_rule_json)
+        previous_recurrence_rule = parse_json(stored_activity.recurrence_rule_json)
         if recurrence_rule.get("type") == previous_recurrence_rule.get("type"):
             for optional_date in ("start_date", "due_date"):
                 if (
@@ -375,24 +391,27 @@ async def mutate_plan_node(
                     recurrence_rule[optional_date] = previous_recurrence_rule[
                         optional_date
                     ]
-        detail.recurrence_rule_json = canonical_json(recurrence_rule)
-        detail.completion_policy = activity_payload.completion_policy
-        detail.target_value = activity_payload.target_value
-        detail.target_unit = activity_payload.target_unit
-        detail.target_cycles = activity_payload.target_cycles
-        detail.failure_policy_json = canonical_json(
+        stored_activity.recurrence_rule_json = canonical_json(recurrence_rule)
+        stored_activity.completion_policy = activity_payload.completion_policy
+        stored_activity.target_value = activity_payload.target_value
+        stored_activity.target_unit = activity_payload.target_unit
+        stored_activity.target_cycles = activity_payload.target_cycles
+        stored_activity.failure_policy_json = canonical_json(
             activity_payload.failure_policy.model_dump(mode="json")
         )
-        detail.preferred_local_time = activity_payload.preferred_local_time
-        detail.timezone = activity_payload.timezone
+        stored_activity.preferred_local_time = activity_payload.preferred_local_time
+        stored_activity.timezone = activity_payload.timezone
         if "origin_assignment_id" in activity_payload.model_fields_set:
-            detail.origin_assignment_id = (
+            stored_activity.origin_assignment_id = (
                 str(activity_payload.origin_assignment_id)
                 if activity_payload.origin_assignment_id
                 else None
             )
     await session.flush()
-    existing = await get_plan_node(session, user_id, str(operation.entity_uuid))
+    existing = require_internal(
+        await get_plan_node(session, user_id, str(operation.entity_uuid)),
+        "updated PlanNode",
+    )
     entity = await serialize_plan_node(session, existing)
     await append_change(
         session,

@@ -13,12 +13,13 @@ from pydantic import ValidationError
 from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
+from sqlmodel import col, select
 
 from src.v2.change_log import append_change
 from src.v2.encoding import canonical_json
 from src.v2.entity_snapshots import serialize_metric, serialize_observation
 from src.v2.errors import DomainError
+from src.v2.invariants import require_internal
 from src.v2.models import ClientDevice, MetricObservation, TrackedMetric, utc_now
 from src.v2.schemas import MetricObservationPayload, MetricPayload, SyncOperationRequest
 
@@ -31,11 +32,11 @@ async def get_metric(
     include_deleted: bool = True,
 ) -> Optional[TrackedMetric]:
     query = select(TrackedMetric).where(
-        TrackedMetric.owner_user_id == owner_user_id,
-        TrackedMetric.public_id == public_id,
+        col(TrackedMetric.owner_user_id) == owner_user_id,
+        col(TrackedMetric.public_id) == public_id,
     )
     if not include_deleted:
-        query = query.where(TrackedMetric.deleted_at.is_(None))
+        query = query.where(col(TrackedMetric.deleted_at).is_(None))
     result = await session.execute(query)
     return result.scalar_one_or_none()
 
@@ -65,19 +66,24 @@ async def mutate_metric(
         result = await session.execute(
             update(TrackedMetric)
             .where(
-                TrackedMetric.id == existing.id,
-                TrackedMetric.owner_user_id == user_id,
-                TrackedMetric.revision == operation.base_revision,
-                TrackedMetric.deleted_at.is_(None),
+                col(TrackedMetric.id) == existing.id,
+                col(TrackedMetric.owner_user_id) == user_id,
+                col(TrackedMetric.revision) == operation.base_revision,
+                col(TrackedMetric.deleted_at).is_(None),
             )
-            .values(revision=TrackedMetric.revision + 1, updated_at=now, deleted_at=now)
+            .values(
+                revision=col(TrackedMetric.revision) + 1, updated_at=now, deleted_at=now
+            )
         )
         if result.rowcount != 1:
             raise DomainError(
                 "REVISION_CONFLICT", "Metric changed concurrently", conflict=True
             )
         await session.flush()
-        existing = await get_metric(session, user_id, str(operation.entity_uuid))
+        existing = require_internal(
+            await get_metric(session, user_id, str(operation.entity_uuid)),
+            "updated TrackedMetric",
+        )
         entity = serialize_metric(existing)
         await append_change(
             session,
@@ -130,14 +136,14 @@ async def mutate_metric(
             )
         now = utc_now()
         values = payload.model_dump()
-        values.update(revision=TrackedMetric.revision + 1, updated_at=now)
+        values.update(revision=col(TrackedMetric.revision) + 1, updated_at=now)
         result = await session.execute(
             update(TrackedMetric)
             .where(
-                TrackedMetric.id == existing.id,
-                TrackedMetric.owner_user_id == user_id,
-                TrackedMetric.revision == operation.base_revision,
-                TrackedMetric.deleted_at.is_(None),
+                col(TrackedMetric.id) == existing.id,
+                col(TrackedMetric.owner_user_id) == user_id,
+                col(TrackedMetric.revision) == operation.base_revision,
+                col(TrackedMetric.deleted_at).is_(None),
             )
             .values(**values)
         )
@@ -146,7 +152,10 @@ async def mutate_metric(
                 "REVISION_CONFLICT", "Metric changed concurrently", conflict=True
             )
         await session.flush()
-        metric = await get_metric(session, user_id, str(operation.entity_uuid))
+        metric = require_internal(
+            await get_metric(session, user_id, str(operation.entity_uuid)),
+            "updated TrackedMetric",
+        )
 
     entity = serialize_metric(metric)
     await append_change(
@@ -171,8 +180,8 @@ async def mutate_observation(
 ) -> tuple[int, dict[str, Any]]:
     result = await session.execute(
         select(MetricObservation).where(
-            MetricObservation.owner_user_id == user_id,
-            MetricObservation.public_id == str(operation.entity_uuid),
+            col(MetricObservation.owner_user_id) == user_id,
+            col(MetricObservation.public_id) == str(operation.entity_uuid),
         )
     )
     existing = result.scalar_one_or_none()
@@ -180,8 +189,12 @@ async def mutate_observation(
         if existing is None:
             raise DomainError("ENTITY_NOT_FOUND", "Metric observation was not found")
         if existing.deleted_at is not None:
-            metric = await session.get(TrackedMetric, existing.metric_id)
-            return existing.revision, serialize_observation(existing, metric.public_id)
+            existing_metric = require_internal(
+                await session.get(TrackedMetric, existing.metric_id), "TrackedMetric"
+            )
+            return existing.revision, serialize_observation(
+                existing, existing_metric.public_id
+            )
         if operation.base_revision != existing.revision:
             raise DomainError(
                 "REVISION_CONFLICT",
@@ -192,8 +205,10 @@ async def mutate_observation(
         existing.revision += 1
         existing.updated_at = utc_now()
         existing.deleted_at = existing.updated_at
-        metric = await session.get(TrackedMetric, existing.metric_id)
-        entity = serialize_observation(existing, metric.public_id)
+        existing_metric = require_internal(
+            await session.get(TrackedMetric, existing.metric_id), "TrackedMetric"
+        )
+        entity = serialize_observation(existing, existing_metric.public_id)
         await append_change(
             session,
             user_id=user_id,
@@ -207,13 +222,15 @@ async def mutate_observation(
         )
         return existing.revision, entity
     if existing is not None:
-        metric = await session.get(TrackedMetric, existing.metric_id)
+        existing_metric = require_internal(
+            await session.get(TrackedMetric, existing.metric_id), "TrackedMetric"
+        )
         raise DomainError(
             "ENTITY_ALREADY_EXISTS",
             "An observation with this UUID already exists",
             conflict=True,
             revision=existing.revision,
-            entity=serialize_observation(existing, metric.public_id),
+            entity=serialize_observation(existing, existing_metric.public_id),
         )
     if operation.base_revision not in (None, 0):
         raise DomainError(

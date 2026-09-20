@@ -4,7 +4,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
+from sqlmodel import col, select
 
 from src.auth.dependencies import get_current_user
 from src.auth.models import User
@@ -27,6 +27,7 @@ from src.v2.schemas import (
 )
 from src.v2.encoding import canonical_json
 from src.v2.errors import DomainError
+from src.v2.invariants import require_internal
 from src.v2.service import process_push
 from src.v2.read_service import bootstrap, pull_changes
 from src.v2.device_service import (
@@ -93,9 +94,10 @@ async def list_client_devices(
     result = await session.execute(
         select(ClientDevice)
         .where(
-            ClientDevice.user_id == current_user.id, ClientDevice.revoked_at.is_(None)
+            col(ClientDevice.user_id) == current_user.id,
+            col(ClientDevice.revoked_at).is_(None),
         )
-        .order_by(ClientDevice.last_seen_at.desc())
+        .order_by(col(ClientDevice.last_seen_at).desc())
     )
     return [
         await to_device_response(session, device) for device in result.scalars().all()
@@ -109,9 +111,9 @@ async def _owned_active_device(
 ) -> ClientDevice:
     result = await session.execute(
         select(ClientDevice).where(
-            ClientDevice.user_id == user_id,
-            ClientDevice.public_id == str(device_id),
-            ClientDevice.revoked_at.is_(None),
+            col(ClientDevice.user_id) == user_id,
+            col(ClientDevice.public_id) == str(device_id),
+            col(ClientDevice.revoked_at).is_(None),
         )
     )
     device = result.scalar_one_or_none()
@@ -129,7 +131,9 @@ async def make_device_primary(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session, scope="function"),
 ) -> DeviceResponse:
-    device = await _owned_active_device(session, current_user.id, device_id)
+    device = await _owned_active_device(
+        session, require_internal(current_user.id, "User.id"), device_id
+    )
     try:
         await make_primary(session, device)
     except ValueError as error:
@@ -146,7 +150,9 @@ async def update_device_editing(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session, scope="function"),
 ) -> DeviceResponse:
-    device = await _owned_active_device(session, current_user.id, device_id)
+    device = await _owned_active_device(
+        session, require_internal(current_user.id, "User.id"), device_id
+    )
     try:
         await set_structural_editing(session, device, request.structural_edit_enabled)
     except ValueError as error:
@@ -162,7 +168,9 @@ async def revoke_client_device(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session, scope="function"),
 ) -> None:
-    device = await _owned_active_device(session, current_user.id, device_id)
+    device = await _owned_active_device(
+        session, require_internal(current_user.id, "User.id"), device_id
+    )
     await revoke(session, device)
 
 
