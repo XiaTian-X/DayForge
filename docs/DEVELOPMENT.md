@@ -49,6 +49,12 @@ chore(deps): upgrade FastAPI compatibility group
 
 也可以只验证 `root`、`android` 或 `backend`。
 
+后端静态检查使用开发组中锁定的 [Ruff](https://docs.astral.sh/ruff/linter/)，
+可在 `backend/` 运行 `uv run --frozen ruff check --config pyproject.toml .`。
+规则集显式配置，新增规则按独立批次推进；不要自动执行不安全修复或删除 pytest fixture／模型注册导入。
+显式重导出的写法遵循 [Ruff 导入规则](https://docs.astral.sh/ruff/rules/unused-import/)。
+格式／类型检查的接入进度以 `TESTING.md` 为准，不把尚未配置的检查写成已通过。
+
 ## 公开仓库与本地文件
 
 - 本仓库是公开仓库。真实密钥、令牌、账户、数据库、备份、签名材料和设备配置不得进入 Git。

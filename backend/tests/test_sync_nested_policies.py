@@ -8,7 +8,9 @@ import pytest
 from sqlmodel import select
 
 from src.v2.models import SyncOperation
-from tests.test_sync_merge_characterization import assert_history, edit, merge_client
+from tests.test_sync_merge_characterization import assert_history, edit
+# Explicit re-export keeps the imported fixture visible to pytest and linters.
+from tests.test_sync_merge_characterization import merge_client as merge_client
 from tests.test_sync_v2 import activity_operation, goal_operation
 
 

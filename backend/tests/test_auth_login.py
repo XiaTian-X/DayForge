@@ -3,12 +3,9 @@ import pytest
 import bcrypt
 from unittest.mock import AsyncMock, Mock
 from fastapi import HTTPException
-from httpx import AsyncClient
-from sqlmodel import select
-from datetime import datetime, timezone
 
 from src.auth.models import User
-from src.auth.service import get_password_hash, create_access_token, create_refresh_token
+from src.auth.service import get_password_hash
 from src.auth.service import PASSWORD_HASH_PREFIX, verify_password
 from src.auth.router import login
 from src.auth.schemas import UserLogin

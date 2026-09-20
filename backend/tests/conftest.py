@@ -3,20 +3,18 @@ import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlmodel import SQLModel, select
+from sqlmodel import SQLModel
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import text
 import jwt
 from datetime import datetime, timedelta, timezone
-import asyncio
 
 # Import models BEFORE creating engine to register them with SQLModel.metadata
 from src.auth.models import User  # noqa: F401
 from src.auth.service import get_password_hash
 
 from src.main import app
-from src.database import DATABASE_URL, set_engine, get_engine
-from src.config import settings
+from src.database import set_engine
 
 
 # Test configuration

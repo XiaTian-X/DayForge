@@ -9,7 +9,7 @@ from sqlmodel import select
 from src.auth.models import User
 from src.v2.models import ClientDevice, SyncChange, SyncCursor
 from src.v2.read_service import bootstrap, pull_changes
-from tests.test_sync_persistence import snapshot_setup
+from tests.test_sync_persistence import snapshot_setup as snapshot_setup
 from tests.test_sync_v2 import goal_operation, push, register_account, register_device
 
 

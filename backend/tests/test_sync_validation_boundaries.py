@@ -5,8 +5,9 @@ from sqlalchemy import delete
 from sqlmodel import select
 
 from src.v2.models import EntityRevisionSnapshot, GoalDetail, PlanNode, SyncChange
-from tests.test_sync_merge_characterization import edit, assert_history, merge_client
-from tests.test_sync_persistence import snapshot_setup
+from tests.test_sync_merge_characterization import edit, assert_history
+from tests.test_sync_merge_characterization import merge_client as merge_client
+from tests.test_sync_persistence import snapshot_setup as snapshot_setup
 from tests.test_sync_v2 import goal_operation, push
 
 

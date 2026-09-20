@@ -114,8 +114,9 @@ verify_backend() {
   (
     cd "$repo_root/backend"
     uv sync --frozen
-    uv run python -m pytest -p tests.warning_budget
-    uv run python scripts/export_openapi.py --check
+    uv run --frozen ruff check --config pyproject.toml .
+    uv run --frozen python -m pytest -p tests.warning_budget
+    uv run --frozen python scripts/export_openapi.py --check
   )
 }
 

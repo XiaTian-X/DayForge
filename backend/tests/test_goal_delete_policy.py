@@ -8,7 +8,9 @@ import pytest
 from sqlmodel import select
 
 from src.v2.models import EntityRevisionSnapshot, SyncChange
-from tests.test_plan_node_mutations import current_nodes, delete_node, hierarchy
+from tests.test_plan_node_mutations import current_nodes, delete_node
+# Explicit re-export: pytest discovers this fixture by its module attribute.
+from tests.test_plan_node_mutations import hierarchy as hierarchy
 from tests.test_sync_v2 import goal_operation
 
 
