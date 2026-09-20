@@ -1,6 +1,5 @@
 package com.dayforge.ui.theme
 
-import android.app.Application
 import android.content.ContextWrapper
 import android.view.View
 import androidx.activity.ComponentActivity
@@ -41,18 +40,16 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35], application = Application::class, qualifiers = "w400dp-h800dp-mdpi")
+@RunWith(AndroidJUnit4::class)
 @OptIn(ExperimentalMaterial3Api::class)
 class DayForgeWindowTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
     @Test
-    fun `nested title and content consume status and navigation insets exactly once`() {
+    fun nested_title_and_content_consume_status_and_navigation_insets_exactly_once() {
         fixture()
         val root = bounds("root")
         assertDp(root.top + 24.dp, bounds("toolbar").top)
@@ -62,7 +59,7 @@ class DayForgeWindowTest {
     }
 
     @Test
-    fun `bottom navigation owns its inset and nested content does not reserve it again`() {
+    fun bottom_navigation_owns_its_inset_and_nested_content_does_not_reserve_it_again() {
         fixture(bottomBar = true)
         assertDp(104.dp, bounds("navigation").height)
         assertDp(bounds("root").bottom, bounds("navigation").bottom)
@@ -70,7 +67,7 @@ class DayForgeWindowTest {
     }
 
     @Test
-    fun `IME replaces bottom inset then restores layout on dismissal`() {
+    fun IME_replaces_bottom_inset_then_restores_layout_on_dismissal() {
         val keyboard = mutableStateOf(0.dp)
         fixture(keyboard = { keyboard.value })
         val closedBottom = bounds("content").bottom
@@ -81,7 +78,7 @@ class DayForgeWindowTest {
     }
 
     @Test
-    fun `bottom navigation stays above IME without a second navigation gap`() {
+    fun bottom_navigation_stays_above_IME_without_a_second_navigation_gap() {
         val keyboard = mutableStateOf(0.dp)
         fixture(bottomBar = true, keyboard = { keyboard.value })
         compose.runOnIdle { keyboard.value = 300.dp }
@@ -93,7 +90,7 @@ class DayForgeWindowTest {
     }
 
     @Test
-    fun `side cutouts and caption bar remain physical in RTL and update after rotation`() {
+    fun side_cutouts_and_caption_bar_remain_physical_in_RTL_and_update_after_rotation() {
         val landscape = mutableStateOf(false)
         fixture(
             safeInsets = {
@@ -111,7 +108,7 @@ class DayForgeWindowTest {
     }
 
     @Test
-    fun `bottom navigation buttons avoid side cutouts in RTL`() {
+    fun bottom_navigation_buttons_avoid_side_cutouts_in_RTL() {
         fixture(
             bottomBar = true,
             safeInsets = { WindowInsets(left = 32.dp, right = 16.dp, bottom = 24.dp) },
@@ -123,7 +120,7 @@ class DayForgeWindowTest {
     }
 
     @Test
-    fun `status protection follows visible status inset without reserving content space`() {
+    fun status_protection_follows_visible_status_inset_without_reserving_content_space() {
         val top = mutableStateOf(24.dp)
         var measuredHeight = -1
         compose.setContent {
@@ -142,20 +139,23 @@ class DayForgeWindowTest {
     }
 
     @Test
-    fun `theme works with a wrapped non activity view context`() {
+    fun theme_works_with_a_wrapped_non_activity_view_context() {
         val previewView = View(ContextWrapper(compose.activity.applicationContext))
         compose.setContent {
-            CompositionLocalProvider(LocalView provides previewView) {
-                DayForgeTheme(themeMode = "dark", darkColorThemeId = "oled") {
-                    Box(Modifier.fillMaxSize().testTag("content"))
+            Box(Modifier.fillMaxSize().testTag("root")) {
+                CompositionLocalProvider(LocalView provides previewView) {
+                    DayForgeTheme(themeMode = "dark", darkColorThemeId = "oled") {
+                        Box(Modifier.fillMaxSize().testTag("content"))
+                    }
                 }
             }
         }
-        assertDp(400.dp, bounds("content").width)
+        assertTrue(bounds("content").width > 0.dp)
+        assertEquals(bounds("root"), bounds("content"))
     }
 
     @Test
-    fun `window reacts to custom color changes and composites transparent roles`() {
+    fun window_reacts_to_custom_color_changes_and_composites_transparent_roles() {
         val background = mutableStateOf(Color.White)
         compose.setContent {
             MaterialTheme(colorScheme = lightColorScheme(

@@ -272,3 +272,10 @@ UI 保存成功必须同时检查持久化字段/outbox；失败必须检查无�
 测试夹具遵守 D-003，不用已废弃的普通父节点/孙节点替代当前删除行为。会显示 Toast 的 suspend UI 操作
 应在真实 Android 主 Looper 上测试，不能依靠 Robolectric 宽松线程行为。详细记录见
 [ViewModel 报告](reviews/2026-09-20-viewmodel-device.md)。
+
+### Compose 与系统栏真机回归
+
+窗口几何与系统栏标记由真实 Activity 验证；可重复的注入 Insets 不等同于真实键盘/旋转验收。
+趋势图必须检查实际默认选中、双向切换与聚合回调，不能仅验证枚举；指标详情必须从页面点击到真实
+Room/outbox，并检查数据库重开、取消/确认删除和回调次数。数据类结构断言保留但不计为页面交互覆盖。
+证据见 [Compose 审查报告](reviews/2026-09-20-compose-device.md)。
