@@ -1,5 +1,7 @@
 package com.dayforge.data.repository
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.runner.RunWith
 import com.dayforge.data.api.SyncV2Api
 import com.dayforge.data.api.dto.TimerCommandBatchResponse
 import com.dayforge.data.api.dto.TimerCommandResult
@@ -18,13 +20,14 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+@RunWith(AndroidJUnit4::class)
 class TimerSyncRepositoryTest {
     private val api = mockk<SyncV2Api>()
     private val dao = mockk<TimeLogDao>(relaxed = true)
     private val repository = TimerSyncRepository(api, dao)
 
     @Test
-    fun `applied ordered commands are removed only after acknowledgement`() = runTest {
+    fun applied_ordered_commands_are_removed_only_after_acknowledgement() = runTest {
         val start = command(1, 1, "start")
         val stop = command(2, 2, "stop")
         coEvery { dao.getPendingTimerCommands(any()) } returnsMany listOf(
@@ -45,7 +48,7 @@ class TimerSyncRepositoryTest {
     }
 
     @Test
-    fun `lost response retries the exact timer command until acknowledged`() = runTest {
+    fun lost_response_retries_the_exact_timer_command_until_acknowledged() = runTest {
         val stop = command(2, 2, "stop")
         coEvery { dao.getPendingTimerCommands(any()) } returnsMany listOf(
             listOf(stop),
@@ -53,20 +56,25 @@ class TimerSyncRepositoryTest {
             emptyList()
         )
         val requests = mutableListOf<com.dayforge.data.api.dto.TimerCommandBatchRequest>()
-        coEvery { api.pushTimerCommands(capture(requests)) } throws IOException("response lost") andThen
-            TimerCommandBatchResponse(
-                listOf(
-                    TimerCommandResult(
-                        stop.commandId,
-                        stop.sessionUuid,
-                        "already_applied"
-                    )
-                ),
-                "2026-08-14T00:00:00Z"
-            )
-
-        assertTrue(runCatching { repository.pushPending("device") }.exceptionOrNull() is IOException)
-        repository.pushPending("device")
+        // Android's interface proxy wraps checked exceptions; a small transport fake preserves
+        // the real IOException contract instead of weakening the expected exception assertion.
+        val transport = object : SyncV2Api by api {
+            override suspend fun pushTimerCommands(
+                request: com.dayforge.data.api.dto.TimerCommandBatchRequest
+            ): TimerCommandBatchResponse {
+                requests += request
+                if (requests.size == 1) throw IOException("response lost")
+                return TimerCommandBatchResponse(
+                    listOf(TimerCommandResult(stop.commandId, stop.sessionUuid, "already_applied")),
+                    "2026-08-14T00:00:00Z"
+                )
+            }
+        }
+        val subject = TimerSyncRepository(transport, dao)
+        val failure = runCatching { subject.pushPending("device") }.exceptionOrNull()
+        assertTrue("Expected IOException, received $failure", failure is IOException)
+        coVerify(exactly = 0) { dao.deleteTimerCommand(any()) }
+        subject.pushPending("device")
 
         assertEquals(2, requests.size)
         assertEquals(requests[0].commands, requests[1].commands)
@@ -74,7 +82,7 @@ class TimerSyncRepositoryTest {
     }
 
     @Test
-    fun `missing predecessor remains retryable without changing command identity`() = runTest {
+    fun missing_predecessor_remains_retryable_without_changing_command_identity() = runTest {
         val stop = command(2, 2, "stop")
         coEvery { dao.getPendingTimerCommands(any()) } returns listOf(stop)
         coEvery { api.pushTimerCommands(any()) } returns TimerCommandBatchResponse(
@@ -96,7 +104,7 @@ class TimerSyncRepositoryTest {
     }
 
     @Test
-    fun `permanent rejection is quarantined for user attention`() = runTest {
+    fun permanent_rejection_is_quarantined_for_user_attention() = runTest {
         val start = command(1, 1, "start")
         coEvery { dao.getPendingTimerCommands(any()) } returns listOf(start)
         coEvery { api.pushTimerCommands(any()) } returns TimerCommandBatchResponse(
@@ -118,7 +126,7 @@ class TimerSyncRepositoryTest {
     }
 
     @Test
-    fun `manual retry replaces rejected command id before reactivating it`() = runTest {
+    fun manual_retry_replaces_rejected_command_id_before_reactivating_it() = runTest {
         val replacement = slot<String>()
 
         repository.retryRejectedCommand(7)
@@ -131,7 +139,7 @@ class TimerSyncRepositoryTest {
     }
 
     @Test
-    fun `server recovery cancels an active owned session before clearing local data`() = runTest {
+    fun server_recovery_cancels_an_active_owned_session_before_clearing_local_data() = runTest {
         val rejected = command(7, 2, "stop").copy(deadLetteredAt = 10)
         coEvery { dao.getRejectedTimerCommand(7) } returns rejected
         coEvery { api.timerStatus(rejected.sessionUuid, "device") } returns
@@ -158,7 +166,7 @@ class TimerSyncRepositoryTest {
     }
 
     @Test
-    fun `server recovery keeps local data when cancel acknowledgement does not match`() = runTest {
+    fun server_recovery_keeps_local_data_when_cancel_acknowledgement_does_not_match() = runTest {
         val rejected = command(7, 2, "stop").copy(deadLetteredAt = 10)
         coEvery { dao.getRejectedTimerCommand(7) } returns rejected
         coEvery { api.timerStatus(rejected.sessionUuid, "device") } returns
@@ -177,7 +185,7 @@ class TimerSyncRepositoryTest {
     }
 
     @Test
-    fun `server recovery keeps local completed record until normal pull replaces it`() = runTest {
+    fun server_recovery_keeps_local_completed_record_until_normal_pull_replaces_it() = runTest {
         val rejected = command(7, 2, "stop").copy(deadLetteredAt = 10)
         coEvery { dao.getRejectedTimerCommand(7) } returns rejected
         coEvery { api.timerStatus(rejected.sessionUuid, "device") } returns
@@ -192,7 +200,7 @@ class TimerSyncRepositoryTest {
     }
 
     @Test
-    fun `server recovery leaves another controller active and clears only stale local data`() = runTest {
+    fun server_recovery_leaves_another_controller_active_and_clears_only_stale_local_data() = runTest {
         val rejected = command(7, 2, "stop").copy(deadLetteredAt = 10)
         coEvery { dao.getRejectedTimerCommand(7) } returns rejected
         coEvery { api.timerStatus(rejected.sessionUuid, "device") } returns TimerStatusResponse(

@@ -107,6 +107,9 @@ class TimerSyncRepository @Inject constructor(
             var retryAfterPredecessor = false
             response.results.forEach { result ->
                 val row = byId[result.commandId] ?: return@forEach
+                check(result.sessionId == row.sessionUuid) {
+                    "服务器返回了不匹配的计时命令结果"
+                }
                 acknowledged += result.commandId
                 when (result.status) {
                     "applied", "already_applied" -> {

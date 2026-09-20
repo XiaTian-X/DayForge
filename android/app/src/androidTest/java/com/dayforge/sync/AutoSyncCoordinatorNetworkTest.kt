@@ -1,5 +1,7 @@
 package com.dayforge.sync
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.runner.RunWith
 import android.content.Context
 import android.net.Network
 import androidx.work.ExistingWorkPolicy
@@ -18,6 +20,7 @@ import org.junit.Before
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
+@RunWith(AndroidJUnit4::class)
 class AutoSyncCoordinatorNetworkTest {
     private val context = mockk<Context>()
     private val workManager = mockk<WorkManager>(relaxed = true)
@@ -46,7 +49,7 @@ class AutoSyncCoordinatorNetworkTest {
         }
     }
 
-    @Test fun `network bursts debounce and reconnect schedules exactly one attempt`() = runTest {
+    @Test fun network_bursts_debounce_and_reconnect_schedules_exactly_one_attempt() = runTest {
         val coordinator = AutoSyncCoordinator(context, outbox, timers, monitor, backgroundScope)
         coordinator.start()
         coordinator.start()
@@ -75,7 +78,7 @@ class AutoSyncCoordinatorNetworkTest {
         enqueues(3)
     }
 
-    @Test fun `last network loss cancels pending wakeup while another path keeps retry enabled`() = runTest {
+    @Test fun last_network_loss_cancels_pending_wakeup_while_another_path_keeps_retry_enabled() = runTest {
         AutoSyncCoordinator(context, outbox, timers, monitor, backgroundScope).start()
         runCurrent()
         state.value = connected(1)

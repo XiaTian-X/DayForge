@@ -1,5 +1,7 @@
 package com.dayforge.data.api
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.runner.RunWith
 import com.dayforge.data.api.authenticator.TokenAuthenticator
 import com.dayforge.data.api.interceptor.AuthInterceptor
 import com.dayforge.data.local.AuthenticationSession
@@ -15,13 +17,14 @@ import okhttp3.Response
 import org.junit.Assert.*
 import org.junit.Test
 
+@RunWith(AndroidJUnit4::class)
 class AuthenticationSessionTest {
     private val session = AuthenticationSession("account-a", "login-1")
     private val manager = mockk<TokenManager>()
     private val authenticator = TokenAuthenticator(manager, mockk(), mockk())
 
     @Test
-    fun `old request cannot retry under another account or new login`() {
+    fun old_request_cannot_retry_under_another_account_or_new_login() {
         for (currentSession in listOf(AuthenticationSession("account-b", "login-2"), session.copy(generation = "login-2"))) {
             coEvery { manager.authenticationSnapshot() } returns AuthenticationSnapshot(currentSession, "new", "refresh")
             assertNull(authenticator.authenticate(null, unauthorized(request(session))))
@@ -29,7 +32,7 @@ class AuthenticationSessionTest {
     }
 
     @Test
-    fun `concurrent refresh in the same session reuses new access token`() {
+    fun concurrent_refresh_in_the_same_session_reuses_new_access_token() {
         coEvery { manager.authenticationSnapshot() } returns AuthenticationSnapshot(session, "new", "refresh")
         val retry = authenticator.authenticate(null, unauthorized(request(session)))!!
         assertEquals("Bearer new", retry.header("Authorization"))
@@ -37,14 +40,14 @@ class AuthenticationSessionTest {
     }
 
     @Test
-    fun `logout and untagged requests cannot be refreshed`() {
+    fun logout_and_untagged_requests_cannot_be_refreshed() {
         coEvery { manager.authenticationSnapshot() } returns null
         assertNull(authenticator.authenticate(null, unauthorized(request(session))))
         assertNull(authenticator.authenticate(null, unauthorized(request(null))))
     }
 
     @Test
-    fun `interceptor attaches the same snapshot account as the bearer token`() {
+    fun interceptor_attaches_the_same_snapshot_account_as_the_bearer_token() {
         coEvery { manager.authenticationSnapshot() } returns AuthenticationSnapshot(session, "new", "refresh")
         val chain = mockk<Interceptor.Chain>()
         every { chain.request() } returns request(null)

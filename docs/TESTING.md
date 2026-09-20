@@ -249,3 +249,11 @@ assets 读取同一份 `contracts/sync-v2` 样例，不复制或自动生成测�
 拒绝后关闭重开核对业务与 outbox 均不变，同时保留合法移动/解除归属的正向场景。
 故障注入会临时改变仓库源码，不能与包含仓库级检查的验证并行；必须恢复后再执行完整验证。
 详见 [习惯业务报告](reviews/2026-09-20-habit-workflow-device.md)。
+
+## 网络和计时同步真机回归（Issue #138）
+
+网络回调夹具使用真实 Android capabilities / LinkProperties，路由选择通过边界替身和本机 TCP 服务验证；
+不能等同于 VPN、NAS 或外网验收。DataStore 和 HTTP fixture 必须显式关闭并暴露服务线程意外异常。
+计时同步使用真实 Room/Retrofit，固定 wire JSON 预期，验证响应丢失、临时/永久拒绝、错配确认与重开重试。
+只有 command ID 和 session ID 都匹配才能改变对应命令。详细记录见
+[网络与计时同步报告](reviews/2026-09-20-network-timer-device.md)。
