@@ -90,6 +90,9 @@ class DashboardViewModelMetricTest {
             context,
             HabitDatabase::class.java
         ).build()
+        // Match DashboardViewModelTest: finish the blocking first open before ViewModel
+        // queries start, so an initial-value-only test cannot race Room close against open.
+        runBlocking(Dispatchers.IO) { database.openHelper.writableDatabase }
         habitDao = database.habitDao()
         completionDao = database.completionDao()
         timeLogDao = database.timeLogDao()
