@@ -94,6 +94,7 @@
           "joined_at": {
             "anyOf": [
               {
+                "description": "UTC instant serialized with Z; fractional seconds are preserved.",
                 "format": "date-time",
                 "type": "string"
               },
