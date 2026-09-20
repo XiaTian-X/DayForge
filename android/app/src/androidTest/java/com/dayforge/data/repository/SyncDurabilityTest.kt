@@ -1,166 +1,23 @@
 package com.dayforge.data.repository
 
-import android.content.Context
-import android.net.ConnectivityManager
-import androidx.datastore.preferences.core.PreferenceDataStoreFactory
-import androidx.test.core.app.ApplicationProvider
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.dayforge.data.api.AuthApi
-import com.dayforge.data.api.EndpointResolver
-import com.dayforge.data.api.NetworkMonitor
-import com.dayforge.data.api.SelectedNetworkTransport
-import com.dayforge.data.api.SyncV2Api
-import com.dayforge.data.local.AndroidKeystoreTokenCipher
-import com.dayforge.data.local.HabitDatabase
-import com.dayforge.data.local.HabitDatabaseProvider
-import com.dayforge.data.local.PreferencesManager
-import com.dayforge.data.local.TokenManager
-import com.dayforge.data.local.entity.HabitEntity
-import com.dayforge.data.model.HabitSchedule
-import com.dayforge.data.model.HabitType
+import com.dayforge.data.local.entity.SyncOutboxEntity
 import com.dayforge.data.model.SyncProgress
-import com.dayforge.domain.service.AccountSessionCoordinator
-import java.io.File
 import java.io.IOException
-import java.security.KeyStore
 import java.util.UUID
-import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.*
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Protocol
-import okhttp3.Response
-import okhttp3.ResponseBody.Companion.toResponseBody
-import okio.Buffer
-import org.junit.After
 import org.junit.Assert.*
-import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import retrofit2.Retrofit
-import retrofit2.converter.kotlinx.serialization.asConverterFactory
 
 /** Real client persistence and wire encoding. Scripted transport is not server idempotency evidence. */
 @RunWith(AndroidJUnit4::class)
-class SyncDurabilityTest {
-    private val context: Context = ApplicationProvider.getApplicationContext()
-    private val json = Json { ignoreUnknownKeys = true }
-    private val alias = "dayforge.test.sync.${UUID.randomUUID()}"
-    private val files = listOf("tokens", "preferences").map {
-        File(context.cacheDir, "sync-$it-${UUID.randomUUID()}.preferences_pb")
-    }
-    private val scopes = mutableListOf<CoroutineScope>()
-    private lateinit var database: HabitDatabase
-    private lateinit var tokens: TokenManager
-    private lateinit var repository: IncrementalSyncRepository
-    private lateinit var networks: NetworkMonitor
-    private lateinit var client: OkHttpClient
-    private val pushes = CopyOnWriteArrayList<JsonObject>()
-    private val cursors = CopyOnWriteArrayList<Long>()
-    private val paths = CopyOnWriteArrayList<String>()
-    private var server = "server-a"
-    private var epoch = "epoch-a"
-    private var onPush: (JsonObject) -> String = { acknowledge(it) }
-    private var onPull: (Long) -> String = { page(emptyList(), it) }
-    private var onBootstrap: () -> String = { throw IOException("Unexpected bootstrap") }
-
-    @Before fun setup() = runBlocking {
-        check(context.packageName == "com.dayforge.testbed")
-        HabitDatabaseProvider.clearInstanceForTesting()
-        context.deleteDatabase("habit_database")
-        networks = NetworkMonitor(context.getSystemService(ConnectivityManager::class.java))
-        client = OkHttpClient.Builder().addInterceptor { chain ->
-            val request = chain.request()
-            val path = request.url.encodedPath
-            paths += path
-            val body = request.body?.let { body ->
-                val buffer = Buffer()
-                body.writeTo(buffer)
-                json.parseToJsonElement(buffer.readUtf8()).jsonObject
-            }
-            val response = when (request.method to path) {
-                "GET" to "/api/v2/system/identity" -> """{"server_instance_id":"$server","sync_epoch":"$epoch","protocol_version":4,"capabilities":["sync_v2","device_capabilities"],"server_time":"2026-09-20T00:00:00Z"}"""
-                "POST" to "/api/v2/devices/register" -> """{"device_id":"device-a","installation_id":${body!!.getValue("installation_id")},"platform":"android","capabilities":["structure.write","facts.write"],"is_primary_editor":true}"""
-                "POST" to "/api/v2/sync/push" -> {
-                    val requestBody = requireNotNull(body)
-                    pushes += requestBody
-                    onPush(requestBody)
-                }
-                "GET" to "/api/v2/sync/changes" -> {
-                    val cursor = requireNotNull(request.url.queryParameter("cursor")).toLong()
-                    cursors += cursor
-                    onPull(cursor)
-                }
-                "GET" to "/api/v2/sync/bootstrap" -> onBootstrap()
-                else -> throw IOException("Unexpected sync request: ${request.method} $path")
-            }
-            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200)
-                .message("scripted boundary")
-                .body(response.toResponseBody("application/json".toMediaType())).build()
-        }.build()
-        openStores()
-        tokens.saveTokens("synthetic-access", "synthetic-refresh", "member", "account-a", false)
-        tokens.prepareSyncAccount("account-a")
-        tokens.saveServerIdentity(server, epoch)
-        tokens.saveSyncCursor(0)
-    }
-
-    private fun openStores() {
-        database = HabitDatabaseProvider.getInstance(context)
-        val stores = files.map { file ->
-            val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-            scopes += scope
-            PreferenceDataStoreFactory.create(scope = scope, produceFile = { file })
-        }
-        tokens = TokenManager(stores[0], AndroidKeystoreTokenCipher(alias))
-        val preferences = PreferencesManager(stores[1])
-        val retrofit = Retrofit.Builder().baseUrl("https://example.invalid/").client(client)
-            .addConverterFactory(json.asConverterFactory("application/json".toMediaType())).build()
-        val api = retrofit.create(SyncV2Api::class.java)
-        val merger = SyncV2Merger(database, database.habitDao(), database.completionDao(),
-            database.timeLogDao(), database.metricDao(), database.metricLogDao(),
-            database.habitMetricLinkDao(), database.syncOutboxDao(), database.syncConflictDao())
-        repository = IncrementalSyncRepository(api,
-            EndpointResolver(networks, preferences, tokens, json, SelectedNetworkTransport()),
-            retrofit.create(AuthApi::class.java), tokens, preferences, database.habitDao(),
-            database.completionDao(), database.timeLogDao(), database.metricDao(), database.metricLogDao(),
-            database.habitMetricLinkDao(), database.syncOutboxDao(), database.syncConflictDao(),
-            TimerSyncRepository(api, database.timeLogDao()), merger, json, AccountSessionCoordinator())
-    }
-
-    private suspend fun closeStores() {
-        scopes.forEach { it.coroutineContext[Job]!!.cancelAndJoin() }
-        scopes.clear()
-        if (::database.isInitialized) database.close()
-        HabitDatabaseProvider.clearInstanceForTesting()
-    }
-
-    private suspend fun reopen() {
-        closeStores()
-        openStores()
-    }
-
-    @After fun cleanup() = runBlocking {
-        closeStores()
-        if (::networks.isInitialized) networks.close()
-        if (::client.isInitialized) {
-            client.dispatcher.executorService.shutdown()
-            client.connectionPool.evictAll()
-        }
-        context.deleteDatabase("habit_database")
-        files.forEach { it.delete() }
-        KeyStore.getInstance("AndroidKeyStore").apply { load(null); deleteEntry(alias) }
-        Unit
-    }
-
+class SyncDurabilityTest : SyncPersistenceFixture() {
     @Test fun bootstrap_persists_rows_and_cursor_without_echoing_server_data() = runBlocking {
         tokens.requireSyncBootstrap()
         val uuid = UUID.randomUUID().toString()
@@ -382,50 +239,92 @@ class SyncDurabilityTest {
         assertEquals(listOf("/api/v2/system/identity"), paths.toList())
     }
 
-    private suspend fun insertGoal(title: String): HabitEntity {
-        val entity = HabitEntity(name = title, habitType = HabitType.GOAL,
-            iconResId = 1, colorHex = "#123456", schedule = HabitSchedule.Daily)
-        return entity.copy(id = database.habitDao().insert(entity))
-    }
 
-    private fun operation(request: JsonObject) = request.getValue("operations").jsonArray.single().jsonObject
-
-    private fun acknowledge(request: JsonObject, status: String = "applied"): String = buildJsonObject {
-        put("results", buildJsonArray {
-            request.getValue("operations").jsonArray.forEach { element ->
-                val op = element.jsonObject
-                add(buildJsonObject {
-                    put("operation_id", op.getValue("operation_id"))
-                    put("entity_type", op.getValue("entity_type"))
-                    put("entity_uuid", op.getValue("entity_uuid"))
-                    put("status", status)
-                    put("revision", 1)
-                    put("entity", op.getValue("payload"))
-                })
+    @Test fun upload_progress_is_reported_after_durable_acknowledgement_before_pull() = runBlocking {
+        insertGoal("Offline goal")
+        val progress = mutableListOf<SyncProgress>()
+        val persistedCounts = mutableListOf<Int>()
+        repository.sync { event ->
+            progress += event
+            if (event is SyncProgress.UploadingChanges) {
+                persistedCounts += runBlocking { database.syncOutboxDao().count() }
             }
-        })
-    }.toString()
-
-    private fun change(sequence: Long, uuid: String, title: String) = buildJsonObject {
-        put("sequence", sequence)
-        put("entity_type", "plan_node")
-        put("entity_uuid", uuid)
-        put("operation", "upsert")
-        put("revision", 1)
-        put("payload", buildJsonObject { put("node_kind", "goal"); put("title", title) })
-        put("changed_at", "2026-09-20T00:00:00Z")
+        }
+        assertEquals(listOf(SyncProgress.UploadingChanges(0, 1), SyncProgress.UploadingChanges(1, 1),
+            SyncProgress.Downloading), progress)
+        assertEquals(listOf(1, 0), persistedCounts)
+        assertTrue(paths.indexOf("/api/v2/sync/push") < paths.indexOf("/api/v2/sync/changes"))
+        reopen()
+        assertEquals(0, database.syncOutboxDao().count())
+        assertEquals("Offline goal", database.habitDao().getAllHabitsOnce().single().name)
     }
 
-    private fun page(changes: List<JsonObject>, cursor: Long, more: Boolean = false) = buildJsonObject {
-        put("changes", JsonArray(changes))
-        put("next_cursor", cursor)
-        put("has_more", more)
-        put("server_time", "2026-09-20T00:00:00Z")
-    }.toString()
+    @Test fun persisted_parent_first_deletions_are_transmitted_child_first() = runBlocking {
+        val parent = UUID.randomUUID().toString()
+        val child = UUID.randomUUID().toString()
+        // Persist prepared operations in the opposite order, so bypassing sorting cannot pass.
+        for ((uuid, type, payload) in listOf(Triple(parent, "GOAL", "{\"child_policy\":\"detach_children\"}"),
+            Triple(child, "CHECK_IN", "{}"))) {
+            database.syncOutboxDao().insert(SyncOutboxEntity(operationId = UUID.randomUUID().toString(),
+                recordType = "habit", entityUuid = uuid, wireEntityUuid = uuid, action = "delete",
+                referenceUuid = type, payloadJson = payload, baseRevision = 1, attemptedAt = 1, attemptCount = 1))
+        }
+        reopen()
+        assertEquals(listOf(parent, child), database.syncOutboxDao().getAll().map { it.entityUuid })
+        repository.sync()
+        val operations = pushes.single().getValue("operations").jsonArray.map { it.jsonObject }
+        assertEquals(listOf(child, parent), operations.map { it.getValue("entity_uuid").jsonPrimitive.content })
+        assertTrue(operations.all { it.getValue("action").jsonPrimitive.content == "delete" })
+        assertEquals(buildJsonObject { put("child_policy", "detach_children") }, operations[1].getValue("payload"))
+        reopen()
+        assertEquals(0, database.syncOutboxDao().count())
+        assertTrue(database.syncOutboxDao().getState("plan_node", parent)!!.deleted)
+        assertTrue(database.syncOutboxDao().getState("plan_node", child)!!.deleted)
+    }
 
-    private fun snapshot(changes: List<JsonObject>, cursor: Long) = buildJsonObject {
-        put("changes", JsonArray(changes))
-        put("next_cursor", cursor)
-        put("server_time", "2026-09-20T00:00:00Z")
-    }.toString()
+    @Test fun malformed_incremental_page_on_clean_cache_recovers_from_authoritative_snapshot() = runBlocking {
+        val old = UUID.randomUUID().toString()
+        val fresh = UUID.randomUUID().toString()
+        onPull = { page(listOf(change(3, old, "Old replica")), 3) }
+        repository.sync()
+        val malformed = JsonObject(change(7, fresh, "Invalid") + ("payload" to buildJsonObject { put("node_kind", "goal") }))
+        onPull = { page(listOf(malformed), 7) }
+        onBootstrap = { snapshot(listOf(change(0, fresh, "Recovered replica")), 9) }
+        val progress = mutableListOf<SyncProgress>()
+        repository.sync(progress::add)
+        reopen()
+        assertTrue(progress.contains(SyncProgress.Recovering))
+        assertEquals(9L, tokens.syncCursor.first())
+        assertNull(database.habitDao().getHabitByUuid(old))
+        assertEquals("Recovered replica", database.habitDao().getHabitByUuid(fresh)!!.name)
+        assertEquals(0, database.syncOutboxDao().count())
+        assertEquals(1, paths.count { it == "/api/v2/sync/bootstrap" })
+    }
+
+    @Test fun legacy_session_without_public_account_id_refreshes_before_any_sync_request() = runBlocking {
+        tokens.clearSyncState()
+        tokenStore.edit { it.remove(stringPreferencesKey("user_public_id")) }
+        reopen()
+        assertNull(tokens.userId.first())
+        var refreshBody: JsonObject? = null
+        onRefresh = {
+            refreshBody = it
+            """{"access_token":"refreshed-access","refresh_token":"refreshed-refresh","user_id":"account-a","username":"member","is_admin":false}"""
+        }
+        onBootstrap = { snapshot(emptyList(), 9) }
+        repository.sync()
+        assertEquals(buildJsonObject { put("refresh_token", "synthetic-refresh") }, refreshBody)
+        assertEquals("/api/auth/refresh", paths.first())
+        assertTrue(paths.indexOf("/api/auth/refresh") < paths.indexOf("/api/v2/devices/register"))
+        reopen()
+        assertEquals("refreshed-access", tokens.accessToken.first())
+        assertEquals("refreshed-refresh", tokens.refreshToken.first())
+        assertEquals("member", tokens.userEmail.first())
+        assertEquals(false, tokens.isAdmin.first())
+        assertEquals("account-a", tokens.userId.first())
+        assertEquals("account-a", tokens.syncAccountId.first())
+        assertEquals(9L, tokens.syncCursor.first())
+        repository.sync()
+        assertEquals(1, paths.count { it == "/api/auth/refresh" })
+    }
 }
