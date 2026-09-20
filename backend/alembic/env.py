@@ -1,4 +1,5 @@
 """Alembic environment configuration for database migrations."""
+
 from logging.config import fileConfig
 import os
 
@@ -11,6 +12,7 @@ from alembic import context
 # Import SQLModel and all models to register them with metadata
 from sqlmodel import SQLModel
 import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Import all models to register them with SQLModel.metadata
@@ -49,7 +51,10 @@ config = context.config
 
 # Set sqlalchemy.url from environment only if not already set in config
 # This allows tests to override the URL via config.set_main_option()
-if config.get_main_option("sqlalchemy.url") is None or config.get_main_option("sqlalchemy.url") == "driver://user:pass@localhost/dbname":
+if (
+    config.get_main_option("sqlalchemy.url") is None
+    or config.get_main_option("sqlalchemy.url") == "driver://user:pass@localhost/dbname"
+):
     config.set_main_option("sqlalchemy.url", get_migration_database_url())
 
 # Interpret the config file for Python logging.
@@ -62,7 +67,9 @@ if config.config_file_name is not None:
 target_metadata = SQLModel.metadata
 
 
-def compare_type(context, inspected_column, metadata_column, inspected_type, metadata_type):
+def compare_type(
+    context, inspected_column, metadata_column, inspected_type, metadata_type
+):
     """Ignore SQLite's loss of SQLAlchemy Enum reflection metadata.
 
     Legacy models use Python Enum columns, which SQLite persists and reflects as

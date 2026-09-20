@@ -1,4 +1,5 @@
 """Pytest fixtures for testing."""
+
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
@@ -46,7 +47,7 @@ async def async_engine():
     engine = create_async_engine(
         TEST_DATABASE_URL,
         echo=False,  # Disable SQL logging
-        future=True
+        future=True,
     )
     # Override the app's engine with test engine
     set_engine(engine)
@@ -67,9 +68,7 @@ async def async_session(async_engine):
 
     # Create session factory
     async_session_maker = sessionmaker(
-        async_engine,
-        class_=AsyncSession,
-        expire_on_commit=False
+        async_engine, class_=AsyncSession, expire_on_commit=False
     )
 
     # Yield session
@@ -97,8 +96,7 @@ async def test_client(async_session, async_engine):
     app.dependency_overrides[get_session] = override_get_session
 
     async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
         yield client
 
@@ -141,9 +139,7 @@ async def clear_db(async_session, async_engine):
 
     # Truncate all tables after test
     async with async_engine.begin() as conn:
-        await conn.execute(
-            text("DELETE FROM users")
-        )
+        await conn.execute(text("DELETE FROM users"))
 
 
 @pytest.fixture
@@ -158,10 +154,14 @@ def auth_token():
 @pytest.fixture
 def auth_token_admin():
     """Generate valid JWT token for admin user testing."""
-    return create_test_token({"sub": "admin-user-id", "type": "access", "role": "admin"})
+    return create_test_token(
+        {"sub": "admin-user-id", "type": "access", "role": "admin"}
+    )
 
 
-def create_test_token(data: dict, token_type: str = "access", expire_minutes: int = 30) -> str:
+def create_test_token(
+    data: dict, token_type: str = "access", expire_minutes: int = 30
+) -> str:
     """Create JWT token for testing.
 
     Args:

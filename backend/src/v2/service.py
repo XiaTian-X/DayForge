@@ -47,11 +47,21 @@ async def _prepare_three_way_merge(
     user_id: int,
     operation: SyncOperationRequest,
 ) -> tuple[SyncOperationRequest, Optional[tuple[int, dict[str, Any]]]]:
-    if operation.entity_type not in MERGE_PATHS or operation.action != "upsert" or not operation.base_revision:
+    if (
+        operation.entity_type not in MERGE_PATHS
+        or operation.action != "upsert"
+        or not operation.base_revision
+    ):
         return operation, None
 
-    current_revision, server_payload = await current_entity_snapshot(session, user_id, operation)
-    if current_revision is None or server_payload is None or current_revision == operation.base_revision:
+    current_revision, server_payload = await current_entity_snapshot(
+        session, user_id, operation
+    )
+    if (
+        current_revision is None
+        or server_payload is None
+        or current_revision == operation.base_revision
+    ):
         return operation, None
     if server_payload.get("deleted_at") is not None:
         return operation, None
@@ -69,7 +79,9 @@ async def _prepare_three_way_merge(
         operation,
         current_revision=current_revision,
         server_payload=server_payload,
-        base_snapshot_json=base_snapshot.payload_json if base_snapshot is not None else None,
+        base_snapshot_json=base_snapshot.payload_json
+        if base_snapshot is not None
+        else None,
     )
 
 
@@ -117,12 +129,17 @@ async def _is_fact_derived_one_time_delete(
         return False
     node, _ = row
     revert = aliased(ActivityEvent)
-    has_revert = select(revert.id).where(
-        revert.owner_user_id == user_id,
-        revert.reverts_event_id == ActivityEvent.id,
-        revert.event_type == "revert",
-        revert.deleted_at.is_(None),
-    ).correlate(ActivityEvent).exists()
+    has_revert = (
+        select(revert.id)
+        .where(
+            revert.owner_user_id == user_id,
+            revert.reverts_event_id == ActivityEvent.id,
+            revert.event_type == "revert",
+            revert.deleted_at.is_(None),
+        )
+        .correlate(ActivityEvent)
+        .exists()
+    )
     event_result = await session.execute(
         select(ActivityEvent.id).where(
             ActivityEvent.owner_user_id == user_id,
@@ -233,7 +250,9 @@ async def process_push(
                 if (
                     operation.entity_type in STRUCTURAL_ENTITY_TYPES
                     and not can_write_structure
-                    and not await _is_fact_derived_one_time_delete(session, user.id, operation)
+                    and not await _is_fact_derived_one_time_delete(
+                        session, user.id, operation
+                    )
                 ):
                     raise DomainError(
                         "DEVICE_CAPABILITY_DENIED",
@@ -269,7 +288,9 @@ async def process_push(
                     user.id,
                     operation,
                 )
-                exc.revision = exc.revision if exc.revision is not None else current_revision
+                exc.revision = (
+                    exc.revision if exc.revision is not None else current_revision
+                )
                 exc.entity = exc.entity if exc.entity is not None else current_entity
             result = SyncOperationResult(
                 operation_id=operation.operation_id,

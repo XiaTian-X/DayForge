@@ -1,4 +1,5 @@
 """Tests for admin auto-creation on first run."""
+
 import pytest
 from sqlmodel import select
 
@@ -12,9 +13,12 @@ pytestmark = pytest.mark.usefixtures("isolated_settings_env")
 
 
 @pytest.mark.asyncio
-async def test_does_not_create_admin_without_explicit_credentials(async_session, async_engine):
+async def test_does_not_create_admin_without_explicit_credentials(
+    async_session, async_engine
+):
     """A fresh deployment must never receive a default privileged account."""
     from src.database import set_engine
+
     set_engine(async_engine)
 
     await _create_admin_if_missing()
@@ -26,9 +30,12 @@ async def test_does_not_create_admin_without_explicit_credentials(async_session,
 
 
 @pytest.mark.asyncio
-async def test_does_not_create_duplicate_admin(monkeypatch, async_session, async_engine):
+async def test_does_not_create_duplicate_admin(
+    monkeypatch, async_session, async_engine
+):
     """Test that admin is not duplicated when one already exists."""
     from src.database import set_engine
+
     set_engine(async_engine)
 
     monkeypatch.setenv("ADMIN_USERNAME", "testadmin")
@@ -52,6 +59,7 @@ async def test_uses_custom_admin_credentials(monkeypatch, async_session, async_e
     """Test that custom ADMIN_USERNAME and ADMIN_PASSWORD are used."""
     from src.database import set_engine
     from src.config import get_settings
+
     set_engine(async_engine)
 
     monkeypatch.setenv("ADMIN_USERNAME", "superadmin")

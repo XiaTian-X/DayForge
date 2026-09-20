@@ -1,4 +1,5 @@
 """Tests for JWT token validation on protected routes."""
+
 import pytest
 from httpx import AsyncClient, ASGITransport
 from datetime import datetime, timedelta, timezone
@@ -15,7 +16,9 @@ TEST_ALGORITHM = "HS256"
 TEST_DATABASE_URL = "sqlite+aiosqlite:///./test_jwt.db"
 
 
-def create_token(data: dict, token_type: str = "access", expire_minutes: int = 30) -> str:
+def create_token(
+    data: dict, token_type: str = "access", expire_minutes: int = 30
+) -> str:
     """Create JWT token for testing."""
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(minutes=expire_minutes)
@@ -23,7 +26,9 @@ def create_token(data: dict, token_type: str = "access", expire_minutes: int = 3
     return jwt.encode(to_encode, TEST_SECRET_KEY, algorithm=TEST_ALGORITHM)
 
 
-def create_expired_token(data: dict, token_type: str = "access", expire_minutes_ago: int = 5) -> str:
+def create_expired_token(
+    data: dict, token_type: str = "access", expire_minutes_ago: int = 5
+) -> str:
     """Create expired JWT token for testing."""
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) - timedelta(minutes=expire_minutes_ago)
@@ -38,11 +43,15 @@ async def test_protected_route_without_token():
     engine = create_async_engine(TEST_DATABASE_URL, echo=False, future=True)
     set_engine(engine)
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
         response = await client.get("/api/v1/auth/users/me")
         assert response.status_code == 401
         detail = response.json().get("detail", "")
-        assert "Not authenticated" in detail or "Could not validate credentials" in detail
+        assert (
+            "Not authenticated" in detail or "Could not validate credentials" in detail
+        )
 
 
 @pytest.mark.asyncio
@@ -52,10 +61,11 @@ async def test_protected_route_with_invalid_token_format():
     engine = create_async_engine(TEST_DATABASE_URL, echo=False, future=True)
     set_engine(engine)
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
         response = await client.get(
-            "/api/v1/auth/users/me",
-            headers={"Authorization": "Bearer invalid-token"}
+            "/api/v1/auth/users/me", headers={"Authorization": "Bearer invalid-token"}
         )
         assert response.status_code == 401
 
@@ -70,10 +80,12 @@ async def test_protected_route_with_expired_token():
     # Create expired token
     expired_token = create_expired_token({"sub": "test-user"}, token_type="access")
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
         response = await client.get(
             "/api/v1/auth/users/me",
-            headers={"Authorization": f"Bearer {expired_token}"}
+            headers={"Authorization": f"Bearer {expired_token}"},
         )
         assert response.status_code == 401
 
@@ -84,10 +96,11 @@ async def test_protected_route_with_valid_token(auth_tokens, async_session):
     # Use auth_tokens fixture to register and login
     access_token = auth_tokens["access_token"]
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
         response = await client.get(
-            "/api/v1/auth/users/me",
-            headers={"Authorization": f"Bearer {access_token}"}
+            "/api/v1/auth/users/me", headers={"Authorization": f"Bearer {access_token}"}
         )
         assert response.status_code == 200
         data = response.json()

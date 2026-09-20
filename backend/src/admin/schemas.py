@@ -1,4 +1,5 @@
 """Pydantic schemas for admin endpoints."""
+
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal, Optional
 from datetime import datetime
@@ -9,6 +10,7 @@ from src.time_utils import UTCResponseDatetime
 
 class AdminUserCreate(BaseModel):
     """Create a local account managed by an administrator."""
+
     username: str = Field(min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9_]+$")
     password: str = Field(min_length=8, max_length=128)
     is_admin: bool = False
@@ -16,16 +18,19 @@ class AdminUserCreate(BaseModel):
 
 class UserStatusUpdate(BaseModel):
     """Request schema for updating user status."""
+
     is_active: bool
 
 
 class AdminPasswordReset(BaseModel):
     """Request schema for admin password reset."""
+
     new_password: str = Field(min_length=8, max_length=128)
 
 
 class AdminUserResponse(BaseModel):
     """Admin user response schema with all fields."""
+
     id: int
     public_id: UUID
     username: str

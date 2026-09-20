@@ -14,7 +14,7 @@ from src.time_utils import utc_now
 
 
 # OAuth2 scheme for token extraction
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl='/api/v1/auth/login', auto_error=False)
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
 
 
 async def get_current_user(
@@ -39,34 +39,34 @@ async def get_current_user(
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail='Could not validate credentials',
-        headers={'WWW-Authenticate': 'Bearer'},
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
     )
 
     # Get the raw Authorization header
-    auth_header = request.headers.get('Authorization')
+    auth_header = request.headers.get("Authorization")
     if not auth_header:
         raise credentials_exception
 
     # Parse header format
-    parts = auth_header.split(' ', 1)
+    parts = auth_header.split(" ", 1)
     if len(parts) != 2:
         raise credentials_exception
 
     scheme, credentials = parts
 
-    if scheme == 'Bearer':
+    if scheme == "Bearer":
         # JWT authentication
         payload = verify_token(credentials)
         if payload is None:
             raise credentials_exception
 
-        token_type = payload.get('type')
-        if token_type != 'access':
+        token_type = payload.get("type")
+        if token_type != "access":
             raise credentials_exception
 
-        user_id: str = payload.get('sub')
-        token_version = payload.get('ver')
+        user_id: str = payload.get("sub")
+        token_version = payload.get("ver")
         if user_id is None or not isinstance(token_version, int):
             raise credentials_exception
 
@@ -88,7 +88,7 @@ async def get_current_user(
 
         return user
 
-    elif scheme == 'Token':
+    elif scheme == "Token":
         # API Token authentication
         token_hash = hash_token(credentials)
 
@@ -111,9 +111,7 @@ async def get_current_user(
         await session.flush()
 
         # Get the associated user
-        result = await session.execute(
-            select(User).where(User.id == api_token.user_id)
-        )
+        result = await session.execute(select(User).where(User.id == api_token.user_id))
         user = result.scalar()
 
         if user is None or not user.is_active or user.status != "active":

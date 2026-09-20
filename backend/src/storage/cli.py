@@ -21,12 +21,16 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m src.storage.cli")
     commands = parser.add_subparsers(dest="command", required=True)
 
-    backup = commands.add_parser("sqlite-backup", help="create a verified SQLite backup")
+    backup = commands.add_parser(
+        "sqlite-backup", help="create a verified SQLite backup"
+    )
     backup.add_argument("--database", type=Path, required=True)
     backup.add_argument("--backup-dir", type=Path, required=True)
     backup.add_argument("--kind", choices=("scheduled", "manual"), default="scheduled")
 
-    restore = commands.add_parser("sqlite-restore", help="restore a verified SQLite backup")
+    restore = commands.add_parser(
+        "sqlite-restore", help="restore a verified SQLite backup"
+    )
     restore.add_argument("--database", type=Path, required=True)
     restore.add_argument("--backup-file", type=Path, required=True)
     restore.add_argument("--cancel-active-timers", action="store_true")
@@ -35,7 +39,8 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument("--database", type=Path, required=True)
 
     snapshots = commands.add_parser(
-        "snapshot-backfill", help="backfill revision snapshots from retained sync changes"
+        "snapshot-backfill",
+        help="backfill revision snapshots from retained sync changes",
     )
     snapshots.add_argument("--database", type=Path, required=True)
 
@@ -46,7 +51,8 @@ def _parser() -> argparse.ArgumentParser:
     logical_export.add_argument("--output", type=Path, required=True)
 
     logical_import = commands.add_parser(
-        "logical-import", help="import a portable archive into an empty migrated database"
+        "logical-import",
+        help="import a portable archive into an empty migrated database",
     )
     logical_import.add_argument("--database-url", required=True)
     logical_import.add_argument("--archive", type=Path, required=True)

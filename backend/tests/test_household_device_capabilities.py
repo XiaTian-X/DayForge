@@ -5,10 +5,15 @@ from uuid import uuid4
 import pytest
 
 from src.auth.models import User
-from tests.account_fixtures import TEST_ACCOUNT_PASSWORD as PASSWORD, account_password_hash
+from tests.account_fixtures import (
+    TEST_ACCOUNT_PASSWORD as PASSWORD,
+    account_password_hash,
+)
 
 
-async def account(test_client, async_session, username: str, *, admin: bool = False) -> dict:
+async def account(
+    test_client, async_session, username: str, *, admin: bool = False
+) -> dict:
     user = User(
         username=username,
         password_hash=account_password_hash(),
@@ -209,7 +214,9 @@ async def test_noninteractive_device_requires_admin_provisioning_and_cannot_edit
         platform="hardware",
         device_class="hardware",
     )
-    denied = await push(test_client, member_token, registered["device_id"], goal_operation())
+    denied = await push(
+        test_client, member_token, registered["device_id"], goal_operation()
+    )
     assert denied.json()["results"][0]["error_code"] == "DEVICE_CAPABILITY_DENIED"
 
 
@@ -238,8 +245,13 @@ async def test_household_membership_is_admin_managed_metadata_not_private_data_a
     )
     assert added.status_code == 200, added.text
     body = added.json()
-    assert {item["username"] for item in body["members"]} == {"familyadmin", "familymember"}
-    assert not ({"plan_nodes", "events", "metrics", "observations", "timers"} & set(body))
+    assert {item["username"] for item in body["members"]} == {
+        "familyadmin",
+        "familymember",
+    }
+    assert not (
+        {"plan_nodes", "events", "metrics", "observations", "timers"} & set(body)
+    )
 
     forbidden = await test_client.get(
         "/api/v1/admin/households",
@@ -253,7 +265,9 @@ async def test_household_membership_is_admin_managed_metadata_not_private_data_a
     )
     assert last_owner.status_code == 409
 
-    member_device = await register(test_client, member["access_token"], "family-member-phone")
+    member_device = await register(
+        test_client, member["access_token"], "family-member-phone"
+    )
     private_goal = await push(
         test_client,
         member["access_token"],
@@ -261,11 +275,16 @@ async def test_household_membership_is_admin_managed_metadata_not_private_data_a
         goal_operation("Member only"),
     )
     assert private_goal.json()["results"][0]["status"] == "applied"
-    admin_device = await register(test_client, admin["access_token"], "family-admin-phone")
+    admin_device = await register(
+        test_client, admin["access_token"], "family-admin-phone"
+    )
     admin_bootstrap = await test_client.get(
         "/api/v2/sync/bootstrap",
         headers=admin_headers,
         params={"device_id": admin_device["device_id"]},
     )
     assert admin_bootstrap.status_code == 200
-    assert all(change["payload"].get("title") != "Member only" for change in admin_bootstrap.json()["changes"])
+    assert all(
+        change["payload"].get("title") != "Member only"
+        for change in admin_bootstrap.json()["changes"]
+    )

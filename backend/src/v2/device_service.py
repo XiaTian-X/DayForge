@@ -24,7 +24,10 @@ async def register_device(
     request: DeviceRegisterRequest,
     session: AsyncSession,
 ) -> DeviceResponse:
-    if request.protocol_version < 4 or "protocol_version" not in request.model_fields_set:
+    if (
+        request.protocol_version < 4
+        or "protocol_version" not in request.model_fields_set
+    ):
         raise DomainError(
             "CLIENT_UPGRADE_REQUIRED",
             "This DayForge client must be upgraded before it can synchronize",
@@ -59,7 +62,10 @@ async def register_device(
                 "DEVICE_REVOKED",
                 "This device was revoked and must be re-enabled by an administrator",
             )
-        if device.platform != request.platform or device.device_class != request.device_class:
+        if (
+            device.platform != request.platform
+            or device.device_class != request.device_class
+        ):
             raise DomainError(
                 "DEVICE_IDENTITY_MISMATCH",
                 "A registered device cannot change its platform or device class",
@@ -87,7 +93,9 @@ async def require_device(
     )
     device = result.scalar_one_or_none()
     if device is None:
-        raise DomainError("DEVICE_NOT_FOUND", "Device is not registered or has been revoked")
+        raise DomainError(
+            "DEVICE_NOT_FOUND", "Device is not registered or has been revoked"
+        )
     device.last_seen_at = utc_now()
     return device
 
@@ -126,7 +134,9 @@ async def capabilities_for_device(
     return capabilities, is_primary
 
 
-async def to_device_response(session: AsyncSession, device: ClientDevice) -> DeviceResponse:
+async def to_device_response(
+    session: AsyncSession, device: ClientDevice
+) -> DeviceResponse:
     capabilities, is_primary = await capabilities_for_device(session, device)
     return DeviceResponse(
         device_id=device.public_id,

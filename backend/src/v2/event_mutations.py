@@ -33,10 +33,16 @@ async def mutate_activity_event(
     )
     existing = result.scalar_one_or_none()
     if operation.action == "delete":
-        raise DomainError("USE_REVERT_EVENT", "Activity events are immutable; append a revert event")
+        raise DomainError(
+            "USE_REVERT_EVENT", "Activity events are immutable; append a revert event"
+        )
     if existing is not None:
         activity = await session.get(PlanNode, existing.activity_node_id)
-        revert = await session.get(ActivityEvent, existing.reverts_event_id) if existing.reverts_event_id else None
+        revert = (
+            await session.get(ActivityEvent, existing.reverts_event_id)
+            if existing.reverts_event_id
+            else None
+        )
         entity = await serialize_activity_event_with_allocations(
             session, existing, activity.public_id, revert.public_id if revert else None
         )
@@ -48,13 +54,17 @@ async def mutate_activity_event(
             entity=entity,
         )
     if operation.base_revision not in (None, 0):
-        raise DomainError("INVALID_BASE_REVISION", "New events must not have a positive base revision")
+        raise DomainError(
+            "INVALID_BASE_REVISION", "New events must not have a positive base revision"
+        )
     try:
         payload = ActivityEventPayload.model_validate(operation.payload)
     except ValidationError as exc:
         raise DomainError("INVALID_PAYLOAD", str(exc)) from exc
 
-    activity = await get_plan_node(session, user_id, str(payload.activity_uuid), include_deleted=False)
+    activity = await get_plan_node(
+        session, user_id, str(payload.activity_uuid), include_deleted=False
+    )
     if activity is None or activity.node_kind != "activity":
         raise DomainError("ACTIVITY_NOT_FOUND", "Activity was not found")
     detail = await session.get(ActivityDetail, activity.id)
@@ -64,7 +74,9 @@ async def mutate_activity_event(
         "duration": {"duration_session", "revert"},
     }[detail.tracking_mode]
     if payload.event_type not in allowed_types:
-        raise DomainError("EVENT_TYPE_MISMATCH", "Event type does not match activity tracking mode")
+        raise DomainError(
+            "EVENT_TYPE_MISMATCH", "Event type does not match activity tracking mode"
+        )
     if payload.event_type == "duration_session":
         raise DomainError(
             "TIMER_COMMAND_REQUIRED",
@@ -79,7 +91,9 @@ async def mutate_activity_event(
             or payload.value > 2_147_483_647
         )
     ):
-        raise DomainError("INVALID_COUNT_VALUE", "Count events must use Android-range whole numbers")
+        raise DomainError(
+            "INVALID_COUNT_VALUE", "Count events must use Android-range whole numbers"
+        )
 
     revert_event = None
     if payload.reverts_event_uuid:
@@ -92,7 +106,10 @@ async def mutate_activity_event(
         )
         revert_event = revert_result.scalar_one_or_none()
         if revert_event is None or revert_event.activity_node_id != activity.id:
-            raise DomainError("REVERT_TARGET_NOT_FOUND", "Revert target was not found for this activity")
+            raise DomainError(
+                "REVERT_TARGET_NOT_FOUND",
+                "Revert target was not found for this activity",
+            )
         duplicate_revert = await session.execute(
             select(ActivityEvent).where(
                 ActivityEvent.owner_user_id == user_id,
@@ -101,18 +118,26 @@ async def mutate_activity_event(
             )
         )
         if duplicate_revert.scalar_one_or_none() is not None:
-            raise DomainError("EVENT_ALREADY_REVERTED", "The target event has already been reverted")
+            raise DomainError(
+                "EVENT_ALREADY_REVERTED", "The target event has already been reverted"
+            )
 
-    source_device_id = str(payload.source_device_id) if payload.source_device_id else device.public_id
+    source_device_id = (
+        str(payload.source_device_id) if payload.source_device_id else device.public_id
+    )
     if source_device_id != device.public_id:
-        raise DomainError("SOURCE_DEVICE_MISMATCH", "A client may not impersonate another device")
+        raise DomainError(
+            "SOURCE_DEVICE_MISMATCH", "A client may not impersonate another device"
+        )
 
     event = ActivityEvent(
         public_id=str(operation.entity_uuid),
         owner_user_id=user_id,
         activity_node_id=activity.id,
         event_type=payload.event_type,
-        value=payload.value if payload.value is not None else (Decimal("1") if payload.event_type == "check_in" else None),
+        value=payload.value
+        if payload.value is not None
+        else (Decimal("1") if payload.event_type == "check_in" else None),
         duration_seconds=payload.duration_seconds,
         duration_milliseconds=payload.duration_milliseconds,
         started_at=payload.started_at,
@@ -133,12 +158,21 @@ async def mutate_activity_event(
         await session.flush()
     except IntegrityError as exc:
         if payload.event_type == "revert":
-            raise DomainError("EVENT_ALREADY_REVERTED", "The target event has already been reverted") from exc
+            raise DomainError(
+                "EVENT_ALREADY_REVERTED", "The target event has already been reverted"
+            ) from exc
         if payload.external_event_id:
-            raise DomainError("DUPLICATE_EXTERNAL_EVENT", "This source event was already recorded") from exc
-        raise DomainError("CONSTRAINT_VIOLATION", "The activity event violated a database constraint") from exc
+            raise DomainError(
+                "DUPLICATE_EXTERNAL_EVENT", "This source event was already recorded"
+            ) from exc
+        raise DomainError(
+            "CONSTRAINT_VIOLATION", "The activity event violated a database constraint"
+        ) from exc
     entity = await serialize_activity_event_with_allocations(
-        session, event, activity.public_id, revert_event.public_id if revert_event else None
+        session,
+        event,
+        activity.public_id,
+        revert_event.public_id if revert_event else None,
     )
     await append_change(
         session,

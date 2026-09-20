@@ -19,10 +19,34 @@ GOAL_TITLE = "E2E Family Goal"
 ACTIVITY_TITLE = "E2E Check Habit"
 
 FEATURE_ACTIVITIES = (
-    ("30000000-0000-4000-8000-000000000001", "API测试-正计数（目标5）", "count", False, "5"),
-    ("30000000-0000-4000-8000-000000000002", "API测试-倒计数（目标5）", "count", True, "5"),
-    ("30000000-0000-4000-8000-000000000003", "API测试-正计时（1分钟）", "duration", False, "60"),
-    ("30000000-0000-4000-8000-000000000004", "API测试-倒计时（1分钟）", "duration", True, "60"),
+    (
+        "30000000-0000-4000-8000-000000000001",
+        "API测试-正计数（目标5）",
+        "count",
+        False,
+        "5",
+    ),
+    (
+        "30000000-0000-4000-8000-000000000002",
+        "API测试-倒计数（目标5）",
+        "count",
+        True,
+        "5",
+    ),
+    (
+        "30000000-0000-4000-8000-000000000003",
+        "API测试-正计时（1分钟）",
+        "duration",
+        False,
+        "60",
+    ),
+    (
+        "30000000-0000-4000-8000-000000000004",
+        "API测试-倒计时（1分钟）",
+        "duration",
+        True,
+        "60",
+    ),
 )
 FEATURE_METRIC_UUID = "30000000-0000-4000-8000-000000000005"
 FEATURE_OBSERVATION_UUID = "30000000-0000-4000-8000-000000000006"
@@ -197,13 +221,19 @@ def create_empty_member(args: argparse.Namespace) -> None:
         expected=(201, 409),
     )
     client.login(args.member_username, args.member_password)
-    print(json.dumps({"available": True, "username": args.member_username}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {"available": True, "username": args.member_username}, ensure_ascii=False
+        )
+    )
 
 
 def seed_remote_mutations(args: argparse.Namespace) -> None:
     client = AcceptanceClient(args.base_url)
     member = client.login(args.member_username, args.member_password)
-    device_id = client.register_device(member["access_token"], "e2e-remote-mutation-writer")
+    device_id = client.register_device(
+        member["access_token"], "e2e-remote-mutation-writer"
+    )
     operations = [
         {
             "operation_id": "70000000-0000-4000-8000-000000000001",
@@ -237,7 +267,9 @@ def seed_remote_mutations(args: argparse.Namespace) -> None:
 def apply_remote_mutations(args: argparse.Namespace) -> None:
     client = AcceptanceClient(args.base_url)
     member = client.login(args.member_username, args.member_password)
-    device_id = client.register_device(member["access_token"], "e2e-remote-mutation-writer")
+    device_id = client.register_device(
+        member["access_token"], "e2e-remote-mutation-writer"
+    )
     operations = [
         {
             "operation_id": "80000000-0000-4000-8000-000000000001",
@@ -283,9 +315,17 @@ def seed_feature_matrix(args: argparse.Namespace) -> None:
         expected=(201, 409),
     )
     member = client.login(args.member_username, args.member_password)
-    device_id = client.register_device(member["access_token"], "e2e-feature-matrix-writer")
+    device_id = client.register_device(
+        member["access_token"], "e2e-feature-matrix-writer"
+    )
     operations = []
-    for index, (entity_uuid, title, tracking_mode, is_countdown, target_value) in enumerate(
+    for index, (
+        entity_uuid,
+        title,
+        tracking_mode,
+        is_countdown,
+        target_value,
+    ) in enumerate(
         FEATURE_ACTIVITIES,
         start=1,
     ):
@@ -444,7 +484,9 @@ def verify_check_in(args: argparse.Namespace) -> None:
 def verify_feature_matrix(args: argparse.Namespace) -> None:
     client = AcceptanceClient(args.base_url)
     member = client.login(args.member_username, args.member_password)
-    device_id = client.register_device(member["access_token"], "e2e-feature-matrix-verifier")
+    device_id = client.register_device(
+        member["access_token"], "e2e-feature-matrix-verifier"
+    )
     query = urlencode({"device_id": device_id})
     snapshot = client.request(
         "GET",
@@ -453,7 +495,13 @@ def verify_feature_matrix(args: argparse.Namespace) -> None:
     )
     changes = {change["entity_uuid"]: change for change in snapshot["changes"]}
     actual_modes = []
-    for entity_uuid, title, tracking_mode, is_countdown, target_value in FEATURE_ACTIVITIES:
+    for (
+        entity_uuid,
+        title,
+        tracking_mode,
+        is_countdown,
+        target_value,
+    ) in FEATURE_ACTIVITIES:
         change = changes.get(entity_uuid)
         if change is None or change["payload"].get("title") != title:
             raise RuntimeError(f"Feature activity is missing: {title}")
@@ -475,7 +523,9 @@ def verify_feature_matrix(args: argparse.Namespace) -> None:
     }
     for entity_uuid, entity_type in required_entities.items():
         if changes.get(entity_uuid, {}).get("entity_type") != entity_type:
-            raise RuntimeError(f"Feature entity is missing: {entity_type}/{entity_uuid}")
+            raise RuntimeError(
+                f"Feature entity is missing: {entity_type}/{entity_uuid}"
+            )
     print(
         json.dumps(
             {
@@ -492,7 +542,9 @@ def verify_feature_matrix(args: argparse.Namespace) -> None:
 def enable_feature_metric_prompt(args: argparse.Namespace) -> None:
     client = AcceptanceClient(args.base_url)
     member = client.login(args.member_username, args.member_password)
-    device_id = client.register_device(member["access_token"], "e2e-metric-prompt-writer")
+    device_id = client.register_device(
+        member["access_token"], "e2e-metric-prompt-writer"
+    )
     response = client.request(
         "POST",
         "/api/v2/sync/push",
@@ -539,7 +591,9 @@ def enable_feature_metric_prompt(args: argparse.Namespace) -> None:
 def verify_feature_results(args: argparse.Namespace) -> None:
     client = AcceptanceClient(args.base_url)
     member = client.login(args.member_username, args.member_password)
-    device_id = client.register_device(member["access_token"], "e2e-feature-result-verifier")
+    device_id = client.register_device(
+        member["access_token"], "e2e-feature-result-verifier"
+    )
     query = urlencode({"device_id": device_id})
     snapshot = client.request(
         "GET",
@@ -552,7 +606,10 @@ def verify_feature_results(args: argparse.Namespace) -> None:
         payload = change.get("payload", {})
         if change["entity_type"] == "activity_event":
             activity_uuid = payload.get("activity_uuid")
-            if activity_uuid in events_by_activity and payload.get("event_type") != "revert":
+            if (
+                activity_uuid in events_by_activity
+                and payload.get("event_type") != "revert"
+            ):
                 events_by_activity[activity_uuid].append(payload)
         elif (
             change["entity_type"] == "metric_observation"
@@ -568,14 +625,23 @@ def verify_feature_results(args: argparse.Namespace) -> None:
             raise RuntimeError(f"Android result is missing: {title}")
         if tracking_mode == "count":
             values = [event.get("value") for event in events]
-            if any(value is None or float(value) != int(float(value)) for value in values):
-                raise RuntimeError(f"Android count result has an invalid value: {title}: {values}")
+            if any(
+                value is None or float(value) != int(float(value)) for value in values
+            ):
+                raise RuntimeError(
+                    f"Android count result has an invalid value: {title}: {values}"
+                )
             result_summary[title] = {"events": len(events), "values": values}
         else:
             durations = [event.get("duration_seconds") for event in events]
             if any(duration is None or duration <= 0 for duration in durations):
-                raise RuntimeError(f"Android duration result is invalid: {title}: {durations}")
-            result_summary[title] = {"events": len(events), "duration_seconds": durations}
+                raise RuntimeError(
+                    f"Android duration result is invalid: {title}: {durations}"
+                )
+            result_summary[title] = {
+                "events": len(events),
+                "duration_seconds": durations,
+            }
     if not extra_observations:
         raise RuntimeError("Android metric observation has not reached the backend")
 

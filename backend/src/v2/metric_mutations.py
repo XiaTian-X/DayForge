@@ -73,7 +73,9 @@ async def mutate_metric(
             .values(revision=TrackedMetric.revision + 1, updated_at=now, deleted_at=now)
         )
         if result.rowcount != 1:
-            raise DomainError("REVISION_CONFLICT", "Metric changed concurrently", conflict=True)
+            raise DomainError(
+                "REVISION_CONFLICT", "Metric changed concurrently", conflict=True
+            )
         await session.flush()
         existing = await get_metric(session, user_id, str(operation.entity_uuid))
         entity = serialize_metric(existing)
@@ -97,7 +99,9 @@ async def mutate_metric(
 
     if existing is None:
         if operation.base_revision not in (None, 0):
-            raise DomainError("ENTITY_NOT_FOUND", "Cannot update a metric that does not exist")
+            raise DomainError(
+                "ENTITY_NOT_FOUND", "Cannot update a metric that does not exist"
+            )
         metric = TrackedMetric(
             public_id=str(operation.entity_uuid),
             owner_user_id=user_id,
@@ -138,7 +142,9 @@ async def mutate_metric(
             .values(**values)
         )
         if result.rowcount != 1:
-            raise DomainError("REVISION_CONFLICT", "Metric changed concurrently", conflict=True)
+            raise DomainError(
+                "REVISION_CONFLICT", "Metric changed concurrently", conflict=True
+            )
         await session.flush()
         metric = await get_metric(session, user_id, str(operation.entity_uuid))
 
@@ -210,17 +216,26 @@ async def mutate_observation(
             entity=serialize_observation(existing, metric.public_id),
         )
     if operation.base_revision not in (None, 0):
-        raise DomainError("INVALID_BASE_REVISION", "New observations must not have a positive base revision")
+        raise DomainError(
+            "INVALID_BASE_REVISION",
+            "New observations must not have a positive base revision",
+        )
     try:
         payload = MetricObservationPayload.model_validate(operation.payload)
     except ValidationError as exc:
         raise DomainError("INVALID_PAYLOAD", str(exc)) from exc
-    metric = await get_metric(session, user_id, str(payload.metric_uuid), include_deleted=False)
+    metric = await get_metric(
+        session, user_id, str(payload.metric_uuid), include_deleted=False
+    )
     if metric is None:
         raise DomainError("METRIC_NOT_FOUND", "Metric was not found")
-    source_device_id = str(payload.source_device_id) if payload.source_device_id else device.public_id
+    source_device_id = (
+        str(payload.source_device_id) if payload.source_device_id else device.public_id
+    )
     if source_device_id != device.public_id:
-        raise DomainError("SOURCE_DEVICE_MISMATCH", "A client may not impersonate another device")
+        raise DomainError(
+            "SOURCE_DEVICE_MISMATCH", "A client may not impersonate another device"
+        )
     observation = MetricObservation(
         public_id=str(operation.entity_uuid),
         owner_user_id=user_id,
@@ -242,8 +257,13 @@ async def mutate_observation(
         await session.flush()
     except IntegrityError as exc:
         if payload.external_event_id:
-            raise DomainError("DUPLICATE_EXTERNAL_EVENT", "This source observation was already recorded") from exc
-        raise DomainError("CONSTRAINT_VIOLATION", "The observation violated a database constraint") from exc
+            raise DomainError(
+                "DUPLICATE_EXTERNAL_EVENT",
+                "This source observation was already recorded",
+            ) from exc
+        raise DomainError(
+            "CONSTRAINT_VIOLATION", "The observation violated a database constraint"
+        ) from exc
     entity = serialize_observation(observation, metric.public_id)
     await append_change(
         session,

@@ -1,4 +1,5 @@
 """Tests for API token service layer."""
+
 import hashlib
 from datetime import datetime, timedelta, timezone
 

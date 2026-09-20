@@ -25,29 +25,58 @@ MERGE_PATHS: dict[str, tuple[tuple[str, ...], ...]] = {
     "plan_node": tuple(
         tuple(path.split("."))
         for path in [
-            "parent_uuid", "title", "description", "icon", "color_hex", "status",
-            "visibility", "sort_order", "goal.start_date", "goal.due_date",
-            "goal.target_cycles", "goal.failure_policy", "goal.evaluation_policy",
-            "goal.manual_result", "activity.tracking_mode", "activity.is_countdown",
-            "activity.recurrence_rule", "activity.completion_policy",
-            "activity.target_value", "activity.target_unit", "activity.target_cycles",
-            "activity.failure_policy", "activity.preferred_local_time", "activity.timezone",
+            "parent_uuid",
+            "title",
+            "description",
+            "icon",
+            "color_hex",
+            "status",
+            "visibility",
+            "sort_order",
+            "goal.start_date",
+            "goal.due_date",
+            "goal.target_cycles",
+            "goal.failure_policy",
+            "goal.evaluation_policy",
+            "goal.manual_result",
+            "activity.tracking_mode",
+            "activity.is_countdown",
+            "activity.recurrence_rule",
+            "activity.completion_policy",
+            "activity.target_value",
+            "activity.target_unit",
+            "activity.target_cycles",
+            "activity.failure_policy",
+            "activity.preferred_local_time",
+            "activity.timezone",
             "activity.origin_assignment_id",
         ]
     ),
     "metric": tuple(
         (field,)
         for field in [
-            "name", "description", "unit", "decimal_places", "aggregation_type",
-            "target_direction", "target_value", "target_value_upper", "icon",
-            "color_hex", "status",
+            "name",
+            "description",
+            "unit",
+            "decimal_places",
+            "aggregation_type",
+            "target_direction",
+            "target_value",
+            "target_value_upper",
+            "icon",
+            "color_hex",
+            "status",
         ]
     ),
     "activity_metric_link": tuple(
         (field,)
         for field in [
-            "activity_uuid", "metric_uuid", "coefficient", "show_in_activity_detail",
-            "prompt_on_complete", "is_active",
+            "activity_uuid",
+            "metric_uuid",
+            "coefficient",
+            "show_in_activity_detail",
+            "prompt_on_complete",
+            "is_active",
         ]
     ),
 }
@@ -84,7 +113,9 @@ def _delete_path(payload: dict[str, Any], path: tuple[str, ...]) -> None:
         target.pop(path[-1], None)
 
 
-def _normalized_operation_payload(operation: SyncOperationRequest) -> tuple[dict[str, Any], dict[str, Any]]:
+def _normalized_operation_payload(
+    operation: SyncOperationRequest,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     models = {
         "plan_node": PlanNodePayload,
         "metric": MetricPayload,
@@ -123,7 +154,9 @@ def _inherit_omitted_recurrence_dates(
     local_rule = _get_path(local_full, path)
     submitted_rule = _get_path(local_set, path)
     base_rule = _get_path(base_payload, path)
-    if not all(isinstance(rule, dict) for rule in (local_rule, submitted_rule, base_rule)):
+    if not all(
+        isinstance(rule, dict) for rule in (local_rule, submitted_rule, base_rule)
+    ):
         return
     if local_rule.get("type") != base_rule.get("type"):
         return

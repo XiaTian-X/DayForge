@@ -42,7 +42,9 @@ async def login(
     session: AsyncSession = Depends(get_session, scope="function"),
 ):
     """Log in to an account created by the local server administrator."""
-    result = await session.execute(select(User).where(User.username == credentials.username))
+    result = await session.execute(
+        select(User).where(User.username == credentials.username)
+    )
     user = result.scalar()
 
     if not user or not verify_password(credentials.password, user.password_hash):
@@ -102,7 +104,9 @@ async def refresh_token(
         or user.status != "active"
         or user.auth_version != token_version
     ):
-        raise HTTPException(status_code=401, detail="User not found, inactive, or session revoked")
+        raise HTTPException(
+            status_code=401, detail="User not found, inactive, or session revoked"
+        )
 
     return _token_response(user)
 

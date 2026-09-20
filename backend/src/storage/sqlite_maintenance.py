@@ -74,13 +74,19 @@ def inspect_database(path: Path) -> DatabaseInspection:
     with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as connection:
         connection.row_factory = sqlite3.Row
         integrity_rows = connection.execute("PRAGMA integrity_check").fetchall()
-        integrity = "ok" if len(integrity_rows) == 1 and integrity_rows[0][0] == "ok" else "; ".join(
-            str(row[0]) for row in integrity_rows
+        integrity = (
+            "ok"
+            if len(integrity_rows) == 1 and integrity_rows[0][0] == "ok"
+            else "; ".join(str(row[0]) for row in integrity_rows)
         )
-        foreign_keys = [dict(row) for row in connection.execute("PRAGMA foreign_key_check")]
+        foreign_keys = [
+            dict(row) for row in connection.execute("PRAGMA foreign_key_check")
+        ]
         tables = _table_names(connection)
         row_counts = {
-            table: int(connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0])
+            table: int(
+                connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+            )
             for table in tables
         }
         tombstone_counts: dict[str, int] = {}
@@ -97,7 +103,9 @@ def inspect_database(path: Path) -> DatabaseInspection:
 
         alembic_head = None
         if "alembic_version" in tables:
-            row = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+            row = connection.execute(
+                "SELECT version_num FROM alembic_version"
+            ).fetchone()
             alembic_head = row[0] if row else None
 
         identity = None
@@ -130,7 +138,9 @@ def inspect_database(path: Path) -> DatabaseInspection:
                 "OR parent.parent_node_id IS NOT NULL"
             ).fetchone()[0]
             if invalid_parents:
-                domain_errors.append(f"{invalid_parents} plan nodes violate the single-parent hierarchy")
+                domain_errors.append(
+                    f"{invalid_parents} plan nodes violate the single-parent hierarchy"
+                )
         if "entity_revision_snapshots" in tables:
             duplicate_snapshots = connection.execute(
                 "SELECT COUNT(*) FROM ("
@@ -138,7 +148,9 @@ def inspect_database(path: Path) -> DatabaseInspection:
                 "GROUP BY owner_user_id, entity_type, entity_uuid, revision HAVING COUNT(*) > 1)"
             ).fetchone()[0]
             if duplicate_snapshots:
-                domain_errors.append(f"{duplicate_snapshots} duplicate revision snapshots")
+                domain_errors.append(
+                    f"{duplicate_snapshots} duplicate revision snapshots"
+                )
 
         return DatabaseInspection(
             integrity_check=integrity,
@@ -156,11 +168,16 @@ def inspect_database(path: Path) -> DatabaseInspection:
 
 def _copy_with_sqlite_backup(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(source)) as source_db, closing(sqlite3.connect(target)) as target_db:
+    with (
+        closing(sqlite3.connect(source)) as source_db,
+        closing(sqlite3.connect(target)) as target_db,
+    ):
         source_db.backup(target_db)
 
 
-def _manifest_for(database_file: Path, inspection: DatabaseInspection, *, kind: str) -> dict[str, Any]:
+def _manifest_for(
+    database_file: Path, inspection: DatabaseInspection, *, kind: str
+) -> dict[str, Any]:
     return {
         "format_version": BACKUP_FORMAT_VERSION,
         "kind": kind,
@@ -214,7 +231,9 @@ def create_backup(
                 f"domain_errors={inspection.domain_errors}"
             )
         os.replace(temporary, target)
-        manifest_path = _write_manifest(target, _manifest_for(target, inspection, kind=kind))
+        manifest_path = _write_manifest(
+            target, _manifest_for(target, inspection, kind=kind)
+        )
     finally:
         temporary.unlink(missing_ok=True)
     if apply_retention:
@@ -222,7 +241,9 @@ def create_backup(
     return target, manifest_path
 
 
-def load_and_validate_backup(backup_file: Path) -> tuple[dict[str, Any], DatabaseInspection]:
+def load_and_validate_backup(
+    backup_file: Path,
+) -> tuple[dict[str, Any], DatabaseInspection]:
     backup_file = backup_file.resolve()
     manifest_path = backup_file.with_suffix(backup_file.suffix + ".manifest.json")
     if not backup_file.is_file() or not manifest_path.is_file():
@@ -236,11 +257,15 @@ def load_and_validate_backup(backup_file: Path) -> tuple[dict[str, Any], Databas
         raise StorageValidationError("backup checksum mismatch")
     inspection = inspect_database(backup_file)
     if not inspection.valid:
-        raise StorageValidationError("backup database failed integrity, foreign-key, or domain checks")
+        raise StorageValidationError(
+            "backup database failed integrity, foreign-key, or domain checks"
+        )
     if manifest.get("alembic_head") != inspection.alembic_head:
         raise StorageValidationError("backup Alembic head does not match its manifest")
     if manifest.get("server_instance_id") != inspection.server_instance_id:
-        raise StorageValidationError("backup server identity does not match its manifest")
+        raise StorageValidationError(
+            "backup server identity does not match its manifest"
+        )
     return manifest, inspection
 
 
@@ -254,7 +279,10 @@ def restore_backup(
     backup_file = backup_file.resolve()
     database_path = database_path.resolve()
     _, source_inspection = load_and_validate_backup(backup_file)
-    if expected_alembic_head is not None and source_inspection.alembic_head != expected_alembic_head:
+    if (
+        expected_alembic_head is not None
+        and source_inspection.alembic_head != expected_alembic_head
+    ):
         raise StorageValidationError(
             "backup Alembic head is incompatible with the running application"
         )
@@ -267,7 +295,9 @@ def restore_backup(
     if database_path.exists():
         target_inspection = inspect_database(database_path)
         if target_inspection.alembic_head != source_inspection.alembic_head:
-            raise StorageValidationError("backup and current database Alembic heads differ")
+            raise StorageValidationError(
+                "backup and current database Alembic heads differ"
+            )
         safety_backup, _ = create_backup(
             database_path,
             database_path.parent / "backups",
@@ -301,11 +331,15 @@ def restore_backup(
                 (new_epoch,),
             )
             if changed.rowcount != 1:
-                raise StorageValidationError("restored database has no canonical server identity")
+                raise StorageValidationError(
+                    "restored database has no canonical server identity"
+                )
             connection.commit()
         restored_inspection = inspect_database(temporary)
         if not restored_inspection.valid or restored_inspection.active_timer_count:
-            raise StorageValidationError("restored database failed post-restore validation")
+            raise StorageValidationError(
+                "restored database failed post-restore validation"
+            )
         os.chmod(temporary, 0o600)
         os.replace(temporary, database_path)
         database_path.with_name(database_path.name + "-wal").unlink(missing_ok=True)
@@ -321,7 +355,9 @@ def backfill_revision_snapshots(database_path: Path) -> int:
     inspection = inspect_database(database_path)
     required = {"sync_changes", "entity_revision_snapshots"}
     if not required.issubset(inspection.row_counts):
-        raise StorageValidationError("database has not been migrated to revision snapshots")
+        raise StorageValidationError(
+            "database has not been migrated to revision snapshots"
+        )
     inserted = 0
     with closing(sqlite3.connect(database_path)) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
@@ -336,7 +372,11 @@ def backfill_revision_snapshots(database_path: Path) -> int:
                 "owner_user_id, entity_type, entity_uuid, revision, operation, payload_json, "
                 "payload_hash, origin_device_id, origin_operation_id, created_at) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (*row[:6], hashlib.sha256(row[5].encode("utf-8")).hexdigest(), *row[6:]),
+                (
+                    *row[:6],
+                    hashlib.sha256(row[5].encode("utf-8")).hexdigest(),
+                    *row[6:],
+                ),
             )
             inserted += cursor.rowcount
         connection.commit()
@@ -349,7 +389,9 @@ def prune_backups(directory: Path, *, daily: int = 7, weekly: int = 4) -> list[P
     for manifest_path in directory.glob(f"{BACKUP_PREFIX}*.db.manifest.json"):
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            created = datetime.fromisoformat(manifest["created_at"].replace("Z", "+00:00"))
+            created = datetime.fromisoformat(
+                manifest["created_at"].replace("Z", "+00:00")
+            )
         except (KeyError, ValueError, json.JSONDecodeError):
             continue
         manifests.append((manifest_path, manifest, created))

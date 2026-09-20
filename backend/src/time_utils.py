@@ -23,5 +23,7 @@ def as_utc(value: datetime) -> datetime:
 UTCResponseDatetime = Annotated[
     datetime,
     AfterValidator(as_utc),
-    Field(description="UTC instant serialized with Z; fractional seconds are preserved."),
+    Field(
+        description="UTC instant serialized with Z; fractional seconds are preserved."
+    ),
 ]

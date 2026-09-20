@@ -1,4 +1,5 @@
 """Tests for database module."""
+
 import pytest
 
 
@@ -19,8 +20,8 @@ class TestDatabaseModule:
 
         engine = get_engine()
         # Check engine has async attributes
-        assert hasattr(engine, 'begin')
-        assert hasattr(engine, 'dispose')
+        assert hasattr(engine, "begin")
+        assert hasattr(engine, "dispose")
 
 
 class TestAsyncSession:
@@ -39,6 +40,7 @@ class TestAsyncSession:
         # Verify tables were created by checking the database
         async with engine.begin() as conn:
             from sqlalchemy import text
+
             result = await conn.execute(
                 text("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
             )
@@ -61,7 +63,9 @@ class TestAsyncSession:
         set_engine(engine)
         try:
             async with engine.begin() as connection:
-                await connection.execute(text("CREATE TABLE session_probe (value INTEGER)"))
+                await connection.execute(
+                    text("CREATE TABLE session_probe (value INTEGER)")
+                )
             failure_observed = False
             try:
                 async with asynccontextmanager(get_session)() as session:
@@ -73,7 +77,9 @@ class TestAsyncSession:
                 failure_observed = True
             assert failure_observed is fail
             async with engine.connect() as connection:
-                count = (await connection.execute(text("SELECT COUNT(*) FROM session_probe"))).scalar_one()
+                count = (
+                    await connection.execute(text("SELECT COUNT(*) FROM session_probe"))
+                ).scalar_one()
                 assert count == (0 if fail else 1)
         finally:
             set_engine(previous)
@@ -126,8 +132,13 @@ class TestEngineType:
         try:
             with engine.connect() as connection:
                 assert connection.execute(text("PRAGMA foreign_keys")).scalar_one() == 1
-                assert connection.execute(text("PRAGMA busy_timeout")).scalar_one() == 5000
-                assert connection.execute(text("PRAGMA journal_mode")).scalar_one() == "wal"
+                assert (
+                    connection.execute(text("PRAGMA busy_timeout")).scalar_one() == 5000
+                )
+                assert (
+                    connection.execute(text("PRAGMA journal_mode")).scalar_one()
+                    == "wal"
+                )
         finally:
             engine.dispose()
 
@@ -136,13 +147,21 @@ class TestEngineType:
         from sqlalchemy import text
         from src.storage.database_adapter import build_database_adapter
 
-        adapter = build_database_adapter("sqlite", None, str(tmp_path / "async-adapter.db"))
+        adapter = build_database_adapter(
+            "sqlite", None, str(tmp_path / "async-adapter.db")
+        )
         engine = adapter.create_async_engine()
         try:
             async with engine.connect() as connection:
-                assert (await connection.execute(text("PRAGMA foreign_keys"))).scalar_one() == 1
-                assert (await connection.execute(text("PRAGMA busy_timeout"))).scalar_one() == 5000
-                assert (await connection.execute(text("PRAGMA journal_mode"))).scalar_one() == "wal"
+                assert (
+                    await connection.execute(text("PRAGMA foreign_keys"))
+                ).scalar_one() == 1
+                assert (
+                    await connection.execute(text("PRAGMA busy_timeout"))
+                ).scalar_one() == 5000
+                assert (
+                    await connection.execute(text("PRAGMA journal_mode"))
+                ).scalar_one() == "wal"
         finally:
             await engine.dispose()
 
@@ -158,14 +177,18 @@ class TestCreateDbAndTables:
         from src.storage.database_adapter import build_database_adapter
 
         previous_engine = get_engine()
-        adapter = build_database_adapter("sqlite", None, str(tmp_path / "create-all.db"))
+        adapter = build_database_adapter(
+            "sqlite", None, str(tmp_path / "create-all.db")
+        )
         isolated_engine = adapter.create_async_engine()
         set_engine(isolated_engine)
         try:
             await create_db_and_tables()
             async with isolated_engine.begin() as connection:
                 result = await connection.execute(
-                    text("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+                    text(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name='users'"
+                    )
                 )
                 assert result.scalar_one() == "users"
         finally:

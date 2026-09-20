@@ -7,7 +7,10 @@ import pytest
 from sqlmodel import select
 
 from src.auth.models import User
-from tests.account_fixtures import TEST_ACCOUNT_PASSWORD as PASSWORD, account_password_hash
+from tests.account_fixtures import (
+    TEST_ACCOUNT_PASSWORD as PASSWORD,
+    account_password_hash,
+)
 from src.v2.models import DurationDayAllocation, TimerSession
 
 
@@ -133,7 +136,9 @@ async def test_server_identity_is_stable_and_exposes_timer_capabilities(test_cli
 
 
 @pytest.mark.asyncio
-async def test_invalid_iana_timezone_is_rejected_before_storage(test_client, async_session):
+async def test_invalid_iana_timezone_is_rejected_before_storage(
+    test_client, async_session
+):
     account = await register_account(test_client, async_session, "invalidtimezone")
     token = account["access_token"]
     device = await register_device(test_client, token, "timer-invalid-timezone")
@@ -164,11 +169,16 @@ async def test_cross_midnight_stop_is_idempotent_and_allocates_both_days(
     start_at = datetime(2026, 8, 3, 15, 59, 30, tzinfo=timezone.utc)
     commands = [
         timer_command("start", session_id, 1, start_at, activity_id=activity),
-        timer_command("stop", session_id, 2, start_at + timedelta(seconds=60), revision=1),
+        timer_command(
+            "stop", session_id, 2, start_at + timedelta(seconds=60), revision=1
+        ),
     ]
     response = await submit(test_client, token, device, commands)
     assert response.status_code == 200, response.text
-    assert [item["status"] for item in response.json()["results"]] == ["applied", "applied"]
+    assert [item["status"] for item in response.json()["results"]] == [
+        "applied",
+        "applied",
+    ]
     completed = response.json()["results"][1]["session"]
     assert completed["state"] == "completed"
     assert completed["active_elapsed_ms"] == 60_000
@@ -180,13 +190,17 @@ async def test_cross_midnight_stop_is_idempotent_and_allocates_both_days(
     ]
 
     timer = (
-        await async_session.execute(select(TimerSession).where(TimerSession.public_id == session_id))
+        await async_session.execute(
+            select(TimerSession).where(TimerSession.public_id == session_id)
+        )
     ).scalar_one()
     allocations = list(
         (
             await async_session.execute(
                 select(DurationDayAllocation)
-                .where(DurationDayAllocation.activity_event_id == timer.completed_event_id)
+                .where(
+                    DurationDayAllocation.activity_event_id == timer.completed_event_id
+                )
                 .order_by(DurationDayAllocation.local_date)
             )
         ).scalars()
@@ -236,21 +250,31 @@ async def test_pause_spanning_midnight_is_excluded_from_daily_allocations(
         device,
         [
             timer_command("start", session_id, 1, start_at, activity_id=activity),
-            timer_command("pause", session_id, 2, start_at + timedelta(seconds=30), revision=1),
-            timer_command("resume", session_id, 3, start_at + timedelta(seconds=90), revision=2),
-            timer_command("stop", session_id, 4, start_at + timedelta(seconds=120), revision=3),
+            timer_command(
+                "pause", session_id, 2, start_at + timedelta(seconds=30), revision=1
+            ),
+            timer_command(
+                "resume", session_id, 3, start_at + timedelta(seconds=90), revision=2
+            ),
+            timer_command(
+                "stop", session_id, 4, start_at + timedelta(seconds=120), revision=3
+            ),
         ],
     )
     assert response.status_code == 200, response.text
     assert [item["status"] for item in response.json()["results"]] == ["applied"] * 4
     timer = (
-        await async_session.execute(select(TimerSession).where(TimerSession.public_id == session_id))
+        await async_session.execute(
+            select(TimerSession).where(TimerSession.public_id == session_id)
+        )
     ).scalar_one()
     allocations = list(
         (
             await async_session.execute(
                 select(DurationDayAllocation)
-                .where(DurationDayAllocation.activity_event_id == timer.completed_event_id)
+                .where(
+                    DurationDayAllocation.activity_event_id == timer.completed_event_id
+                )
                 .order_by(DurationDayAllocation.local_date)
             )
         ).scalars()
@@ -386,7 +410,9 @@ async def test_takeover_fences_the_old_controller(test_client, async_session):
 
 
 @pytest.mark.asyncio
-async def test_late_takeover_clamps_elapsed_and_remains_completable(test_client, async_session):
+async def test_late_takeover_clamps_elapsed_and_remains_completable(
+    test_client, async_session
+):
     account = await register_account(test_client, async_session, "timerlatetakeover")
     token = account["access_token"]
     first = await register_device(test_client, token, "timer-late-controller-first")
@@ -487,7 +513,9 @@ async def test_timer_status_is_account_scoped_and_returns_missing_without_leakin
 
 
 @pytest.mark.asyncio
-async def test_out_of_order_command_can_be_retried_after_its_predecessor(test_client, async_session):
+async def test_out_of_order_command_can_be_retried_after_its_predecessor(
+    test_client, async_session
+):
     account = await register_account(test_client, async_session, "timerordering")
     token = account["access_token"]
     device = await register_device(test_client, token, "timer-ordering-device")
@@ -495,14 +523,22 @@ async def test_out_of_order_command_can_be_retried_after_its_predecessor(test_cl
     session_id = str(uuid4())
     start_at = datetime(2026, 8, 3, 0, 0, tzinfo=timezone.utc)
     start = timer_command("start", session_id, 1, start_at, activity_id=activity)
-    pause = timer_command("pause", session_id, 2, start_at + timedelta(seconds=30), revision=1)
-    resume = timer_command("resume", session_id, 3, start_at + timedelta(seconds=40), revision=2)
+    pause = timer_command(
+        "pause", session_id, 2, start_at + timedelta(seconds=30), revision=1
+    )
+    resume = timer_command(
+        "resume", session_id, 3, start_at + timedelta(seconds=40), revision=2
+    )
 
-    assert (await submit(test_client, token, device, [start])).json()["results"][0]["status"] == "applied"
+    assert (await submit(test_client, token, device, [start])).json()["results"][0][
+        "status"
+    ] == "applied"
     early = (await submit(test_client, token, device, [resume])).json()["results"][0]
     assert early["status"] == "conflict"
     assert early["error_code"] == "MISSING_PREDECESSOR"
-    assert (await submit(test_client, token, device, [pause])).json()["results"][0]["status"] == "applied"
+    assert (await submit(test_client, token, device, [pause])).json()["results"][0][
+        "status"
+    ] == "applied"
     retried = (await submit(test_client, token, device, [resume])).json()["results"][0]
     assert retried["status"] == "applied"
 

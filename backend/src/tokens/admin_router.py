@@ -25,9 +25,7 @@ async def list_user_tokens(
     session: AsyncSession = Depends(get_session, scope="function"),
 ):
     """List all API tokens for a specific user. Requires admin role."""
-    result = await session.execute(
-        select(ApiToken).where(ApiToken.user_id == user_id)
-    )
+    result = await session.execute(select(ApiToken).where(ApiToken.user_id == user_id))
     tokens = result.scalars().all()
     return tokens
 
