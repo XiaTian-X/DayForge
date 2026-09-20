@@ -1,5 +1,6 @@
 package com.dayforge
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import android.content.Context
 import android.content.res.Configuration
 import androidx.test.core.app.ApplicationProvider
@@ -7,11 +8,8 @@ import java.util.Locale
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 class FormattedStringResourceTest {
 
     @Test

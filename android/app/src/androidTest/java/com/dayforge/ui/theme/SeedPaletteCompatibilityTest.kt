@@ -1,16 +1,14 @@
 package com.dayforge.ui.theme
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.dayforge.domain.model.GlobalColorTheme
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 class SeedPaletteCompatibilityTest {
     private fun theme(seed: String) = GlobalColorTheme("test", "Test", seed, true, true)
     private fun colors(theme: GlobalColorTheme, dark: Boolean) = SeedPaletteFixtures.colors(
@@ -18,7 +16,7 @@ class SeedPaletteCompatibilityTest {
         else ColorSchemeGenerator.generateLightColorScheme(theme)
     )
 
-    @Test fun `all 27 light and dark roles match pre-migration output for 43 seeds`() {
+    @Test fun all_27_light_and_dark_roles_match_pre_migration_output_for_43_seeds() {
         val fixtures = SeedPaletteFixtures.load()
         assertEquals(86, fixtures.size)
         for (fixture in fixtures) {
@@ -29,10 +27,10 @@ class SeedPaletteCompatibilityTest {
         }
     }
 
-    @Test fun `each custom role overrides only its role in both modes`() {
+    @Test fun each_custom_role_overrides_only_its_role_in_both_modes() {
         for (dark in listOf(false, true)) {
             val base = theme("#1976D2")
-            val baseline = colors(base, dark)
+            val baseline = SeedPaletteFixtures.ocean(dark)
             val json = Json.parseToJsonElement(Json.encodeToString(base)).jsonObject
             SeedPaletteFixtures.roles.forEachIndexed { i, role ->
                 val custom = Json.decodeFromJsonElement<GlobalColorTheme>(JsonObject(json + (role to JsonPrimitive("#123456"))))
@@ -42,22 +40,23 @@ class SeedPaletteCompatibilityTest {
         }
     }
 
-    @Test fun `invalid seed falls back to ocean and invalid override stays black`() {
+    @Test fun invalid_seed_falls_back_to_ocean_and_invalid_override_stays_black() {
         for (dark in listOf(false, true)) {
-            assertEquals(colors(theme("#1976D2"), dark), colors(theme("invalid"), dark))
+            assertEquals(SeedPaletteFixtures.ocean(dark), colors(theme("invalid"), dark))
             val overridden = colors(theme("invalid").copy(primary = "invalid"), dark)
             assertEquals(0xff000000.toInt(), overridden.first())
-            assertEquals(colors(theme("#1976D2"), dark).drop(1), overridden.drop(1))
+            assertEquals(SeedPaletteFixtures.ocean(dark).drop(1), overridden.drop(1))
         }
     }
 
-    @Test fun `OLED preset remains fixed but custom theme named oled uses its own colors`() {
+    @Test fun OLED_preset_remains_fixed_but_custom_theme_named_oled_uses_its_own_colors() {
         val preset = theme("#000000").copy(id = "oled", primary = "#123456")
-        val fixed = SeedPaletteFixtures.colors(ColorSchemeGenerator.generateOledColorScheme())
+        val fixed = SeedPaletteFixtures.oledColors
         for (dark in listOf(false, true)) {
             assertEquals(fixed, colors(preset, dark))
             val custom = preset.copy(isCustom = true)
-            assertEquals(colors(custom.copy(id = "custom"), dark), colors(custom, dark))
+            val black = SeedPaletteFixtures.load().single { it.seed == "FF000000" && it.dark == dark }.colors
+            assertEquals(black.toMutableList().apply { this[0] = 0xff123456.toInt() }, colors(custom, dark))
             assertEquals(0xff123456.toInt(), colors(custom, dark).first())
         }
     }

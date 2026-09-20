@@ -257,3 +257,10 @@ assets 读取同一份 `contracts/sync-v2` 样例，不复制或自动生成测�
 计时同步使用真实 Room/Retrofit，固定 wire JSON 预期，验证响应丢失、临时/永久拒绝、错配确认与重开重试。
 只有 command ID 和 session ID 都匹配才能改变对应命令。详细记录见
 [网络与计时同步报告](reviews/2026-09-20-network-timer-device.md)。
+
+## 主题与资源真机回归（Issue #139）
+
+主题 CSV 基准从 instrumentation assets 读取，移动时须校验原始字节不变。OLED 使用固定 27 角色
+设计值，禁止调用被测颜色生成器生成导出预期；非空断言不能代替实际颜色相等。
+格式化资源使用固定结果检查参数顺序与补零。详细记录见
+[主题与资源报告](reviews/2026-09-20-theme-resource-device.md)。

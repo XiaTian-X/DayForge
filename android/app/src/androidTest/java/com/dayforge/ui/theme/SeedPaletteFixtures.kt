@@ -12,9 +12,20 @@ internal object SeedPaletteFixtures {
         "surface", "onSurface", "surfaceVariant", "onSurfaceVariant", "outline", "outlineVariant",
         "inverseSurface", "inverseOnSurface")
 
+    val oledColors = listOf(
+        0xFF00BFA5, 0xFF000000, 0xFF004D40, 0xFF80CBC4, 0xFF00BFA5,
+        0xFF3D5AFE, 0xFFFFFFFF, 0xFF1A237E, 0xFFB388FF,
+        0xFF2979FF, 0xFFFFFFFF, 0xFF0D47A1, 0xFF82B1FF,
+        0xFFCF6679, 0xFF000000, 0xFF4D1F1F, 0xFFFFB4AB, 0xFF000000, 0xFFFFFFFF,
+        0xFF000000, 0xFFFFFFFF, 0xFF121212, 0xFFB0B0B0, 0xFF404040, 0xFF202020,
+        0xFFFFFFFF, 0xFF000000
+    ).map { it.toInt() }
+
+    fun ocean(dark: Boolean): List<Int> = load().single { it.seed == "FF1976D2" && it.dark == dark }.colors
+
     data class Fixture(val seed: String, val dark: Boolean, val colors: List<Int>)
 
-    fun load(): List<Fixture> = requireNotNull(javaClass.getResourceAsStream("/theme/seed-palette.csv"))
+    fun load(): List<Fixture> = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().context.assets.open("theme/seed-palette.csv")
         .bufferedReader().use { reader ->
             reader.readLines().filter { it.isNotBlank() && !it.startsWith("#") }.map { line ->
                 val fields = line.split(',')
