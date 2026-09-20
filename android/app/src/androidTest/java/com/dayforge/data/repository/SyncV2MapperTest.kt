@@ -1,5 +1,8 @@
 package com.dayforge.data.repository
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.runner.RunWith
+
 import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.HabitMetricLinkEntity
@@ -20,9 +23,10 @@ import kotlinx.serialization.json.jsonArray
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
+@RunWith(AndroidJUnit4::class)
 class SyncV2MapperTest {
     @Test
-    fun `captured dates survive DST folds negative zones and later edits`() {
+    fun captured_dates_survive_DST_folds_negative_zones_and_later_edits() {
         val originalZone = TimeZone.getDefault()
         try {
             for ((captureZone, instantText, date) in listOf(
@@ -48,7 +52,7 @@ class SyncV2MapperTest {
     }
 
     @Test
-    fun `weekly default uses creation weekday rather than synchronization weekday`() {
+    fun weekly_default_uses_creation_weekday_rather_than_synchronization_weekday() {
         val originalZone = TimeZone.getDefault()
         try {
             TimeZone.setDefault(TimeZone.getTimeZone("Asia/Shanghai"))
@@ -66,7 +70,7 @@ class SyncV2MapperTest {
     }
 
     @Test
-    fun `wire preferred time always uses ASCII digits`() {
+    fun wire_preferred_time_always_uses_ASCII_digits() {
         val originalLocale = Locale.getDefault()
         try {
             for (language in listOf("ar-EG", "fa-IR", "en-US")) {
@@ -80,7 +84,7 @@ class SyncV2MapperTest {
     }
 
     @Test
-    fun `goal remains a top level goal node`() {
+    fun goal_remains_a_top_level_goal_node() {
         val payload = SyncV2Mapper.planNode(habit(HabitType.GOAL))
         assertEquals("goal", payload["node_kind"]?.jsonPrimitive?.content)
         assertEquals(JsonNull, payload["parent_uuid"])
@@ -89,7 +93,7 @@ class SyncV2MapperTest {
     }
 
     @Test
-    fun `temporary task maps to once and one and done`() {
+    fun temporary_task_maps_to_once_and_one_and_done() {
         val payload = SyncV2Mapper.planNode(
             habit(HabitType.CHECK_IN).copy(targetCycles = 1, failMode = FailMode.LOOSE)
         )
@@ -99,7 +103,7 @@ class SyncV2MapperTest {
     }
 
     @Test
-    fun `timer target minutes convert to wire seconds`() {
+    fun timer_target_minutes_convert_to_wire_seconds() {
         val payload = SyncV2Mapper.planNode(
             habit(HabitType.TIMER).copy(targetValue = 10, isCountdown = true)
         )
@@ -110,7 +114,7 @@ class SyncV2MapperTest {
     }
 
     @Test
-    fun `goal preserves target policy and creation time`() {
+    fun goal_preserves_target_policy_and_creation_time() {
         val payload = SyncV2Mapper.planNode(
             habit(HabitType.GOAL).copy(
                 targetCycles = 30,
@@ -126,7 +130,7 @@ class SyncV2MapperTest {
     }
 
     @Test
-    fun `counting completion maps to a count snapshot`() {
+    fun counting_completion_maps_to_a_count_snapshot() {
         val habit = habit(HabitType.COUNTING)
         val payload = SyncV2Mapper.completion(
             CompletionEntity(
@@ -145,25 +149,26 @@ class SyncV2MapperTest {
     }
 
     @Test
-    fun `completion local date follows its occurrence timestamp`() {
+    fun completion_local_date_follows_its_occurrence_timestamp() {
         val occurredAt = 1_786_327_200_000L
         val payload = SyncV2Mapper.completion(
             CompletionEntity(
                 habitId = 1,
                 date = 0,
-                actualCompletedAt = occurredAt
+                actualCompletedAt = occurredAt,
+                recordedTimezone = "Asia/Shanghai"
             ),
             habit(HabitType.CHECK_IN)
         )
 
         assertEquals(
-            Instant.ofEpochMilli(occurredAt).atZone(ZoneId.systemDefault()).toLocalDate().toString(),
+            "2026-08-10",
             payload["local_date"]?.jsonPrimitive?.content
         )
     }
 
     @Test
-    fun `legacy completion without occurrence uses its recorded day`() {
+    fun legacy_completion_without_occurrence_uses_its_recorded_day() {
         val recordedDay = 1_786_291_200_000L
         val payload = SyncV2Mapper.completion(
             CompletionEntity(
@@ -182,7 +187,7 @@ class SyncV2MapperTest {
     }
 
     @Test
-    fun `metric observation and link preserve their dependencies`() {
+    fun metric_observation_and_link_preserve_their_dependencies() {
         val metric = MetricEntity(
             name = "Weight",
             unit = "kg",

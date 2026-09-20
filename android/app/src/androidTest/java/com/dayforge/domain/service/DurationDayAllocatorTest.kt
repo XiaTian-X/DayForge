@@ -1,5 +1,8 @@
 package com.dayforge.domain.service
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.runner.RunWith
+
 import com.dayforge.data.local.entity.TimerSegmentEntity
 import java.time.LocalDate
 import java.time.ZonedDateTime
@@ -7,9 +10,10 @@ import java.time.ZoneId
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
+@RunWith(AndroidJUnit4::class)
 class DurationDayAllocatorTest {
     @Test
-    fun `cross midnight duration is split at captured timezone midnight`() {
+    fun cross_midnight_duration_is_split_at_captured_timezone_midnight() {
         val zone = ZoneId.of("Asia/Shanghai")
         val start = ZonedDateTime.of(2026, 8, 14, 23, 30, 0, 0, zone).toInstant().toEpochMilli()
         val end = ZonedDateTime.of(2026, 8, 15, 0, 30, 0, 0, zone).toInstant().toEpochMilli()
@@ -24,7 +28,7 @@ class DurationDayAllocatorTest {
     }
 
     @Test
-    fun `paused interval spanning midnight is excluded`() {
+    fun paused_interval_spanning_midnight_is_excluded() {
         val zone = ZoneId.of("Asia/Shanghai")
         fun at(day: Int, hour: Int, minute: Int) =
             ZonedDateTime.of(2026, 8, day, hour, minute, 0, 0, zone).toInstant().toEpochMilli()
@@ -41,7 +45,7 @@ class DurationDayAllocatorTest {
     }
 
     @Test
-    fun `dst spring day uses real 23 hour boundary`() {
+    fun dst_spring_day_uses_real_23_hour_boundary() {
         val zone = ZoneId.of("America/New_York")
         val day = LocalDate.of(2026, 3, 8)
         val start = day.atStartOfDay(zone).toInstant().toEpochMilli()
@@ -56,7 +60,7 @@ class DurationDayAllocatorTest {
     }
 
     @Test
-    fun `dst fall day uses real 25 hour boundary`() {
+    fun dst_fall_day_uses_real_25_hour_boundary() {
         val zone = ZoneId.of("America/New_York")
         val day = LocalDate.of(2026, 11, 1)
         val start = day.atStartOfDay(zone).toInstant().toEpochMilli()
@@ -78,7 +82,7 @@ class DurationDayAllocatorTest {
     }
 
     @Test
-    fun `maximum duration clamps across ordered running segments`() {
+    fun maximum_duration_clamps_across_ordered_running_segments() {
         val zone = ZoneId.of("UTC")
         fun at(day: Int, hour: Int) =
             ZonedDateTime.of(2026, 8, day, hour, 0, 0, 0, zone).toInstant().toEpochMilli()
@@ -105,4 +109,20 @@ class DurationDayAllocatorTest {
         assertEquals(listOf("2026-08-14", "2026-08-15"), result.map { it.localDate })
         assertEquals(listOf(60L * 60 * 1_000, 30L * 60 * 1_000), result.map { it.durationMillis })
     }
+    @Test
+    fun literal_utc_interval_crosses_a_short_dst_day_without_losing_milliseconds() {
+        // 2026-03-08 00:00 New York through 2026-03-09 01:00, plus 123 ms.
+        val result = DurationDayAllocator.allocate("fixed-session", 7, "America/New_York", listOf(
+            TimerSegmentEntity(sessionUuid = "fixed-session", sequence = 1,
+                startedAt = 1772946000000L, endedAt = 1773032400123L)
+        ))
+        assertEquals(listOf("2026-03-08", "2026-03-09"), result.map { it.localDate })
+        assertEquals(listOf(82800000L, 3600123L), result.map { it.durationMillis })
+        assertEquals(listOf(1772946000000L, 1773028800000L), result.map { it.localDateEpoch })
+        assertEquals(86400123L, result.sumOf { it.durationMillis })
+        assertEquals(listOf("fixed-session", "fixed-session"), result.map { it.sessionUuid })
+        assertEquals(listOf(7L, 7L), result.map { it.habitId })
+        assertEquals(listOf("America/New_York", "America/New_York"), result.map { it.timezone })
+    }
+
 }

@@ -1,10 +1,14 @@
 package com.dayforge.domain.service
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.runner.RunWith
+
 import org.junit.Assert.*
 import org.junit.Test
 import java.time.ZonedDateTime
 import java.time.ZoneId
 
+@RunWith(AndroidJUnit4::class)
 class CountingSlotCalculatorTest {
 
     private val zoneId = ZoneId.systemDefault()

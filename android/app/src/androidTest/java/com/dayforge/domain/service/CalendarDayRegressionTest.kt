@@ -1,5 +1,8 @@
 package com.dayforge.domain.service
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.runner.RunWith
+
 import com.dayforge.util.DateTimeUtils
 import java.time.LocalDate
 import java.time.ZoneId
@@ -8,6 +11,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
+@RunWith(AndroidJUnit4::class)
 class CalendarDayRegressionTest {
     private val originalZone = TimeZone.getDefault()
 
@@ -15,7 +19,7 @@ class CalendarDayRegressionTest {
     fun restoreZone() = TimeZone.setDefault(originalZone)
 
     @Test
-    fun `day end follows next midnight across DST and ordinary dates`() {
+    fun day_end_follows_next_midnight_across_DST_and_ordinary_dates() {
         for ((zone, date, hours) in listOf(
             Triple("America/New_York", "2026-03-08", 23L),
             Triple("America/New_York", "2026-11-01", 25L),
@@ -36,7 +40,7 @@ class CalendarDayRegressionTest {
     }
 
     @Test
-    fun `current and best streak continue across both DST transitions`() {
+    fun current_and_best_streak_continue_across_both_DST_transitions() {
         TimeZone.setDefault(TimeZone.getTimeZone("America/New_York"))
         for (transition in listOf("2026-03-08", "2026-11-01")) {
             val today = LocalDate.parse(transition).plusDays(1)

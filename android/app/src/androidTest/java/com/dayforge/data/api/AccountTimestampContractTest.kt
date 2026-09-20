@@ -12,6 +12,8 @@ import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import java.util.concurrent.CopyOnWriteArrayList
+import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.Parameterized
@@ -22,9 +24,17 @@ import retrofit2.converter.kotlinx.serialization.asConverterFactory
 @RunWith(Parameterized::class)
 class AccountTimestampContractTest(private val timestamp: String) {
     private val json = Json { ignoreUnknownKeys = true }
+    private val clients = CopyOnWriteArrayList<OkHttpClient>()
+
+    @After fun closeClients() {
+        clients.forEach { client ->
+            client.dispatcher.executorService.shutdown()
+            client.connectionPool.evictAll()
+        }
+    }
 
     @Test
-    fun `user token creation and listing preserve timestamps and nullable fields`() = runBlocking {
+    fun user_token_creation_and_listing_preserve_timestamps_and_nullable_fields() = runBlocking {
         val api = retrofit().create(TokenApi::class.java)
         val created = api.createToken(ApiTokenCreateRequest("fixture", 7))
         assertEquals(timestamp, created.created_at)
@@ -39,7 +49,7 @@ class AccountTimestampContractTest(private val timestamp: String) {
     }
 
     @Test
-    fun `admin token routes accept the same UTC response contract`() = runBlocking {
+    fun admin_token_routes_accept_the_same_UTC_response_contract() = runBlocking {
         val api = retrofit().create(AdminApi::class.java)
         val created = api.createUserToken(7, ApiTokenCreateRequest("fixture", 7))
         assertEquals(timestamp, created.created_at)
@@ -52,7 +62,7 @@ class AccountTimestampContractTest(private val timestamp: String) {
     }
 
     @Test
-    fun `admin account create list and update preserve timestamp precision`() = runBlocking {
+    fun admin_account_create_list_and_update_preserve_timestamp_precision() = runBlocking {
         val api = retrofit().create(AdminApi::class.java)
         val created = api.createUser(AdminUserCreate("fixture", "test-password"))
         val listed = api.listUsers().single()
@@ -90,6 +100,7 @@ class AccountTimestampContractTest(private val timestamp: String) {
                 .code(if (request.method == "POST") 201 else 200).message("fixture")
                 .body(response.toResponseBody("application/json".toMediaType())).build()
         }.build()
+        clients += client
         return Retrofit.Builder().baseUrl("https://example.invalid/api/v1/").client(client)
             .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
             .build()

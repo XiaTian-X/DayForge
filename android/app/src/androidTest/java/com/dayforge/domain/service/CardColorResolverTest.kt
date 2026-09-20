@@ -1,10 +1,14 @@
 package com.dayforge.domain.service
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.runner.RunWith
+
 import com.dayforge.domain.model.CardColorStyle
 import androidx.compose.ui.graphics.toArgb
 import org.junit.Assert.*
 import org.junit.Test
 
+@RunWith(AndroidJUnit4::class)
 class CardColorResolverTest {
 
     // Test colors (Int ARGB format)
