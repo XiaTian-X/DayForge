@@ -3,7 +3,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlmodel import select
+from sqlmodel import col, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
@@ -146,7 +146,7 @@ async def _household_response(
     creator = await session.get(User, household.created_by_user_id)
     rows = await session.execute(
         select(HouseholdMembership, User)
-        .join(User, HouseholdMembership.user_id == User.id)
+        .join(User, col(HouseholdMembership.user_id) == col(User.id))
         .where(HouseholdMembership.household_id == household.id)
         .order_by(User.username)
     )
@@ -161,13 +161,19 @@ async def _household_response(
         )
         for membership, user in rows.all()
     ]
-    return AdminHouseholdResponse(
-        household_id=household.public_id,
-        name=household.name,
-        is_active=household.deleted_at is None,
-        revision=household.revision,
-        created_by_user_id=creator.public_id,
-        members=members,
+    if creator is None:
+        # This required foreign-key reference must exist. Keep a server error
+        # and roll back the request; never invent a replacement owner.
+        raise RuntimeError("Household creator reference is missing")
+    return AdminHouseholdResponse.model_validate(
+        {
+            "household_id": household.public_id,
+            "name": household.name,
+            "is_active": household.deleted_at is None,
+            "revision": household.revision,
+            "created_by_user_id": creator.public_id,
+            "members": members,
+        }
     )
 
 
@@ -202,7 +208,7 @@ async def list_households(
     session: AsyncSession = Depends(get_session, scope="function"),
 ) -> list[AdminHouseholdResponse]:
     rows = await session.execute(
-        select(Household).order_by(Household.name, Household.id)
+        select(Household).order_by(Household.name, col(Household.id))
     )
     return [
         await _household_response(session, household)
@@ -293,7 +299,7 @@ async def remove_household_member(
     household = await _household_or_404(session, household_id)
     result = await session.execute(
         select(HouseholdMembership)
-        .join(User, HouseholdMembership.user_id == User.id)
+        .join(User, col(HouseholdMembership.user_id) == col(User.id))
         .where(
             HouseholdMembership.household_id == household.id,
             User.public_id == str(user_id),
@@ -347,7 +353,7 @@ async def _admin_device(
         ClientDevice.public_id == str(device_id),
     )
     if active_only:
-        query = query.where(ClientDevice.revoked_at.is_(None))
+        query = query.where(col(ClientDevice.revoked_at).is_(None))
     result = await session.execute(query)
     device = result.scalar_one_or_none()
     if device is None:
@@ -365,7 +371,7 @@ async def list_user_devices(
     rows = await session.execute(
         select(ClientDevice)
         .where(ClientDevice.user_id == user.id)
-        .order_by(ClientDevice.created_at)
+        .order_by(col(ClientDevice.created_at))
     )
     return [
         await to_device_response(session, device) for device in rows.scalars().all()

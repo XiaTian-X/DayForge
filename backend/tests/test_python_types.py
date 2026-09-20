@@ -47,6 +47,10 @@ def type_cache(tmp_path_factory):
             "from src.tokens.schemas import TokenResponse\ndef wrong(token: TokenResponse) -> None:\n    token.id = None\n",
             "assignment",
         ),
+        (
+            "from src.admin.schemas import AdminHouseholdResponse\ndef wrong(value: AdminHouseholdResponse) -> str:\n    return value.created_by_user_id\n",
+            "return-value",
+        ),
     ],
 )
 def test_type_gate_rejects_invalid_contracts(source, diagnostic, type_cache):
@@ -121,6 +125,26 @@ def test_validated_auth_responses_have_precise_public_types(type_cache):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_admin_and_device_boundaries_return_typed_models(type_cache):
+    source = (
+        "from typing import assert_type\n"
+        "from uuid import UUID\n"
+        "from sqlalchemy.ext.asyncio import AsyncSession\n"
+        "from src.auth.models import User\n"
+        "from src.admin.router import _household_response\n"
+        "from src.tokens.admin_router import create_user_token\n"
+        "from src.tokens.schemas import TokenCreate\n"
+        "from src.v2.device_service import to_device_response\n"
+        "from src.v2.models import Household, ClientDevice\n"
+        "async def check(session: AsyncSession, user: User, home: Household, device: ClientDevice) -> None:\n"
+        "    assert_type((await _household_response(session, home)).household_id, UUID)\n"
+        "    assert_type((await to_device_response(session, device)).device_id, UUID)\n"
+        "    assert_type((await create_user_token(1, TokenCreate(name='probe'), user, session)).id, int)\n"
+    )
+    result = run_mypy(source, type_cache)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_type_gate_scope_is_explicit_without_error_or_import_suppression():
     config = tomllib.loads((BACKEND / "pyproject.toml").read_text())["tool"]["mypy"]
     assert set(config["files"]) == {
@@ -138,6 +162,9 @@ def test_type_gate_scope_is_explicit_without_error_or_import_suppression():
         "src/tokens/schemas.py",
         "src/tokens/service.py",
         "src/tokens/router.py",
+        "src/tokens/admin_router.py",
+        "src/admin",
+        "src/v2/device_service.py",
     }
     assert config["check_untyped_defs"] is True
     assert not config.get("ignore_errors", False)

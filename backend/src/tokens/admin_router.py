@@ -36,7 +36,7 @@ async def create_user_token(
     token_data: TokenCreate,
     admin: User = Depends(get_admin_user),
     session: AsyncSession = Depends(get_session, scope="function"),
-):
+) -> TokenResponse:
     """Create a new API token for a specific user. Requires admin role."""
     # Verify target user exists
     result = await session.execute(select(User).where(User.id == user_id))
@@ -66,14 +66,17 @@ async def create_user_token(
     await session.commit()
     await session.refresh(api_token)
 
-    return TokenResponse(
-        id=api_token.id,
-        name=api_token.name,
-        prefix=api_token.prefix,
-        token=raw_token,
-        last_used_at=api_token.last_used_at,
-        created_at=api_token.created_at,
-        expires_at=api_token.expires_at,
+    # Validate the persisted ID without weakening the required response field.
+    return TokenResponse.model_validate(
+        {
+            "id": api_token.id,
+            "name": api_token.name,
+            "prefix": api_token.prefix,
+            "token": raw_token,
+            "last_used_at": api_token.last_used_at,
+            "created_at": api_token.created_at,
+            "expires_at": api_token.expires_at,
+        }
     )
 
 
