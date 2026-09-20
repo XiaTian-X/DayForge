@@ -8,11 +8,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.runner.RunWith
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
+@RunWith(AndroidJUnit4::class)
 class WidgetRefresherTest {
-    @Test fun `refresh is sequential and visits every instance once`() = runTest {
+    @Test fun refresh_is_sequential_and_visits_every_instance_once() = runTest {
         val events = mutableListOf<String>()
         val gate = CompletableDeferred<Unit>()
         val refresher = WidgetRefresher(listOf(
@@ -30,7 +33,7 @@ class WidgetRefresherTest {
         assertEquals(listOf("first start", "first end", "second", "timer"), events)
     }
 
-    @Test fun `discovery and instance failures do not suppress other widgets`() = runTest {
+    @Test fun discovery_and_instance_failures_do_not_suppress_other_widgets() = runTest {
         val visited = mutableListOf<String>()
         val failures = mutableListOf<String>()
         val refresher = WidgetRefresher(listOf(
@@ -47,7 +50,7 @@ class WidgetRefresherTest {
         assertEquals(listOf("second instance", "alarm"), visited)
     }
 
-    @Test fun `cancellation during discovery or refresh stops later work without error logging`() = runTest {
+    @Test fun cancellation_during_discovery_or_refresh_stops_later_work_without_error_logging() = runTest {
         for (duringDiscovery in listOf(true, false)) {
             var later = false
             val cancelled = WidgetRefresher.Target("cancelled") {

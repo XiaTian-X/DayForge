@@ -59,10 +59,6 @@ android {
 
     testBuildType = "deviceTest"
 
-    testOptions {
-        unitTests.isIncludeAndroidResources = true
-    }
-
     lint {
         baseline = file("lint-baseline.xml")
         warningsAsErrors = true
@@ -74,7 +70,7 @@ android {
 
     buildTypes {
         getByName("debug") {
-            enableUnitTestCoverage = true
+            enableUnitTestCoverage = false
             enableAndroidTestCoverage = true
         }
         create("deviceTest") {
@@ -93,8 +89,6 @@ android {
     sourceSets {
         getByName("androidTest").assets.srcDir("$projectDir/schemas")
         getByName("androidTest").assets.srcDir(rootProject.file("../contracts"))
-        getByName("test").resources.srcDir(rootProject.file("../contracts"))
-        getByName("test").resources.srcDir("$projectDir/schemas")
     }
 }
 
@@ -103,14 +97,15 @@ ksp {
     arg("room.incremental", "true")
 }
 
-tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
-    timeout.set(Duration.ofMinutes(15))
-    if (providers.environmentVariable("CI").orNull == "true") {
-        testLogging.events("started", "failed", "skipped")
-    }
+check(fileTree("src") { include("test*/**/*.kt", "test*/**/*.java") }.isEmpty) {
+    "Android tests must live in src/androidTest and run on an authorized physical device."
 }
 
 androidComponents {
+    // All historical tests now live in androidTest and run only on physical devices.
+    // Do not create an empty JVM variant that could be mistaken for behavior validation.
+    beforeVariants { it.enableUnitTest = false }
+
     onVariants(selector().withBuildType("deviceTest")) { variant ->
         // Retain all notices from the instrumentation-only MockK/JUnit dependencies.
         variant.androidTest?.packaging?.resources?.merges?.addAll(
@@ -181,19 +176,12 @@ dependencies {
     // WorkManager for scheduled tasks
     implementation(libs.work.runtime.ktx)
 
-    // Testing
-    testImplementation(libs.junit)
-    testImplementation(libs.turbine)
-    testImplementation(libs.coroutines.test)
-    testImplementation(libs.androidx.test.core)
-    testImplementation(libs.androidx.test.runner)
-    testImplementation(libs.androidx.test.ext.junit)
-    testImplementation(libs.robolectric)
-    testImplementation(libs.mockk)
-    testImplementation(libs.ui.test.junit4)
+    // Physical-device instrumentation testing
     debugImplementation(libs.ui.test.manifest)
     add("deviceTestImplementation", libs.ui.test.manifest)
     kspAndroidTest(libs.hilt.compiler)
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.mockk.android)
     androidTestImplementation(libs.coroutines.test)
     androidTestImplementation(libs.turbine)

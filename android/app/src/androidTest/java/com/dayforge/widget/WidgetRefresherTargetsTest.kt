@@ -18,12 +18,10 @@ import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26, 34])
+@RunWith(AndroidJUnit4::class)
 class WidgetRefresherTargetsTest {
     private lateinit var context: Context
     private val id = mockk<GlanceId>()
@@ -55,6 +53,9 @@ class WidgetRefresherTargetsTest {
     }
 
     @After fun teardown() {
+        listOf(CheckInWidget.PREFS_NAME, CountingWidget.PREFS_NAME, TimerWidget.PREFS_NAME).forEach { name ->
+            assertTrue(context.getSharedPreferences(name, Context.MODE_PRIVATE).edit().remove("habit_id_10").commit())
+        }
         unmockkConstructor(GlanceAppWidgetManager::class, CheckInWidget::class, CountingWidget::class,
             TimerWidget::class, ProgressWidget::class, MotivationWidget::class, FocusWidget::class)
         unmockkObject(CheckInWidget.Companion, CountingWidget.Companion, TimerWidget.Companion,
@@ -65,7 +66,7 @@ class WidgetRefresherTargetsTest {
         context.getSharedPreferences(name, Context.MODE_PRIVATE).edit().putLong(prefix + 10, habit).commit()
     }
 
-    @Test fun `all six types load current state before rendering and focus alarm is retained`() = runTest {
+    @Test fun all_six_types_load_current_state_before_rendering_and_focus_alarm_is_retained() = runTest {
         assertEquals(0, WidgetRefresher(context).refresh())
         coVerifyOrder {
             CheckInWidget.refreshWidgetData(context, id, 101)
@@ -84,7 +85,7 @@ class WidgetRefresherTargetsTest {
         }
     }
 
-    @Test fun `no installed widgets avoids loading data or rendering but retains alarm reconciliation`() = runTest {
+    @Test fun no_installed_widgets_avoids_loading_data_or_rendering_but_retains_alarm_reconciliation() = runTest {
         coEvery { anyConstructed<GlanceAppWidgetManager>().getGlanceIds(any<Class<GlanceAppWidget>>()) } returns emptyList()
         assertEquals(0, WidgetRefresher(context).refresh())
         coVerify(exactly = 0) { CheckInWidget.refreshWidgetData(any(), any(), any()) }
@@ -93,7 +94,7 @@ class WidgetRefresherTargetsTest {
         coVerify(exactly = 1) { FocusWidgetAlarmScheduler.scheduleNextRefresh(context) }
     }
 
-    @Test fun `queued refresh resolves latest binding and renders unconfigured widgets`() = runTest {
+    @Test fun queued_refresh_resolves_latest_binding_and_renders_unconfigured_widgets() = runTest {
         val refresher = WidgetRefresher(context)
         bind(CheckInWidget.PREFS_NAME, CheckInWidget.PREF_HABIT_ID_PREFIX, 999)
         bind(CountingWidget.PREFS_NAME, CountingWidget.PREF_HABIT_ID_PREFIX, -1)
@@ -104,7 +105,7 @@ class WidgetRefresherTargetsTest {
         coVerify(exactly = 1) { anyConstructed<CountingWidget>().update(context, id) }
     }
 
-    @Test fun `a data-load failure does not render stale state or block later types`() = runTest {
+    @Test fun a_data_load_failure_does_not_render_stale_state_or_block_later_types() = runTest {
         coEvery { ProgressWidget.refreshWidgetData(context, id) } throws IOException("database busy")
         assertEquals(1, WidgetRefresher(context).refresh())
         coVerify(exactly = 0) { anyConstructed<ProgressWidget>().update(context, id) }

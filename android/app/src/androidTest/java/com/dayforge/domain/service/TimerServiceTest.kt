@@ -7,9 +7,8 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
 /**
  * Intent and notification contracts used by [TimerService].
@@ -18,8 +17,7 @@ import org.robolectric.annotation.Config
  * process-recovery dispatch by TimerManagerTest. Android lifecycle/background
  * behavior still requires the device acceptance described in docs/TESTING.md.
  */
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 class TimerServiceTest {
 
     private lateinit var context: Context
