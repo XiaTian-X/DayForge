@@ -1,6 +1,6 @@
 package com.dayforge.ui.screens.habitdetail
 
-import androidx.room.Room
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.lifecycle.ViewModelStore
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
@@ -43,15 +43,13 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 import java.util.Calendar
 import java.util.TimeZone
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 @OptIn(ExperimentalCoroutinesApi::class)
 class HabitDetailViewModelTest {
+    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
 
     private val testDispatcher = StandardTestDispatcher()
     private val viewModelStore = ViewModelStore()
@@ -79,10 +77,7 @@ class HabitDetailViewModelTest {
     @Before
     fun setup() {
         context = ApplicationProvider.getApplicationContext()
-        database = Room.inMemoryDatabaseBuilder(
-            context,
-            HabitDatabase::class.java
-        ).build()
+        database = storage.database
         habitDao = database.habitDao()
         completionDao = database.completionDao()
         timeLogDao = database.timeLogDao()

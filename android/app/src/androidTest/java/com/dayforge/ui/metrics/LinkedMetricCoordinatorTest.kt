@@ -1,5 +1,7 @@
 package com.dayforge.ui.metrics
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.runner.RunWith
 import android.content.Context
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.entity.HabitEntity
@@ -14,6 +16,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Before
 import org.junit.Test
 
+@RunWith(AndroidJUnit4::class)
 class LinkedMetricCoordinatorTest {
     private lateinit var habitRepository: HabitRepository
     private lateinit var metricRepository: MetricRepository
@@ -35,7 +38,7 @@ class LinkedMetricCoordinatorTest {
     }
 
     @Test
-    fun `timer stop prompt reloads habit after service persistence delay`() = runTest {
+    fun timer_stop_prompt_reloads_habit_after_service_persistence_delay() = runTest {
         val habit = mockk<HabitEntity> {
             every { name } returns "Timer"
         }
@@ -50,7 +53,7 @@ class LinkedMetricCoordinatorTest {
     }
 
     @Test
-    fun `timer stop prompt ignores unaccepted stop`() = runTest {
+    fun timer_stop_prompt_ignores_unaccepted_stop() = runTest {
         coordinator.showPromptAfterTimerStop(null)
 
         coVerify(exactly = 0) { habitRepository.getHabitById(any()) }

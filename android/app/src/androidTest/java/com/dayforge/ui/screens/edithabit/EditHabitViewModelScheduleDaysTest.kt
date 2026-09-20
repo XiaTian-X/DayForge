@@ -1,7 +1,9 @@
 package com.dayforge.ui.screens.edithabit
 
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.cancelAndJoin
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import android.content.Context
-import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.PreferencesManager
@@ -29,14 +31,12 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 import java.util.UUID
 
 @OptIn(ExperimentalCoroutinesApi::class)
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 class EditHabitViewModelScheduleDaysTest {
+    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
 
     private lateinit var viewModel: EditHabitViewModel
     private lateinit var repository: HabitRepository
@@ -48,24 +48,25 @@ class EditHabitViewModelScheduleDaysTest {
     private lateinit var context: Context
     private lateinit var testDataStore: DataStore<Preferences>
     private lateinit var preferencesManager: PreferencesManager
+    private val storeJob = kotlinx.coroutines.SupervisorJob()
+    private lateinit var storeFile: File
     private val testDispatcher = UnconfinedTestDispatcher()
 
     @Before
     fun setup() {
         Dispatchers.setMain(testDispatcher)
         context = ApplicationProvider.getApplicationContext()
-        database = Room.inMemoryDatabaseBuilder(
-            context,
-            HabitDatabase::class.java
-        ).allowMainThreadQueries().build()
+        database = storage.database
         habitDao = database.habitDao()
         completionDao = database.completionDao()
         metricDao = database.metricDao()
         habitMetricLinkDao = database.habitMetricLinkDao()
 
         // Create test DataStore for PreferencesManager
+        storeFile = File(context.cacheDir, "viewmodel-${java.util.UUID.randomUUID()}.preferences_pb")
         testDataStore = PreferenceDataStoreFactory.create(
-            produceFile = { File(context.cacheDir, "test_edit_habit_preferences.preferences_pb") }
+            scope = kotlinx.coroutines.CoroutineScope(storeJob + Dispatchers.IO),
+            produceFile = { storeFile }
         )
         preferencesManager = PreferencesManager(testDataStore)
 
@@ -75,8 +76,13 @@ class EditHabitViewModelScheduleDaysTest {
 
     @After
     fun teardown() {
-        Dispatchers.resetMain()
+        kotlinx.coroutines.runBlocking {
+            if (::viewModel.isInitialized) viewModel.viewModelScope.coroutineContext[kotlinx.coroutines.Job]?.cancelAndJoin()
+            storeJob.cancelAndJoin()
+        }
         database.close()
+        if (::storeFile.isInitialized) assertTrue(storeFile.delete() || !storeFile.exists())
+        Dispatchers.resetMain()
     }
 
     // Test: getScheduleDays(Daily) returns 1

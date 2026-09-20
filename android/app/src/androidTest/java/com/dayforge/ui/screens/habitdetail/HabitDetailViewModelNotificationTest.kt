@@ -1,9 +1,9 @@
 package com.dayforge.ui.screens.habitdetail
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
-import androidx.room.Room
 import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
 import app.cash.turbine.test
@@ -37,8 +37,6 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 import java.io.File
 
 /**
@@ -46,9 +44,9 @@ import java.io.File
  * Verifies per-habit notification toggle state and persistence.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 class HabitDetailViewModelNotificationTest {
+    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
 
     private lateinit var viewModel: HabitDetailViewModel
     private lateinit var habitDao: HabitDao
@@ -76,11 +74,7 @@ class HabitDetailViewModelNotificationTest {
         testDataStore = PreferenceDataStoreFactory.create(scope = dataStoreScope, produceFile = { dataStoreFile })
         preferencesManager = PreferencesManager(testDataStore)
 
-        // Create in-memory database
-        database = Room.inMemoryDatabaseBuilder(
-            context,
-            HabitDatabase::class.java
-        ).build()
+        database = storage.database
         habitDao = database.habitDao()
         completionDao = database.completionDao()
         timeLogDao = database.timeLogDao()

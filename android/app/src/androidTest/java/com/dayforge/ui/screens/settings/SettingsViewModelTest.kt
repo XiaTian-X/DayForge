@@ -1,5 +1,6 @@
 package com.dayforge.ui.screens.settings
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import android.content.Context
 import android.net.Network
 import com.dayforge.data.api.NetworkMonitor
@@ -11,7 +12,6 @@ import android.net.Uri
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
-import androidx.room.Room
 import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
 import app.cash.turbine.test
@@ -56,17 +56,15 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 import java.io.File
 
 /**
  * Tests the account role state exposed by SettingsViewModel.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 class SettingsViewModelTest {
+    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
 
     private lateinit var viewModel: SettingsViewModel
     private lateinit var tokenManager: TokenManager
@@ -99,11 +97,7 @@ class SettingsViewModelTest {
         testDataStore = PreferenceDataStoreFactory.create(scope = dataStoreScope, produceFile = { dataStoreFile })
         tokenManager = TokenManager(testDataStore)
 
-        // Create in-memory database
-        database = Room.inMemoryDatabaseBuilder(
-            context,
-            HabitDatabase::class.java
-        ).build()
+        database = storage.database
         habitDao = database.habitDao()
         completionDao = database.completionDao()
         timeLogDao = database.timeLogDao()
@@ -174,7 +168,7 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun `settings follows shared connectivity and callback failure remains unknown`() = runTest {
+    fun settings_follows_shared_connectivity_and_callback_failure_remains_unknown() = runTest {
         testDispatcher.scheduler.runCurrent()
         assertFalse(viewModel.isOnline.value)
         networkState.value = NetworkMonitor.Snapshot(listOf(NetworkMonitor.Path(mockk<Network>(), true, false)))
@@ -189,7 +183,7 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun `sync before logout probes despite empty network hints and preserves account on failure`() = runTest {
+    fun sync_before_logout_probes_despite_empty_network_hints_and_preserves_account_on_failure() = runTest {
         tokenManager.saveTokens("access", "refresh", "member", "account", false)
         coEvery { mockSyncManager.syncAndThen(any()) } returns Result.failure(java.io.IOException("offline"))
         var completed = false
@@ -203,14 +197,14 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun `admin role is false without a session`() = runTest {
+    fun admin_role_is_false_without_a_session() = runTest {
         viewModel.isAdmin.test {
             assertFalse(awaitItem())
         }
     }
 
     @Test
-    fun `admin role follows authenticated token contract`() = runTest {
+    fun admin_role_follows_authenticated_token_contract() = runTest {
         viewModel.isAdmin.test {
             assertFalse(awaitItem())
             tokenManager.saveTokens("access", "refresh", "admin", "account", true)
@@ -219,7 +213,7 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun `regular account is logged in without admin access`() = runTest {
+    fun regular_account_is_logged_in_without_admin_access() = runTest {
         viewModel.isLoggedIn.test {
             assertFalse(awaitItem())
             tokenManager.saveTokens("access", "refresh", "member", "account", false)
@@ -229,7 +223,7 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun `configuration preview reports imported and replaced habit counts`() = runTest {
+    fun configuration_preview_reports_imported_and_replaced_habit_counts() = runTest {
         habitDao.insert(
             HabitEntity(
                 name = "Existing habit",
@@ -257,7 +251,7 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun `appearance changes remain observable through settings contract`() = runTest {
+    fun appearance_changes_remain_observable_through_settings_contract() = runTest {
         // Alternate both preferences to require a fresh persisted value every time.
         repeat(100) { index ->
             val style = if (index % 2 == 0) "personalized" else "follow_theme"
@@ -270,7 +264,7 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun `direct logout is blocked while a timer is active`() = runTest(testDispatcher.scheduler) {
+    fun direct_logout_is_blocked_while_a_timer_is_active() = runTest(testDispatcher.scheduler) {
         tokenManager.saveTokens("access", "refresh", "member", "account", false)
         val habitId = habitDao.insert(
             HabitEntity(
