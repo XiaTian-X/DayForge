@@ -165,6 +165,9 @@ def test_type_gate_scope_is_explicit_without_error_or_import_suppression():
         "src/tokens/admin_router.py",
         "src/admin",
         "src/v2/device_service.py",
+        "src/v2/invariants.py",
+        "src/v2/entity_snapshots.py",
+        "src/v2/read_service.py",
     }
     assert config["check_untyped_defs"] is True
     assert not config.get("ignore_errors", False)
@@ -172,3 +175,16 @@ def test_type_gate_scope_is_explicit_without_error_or_import_suppression():
     assert config.get("follow_imports", "normal") == "normal"
     assert not config.get("disable_error_code", [])
     assert not config.get("overrides", [])
+
+
+def test_internal_guard_preserves_concrete_type(type_cache):
+    result = run_mypy(
+        "from typing import assert_type\n"
+        "from src.v2.invariants import require_internal\n"
+        "from src.v2.models import PlanNode\n"
+        "def checked(node: PlanNode | None, key: int | None) -> None:\n"
+        "    assert_type(require_internal(node, 'node'), PlanNode)\n"
+        "    assert_type(require_internal(key, 'key'), int)\n",
+        type_cache,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

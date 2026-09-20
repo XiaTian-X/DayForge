@@ -5,8 +5,9 @@ from __future__ import annotations
 from typing import Optional
 
 from sqlalchemy import func
+from sqlalchemy.engine import Result
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
+from sqlmodel import col, select
 
 from src.auth.models import User
 from src.v2.device_service import require_device
@@ -19,6 +20,7 @@ from src.v2.entity_snapshots import (
     serialize_plan_node,
 )
 from src.v2.errors import DomainError
+from src.v2.invariants import require_internal
 from src.v2.models import (
     ActivityEvent,
     ActivityMetricLinkV2,
@@ -37,15 +39,17 @@ def _change_response(
     change: SyncChange,
     origin_device_public_id: Optional[str],
 ) -> SyncChangeResponse:
-    return SyncChangeResponse(
-        sequence=change.sequence,
-        entity_type=change.entity_type,
-        entity_uuid=change.entity_uuid,
-        operation=change.operation,
-        revision=change.revision,
-        payload=parse_json(change.payload_json),
-        changed_at=change.changed_at,
-        origin_device_id=origin_device_public_id,
+    return SyncChangeResponse.model_validate(
+        {
+            "sequence": change.sequence,
+            "entity_type": change.entity_type,
+            "entity_uuid": change.entity_uuid,
+            "operation": change.operation,
+            "revision": change.revision,
+            "payload": parse_json(change.payload_json),
+            "changed_at": change.changed_at,
+            "origin_device_id": origin_device_public_id,
+        }
     )
 
 
@@ -56,10 +60,12 @@ async def pull_changes(
     limit: int,
     session: AsyncSession,
 ) -> SyncPullResponse:
-    device = await require_device(user.id, device_public_id, session)
-    max_result = await session.execute(
-        select(func.coalesce(func.max(SyncChange.sequence), 0)).where(
-            SyncChange.recipient_user_id == user.id
+    device = await require_device(
+        require_internal(user.id, "User.id"), device_public_id, session
+    )
+    max_result: Result[tuple[int]] = await session.execute(
+        select(func.coalesce(func.max(col(SyncChange.sequence)), 0)).where(
+            col(SyncChange.recipient_user_id) == user.id
         )
     )
     max_sequence = int(max_result.scalar_one())
@@ -67,13 +73,15 @@ async def pull_changes(
         raise DomainError("INVALID_CURSOR", "Cursor is ahead of the server change log")
 
     rows_result = await session.execute(
-        select(SyncChange, ClientDevice.public_id)
-        .outerjoin(ClientDevice, SyncChange.origin_device_id == ClientDevice.id)
-        .where(
-            SyncChange.recipient_user_id == user.id,
-            SyncChange.sequence > cursor_value,
+        select(SyncChange, col(ClientDevice.public_id))
+        .outerjoin(
+            ClientDevice, col(SyncChange.origin_device_id) == col(ClientDevice.id)
         )
-        .order_by(SyncChange.sequence)
+        .where(
+            col(SyncChange.recipient_user_id) == user.id,
+            col(SyncChange.sequence) > cursor_value,
+        )
+        .order_by(col(SyncChange.sequence))
         .limit(limit + 1)
     )
     rows = list(rows_result.all())
@@ -108,10 +116,12 @@ async def bootstrap(
     device_public_id: str,
     session: AsyncSession,
 ) -> SyncBootstrapResponse:
-    device = await require_device(user.id, device_public_id, session)
-    max_result = await session.execute(
-        select(func.coalesce(func.max(SyncChange.sequence), 0)).where(
-            SyncChange.recipient_user_id == user.id
+    device = await require_device(
+        require_internal(user.id, "User.id"), device_public_id, session
+    )
+    max_result: Result[tuple[int]] = await session.execute(
+        select(func.coalesce(func.max(col(SyncChange.sequence)), 0)).where(
+            col(SyncChange.recipient_user_id) == user.id
         )
     )
     high_watermark = int(max_result.scalar_one())
@@ -119,36 +129,40 @@ async def bootstrap(
 
     nodes_result = await session.execute(
         select(PlanNode)
-        .where(PlanNode.owner_user_id == user.id, PlanNode.deleted_at.is_(None))
-        .order_by(PlanNode.node_kind, PlanNode.id)
+        .where(
+            col(PlanNode.owner_user_id) == user.id, col(PlanNode.deleted_at).is_(None)
+        )
+        .order_by(col(PlanNode.node_kind), col(PlanNode.id))
     )
     nodes = list(nodes_result.scalars().all())
     # Goals must arrive before child activities.
     nodes.sort(key=lambda node: (0 if node.node_kind == "goal" else 1, node.id))
     for node in nodes:
         synthetic.append(
-            SyncChangeResponse(
-                sequence=0,
-                entity_type="plan_node",
-                entity_uuid=node.public_id,
-                operation="upsert",
-                revision=node.revision,
-                payload=await serialize_plan_node(session, node),
-                changed_at=node.updated_at,
-                origin_device_id=None,
+            SyncChangeResponse.model_validate(
+                {
+                    "sequence": 0,
+                    "entity_type": "plan_node",
+                    "entity_uuid": node.public_id,
+                    "operation": "upsert",
+                    "revision": node.revision,
+                    "payload": await serialize_plan_node(session, node),
+                    "changed_at": node.updated_at,
+                    "origin_device_id": None,
+                }
             )
         )
 
     events_result = await session.execute(
-        select(ActivityEvent, PlanNode.public_id)
-        .join(PlanNode, ActivityEvent.activity_node_id == PlanNode.id)
+        select(ActivityEvent, col(PlanNode.public_id))
+        .join(PlanNode, col(ActivityEvent.activity_node_id) == col(PlanNode.id))
         .where(
-            ActivityEvent.owner_user_id == user.id,
-            ActivityEvent.deleted_at.is_(None),
-            PlanNode.owner_user_id == user.id,
-            PlanNode.deleted_at.is_(None),
+            col(ActivityEvent.owner_user_id) == user.id,
+            col(ActivityEvent.deleted_at).is_(None),
+            col(PlanNode.owner_user_id) == user.id,
+            col(PlanNode.deleted_at).is_(None),
         )
-        .order_by(ActivityEvent.id)
+        .order_by(col(ActivityEvent.id))
     )
     for event, activity_uuid in events_result.all():
         revert = (
@@ -157,92 +171,108 @@ async def bootstrap(
             else None
         )
         synthetic.append(
-            SyncChangeResponse(
-                sequence=0,
-                entity_type="activity_event",
-                entity_uuid=event.public_id,
-                operation="upsert",
-                revision=event.revision,
-                payload=await serialize_activity_event_with_allocations(
-                    session, event, activity_uuid, revert.public_id if revert else None
-                ),
-                changed_at=event.updated_at,
-                origin_device_id=None,
+            SyncChangeResponse.model_validate(
+                {
+                    "sequence": 0,
+                    "entity_type": "activity_event",
+                    "entity_uuid": event.public_id,
+                    "operation": "upsert",
+                    "revision": event.revision,
+                    "payload": await serialize_activity_event_with_allocations(
+                        session,
+                        event,
+                        activity_uuid,
+                        revert.public_id if revert else None,
+                    ),
+                    "changed_at": event.updated_at,
+                    "origin_device_id": None,
+                }
             )
         )
 
     metrics_result = await session.execute(
         select(TrackedMetric)
         .where(
-            TrackedMetric.owner_user_id == user.id, TrackedMetric.deleted_at.is_(None)
+            col(TrackedMetric.owner_user_id) == user.id,
+            col(TrackedMetric.deleted_at).is_(None),
         )
-        .order_by(TrackedMetric.id)
+        .order_by(col(TrackedMetric.id))
     )
     metrics = list(metrics_result.scalars().all())
     for metric in metrics:
         synthetic.append(
-            SyncChangeResponse(
-                sequence=0,
-                entity_type="metric",
-                entity_uuid=metric.public_id,
-                operation="upsert",
-                revision=metric.revision,
-                payload=serialize_metric(metric),
-                changed_at=metric.updated_at,
-                origin_device_id=None,
+            SyncChangeResponse.model_validate(
+                {
+                    "sequence": 0,
+                    "entity_type": "metric",
+                    "entity_uuid": metric.public_id,
+                    "operation": "upsert",
+                    "revision": metric.revision,
+                    "payload": serialize_metric(metric),
+                    "changed_at": metric.updated_at,
+                    "origin_device_id": None,
+                }
             )
         )
 
     observations_result = await session.execute(
-        select(MetricObservation, TrackedMetric.public_id)
-        .join(TrackedMetric, MetricObservation.metric_id == TrackedMetric.id)
+        select(MetricObservation, col(TrackedMetric.public_id))
+        .join(TrackedMetric, col(MetricObservation.metric_id) == col(TrackedMetric.id))
         .where(
-            MetricObservation.owner_user_id == user.id,
-            MetricObservation.deleted_at.is_(None),
-            TrackedMetric.owner_user_id == user.id,
-            TrackedMetric.deleted_at.is_(None),
+            col(MetricObservation.owner_user_id) == user.id,
+            col(MetricObservation.deleted_at).is_(None),
+            col(TrackedMetric.owner_user_id) == user.id,
+            col(TrackedMetric.deleted_at).is_(None),
         )
-        .order_by(MetricObservation.id)
+        .order_by(col(MetricObservation.id))
     )
     for observation, metric_uuid in observations_result.all():
         synthetic.append(
-            SyncChangeResponse(
-                sequence=0,
-                entity_type="metric_observation",
-                entity_uuid=observation.public_id,
-                operation="upsert",
-                revision=observation.revision,
-                payload=serialize_observation(observation, metric_uuid),
-                changed_at=observation.updated_at,
-                origin_device_id=None,
+            SyncChangeResponse.model_validate(
+                {
+                    "sequence": 0,
+                    "entity_type": "metric_observation",
+                    "entity_uuid": observation.public_id,
+                    "operation": "upsert",
+                    "revision": observation.revision,
+                    "payload": serialize_observation(observation, metric_uuid),
+                    "changed_at": observation.updated_at,
+                    "origin_device_id": None,
+                }
             )
         )
 
     links_result = await session.execute(
-        select(ActivityMetricLinkV2, PlanNode.public_id, TrackedMetric.public_id)
-        .join(PlanNode, ActivityMetricLinkV2.activity_node_id == PlanNode.id)
-        .join(TrackedMetric, ActivityMetricLinkV2.metric_id == TrackedMetric.id)
-        .where(
-            ActivityMetricLinkV2.owner_user_id == user.id,
-            ActivityMetricLinkV2.deleted_at.is_(None),
-            PlanNode.owner_user_id == user.id,
-            PlanNode.deleted_at.is_(None),
-            TrackedMetric.owner_user_id == user.id,
-            TrackedMetric.deleted_at.is_(None),
+        select(
+            ActivityMetricLinkV2, col(PlanNode.public_id), col(TrackedMetric.public_id)
         )
-        .order_by(ActivityMetricLinkV2.id)
+        .join(PlanNode, col(ActivityMetricLinkV2.activity_node_id) == col(PlanNode.id))
+        .join(
+            TrackedMetric, col(ActivityMetricLinkV2.metric_id) == col(TrackedMetric.id)
+        )
+        .where(
+            col(ActivityMetricLinkV2.owner_user_id) == user.id,
+            col(ActivityMetricLinkV2.deleted_at).is_(None),
+            col(PlanNode.owner_user_id) == user.id,
+            col(PlanNode.deleted_at).is_(None),
+            col(TrackedMetric.owner_user_id) == user.id,
+            col(TrackedMetric.deleted_at).is_(None),
+        )
+        .order_by(col(ActivityMetricLinkV2.id))
     )
     for link, activity_uuid, metric_uuid in links_result.all():
         synthetic.append(
-            SyncChangeResponse(
-                sequence=0,
-                entity_type="activity_metric_link",
-                entity_uuid=link.public_id,
-                operation="upsert",
-                revision=link.revision,
-                payload=serialize_link(link, activity_uuid, metric_uuid),
-                changed_at=link.updated_at,
-                origin_device_id=None,
+            SyncChangeResponse.model_validate(
+                {
+                    "sequence": 0,
+                    "entity_type": "activity_metric_link",
+                    "entity_uuid": link.public_id,
+                    "operation": "upsert",
+                    "revision": link.revision,
+                    "payload": serialize_link(link, activity_uuid, metric_uuid),
+                    "changed_at": link.updated_at,
+                    "origin_device_id": None,
+                }
             )
         )
 
