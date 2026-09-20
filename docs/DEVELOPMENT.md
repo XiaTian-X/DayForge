@@ -57,8 +57,8 @@ chore(deps): upgrade FastAPI compatibility group
 CI 仅运行 `format --check`，有格式差异即失败。稳定配置使用 88 列、4 空格、双引号、LF，
 不启用 preview；编辑器须遵循仓库配置和锁定版本，升级时单独审查格式变化。
 类型检查使用开发组锁定的 mypy，在 `backend/` 执行 `uv run --frozen mypy --config-file pyproject.toml`。
-配置中的 `files` 是当前接入范围，默认正常跟踪导入，不把未接入模块转换为 `Any` 或全局忽略错误。
-扩大范围与提高严格程度须独立审查，并同步测试和 `TESTING.md`；不要将分批通过写成全后端类型检查通过。
+配置中的 `files` 覆盖源码、测试、脚本和 Alembic，默认正常跟踪导入，不把模块转换为 `Any` 或全局忽略错误。
+这是覆盖所有后端 Python 文件的渐进检查，不是 strict 全注解保证；提高严格程度须独立审查并同步测试和 `TESTING.md`。
 
 ## 公开仓库与本地文件
 

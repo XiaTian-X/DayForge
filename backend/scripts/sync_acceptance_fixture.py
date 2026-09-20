@@ -318,7 +318,7 @@ def seed_feature_matrix(args: argparse.Namespace) -> None:
     device_id = client.register_device(
         member["access_token"], "e2e-feature-matrix-writer"
     )
-    operations = []
+    operations: list[dict[str, Any]] = []
     for index, (
         entity_uuid,
         title,
@@ -600,7 +600,9 @@ def verify_feature_results(args: argparse.Namespace) -> None:
         f"/api/v2/sync/bootstrap?{query}",
         token=member["access_token"],
     )
-    events_by_activity = {entity_uuid: [] for entity_uuid, *_ in FEATURE_ACTIVITIES}
+    events_by_activity: dict[str, list[dict[str, Any]]] = {
+        entity_uuid: [] for entity_uuid, *_ in FEATURE_ACTIVITIES
+    }
     extra_observations = []
     for change in snapshot["changes"]:
         payload = change.get("payload", {})

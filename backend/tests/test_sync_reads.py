@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
-from sqlmodel import select
+from sqlmodel import col, select
 
 from src.auth.models import User
 from src.v2.models import ClientDevice, SyncChange, SyncCursor
@@ -55,7 +55,7 @@ async def test_paging_across_other_account_sequences_keeps_cursor_and_history(
             await async_session.execute(
                 select(SyncChange)
                 .where(SyncChange.recipient_user_id == owner)
-                .order_by(SyncChange.sequence)
+                .order_by(col(SyncChange.sequence))
             )
         ).scalars()
     )

@@ -3,7 +3,7 @@
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.auth.models import User
 from src.database import get_session
@@ -34,6 +34,15 @@ async def assert_sqlite_constraints(engine):
 
 async def test_service_fixture_enforces_foreign_keys(async_engine):
     await assert_sqlite_constraints(async_engine)
+
+
+async def test_service_fixture_retains_async_session_configuration(
+    async_session, async_engine
+):
+    assert isinstance(async_session, AsyncSession)
+    assert async_session.bind is async_engine
+    assert async_session.autoflush is True
+    assert async_session.sync_session.expire_on_commit is False
 
 
 async def test_runtime_fixture_is_migrated_and_has_no_session_override(runtime_engine):

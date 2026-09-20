@@ -53,7 +53,7 @@ async def push_context(test_client, async_session):
 def hide_initial_operation_lookup(monkeypatch, session, operation_id):
     """Model a race-window stale lookup; the subsequent insert hits real SQLite uniqueness."""
     execute = session.execute
-    hidden = []
+    hidden: list[bool] = []
 
     async def wrapped(statement, *args, **kwargs):
         is_operation = any(
@@ -167,6 +167,7 @@ async def test_incomplete_replay_aborts_entire_batch_and_allows_safe_retry(
                     monkeypatch, session, operation["operation_id"]
                 )
             user = await session.get(User, owner)
+            assert user is not None
             await process_push(
                 user,
                 SyncPushRequest.model_validate(
@@ -237,6 +238,7 @@ async def test_final_persistence_failure_rolls_back_business_and_replay_state(
     with pytest.raises(IntegrityError, match="injected final persistence failure"):
         async with sessions.begin() as session:
             user = await session.get(User, owner)
+            assert user is not None
             await process_push(
                 user,
                 SyncPushRequest.model_validate(

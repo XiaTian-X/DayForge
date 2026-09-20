@@ -1,11 +1,13 @@
 """Contract and invariant tests for the v2 incremental sync protocol."""
 
 from copy import deepcopy
+from typing import Any
 from datetime import datetime
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import delete
+from sqlmodel import col
 from src.auth.models import User
 from tests.account_fixtures import TEST_ACCOUNT_PASSWORD, account_password_hash
 from src.v2.models import EntityRevisionSnapshot
@@ -291,8 +293,8 @@ async def test_missing_merge_base_is_reported_instead_of_guessing(
     await push(test_client, token, device_id, [remote])
     await async_session.execute(
         delete(EntityRevisionSnapshot).where(
-            EntityRevisionSnapshot.entity_uuid == str(goal_uuid),
-            EntityRevisionSnapshot.revision == 1,
+            col(EntityRevisionSnapshot.entity_uuid) == str(goal_uuid),
+            col(EntityRevisionSnapshot.revision) == 1,
         )
     )
     await async_session.commit()
@@ -422,7 +424,7 @@ async def test_stale_link_coefficient_merges_instead_of_conflicting(
 
     activity = activity_operation()
     metric = metric_operation(target_value=None)
-    link = {
+    link: dict[str, Any] = {
         "operation_id": str(uuid4()),
         "entity_type": "activity_metric_link",
         "entity_uuid": str(uuid4()),
@@ -868,7 +870,7 @@ async def test_activity_event_validation_revert_and_bootstrap(
     await push(test_client, token, device_id, [activity])
 
     event_uuid = uuid4()
-    event = {
+    event: dict[str, Any] = {
         "operation_id": str(uuid4()),
         "entity_type": "activity_event",
         "entity_uuid": str(event_uuid),
@@ -951,7 +953,7 @@ async def test_sync_rejects_ambiguous_naive_event_timestamp(test_client, async_s
     activity = activity_operation()
     await push(test_client, token, device_id, [activity])
 
-    event = {
+    event: dict[str, Any] = {
         "operation_id": str(uuid4()),
         "entity_type": "activity_event",
         "entity_uuid": str(uuid4()),
@@ -981,7 +983,7 @@ async def test_direct_duration_event_requires_timer_commands_for_every_source(
     activity = activity_operation(tracking_mode="duration")
     await push(test_client, token, device_id, [activity])
 
-    event = {
+    event: dict[str, Any] = {
         "operation_id": str(uuid4()),
         "entity_type": "activity_event",
         "entity_uuid": str(uuid4()),
@@ -1021,7 +1023,7 @@ async def test_external_count_event_round_trip_is_utc_and_unique(
     activity = activity_operation(tracking_mode="count")
     await push(test_client, token, device_id, [activity])
 
-    event = {
+    event: dict[str, Any] = {
         "operation_id": str(uuid4()),
         "entity_type": "activity_event",
         "entity_uuid": str(uuid4()),
@@ -1110,7 +1112,7 @@ async def test_bootstrap_excludes_facts_and_links_whose_parent_is_deleted(
             "timezone": "Asia/Shanghai",
         },
     }
-    link = {
+    link: dict[str, Any] = {
         "operation_id": str(uuid4()),
         "entity_type": "activity_metric_link",
         "entity_uuid": str(uuid4()),
@@ -1213,7 +1215,7 @@ async def test_conflict_always_contains_authoritative_revision_and_entity(
         "action": "upsert",
         "payload": {"name": "Mood", "unit": "point"},
     }
-    link = {
+    link: dict[str, Any] = {
         "operation_id": str(uuid4()),
         "entity_type": "activity_metric_link",
         "entity_uuid": str(uuid4()),

@@ -3,9 +3,8 @@
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlmodel import SQLModel
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy import text
 import jwt
 from datetime import datetime, timedelta, timezone
@@ -68,7 +67,7 @@ async def async_session(async_engine):
         await conn.run_sync(SQLModel.metadata.create_all)
 
     # Create session factory
-    async_session_maker = sessionmaker(
+    async_session_maker = async_sessionmaker(
         async_engine, class_=AsyncSession, expire_on_commit=False
     )
 

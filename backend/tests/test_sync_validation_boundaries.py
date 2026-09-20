@@ -2,7 +2,7 @@
 
 import pytest
 from sqlalchemy import delete
-from sqlmodel import select
+from sqlmodel import col, select
 
 from src.v2.models import EntityRevisionSnapshot, GoalDetail, PlanNode, SyncChange
 from tests.test_sync_merge_characterization import edit, assert_history
@@ -31,10 +31,10 @@ async def test_invalid_structural_payload_is_cached_and_does_not_abort_batch(
     if base_state == "unavailable":
         await async_session.execute(
             delete(EntityRevisionSnapshot).where(
-                EntityRevisionSnapshot.owner_user_id == owner,
-                EntityRevisionSnapshot.entity_type == original["entity_type"],
-                EntityRevisionSnapshot.entity_uuid == original["entity_uuid"],
-                EntityRevisionSnapshot.revision == 1,
+                col(EntityRevisionSnapshot.owner_user_id) == owner,
+                col(EntityRevisionSnapshot.entity_type) == original["entity_type"],
+                col(EntityRevisionSnapshot.entity_uuid) == original["entity_uuid"],
+                col(EntityRevisionSnapshot.revision) == 1,
             )
         )
     await async_session.commit()
@@ -66,9 +66,9 @@ async def test_invalid_structural_payload_is_cached_and_does_not_abort_batch(
             await async_session.execute(
                 select(SyncChange)
                 .where(
-                    SyncChange.entity_uuid == original["entity_uuid"],
+                    col(SyncChange.entity_uuid) == original["entity_uuid"],
                 )
-                .order_by(SyncChange.revision)
+                .order_by(col(SyncChange.revision))
             )
         )
         .scalars()

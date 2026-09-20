@@ -5,7 +5,7 @@ from copy import deepcopy
 from uuid import uuid4
 
 import pytest
-from sqlmodel import select
+from sqlmodel import col, select
 
 from src.v2.models import EntityRevisionSnapshot, SyncChange
 from tests.test_plan_node_mutations import current_nodes, delete_node
@@ -37,7 +37,7 @@ async def journal(session):
         rows = (
             (
                 await session.execute(
-                    select(model).order_by(model.entity_uuid, model.revision)
+                    select(model).order_by(model.entity_uuid, col(model.revision))
                 )
             )
             .scalars()

@@ -106,6 +106,7 @@ async def test_authoritative_snapshot_is_scoped_by_owner_even_with_identical_pub
         )
         assert revision == expected["revision"] == 1
         assert payload == expected["entity"]
+        assert payload is not None
         assert "owner_user_id" not in payload
         assert "created_by_user_id" not in payload
     assert results[index]["entity"] != other_results[index]["entity"]
@@ -142,6 +143,7 @@ async def test_authoritative_snapshot_keeps_tombstones_for_conflict_resolution(
     )
     assert revision == result["revision"] == 2
     assert payload == result["entity"]
+    assert payload is not None
     assert payload["deleted_at"].endswith("Z")
 
 
@@ -170,6 +172,7 @@ async def test_timer_snapshot_preserves_sorted_day_allocations_and_journal_paylo
     )
     revision, payload = await current_entity_snapshot(async_session, owner, operation)
     assert revision == 1
+    assert payload is not None
     assert payload["day_allocations"] == [
         {
             "local_date": "2026-08-03",
@@ -238,6 +241,7 @@ async def test_revert_snapshot_keeps_its_original_event_reference(
     )
     assert revision == 1
     assert payload == result["entity"]
+    assert payload is not None
     assert payload["reverts_event_uuid"] == event["entity_uuid"]
     assert "day_allocations" not in payload
 
@@ -347,6 +351,7 @@ async def test_outer_rollback_removes_entity_history_cursor_and_idempotency_resu
     with pytest.raises(AbortRequest):
         async with sessions.begin() as transaction:
             owner = await transaction.get(User, user_id)
+            assert owner is not None
             result = await process_push(owner, request, transaction)
             assert result.results[0].status == "applied"
             for model in (

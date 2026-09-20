@@ -62,9 +62,10 @@ def test_settings_dotenv_is_opt_in_for_isolated_tests(monkeypatch, tmp_path):
     assert Settings().SQLITE_DB_PATH == "./dev.db"
 
     monkeypatch.delenv("JWT_SECRET_KEY")
+    monkeypatch.setitem(Settings.model_config, "env_file", dotenv)
     with warnings.catch_warnings(record=True) as captured:
         warnings.simplefilter("always")
-        settings = Settings(_env_file=dotenv)
+        settings = Settings()
 
     assert not captured
     assert settings.JWT_SECRET_KEY == EXPLICIT_TEST_SECRET
