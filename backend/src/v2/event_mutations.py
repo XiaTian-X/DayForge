@@ -8,12 +8,13 @@ from typing import Any
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
+from sqlmodel import col, select
 
 from src.v2.change_log import append_change
 from src.v2.encoding import canonical_json
 from src.v2.entity_snapshots import serialize_activity_event_with_allocations
 from src.v2.errors import DomainError
+from src.v2.invariants import require_internal
 from src.v2.models import ActivityDetail, ActivityEvent, ClientDevice, PlanNode
 from src.v2.plan_node_mutations import get_plan_node
 from src.v2.schemas import ActivityEventPayload, SyncOperationRequest
@@ -27,8 +28,8 @@ async def mutate_activity_event(
 ) -> tuple[int, dict[str, Any]]:
     result = await session.execute(
         select(ActivityEvent).where(
-            ActivityEvent.owner_user_id == user_id,
-            ActivityEvent.public_id == str(operation.entity_uuid),
+            col(ActivityEvent.owner_user_id) == user_id,
+            col(ActivityEvent.public_id) == str(operation.entity_uuid),
         )
     )
     existing = result.scalar_one_or_none()
@@ -37,14 +38,19 @@ async def mutate_activity_event(
             "USE_REVERT_EVENT", "Activity events are immutable; append a revert event"
         )
     if existing is not None:
-        activity = await session.get(PlanNode, existing.activity_node_id)
+        existing_activity = require_internal(
+            await session.get(PlanNode, existing.activity_node_id), "PlanNode"
+        )
         revert = (
             await session.get(ActivityEvent, existing.reverts_event_id)
             if existing.reverts_event_id
             else None
         )
         entity = await serialize_activity_event_with_allocations(
-            session, existing, activity.public_id, revert.public_id if revert else None
+            session,
+            existing,
+            existing_activity.public_id,
+            revert.public_id if revert else None,
         )
         raise DomainError(
             "ENTITY_ALREADY_EXISTS",
@@ -67,7 +73,9 @@ async def mutate_activity_event(
     )
     if activity is None or activity.node_kind != "activity":
         raise DomainError("ACTIVITY_NOT_FOUND", "Activity was not found")
-    detail = await session.get(ActivityDetail, activity.id)
+    detail = require_internal(
+        await session.get(ActivityDetail, activity.id), "ActivityDetail"
+    )
     allowed_types = {
         "check": {"check_in", "revert"},
         "count": {"count_delta", "count_snapshot", "revert"},
@@ -99,9 +107,9 @@ async def mutate_activity_event(
     if payload.reverts_event_uuid:
         revert_result = await session.execute(
             select(ActivityEvent).where(
-                ActivityEvent.owner_user_id == user_id,
-                ActivityEvent.public_id == str(payload.reverts_event_uuid),
-                ActivityEvent.deleted_at.is_(None),
+                col(ActivityEvent.owner_user_id) == user_id,
+                col(ActivityEvent.public_id) == str(payload.reverts_event_uuid),
+                col(ActivityEvent.deleted_at).is_(None),
             )
         )
         revert_event = revert_result.scalar_one_or_none()
@@ -112,9 +120,9 @@ async def mutate_activity_event(
             )
         duplicate_revert = await session.execute(
             select(ActivityEvent).where(
-                ActivityEvent.owner_user_id == user_id,
-                ActivityEvent.reverts_event_id == revert_event.id,
-                ActivityEvent.deleted_at.is_(None),
+                col(ActivityEvent.owner_user_id) == user_id,
+                col(ActivityEvent.reverts_event_id) == revert_event.id,
+                col(ActivityEvent.deleted_at).is_(None),
             )
         )
         if duplicate_revert.scalar_one_or_none() is not None:

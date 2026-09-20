@@ -7,12 +7,13 @@ from typing import Any, Optional
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
-from sqlmodel import select
+from sqlmodel import col, select
 
 from src.auth.models import User
 from src.v2.entity_snapshots import current_entity_snapshot
 from src.v2.encoding import canonical_json, operation_hash, parse_json
 from src.v2.errors import DomainError
+from src.v2.invariants import require_internal
 from src.v2.merge import MERGE_PATHS, merge_structural_payload
 from src.v2.metric_mutations import mutate_metric, mutate_observation
 from src.v2.plan_node_mutations import mutate_plan_node
@@ -68,10 +69,10 @@ async def _prepare_three_way_merge(
 
     snapshot_result = await session.execute(
         select(EntityRevisionSnapshot).where(
-            EntityRevisionSnapshot.owner_user_id == user_id,
-            EntityRevisionSnapshot.entity_type == operation.entity_type,
-            EntityRevisionSnapshot.entity_uuid == str(operation.entity_uuid),
-            EntityRevisionSnapshot.revision == operation.base_revision,
+            col(EntityRevisionSnapshot.owner_user_id) == user_id,
+            col(EntityRevisionSnapshot.entity_type) == operation.entity_type,
+            col(EntityRevisionSnapshot.entity_uuid) == str(operation.entity_uuid),
+            col(EntityRevisionSnapshot.revision) == operation.base_revision,
         )
     )
     base_snapshot = snapshot_result.scalar_one_or_none()
@@ -116,12 +117,12 @@ async def _is_fact_derived_one_time_delete(
         return False
     result = await session.execute(
         select(PlanNode, ActivityDetail)
-        .join(ActivityDetail, ActivityDetail.node_id == PlanNode.id)
+        .join(ActivityDetail, col(ActivityDetail.node_id) == col(PlanNode.id))
         .where(
-            PlanNode.owner_user_id == user_id,
-            PlanNode.public_id == str(operation.entity_uuid),
-            PlanNode.deleted_at.is_(None),
-            ActivityDetail.completion_policy == "one_and_done",
+            col(PlanNode.owner_user_id) == user_id,
+            col(PlanNode.public_id) == str(operation.entity_uuid),
+            col(PlanNode.deleted_at).is_(None),
+            col(ActivityDetail.completion_policy) == "one_and_done",
         )
     )
     row = result.one_or_none()
@@ -133,19 +134,19 @@ async def _is_fact_derived_one_time_delete(
         select(revert.id)
         .where(
             revert.owner_user_id == user_id,
-            revert.reverts_event_id == ActivityEvent.id,
+            revert.reverts_event_id == col(ActivityEvent.id),
             revert.event_type == "revert",
-            revert.deleted_at.is_(None),
+            col(revert.deleted_at).is_(None),
         )
         .correlate(ActivityEvent)
         .exists()
     )
     event_result = await session.execute(
-        select(ActivityEvent.id).where(
-            ActivityEvent.owner_user_id == user_id,
-            ActivityEvent.activity_node_id == node.id,
-            ActivityEvent.event_type == "check_in",
-            ActivityEvent.deleted_at.is_(None),
+        select(col(ActivityEvent.id)).where(
+            col(ActivityEvent.owner_user_id) == user_id,
+            col(ActivityEvent.activity_node_id) == node.id,
+            col(ActivityEvent.event_type) == "check_in",
+            col(ActivityEvent.deleted_at).is_(None),
             ~has_revert,
         )
     )
@@ -185,7 +186,8 @@ async def process_push(
     request: SyncPushRequest,
     session: AsyncSession,
 ) -> SyncPushResponse:
-    device = await require_device(user.id, str(request.device_id), session)
+    user_id = require_internal(user.id, "User.id")
+    device = await require_device(user_id, str(request.device_id), session)
     device_capabilities, _ = await capabilities_for_device(session, device)
     can_write_structure = STRUCTURE_CAPABILITY in device_capabilities
     results: list[SyncOperationResult] = []
@@ -194,8 +196,8 @@ async def process_push(
         request_hash = operation_hash(operation)
         previous_result = await session.execute(
             select(SyncOperation).where(
-                SyncOperation.device_id == device.id,
-                SyncOperation.operation_id == str(operation.operation_id),
+                col(SyncOperation.device_id) == device.id,
+                col(SyncOperation.operation_id) == str(operation.operation_id),
             )
         )
         previous = previous_result.scalar_one_or_none()
@@ -210,7 +212,7 @@ async def process_push(
             # transaction.
             async with session.begin_nested():
                 operation_record = SyncOperation(
-                    user_id=user.id,
+                    user_id=user_id,
                     device_id=device.id,
                     operation_id=str(operation.operation_id),
                     request_hash=request_hash,
@@ -225,8 +227,8 @@ async def process_push(
         except IntegrityError:
             raced_result = await session.execute(
                 select(SyncOperation).where(
-                    SyncOperation.device_id == device.id,
-                    SyncOperation.operation_id == str(operation.operation_id),
+                    col(SyncOperation.device_id) == device.id,
+                    col(SyncOperation.operation_id) == str(operation.operation_id),
                 )
             )
             raced = raced_result.scalar_one_or_none()
@@ -251,7 +253,7 @@ async def process_push(
                     operation.entity_type in STRUCTURAL_ENTITY_TYPES
                     and not can_write_structure
                     and not await _is_fact_derived_one_time_delete(
-                        session, user.id, operation
+                        session, user_id, operation
                     )
                 ):
                     raise DomainError(
@@ -260,7 +262,7 @@ async def process_push(
                     )
                 prepared_operation, no_op = await _prepare_three_way_merge(
                     session,
-                    user.id,
+                    user_id,
                     operation,
                 )
                 if no_op is not None:
@@ -268,7 +270,7 @@ async def process_push(
                 else:
                     revision, entity = await _dispatch_operation(
                         session,
-                        user.id,
+                        user_id,
                         device,
                         prepared_operation,
                     )
@@ -285,7 +287,7 @@ async def process_push(
             if exc.conflict and (exc.revision is None or exc.entity is None):
                 current_revision, current_entity = await current_entity_snapshot(
                     session,
-                    user.id,
+                    user_id,
                     operation,
                 )
                 exc.revision = (
@@ -326,13 +328,13 @@ async def process_push(
 
     cursor_result = await session.execute(
         select(SyncCursor).where(
-            SyncCursor.user_id == user.id,
+            SyncCursor.user_id == user_id,
             SyncCursor.device_id == device.id,
         )
     )
     cursor = cursor_result.scalar_one_or_none()
     if cursor is None:
-        cursor = SyncCursor(user_id=user.id, device_id=device.id)
+        cursor = SyncCursor(user_id=user_id, device_id=device.id)
         session.add(cursor)
     cursor.last_push_at = utc_now()
     await session.flush()

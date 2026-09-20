@@ -2,21 +2,23 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func
+from sqlalchemy.engine import Result
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
+from sqlmodel import col, select
 
 from src.auth.models import User
 from src.v2.change_log import append_change
 from src.v2.encoding import canonical_json, parse_json
 from src.v2.entity_snapshots import serialize_activity_event_with_allocations
 from src.v2.errors import DomainError
+from src.v2.invariants import require_internal
 from src.v2.models import (
     ActivityDetail,
     ActivityEvent,
@@ -60,8 +62,8 @@ async def _get_session(
 ) -> Optional[TimerSession]:
     result = await db.execute(
         select(TimerSession).where(
-            TimerSession.owner_user_id == user_id,
-            TimerSession.public_id == public_id,
+            col(TimerSession.owner_user_id) == user_id,
+            col(TimerSession.public_id) == public_id,
         )
     )
     return result.scalar_one_or_none()
@@ -70,8 +72,8 @@ async def _get_session(
 async def _get_active_session(db: AsyncSession, user_id: int) -> Optional[TimerSession]:
     result = await db.execute(
         select(TimerSession).where(
-            TimerSession.owner_user_id == user_id,
-            TimerSession.state.in_(ACTIVE_STATES),
+            col(TimerSession.owner_user_id) == user_id,
+            col(TimerSession.state).in_(ACTIVE_STATES),
         )
     )
     return result.scalar_one_or_none()
@@ -89,24 +91,28 @@ async def serialize_timer_session(
     )
     if activity is None or controller is None:
         raise RuntimeError("timer session references missing activity or controller")
-    return TimerSessionResponse(
-        session_id=timer.public_id,
-        activity_uuid=activity.public_id,
-        state=timer.state,
-        controller_device_id=controller.public_id,
-        control_generation=timer.control_generation,
-        revision=timer.revision,
-        next_command_sequence=timer.next_command_sequence,
-        started_at=timer.started_at,
-        state_changed_at=timer.state_changed_at,
-        ended_at=timer.ended_at,
-        timezone=timer.timezone,
-        is_countdown=timer.is_countdown,
-        target_seconds=timer.target_seconds,
-        max_duration_seconds=timer.max_duration_seconds,
-        active_elapsed_ms=timer.active_elapsed_ms,
-        last_heartbeat_at=timer.last_heartbeat_at,
-        completed_event_id=completed_event.public_id if completed_event else None,
+    return TimerSessionResponse.model_validate(
+        {
+            "session_id": timer.public_id,
+            "activity_uuid": activity.public_id,
+            "state": timer.state,
+            "controller_device_id": controller.public_id,
+            "control_generation": timer.control_generation,
+            "revision": timer.revision,
+            "next_command_sequence": timer.next_command_sequence,
+            "started_at": timer.started_at,
+            "state_changed_at": timer.state_changed_at,
+            "ended_at": timer.ended_at,
+            "timezone": timer.timezone,
+            "is_countdown": timer.is_countdown,
+            "target_seconds": timer.target_seconds,
+            "max_duration_seconds": timer.max_duration_seconds,
+            "active_elapsed_ms": timer.active_elapsed_ms,
+            "last_heartbeat_at": timer.last_heartbeat_at,
+            "completed_event_id": completed_event.public_id
+            if completed_event
+            else None,
+        }
     )
 
 
@@ -118,9 +124,9 @@ def _validate_command_time(command: TimerCommandRequest) -> datetime:
 
 
 async def _next_segment_sequence(db: AsyncSession, timer_id: int) -> int:
-    result = await db.execute(
-        select(func.coalesce(func.max(TimerSegment.sequence), 0)).where(
-            TimerSegment.session_id == timer_id
+    result: Result[tuple[int]] = await db.execute(
+        select(func.coalesce(func.max(col(TimerSegment.sequence)), 0)).where(
+            col(TimerSegment.session_id) == timer_id
         )
     )
     return int(result.scalar_one()) + 1
@@ -132,7 +138,9 @@ async def _open_segment(
     db.add(
         TimerSegment(
             session_id=timer.id,
-            sequence=await _next_segment_sequence(db, timer.id),
+            sequence=await _next_segment_sequence(
+                db, require_internal(timer.id, "TimerSession.id")
+            ),
             started_at=started_at,
         )
     )
@@ -149,8 +157,8 @@ async def _close_segment(
 ) -> TimerSegment:
     result = await db.execute(
         select(TimerSegment).where(
-            TimerSegment.session_id == timer.id,
-            TimerSegment.ended_at.is_(None),
+            col(TimerSegment.session_id) == timer.id,
+            col(TimerSegment.ended_at).is_(None),
         )
     )
     segment = result.scalar_one_or_none()
@@ -195,11 +203,16 @@ async def _start(
     command: TimerCommandRequest,
     occurred_at: datetime,
 ) -> TimerSession:
-    if await _get_session(db, user.id, str(command.session_id)) is not None:
+    if (
+        await _get_session(
+            db, require_internal(user.id, "User.id"), str(command.session_id)
+        )
+        is not None
+    ):
         raise DomainError(
             "TIMER_SESSION_EXISTS", "Timer session UUID already exists", conflict=True
         )
-    active = await _get_active_session(db, user.id)
+    active = await _get_active_session(db, require_internal(user.id, "User.id"))
     if active is not None:
         raise DomainError(
             "ACTIVE_TIMER_EXISTS",
@@ -208,12 +221,12 @@ async def _start(
         )
     node_result = await db.execute(
         select(PlanNode, ActivityDetail)
-        .join(ActivityDetail, ActivityDetail.node_id == PlanNode.id)
+        .join(ActivityDetail, col(ActivityDetail.node_id) == col(PlanNode.id))
         .where(
-            PlanNode.owner_user_id == user.id,
-            PlanNode.public_id == str(command.activity_uuid),
-            PlanNode.deleted_at.is_(None),
-            PlanNode.status == "active",
+            col(PlanNode.owner_user_id) == user.id,
+            col(PlanNode.public_id) == str(command.activity_uuid),
+            col(PlanNode.deleted_at).is_(None),
+            col(PlanNode.status) == "active",
         )
     )
     row = node_result.one_or_none()
@@ -301,13 +314,16 @@ async def _create_allocations(
     zone = ZoneInfo(timer.timezone)
     result = await db.execute(
         select(TimerSegment)
-        .where(TimerSegment.session_id == timer.id, TimerSegment.ended_at.is_not(None))
-        .order_by(TimerSegment.sequence)
+        .where(
+            col(TimerSegment.session_id) == timer.id,
+            col(TimerSegment.ended_at).is_not(None),
+        )
+        .order_by(col(TimerSegment.sequence))
     )
-    totals: dict[object, int] = {}
+    totals: dict[date, int] = {}
     for segment in result.scalars().all():
         cursor = as_utc(segment.started_at)
-        end = as_utc(segment.ended_at)
+        end = as_utc(require_internal(segment.ended_at, "closed TimerSegment.ended_at"))
         while cursor < end:
             local_day = cursor.astimezone(zone).date()
             next_midnight = datetime.combine(
@@ -385,12 +401,15 @@ async def _complete(
     entity = await serialize_activity_event_with_allocations(
         db,
         event,
-        (await db.get(PlanNode, timer.activity_node_id)).public_id,
+        require_internal(
+            await db.get(PlanNode, timer.activity_node_id),
+            "TimerSession.activity_node_id",
+        ).public_id,
         None,
     )
     await append_change(
         db,
-        user_id=user.id,
+        user_id=require_internal(user.id, "User.id"),
         device_id=device.id,
         operation_id=str(command.command_id),
         entity_type="activity_event",
@@ -459,7 +478,7 @@ async def _apply_existing(
             # takeover can never leave a timer that is impossible to stop.
             await _close_segment(db, timer, occurred_at, clamp_to_remaining=True)
             await _open_segment(db, timer, occurred_at)
-        timer.controller_device_id = device.id
+        timer.controller_device_id = require_internal(device.id, "ClientDevice.id")
         timer.control_generation += 1
     else:
         raise DomainError("INVALID_TIMER_COMMAND", "Unsupported timer command")
@@ -482,7 +501,9 @@ async def _apply_command(
     occurred_at = _validate_command_time(command)
     if command.command_type == "start":
         return await _start(db, user, device, command, occurred_at)
-    timer = await _get_session(db, user.id, str(command.session_id))
+    timer = await _get_session(
+        db, require_internal(user.id, "User.id"), str(command.session_id)
+    )
     if timer is None:
         raise DomainError("TIMER_NOT_FOUND", "Timer session was not found")
     return await _apply_existing(db, user, device, timer, command, occurred_at)
@@ -493,15 +514,17 @@ async def process_timer_commands(
     request: TimerCommandBatchRequest,
     db: AsyncSession,
 ) -> TimerCommandBatchResponse:
-    device = await require_device(user.id, str(request.device_id), db)
+    device = await require_device(
+        require_internal(user.id, "User.id"), str(request.device_id), db
+    )
     results: list[TimerCommandResult] = []
 
     for command in request.commands:
         request_hash = _request_hash(command)
         previous_result = await db.execute(
             select(TimerCommand).where(
-                TimerCommand.device_id == device.id,
-                TimerCommand.command_id == str(command.command_id),
+                col(TimerCommand.device_id) == device.id,
+                col(TimerCommand.command_id) == str(command.command_id),
             )
         )
         previous = previous_result.scalar_one_or_none()
@@ -555,15 +578,19 @@ async def process_timer_commands(
             )
             record.status = "applied"
         except DomainError as exc:
-            current = await _get_session(db, user.id, str(command.session_id))
-            snapshot = await serialize_timer_session(db, current) if current else None
+            current = await _get_session(
+                db, require_internal(user.id, "User.id"), str(command.session_id)
+            )
+            failure_snapshot = (
+                await serialize_timer_session(db, current) if current else None
+            )
             result = TimerCommandResult(
                 command_id=command.command_id,
                 session_id=command.session_id,
                 status="conflict" if exc.conflict else "rejected",
                 error_code=exc.code,
                 message=exc.message,
-                session=snapshot,
+                session=failure_snapshot,
             )
             record.status = result.status
             record.error_code = exc.code
@@ -589,8 +616,8 @@ async def get_active_timer(
     device_public_id: str,
     db: AsyncSession,
 ) -> ActiveTimerResponse:
-    await require_device(user.id, device_public_id, db)
-    timer = await _get_active_session(db, user.id)
+    await require_device(require_internal(user.id, "User.id"), device_public_id, db)
+    timer = await _get_active_session(db, require_internal(user.id, "User.id"))
     return ActiveTimerResponse(
         session=await serialize_timer_session(db, timer) if timer else None,
         server_time=utc_now(),
@@ -604,8 +631,10 @@ async def get_timer_status(
     db: AsyncSession,
 ) -> ActiveTimerResponse:
     """Return an account-scoped session snapshot for explicit client recovery."""
-    await require_device(user.id, device_public_id, db)
-    timer = await _get_session(db, user.id, session_public_id)
+    await require_device(require_internal(user.id, "User.id"), device_public_id, db)
+    timer = await _get_session(
+        db, require_internal(user.id, "User.id"), session_public_id
+    )
     return ActiveTimerResponse(
         session=await serialize_timer_session(db, timer) if timer else None,
         server_time=utc_now(),
@@ -619,8 +648,12 @@ async def heartbeat_timer(
     control_generation: int,
     db: AsyncSession,
 ) -> TimerHeartbeatResponse:
-    device = await require_device(user.id, device_public_id, db)
-    timer = await _get_session(db, user.id, session_public_id)
+    device = await require_device(
+        require_internal(user.id, "User.id"), device_public_id, db
+    )
+    timer = await _get_session(
+        db, require_internal(user.id, "User.id"), session_public_id
+    )
     if timer is None:
         raise DomainError("TIMER_NOT_FOUND", "Timer session was not found")
     if timer.state not in ACTIVE_STATES:
