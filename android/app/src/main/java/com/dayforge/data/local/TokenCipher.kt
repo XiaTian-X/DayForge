@@ -18,7 +18,9 @@ interface TokenCipher {
 
 /** AES-GCM token encryption whose non-exportable key is held by Android Keystore. */
 @Singleton
-class AndroidKeystoreTokenCipher @Inject constructor() : TokenCipher {
+class AndroidKeystoreTokenCipher internal constructor(private val keyAlias: String) : TokenCipher {
+    @Inject constructor() : this(KEY_ALIAS)
+
     override fun encrypt(value: String): String {
         if (value.startsWith(PREFIX)) return value
         val cipher = Cipher.getInstance(TRANSFORMATION)
@@ -45,12 +47,12 @@ class AndroidKeystoreTokenCipher @Inject constructor() : TokenCipher {
 
     private fun getOrCreateKey(): SecretKey = synchronized(KEY_LOCK) {
         val keyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
-        (keyStore.getKey(KEY_ALIAS, null) as? SecretKey) ?: KeyGenerator
+        (keyStore.getKey(keyAlias, null) as? SecretKey) ?: KeyGenerator
             .getInstance(KeyProperties.KEY_ALGORITHM_AES, KEYSTORE)
             .apply {
                 init(
                     KeyGenParameterSpec.Builder(
-                        KEY_ALIAS,
+                        keyAlias,
                         KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
                     )
                         .setBlockModes(KeyProperties.BLOCK_MODE_GCM)

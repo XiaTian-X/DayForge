@@ -9,18 +9,23 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.test.core.app.ApplicationProvider
 import java.io.File
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
+import java.util.UUID
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
+import androidx.test.ext.junit.runners.AndroidJUnit4
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 class TokenManagerTest {
+    private lateinit var storeScope: CoroutineScope
     private lateinit var manager: TokenManager
     private lateinit var context: Context
     private lateinit var store: DataStore<Preferences>
@@ -29,28 +34,30 @@ class TokenManagerTest {
     @Before
     fun setup() {
         context = ApplicationProvider.getApplicationContext()
-        file = File(context.cacheDir, "token_manager_v2.preferences_pb")
-        store = PreferenceDataStoreFactory.create(produceFile = { file })
+        file = File(context.cacheDir, "token_manager_${UUID.randomUUID()}.preferences_pb")
+        storeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        store = PreferenceDataStoreFactory.create(scope = storeScope, produceFile = { file })
         manager = TokenManager(store, TestTokenCipher)
     }
 
     @After
-    fun teardown() { file.delete() }
+    fun teardown() = runBlocking { storeScope.coroutineContext[Job]!!.cancelAndJoin(); file.delete(); Unit }
 
     @Test
-    fun `credentials persist account identity and admin role encrypted`() = runTest {
+    fun credentials_persist_account_identity_and_delegate_token_storage_to_cipher() = runBlocking {
         manager.saveTokens("access-secret", "refresh-secret", "admin", "account-a", true)
 
         assertEquals("access-secret", manager.accessToken.first())
         assertEquals("account-a", manager.userId.first())
         assertTrue(manager.isAdmin.first())
         val persisted = store.data.first().asMap().values.map { it.toString() }
-        assertFalse(persisted.contains("access-secret"))
-        assertFalse(persisted.contains("refresh-secret"))
+        // This fake verifies wiring only; AndroidKeystoreTokenCipherTest verifies encryption.
+        assertTrue(persisted.contains("encrypted:access-secret"))
+        assertTrue(persisted.contains("encrypted:refresh-secret"))
     }
 
     @Test
-    fun `legacy plaintext tokens migrate in place`() = runTest {
+    fun legacy_plaintext_tokens_migrate_in_place() = runBlocking {
         store.edit {
             it[stringPreferencesKey("access_token")] = "legacy-access"
             it[stringPreferencesKey("refresh_token")] = "legacy-refresh"
@@ -61,7 +68,7 @@ class TokenManagerTest {
     }
 
     @Test
-    fun `switching sync owner clears device cursor and bootstrap state`() = runTest {
+    fun switching_sync_owner_clears_device_cursor_and_bootstrap_state() = runBlocking {
         manager.prepareSyncAccount("account-a")
         manager.saveSyncDeviceId("device-a")
         manager.saveSyncCursor(42)
@@ -73,7 +80,7 @@ class TokenManagerTest {
     }
 
     @Test
-    fun `authentication failure retains sync ownership for safe relogin`() = runTest {
+    fun authentication_failure_retains_sync_ownership_for_safe_relogin() = runBlocking {
         manager.saveTokens("access", "refresh", "member", "account-a", false)
         manager.prepareSyncAccount("account-a")
         manager.clearAuthenticationTokens()
@@ -85,7 +92,7 @@ class TokenManagerTest {
     }
 
     @Test
-    fun `new server epoch clears only replica cursor and device registration`() = runTest {
+    fun new_server_epoch_clears_only_replica_cursor_and_device_registration() = runBlocking {
         manager.prepareSyncAccount("account-a")
         manager.saveSyncDeviceId("device-a")
         manager.saveSyncCursor(42)
@@ -100,7 +107,7 @@ class TokenManagerTest {
     }
 
     @Test
-    fun `refresh cannot restore a logged out session`() = runTest {
+    fun refresh_cannot_restore_a_logged_out_session() = runBlocking {
         manager.saveTokens("a", "r", "member", "account-a", false)
         val original = manager.authenticationSnapshot()!!
         manager.clearTokens()
@@ -109,7 +116,7 @@ class TokenManagerTest {
     }
 
     @Test
-    fun `old refresh success and failure cannot overwrite a new login`() = runTest {
+    fun old_refresh_success_and_failure_cannot_overwrite_a_new_login() = runBlocking {
         for (nextAccount in listOf("account-a", "account-b")) {
             manager.saveTokens("a", "r", "member", "account-a", false)
             val original = manager.authenticationSnapshot()!!
@@ -124,7 +131,7 @@ class TokenManagerTest {
     }
 
     @Test
-    fun `normal refresh keeps generation while stale rejection keeps new credentials`() = runTest {
+    fun normal_refresh_keeps_generation_while_stale_rejection_keeps_new_credentials() = runBlocking {
         manager.saveTokens("a", "r", "member", "account-a", false)
         val original = manager.authenticationSnapshot()!!
         assertTrue(manager.saveRefreshedTokens(original, "new-a", "r", "member", "account-a", false))
@@ -136,7 +143,7 @@ class TokenManagerTest {
     }
 
     @Test
-    fun `refresh response for another user is refused`() = runTest {
+    fun refresh_response_for_another_user_is_refused() = runBlocking {
         manager.saveTokens("a", "r", "member", "account-a", false)
         val original = manager.authenticationSnapshot()!!
         assertFalse(manager.saveRefreshedTokens(original, "b", "br", "other", "account-b", true))
@@ -144,7 +151,7 @@ class TokenManagerTest {
     }
 
     @Test
-    fun `current refresh rejection clears authentication but preserves sync ownership`() = runTest {
+    fun current_refresh_rejection_clears_authentication_but_preserves_sync_ownership() = runBlocking {
         manager.saveTokens("a", "r", "member", "account-a", false)
         manager.prepareSyncAccount("account-a")
         manager.clearRejectedRefresh(manager.authenticationSnapshot()!!)

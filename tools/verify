@@ -5,9 +5,9 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 scope="${1:-all}"
 
 case "$scope" in
-  all|root|android|backend) ;;
+  all|root|android|android-build|backend) ;;
   *)
-    echo "Usage: tools/verify [all|root|android|backend]" >&2
+    echo "Usage: tools/verify [all|root|android|android-build|backend]" >&2
     exit 2
     ;;
 esac
@@ -89,12 +89,17 @@ find_java_home() {
 verify_android() {
   local java_home
   local warning_log
+  local android_tasks=(lintDebug assembleDebug assembleDeviceTest assembleDeviceTestAndroidTest)
+  if [[ "$scope" != "android-build" ]]; then
+    ANDROID_SERIAL="$(python3 "$repo_root/tools/check_android_device.py")" || return 1
+    export ANDROID_SERIAL
+    android_tasks+=(connectedDeviceTestAndroidTest createDeviceTestCoverageReport)
+  fi
   java_home="$(find_java_home)"
   warning_log="$(mktemp "${TMPDIR:-/tmp}/dayforge-android-warnings.XXXXXX")"
   if ! (
       cd "$repo_root/android"
-      JAVA_HOME="$java_home" ./gradlew \
-        testDebugUnitTest lintDebug assembleDebug createDebugUnitTestCoverageReport
+      JAVA_HOME="$java_home" ./gradlew "${android_tasks[@]}"
     ) 2>&1 | tee "$warning_log"; then
     rm -f "$warning_log"
     return 1
@@ -104,6 +109,11 @@ verify_android() {
     return 1
   fi
   rm -f "$warning_log"
+  if [[ "$scope" != "android-build" ]]; then
+    python3 "$repo_root/tools/check_android_coverage.py"
+  else
+    echo "Android build/static checks passed; physical-device tests NOT RUN."
+  fi
 }
 
 verify_backend() {
@@ -129,6 +139,6 @@ case "$scope" in
     verify_android
     ;;
   backend) verify_backend ;;
-  android) verify_android ;;
+  android|android-build) verify_android ;;
   root) ;;
 esac

@@ -3,7 +3,7 @@
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import SQLModel
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import text
@@ -15,13 +15,13 @@ from src.auth.models import User  # noqa: F401
 from tests.account_fixtures import TEST_ACCOUNT_PASSWORD, account_password_hash
 
 from src.main import app
-from src.database import set_engine
+from src.database import get_engine, set_engine
+from src.storage.database_adapter import build_database_adapter
 
 
 # Test configuration
 TEST_SECRET_KEY = "test-secret-key-for-development-only"
 TEST_ALGORITHM = "HS256"
-TEST_DATABASE_URL = "sqlite+aiosqlite:///./test.db"
 
 
 @pytest.fixture
@@ -42,24 +42,25 @@ def isolated_settings_env(monkeypatch):
 
 
 @pytest_asyncio.fixture(scope="function")
-async def async_engine():
-    """Create async engine for test database."""
-    engine = create_async_engine(
-        TEST_DATABASE_URL,
-        echo=False,  # Disable SQL logging
-        future=True,
-    )
-    # Override the app's engine with test engine
+async def async_engine(tmp_path):
+    """Isolated service database with the production SQLite FK/WAL configuration."""
+    engine = build_database_adapter(
+        "sqlite", None, str(tmp_path / "service.sqlite")
+    ).create_async_engine()
+    previous = get_engine()
     set_engine(engine)
-    yield engine
-    await engine.dispose()
+    try:
+        yield engine
+    finally:
+        set_engine(previous)
+        await engine.dispose()
 
 
 @pytest_asyncio.fixture(scope="function")
 async def async_session(async_engine):
     """Create async session fixture for tests.
 
-    Creates all tables before tests, drops them after.
+    Creates model tables for service tests. Use runtime_client for migrated HTTP tests.
     Yields an AsyncSession for database operations.
     """
     # Create all tables
@@ -75,17 +76,15 @@ async def async_session(async_engine):
     async with async_session_maker() as session:
         yield session
 
-    # Drop all tables after test
-    async with async_engine.begin() as conn:
-        await conn.run_sync(SQLModel.metadata.drop_all)
+    # tmp_path and async_engine own cleanup; no FK-unsafe DROP ordering.
 
 
 @pytest_asyncio.fixture(scope="function")
 async def test_client(async_session, async_engine):
-    """Create HTTP test client.
+    """Shared-session service/router integration client, NOT a commit boundary test.
 
-    Yields an httpx.AsyncClient configured to test the FastAPI app.
-    The app uses the same session as the test for transaction visibility.
+    Tests can inspect uncommitted state using async_session. HTTP durability,
+    rollback and migration claims must use runtime_client without this override.
     """
     from src.database import get_session
 
@@ -93,15 +92,16 @@ async def test_client(async_session, async_engine):
     async def override_get_session():
         yield async_session
 
+    previous_overrides = app.dependency_overrides.copy()
     app.dependency_overrides[get_session] = override_get_session
-
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        yield client
-
-    # Clean up the override
-    app.dependency_overrides.clear()
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            yield client
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(previous_overrides)
 
 
 @pytest_asyncio.fixture(scope="function")
@@ -125,8 +125,7 @@ async def auth_tokens(test_client, async_session):
 
     yield tokens
 
-    # Cleanup: delete user after test (optional, since db is dropped)
-    # The async_session fixture already drops all tables after each test
+    # The isolated database is owned by tmp_path; no shared account state survives.
 
 
 @pytest_asyncio.fixture(scope="function")
@@ -176,3 +175,33 @@ def create_test_token(
     expire = datetime.now(timezone.utc) + timedelta(minutes=expire_minutes)
     to_encode.update({"exp": expire, "type": token_type})
     return jwt.encode(to_encode, TEST_SECRET_KEY, algorithm=TEST_ALGORITHM)
+
+
+@pytest_asyncio.fixture
+async def runtime_engine(tmp_path):
+    """Production adapter and Alembic schema; restore application globals on failure."""
+    from alembic import command
+    from tests.test_alembic_migration import alembic_config
+    from src.database import get_session
+
+    assert get_session not in app.dependency_overrides
+    database = tmp_path / "runtime.sqlite"
+    command.upgrade(alembic_config(str(database)), "head")
+    engine = build_database_adapter("sqlite", None, str(database)).create_async_engine()
+    previous = get_engine()
+    set_engine(engine)
+    try:
+        yield engine
+    finally:
+        set_engine(previous)
+        await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def runtime_client(runtime_engine):
+    """Real HTTP transaction dependencies; every request opens its own session."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        yield client

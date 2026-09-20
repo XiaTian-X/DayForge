@@ -1,5 +1,20 @@
 # 测试规范
 
+## Android 测试执行约定（2026-09-20 用户决策）
+
+后续所有 Android 测试统一使用已连接并授权的真机。不得下载、创建或运行模拟器、AVD 或系统镜像；
+不得以 JVM/Robolectric 执行替代真机测试。没有可用真机时停止 Android 测试执行，明确记录未验证。
+构建、静态审查以及此前的本地单测结果均不代表当前真机测试通过。
+
+真机入口为 `ANDROID_SERIAL=<设备序列号> ./tools/verify android`，默认要求唯一已授权真机；
+`adb` 的未连接、未授权、多设备歧义及 QEMU/AVD 均导致失败。使用 `deviceTest` 构建和
+`com.dayforge.testbed` 包，执行本批 instrumentation 测试并输出覆盖率，结束后测试工具卸载测试包。
+`./tools/verify all` 也要求真机。构建与测试均沿用锁定依赖，不下载系统镜像。
+
+无真机的托管 CI 仅执行 `./tools/verify android-build`（编译、lint、APK 和编译警告门禁），
+明确输出“真机测试未执行”；CI 绿色不代表 Android 行为验收。PR 必须附当前变更的真机结果。
+历史 `src/test` 中尚未迁移的 JVM/Robolectric 用例保留为测试资产，本批不执行，也不声称已被真机覆盖。
+
 ## 验证层级
 
 ### Android 改动
@@ -7,19 +22,20 @@
 最低要求：
 
 ```bash
-cd android
-./gradlew testDebugUnitTest lintDebug assembleDebug
+ANDROID_SERIAL=<设备序列号> ./tools/verify android
 ```
 
-统一验证入口和 CI 还执行 AGP 的 `createDebugUnitTestCoverageReport`。HTML/XML 报告位于
-`android/app/build/reports/coverage/test/debug/`，包含 Kotlin 业务类。覆盖率不能代替异常路径断言；
-全项目汇总包含生成类，审查时应优先检查 domain、repository、sync 等业务包和具体分支。
+入口执行 `lintDebug`、`assembleDebug`、`assembleDeviceTest`、`assembleDeviceTestAndroidTest`、
+`connectedDeviceTestAndroidTest` 和 `createDeviceTestCoverageReport`。真机测试结果位于
+`android/app/build/outputs/androidTest-results/connected/deviceTest/`；覆盖率报告位于
+`android/app/build/reports/coverage/androidTest/deviceTest/connected/`。
+`tools/check_android_coverage.py` 要求输入校验、指标仓库和计时服务三个实际执行的应用类均有
+非零源代码行覆盖，防止“测试执行了，但插桩没有记录”的报告被当作可靠统计。
+这只是统计校准，不是百分比达标，也不能代替异常路径断言。
 
-Gradle 单测任务上限为 15 分钟；CI 的 Android 验证步骤上限为 20 分钟、整个作业为 25 分钟；后端作业为 15 分钟。
-超时属于检查失败，不能视为通过。Android 失败时会保留已生成的单测/lint 报告 14 天；
-若构建尚未生成报告，不能凭缺少报告判断测试结果。扩充测试或升级工具链时可依据实测调整时限，
-不能用延长时限掩盖未结束的协程或测试挂起。
-CI 还记录单测开始/失败/跳过事件，帮助定位未完成的用例；本地默认不增加逐用例日志。
+后端作业上限 15 分钟，CI Android 构建步骤上限 20 分钟、作业上限 25 分钟。
+真机测试单项上限 150 秒（含完整一分钟计时），统一入口 Android 测试任务上限 15 分钟。
+超时属于失败，不能通过提高时限掩盖未结束的协程或挂起的测试。
 
 Android lint 使用官方 `android/app/lint-baseline.xml` 记录已有问题，并将所有未进入基线的
 warning 提升为 error。Kotlin、javac 与 Android 资源编译警告由
@@ -170,3 +186,17 @@ Compose 布局测试使用合成 insets 验证嵌套标题、底栏、键盘开�
    同时检查指标弹窗的输入和保存（它是独立 Dialog 窗口，不由主窗口布局测试覆盖）。
 3. 有条件时切换手势/三键导航，并在横屏、刘海侧边、分屏下重复第一组；记录 Android 版本、导航模式
    和结果。建议覆盖 Android 8–9 与 Android 15+；缺少的设备组合保持待验收，不自动视为通过。
+
+## 测试可信度回归（Issue #124）
+
+- 认证测试构造真实 Retrofit，仅在 HTTP 传输边界提供响应；独立断言方法、URL、JSON、响应字段和 401。
+- 指标卡片、关联指标、打卡弹窗通过真机 Compose 语义和点击/输入验证，禁止恒真占位断言。
+- 仪器测试中的 TokenManager 替身只证明加密器调用；Android Keystore 测试另行检查随机 IV、
+  不可导出密钥、认证标签篡改、密钥丢失，以及文件中无明文和重开 DataStore。仅删除测试专用密钥。
+- 计时测试从系统 Service 入口执行真实 Room 写入、前台通知、服务重建、重复/过期命令和 outbox 失败回滚；
+  使用真实流逝时间，不修改设备时钟，不手工造完成记录。服务重建不等同于进程被杀或手机重启。
+- 后端 `async_session` / `test_client` 用于模型和共享会话的 service/router 测试，数据库仍启用生产 FK/WAL，
+  但不证明 HTTP 提交边界。提交、跨请求读取及认证持久化使用 Alembic 初始化的 `runtime_engine` /
+  `runtime_client`，不 override `get_session`。CORS 方法必须发送真实 OPTIONS 预检并断言状态及允许头。
+- 修改测试预期前先说明来自哪个契约或用户行为；用有代表性的错误实现确认断言会失败。
+  覆盖率和测试总数均不代表测试预期一定正确。

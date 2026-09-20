@@ -28,6 +28,7 @@ android {
         versionName = "2.0"
 
         testInstrumentationRunner = "com.dayforge.HiltTestRunner"
+        testInstrumentationRunnerArguments["timeout_msec"] = "150000"
     }
 
     compileOptions {
@@ -56,6 +57,8 @@ android {
         buildConfig = true
     }
 
+    testBuildType = "deviceTest"
+
     testOptions {
         unitTests.isIncludeAndroidResources = true
     }
@@ -72,6 +75,13 @@ android {
     buildTypes {
         getByName("debug") {
             enableUnitTestCoverage = true
+            enableAndroidTestCoverage = true
+        }
+        create("deviceTest") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".testbed"
+            matchingFallbacks += "debug"
+            enableUnitTestCoverage = false
             enableAndroidTestCoverage = true
         }
         release {
@@ -172,8 +182,17 @@ dependencies {
     testImplementation(libs.mockk)
     testImplementation(libs.ui.test.junit4)
     debugImplementation(libs.ui.test.manifest)
+    add("deviceTestImplementation", libs.ui.test.manifest)
+    kspAndroidTest(libs.hilt.compiler)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.espresso.core)
     androidTestImplementation(libs.hilt.android.testing)
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.ui.test.junit4)
+}
+
+// Bound physical-device runs too; a hung instrumentation process is a failure.
+tasks.matching { it.name == "connectedDeviceTestAndroidTest" }.configureEach {
+    timeout.set(Duration.ofMinutes(15))
 }

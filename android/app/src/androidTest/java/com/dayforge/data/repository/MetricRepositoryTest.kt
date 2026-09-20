@@ -10,9 +10,12 @@ import com.dayforge.data.local.entity.MetricLogEntity
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.service.StructuralEditGuard
-import io.mockk.coEvery
-import io.mockk.mockk
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.runBlocking
+import com.dayforge.data.local.TokenManager
+import dagger.hilt.android.testing.HiltAndroidRule
+import dagger.hilt.android.testing.HiltAndroidTest
+import javax.inject.Inject
+import org.junit.Rule
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -21,12 +24,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
+import androidx.test.ext.junit.runners.AndroidJUnit4
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@HiltAndroidTest
+@RunWith(AndroidJUnit4::class)
 class MetricRepositoryTest {
+    @get:Rule val hilt = HiltAndroidRule(this)
+    @Inject lateinit var guard: StructuralEditGuard
+    @Inject lateinit var tokenManager: TokenManager
     private lateinit var database: HabitDatabase
     private lateinit var repository: MetricRepository
 
@@ -35,7 +40,9 @@ class MetricRepositoryTest {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         HabitDatabaseProvider.clearInstanceForTesting()
         context.deleteDatabase("habit_database")
+        check(context.packageName == "com.dayforge.testbed")
         database = HabitDatabaseProvider.getInstance(context)
+        hilt.inject()
         repository = MetricRepository(
             database,
             database.metricDao(),
@@ -46,13 +53,14 @@ class MetricRepositoryTest {
     }
 
     @After
-    fun teardown() {
+    fun teardown() = runBlocking {
+        tokenManager.clearTokens()
         database.close()
         HabitDatabaseProvider.clearInstanceForTesting()
     }
 
     @Test
-    fun `create metric and links commits business rows with outbox rows`() = runTest {
+    fun create_metric_and_links_commits_business_rows_with_outbox_rows() = runBlocking {
         val habitId = database.habitDao().insert(testHabit())
         clearOutbox()
 
@@ -67,9 +75,8 @@ class MetricRepositoryTest {
     }
 
     @Test
-    fun `structural permission denial leaves metric and outbox unchanged`() = runTest {
-        val guard = mockk<StructuralEditGuard>()
-        coEvery { guard.requireAllowed() } throws IllegalStateException("denied")
+    fun structural_permission_denial_leaves_metric_and_outbox_unchanged() = runBlocking {
+        tokenManager.markStructuralEditingDenied()
         val guardedRepository = MetricRepository(
             database,
             database.metricDao(),
@@ -87,7 +94,7 @@ class MetricRepositoryTest {
     }
 
     @Test
-    fun `missing selected habit rolls back metric and generated outbox`() = runTest {
+    fun missing_selected_habit_rolls_back_metric_and_generated_outbox() = runBlocking {
         val failure = runCatching {
             repository.createMetric(testMetric(), setOf(Long.MAX_VALUE))
         }.exceptionOrNull()
@@ -98,7 +105,7 @@ class MetricRepositoryTest {
     }
 
     @Test
-    fun `batch observation failure rolls back earlier observations and outbox`() = runTest {
+    fun batch_observation_failure_rolls_back_earlier_observations_and_outbox() = runBlocking {
         val metricId = database.metricDao().insert(testMetric())
         clearOutbox()
 
@@ -118,7 +125,7 @@ class MetricRepositoryTest {
     }
 
     @Test
-    fun `link batch failure rolls back earlier links and outbox`() = runTest {
+    fun link_batch_failure_rolls_back_earlier_links_and_outbox() = runBlocking {
         val habitId = database.habitDao().insert(testHabit())
         val metricId = database.metricDao().insert(testMetric())
         val metric = database.metricDao().getMetricById(metricId)!!
@@ -134,7 +141,7 @@ class MetricRepositoryTest {
     }
 
     @Test
-    fun `record values share one captured occurrence time`() = runTest {
+    fun record_values_share_one_captured_occurrence_time() = runBlocking {
         val firstId = database.metricDao().insert(testMetric())
         val secondId = database.metricDao().insert(testMetric().copy(name = "Sleep", unit = "hour"))
         clearOutbox()
@@ -154,7 +161,7 @@ class MetricRepositoryTest {
     }
 
     @Test
-    fun `deleting metric captures cascade tombstones in the same commit`() = runTest {
+    fun deleting_metric_captures_cascade_tombstones_in_the_same_commit() = runBlocking {
         val habitId = database.habitDao().insert(testHabit())
         val metricId = database.metricDao().insert(testMetric())
         val metric = database.metricDao().getMetricById(metricId)!!
@@ -193,7 +200,7 @@ class MetricRepositoryTest {
     }
 
     @Test
-    fun `non finite observations roll back the entire batch and outbox`() = runTest {
+    fun non_finite_observations_roll_back_the_entire_batch_and_outbox() = runBlocking {
         val metricId = repository.createMetric(testMetric())
         clearOutbox()
         for (invalid in listOf(Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY)) {
@@ -210,7 +217,7 @@ class MetricRepositoryTest {
     }
 
     @Test
-    fun `non finite targets cannot create or overwrite a metric`() = runTest {
+    fun non_finite_targets_cannot_create_or_overwrite_a_metric() = runBlocking {
         for (invalid in listOf(Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY)) {
             val failure = runCatching { repository.createMetric(testMetric().copy(targetValue = invalid)) }.exceptionOrNull()
             assertTrue(failure is IllegalArgumentException)
@@ -227,7 +234,7 @@ class MetricRepositoryTest {
     }
 
     @Test
-    fun `range target validation matches server contract and leaves no rejected mutations`() = runTest {
+    fun range_target_validation_matches_server_contract_and_leaves_no_rejected_mutations() = runBlocking {
         for ((lower, upper) in listOf(null to 1.0, 1.0 to null, 2.0 to 1.0)) {
             val failure = runCatching {
                 repository.createMetric(testMetric().copy(targetDirection = "range", targetValue = lower, targetValueUpper = upper))
