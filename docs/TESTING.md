@@ -13,7 +13,8 @@
 
 无真机的托管 CI 仅执行 `./tools/verify android-build`（编译、lint、APK 和编译警告门禁），
 明确输出“真机测试未执行”；CI 绿色不代表 Android 行为验收。PR 必须附当前变更的真机结果。
-历史 `src/test` 中尚未迁移的 JVM/Robolectric 用例保留为测试资产，本批不执行，也不声称已被真机覆盖。
+历史 `src/test` 测试已全部审查并迁入 `src/androidTest`，旧 JVM/Robolectric 依赖、资源映射和变体已移除。
+构建配置拒绝 `src/test*` 中的 Kotlin/Java 源文件，防止新增测试落入无人执行的目录；所有 Android 用例仍由真机入口运行。
 
 ## 验证层级
 
@@ -279,3 +280,11 @@ UI 保存成功必须同时检查持久化字段/outbox；失败必须检查无�
 趋势图必须检查实际默认选中、双向切换与聚合回调，不能仅验证枚举；指标详情必须从页面点击到真实
 Room/outbox，并检查数据库重开、取消/确认删除和回调次数。数据类结构断言保留但不计为页面交互覆盖。
 证据见 [Compose 审查报告](reviews/2026-09-20-compose-device.md)。
+
+### 桌面组件、计时入口与测试收尾
+
+进度组件测试必须调用生产刷新逻辑并读取真实 Glance 状态，不能在测试里重复计算结果。
+组件配置过滤需启动真实页面；打卡回调检查事实/outbox 和刷新排队，缺少 ID 时检查无写入/无排队。
+账户清理检查调用当时的绑定状态及失败传播，不能只断言最终空值。Glance 状态、派发边界与 Worker
+替身断言不代表实际 launcher、后台调度或设备重启验收。完整迁移和豁免见
+[组件审查报告](reviews/2026-09-20-widget-timer-device.md) 与 [最终验收](reviews/2026-09-20-test-confidence-final.md)。

@@ -1,7 +1,6 @@
 package com.dayforge.widget
 
 import android.content.Context
-import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.work.ListenableWorker.Result
 import androidx.work.Operation
@@ -21,13 +20,12 @@ import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26, 34])
+@RunWith(AndroidJUnit4::class)
 class WidgetUpdateWorkerTest {
+    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
     private lateinit var context: Context
     private lateinit var database: HabitDatabase
     private val future = mockk<ListenableFuture<Operation.State.SUCCESS>>()
@@ -35,8 +33,7 @@ class WidgetUpdateWorkerTest {
 
     @Before fun setup() {
         context = ApplicationProvider.getApplicationContext()
-        database = Room.inMemoryDatabaseBuilder(context, HabitDatabase::class.java).build()
-        HabitDatabaseProvider.setInstanceForTesting(database)
+        database = storage.database
         mockkObject(WidgetRefreshScheduler)
         every { operation.result } returns future
         every { future.isDone } returns true
@@ -46,7 +43,6 @@ class WidgetUpdateWorkerTest {
 
     @After fun teardown() {
         unmockkObject(WidgetRefreshScheduler)
-        HabitDatabaseProvider.clearInstanceForTesting()
         database.close()
     }
 
@@ -56,7 +52,7 @@ class WidgetUpdateWorkerTest {
         return WidgetUpdateWorker(context, params)
     }
 
-    @Test fun `midnight commits activity-rate refresh before enqueue and waits for enqueue result`() = runTest {
+    @Test fun midnight_commits_activity_rate_refresh_before_enqueue_and_waits_for_enqueue_result() = runTest {
         val id = database.habitDao().insert(HabitEntity(name = "Midnight", habitType = HabitType.CHECK_IN,
             iconResId = 1, colorHex = "#2196F3", schedule = HabitSchedule.Daily,
             activityRateUpdatedAt = 1L))
@@ -69,7 +65,7 @@ class WidgetUpdateWorkerTest {
         verify(exactly = 1) { future.get() }
     }
 
-    @Test fun `synchronous and asynchronous enqueue failures retry but are bounded`() = runTest {
+    @Test fun synchronous_and_asynchronous_enqueue_failures_retry_but_are_bounded() = runTest {
         every { WidgetRefreshScheduler.request(context) } returns null
         assertEquals(Result.retry(), worker().doWork())
         assertEquals(Result.failure(), worker(2).doWork())
@@ -78,7 +74,7 @@ class WidgetUpdateWorkerTest {
         assertEquals(Result.retry(), worker().doWork())
     }
 
-    @Test fun `cancellation is not converted to a midnight retry`() = runTest {
+    @Test fun cancellation_is_not_converted_to_a_midnight_retry() = runTest {
         every { future.get() } throws CancellationException("cancelled")
         try {
             worker().doWork()

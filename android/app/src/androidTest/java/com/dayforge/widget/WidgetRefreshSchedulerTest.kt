@@ -8,12 +8,10 @@ import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26, 34])
+@RunWith(AndroidJUnit4::class)
 class WidgetRefreshSchedulerTest {
     private val manager = mockk<WorkManager>(relaxed = true)
     private lateinit var context: Context
@@ -26,7 +24,7 @@ class WidgetRefreshSchedulerTest {
 
     @After fun teardown() { unmockkStatic(WorkManager::class) }
 
-    @Test fun `bursts append independent payload-free refresh requests without cancellation`() {
+    @Test fun bursts_append_independent_payload_free_refresh_requests_without_cancellation() {
         val requests = mutableListOf<OneTimeWorkRequest>()
         every { manager.enqueueUniqueWork(WidgetRefreshScheduler.WORK_NAME,
             ExistingWorkPolicy.APPEND_OR_REPLACE, capture(requests)) } returns mockk(relaxed = true)
@@ -42,7 +40,7 @@ class WidgetRefreshSchedulerTest {
         verify(exactly = 0) { manager.cancelUniqueWork(any()) }
     }
 
-    @Test fun `enqueue failure does not throw after a business write`() {
+    @Test fun enqueue_failure_does_not_throw_after_a_business_write() {
         every { WorkManager.getInstance(context) } throws IllegalStateException("unavailable")
         assertNull(WidgetRefreshScheduler.request(context))
     }

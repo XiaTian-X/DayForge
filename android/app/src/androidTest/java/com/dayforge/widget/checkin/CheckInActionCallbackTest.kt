@@ -1,5 +1,7 @@
 package com.dayforge.widget.checkin
 
+import dagger.hilt.android.testing.HiltAndroidRule
+import dagger.hilt.android.testing.HiltAndroidTest
 import android.content.Context
 import androidx.glance.GlanceId
 import androidx.glance.action.ActionParameters
@@ -7,7 +9,6 @@ import androidx.glance.action.actionParametersOf
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequest
 import androidx.work.WorkManager
-import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.HabitDatabaseProvider
@@ -25,9 +26,8 @@ import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
 /**
  * Unit tests for CheckInActionCallback.
@@ -39,12 +39,13 @@ import org.robolectric.annotation.Config
  * - Missing habitId returns early without error
  * - Missing action defaults to "toggle"
  *
- * Note: Tests use in-memory database. The callback creates its own database/service
- * instance internally, so we verify the side effects through the shared database.
+ * Production disk Room is shared with the callback; assertions inspect committed side effects.
  */
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@HiltAndroidTest
+@RunWith(AndroidJUnit4::class)
 class CheckInActionCallbackTest {
+    @get:org.junit.Rule(order = 0) val hilt = HiltAndroidRule(this)
+    @get:org.junit.Rule(order = 1) val storage = com.dayforge.data.local.PhysicalDatabaseRule()
 
     private lateinit var database: HabitDatabase
     private lateinit var habitDao: HabitDao
@@ -60,14 +61,9 @@ class CheckInActionCallbackTest {
         mockkStatic(WorkManager::class)
         every { WorkManager.getInstance(context) } returns workManager
 
-        // Use in-memory database for test isolation
-        database = Room.inMemoryDatabaseBuilder(
-            context,
-            HabitDatabase::class.java
-        ).build()
+        database = storage.database
+        hilt.inject()
 
-        // Inject the in-memory database so the callback uses it
-        HabitDatabaseProvider.setInstanceForTesting(database)
 
         habitDao = database.habitDao()
         completionDao = database.completionDao()
@@ -79,7 +75,6 @@ class CheckInActionCallbackTest {
     @After
     fun teardown() {
         unmockkStatic(WorkManager::class)
-        HabitDatabaseProvider.clearInstanceForTesting()
         database.close()
     }
 
@@ -190,8 +185,9 @@ class CheckInActionCallbackTest {
         // Execute callback - should not throw
         callback.onAction(context, glanceId, parameters)
 
-        // This test passes if no exception is thrown
-        assertTrue("Should complete without error", true)
+        assertEquals(0, completionDao.countAll())
+        assertEquals(0, database.syncOutboxDao().count())
+        verify(exactly = 0) { workManager.enqueueUniqueWork(any(), any(), any<OneTimeWorkRequest>()) }
     }
 
     // ==================== Edge case: Missing action defaults to toggle ====================
@@ -225,7 +221,7 @@ class CheckInActionCallbackTest {
     }
 
     @Test
-    fun `real toggle commits data and queues exactly one cross-widget refresh`() = runTest {
+    fun real_toggle_commits_data_and_queues_exactly_one_cross_widget_refresh() = runTest {
         val habitId = habitDao.insert(HabitEntity(
             name = "Test Habit",
             description = "Test",
@@ -241,6 +237,10 @@ class CheckInActionCallbackTest {
             ActionParameters.Key<String>("action") to "toggle"
         ))
         assertEquals(1, repository.getTodayCompletionCount(habitId))
+        assertEquals(2, database.syncOutboxDao().count())
+        val reopened = storage.reopen()
+        assertEquals(1, reopened.completionDao().countAll())
+        assertEquals(2, reopened.syncOutboxDao().count())
         verify(exactly = 1) {
             workManager.enqueueUniqueWork(WidgetRefreshScheduler.WORK_NAME,
                 ExistingWorkPolicy.APPEND_OR_REPLACE, any<OneTimeWorkRequest>())
