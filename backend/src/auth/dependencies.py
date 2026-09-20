@@ -20,7 +20,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl='/api/v1/auth/login', auto_error=F
 async def get_current_user(
     request: Request,
     token: str | None = Depends(oauth2_scheme),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> User:
     """Get current authenticated user from JWT or API Token.
 

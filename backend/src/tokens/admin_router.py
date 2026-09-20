@@ -22,7 +22,7 @@ router = APIRouter(prefix="/admin/users/{user_id}/tokens", tags=["Admin Tokens"]
 async def list_user_tokens(
     user_id: int,
     admin: User = Depends(get_admin_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ):
     """List all API tokens for a specific user. Requires admin role."""
     result = await session.execute(
@@ -37,7 +37,7 @@ async def create_user_token(
     user_id: int,
     token_data: TokenCreate,
     admin: User = Depends(get_admin_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ):
     """Create a new API token for a specific user. Requires admin role."""
     # Verify target user exists
@@ -84,7 +84,7 @@ async def delete_user_token(
     user_id: int,
     token_id: int,
     admin: User = Depends(get_admin_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ):
     """Delete an API token for a specific user. Requires admin role."""
     result = await session.execute(

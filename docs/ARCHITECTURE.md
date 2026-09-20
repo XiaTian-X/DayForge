@@ -133,6 +133,12 @@ revision／日志与父目标同处调用方保存点，任一步失败必须整
 实体处理函数不自行提交事务，也不提供绕过同步入口的新 API。
 实体写入、revision、快照、变更日志及幂等结果仍由同一外层事务持有。
 
+所有 HTTP 数据库依赖使用 `Depends(get_session, scope="function")`，认证和路由必须使用相同
+作用域以共享会话。依赖在发送响应前完成 COMMIT；flush 成功不代表最终提交成功，不能提前
+返回 `applied`。提交失败时回滚并返回非成功响应，客户端保留待确认操作。实体 handler 不自行提交。
+该生命周期遵循 [FastAPI 的 function 作用域](https://fastapi.tiangolo.com/tutorial/dependencies/dependencies-with-yield/#early-exit-and-scope)。
+未来若增加流式响应或后台任务，必须另建其所需会话，不能在请求事务结束后继续使用已关闭会话。
+
 `src/v2/device_service.py` 统一设备注册、活动设备校验及服务端编辑能力策略；同步、计时和
 注册路由直接依赖这个边界，计时服务不再反向依赖同步编排服务。重复注册只刷新展示信息和
 活动时间，不接受客户端变更设备身份或自行提升权限；注册及首次主设备分配仍参与调用方事务。

@@ -74,7 +74,7 @@ app.include_router(v2_router)
 
 
 @app.get("/health")
-async def health_check(session: AsyncSession = Depends(get_session)):
+async def health_check(session: AsyncSession = Depends(get_session, scope="function")):
     """Report ready only when the SQLite database is reachable."""
     await session.execute(text("SELECT 1"))
     return {"status": "ok"}

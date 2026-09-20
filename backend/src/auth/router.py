@@ -39,7 +39,7 @@ def _token_response(user: User) -> Token:
 @router.post("/login", response_model=Token)
 async def login(
     credentials: UserLogin,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ):
     """Log in to an account created by the local server administrator."""
     result = await session.execute(select(User).where(User.username == credentials.username))
@@ -77,7 +77,7 @@ async def login(
 @router.post("/refresh", response_model=Token)
 async def refresh_token(
     token_data: TokenRefresh,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ):
     """Rotate a valid refresh token."""
     payload = verify_token(token_data.refresh_token)

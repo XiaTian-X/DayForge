@@ -32,7 +32,9 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
     """Async database session dependency.
 
     Yields an AsyncSession that automatically commits on success
-    or rolls back on error.
+    or rolls back on error. HTTP consumers must use Depends(get_session,
+    scope="function") so this boundary completes before the response is sent.
+    Authentication and endpoint consumers must share that scope and session.
     """
     engine = get_engine()
     async with async_sessionmaker(
