@@ -59,7 +59,7 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _current_alembic_head() -> str:
+def _current_alembic_head() -> str | None:
     return ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
 
 

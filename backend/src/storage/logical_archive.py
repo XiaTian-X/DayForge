@@ -205,13 +205,17 @@ def export_archive(database_url: str, archive_path: Path) -> Path:
     try:
         metadata = _reflect(engine)
         with engine.connect() as connection:
-            active = 0
+            has_active_timers = False
             if "timer_sessions" in metadata.tables:
                 timer = metadata.tables["timer_sessions"]
-                active = connection.execute(
-                    select(timer.c.id).where(timer.c.state.in_(("running", "paused")))
-                ).fetchall()
-            if active:
+                has_active_timers = bool(
+                    connection.execute(
+                        select(timer.c.id).where(
+                            timer.c.state.in_(("running", "paused"))
+                        )
+                    ).fetchall()
+                )
+            if has_active_timers:
                 raise StorageValidationError(
                     "logical export requires a maintenance window without active timers"
                 )

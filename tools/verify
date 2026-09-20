@@ -116,6 +116,7 @@ verify_backend() {
     uv sync --frozen
     uv run --frozen ruff check --config pyproject.toml .
     uv run --frozen ruff format --check --config pyproject.toml .
+    uv run --frozen mypy --config-file pyproject.toml
     uv run --frozen python -m pytest -p tests.warning_budget
     uv run --frozen python scripts/export_openapi.py --check
   )

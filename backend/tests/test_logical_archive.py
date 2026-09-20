@@ -391,3 +391,31 @@ def test_logical_import_rejects_nonempty_target(tmp_path: Path):
 
     with pytest.raises(StorageValidationError, match="not empty"):
         import_archive(target_url, archive)
+
+
+@pytest.mark.parametrize("state", ["running", "paused"])
+def test_logical_export_rejects_active_timers_without_creating_archive(tmp_path, state):
+    source_url = migrate(tmp_path / "source.db")
+    seed_source(source_url)
+    engine = create_engine(source_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE timer_sessions SET state=:state, ended_at=NULL, completed_event_id=NULL"
+                ),
+                {"state": state},
+            )
+        output = tmp_path / "blocked.zip"
+        with pytest.raises(StorageValidationError, match="without active timers"):
+            export_archive(source_url, output)
+        assert not output.exists()
+        with engine.connect() as connection:
+            assert (
+                connection.execute(
+                    text("SELECT state FROM timer_sessions")
+                ).scalar_one()
+                == state
+            )
+    finally:
+        engine.dispose()

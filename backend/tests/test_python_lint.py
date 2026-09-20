@@ -74,7 +74,7 @@ def test_lint_accepts_explicit_pytest_fixture_reexport():
 
 
 @pytest.mark.parametrize(
-    "fail_stage", ["sync", "ruff", "format", "pytest", "openapi", "none"]
+    "fail_stage", ["sync", "ruff", "format", "mypy", "pytest", "openapi", "none"]
 )
 def test_verify_backend_fails_fast_and_never_updates_the_lock(tmp_path, fail_stage):
     """Exercise the real shell entry point with a recording uv, not string matching."""
@@ -87,7 +87,7 @@ def test_verify_backend_fails_fast_and_never_updates_the_lock(tmp_path, fail_sta
         "with open(os.environ['LINT_TEST_LOG'], 'a') as log:\n"
         "    log.write(json.dumps(args) + '\\n')\n"
         "stage = ('sync' if args[0] == 'sync' else 'format' if 'format' in args else "
-        "'ruff' if 'ruff' in args else "
+        "'ruff' if 'ruff' in args else 'mypy' if 'mypy' in args else "
         "'pytest' if 'pytest' in args else 'openapi')\n"
         "sys.exit(1 if stage == os.environ['LINT_TEST_FAILURE'] else 0)\n",
         encoding="utf-8",
@@ -120,12 +120,19 @@ def test_verify_backend_fails_fast_and_never_updates_the_lock(tmp_path, fail_sta
             "pyproject.toml",
             ".",
         ],
+        ["run", "--frozen", "mypy", "--config-file", "pyproject.toml"],
         ["run", "--frozen", "python", "-m", "pytest", "-p", "tests.warning_budget"],
         ["run", "--frozen", "python", "scripts/export_openapi.py", "--check"],
     ]
-    count = {"sync": 1, "ruff": 2, "format": 3, "pytest": 4, "openapi": 5, "none": 5}[
-        fail_stage
-    ]
+    count = {
+        "sync": 1,
+        "ruff": 2,
+        "format": 3,
+        "mypy": 4,
+        "pytest": 5,
+        "openapi": 6,
+        "none": 6,
+    }[fail_stage]
     assert command_log.exists(), result.stdout + result.stderr
     assert [
         json.loads(line) for line in command_log.read_text().splitlines()
