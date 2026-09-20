@@ -217,3 +217,12 @@ assets 读取同一份 `contracts/sync-v2` 样例，不复制或自动生成测�
 迁移失败后应关闭 Room，用独立 SQLite 连接检查版本、DDL、事实、触发器和完整 outbox 是否回滚，
 并验证移除故障后的重试。时区边界预期使用独立日期和毫秒字面量，覆盖实际完成时间与计划日期不同的情况。
 本批结果、故障注入和限制见 [Room 迁移报告](reviews/2026-09-20-room-migration.md)。
+
+## 同步冲突与拒绝恢复真机回归（Issue #130）
+
+`IncrementalSyncRepositoryTest` 的 15 个旧场景已逐项对应真实存储测试，迁移映射见
+[冲突与拒绝恢复报告](reviews/2026-09-20-sync-conflict-recovery.md)。共享 fixture 只控制 HTTP 边界，
+不模拟 DAO、仓库或合并器。冲突保存与解决失败须核对事实、shadow、冲突记录和 outbox 一起回滚，
+显式重试必须产生新 operation ID，并从磁盘验证准备字段清空。
+放弃被拒绝修改沿用现有界面约定：移除待同步记录、保留当前本地数据；随后 bootstrap 应用服务端已有记录。
+测试预期不得仅从当前实现推导，必须核对协议样例和用户界面约定，并保留代表性错误实现检出证据。
