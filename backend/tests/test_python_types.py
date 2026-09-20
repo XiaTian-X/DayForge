@@ -39,6 +39,14 @@ def type_cache(tmp_path_factory):
             "from datetime import datetime\nfrom src.v2.schemas import require_aware_utc\nvalue: datetime = require_aware_utc(None)\n",
             "assignment",
         ),
+        (
+            "from src.auth.schemas import Token\ndef wrong(token: Token) -> str:\n    return token.user_id\n",
+            "return-value",
+        ),
+        (
+            "from src.tokens.schemas import TokenResponse\ndef wrong(token: TokenResponse) -> None:\n    token.id = None\n",
+            "assignment",
+        ),
     ],
 )
 def test_type_gate_rejects_invalid_contracts(source, diagnostic, type_cache):
@@ -98,6 +106,21 @@ def test_utc_normalizer_retains_required_and_optional_types(type_cache):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_validated_auth_responses_have_precise_public_types(type_cache):
+    source = (
+        "from typing import assert_type\n"
+        "from uuid import UUID\n"
+        "from src.auth.models import User\n"
+        "from src.auth.router import _token_response\n"
+        "from src.tokens.schemas import TokenResponse\n"
+        "def response(user: User, raw: dict[str, object]) -> None:\n"
+        "    assert_type(_token_response(user).user_id, UUID)\n"
+        "    assert_type(TokenResponse.model_validate(raw).id, int)\n"
+    )
+    result = run_mypy(source, type_cache)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_type_gate_scope_is_explicit_without_error_or_import_suppression():
     config = tomllib.loads((BACKEND / "pyproject.toml").read_text())["tool"]["mypy"]
     assert set(config["files"]) == {
@@ -110,6 +133,11 @@ def test_type_gate_scope_is_explicit_without_error_or_import_suppression():
         "src/v2/encoding.py",
         "src/v2/merge.py",
         "src/v2/errors.py",
+        "src/auth",
+        "src/tokens/models.py",
+        "src/tokens/schemas.py",
+        "src/tokens/service.py",
+        "src/tokens/router.py",
     }
     assert config["check_untyped_defs"] is True
     assert not config.get("ignore_errors", False)

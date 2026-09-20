@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import update
-from sqlmodel import select
+from sqlmodel import col, select
 
 from src.auth.dependencies import get_current_user
 from src.auth.models import User
@@ -27,12 +27,15 @@ def _token_claims(user: User) -> dict[str, str | int]:
 
 def _token_response(user: User) -> Token:
     claims = _token_claims(user)
-    return Token(
-        access_token=create_access_token(claims),
-        refresh_token=create_refresh_token(claims),
-        user_id=user.public_id,
-        username=user.username,
-        is_admin=user.is_admin,
+    # Stored UUIDs are strings; validate at the response boundary as before.
+    return Token.model_validate(
+        {
+            "access_token": create_access_token(claims),
+            "refresh_token": create_refresh_token(claims),
+            "user_id": user.public_id,
+            "username": user.username,
+            "is_admin": user.is_admin,
+        }
     )
 
 
@@ -59,19 +62,19 @@ async def login(
         )
     if password_hash_needs_upgrade(user.password_hash):
         # Do not overwrite a password reset that won the race after the read.
-        result = await session.execute(
+        upgrade_result = await session.execute(
             update(User)
             .where(
-                User.id == user.id,
-                User.password_hash == user.password_hash,
-                User.auth_version == user.auth_version,
-                User.is_active.is_(True),
-                User.status == "active",
+                col(User.id) == user.id,
+                col(User.password_hash) == user.password_hash,
+                col(User.auth_version) == user.auth_version,
+                col(User.is_active).is_(True),
+                col(User.status) == "active",
             )
             .values(password_hash=get_password_hash(credentials.password))
             .execution_options(synchronize_session=False)
         )
-        if result.rowcount != 1:
+        if upgrade_result.rowcount != 1:
             raise HTTPException(status_code=401, detail="Incorrect credentials")
     return _token_response(user)
 
