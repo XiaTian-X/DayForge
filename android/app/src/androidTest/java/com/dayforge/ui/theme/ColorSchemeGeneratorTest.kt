@@ -1,5 +1,6 @@
 package com.dayforge.ui.theme
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.compose.ui.graphics.Color
 import com.dayforge.domain.model.GlobalColorTheme
 import org.junit.Assert.assertEquals
@@ -7,16 +8,13 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
 /**
  * Tests for ColorSchemeGenerator - Material3 ColorScheme generation from seed colors.
  *
  * Per THEME-08, THEME-09, THEME-10: Tonal palette generation with OLED special handling.
  */
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 class ColorSchemeGeneratorTest {
 
     // ========== Test 1: Light scheme generation from Ocean seed (#1976D2) ==========
@@ -91,6 +89,7 @@ class ColorSchemeGeneratorTest {
         val colorScheme = ColorSchemeGenerator.generateLightColorScheme(theme(invalidColor))
 
         assertNotNull(colorScheme)
+        assertEquals(SeedPaletteFixtures.ocean(false), SeedPaletteFixtures.colors(colorScheme))
         // Should fallback to Ocean (#1976D2) - blue primary
         assertTrue(
             "Invalid color should fallback to Ocean primary (blue-ish)",
@@ -104,6 +103,7 @@ class ColorSchemeGeneratorTest {
         val colorScheme = ColorSchemeGenerator.generateDarkColorScheme(theme(invalidColor))
 
         assertNotNull(colorScheme)
+        assertEquals(SeedPaletteFixtures.ocean(true), SeedPaletteFixtures.colors(colorScheme))
         // Should fallback to Ocean (#1976D2) - generates valid dark scheme
         assertNotNull(colorScheme.primary)
         assertNotNull(colorScheme.background)
@@ -115,6 +115,7 @@ class ColorSchemeGeneratorTest {
     fun generateOledColorScheme_usesCyanBlueAccents_notPink() {
         val colorScheme = ColorSchemeGenerator.generateOledColorScheme()
 
+        assertEquals(SeedPaletteFixtures.oledColors, SeedPaletteFixtures.colors(colorScheme))
         // Verify pure black backgrounds
         assertEquals(Color(0xFF000000), colorScheme.background)
         assertEquals(Color(0xFF000000), colorScheme.surface)
@@ -160,6 +161,7 @@ class ColorSchemeGeneratorTest {
         val seedColor = "#1976D2"
         val colorScheme = ColorSchemeGenerator.generateLightColorScheme(theme(seedColor))
 
+        assertEquals(SeedPaletteFixtures.ocean(false), SeedPaletteFixtures.colors(colorScheme))
         // Verify all essential color roles are populated (not default/unset)
         assertNotNull(colorScheme.primary)
         assertNotNull(colorScheme.onPrimary)
