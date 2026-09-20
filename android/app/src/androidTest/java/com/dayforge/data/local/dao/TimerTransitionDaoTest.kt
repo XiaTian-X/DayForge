@@ -1,8 +1,5 @@
 package com.dayforge.data.local.dao
 
-import android.content.Context
-import androidx.room.Room
-import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.TimeLogEntity
@@ -10,29 +7,28 @@ import com.dayforge.data.local.entity.TimerCommandEntity
 import com.dayforge.data.local.entity.TimerSegmentEntity
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
+import androidx.test.ext.junit.runners.AndroidJUnit4
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 class TimerTransitionDaoTest {
+    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
     private lateinit var database: HabitDatabase
     private lateinit var dao: TimeLogDao
     private var habitId: Long = 0
 
     @Before
-    fun setUp() = runTest {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        database = Room.inMemoryDatabaseBuilder(context, HabitDatabase::class.java).build()
+    fun setUp() = runBlocking {
+        database = storage.database
         dao = database.timeLogDao()
         habitId = database.habitDao().insert(
             HabitEntity(
@@ -52,7 +48,7 @@ class TimerTransitionDaoTest {
     }
 
     @Test
-    fun `pause resume and stop persist one ordered command history`() = runTest {
+    fun pause_resume_and_stop_persist_one_ordered_command_history() = runBlocking {
         val session = "timer-session"
         val logId = insertStartedTimer(session)
 
@@ -96,6 +92,7 @@ class TimerTransitionDaoTest {
             wasPaused = false
         )
 
+        reopen()
         val completed = dao.getById(logId)
         assertNotNull(completed)
         assertEquals(45_000L, completed?.endTime)
@@ -112,7 +109,7 @@ class TimerTransitionDaoTest {
     }
 
     @Test
-    fun `stale stop rolls back its outbox command`() = runTest {
+    fun stale_stop_rolls_back_its_outbox_command() = runBlocking {
         val session = "stale-stop-session"
         val logId = insertStartedTimer(session)
         dao.finishTimerAndQueue(
@@ -140,8 +137,47 @@ class TimerTransitionDaoTest {
         }.exceptionOrNull()
 
         assertNotNull(failure)
+        assertTrue(failure is IllegalStateException)
+        assertEquals("Active timer changed before stop transition", failure?.message)
+        reopen()
         assertEquals(listOf(1, 2), dao.getPendingTimerCommands().map { it.sequence })
         assertEquals(20_000L, dao.getById(logId)?.endTime)
+    }
+
+    @Test
+    fun commandInsertFailureRollsBackTimerAndSegmentOnDisk() = runBlocking {
+        val session = "failed-stop"
+        val id = insertStartedTimer(session)
+        val original = dao.getById(id)
+        val segments = dao.getTimerSegments(session)
+        val commands = dao.getPendingTimerCommands()
+        database.openHelper.writableDatabase.execSQL("""
+            CREATE TRIGGER fail_test_stop BEFORE INSERT ON timer_command_outbox
+            WHEN NEW.commandType = 'stop'
+            BEGIN SELECT RAISE(ABORT, 'test stop insert failure'); END
+        """.trimIndent())
+        val error = runCatching {
+            dao.finishTimerAndQueue(id, 20000, 10, 0, 3, 10000,
+                command(session, 2, "stop", 20000, 10000), false)
+        }.exceptionOrNull()
+        assertTrue(error is android.database.sqlite.SQLiteConstraintException)
+        assertTrue(error?.message.orEmpty().contains("test stop insert failure"))
+        reopen()
+        assertEquals(original, dao.getById(id))
+        assertEquals(segments, dao.getTimerSegments(session))
+        assertEquals(commands, dao.getPendingTimerCommands())
+        database.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_test_stop")
+        dao.finishTimerAndQueue(id, 20000, 10, 0, 3, 10000,
+            command(session, 2, "stop", 20000, 10000), false)
+        reopen()
+        assertEquals(20000L, dao.getById(id)?.endTime)
+        assertEquals(listOf("start", "stop"), dao.getPendingTimerCommands().map { it.commandType })
+        assertEquals(listOf(20000L), dao.getTimerSegments(session).map { it.endedAt })
+    }
+
+    private fun reopen() {
+        database = storage.reopen()
+        dao = database.timeLogDao()
     }
 
     private suspend fun insertStartedTimer(session: String): Long = dao.insertSyncedTimer(

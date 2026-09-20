@@ -1,8 +1,5 @@
 package com.dayforge.data.local
 
-import android.content.Context
-import androidx.room.Room
-import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.model.HabitSchedule
@@ -28,20 +25,17 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
+import androidx.test.ext.junit.runners.AndroidJUnit4
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 class CapturedDayStatisticsTest {
+    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
     private lateinit var db: HabitDatabase
     private val originalZone = TimeZone.getDefault()
     private val zones = listOf("UTC", "America/Los_Angeles", "Asia/Shanghai", "Pacific/Kiritimati")
 
     @Before fun setup() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        db = Room.inMemoryDatabaseBuilder(context, HabitDatabase::class.java)
-            .addCallback(SyncSchemaCallback).allowMainThreadQueries().build()
+        db = storage.database
     }
 
     @After fun cleanup() {

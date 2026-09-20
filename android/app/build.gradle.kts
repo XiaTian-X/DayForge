@@ -185,6 +185,7 @@ dependencies {
     debugImplementation(libs.ui.test.manifest)
     add("deviceTestImplementation", libs.ui.test.manifest)
     kspAndroidTest(libs.hilt.compiler)
+    androidTestImplementation(libs.turbine)
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.espresso.core)

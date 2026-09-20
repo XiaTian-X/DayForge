@@ -13,12 +13,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
+import androidx.test.ext.junit.runners.AndroidJUnit4
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 class HabitDatabaseBaselineTest {
+    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
 
     private lateinit var context: Context
     private lateinit var database: HabitDatabase
@@ -26,16 +25,12 @@ class HabitDatabaseBaselineTest {
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
-        context.deleteDatabase(TEST_DATABASE)
-        HabitDatabaseProvider.clearInstanceForTesting()
-        database = HabitDatabaseProvider.getInstance(context)
+        database = storage.database
     }
 
     @After
     fun tearDown() {
         database.close()
-        HabitDatabaseProvider.clearInstanceForTesting()
-        context.deleteDatabase(TEST_DATABASE)
     }
 
     @Test
@@ -122,7 +117,4 @@ class HabitDatabaseBaselineTest {
         }
     }
 
-    private companion object {
-        const val TEST_DATABASE = "habit_database"
-    }
 }

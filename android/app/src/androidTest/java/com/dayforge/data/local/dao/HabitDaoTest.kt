@@ -1,36 +1,29 @@
 package com.dayforge.data.local.dao
 
 import android.database.sqlite.SQLiteConstraintException
-import androidx.room.Room
-import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
+import androidx.test.ext.junit.runners.AndroidJUnit4
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 class HabitDaoTest {
+    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
 
     private lateinit var habitDao: HabitDao
     private lateinit var database: HabitDatabase
 
     @Before
     fun setup() {
-        // Use in-memory database for test isolation
-        database = Room.inMemoryDatabaseBuilder(
-            ApplicationProvider.getApplicationContext(),
-            HabitDatabase::class.java
-        ).build()
+        database = storage.database
         habitDao = database.habitDao()
     }
 
@@ -40,7 +33,7 @@ class HabitDaoTest {
     }
 
     @Test
-    fun insertHabit_returnsGeneratedIdGreaterThanZero() = runTest {
+    fun insertHabit_returnsGeneratedIdGreaterThanZero() = runBlocking {
         val habit = createTestHabit(name = "Test Habit")
 
         val insertedId = habitDao.insert(habit)
@@ -49,7 +42,7 @@ class HabitDaoTest {
     }
 
     @Test
-    fun getHabitById_returnsInsertedHabitWithSameProperties() = runTest {
+    fun getHabitById_returnsInsertedHabitWithSameProperties() = runBlocking {
         val habit = createTestHabit(name = "Test Habit", description = "Test Description")
 
         val insertedId = habitDao.insert(habit)
@@ -62,7 +55,7 @@ class HabitDaoTest {
     }
 
     @Test
-    fun getAllHabits_emitsListContainingInsertedHabit() = runTest {
+    fun getAllHabits_emitsListContainingInsertedHabit() = runBlocking {
         val habit = createTestHabit(name = "Test Habit")
 
         habitDao.insert(habit)
@@ -74,13 +67,13 @@ class HabitDaoTest {
     }
 
     @Test
-    fun updateHabit_changesPersistedData() = runTest {
-        val habit = createTestHabit(name = "Original Name")
+    fun updateHabit_changesPersistedData() = runBlocking {
+        val habit = createTestHabit(name = "Original Name").copy(createdAt = 100, updatedAt = 100)
         val insertedId = habitDao.insert(habit)
 
         // Retrieve the inserted habit to get the correct ID and createdAt
         val insertedHabit = habitDao.getHabitById(insertedId)!!
-        val updatedHabit = insertedHabit.copy(name = "Updated Name", updatedAt = System.currentTimeMillis())
+        val updatedHabit = insertedHabit.copy(name = "Updated Name", updatedAt = 200)
         habitDao.update(updatedHabit)
 
         val retrievedHabit = habitDao.getHabitById(insertedId)
@@ -91,7 +84,7 @@ class HabitDaoTest {
     }
 
     @Test
-    fun deleteHabit_removesFromDatabase() = runTest {
+    fun deleteHabit_removesFromDatabase() = runBlocking {
         val habit = createTestHabit(name = "To Delete")
         val insertedId = habitDao.insert(habit)
 
@@ -109,7 +102,7 @@ class HabitDaoTest {
     // ========== Unique Constraint Tests (Task 13-01) ==========
 
     @Test
-    fun insertDuplicateName_throwsSQLiteConstraintException() = runTest {
+    fun insertDuplicateName_throwsSQLiteConstraintException() = runBlocking {
         val habit1 = createTestHabit(name = "Duplicate Name")
         habitDao.insert(habit1)
 
@@ -125,7 +118,7 @@ class HabitDaoTest {
     }
 
     @Test
-    fun insertHabit_afterDeleteWithSameName_succeeds() = runTest {
+    fun insertHabit_afterDeleteWithSameName_succeeds() = runBlocking {
         // Create and insert first habit
         val habit1 = createTestHabit(name = "Test Habit")
         val id1 = habitDao.insert(habit1)
@@ -145,7 +138,7 @@ class HabitDaoTest {
     }
 
     @Test
-    fun insertHabit_withUniqueName_succeeds() = runTest {
+    fun insertHabit_withUniqueName_succeeds() = runBlocking {
         val habit1 = createTestHabit(name = "Unique Habit 1")
         val id1 = habitDao.insert(habit1)
 
@@ -202,9 +195,9 @@ class HabitDaoTest {
     // ========== Parent-Child DAO Tests (Task 42-01) ==========
 
     @Test
-    fun getChildrenByParentUuid_returnsChildHabits() = runTest {
+    fun getChildrenByParentUuid_returnsChildHabits() = runBlocking {
         // Create parent habit
-        val parent = createTestHabit(name = "Parent Habit")
+        val parent = createTestHabit(name = "Parent Habit", habitType = HabitType.GOAL)
         val parentId = habitDao.insert(parent)
         val parentUuid = habitDao.getHabitById(parentId)!!.uuid
 
@@ -223,7 +216,7 @@ class HabitDaoTest {
     }
 
     @Test
-    fun getChildrenByParentUuid_returnsEmptyList_whenNoChildren() = runTest {
+    fun getChildrenByParentUuid_returnsEmptyList_whenNoChildren() = runBlocking {
         val nonExistentUuid = "non-existent-uuid-12345"
 
         val children = habitDao.getChildrenByParentUuid(nonExistentUuid).first()
@@ -232,7 +225,7 @@ class HabitDaoTest {
     }
 
     @Test
-    fun getTopLevelHabits_returnsOnlyNullParentHabits() = runTest {
+    fun getTopLevelHabits_returnsOnlyNullParentHabits() = runBlocking {
         // Create 2 top-level habits (no parent)
         val topLevel1 = createTestHabit(name = "Top Level 1")
         val topLevel2 = createTestHabit(name = "Top Level 2")
@@ -240,7 +233,7 @@ class HabitDaoTest {
         habitDao.insert(topLevel2)
 
         // Create parent and child habit
-        val parent = createTestHabit(name = "Parent Habit")
+        val parent = createTestHabit(name = "Parent Habit", habitType = HabitType.GOAL)
         val parentId = habitDao.insert(parent)
         val parentUuid = habitDao.getHabitById(parentId)!!.uuid
         val child = createTestHabitWithParent(name = "Child Habit", parentHabitId = parentUuid)
@@ -255,9 +248,9 @@ class HabitDaoTest {
     }
 
     @Test
-    fun getTopLevelHabits_excludesChildHabits() = runTest {
+    fun getTopLevelHabits_excludesChildHabits() = runBlocking {
         // Create parent habit
-        val parent = createTestHabit(name = "Parent Habit")
+        val parent = createTestHabit(name = "Parent Habit", habitType = HabitType.GOAL)
         val parentId = habitDao.insert(parent)
         val parentUuid = habitDao.getHabitById(parentId)!!.uuid
 
@@ -273,9 +266,9 @@ class HabitDaoTest {
     }
 
     @Test
-    fun updateParentHabitId_setsParentForHabit() = runTest {
+    fun updateParentHabitId_setsParentForHabit() = runBlocking {
         // Create parent habit
-        val parent = createTestHabit(name = "Parent Habit")
+        val parent = createTestHabit(name = "Parent Habit", habitType = HabitType.GOAL)
         val parentId = habitDao.insert(parent)
         val parentUuid = habitDao.getHabitById(parentId)!!.uuid
 
@@ -287,14 +280,16 @@ class HabitDaoTest {
         habitDao.updateParentHabitId(childId, parentUuid)
 
         // Verify parent is set
+        database = storage.reopen()
+        habitDao = database.habitDao()
         val updatedChild = habitDao.getHabitById(childId)
         assertEquals("Child should have parent UUID set", parentUuid, updatedChild?.parentHabitId)
     }
 
     @Test
-    fun updateParentHabitId_clearsParent_whenSetToNull() = runTest {
+    fun updateParentHabitId_clearsParent_whenSetToNull() = runBlocking {
         // Create parent habit
-        val parent = createTestHabit(name = "Parent Habit")
+        val parent = createTestHabit(name = "Parent Habit", habitType = HabitType.GOAL)
         val parentId = habitDao.insert(parent)
         val parentUuid = habitDao.getHabitById(parentId)!!.uuid
 
@@ -306,23 +301,24 @@ class HabitDaoTest {
         habitDao.updateParentHabitId(childId, null)
 
         // Verify parent is cleared
+        database = storage.reopen()
+        habitDao = database.habitDao()
         val updatedChild = habitDao.getHabitById(childId)
         assertNull("Child should have no parent (null)", updatedChild?.parentHabitId)
     }
 
     @Test
-    fun updateParentHabitId_updatesTimestamp() = runTest {
+    fun updateParentHabitId_updatesTimestamp() = runBlocking {
         // Create habit
-        val habit = createTestHabit(name = "Test Habit")
+        val habit = createTestHabit(name = "Test Habit").copy(createdAt = 100, updatedAt = 100)
         val habitId = habitDao.insert(habit)
         val originalHabit = habitDao.getHabitById(habitId)!!
         val originalUpdatedAt = originalHabit.updatedAt
 
-        // Small delay to ensure timestamp difference
-        Thread.sleep(10)
-
         // Update parent
-        val newParentUuid = "new-parent-uuid"
+        val parent = createTestHabit(name = "Parent Goal", habitType = HabitType.GOAL)
+        habitDao.insert(parent)
+        val newParentUuid = parent.uuid
         habitDao.updateParentHabitId(habitId, newParentUuid)
 
         // Verify timestamp updated
