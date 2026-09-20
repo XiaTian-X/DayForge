@@ -15,6 +15,7 @@ from src.v2.encoding import jsonable_utc, parse_json
 from src.v2.errors import DomainError
 from src.v2.schemas import (
     ActivityMetricLinkPayload,
+    ApiModel,
     MetricPayload,
     PlanNodePayload,
     SyncOperationRequest,
@@ -116,7 +117,7 @@ def _delete_path(payload: dict[str, Any], path: tuple[str, ...]) -> None:
 def _normalized_operation_payload(
     operation: SyncOperationRequest,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    models = {
+    models: dict[str, type[ApiModel]] = {
         "plan_node": PlanNodePayload,
         "metric": MetricPayload,
         "activity_metric_link": ActivityMetricLinkPayload,
