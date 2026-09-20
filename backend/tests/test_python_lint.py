@@ -28,7 +28,7 @@ def test_lint_rejects_invalid_code(source, code):
     result = subprocess.run(
         [sys.executable, "-m", "ruff", "check", "--config", str(BACKEND / "pyproject.toml"),
          "--output-format", "json", "--stdin-filename", "example.py", "-"],
-        input=source, text=True, capture_output=True, cwd=BACKEND, check=False,
+        input=source, text=True, capture_output=True, cwd=BACKEND, check=False, timeout=30,
     )
     assert result.returncode == 1, result.stderr
     assert code in {diagnostic["code"] for diagnostic in json.loads(result.stdout)}
@@ -39,7 +39,7 @@ def test_lint_accepts_explicit_pytest_fixture_reexport():
         [sys.executable, "-m", "ruff", "check", "--config", str(BACKEND / "pyproject.toml"),
          "--stdin-filename", "example.py", "-"],
         input="from fixtures import setup as setup\ndef test_example(setup):\n    assert setup\n",
-        text=True, capture_output=True, cwd=BACKEND, check=False,
+        text=True, capture_output=True, cwd=BACKEND, check=False, timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -65,7 +65,7 @@ def test_verify_backend_fails_fast_and_never_updates_the_lock(tmp_path, fail_sta
         [str(REPOSITORY / "tools/verify"), "backend"],
         env={**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
              "LINT_TEST_LOG": str(command_log), "LINT_TEST_FAILURE": fail_stage},
-        cwd=tmp_path, text=True, capture_output=True, check=False,
+        cwd=tmp_path, text=True, capture_output=True, check=False, timeout=30,
     )
     expected = [
         ["sync", "--frozen"],
