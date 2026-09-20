@@ -65,7 +65,7 @@ async def get_current_user(
         if token_type != "access":
             raise credentials_exception
 
-        user_id: str = payload.get("sub")
+        user_id: str | None = payload.get("sub")
         token_version = payload.get("ver")
         if user_id is None or not isinstance(token_version, int):
             raise credentials_exception
@@ -92,10 +92,10 @@ async def get_current_user(
         # API Token authentication
         token_hash = hash_token(credentials)
 
-        result = await session.execute(
+        token_result = await session.execute(
             select(ApiToken).where(ApiToken.token_hash == token_hash)
         )
-        api_token = result.scalar()
+        api_token = token_result.scalar()
 
         if api_token is None:
             raise credentials_exception

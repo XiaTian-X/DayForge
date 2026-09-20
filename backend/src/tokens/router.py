@@ -23,7 +23,7 @@ async def create_token(
     token_data: TokenCreate,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session, scope="function"),
-):
+) -> TokenResponse:
     """Create a new API token for the authenticated user."""
     raw_token = generate_token()
     token_hash = hash_token(raw_token)
@@ -44,14 +44,18 @@ async def create_token(
     await session.commit()
     await session.refresh(api_token)
 
-    return TokenResponse(
-        id=api_token.id,
-        name=api_token.name,
-        prefix=api_token.prefix,
-        token=raw_token,
-        last_used_at=api_token.last_used_at,
-        created_at=api_token.created_at,
-        expires_at=api_token.expires_at,
+    # ORM primary keys are optional before insertion; response validation still
+    # rejects a missing ID instead of weakening the required API field.
+    return TokenResponse.model_validate(
+        {
+            "id": api_token.id,
+            "name": api_token.name,
+            "prefix": api_token.prefix,
+            "token": raw_token,
+            "last_used_at": api_token.last_used_at,
+            "created_at": api_token.created_at,
+            "expires_at": api_token.expires_at,
+        }
     )
 
 
