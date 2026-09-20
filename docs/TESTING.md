@@ -56,7 +56,8 @@ OpenAPI 一致性检查，任何一步失败即停止。Ruff 仅作为锁定的�
 类型门禁使用锁定的 mypy，已接入范围是 `src/storage/`、`src/config.py`、`src/database.py`、
 `src/time_utils.py`、`src/v2/time_utils.py`，以及 `src/v2/` 下的 `schemas.py`、`encoding.py`、
 `merge.py`、`errors.py`；另包括 `src/auth/` 和 `src/tokens/` 下的 `models.py`、`schemas.py`、
-`service.py`、`router.py`（23 个源文件）。管理员令牌路由及其管理/设备依赖链尚未接入。
+`service.py`、`router.py`、`admin_router.py`，以及 `src/admin/`、`src/v2/device_service.py`
+（29 个源文件）。
 启用未注解函数体检查、隐式可空值限制、
 无用忽略和冗余 cast 检查，正常跟踪导入；不使用全局忽略、错误预算或跳过导入来取得通过。
 这还不是 strict 全注解检查；动态 JSON/反射边界中已有的 `Any` 也不代表已得到精确类型保证。
@@ -68,8 +69,10 @@ OpenAPI 一致性检查，任何一步失败即停止。Ruff 仅作为锁定的�
 JWT/API Token 的账户状态判断、过期拒绝和事务提交顺序；静态探针同时验证响应字段的非空和 UUID 类型。
 ORM 数据进入响应时可使用 Pydantic `model_validate` 明确运行时校验边界，不得使用
 `model_construct`、扩大响应字段可空性或无依据的类型断言规避校验。
+管理边界还须验证家庭排序/成员隔离、设备响应不会创建策略，以及家庭创建者引用缺失时
+保持非成功响应、整笔请求回滚且不泄露内部异常；不得通过默认归属或残缺成功响应掩盖数据完整性错误。
 
-**尚未达成的检查要求（#20）：** 管理、管理员令牌和其余同步业务模块，以及测试/脚本/Alembic 的
+**尚未达成的检查要求（#20）：** 其余同步业务模块，以及测试/脚本/Alembic 的
 全量类型接入仍待后续批次，不得把当前 `verify backend` 通过表述为全后端类型检查已经通过。
 类型整改须区分 ORM
 表达式推断限制、经过验证的可空值收窄与真实错误，不使用全局忽略或无依据的 cast 掩盖问题。

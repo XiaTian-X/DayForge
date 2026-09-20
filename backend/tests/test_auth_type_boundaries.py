@@ -1,7 +1,7 @@
 """Behavior contracts for authentication and database-to-response type boundaries."""
 
 from datetime import timedelta
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
 import pytest
@@ -13,6 +13,7 @@ from src.auth.service import create_access_token, create_refresh_token, verify_t
 from src.time_utils import utc_now
 from src.tokens.models import ApiToken
 from src.tokens.router import create_token
+from src.tokens.admin_router import create_user_token
 from src.tokens.schemas import TokenCreate
 from src.tokens.service import hash_token
 from tests.account_fixtures import account_password_hash
@@ -57,11 +58,14 @@ def test_auth_response_rejects_invalid_stored_uuid(public_id):
 
 
 @pytest.mark.parametrize("assigned_id", [None, 91])
-async def test_user_token_response_requires_generated_id_after_commit_and_refresh(
+@pytest.mark.parametrize("entry", ["user", "admin"])
+async def test_token_response_requires_generated_id_after_commit_and_refresh(
     assigned_id,
+    entry,
 ):
     user = User(id=17, username="boundary", password_hash="unused")
     session = AsyncMock()
+    session.execute.return_value = Mock(scalar=Mock(return_value=user))
     timeline = []
 
     async def commit():
@@ -76,13 +80,21 @@ async def test_user_token_response_requires_generated_id_after_commit_and_refres
     session.add = lambda token: timeline.append("add")
     session.commit.side_effect = commit
     session.refresh.side_effect = refresh
+
+    async def create():
+        if entry == "admin":
+            return await create_user_token(
+                user.id, TokenCreate(name="boundary"), user, session
+            )
+        return await create_token(TokenCreate(name="boundary"), user, session)
+
     if assigned_id is None:
         with pytest.raises(ValidationError) as error:
-            await create_token(TokenCreate(name="boundary"), user, session)
+            await create()
         assert error.value.errors()[0]["loc"] == ("id",)
         assert error.value.errors()[0]["type"] == "int_type"
     else:
-        response = await create_token(TokenCreate(name="boundary"), user, session)
+        response = await create()
         assert response.id == assigned_id
         assert response.name == "boundary"
         assert response.prefix == response.token[:11]

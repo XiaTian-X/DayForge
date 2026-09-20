@@ -51,8 +51,8 @@ select = ["E4", "E9", "F"]
 
 [tool.mypy]
 python_version = "3.12"
-# Reviewed #20 batches: storage, sync contracts and user authentication. Expand this
-# list in reviewed batches; this is not a claim of whole-backend coverage.
+# Reviewed #20 batches: storage, contracts, authentication and administration.
+# Expand the list in reviewed batches; this is not whole-backend coverage.
 files = [
     "src/storage",
     "src/config.py",
@@ -68,6 +68,9 @@ files = [
     "src/tokens/schemas.py",
     "src/tokens/service.py",
     "src/tokens/router.py",
+    "src/tokens/admin_router.py",
+    "src/admin",
+    "src/v2/device_service.py",
 ]
 check_untyped_defs = true
 no_implicit_optional = true

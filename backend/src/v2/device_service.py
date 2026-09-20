@@ -2,7 +2,7 @@
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
+from sqlmodel import col, select
 
 from src.auth.models import User
 from src.v2.errors import DomainError
@@ -88,7 +88,7 @@ async def require_device(
         select(ClientDevice).where(
             ClientDevice.user_id == user_id,
             ClientDevice.public_id == device_public_id,
-            ClientDevice.revoked_at.is_(None),
+            col(ClientDevice.revoked_at).is_(None),
         )
     )
     device = result.scalar_one_or_none()
@@ -138,18 +138,20 @@ async def to_device_response(
     session: AsyncSession, device: ClientDevice
 ) -> DeviceResponse:
     capabilities, is_primary = await capabilities_for_device(session, device)
-    return DeviceResponse(
-        device_id=device.public_id,
-        installation_id=device.installation_id,
-        platform=device.platform,
-        device_class=device.device_class,
-        app_version=device.app_version,
-        display_name=device.display_name,
-        is_primary_editor=is_primary,
-        structural_edit_enabled=device.structural_edit_enabled,
-        capability_revision=device.capability_revision,
-        capabilities=capabilities,
-        last_seen_at=device.last_seen_at,
+    return DeviceResponse.model_validate(
+        {
+            "device_id": device.public_id,
+            "installation_id": device.installation_id,
+            "platform": device.platform,
+            "device_class": device.device_class,
+            "app_version": device.app_version,
+            "display_name": device.display_name,
+            "is_primary_editor": is_primary,
+            "structural_edit_enabled": device.structural_edit_enabled,
+            "capability_revision": device.capability_revision,
+            "capabilities": capabilities,
+            "last_seen_at": device.last_seen_at,
+        }
     )
 
 
