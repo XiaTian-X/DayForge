@@ -1,8 +1,4 @@
 """Tests for POST /api/v1/auth/refresh endpoint."""
-import pytest
-from httpx import AsyncClient
-from sqlmodel import select
-from datetime import datetime, timezone
 
 from src.auth.models import User
 from src.auth.service import (
@@ -11,7 +7,6 @@ from src.auth.service import (
     create_refresh_token,
     verify_token
 )
-from src.config import settings
 
 
 class TestRefreshTokenEndpoint:

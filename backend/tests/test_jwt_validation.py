@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 import jwt
 
 from src.main import app
-from src.config import settings
 from src.database import set_engine
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -121,7 +120,6 @@ async def test_refresh_token_rotation(auth_tokens, async_session):
 
     # Decode the refresh token to verify it has correct structure
     # Use the app's settings to decode (same key used to encode)
-    from src.config import settings
     from src.auth.service import verify_token
 
     # Verify the token can be decoded
