@@ -2,7 +2,6 @@
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal, Optional
-from datetime import datetime
 from uuid import UUID
 
 from src.time_utils import UTCResponseDatetime
@@ -66,7 +65,7 @@ class AdminHouseholdMemberResponse(BaseModel):
     username: str
     role: str
     status: str
-    joined_at: Optional[datetime] = None
+    joined_at: Optional[UTCResponseDatetime] = None
 
 
 class AdminHouseholdResponse(BaseModel):
