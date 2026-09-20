@@ -7,7 +7,7 @@ from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from src.auth.models import User
-from src.auth.service import get_password_hash
+from tests.account_fixtures import TEST_ACCOUNT_PASSWORD, account_password_hash
 from src.database import get_engine, get_session, set_engine
 from src.main import app
 from src.storage.database_adapter import build_database_adapter
@@ -30,12 +30,12 @@ async def runtime_http(tmp_path):
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with sessions.begin() as session:
-            user = User(username="commit-owner", password_hash=get_password_hash("TestPassword123!"), is_admin=True)
+            user = User(username="commit-owner", password_hash=account_password_hash(), is_admin=True)
             session.add(user)
             await session.flush()
             session.add(ApiToken(user_id=user.id, name="commit-probe", token_hash=hash_token(api_key), prefix=api_key[:11]))
         async with AsyncClient(transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test") as client:
-            login = await client.post("/api/v1/auth/login", json={"username": "commit-owner", "password": "TestPassword123!"})
+            login = await client.post("/api/v1/auth/login", json={"username": "commit-owner", "password": TEST_ACCOUNT_PASSWORD})
             assert login.status_code == 200
             bearer = {"Authorization": "Bearer " + login.json()["access_token"]}
             device = await client.post("/api/v2/devices/register", headers=bearer, json={

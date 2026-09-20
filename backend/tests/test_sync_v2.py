@@ -7,16 +7,16 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete
 from src.auth.models import User
-from src.auth.service import get_password_hash
+from tests.account_fixtures import TEST_ACCOUNT_PASSWORD, account_password_hash
 from src.v2.models import EntityRevisionSnapshot
 
 
 async def register_account(test_client, async_session, username: str) -> dict[str, str]:
-    async_session.add(User(username=username, password_hash=get_password_hash("TestPassword123!")))
+    async_session.add(User(username=username, password_hash=account_password_hash()))
     await async_session.commit()
     response = await test_client.post(
         "/api/v1/auth/login",
-        json={"username": username, "password": "TestPassword123!"},
+        json={"username": username, "password": TEST_ACCOUNT_PASSWORD},
     )
     assert response.status_code == 200, response.text
     body = response.json()

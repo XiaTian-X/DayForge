@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel, ValidationError
 from src.auth.models import User
-from src.auth.service import get_password_hash
+from tests.account_fixtures import TEST_ACCOUNT_PASSWORD as PASSWORD, account_password_hash
 from src.v2.schemas import (
     ServerIdentityResponse,
     SyncBootstrapResponse,
@@ -20,7 +20,6 @@ from src.v2.schemas import (
 
 
 FIXTURES = Path(__file__).resolve().parents[2] / "contracts" / "sync-v2"
-PASSWORD = "TestPassword123!"
 VALID_FIXTURES: list[tuple[str, type[BaseModel]]] = [
     ("client/push-all-entities.json", SyncPushRequest),
     ("client/delete-goal.json", SyncPushRequest),
@@ -53,7 +52,7 @@ def with_device(request: dict, device_id: str) -> dict:
 
 
 async def register_account(test_client, async_session, username: str) -> dict[str, str]:
-    async_session.add(User(username=username, password_hash=get_password_hash(PASSWORD)))
+    async_session.add(User(username=username, password_hash=account_password_hash()))
     await async_session.commit()
     response = await test_client.post(
         "/api/v1/auth/login",

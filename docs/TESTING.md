@@ -37,6 +37,10 @@ Room schema、计时、后台任务或 Android 平台行为变化时还需要相
 
 最低要求为锁定环境中的格式、静态检查、类型检查和 pytest。数据库相关改动还必须从空 SQLite 执行完整 Alembic upgrade，并验证模型与迁移一致。
 
+非认证行为测试创建种子账户时，可使用 `backend/tests/account_fixtures.py` 复用固定合成密码的
+真实、生产强度哈希，避免重复执行昂贵的哈希生成；每个账户、会话与登录仍独立，真实密码校验不能缓存或绕过。
+密码创建、修改、升级等认证测试必须直接使用生产哈希函数，不得使用该夹具替代待验证行为。
+
 当前统一入口 `./tools/verify backend` 依次执行冻结环境安装、Ruff 静态检查、pytest 与警告预算、
 OpenAPI 一致性检查，任何一步失败即停止。Ruff 仅作为锁定的开发依赖，显式使用
 `backend/pyproject.toml`，对整个后端（包括测试、运维脚本及 Alembic）启用 `E4`、`E9`、`F`；
