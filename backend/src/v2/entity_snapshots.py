@@ -7,9 +7,10 @@ payloads. Transaction ownership stays with the application service.
 from typing import Any, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
+from sqlmodel import col, select
 
 from src.v2.encoding import jsonable_utc, parse_json
+from src.v2.invariants import require_internal
 from src.v2.models import (
     ActivityDetail,
     ActivityEvent,
@@ -59,20 +60,20 @@ async def serialize_plan_node(session: AsyncSession, node: PlanNode) -> dict[str
                 "manual_result": detail.manual_result,
             }
     else:
-        detail = await session.get(ActivityDetail, node.id)
-        if detail:
+        activity_detail = await session.get(ActivityDetail, node.id)
+        if activity_detail:
             result["activity"] = {
-                "tracking_mode": detail.tracking_mode,
-                "is_countdown": detail.is_countdown,
-                "recurrence_rule": parse_json(detail.recurrence_rule_json),
-                "completion_policy": detail.completion_policy,
-                "target_value": detail.target_value,
-                "target_unit": detail.target_unit,
-                "target_cycles": detail.target_cycles,
-                "failure_policy": parse_json(detail.failure_policy_json),
-                "preferred_local_time": detail.preferred_local_time,
-                "timezone": detail.timezone,
-                "origin_assignment_id": detail.origin_assignment_id,
+                "tracking_mode": activity_detail.tracking_mode,
+                "is_countdown": activity_detail.is_countdown,
+                "recurrence_rule": parse_json(activity_detail.recurrence_rule_json),
+                "completion_policy": activity_detail.completion_policy,
+                "target_value": activity_detail.target_value,
+                "target_unit": activity_detail.target_unit,
+                "target_cycles": activity_detail.target_cycles,
+                "failure_policy": parse_json(activity_detail.failure_policy_json),
+                "preferred_local_time": activity_detail.preferred_local_time,
+                "timezone": activity_detail.timezone,
+                "origin_assignment_id": activity_detail.origin_assignment_id,
             }
     return jsonable_utc(result)
 
@@ -120,7 +121,7 @@ async def serialize_activity_event_with_allocations(
     result = await session.execute(
         select(DurationDayAllocation)
         .where(DurationDayAllocation.activity_event_id == event.id)
-        .order_by(DurationDayAllocation.local_date)
+        .order_by(col(DurationDayAllocation.local_date))
     )
     payload["day_allocations"] = [
         {
@@ -217,7 +218,10 @@ async def current_entity_snapshot(
     if operation.entity_type == "plan_node":
         result = await session.execute(
             select(PlanNode)
-            .where(PlanNode.owner_user_id == user_id, PlanNode.public_id == entity_uuid)
+            .where(
+                col(PlanNode.owner_user_id) == user_id,
+                col(PlanNode.public_id) == entity_uuid,
+            )
             .execution_options(populate_existing=True)
         )
         entity = result.scalar_one_or_none()
@@ -228,73 +232,85 @@ async def current_entity_snapshot(
         )
 
     if operation.entity_type == "activity_event":
-        result = await session.execute(
+        event_result = await session.execute(
             select(ActivityEvent)
             .where(
-                ActivityEvent.owner_user_id == user_id,
-                ActivityEvent.public_id == entity_uuid,
+                col(ActivityEvent.owner_user_id) == user_id,
+                col(ActivityEvent.public_id) == entity_uuid,
             )
             .execution_options(populate_existing=True)
         )
-        entity = result.scalar_one_or_none()
-        if entity is None:
+        event = event_result.scalar_one_or_none()
+        if event is None:
             return None, None
-        activity = await session.get(PlanNode, entity.activity_node_id)
+        activity = require_internal(
+            await session.get(PlanNode, event.activity_node_id),
+            "ActivityEvent.activity_node_id",
+        )
         revert = (
-            await session.get(ActivityEvent, entity.reverts_event_id)
-            if entity.reverts_event_id
+            await session.get(ActivityEvent, event.reverts_event_id)
+            if event.reverts_event_id
             else None
         )
-        return entity.revision, await serialize_activity_event_with_allocations(
+        return event.revision, await serialize_activity_event_with_allocations(
             session,
-            entity,
+            event,
             activity.public_id,
             revert.public_id if revert else None,
         )
 
     if operation.entity_type == "metric":
-        result = await session.execute(
+        metric_result = await session.execute(
             select(TrackedMetric)
             .where(
-                TrackedMetric.owner_user_id == user_id,
-                TrackedMetric.public_id == entity_uuid,
+                col(TrackedMetric.owner_user_id) == user_id,
+                col(TrackedMetric.public_id) == entity_uuid,
             )
             .execution_options(populate_existing=True)
         )
-        entity = result.scalar_one_or_none()
-        return (entity.revision, serialize_metric(entity)) if entity else (None, None)
+        metric = metric_result.scalar_one_or_none()
+        return (metric.revision, serialize_metric(metric)) if metric else (None, None)
 
     if operation.entity_type == "metric_observation":
-        result = await session.execute(
+        observation_result = await session.execute(
             select(MetricObservation)
             .where(
-                MetricObservation.owner_user_id == user_id,
-                MetricObservation.public_id == entity_uuid,
+                col(MetricObservation.owner_user_id) == user_id,
+                col(MetricObservation.public_id) == entity_uuid,
             )
             .execution_options(populate_existing=True)
         )
-        entity = result.scalar_one_or_none()
-        if entity is None:
+        observation = observation_result.scalar_one_or_none()
+        if observation is None:
             return None, None
-        metric = await session.get(TrackedMetric, entity.metric_id)
-        return entity.revision, serialize_observation(entity, metric.public_id)
+        metric = require_internal(
+            await session.get(TrackedMetric, observation.metric_id),
+            "MetricObservation.metric_id",
+        )
+        return observation.revision, serialize_observation(
+            observation, metric.public_id
+        )
 
     if operation.entity_type == "activity_metric_link":
-        result = await session.execute(
+        link_result = await session.execute(
             select(ActivityMetricLinkV2)
             .where(
-                ActivityMetricLinkV2.owner_user_id == user_id,
-                ActivityMetricLinkV2.public_id == entity_uuid,
+                col(ActivityMetricLinkV2.owner_user_id) == user_id,
+                col(ActivityMetricLinkV2.public_id) == entity_uuid,
             )
             .execution_options(populate_existing=True)
         )
-        entity = result.scalar_one_or_none()
-        if entity is None:
+        link = link_result.scalar_one_or_none()
+        if link is None:
             return None, None
-        activity = await session.get(PlanNode, entity.activity_node_id)
-        metric = await session.get(TrackedMetric, entity.metric_id)
-        return entity.revision, serialize_link(
-            entity, activity.public_id, metric.public_id
+        activity = require_internal(
+            await session.get(PlanNode, link.activity_node_id),
+            "ActivityMetricLinkV2.activity_node_id",
         )
+        metric = require_internal(
+            await session.get(TrackedMetric, link.metric_id),
+            "ActivityMetricLinkV2.metric_id",
+        )
+        return link.revision, serialize_link(link, activity.public_id, metric.public_id)
 
     return None, None

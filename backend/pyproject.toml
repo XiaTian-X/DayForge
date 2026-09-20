@@ -71,6 +71,9 @@ files = [
     "src/tokens/admin_router.py",
     "src/admin",
     "src/v2/device_service.py",
+    "src/v2/invariants.py",
+    "src/v2/entity_snapshots.py",
+    "src/v2/read_service.py",
 ]
 check_untyped_defs = true
 no_implicit_optional = true

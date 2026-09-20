@@ -76,7 +76,7 @@ OpenAPI 一致性检查，任何一步失败即停止。Ruff 仅作为锁定的�
 `src/time_utils.py`、`src/v2/time_utils.py`，以及 `src/v2/` 下的 `schemas.py`、`encoding.py`、
 `merge.py`、`errors.py`；另包括 `src/auth/` 和 `src/tokens/` 下的 `models.py`、`schemas.py`、
 `service.py`、`router.py`、`admin_router.py`，以及 `src/admin/`、`src/v2/device_service.py`
-（29 个源文件）。
+及 `invariants.py`、`entity_snapshots.py`、`read_service.py`（32 个源文件）。
 启用未注解函数体检查、隐式可空值限制、
 无用忽略和冗余 cast 检查，正常跟踪导入；不使用全局忽略、错误预算或跳过导入来取得通过。
 这还不是 strict 全注解检查；动态 JSON/反射边界中已有的 `Any` 也不代表已得到精确类型保证。
