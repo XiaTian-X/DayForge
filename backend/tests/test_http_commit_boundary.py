@@ -1,6 +1,5 @@
 """HTTP acknowledgement uses the real runtime session, not a yield-only override."""
 
-from alembic import command
 from httpx import ASGITransport, AsyncClient
 import pytest
 from sqlalchemy import event, text
@@ -8,73 +7,62 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from src.auth.models import User
 from tests.account_fixtures import TEST_ACCOUNT_PASSWORD, account_password_hash
-from src.database import get_engine, get_session, set_engine
+from src.database import get_session
 from src.main import app
-from src.storage.database_adapter import build_database_adapter
 from src.tokens.models import ApiToken
 from src.tokens.service import generate_token, hash_token
-from tests.test_alembic_migration import alembic_config
 from tests.test_sync_contract_matrix import fixture, with_device
 from tests.test_sync_v2 import goal_operation
 
 
 @pytest.fixture
-async def runtime_http(tmp_path):
-    database = tmp_path / "runtime.sqlite"
-    command.upgrade(alembic_config(str(database)), "head")
-    engine = build_database_adapter("sqlite", None, str(database)).create_async_engine()
-    previous = get_engine()
-    set_engine(engine)
-    assert get_session not in app.dependency_overrides
+async def runtime_http(runtime_engine):
+    engine = runtime_engine
     api_key = generate_token()
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-    try:
-        async with sessions.begin() as session:
-            user = User(
-                username="commit-owner",
-                password_hash=account_password_hash(),
-                is_admin=True,
+    async with sessions.begin() as session:
+        user = User(
+            username="commit-owner",
+            password_hash=account_password_hash(),
+            is_admin=True,
+        )
+        session.add(user)
+        await session.flush()
+        session.add(
+            ApiToken(
+                user_id=user.id,
+                name="commit-probe",
+                token_hash=hash_token(api_key),
+                prefix=api_key[:11],
             )
-            session.add(user)
-            await session.flush()
-            session.add(
-                ApiToken(
-                    user_id=user.id,
-                    name="commit-probe",
-                    token_hash=hash_token(api_key),
-                    prefix=api_key[:11],
-                )
-            )
-        async with AsyncClient(
-            transport=ASGITransport(app=app, raise_app_exceptions=False),
-            base_url="http://test",
-        ) as client:
-            login = await client.post(
-                "/api/v1/auth/login",
-                json={"username": "commit-owner", "password": TEST_ACCOUNT_PASSWORD},
-            )
-            assert login.status_code == 200
-            bearer = {"Authorization": "Bearer " + login.json()["access_token"]}
-            device = await client.post(
-                "/api/v2/devices/register",
-                headers=bearer,
-                json={
-                    "installation_id": "commit-primary-device",
-                    "platform": "android",
-                    "protocol_version": 4,
-                },
-            )
-            assert device.status_code == 200
-            yield (
-                client,
-                engine,
-                bearer,
-                {"Authorization": "Token " + api_key},
-                device.json()["device_id"],
-            )
-    finally:
-        set_engine(previous)
-        await engine.dispose()
+        )
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        login = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "commit-owner", "password": TEST_ACCOUNT_PASSWORD},
+        )
+        assert login.status_code == 200
+        bearer = {"Authorization": "Bearer " + login.json()["access_token"]}
+        device = await client.post(
+            "/api/v2/devices/register",
+            headers=bearer,
+            json={
+                "installation_id": "commit-primary-device",
+                "platform": "android",
+                "protocol_version": 4,
+            },
+        )
+        assert device.status_code == 200
+        yield (
+            client,
+            engine,
+            bearer,
+            {"Authorization": "Token " + api_key},
+            device.json()["device_id"],
+        )
 
 
 async def database_state(engine):

@@ -14,11 +14,11 @@ async def test_cors_headers_present(async_session):
     ) as client:
         response = await client.post(
             "/api/v1/auth/login",
-            json={"email": "test@example.com", "password": "TestPassword123!"},
+            json={"username": "nonexistent-user", "password": "TestPassword123!"},
             headers={"Origin": "http://localhost:3000"},
         )
-        # Status can be 200/400/401/422 (validation/auth failure) but CORS headers should be present
-        assert response.status_code in [200, 400, 401, 422]
+        # A valid login shape reaches authentication even when the user is absent.
+        assert response.status_code == 401
         assert "access-control-allow-origin" in response.headers
         # With allow_credentials=True, specific origin is returned instead of "*"
         assert (
@@ -59,29 +59,56 @@ async def test_cors_disallowed_origin(async_session):
     ) as client:
         response = await client.post(
             "/api/v1/auth/login",
-            json={"email": "test@example.com", "password": "TestPassword123!"},
+            json={"username": "nonexistent-user", "password": "TestPassword123!"},
             headers={"Origin": "http://malicious-site.com"},
         )
         # Disallowed origin should not get CORS headers
-        assert response.status_code in [200, 400, 401, 422]
+        assert response.status_code == 401
         assert "access-control-allow-origin" not in response.headers
 
 
 @pytest.mark.asyncio
-async def test_cors_methods_allowed(async_session):
-    """Response includes Access-Control-Allow-Methods header."""
+@pytest.mark.parametrize("method", ["GET", "POST", "PUT", "PATCH", "DELETE"])
+async def test_cors_methods_allowed(method):
+    """Browser preflight must authorize the method and authentication headers."""
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
-        response = await client.post(
+        response = await client.options(
             "/api/v1/auth/login",
-            json={"email": "test@example.com", "password": "TestPassword123!"},
-            headers={"Origin": "http://localhost:3000"},
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": method,
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
         )
-        # Current implementation uses allow_methods=["*"]
-        # Verify CORS headers are present
-        assert "access-control-allow-origin" in response.headers
-        # The methods header may be "*" or list specific methods
-        if "access-control-allow-methods" in response.headers:
-            methods = response.headers["access-control-allow-methods"]
-            assert methods == "*" or "POST" in methods
+    assert response.status_code == 200, response.text
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert response.headers["access-control-allow-credentials"] == "true"
+    assert method in {
+        m.strip() for m in response.headers["access-control-allow-methods"].split(",")
+    }
+    allowed_headers = response.headers["access-control-allow-headers"].lower()
+    assert "authorization" in allowed_headers
+    assert "content-type" in allowed_headers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "origin,method",
+    [
+        ("http://malicious-site.com", "POST"),
+        ("http://localhost:3000", "TRACE"),
+    ],
+)
+async def test_cors_rejects_disallowed_preflight(origin, method):
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.options(
+            "/api/v1/auth/login",
+            headers={"Origin": origin, "Access-Control-Request-Method": method},
+        )
+    assert response.status_code == 400
+    if origin != "http://localhost:3000":
+        assert "access-control-allow-origin" not in response.headers

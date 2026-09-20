@@ -1,5 +1,7 @@
 # Android Module Rules
 
+- 用户于 2026-09-20 明确要求：后续所有 Android 测试均使用真机执行，不下载、创建或运行模拟器/AVD，也不以 JVM/Robolectric 执行替代真机测试。未连接且授权真机时停止 Android 测试执行，并明确记录未验证；构建和静态审查不算测试通过。
+
 - 依赖方向保持 `Compose UI -> ViewModel -> domain service/use case -> repository -> Room/API`。
 - UI 和 ViewModel 不直接访问 DAO，不自行拼装同步请求。
 - Repository 负责本地事务、outbox、远端合并和同步状态持久化。
