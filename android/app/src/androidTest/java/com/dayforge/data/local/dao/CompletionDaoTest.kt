@@ -1,7 +1,5 @@
 package com.dayforge.data.local.dao
 
-import androidx.room.Room
-import android.app.Application
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.local.HabitDatabase
@@ -9,20 +7,19 @@ import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import app.cash.turbine.test
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.time.LocalDate
 import java.time.ZoneId
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 class CompletionDaoTest {
+    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
 
     private lateinit var completionDao: CompletionDao
     private lateinit var habitDao: HabitDao
@@ -32,11 +29,7 @@ class CompletionDaoTest {
     @Before
     fun setup() {
         context = ApplicationProvider.getApplicationContext()
-        // Use in-memory database for test isolation
-        database = Room.inMemoryDatabaseBuilder(
-            context,
-            HabitDatabase::class.java
-        ).build()
+        database = storage.database
         completionDao = database.completionDao()
         habitDao = database.habitDao()
     }
@@ -47,7 +40,7 @@ class CompletionDaoTest {
     }
 
     @Test
-    fun insertCompletion_returnsGeneratedIdGreaterThanZero() = runTest {
+    fun insertCompletion_returnsGeneratedIdGreaterThanZero() = runBlocking {
         val habitId = createTestHabit()
         val completion = createTestCompletion(habitId = habitId)
 
@@ -57,7 +50,7 @@ class CompletionDaoTest {
     }
 
     @Test
-    fun getCompletionsByHabit_emitsListContainingInsertedCompletion() = runTest {
+    fun getCompletionsByHabit_emitsListContainingInsertedCompletion() = runBlocking {
         val habitId = createTestHabit()
         val completion = createTestCompletion(habitId = habitId)
 
@@ -71,7 +64,7 @@ class CompletionDaoTest {
     }
 
     @Test
-    fun getCompletionsByHabit_returnsCompletionsOrderedByDateDescending() = runTest {
+    fun getCompletionsByHabit_returnsCompletionsOrderedByDateDescending() = runBlocking {
         val habitId = createTestHabit()
         val olderCompletion = createTestCompletion(habitId = habitId, date = 1000L)
         val newerCompletion = createTestCompletion(habitId = habitId, date = 2000L)
@@ -88,7 +81,7 @@ class CompletionDaoTest {
     }
 
     @Test
-    fun getCompletionsInRange_returnsCompletionsWithinDateRange() = runTest {
+    fun getCompletionsInRange_returnsCompletionsWithinDateRange() = runBlocking {
         val habitId = createTestHabit()
         val start = LocalDate.of(2026, 3, 8)
         fun day(date: LocalDate) = date.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
@@ -114,7 +107,7 @@ class CompletionDaoTest {
     }
 
     @Test
-    fun insertWithReplace_sameHabitIdAndDate_replacesExistingCompletion() = runTest {
+    fun insertWithReplace_sameHabitIdAndDate_replacesExistingCompletion() = runBlocking {
         val habitId = createTestHabit()
         val completion1 = createTestCompletion(habitId = habitId, date = 1000L, value = 1)
         val insertedId = completionDao.insert(completion1)
@@ -122,7 +115,7 @@ class CompletionDaoTest {
         val completion2 = createTestCompletion(id = insertedId, habitId = habitId, date = 1000L, value = 5)
         completionDao.insert(completion2)
 
-        val completions = completionDao.getCompletionsByHabit(habitId).test {
+        completionDao.getCompletionsByHabit(habitId).test {
             val list = awaitItem()
             assertEquals("Should still have one completion", 1, list.size)
             assertEquals("Value should be replaced", 5, list[0].value)
@@ -130,7 +123,7 @@ class CompletionDaoTest {
     }
 
     @Test
-    fun deleteCompletion_removesFromDatabase() = runTest {
+    fun deleteCompletion_removesFromDatabase() = runBlocking {
         val habitId = createTestHabit()
         val completion = createTestCompletion(habitId = habitId)
         val insertedId = completionDao.insert(completion)
@@ -145,7 +138,7 @@ class CompletionDaoTest {
     }
 
     @Test
-    fun getCompletionById_returnsInsertedCompletion() = runTest {
+    fun getCompletionById_returnsInsertedCompletion() = runBlocking {
         val habitId = createTestHabit()
         val completion = createTestCompletion(habitId = habitId, value = 3)
 
@@ -159,7 +152,7 @@ class CompletionDaoTest {
     }
 
     @Test
-    fun deleteHabit_cascadesToCompletions() = runTest {
+    fun deleteHabit_cascadesToCompletions() = runBlocking {
         // Create a habit
         val habitId = createTestHabit()
 
@@ -216,7 +209,7 @@ class CompletionDaoTest {
     // === Wave 0: TDD Tests for getDistinctDayCount (Wave 1 implementation) ===
 
     @Test
-    fun testDistinctDayCount() = runTest {
+    fun testDistinctDayCount() = runBlocking {
         // Given: One completion exists for habit
         val habitId = createTestHabit()
         val today = LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toEpochSecond() * 1000
@@ -230,7 +223,7 @@ class CompletionDaoTest {
     }
 
     @Test
-    fun testDistinctDayCountMultipleSameDay() = runTest {
+    fun testDistinctDayCountMultipleSameDay() = runBlocking {
         // Given: Multiple completions on same day for same habit
         val habitId = createTestHabit()
         val today = LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toEpochSecond() * 1000
@@ -245,7 +238,7 @@ class CompletionDaoTest {
     }
 
     @Test
-    fun testDistinctDayCountZero() = runTest {
+    fun testDistinctDayCountZero() = runBlocking {
         // Given: No completions for habit
         val habitId = createTestHabit()
 

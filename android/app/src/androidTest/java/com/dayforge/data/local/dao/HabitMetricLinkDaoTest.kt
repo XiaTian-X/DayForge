@@ -1,7 +1,5 @@
 package com.dayforge.data.local.dao
 
-import androidx.room.Room
-import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.entity.HabitEntity
@@ -19,6 +17,7 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class HabitMetricLinkDaoTest {
+    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
     private lateinit var database: HabitDatabase
     private lateinit var habitDao: HabitDao
     private lateinit var metricDao: MetricDao
@@ -26,11 +25,7 @@ class HabitMetricLinkDaoTest {
 
     @Before
     fun setup() {
-        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
-        database = Room.inMemoryDatabaseBuilder(
-            context,
-            HabitDatabase::class.java
-        ).allowMainThreadQueries().build()
+        database = storage.database
         habitDao = database.habitDao()
         metricDao = database.metricDao()
         linkDao = database.habitMetricLinkDao()
@@ -69,6 +64,8 @@ class HabitMetricLinkDaoTest {
     @Test
     fun testHabitMetricLinkDaoExists() = runBlocking {
         assertNotNull("HabitMetricLinkDao should be accessible", linkDao)
+        assertEquals(emptyList<HabitMetricLinkEntity>(), linkDao.getAllActiveLinks())
+        assertNull(linkDao.getLink(999, 999))
     }
 
     @Test
@@ -86,6 +83,8 @@ class HabitMetricLinkDaoTest {
         )
         val id = linkDao.insert(link)
         assertTrue("Insert should return positive ID", id > 0)
+        val reopened = storage.reopen().habitMetricLinkDao()
+        assertEquals(link.copy(id = id), reopened.getById(id))
     }
 
     @Test
@@ -101,9 +100,12 @@ class HabitMetricLinkDaoTest {
             metricId = metricId,
             metricUuid = metricUuid
         )
-        linkDao.insert(link)
-
+        val id = linkDao.insert(link)
+        val anotherMetric = createTestMetric()
+        linkDao.insert(link.copy(metricId = anotherMetric, metricUuid = requireNotNull(metricDao.getMetricById(anotherMetric)).uuid,
+            uuid = "inactive-link", isActive = false))
         val links = linkDao.getLinksByHabit(habitId).first()
+        assertEquals(listOf(link.copy(id = id)), links)
         assertTrue("Should return links for habit", links.isNotEmpty())
     }
 
@@ -120,15 +122,17 @@ class HabitMetricLinkDaoTest {
             metricId = metricId,
             metricUuid = metricUuid
         )
-        linkDao.insert(link)
-
+        val id = linkDao.insert(link)
+        val anotherMetric = createTestMetric()
+        linkDao.insert(link.copy(metricId = anotherMetric, metricUuid = requireNotNull(metricDao.getMetricById(anotherMetric)).uuid,
+            uuid = "other-link"))
         val links = linkDao.getLinksByMetric(metricId).first()
+        assertEquals(listOf(link.copy(id = id)), links)
         assertTrue("Should return links for metric", links.isNotEmpty())
     }
 
     @Test
     fun testUniqueConstraint() = runBlocking {
-        // Stub: Defines expected unique constraint on (habitId, metricId)
         val habitId = createTestHabit()
         val metricId = createTestMetric()
         val habitUuid = habitDao.getHabitById(habitId)?.uuid ?: ""
@@ -152,11 +156,12 @@ class HabitMetricLinkDaoTest {
         )
         val id2 = linkDao.insertOrIgnore(link2)
         assertEquals("Duplicate insert should be ignored", -1L, id2)
+        val reopened = storage.reopen().habitMetricLinkDao()
+        assertEquals(listOf(link1.copy(id = id1)), reopened.getAllLinksForHabit(habitId))
     }
 
     @Test
     fun testCascadeDeleteFromHabit() = runBlocking {
-        // Stub: Defines expected CASCADE from habit deletion
         val habitId = createTestHabit()
         val metricId = createTestMetric()
         val habitUuid = habitDao.getHabitById(habitId)?.uuid ?: ""
@@ -181,7 +186,6 @@ class HabitMetricLinkDaoTest {
 
     @Test
     fun testCascadeDeleteFromMetric() = runBlocking {
-        // Stub: Defines expected CASCADE from metric deletion
         val habitId = createTestHabit()
         val metricId = createTestMetric()
         val habitUuid = habitDao.getHabitById(habitId)?.uuid ?: ""
