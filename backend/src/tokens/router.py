@@ -22,7 +22,7 @@ router = APIRouter(prefix="/auth/tokens", tags=["User Tokens"])
 async def create_token(
     token_data: TokenCreate,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ):
     """Create a new API token for the authenticated user."""
     raw_token = generate_token()
@@ -58,7 +58,7 @@ async def create_token(
 @router.get("", response_model=List[TokenListResponse])
 async def list_tokens(
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ):
     """List all API tokens for the authenticated user."""
     result = await session.execute(
@@ -72,7 +72,7 @@ async def list_tokens(
 async def delete_token(
     token_id: int,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ):
     """Delete an API token owned by the authenticated user."""
     result = await session.execute(

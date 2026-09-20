@@ -33,7 +33,7 @@ router = APIRouter(prefix="/admin", tags=["Admin"])
 async def create_user(
     user_data: AdminUserCreate,
     admin: User = Depends(get_admin_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ):
     """Create a local account. Public self-registration is intentionally disabled."""
     result = await session.execute(select(User).where(User.username == user_data.username))
@@ -54,7 +54,7 @@ async def create_user(
 @router.get("/users", response_model=list[AdminUserResponse])
 async def list_users(
     admin: User = Depends(get_admin_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ):
     """List all users. Requires admin role."""
     result = await session.execute(select(User))
@@ -67,7 +67,7 @@ async def reset_user_password(
     user_id: int,
     reset_data: AdminPasswordReset,
     admin: User = Depends(get_admin_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ):
     """Reset a user's password. Requires admin role."""
     result = await session.execute(select(User).where(User.id == user_id))
@@ -91,7 +91,7 @@ async def update_user_status(
     user_id: int,
     status_data: UserStatusUpdate,
     admin: User = Depends(get_admin_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ):
     """Enable or disable a user account. Requires admin role."""
     result = await session.execute(select(User).where(User.id == user_id))
@@ -169,7 +169,7 @@ async def _household_response(
 async def create_household(
     request: AdminHouseholdCreate,
     admin: User = Depends(get_admin_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> AdminHouseholdResponse:
     household = Household(name=request.name, created_by_user_id=admin.id)
     session.add(household)
@@ -189,7 +189,7 @@ async def create_household(
 @router.get("/households", response_model=list[AdminHouseholdResponse])
 async def list_households(
     admin: User = Depends(get_admin_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> list[AdminHouseholdResponse]:
     rows = await session.execute(select(Household).order_by(Household.name, Household.id))
     return [await _household_response(session, household) for household in rows.scalars().all()]
@@ -200,7 +200,7 @@ async def update_household(
     household_id: UUID,
     request: AdminHouseholdUpdate,
     admin: User = Depends(get_admin_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> AdminHouseholdResponse:
     household = await _household_or_404(session, household_id)
     changed = False
@@ -226,7 +226,7 @@ async def upsert_household_member(
     household_id: UUID,
     request: AdminHouseholdMemberUpsert,
     admin: User = Depends(get_admin_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> AdminHouseholdResponse:
     household = await _household_or_404(session, household_id)
     user_result = await session.execute(select(User).where(User.public_id == str(request.user_id)))
@@ -271,7 +271,7 @@ async def remove_household_member(
     household_id: UUID,
     user_id: UUID,
     admin: User = Depends(get_admin_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> AdminHouseholdResponse:
     household = await _household_or_404(session, household_id)
     result = await session.execute(
@@ -340,7 +340,7 @@ async def _admin_device(
 async def list_user_devices(
     user_id: UUID,
     admin: User = Depends(get_admin_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> list[DeviceResponse]:
     user = await _user_by_public_id(session, user_id)
     rows = await session.execute(
@@ -358,7 +358,7 @@ async def provision_user_device(
     user_id: UUID,
     request: AdminDeviceProvision,
     admin: User = Depends(get_admin_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> DeviceResponse:
     user = await _user_by_public_id(session, user_id)
     existing = await session.execute(
@@ -386,7 +386,7 @@ async def admin_make_device_primary(
     user_id: UUID,
     device_id: UUID,
     admin: User = Depends(get_admin_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> DeviceResponse:
     user = await _user_by_public_id(session, user_id)
     device = await _admin_device(session, user, device_id)
@@ -403,7 +403,7 @@ async def admin_update_device_editing(
     device_id: UUID,
     request: AdminDeviceEditingUpdate,
     admin: User = Depends(get_admin_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> DeviceResponse:
     user = await _user_by_public_id(session, user_id)
     device = await _admin_device(session, user, device_id)
@@ -419,7 +419,7 @@ async def admin_revoke_device(
     user_id: UUID,
     device_id: UUID,
     admin: User = Depends(get_admin_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> None:
     user = await _user_by_public_id(session, user_id)
     device = await _admin_device(session, user, device_id)

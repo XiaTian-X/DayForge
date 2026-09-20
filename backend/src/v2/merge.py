@@ -9,6 +9,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Optional
 
+from pydantic import ValidationError
+
 from src.v2.encoding import jsonable_utc, parse_json
 from src.v2.errors import DomainError
 from src.v2.schemas import (
@@ -88,7 +90,10 @@ def _normalized_operation_payload(operation: SyncOperationRequest) -> tuple[dict
         "metric": MetricPayload,
         "activity_metric_link": ActivityMetricLinkPayload,
     }
-    model = models[operation.entity_type].model_validate(operation.payload)
+    try:
+        model = models[operation.entity_type].model_validate(operation.payload)
+    except ValidationError as exc:
+        raise DomainError("INVALID_PAYLOAD", str(exc)) from exc
     return (
         jsonable_utc(model.model_dump(mode="python", exclude_unset=False)),
         jsonable_utc(model.model_dump(mode="python", exclude_unset=True)),

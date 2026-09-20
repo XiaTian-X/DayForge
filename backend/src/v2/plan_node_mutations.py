@@ -19,7 +19,7 @@ from src.v2.encoding import canonical_json, parse_json
 from src.v2.entity_snapshots import serialize_plan_node
 from src.v2.errors import DomainError
 from src.v2.models import ActivityDetail, ClientDevice, GoalDetail, PlanNode, utc_now
-from src.v2.schemas import PlanNodePayload, SyncOperationRequest
+from src.v2.schemas import GoalPayload, PlanNodePayload, SyncOperationRequest
 
 
 async def get_plan_node(
@@ -284,6 +284,20 @@ async def mutate_plan_node(
             revision=existing.revision,
         )
 
+    goal_payload = None
+    if existing.node_kind == "goal":
+        detail = await session.get(GoalDetail, existing.id)
+        goal_values = payload.goal.model_dump()
+        # Validate the actual resulting range, not just the sparse input. An
+        # omitted endpoint is retained; explicit null still clears it.
+        for field in ("start_date", "due_date"):
+            if field not in payload.goal.model_fields_set:
+                goal_values[field] = getattr(detail, field)
+        try:
+            goal_payload = GoalPayload.model_validate(goal_values)
+        except ValidationError as exc:
+            raise DomainError("INVALID_PAYLOAD", str(exc)) from exc
+
     now = utc_now()
     node_values = {
         "parent_node_id": parent.id if parent else None,
@@ -313,11 +327,8 @@ async def mutate_plan_node(
 
     if existing.node_kind == "goal":
         detail = await session.get(GoalDetail, existing.id)
-        goal_payload = payload.goal
-        if "start_date" in goal_payload.model_fields_set:
-            detail.start_date = goal_payload.start_date
-        if "due_date" in goal_payload.model_fields_set:
-            detail.due_date = goal_payload.due_date
+        detail.start_date = goal_payload.start_date
+        detail.due_date = goal_payload.due_date
         detail.target_cycles = goal_payload.target_cycles
         detail.failure_policy_json = canonical_json(goal_payload.failure_policy.model_dump(mode="json"))
         detail.evaluation_policy_json = canonical_json(goal_payload.evaluation_policy.model_dump(mode="json"))

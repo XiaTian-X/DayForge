@@ -61,7 +61,7 @@ def _http_error(error: DomainError) -> HTTPException:
 
 @router.get("/system/identity", response_model=ServerIdentityResponse)
 async def get_server_identity(
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> ServerIdentityResponse:
     """Return the non-secret identity used to verify local/proxy failover."""
     return await server_identity_response(session)
@@ -71,7 +71,7 @@ async def get_server_identity(
 async def register_client_device(
     request: DeviceRegisterRequest,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> DeviceResponse:
     try:
         return await register_device(current_user, request, session)
@@ -82,7 +82,7 @@ async def register_client_device(
 @router.get("/devices", response_model=list[DeviceResponse])
 async def list_client_devices(
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> list[DeviceResponse]:
     result = await session.execute(
         select(ClientDevice)
@@ -117,7 +117,7 @@ async def _owned_active_device(
 async def make_device_primary(
     device_id: UUID,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> DeviceResponse:
     device = await _owned_active_device(session, current_user.id, device_id)
     try:
@@ -132,7 +132,7 @@ async def update_device_editing(
     device_id: UUID,
     request: DeviceEditingUpdate,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> DeviceResponse:
     device = await _owned_active_device(session, current_user.id, device_id)
     try:
@@ -146,7 +146,7 @@ async def update_device_editing(
 async def revoke_client_device(
     device_id: UUID,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> None:
     device = await _owned_active_device(session, current_user.id, device_id)
     await revoke(session, device)
@@ -156,7 +156,7 @@ async def revoke_client_device(
 async def push_sync_operations(
     request: SyncPushRequest,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> SyncPushResponse:
     if len(canonical_json(request.model_dump(mode="json")).encode("utf-8")) > 1024 * 1024:
         raise HTTPException(
@@ -175,7 +175,7 @@ async def get_sync_changes(
     cursor: int = Query(default=0, ge=0),
     limit: int = Query(default=500, ge=1, le=500),
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> SyncPullResponse:
     try:
         return await pull_changes(current_user, str(device_id), cursor, limit, session)
@@ -187,7 +187,7 @@ async def get_sync_changes(
 async def get_sync_bootstrap(
     device_id: UUID,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> SyncBootstrapResponse:
     try:
         return await bootstrap(current_user, str(device_id), session)
@@ -199,7 +199,7 @@ async def get_sync_bootstrap(
 async def submit_timer_commands(
     request: TimerCommandBatchRequest,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> TimerCommandBatchResponse:
     try:
         return await process_timer_commands(current_user, request, session)
@@ -211,7 +211,7 @@ async def submit_timer_commands(
 async def read_active_timer(
     device_id: UUID,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> ActiveTimerResponse:
     try:
         return await get_active_timer(current_user, str(device_id), session)
@@ -224,7 +224,7 @@ async def read_timer_status(
     session_id: UUID,
     device_id: UUID,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> ActiveTimerResponse:
     try:
         return await get_timer_status(
@@ -242,7 +242,7 @@ async def submit_timer_heartbeat(
     session_id: UUID,
     request: TimerHeartbeatRequest,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_session, scope="function"),
 ) -> TimerHeartbeatResponse:
     try:
         return await heartbeat_timer(
