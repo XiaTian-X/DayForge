@@ -53,7 +53,10 @@ chore(deps): upgrade FastAPI compatibility group
 可在 `backend/` 运行 `uv run --frozen ruff check --config pyproject.toml .`。
 规则集显式配置，新增规则按独立批次推进；不要自动执行不安全修复或删除 pytest fixture／模型注册导入。
 显式重导出的写法遵循 [Ruff 导入规则](https://docs.astral.sh/ruff/rules/unused-import/)。
-格式／类型检查的接入进度以 `TESTING.md` 为准，不把尚未配置的检查写成已通过。
+格式化使用同一锁定工具，在 `backend/` 执行 `uv run --frozen ruff format --config pyproject.toml .`；
+CI 仅运行 `format --check`，有格式差异即失败。稳定配置使用 88 列、4 空格、双引号、LF，
+不启用 preview；编辑器须遵循仓库配置和锁定版本，升级时单独审查格式变化。
+类型检查的接入进度以 `TESTING.md` 为准，不把尚未配置的检查写成已通过。
 
 ## 公开仓库与本地文件
 

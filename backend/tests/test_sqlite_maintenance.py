@@ -85,7 +85,9 @@ def make_database(path: Path, *, active_timer: bool = False) -> None:
         connection.commit()
 
 
-def test_verified_backup_and_restore_changes_epoch_but_preserves_identity(tmp_path: Path):
+def test_verified_backup_and_restore_changes_epoch_but_preserves_identity(
+    tmp_path: Path,
+):
     database = tmp_path / "dayforge.db"
     backups = tmp_path / "archive"
     make_database(database)
@@ -106,7 +108,9 @@ def test_verified_backup_and_restore_changes_epoch_but_preserves_identity(tmp_pa
     assert safety is not None and safety.is_file()
     assert new_epoch != "epoch-before"
     with closing(sqlite3.connect(database)) as connection:
-        assert connection.execute("SELECT username FROM users").fetchone()[0] == "原始用户"
+        assert (
+            connection.execute("SELECT username FROM users").fetchone()[0] == "原始用户"
+        )
         identity = connection.execute(
             "SELECT instance_uuid, sync_epoch FROM server_instances WHERE id = 1"
         ).fetchone()
@@ -151,9 +155,12 @@ def test_active_timer_restore_requires_explicit_cancellation(tmp_path: Path):
         assert timer[0] == "cancelled"
         assert timer[1] is not None
         assert timer[2] == 2
-        assert connection.execute(
-            "SELECT sync_epoch FROM server_instances WHERE id = 1"
-        ).fetchone()[0] == epoch
+        assert (
+            connection.execute(
+                "SELECT sync_epoch FROM server_instances WHERE id = 1"
+            ).fetchone()[0]
+            == epoch
+        )
 
 
 def test_revision_snapshot_backfill_is_idempotent(tmp_path: Path):

@@ -71,7 +71,11 @@ def activity_operation(entity_uuid: str, parent_uuid: str | None = None) -> dict
             "parent_uuid": parent_uuid,
             "activity": {
                 "tracking_mode": "check",
-                "recurrence_rule": {"schema_version": 1, "type": "daily", "interval": 1},
+                "recurrence_rule": {
+                    "schema_version": 1,
+                    "type": "daily",
+                    "interval": 1,
+                },
                 "completion_policy": "recurring",
                 "target_value": "1",
                 "failure_policy": {"schema_version": 1, "type": "strict"},
@@ -82,7 +86,9 @@ def activity_operation(entity_uuid: str, parent_uuid: str | None = None) -> dict
 
 
 @pytest.mark.asyncio
-async def test_fresh_android_device_bootstraps_an_ordered_complete_snapshot(test_client, async_session):
+async def test_fresh_android_device_bootstraps_an_ordered_complete_snapshot(
+    test_client, async_session
+):
     account = await register_account(test_client, async_session, "acceptbootstrap")
     token = account["access_token"]
     writer = await register_device(test_client, token, "accept-bootstrap-writer")
@@ -137,7 +143,9 @@ async def test_fresh_android_device_bootstraps_an_ordered_complete_snapshot(test
     ]
     response = await push(test_client, token, writer, operations)
     assert response.status_code == 200, response.text
-    assert [result["status"] for result in response.json()["results"]] == ["applied"] * 6
+    assert [result["status"] for result in response.json()["results"]] == [
+        "applied"
+    ] * 6
 
     bootstrap = await test_client.get(
         "/api/v2/sync/bootstrap",
@@ -147,9 +155,20 @@ async def test_fresh_android_device_bootstraps_an_ordered_complete_snapshot(test
     assert bootstrap.status_code == 200, bootstrap.text
     body = bootstrap.json()
     uuids = [change["entity_uuid"] for change in body["changes"]]
-    assert set(uuids) == {goal_uuid, activity_uuid, metric_uuid, event_uuid, observation_uuid, link_uuid}
+    assert set(uuids) == {
+        goal_uuid,
+        activity_uuid,
+        metric_uuid,
+        event_uuid,
+        observation_uuid,
+        link_uuid,
+    }
     assert uuids.index(goal_uuid) < uuids.index(activity_uuid) < uuids.index(event_uuid)
-    assert uuids.index(metric_uuid) < uuids.index(observation_uuid) < uuids.index(link_uuid)
+    assert (
+        uuids.index(metric_uuid)
+        < uuids.index(observation_uuid)
+        < uuids.index(link_uuid)
+    )
 
     caught_up = await test_client.get(
         "/api/v2/sync/changes",
@@ -162,7 +181,9 @@ async def test_fresh_android_device_bootstraps_an_ordered_complete_snapshot(test
 
 
 @pytest.mark.asyncio
-async def test_offline_batch_replay_is_idempotent_and_visible_to_another_device(test_client, async_session):
+async def test_offline_batch_replay_is_idempotent_and_visible_to_another_device(
+    test_client, async_session
+):
     account = await register_account(test_client, async_session, "acceptoffline")
     token = account["access_token"]
     phone = await register_device(test_client, token, "accept-offline-phone")
@@ -172,7 +193,10 @@ async def test_offline_batch_replay_is_idempotent_and_visible_to_another_device(
 
     first = await push(test_client, token, phone, queued)
     replay = await push(test_client, token, phone, deepcopy(queued))
-    assert [item["status"] for item in first.json()["results"]] == ["applied", "applied"]
+    assert [item["status"] for item in first.json()["results"]] == [
+        "applied",
+        "applied",
+    ]
     assert [item["status"] for item in replay.json()["results"]] == [
         "already_applied",
         "already_applied",
@@ -184,12 +208,17 @@ async def test_offline_batch_replay_is_idempotent_and_visible_to_another_device(
         params={"device_id": tablet, "cursor": 0},
     )
     body = pulled.json()
-    assert [change["entity_uuid"] for change in body["changes"]] == [goal_uuid, activity_uuid]
+    assert [change["entity_uuid"] for change in body["changes"]] == [
+        goal_uuid,
+        activity_uuid,
+    ]
     assert len({change["sequence"] for change in body["changes"]}) == 2
 
 
 @pytest.mark.asyncio
-async def test_duplicate_operation_inside_one_batch_is_applied_only_once(test_client, async_session):
+async def test_duplicate_operation_inside_one_batch_is_applied_only_once(
+    test_client, async_session
+):
     account = await register_account(test_client, async_session, "acceptsamebatch")
     token = account["access_token"]
     phone = await register_device(test_client, token, "accept-same-batch-phone")
@@ -209,14 +238,17 @@ async def test_duplicate_operation_inside_one_batch_is_applied_only_once(test_cl
         params={"device_id": reader, "cursor": 0},
     )
     matching = [
-        change for change in pulled.json()["changes"]
+        change
+        for change in pulled.json()["changes"]
         if change["entity_uuid"] == operation["entity_uuid"]
     ]
     assert len(matching) == 1
 
 
 @pytest.mark.asyncio
-async def test_rejected_middle_operation_does_not_block_later_batch_items(test_client, async_session):
+async def test_rejected_middle_operation_does_not_block_later_batch_items(
+    test_client, async_session
+):
     account = await register_account(test_client, async_session, "acceptpartialbatch")
     token = account["access_token"]
     phone = await register_device(test_client, token, "accept-partial-batch-phone")
@@ -243,14 +275,15 @@ async def test_rejected_middle_operation_does_not_block_later_batch_items(test_c
 
 
 @pytest.mark.asyncio
-async def test_pull_pagination_has_strict_monotonic_resumable_cursors(test_client, async_session):
+async def test_pull_pagination_has_strict_monotonic_resumable_cursors(
+    test_client, async_session
+):
     account = await register_account(test_client, async_session, "acceptpagination")
     token = account["access_token"]
     writer = await register_device(test_client, token, "accept-pagination-writer")
     reader = await register_device(test_client, token, "accept-pagination-reader")
     operations = [
-        goal_operation(str(uuid4()), f"Paginated goal {index}")
-        for index in range(3)
+        goal_operation(str(uuid4()), f"Paginated goal {index}") for index in range(3)
     ]
     created = await push(test_client, token, writer, operations)
     assert [item["status"] for item in created.json()["results"]] == ["applied"] * 3
@@ -292,13 +325,17 @@ async def test_pull_pagination_has_strict_monotonic_resumable_cursors(test_clien
 
 
 @pytest.mark.asyncio
-async def test_cursor_ahead_of_server_is_rejected_without_breaking_valid_resume(test_client, async_session):
+async def test_cursor_ahead_of_server_is_rejected_without_breaking_valid_resume(
+    test_client, async_session
+):
     account = await register_account(test_client, async_session, "acceptcursorerror")
     token = account["access_token"]
     writer = await register_device(test_client, token, "accept-cursor-writer")
     reader = await register_device(test_client, token, "accept-cursor-reader")
     operation = goal_operation(str(uuid4()), "Cursor recovery goal")
-    assert (await push(test_client, token, writer, [operation])).json()["results"][0]["status"] == "applied"
+    assert (await push(test_client, token, writer, [operation])).json()["results"][0][
+        "status"
+    ] == "applied"
 
     invalid = await test_client.get(
         "/api/v2/sync/changes",
@@ -320,24 +357,34 @@ async def test_cursor_ahead_of_server_is_rejected_without_breaking_valid_resume(
 
 
 @pytest.mark.asyncio
-async def test_accounts_with_the_same_entity_uuid_remain_fully_isolated(test_client, async_session):
+async def test_accounts_with_the_same_entity_uuid_remain_fully_isolated(
+    test_client, async_session
+):
     shared_uuid = str(uuid4())
     first = await register_account(test_client, async_session, "acceptisolationa")
     second = await register_account(test_client, async_session, "acceptisolationb")
-    first_device = await register_device(test_client, first["access_token"], "accept-isolation-a")
-    second_device = await register_device(test_client, second["access_token"], "accept-isolation-b")
-    assert (await push(
-        test_client,
-        first["access_token"],
-        first_device,
-        [goal_operation(shared_uuid, "First account")],
-    )).json()["results"][0]["status"] == "applied"
-    assert (await push(
-        test_client,
-        second["access_token"],
-        second_device,
-        [goal_operation(shared_uuid, "Second account")],
-    )).json()["results"][0]["status"] == "applied"
+    first_device = await register_device(
+        test_client, first["access_token"], "accept-isolation-a"
+    )
+    second_device = await register_device(
+        test_client, second["access_token"], "accept-isolation-b"
+    )
+    assert (
+        await push(
+            test_client,
+            first["access_token"],
+            first_device,
+            [goal_operation(shared_uuid, "First account")],
+        )
+    ).json()["results"][0]["status"] == "applied"
+    assert (
+        await push(
+            test_client,
+            second["access_token"],
+            second_device,
+            [goal_operation(shared_uuid, "Second account")],
+        )
+    ).json()["results"][0]["status"] == "applied"
 
     for account, device, expected_title in (
         (first, first_device, "First account"),
@@ -363,7 +410,9 @@ async def test_accounts_with_the_same_entity_uuid_remain_fully_isolated(test_cli
 
 
 @pytest.mark.asyncio
-async def test_rejected_offline_change_does_not_poison_canonical_bootstrap(test_client, async_session):
+async def test_rejected_offline_change_does_not_poison_canonical_bootstrap(
+    test_client, async_session
+):
     account = await register_account(test_client, async_session, "acceptrecovery")
     token = account["access_token"]
     device = await register_device(test_client, token, "accept-recovery-phone")
@@ -385,7 +434,10 @@ async def test_rejected_offline_change_does_not_poison_canonical_bootstrap(test_
     corrected = deepcopy(rejected)
     corrected["operation_id"] = str(uuid4())
     fixed = await push(test_client, token, device, [goal, corrected])
-    assert [item["status"] for item in fixed.json()["results"]] == ["applied", "applied"]
+    assert [item["status"] for item in fixed.json()["results"]] == [
+        "applied",
+        "applied",
+    ]
     snapshot = await test_client.get(
         "/api/v2/sync/bootstrap",
         headers={"Authorization": f"Bearer {token}"},
@@ -426,5 +478,8 @@ async def test_openapi_contains_no_legacy_data_route_descendants(test_client):
     assert not {
         path
         for path in paths
-        if any(path == prefix or path.startswith(f"{prefix}/") for prefix in retired_prefixes)
+        if any(
+            path == prefix or path.startswith(f"{prefix}/")
+            for prefix in retired_prefixes
+        )
     }

@@ -1,4 +1,5 @@
 """Authentication database models."""
+
 from sqlmodel import Field, SQLModel
 from datetime import datetime
 from typing import Optional
@@ -9,6 +10,7 @@ from src.time_utils import utc_now
 
 class User(SQLModel, table=True):
     """User database model."""
+
     __tablename__ = "users"
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -29,6 +31,5 @@ class User(SQLModel, table=True):
     auth_version: int = Field(default=1)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(
-        default_factory=utc_now,
-        sa_column_kwargs={'onupdate': utc_now}
+        default_factory=utc_now, sa_column_kwargs={"onupdate": utc_now}
     )

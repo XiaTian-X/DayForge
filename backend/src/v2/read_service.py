@@ -151,7 +151,11 @@ async def bootstrap(
         .order_by(ActivityEvent.id)
     )
     for event, activity_uuid in events_result.all():
-        revert = await session.get(ActivityEvent, event.reverts_event_id) if event.reverts_event_id else None
+        revert = (
+            await session.get(ActivityEvent, event.reverts_event_id)
+            if event.reverts_event_id
+            else None
+        )
         synthetic.append(
             SyncChangeResponse(
                 sequence=0,
@@ -169,7 +173,9 @@ async def bootstrap(
 
     metrics_result = await session.execute(
         select(TrackedMetric)
-        .where(TrackedMetric.owner_user_id == user.id, TrackedMetric.deleted_at.is_(None))
+        .where(
+            TrackedMetric.owner_user_id == user.id, TrackedMetric.deleted_at.is_(None)
+        )
         .order_by(TrackedMetric.id)
     )
     metrics = list(metrics_result.scalars().all())

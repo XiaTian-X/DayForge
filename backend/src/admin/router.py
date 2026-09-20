@@ -1,4 +1,5 @@
 """Admin router for user management endpoints."""
+
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -22,21 +23,30 @@ from src.admin.schemas import (
     AdminPasswordReset,
     AdminUserResponse,
 )
-from src.v2.device_service import make_primary, revoke, set_structural_editing, to_device_response
+from src.v2.device_service import (
+    make_primary,
+    revoke,
+    set_structural_editing,
+    to_device_response,
+)
 from src.v2.models import ClientDevice, Household, HouseholdMembership, utc_now
 from src.v2.schemas import DeviceResponse
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
 
-@router.post("/users", response_model=AdminUserResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/users", response_model=AdminUserResponse, status_code=status.HTTP_201_CREATED
+)
 async def create_user(
     user_data: AdminUserCreate,
     admin: User = Depends(get_admin_user),
     session: AsyncSession = Depends(get_session, scope="function"),
 ):
     """Create a local account. Public self-registration is intentionally disabled."""
-    result = await session.execute(select(User).where(User.username == user_data.username))
+    result = await session.execute(
+        select(User).where(User.username == user_data.username)
+    )
     if result.scalar() is not None:
         raise HTTPException(status_code=409, detail="Username already exists")
 
@@ -191,8 +201,13 @@ async def list_households(
     admin: User = Depends(get_admin_user),
     session: AsyncSession = Depends(get_session, scope="function"),
 ) -> list[AdminHouseholdResponse]:
-    rows = await session.execute(select(Household).order_by(Household.name, Household.id))
-    return [await _household_response(session, household) for household in rows.scalars().all()]
+    rows = await session.execute(
+        select(Household).order_by(Household.name, Household.id)
+    )
+    return [
+        await _household_response(session, household)
+        for household in rows.scalars().all()
+    ]
 
 
 @router.patch("/households/{household_id}", response_model=AdminHouseholdResponse)
@@ -229,7 +244,9 @@ async def upsert_household_member(
     session: AsyncSession = Depends(get_session, scope="function"),
 ) -> AdminHouseholdResponse:
     household = await _household_or_404(session, household_id)
-    user_result = await session.execute(select(User).where(User.public_id == str(request.user_id)))
+    user_result = await session.execute(
+        select(User).where(User.public_id == str(request.user_id))
+    )
     user = user_result.scalar_one_or_none()
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
@@ -296,7 +313,9 @@ async def remove_household_member(
             )
         )
         if owners.first() is None:
-            raise HTTPException(status_code=409, detail="A household must keep an active owner")
+            raise HTTPException(
+                status_code=409, detail="A household must keep an active owner"
+            )
     now = utc_now()
     membership.status = "removed"
     membership.deleted_at = now
@@ -344,9 +363,13 @@ async def list_user_devices(
 ) -> list[DeviceResponse]:
     user = await _user_by_public_id(session, user_id)
     rows = await session.execute(
-        select(ClientDevice).where(ClientDevice.user_id == user.id).order_by(ClientDevice.created_at)
+        select(ClientDevice)
+        .where(ClientDevice.user_id == user.id)
+        .order_by(ClientDevice.created_at)
     )
-    return [await to_device_response(session, device) for device in rows.scalars().all()]
+    return [
+        await to_device_response(session, device) for device in rows.scalars().all()
+    ]
 
 
 @router.post(
@@ -368,7 +391,9 @@ async def provision_user_device(
         )
     )
     if existing.scalar_one_or_none() is not None:
-        raise HTTPException(status_code=409, detail="Installation is already registered")
+        raise HTTPException(
+            status_code=409, detail="Installation is already registered"
+        )
     device = ClientDevice(
         user_id=user.id,
         installation_id=request.installation_id,
@@ -381,7 +406,9 @@ async def provision_user_device(
     return await to_device_response(session, device)
 
 
-@router.post("/users/{user_id}/devices/{device_id}/make-primary", response_model=DeviceResponse)
+@router.post(
+    "/users/{user_id}/devices/{device_id}/make-primary", response_model=DeviceResponse
+)
 async def admin_make_device_primary(
     user_id: UUID,
     device_id: UUID,
@@ -397,7 +424,9 @@ async def admin_make_device_primary(
     return await to_device_response(session, device)
 
 
-@router.patch("/users/{user_id}/devices/{device_id}/editing", response_model=DeviceResponse)
+@router.patch(
+    "/users/{user_id}/devices/{device_id}/editing", response_model=DeviceResponse
+)
 async def admin_update_device_editing(
     user_id: UUID,
     device_id: UUID,
@@ -414,7 +443,9 @@ async def admin_update_device_editing(
     return await to_device_response(session, device)
 
 
-@router.delete("/users/{user_id}/devices/{device_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/users/{user_id}/devices/{device_id}", status_code=status.HTTP_204_NO_CONTENT
+)
 async def admin_revoke_device(
     user_id: UUID,
     device_id: UUID,

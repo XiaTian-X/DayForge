@@ -50,7 +50,9 @@ async def _resolve_parent(
     if parent is None:
         raise DomainError("PARENT_NOT_FOUND", "Parent goal was not found")
     if parent.node_kind != "goal" or parent.parent_node_id is not None:
-        raise DomainError("INVALID_PARENT", "An activity parent must be a top-level goal")
+        raise DomainError(
+            "INVALID_PARENT", "An activity parent must be a top-level goal"
+        )
     return parent
 
 
@@ -68,7 +70,9 @@ async def _ensure_unique_plan_node_title(
     if existing_id is not None:
         statement = statement.where(PlanNode.id != existing_id)
     if (await session.execute(statement.limit(1))).scalar_one_or_none() is not None:
-        raise DomainError("DUPLICATE_TITLE", "An active habit or goal with this title already exists")
+        raise DomainError(
+            "DUPLICATE_TITLE", "An active habit or goal with this title already exists"
+        )
 
 
 async def mutate_plan_node(
@@ -106,7 +110,8 @@ async def mutate_plan_node(
             children = list(children_result.scalars().all())
             policy = operation.payload.get("child_policy")
             if children and (
-                not isinstance(policy, str) or policy not in {"cascade_children", "detach_children"}
+                not isinstance(policy, str)
+                or policy not in {"cascade_children", "detach_children"}
             ):
                 raise DomainError(
                     "CHILD_POLICY_REQUIRED",
@@ -159,7 +164,9 @@ async def mutate_plan_node(
             )
         )
         if result.rowcount != 1:
-            raise DomainError("REVISION_CONFLICT", "Plan node changed concurrently", conflict=True)
+            raise DomainError(
+                "REVISION_CONFLICT", "Plan node changed concurrently", conflict=True
+            )
         await session.flush()
         existing = await get_plan_node(session, user_id, str(operation.entity_uuid))
         entity = await serialize_plan_node(session, existing)
@@ -196,7 +203,9 @@ async def mutate_plan_node(
 
     if existing is None:
         if operation.base_revision not in (None, 0):
-            raise DomainError("ENTITY_NOT_FOUND", "Cannot update a plan node that does not exist")
+            raise DomainError(
+                "ENTITY_NOT_FOUND", "Cannot update a plan node that does not exist"
+            )
         created_at = payload.created_at or utc_now()
         node = PlanNode(
             public_id=str(operation.entity_uuid),
@@ -224,8 +233,12 @@ async def mutate_plan_node(
                     start_date=detail.start_date,
                     due_date=detail.due_date,
                     target_cycles=detail.target_cycles,
-                    failure_policy_json=canonical_json(detail.failure_policy.model_dump(mode="json")),
-                    evaluation_policy_json=canonical_json(detail.evaluation_policy.model_dump(mode="json")),
+                    failure_policy_json=canonical_json(
+                        detail.failure_policy.model_dump(mode="json")
+                    ),
+                    evaluation_policy_json=canonical_json(
+                        detail.evaluation_policy.model_dump(mode="json")
+                    ),
                     manual_result=detail.manual_result,
                 )
             )
@@ -236,15 +249,21 @@ async def mutate_plan_node(
                     node_id=node.id,
                     tracking_mode=detail.tracking_mode,
                     is_countdown=detail.is_countdown,
-                    recurrence_rule_json=canonical_json(detail.recurrence_rule.model_dump(mode="json")),
+                    recurrence_rule_json=canonical_json(
+                        detail.recurrence_rule.model_dump(mode="json")
+                    ),
                     completion_policy=detail.completion_policy,
                     target_value=detail.target_value,
                     target_unit=detail.target_unit,
                     target_cycles=detail.target_cycles,
-                    failure_policy_json=canonical_json(detail.failure_policy.model_dump(mode="json")),
+                    failure_policy_json=canonical_json(
+                        detail.failure_policy.model_dump(mode="json")
+                    ),
                     preferred_local_time=detail.preferred_local_time,
                     timezone=detail.timezone,
-                    origin_assignment_id=str(detail.origin_assignment_id) if detail.origin_assignment_id else None,
+                    origin_assignment_id=str(detail.origin_assignment_id)
+                    if detail.origin_assignment_id
+                    else None,
                 )
             )
         await session.flush()
@@ -323,15 +342,21 @@ async def mutate_plan_node(
         .values(**node_values)
     )
     if result.rowcount != 1:
-        raise DomainError("REVISION_CONFLICT", "Plan node changed concurrently", conflict=True)
+        raise DomainError(
+            "REVISION_CONFLICT", "Plan node changed concurrently", conflict=True
+        )
 
     if existing.node_kind == "goal":
         detail = await session.get(GoalDetail, existing.id)
         detail.start_date = goal_payload.start_date
         detail.due_date = goal_payload.due_date
         detail.target_cycles = goal_payload.target_cycles
-        detail.failure_policy_json = canonical_json(goal_payload.failure_policy.model_dump(mode="json"))
-        detail.evaluation_policy_json = canonical_json(goal_payload.evaluation_policy.model_dump(mode="json"))
+        detail.failure_policy_json = canonical_json(
+            goal_payload.failure_policy.model_dump(mode="json")
+        )
+        detail.evaluation_policy_json = canonical_json(
+            goal_payload.evaluation_policy.model_dump(mode="json")
+        )
         detail.manual_result = goal_payload.manual_result
     else:
         detail = await session.get(ActivityDetail, existing.id)
@@ -343,21 +368,28 @@ async def mutate_plan_node(
         if recurrence_rule.get("type") == previous_recurrence_rule.get("type"):
             for optional_date in ("start_date", "due_date"):
                 if (
-                    optional_date not in activity_payload.recurrence_rule.model_fields_set
+                    optional_date
+                    not in activity_payload.recurrence_rule.model_fields_set
                     and optional_date in previous_recurrence_rule
                 ):
-                    recurrence_rule[optional_date] = previous_recurrence_rule[optional_date]
+                    recurrence_rule[optional_date] = previous_recurrence_rule[
+                        optional_date
+                    ]
         detail.recurrence_rule_json = canonical_json(recurrence_rule)
         detail.completion_policy = activity_payload.completion_policy
         detail.target_value = activity_payload.target_value
         detail.target_unit = activity_payload.target_unit
         detail.target_cycles = activity_payload.target_cycles
-        detail.failure_policy_json = canonical_json(activity_payload.failure_policy.model_dump(mode="json"))
+        detail.failure_policy_json = canonical_json(
+            activity_payload.failure_policy.model_dump(mode="json")
+        )
         detail.preferred_local_time = activity_payload.preferred_local_time
         detail.timezone = activity_payload.timezone
         if "origin_assignment_id" in activity_payload.model_fields_set:
             detail.origin_assignment_id = (
-                str(activity_payload.origin_assignment_id) if activity_payload.origin_assignment_id else None
+                str(activity_payload.origin_assignment_id)
+                if activity_payload.origin_assignment_id
+                else None
             )
     await session.flush()
     existing = await get_plan_node(session, user_id, str(operation.entity_uuid))

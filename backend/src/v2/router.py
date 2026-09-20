@@ -29,7 +29,13 @@ from src.v2.encoding import canonical_json
 from src.v2.errors import DomainError
 from src.v2.service import process_push
 from src.v2.read_service import bootstrap, pull_changes
-from src.v2.device_service import make_primary, register_device, revoke, set_structural_editing, to_device_response
+from src.v2.device_service import (
+    make_primary,
+    register_device,
+    revoke,
+    set_structural_editing,
+    to_device_response,
+)
 from src.v2.system_service import server_identity_response
 from src.v2.timer_service import (
     get_active_timer,
@@ -86,10 +92,14 @@ async def list_client_devices(
 ) -> list[DeviceResponse]:
     result = await session.execute(
         select(ClientDevice)
-        .where(ClientDevice.user_id == current_user.id, ClientDevice.revoked_at.is_(None))
+        .where(
+            ClientDevice.user_id == current_user.id, ClientDevice.revoked_at.is_(None)
+        )
         .order_by(ClientDevice.last_seen_at.desc())
     )
-    return [await to_device_response(session, device) for device in result.scalars().all()]
+    return [
+        await to_device_response(session, device) for device in result.scalars().all()
+    ]
 
 
 async def _owned_active_device(
@@ -123,7 +133,9 @@ async def make_device_primary(
     try:
         await make_primary(session, device)
     except ValueError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+        ) from error
     return await to_device_response(session, device)
 
 
@@ -138,7 +150,9 @@ async def update_device_editing(
     try:
         await set_structural_editing(session, device, request.structural_edit_enabled)
     except ValueError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+        ) from error
     return await to_device_response(session, device)
 
 
@@ -158,7 +172,10 @@ async def push_sync_operations(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session, scope="function"),
 ) -> SyncPushResponse:
-    if len(canonical_json(request.model_dump(mode="json")).encode("utf-8")) > 1024 * 1024:
+    if (
+        len(canonical_json(request.model_dump(mode="json")).encode("utf-8"))
+        > 1024 * 1024
+    ):
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail={"code": "BATCH_TOO_LARGE", "message": "Sync batch exceeds 1 MiB"},

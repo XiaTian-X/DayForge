@@ -1,4 +1,5 @@
 """Database session management over the configured storage adapter."""
+
 from sqlmodel import SQLModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from typing import AsyncGenerator, Optional, Any
@@ -38,9 +39,7 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
     """
     engine = get_engine()
     async with async_sessionmaker(
-        bind=engine,
-        class_=AsyncSession,
-        expire_on_commit=False
+        bind=engine, class_=AsyncSession, expire_on_commit=False
     )() as session:
         try:
             yield session

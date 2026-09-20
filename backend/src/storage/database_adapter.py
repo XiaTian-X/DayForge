@@ -74,7 +74,9 @@ def _sqlite_async_url(database_url: str | None, sqlite_path: str) -> URL:
     try:
         url = make_url(database_url)
     except ArgumentError as error:
-        raise DatabaseConfigurationError("DATABASE_URL is not a valid SQLAlchemy URL") from error
+        raise DatabaseConfigurationError(
+            "DATABASE_URL is not a valid SQLAlchemy URL"
+        ) from error
     if url.drivername != "sqlite+aiosqlite":
         raise DatabaseConfigurationError(
             "DATABASE_URL must use sqlite+aiosqlite; no other database backend is supported"

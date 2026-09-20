@@ -19,7 +19,9 @@ from src.main import app  # noqa: E402
 
 def rendered_contract() -> str:
     """Return a deterministic, human-reviewable OpenAPI document."""
-    return json.dumps(app.openapi(), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    return (
+        json.dumps(app.openapi(), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    )
 
 
 def main() -> int:
@@ -33,7 +35,10 @@ def main() -> int:
     rendered = rendered_contract()
 
     if args.check:
-        if not OUTPUT_PATH.exists() or OUTPUT_PATH.read_text(encoding="utf-8") != rendered:
+        if (
+            not OUTPUT_PATH.exists()
+            or OUTPUT_PATH.read_text(encoding="utf-8") != rendered
+        ):
             print("OpenAPI contract is stale; run scripts/export_openapi.py")
             return 1
         return 0

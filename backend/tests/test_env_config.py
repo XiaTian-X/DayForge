@@ -1,4 +1,5 @@
 """Tests for environment variable configuration loading."""
+
 import re
 import warnings
 
@@ -9,8 +10,7 @@ from src.config import Settings, DEFAULT_JWT_SECRET
 
 
 DEFAULT_SECRET_WARNING = (
-    "WARNING: Using default JWT_SECRET_KEY. "
-    "This is allowed for local development only."
+    "WARNING: Using default JWT_SECRET_KEY. This is allowed for local development only."
 )
 # Deliberately synthetic: enough bytes for HMAC tests, not a deployment secret.
 EXPLICIT_TEST_SECRET = "test" * 8
@@ -22,7 +22,9 @@ pytestmark = pytest.mark.usefixtures("isolated_settings_env")
 def test_settings_loads_defaults(monkeypatch):
     """Settings loads defaults without inherited environment or a local .env."""
     monkeypatch.delenv("JWT_SECRET_KEY")
-    with pytest.warns(UserWarning, match=f"^{re.escape(DEFAULT_SECRET_WARNING)}$") as captured:
+    with pytest.warns(
+        UserWarning, match=f"^{re.escape(DEFAULT_SECRET_WARNING)}$"
+    ) as captured:
         settings = Settings()
 
     assert len(captured) == 1
@@ -79,7 +81,9 @@ def test_jwt_secret_key_warning(monkeypatch, environment, explicit_default):
     else:
         monkeypatch.delenv("JWT_SECRET_KEY")
 
-    with pytest.warns(UserWarning, match=f"^{re.escape(DEFAULT_SECRET_WARNING)}$") as captured:
+    with pytest.warns(
+        UserWarning, match=f"^{re.escape(DEFAULT_SECRET_WARNING)}$"
+    ) as captured:
         settings = Settings()
 
     assert len(captured) == 1
@@ -108,7 +112,9 @@ def test_cors_origins_default():
 
 @pytest.mark.parametrize("environment", ["production", "Production"])
 @pytest.mark.parametrize("explicit_default", [False, True])
-def test_production_rejects_default_jwt_secret(monkeypatch, environment, explicit_default):
+def test_production_rejects_default_jwt_secret(
+    monkeypatch, environment, explicit_default
+):
     monkeypatch.setenv("ENVIRONMENT", environment)
     if explicit_default:
         monkeypatch.setenv("JWT_SECRET_KEY", DEFAULT_JWT_SECRET)

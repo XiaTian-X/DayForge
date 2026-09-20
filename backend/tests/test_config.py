@@ -1,4 +1,5 @@
 """Tests for config module."""
+
 import pytest
 from pydantic import ValidationError
 
@@ -43,7 +44,9 @@ class TestSettings:
         from src.config import Settings, DEFAULT_JWT_SECRET
 
         monkeypatch.delenv("JWT_SECRET_KEY")
-        with pytest.warns(UserWarning, match="^WARNING: Using default JWT_SECRET_KEY\\.") as captured:
+        with pytest.warns(
+            UserWarning, match="^WARNING: Using default JWT_SECRET_KEY\\."
+        ) as captured:
             settings = Settings()
         assert len(captured) == 1
         assert settings.JWT_SECRET_KEY == DEFAULT_JWT_SECRET

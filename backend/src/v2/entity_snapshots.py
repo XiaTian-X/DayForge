@@ -77,7 +77,9 @@ async def serialize_plan_node(session: AsyncSession, node: PlanNode) -> dict[str
     return jsonable_utc(result)
 
 
-def serialize_activity_event(event: ActivityEvent, activity_uuid: str, revert_uuid: Optional[str]) -> dict[str, Any]:
+def serialize_activity_event(
+    event: ActivityEvent, activity_uuid: str, revert_uuid: Optional[str]
+) -> dict[str, Any]:
     return jsonable_utc(
         {
             "public_id": event.public_id,
@@ -154,7 +156,9 @@ def serialize_metric(metric: TrackedMetric) -> dict[str, Any]:
     )
 
 
-def serialize_observation(observation: MetricObservation, metric_uuid: str) -> dict[str, Any]:
+def serialize_observation(
+    observation: MetricObservation, metric_uuid: str
+) -> dict[str, Any]:
     return jsonable_utc(
         {
             "public_id": observation.public_id,
@@ -178,7 +182,9 @@ def serialize_observation(observation: MetricObservation, metric_uuid: str) -> d
     )
 
 
-def serialize_link(link: ActivityMetricLinkV2, activity_uuid: str, metric_uuid: str) -> dict[str, Any]:
+def serialize_link(
+    link: ActivityMetricLinkV2, activity_uuid: str, metric_uuid: str
+) -> dict[str, Any]:
     return jsonable_utc(
         {
             "public_id": link.public_id,
@@ -215,19 +221,30 @@ async def current_entity_snapshot(
             .execution_options(populate_existing=True)
         )
         entity = result.scalar_one_or_none()
-        return (entity.revision, await serialize_plan_node(session, entity)) if entity else (None, None)
+        return (
+            (entity.revision, await serialize_plan_node(session, entity))
+            if entity
+            else (None, None)
+        )
 
     if operation.entity_type == "activity_event":
         result = await session.execute(
             select(ActivityEvent)
-            .where(ActivityEvent.owner_user_id == user_id, ActivityEvent.public_id == entity_uuid)
+            .where(
+                ActivityEvent.owner_user_id == user_id,
+                ActivityEvent.public_id == entity_uuid,
+            )
             .execution_options(populate_existing=True)
         )
         entity = result.scalar_one_or_none()
         if entity is None:
             return None, None
         activity = await session.get(PlanNode, entity.activity_node_id)
-        revert = await session.get(ActivityEvent, entity.reverts_event_id) if entity.reverts_event_id else None
+        revert = (
+            await session.get(ActivityEvent, entity.reverts_event_id)
+            if entity.reverts_event_id
+            else None
+        )
         return entity.revision, await serialize_activity_event_with_allocations(
             session,
             entity,
@@ -238,7 +255,10 @@ async def current_entity_snapshot(
     if operation.entity_type == "metric":
         result = await session.execute(
             select(TrackedMetric)
-            .where(TrackedMetric.owner_user_id == user_id, TrackedMetric.public_id == entity_uuid)
+            .where(
+                TrackedMetric.owner_user_id == user_id,
+                TrackedMetric.public_id == entity_uuid,
+            )
             .execution_options(populate_existing=True)
         )
         entity = result.scalar_one_or_none()
@@ -247,7 +267,10 @@ async def current_entity_snapshot(
     if operation.entity_type == "metric_observation":
         result = await session.execute(
             select(MetricObservation)
-            .where(MetricObservation.owner_user_id == user_id, MetricObservation.public_id == entity_uuid)
+            .where(
+                MetricObservation.owner_user_id == user_id,
+                MetricObservation.public_id == entity_uuid,
+            )
             .execution_options(populate_existing=True)
         )
         entity = result.scalar_one_or_none()
@@ -259,7 +282,10 @@ async def current_entity_snapshot(
     if operation.entity_type == "activity_metric_link":
         result = await session.execute(
             select(ActivityMetricLinkV2)
-            .where(ActivityMetricLinkV2.owner_user_id == user_id, ActivityMetricLinkV2.public_id == entity_uuid)
+            .where(
+                ActivityMetricLinkV2.owner_user_id == user_id,
+                ActivityMetricLinkV2.public_id == entity_uuid,
+            )
             .execution_options(populate_existing=True)
         )
         entity = result.scalar_one_or_none()
@@ -267,6 +293,8 @@ async def current_entity_snapshot(
             return None, None
         activity = await session.get(PlanNode, entity.activity_node_id)
         metric = await session.get(TrackedMetric, entity.metric_id)
-        return entity.revision, serialize_link(entity, activity.public_id, metric.public_id)
+        return entity.revision, serialize_link(
+            entity, activity.public_id, metric.public_id
+        )
 
     return None, None

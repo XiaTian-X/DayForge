@@ -14,11 +14,16 @@ from tests.test_sync_v2 import activity_operation
 def base_activity():
     operation = activity_operation(tracking_mode="count")
     operation["payload"]["activity"]["recurrence_rule"] = {
-        "schema_version": 1, "type": "weekly", "interval": 1, "weekdays": [1],
+        "schema_version": 1,
+        "type": "weekly",
+        "interval": 1,
+        "weekdays": [1],
     }
     operation["base_revision"] = 1
     request = SyncOperationRequest.model_validate(operation)
-    snapshot = jsonable_utc(PlanNodePayload.model_validate(request.payload).model_dump())
+    snapshot = jsonable_utc(
+        PlanNodePayload.model_validate(request.payload).model_dump()
+    )
     return request, snapshot
 
 
@@ -32,7 +37,9 @@ def test_rebase_does_not_mutate_inputs_or_alias_nested_server_values():
     original_base = deepcopy(base)
 
     prepared, no_op = merge_structural_payload(
-        operation, current_revision=2, server_payload=server,
+        operation,
+        current_revision=2,
+        server_payload=server,
         base_snapshot_json=canonical_json(base),
     )
     assert no_op is None
@@ -56,14 +63,18 @@ def test_nested_recurrence_rule_is_one_conflict_field_not_a_recursive_dict_merge
 
     with pytest.raises(DomainError) as caught:
         merge_structural_payload(
-            operation, current_revision=2, server_payload=server,
+            operation,
+            current_revision=2,
+            server_payload=server,
             base_snapshot_json=canonical_json(base),
         )
     error = caught.value
     assert error.code == "REVISION_CONFLICT"
     assert error.conflicting_fields == ["activity.recurrence_rule"]
     assert error.base_entity["activity"]["recurrence_rule"]["weekdays"] == [1]
-    assert error.local_entity["activity"]["recurrence_rule"]["start_date"] == "2026-09-14"
+    assert (
+        error.local_entity["activity"]["recurrence_rule"]["start_date"] == "2026-09-14"
+    )
     assert error.entity["activity"]["recurrence_rule"]["weekdays"] == [2, 4]
     assert operation.model_dump() == original_request
     assert server == original_server
@@ -80,7 +91,9 @@ def test_inherited_date_does_not_mutate_the_sparse_request_or_base_snapshot():
     original_server = deepcopy(server)
 
     prepared, no_op = merge_structural_payload(
-        operation, current_revision=2, server_payload=server,
+        operation,
+        current_revision=2,
+        server_payload=server,
         base_snapshot_json=canonical_json(base),
     )
     assert no_op is None

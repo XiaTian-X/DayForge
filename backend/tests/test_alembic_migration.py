@@ -49,26 +49,38 @@ def test_clean_database_upgrades_to_complete_v2_schema():
             "entity_revision_snapshots",
         }
         assert expected <= tables
-        assert tables.isdisjoint({
-            "habits",
-            "completions",
-            "timelogs",
-            "metrics",
-            "metric_logs",
-            "habit_metric_links",
-        })
+        assert tables.isdisjoint(
+            {
+                "habits",
+                "completions",
+                "timelogs",
+                "metrics",
+                "metric_logs",
+                "habit_metric_links",
+            }
+        )
 
         user_columns = {column["name"] for column in inspector.get_columns("users")}
         assert {"public_id", "status"} <= user_columns
-        plan_columns = {column["name"] for column in inspector.get_columns("plan_nodes")}
+        plan_columns = {
+            column["name"] for column in inspector.get_columns("plan_nodes")
+        }
         assert {"public_id", "parent_node_id", "revision", "deleted_at"} <= plan_columns
-        activity_columns = {column["name"] for column in inspector.get_columns("activity_details")}
+        activity_columns = {
+            column["name"] for column in inspector.get_columns("activity_details")
+        }
         assert "is_countdown" in activity_columns
-        goal_columns = {column["name"] for column in inspector.get_columns("goal_details")}
+        goal_columns = {
+            column["name"] for column in inspector.get_columns("goal_details")
+        }
         assert {"target_cycles", "failure_policy_json"} <= goal_columns
-        event_columns = {column["name"] for column in inspector.get_columns("activity_events")}
+        event_columns = {
+            column["name"] for column in inspector.get_columns("activity_events")
+        }
         assert "duration_milliseconds" in event_columns
-        device_columns = {column["name"] for column in inspector.get_columns("client_devices")}
+        device_columns = {
+            column["name"] for column in inspector.get_columns("client_devices")
+        }
         assert {
             "device_class",
             "structural_edit_enabled",
@@ -76,10 +88,14 @@ def test_clean_database_upgrades_to_complete_v2_schema():
         } <= device_columns
 
         with engine.connect() as connection:
-            revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            revision = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
             assert revision == "000000000001"
             identity = connection.execute(
-                text("SELECT instance_uuid, sync_epoch, protocol_version FROM server_instances")
+                text(
+                    "SELECT instance_uuid, sync_epoch, protocol_version FROM server_instances"
+                )
             ).one()
             assert len(identity.instance_uuid) == 36
             assert len(identity.sync_epoch) == 36
@@ -95,7 +111,9 @@ def test_migration_chain_downgrades_to_empty_database():
         config = alembic_config(database_path)
         command.upgrade(config, "head")
         command.downgrade(config, "base")
-        tables = set(inspect(create_engine(f"sqlite:///{database_path}")).get_table_names())
+        tables = set(
+            inspect(create_engine(f"sqlite:///{database_path}")).get_table_names()
+        )
         assert tables <= {"alembic_version", "sqlite_sequence"}
     finally:
         os.unlink(database_path)
@@ -120,7 +138,9 @@ def test_sync_change_sequence_is_monotonic_after_delete():
                     """
                 )
             )
-            user_id = connection.execute(text("SELECT id FROM users WHERE username='migration-user'")).scalar_one()
+            user_id = connection.execute(
+                text("SELECT id FROM users WHERE username='migration-user'")
+            ).scalar_one()
             connection.execute(
                 text(
                     """
@@ -134,7 +154,9 @@ def test_sync_change_sequence_is_monotonic_after_delete():
                 ),
                 {"user_id": user_id},
             )
-            first = connection.execute(text("SELECT max(sequence) FROM sync_changes")).scalar_one()
+            first = connection.execute(
+                text("SELECT max(sequence) FROM sync_changes")
+            ).scalar_one()
             connection.execute(text("DELETE FROM sync_changes"))
             connection.execute(
                 text(
@@ -149,7 +171,9 @@ def test_sync_change_sequence_is_monotonic_after_delete():
                 ),
                 {"user_id": user_id},
             )
-            second = connection.execute(text("SELECT max(sequence) FROM sync_changes")).scalar_one()
+            second = connection.execute(
+                text("SELECT max(sequence) FROM sync_changes")
+            ).scalar_one()
             assert second > first
     finally:
         os.unlink(database_path)

@@ -7,7 +7,10 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel, ValidationError
 from src.auth.models import User
-from tests.account_fixtures import TEST_ACCOUNT_PASSWORD as PASSWORD, account_password_hash
+from tests.account_fixtures import (
+    TEST_ACCOUNT_PASSWORD as PASSWORD,
+    account_password_hash,
+)
 from src.v2.schemas import (
     ServerIdentityResponse,
     SyncBootstrapResponse,
@@ -91,7 +94,9 @@ async def push(test_client, token: str, body: dict):
     ("path", "model"),
     VALID_FIXTURES,
 )
-def test_contract_fixture_has_a_stable_typed_round_trip(path: str, model: type[BaseModel]):
+def test_contract_fixture_has_a_stable_typed_round_trip(
+    path: str, model: type[BaseModel]
+):
     parsed = model.model_validate(fixture(path))
     first = parsed.model_dump_json(exclude_none=True)
     reparsed = model.model_validate_json(first)
@@ -102,10 +107,7 @@ def test_contract_fixture_has_a_stable_typed_round_trip(path: str, model: type[B
 
 
 def test_every_json_fixture_is_registered_in_the_contract_suite():
-    discovered = {
-        str(path.relative_to(FIXTURES))
-        for path in FIXTURES.rglob("*.json")
-    }
+    discovered = {str(path.relative_to(FIXTURES)) for path in FIXTURES.rglob("*.json")}
     registered = {path for path, _ in VALID_FIXTURES} | INVALID_FIXTURES
 
     assert discovered == registered
@@ -113,7 +115,9 @@ def test_every_json_fixture_is_registered_in_the_contract_suite():
 
 def test_malformed_client_fixture_is_rejected_by_the_backend_schema():
     with pytest.raises(ValidationError):
-        SyncPushRequest.model_validate(fixture("invalid/push-missing-operation-id.json"))
+        SyncPushRequest.model_validate(
+            fixture("invalid/push-missing-operation-id.json")
+        )
 
 
 @pytest.mark.asyncio
@@ -142,9 +146,9 @@ async def test_lost_response_replay_timezones_and_tombstones_share_one_fixture_m
 
     assert first.status_code == 200, first.text
     assert [item["status"] for item in first.json()["results"]] == ["applied"] * 7
-    assert [item["status"] for item in replay_after_lost_response.json()["results"]] == [
-        "already_applied"
-    ] * 7
+    assert [
+        item["status"] for item in replay_after_lost_response.json()["results"]
+    ] == ["already_applied"] * 7
 
     pulled = await test_client.get(
         "/api/v2/sync/changes",
@@ -253,7 +257,9 @@ async def test_same_public_entity_id_is_isolated_by_authenticated_account(
             params={"device_id": device},
         )
         assert response.status_code == 200, response.text
-        assert [item["payload"]["title"] for item in response.json()["changes"]] == [expected]
+        assert [item["payload"]["title"] for item in response.json()["changes"]] == [
+            expected
+        ]
 
     stolen = await test_client.get(
         "/api/v2/sync/bootstrap",

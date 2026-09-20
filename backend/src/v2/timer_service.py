@@ -77,7 +77,9 @@ async def _get_active_session(db: AsyncSession, user_id: int) -> Optional[TimerS
     return result.scalar_one_or_none()
 
 
-async def serialize_timer_session(db: AsyncSession, timer: TimerSession) -> TimerSessionResponse:
+async def serialize_timer_session(
+    db: AsyncSession, timer: TimerSession
+) -> TimerSessionResponse:
     activity = await db.get(PlanNode, timer.activity_node_id)
     controller = await db.get(ClientDevice, timer.controller_device_id)
     completed_event = (
@@ -124,7 +126,9 @@ async def _next_segment_sequence(db: AsyncSession, timer_id: int) -> int:
     return int(result.scalar_one()) + 1
 
 
-async def _open_segment(db: AsyncSession, timer: TimerSession, started_at: datetime) -> None:
+async def _open_segment(
+    db: AsyncSession, timer: TimerSession, started_at: datetime
+) -> None:
     db.add(
         TimerSegment(
             session_id=timer.id,
@@ -154,12 +158,16 @@ async def _close_segment(
         raise DomainError("TIMER_SEGMENT_MISSING", "Running timer has no open segment")
     started_at = as_utc(segment.started_at)
     if ended_at < started_at:
-        raise DomainError("COMMAND_TIME_REVERSED", "Timer command predates the running segment")
+        raise DomainError(
+            "COMMAND_TIME_REVERSED", "Timer command predates the running segment"
+        )
     duration_ms = int((ended_at - started_at).total_seconds() * 1000)
     if expected_active_elapsed_ms is not None:
         duration_ms = expected_active_elapsed_ms - timer.active_elapsed_ms
         if duration_ms < 0:
-            raise DomainError("ACTIVE_TIME_REVERSED", "Active elapsed time moved backwards")
+            raise DomainError(
+                "ACTIVE_TIME_REVERSED", "Active elapsed time moved backwards"
+            )
         ended_at = started_at + timedelta(milliseconds=duration_ms)
     if clamp_to_remaining:
         remaining = max(0, timer.max_duration_seconds * 1000 - timer.active_elapsed_ms)
@@ -188,7 +196,9 @@ async def _start(
     occurred_at: datetime,
 ) -> TimerSession:
     if await _get_session(db, user.id, str(command.session_id)) is not None:
-        raise DomainError("TIMER_SESSION_EXISTS", "Timer session UUID already exists", conflict=True)
+        raise DomainError(
+            "TIMER_SESSION_EXISTS", "Timer session UUID already exists", conflict=True
+        )
     active = await _get_active_session(db, user.id)
     if active is not None:
         raise DomainError(
@@ -211,7 +221,9 @@ async def _start(
         raise DomainError("ACTIVITY_NOT_FOUND", "Duration activity was not found")
     node, activity = row
     if activity.tracking_mode != "duration":
-        raise DomainError("INVALID_ACTIVITY_MODE", "Only duration activities can start timers")
+        raise DomainError(
+            "INVALID_ACTIVITY_MODE", "Only duration activities can start timers"
+        )
     target_seconds, max_seconds = _max_duration_seconds(activity)
     timer = TimerSession(
         public_id=str(command.session_id),
@@ -249,17 +261,36 @@ def _validate_existing_command(
     command: TimerCommandRequest,
 ) -> None:
     if command.sequence < timer.next_command_sequence:
-        raise DomainError("COMMAND_SEQUENCE_USED", "Timer command sequence was already used", conflict=True)
+        raise DomainError(
+            "COMMAND_SEQUENCE_USED",
+            "Timer command sequence was already used",
+            conflict=True,
+        )
     if command.sequence > timer.next_command_sequence:
-        raise DomainError("MISSING_PREDECESSOR", "A previous timer command has not arrived yet", conflict=True)
-    if command.expected_revision is not None and command.expected_revision != timer.revision:
-        raise DomainError("REVISION_CONFLICT", "Timer session revision changed", conflict=True)
+        raise DomainError(
+            "MISSING_PREDECESSOR",
+            "A previous timer command has not arrived yet",
+            conflict=True,
+        )
+    if (
+        command.expected_revision is not None
+        and command.expected_revision != timer.revision
+    ):
+        raise DomainError(
+            "REVISION_CONFLICT", "Timer session revision changed", conflict=True
+        )
     if command.expected_control_generation != timer.control_generation:
-        raise DomainError("CONTROL_LOST", "Timer control generation changed", conflict=True)
+        raise DomainError(
+            "CONTROL_LOST", "Timer control generation changed", conflict=True
+        )
     if command.command_type != "takeover" and timer.controller_device_id != device.id:
-        raise DomainError("CONTROL_LOST", "This device does not control the timer", conflict=True)
+        raise DomainError(
+            "CONTROL_LOST", "This device does not control the timer", conflict=True
+        )
     if timer.state not in ACTIVE_STATES:
-        raise DomainError("TIMER_NOT_ACTIVE", "Timer session is no longer active", conflict=True)
+        raise DomainError(
+            "TIMER_NOT_ACTIVE", "Timer session is no longer active", conflict=True
+        )
 
 
 async def _create_allocations(
@@ -316,8 +347,13 @@ async def _complete(
             clamp_to_remaining=True,
             expected_active_elapsed_ms=command.active_elapsed_ms,
         )
-    if timer.target_seconds > 0 and timer.active_elapsed_ms < timer.target_seconds * 1000:
-        raise DomainError("TIMER_TARGET_NOT_REACHED", "Timer target has not been reached")
+    if (
+        timer.target_seconds > 0
+        and timer.active_elapsed_ms < timer.target_seconds * 1000
+    ):
+        raise DomainError(
+            "TIMER_TARGET_NOT_REACHED", "Timer target has not been reached"
+        )
     if timer.active_elapsed_ms > timer.max_duration_seconds * 1000:
         raise DomainError("TIMER_DURATION_LIMIT", "Timer exceeded its maximum duration")
 
@@ -375,11 +411,15 @@ async def _apply_existing(
 ) -> TimerSession:
     _validate_existing_command(timer, device, command)
     if occurred_at < as_utc(timer.state_changed_at):
-        raise DomainError("COMMAND_TIME_REVERSED", "Timer command predates the current state")
+        raise DomainError(
+            "COMMAND_TIME_REVERSED", "Timer command predates the current state"
+        )
 
     if command.command_type == "pause":
         if timer.state != "running":
-            raise DomainError("INVALID_TIMER_TRANSITION", "Only a running timer can be paused")
+            raise DomainError(
+                "INVALID_TIMER_TRANSITION", "Only a running timer can be paused"
+            )
         await _close_segment(
             db,
             timer,
@@ -390,7 +430,9 @@ async def _apply_existing(
         timer.state = "paused"
     elif command.command_type == "resume":
         if timer.state != "paused":
-            raise DomainError("INVALID_TIMER_TRANSITION", "Only a paused timer can be resumed")
+            raise DomainError(
+                "INVALID_TIMER_TRANSITION", "Only a paused timer can be resumed"
+            )
         await _open_segment(db, timer, occurred_at)
         timer.state = "running"
     elif command.command_type == "stop":
@@ -407,7 +449,9 @@ async def _apply_existing(
         timer.ended_at = occurred_at
     elif command.command_type == "takeover":
         if timer.controller_device_id == device.id:
-            raise DomainError("ALREADY_CONTROLLER", "This device already controls the timer")
+            raise DomainError(
+                "ALREADY_CONTROLLER", "This device already controls the timer"
+            )
         if timer.state == "running":
             # The new controller cannot attest to the old controller's monotonic
             # elapsed time. Use the server-observable wall-clock interval, but
@@ -495,7 +539,9 @@ async def process_timer_commands(
                 db.add(record)
                 await db.flush()
         except IntegrityError:
-            raise DomainError("OPERATION_IN_PROGRESS", "The same timer command is being processed")
+            raise DomainError(
+                "OPERATION_IN_PROGRESS", "The same timer command is being processed"
+            )
 
         try:
             async with db.begin_nested():
@@ -578,9 +624,16 @@ async def heartbeat_timer(
     if timer is None:
         raise DomainError("TIMER_NOT_FOUND", "Timer session was not found")
     if timer.state not in ACTIVE_STATES:
-        raise DomainError("TIMER_NOT_ACTIVE", "Timer session is no longer active", conflict=True)
-    if timer.controller_device_id != device.id or timer.control_generation != control_generation:
-        raise DomainError("CONTROL_LOST", "This device no longer controls the timer", conflict=True)
+        raise DomainError(
+            "TIMER_NOT_ACTIVE", "Timer session is no longer active", conflict=True
+        )
+    if (
+        timer.controller_device_id != device.id
+        or timer.control_generation != control_generation
+    ):
+        raise DomainError(
+            "CONTROL_LOST", "This device no longer controls the timer", conflict=True
+        )
     timer.last_heartbeat_at = utc_now()
     timer.updated_at = utc_now()
     await db.flush()

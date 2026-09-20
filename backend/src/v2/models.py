@@ -106,9 +106,7 @@ class UserProfile(SQLModel, table=True):
 
 class Household(SyncableFields, table=True):
     __tablename__ = "households"
-    __table_args__ = (
-        UniqueConstraint("public_id", name="uq_households_public_id"),
-    )
+    __table_args__ = (UniqueConstraint("public_id", name="uq_households_public_id"),)
 
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str = Field(min_length=1, max_length=100)
@@ -119,8 +117,12 @@ class HouseholdMembership(SyncableFields, table=True):
     __tablename__ = "household_memberships"
     __table_args__ = (
         UniqueConstraint("public_id", name="uq_household_memberships_public_id"),
-        UniqueConstraint("household_id", "user_id", name="uq_household_membership_user"),
-        CheckConstraint("role IN ('owner','admin','member')", name="ck_household_membership_role"),
+        UniqueConstraint(
+            "household_id", "user_id", name="uq_household_membership_user"
+        ),
+        CheckConstraint(
+            "role IN ('owner','admin','member')", name="ck_household_membership_role"
+        ),
         CheckConstraint(
             "status IN ('invited','active','left','removed')",
             name="ck_household_membership_status",
@@ -139,7 +141,9 @@ class ClientDevice(SQLModel, table=True):
     __tablename__ = "client_devices"
     __table_args__ = (
         UniqueConstraint("public_id", name="uq_client_devices_public_id"),
-        UniqueConstraint("user_id", "installation_id", name="uq_client_device_installation"),
+        UniqueConstraint(
+            "user_id", "installation_id", name="uq_client_device_installation"
+        ),
         CheckConstraint(
             "platform IN ('android','ios','desktop','hardware','service')",
             name="ck_client_device_platform",
@@ -190,19 +194,26 @@ class UserSyncPolicy(SQLModel, table=True):
 class PlanNode(SyncableFields, table=True):
     __tablename__ = "plan_nodes"
     __table_args__ = (
-        UniqueConstraint("owner_user_id", "public_id", name="uq_plan_node_owner_public_id"),
+        UniqueConstraint(
+            "owner_user_id", "public_id", name="uq_plan_node_owner_public_id"
+        ),
         CheckConstraint("node_kind IN ('goal','activity')", name="ck_plan_node_kind"),
         CheckConstraint(
             "status IN ('active','paused','completed','failed','archived')",
             name="ck_plan_node_status",
         ),
-        CheckConstraint("parent_node_id IS NULL OR parent_node_id != id", name="ck_plan_node_not_self_parent"),
+        CheckConstraint(
+            "parent_node_id IS NULL OR parent_node_id != id",
+            name="ck_plan_node_not_self_parent",
+        ),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     owner_user_id: int = Field(foreign_key="users.id", nullable=False, index=True)
     created_by_user_id: int = Field(foreign_key="users.id", nullable=False, index=True)
-    parent_node_id: Optional[int] = Field(default=None, foreign_key="plan_nodes.id", index=True)
+    parent_node_id: Optional[int] = Field(
+        default=None, foreign_key="plan_nodes.id", index=True
+    )
     node_kind: str = Field(max_length=20, index=True)
     title: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=1000)
@@ -228,20 +239,30 @@ class GoalDetail(SQLModel, table=True):
 class ActivityDetail(SQLModel, table=True):
     __tablename__ = "activity_details"
     __table_args__ = (
-        CheckConstraint("tracking_mode IN ('check','count','duration')", name="ck_activity_tracking_mode"),
+        CheckConstraint(
+            "tracking_mode IN ('check','count','duration')",
+            name="ck_activity_tracking_mode",
+        ),
         CheckConstraint(
             "completion_policy IN ('recurring','one_and_done')",
             name="ck_activity_completion_policy",
         ),
         CheckConstraint("target_value >= 0", name="ck_activity_target_value"),
-        CheckConstraint("target_cycles IS NULL OR target_cycles > 0", name="ck_activity_target_cycles"),
+        CheckConstraint(
+            "target_cycles IS NULL OR target_cycles > 0",
+            name="ck_activity_target_cycles",
+        ),
     )
 
     node_id: int = Field(foreign_key="plan_nodes.id", primary_key=True)
     tracking_mode: str = Field(max_length=20)
     is_countdown: bool = Field(default=False)
-    recurrence_rule_json: str = Field(default='{"schema_version":1,"type":"daily","interval":1}')
-    completion_policy: str = Field(default=CompletionPolicy.RECURRING.value, max_length=20)
+    recurrence_rule_json: str = Field(
+        default='{"schema_version":1,"type":"daily","interval":1}'
+    )
+    completion_policy: str = Field(
+        default=CompletionPolicy.RECURRING.value, max_length=20
+    )
     target_value: Decimal = Field(default=Decimal("1"), decimal_places=4, max_digits=18)
     target_unit: Optional[str] = Field(default=None, max_length=50)
     target_cycles: Optional[int] = Field(default=None)
@@ -254,7 +275,9 @@ class ActivityDetail(SQLModel, table=True):
 class ActivityEvent(SyncableFields, table=True):
     __tablename__ = "activity_events"
     __table_args__ = (
-        UniqueConstraint("owner_user_id", "public_id", name="uq_activity_event_owner_public_id"),
+        UniqueConstraint(
+            "owner_user_id", "public_id", name="uq_activity_event_owner_public_id"
+        ),
         UniqueConstraint(
             "source_device_public_id",
             "external_event_id",
@@ -271,7 +294,10 @@ class ActivityEvent(SyncableFields, table=True):
             "event_type IN ('check_in','count_delta','count_snapshot','duration_session','revert')",
             name="ck_activity_event_type",
         ),
-        CheckConstraint("duration_seconds IS NULL OR duration_seconds >= 0", name="ck_activity_event_duration"),
+        CheckConstraint(
+            "duration_seconds IS NULL OR duration_seconds >= 0",
+            name="ck_activity_event_duration",
+        ),
         CheckConstraint(
             "duration_milliseconds IS NULL OR duration_milliseconds >= 0",
             name="ck_activity_event_duration_ms",
@@ -280,7 +306,9 @@ class ActivityEvent(SyncableFields, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     owner_user_id: int = Field(foreign_key="users.id", nullable=False, index=True)
-    activity_node_id: int = Field(foreign_key="activity_details.node_id", nullable=False, index=True)
+    activity_node_id: int = Field(
+        foreign_key="activity_details.node_id", nullable=False, index=True
+    )
     event_type: str = Field(max_length=30, index=True)
     value: Optional[Decimal] = Field(default=None, decimal_places=4, max_digits=18)
     duration_seconds: Optional[int] = Field(default=None)
@@ -292,10 +320,16 @@ class ActivityEvent(SyncableFields, table=True):
     timezone: str = Field(default="UTC", max_length=64)
     note: str = Field(default="", max_length=1000)
     source_type: str = Field(default=SourceType.APP.value, max_length=30)
-    source_device_public_id: Optional[str] = Field(default=None, max_length=36, index=True)
+    source_device_public_id: Optional[str] = Field(
+        default=None, max_length=36, index=True
+    )
     external_event_id: Optional[str] = Field(default=None, max_length=200)
-    recorded_by_user_id: Optional[int] = Field(default=None, foreign_key="users.id", index=True)
-    reverts_event_id: Optional[int] = Field(default=None, foreign_key="activity_events.id", index=True)
+    recorded_by_user_id: Optional[int] = Field(
+        default=None, foreign_key="users.id", index=True
+    )
+    reverts_event_id: Optional[int] = Field(
+        default=None, foreign_key="activity_events.id", index=True
+    )
     payload_json: str = Field(default="{}")
     received_at: datetime = Field(default_factory=utc_now)
 
@@ -303,8 +337,12 @@ class ActivityEvent(SyncableFields, table=True):
 class TrackedMetric(SyncableFields, table=True):
     __tablename__ = "tracked_metrics"
     __table_args__ = (
-        UniqueConstraint("owner_user_id", "public_id", name="uq_tracked_metric_owner_public_id"),
-        CheckConstraint("decimal_places BETWEEN 0 AND 6", name="ck_tracked_metric_decimal_places"),
+        UniqueConstraint(
+            "owner_user_id", "public_id", name="uq_tracked_metric_owner_public_id"
+        ),
+        CheckConstraint(
+            "decimal_places BETWEEN 0 AND 6", name="ck_tracked_metric_decimal_places"
+        ),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -316,8 +354,12 @@ class TrackedMetric(SyncableFields, table=True):
     decimal_places: int = Field(default=0)
     aggregation_type: str = Field(default="average", max_length=30)
     target_direction: Optional[str] = Field(default=None, max_length=30)
-    target_value: Optional[Decimal] = Field(default=None, decimal_places=6, max_digits=20)
-    target_value_upper: Optional[Decimal] = Field(default=None, decimal_places=6, max_digits=20)
+    target_value: Optional[Decimal] = Field(
+        default=None, decimal_places=6, max_digits=20
+    )
+    target_value_upper: Optional[Decimal] = Field(
+        default=None, decimal_places=6, max_digits=20
+    )
     icon: str = Field(default="favorite", max_length=100)
     color_hex: str = Field(default="#2196F3", max_length=20)
     status: str = Field(default="active", max_length=20, index=True)
@@ -326,7 +368,9 @@ class TrackedMetric(SyncableFields, table=True):
 class MetricObservation(SyncableFields, table=True):
     __tablename__ = "metric_observations"
     __table_args__ = (
-        UniqueConstraint("owner_user_id", "public_id", name="uq_metric_observation_owner_public_id"),
+        UniqueConstraint(
+            "owner_user_id", "public_id", name="uq_metric_observation_owner_public_id"
+        ),
         UniqueConstraint(
             "source_device_public_id",
             "external_event_id",
@@ -344,9 +388,13 @@ class MetricObservation(SyncableFields, table=True):
     timezone: str = Field(default="UTC", max_length=64)
     note: str = Field(default="", max_length=1000)
     source_type: str = Field(default=SourceType.APP.value, max_length=30)
-    source_device_public_id: Optional[str] = Field(default=None, max_length=36, index=True)
+    source_device_public_id: Optional[str] = Field(
+        default=None, max_length=36, index=True
+    )
     external_event_id: Optional[str] = Field(default=None, max_length=200)
-    recorded_by_user_id: Optional[int] = Field(default=None, foreign_key="users.id", index=True)
+    recorded_by_user_id: Optional[int] = Field(
+        default=None, foreign_key="users.id", index=True
+    )
     payload_json: str = Field(default="{}")
     received_at: datetime = Field(default_factory=utc_now)
 
@@ -354,7 +402,9 @@ class MetricObservation(SyncableFields, table=True):
 class ActivityMetricLinkV2(SyncableFields, table=True):
     __tablename__ = "activity_metric_links_v2"
     __table_args__ = (
-        UniqueConstraint("owner_user_id", "public_id", name="uq_activity_metric_link_owner_public_id"),
+        UniqueConstraint(
+            "owner_user_id", "public_id", name="uq_activity_metric_link_owner_public_id"
+        ),
         Index(
             "uq_activity_metric_link_active_pair",
             "activity_node_id",
@@ -367,7 +417,9 @@ class ActivityMetricLinkV2(SyncableFields, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     owner_user_id: int = Field(foreign_key="users.id", nullable=False, index=True)
-    activity_node_id: int = Field(foreign_key="activity_details.node_id", nullable=False, index=True)
+    activity_node_id: int = Field(
+        foreign_key="activity_details.node_id", nullable=False, index=True
+    )
     metric_id: int = Field(foreign_key="tracked_metrics.id", nullable=False, index=True)
     coefficient: Decimal = Field(default=Decimal("1"), decimal_places=6, max_digits=20)
     show_in_activity_detail: bool = Field(default=True)
@@ -378,7 +430,9 @@ class ActivityMetricLinkV2(SyncableFields, table=True):
 class TimerSession(SQLModel, table=True):
     __tablename__ = "timer_sessions"
     __table_args__ = (
-        UniqueConstraint("owner_user_id", "public_id", name="uq_timer_session_owner_public_id"),
+        UniqueConstraint(
+            "owner_user_id", "public_id", name="uq_timer_session_owner_public_id"
+        ),
         Index(
             "uq_timer_session_owner_active",
             "owner_user_id",
@@ -392,17 +446,25 @@ class TimerSession(SQLModel, table=True):
         ),
         CheckConstraint("control_generation >= 1", name="ck_timer_session_generation"),
         CheckConstraint("revision >= 1", name="ck_timer_session_revision"),
-        CheckConstraint("next_command_sequence >= 2", name="ck_timer_session_next_sequence"),
+        CheckConstraint(
+            "next_command_sequence >= 2", name="ck_timer_session_next_sequence"
+        ),
         CheckConstraint("active_elapsed_ms >= 0", name="ck_timer_session_elapsed"),
-        CheckConstraint("max_duration_seconds > 0", name="ck_timer_session_max_duration"),
+        CheckConstraint(
+            "max_duration_seconds > 0", name="ck_timer_session_max_duration"
+        ),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     public_id: str = Field(default_factory=new_uuid, max_length=36, index=True)
     owner_user_id: int = Field(foreign_key="users.id", nullable=False, index=True)
-    activity_node_id: int = Field(foreign_key="activity_details.node_id", nullable=False, index=True)
+    activity_node_id: int = Field(
+        foreign_key="activity_details.node_id", nullable=False, index=True
+    )
     state: str = Field(default=TimerState.RUNNING.value, max_length=20, index=True)
-    controller_device_id: int = Field(foreign_key="client_devices.id", nullable=False, index=True)
+    controller_device_id: int = Field(
+        foreign_key="client_devices.id", nullable=False, index=True
+    )
     control_generation: int = Field(default=1)
     revision: int = Field(default=1)
     next_command_sequence: int = Field(default=2)
@@ -415,7 +477,9 @@ class TimerSession(SQLModel, table=True):
     max_duration_seconds: int = Field(default=86_400, gt=0)
     active_elapsed_ms: int = Field(default=0, ge=0)
     last_heartbeat_at: Optional[datetime] = Field(default=None)
-    completed_event_id: Optional[int] = Field(default=None, foreign_key="activity_events.id", index=True)
+    completed_event_id: Optional[int] = Field(
+        default=None, foreign_key="activity_events.id", index=True
+    )
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -423,7 +487,9 @@ class TimerSession(SQLModel, table=True):
 class TimerSegment(SQLModel, table=True):
     __tablename__ = "timer_segments"
     __table_args__ = (
-        UniqueConstraint("session_id", "sequence", name="uq_timer_segment_session_sequence"),
+        UniqueConstraint(
+            "session_id", "sequence", name="uq_timer_segment_session_sequence"
+        ),
         Index(
             "uq_timer_segment_session_open",
             "session_id",
@@ -432,7 +498,9 @@ class TimerSegment(SQLModel, table=True):
             postgresql_where=text("ended_at IS NULL"),
         ),
         CheckConstraint("sequence >= 1", name="ck_timer_segment_sequence"),
-        CheckConstraint("duration_ms IS NULL OR duration_ms >= 0", name="ck_timer_segment_duration"),
+        CheckConstraint(
+            "duration_ms IS NULL OR duration_ms >= 0", name="ck_timer_segment_duration"
+        ),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -446,7 +514,9 @@ class TimerSegment(SQLModel, table=True):
 class TimerCommand(SQLModel, table=True):
     __tablename__ = "timer_commands"
     __table_args__ = (
-        UniqueConstraint("device_id", "command_id", name="uq_timer_command_device_command"),
+        UniqueConstraint(
+            "device_id", "command_id", name="uq_timer_command_device_command"
+        ),
         CheckConstraint(
             "command_type IN ('start','pause','resume','stop','cancel','takeover')",
             name="ck_timer_command_type",
@@ -471,12 +541,16 @@ class TimerCommand(SQLModel, table=True):
 class DurationDayAllocation(SQLModel, table=True):
     __tablename__ = "duration_day_allocations"
     __table_args__ = (
-        UniqueConstraint("activity_event_id", "local_date", name="uq_duration_allocation_event_date"),
+        UniqueConstraint(
+            "activity_event_id", "local_date", name="uq_duration_allocation_event_date"
+        ),
         CheckConstraint("duration_ms > 0", name="ck_duration_allocation_positive"),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    activity_event_id: int = Field(foreign_key="activity_events.id", nullable=False, index=True)
+    activity_event_id: int = Field(
+        foreign_key="activity_events.id", nullable=False, index=True
+    )
     local_date: date = Field(index=True)
     timezone: str = Field(max_length=64)
     duration_ms: int = Field(gt=0)
@@ -485,7 +559,9 @@ class DurationDayAllocation(SQLModel, table=True):
 class SyncOperation(SQLModel, table=True):
     __tablename__ = "sync_operations"
     __table_args__ = (
-        UniqueConstraint("device_id", "operation_id", name="uq_sync_operation_device_operation"),
+        UniqueConstraint(
+            "device_id", "operation_id", name="uq_sync_operation_device_operation"
+        ),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -531,7 +607,9 @@ class EntityRevisionSnapshot(SQLModel, table=True):
     operation: str = Field(max_length=20)
     payload_json: str = Field(default="{}")
     payload_hash: str = Field(max_length=64)
-    origin_device_id: Optional[int] = Field(default=None, foreign_key="client_devices.id", index=True)
+    origin_device_id: Optional[int] = Field(
+        default=None, foreign_key="client_devices.id", index=True
+    )
     origin_operation_id: Optional[str] = Field(default=None, max_length=36, index=True)
     created_at: datetime = Field(default_factory=utc_now, index=True)
 
@@ -551,7 +629,9 @@ class SyncChange(SQLModel, table=True):
     revision: int = Field(ge=1)
     payload_json: str = Field(default="{}")
     origin_user_id: int = Field(foreign_key="users.id", nullable=False, index=True)
-    origin_device_id: Optional[int] = Field(default=None, foreign_key="client_devices.id", index=True)
+    origin_device_id: Optional[int] = Field(
+        default=None, foreign_key="client_devices.id", index=True
+    )
     origin_operation_id: Optional[str] = Field(default=None, max_length=36, index=True)
     changed_at: datetime = Field(default_factory=utc_now, index=True)
 

@@ -1,4 +1,5 @@
 """Configuration management for the backend application."""
+
 import warnings
 from typing import Optional
 from pydantic import model_validator
@@ -27,10 +28,7 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        case_sensitive=False,
-        extra="ignore"
+        env_file=".env", env_file_encoding="utf-8", case_sensitive=False, extra="ignore"
     )
 
     # Database settings
@@ -50,24 +48,35 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: Optional[str] = None
 
     # CORS settings
-    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173", "http://localhost:8080", "http://localhost:4200"]
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:8080",
+        "http://localhost:4200",
+    ]
 
     @model_validator(mode="after")
     def validate_runtime_settings(self):
         """Fail closed for unsupported storage and unsafe production secrets."""
-        build_database_adapter(self.DATABASE_TYPE, self.DATABASE_URL, self.SQLITE_DB_PATH)
+        build_database_adapter(
+            self.DATABASE_TYPE, self.DATABASE_URL, self.SQLITE_DB_PATH
+        )
         is_production = self.ENVIRONMENT.lower() == "production"
         if bool(self.ADMIN_USERNAME) != bool(self.ADMIN_PASSWORD):
-            raise ValueError("ADMIN_USERNAME and ADMIN_PASSWORD must be configured together")
+            raise ValueError(
+                "ADMIN_USERNAME and ADMIN_PASSWORD must be configured together"
+            )
         if self.ADMIN_PASSWORD and len(self.ADMIN_PASSWORD) < 12:
             raise ValueError("ADMIN_PASSWORD must contain at least 12 characters")
         if is_production and self.JWT_SECRET_KEY == DEFAULT_JWT_SECRET:
-            raise ValueError("JWT_SECRET_KEY must be explicitly configured in production")
+            raise ValueError(
+                "JWT_SECRET_KEY must be explicitly configured in production"
+            )
         if self.JWT_SECRET_KEY == DEFAULT_JWT_SECRET and not is_production:
             warnings.warn(
                 "WARNING: Using default JWT_SECRET_KEY. "
                 "This is allowed for local development only.",
-                UserWarning
+                UserWarning,
             )
         return self
 

@@ -30,10 +30,22 @@ dev = [
 [tool.ruff]
 target-version = "py312"
 required-version = "==0.16.8"
+line-length = 88
+indent-width = 4
+preview = false
+
+[tool.ruff.format]
+# This gate formats Python source, not executable examples in documentation.
+exclude = ["*.md"]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+skip-magic-trailing-comma = false
+docstring-code-format = false
 
 [tool.ruff.lint]
-# Start with import/syntax/Pyflakes checks. Formatting and additional rule
-# families are separate #20 batches, not silently enabled by tool upgrades.
+# Additional lint rule families are separate #20 batches, not silently
+# enabled by formatter adoption or tool upgrades.
 select = ["E4", "E9", "F"]
 
 [tool.pytest.ini_options]

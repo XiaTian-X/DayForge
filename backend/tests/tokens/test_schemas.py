@@ -22,7 +22,9 @@ from src.tokens.schemas import TokenListResponse, TokenResponse
             "2026-09-13T00:12:34Z",
         ),
         (
-            datetime(2026, 9, 13, 23, 12, 34, 123456, tzinfo=timezone(timedelta(hours=-7))),
+            datetime(
+                2026, 9, 13, 23, 12, 34, 123456, tzinfo=timezone(timedelta(hours=-7))
+            ),
             "2026-09-14T06:12:34.123456Z",
         ),
     ],
@@ -53,7 +55,9 @@ def test_response_preserves_fields_dates_and_filters_internal_data(
     if schema is TokenResponse:
         expected["token"] = "test-only-placeholder"
     assert response.model_dump(mode="json") == expected
-    original_instant = created_at if created_at.tzinfo else created_at.replace(tzinfo=timezone.utc)
+    original_instant = (
+        created_at if created_at.tzinfo else created_at.replace(tzinfo=timezone.utc)
+    )
     assert response.created_at == original_instant
     assert response.created_at.tzinfo == timezone.utc
 

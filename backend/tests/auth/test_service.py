@@ -1,4 +1,5 @@
 """Tests for authentication service layer."""
+
 import pytest
 from datetime import datetime, timedelta, timezone
 import jwt
@@ -49,7 +50,16 @@ class TestPasswordHashing:
         assert verify_password("legacy password", hashed)
         assert not verify_password("wrong password", hashed)
 
-    @pytest.mark.parametrize("hashed", ["", "$2b$broken", "$unknown$v2$abc", PASSWORD_HASH_PREFIX + "broken", "$2b$中文"])
+    @pytest.mark.parametrize(
+        "hashed",
+        [
+            "",
+            "$2b$broken",
+            "$unknown$v2$abc",
+            PASSWORD_HASH_PREFIX + "broken",
+            "$2b$中文",
+        ],
+    )
     def test_invalid_hash_fails_closed(self, hashed):
         assert not verify_password("password", hashed)
 
@@ -75,9 +85,7 @@ class TestCreateAccessToken:
 
         # Decode and verify
         payload = jwt.decode(
-            token,
-            settings.JWT_SECRET_KEY,
-            algorithms=[settings.JWT_ALGORITHM]
+            token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
         )
 
         assert payload["sub"] == "user-123"
@@ -91,9 +99,7 @@ class TestCreateAccessToken:
         token = create_access_token(data, expires_delta=custom_expiry)
 
         payload = jwt.decode(
-            token,
-            settings.JWT_SECRET_KEY,
-            algorithms=[settings.JWT_ALGORITHM]
+            token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
         )
 
         # Check expiration is approximately 1 hour from now
@@ -109,13 +115,13 @@ class TestCreateAccessToken:
         token = create_access_token(data)
 
         payload = jwt.decode(
-            token,
-            settings.JWT_SECRET_KEY,
-            algorithms=[settings.JWT_ALGORITHM]
+            token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
         )
 
         exp_time = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
-        expected_time = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        expected_time = datetime.now(timezone.utc) + timedelta(
+            minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
+        )
 
         # Allow 1 minute tolerance
         assert abs((exp_time - expected_time).total_seconds()) < 60
@@ -130,9 +136,7 @@ class TestCreateRefreshToken:
         token = create_refresh_token(data)
 
         payload = jwt.decode(
-            token,
-            settings.JWT_SECRET_KEY,
-            algorithms=[settings.JWT_ALGORITHM]
+            token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
         )
 
         assert payload["sub"] == "user-123"
@@ -145,13 +149,13 @@ class TestCreateRefreshToken:
         token = create_refresh_token(data)
 
         payload = jwt.decode(
-            token,
-            settings.JWT_SECRET_KEY,
-            algorithms=[settings.JWT_ALGORITHM]
+            token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
         )
 
         exp_time = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
-        expected_time = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+        expected_time = datetime.now(timezone.utc) + timedelta(
+            days=settings.REFRESH_TOKEN_EXPIRE_DAYS
+        )
 
         # Allow 1 minute tolerance
         assert abs((exp_time - expected_time).total_seconds()) < 60
@@ -162,9 +166,7 @@ class TestCreateRefreshToken:
         token = create_refresh_token(data)
 
         payload = jwt.decode(
-            token,
-            settings.JWT_SECRET_KEY,
-            algorithms=[settings.JWT_ALGORITHM]
+            token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
         )
 
         assert payload["type"] == "refresh"

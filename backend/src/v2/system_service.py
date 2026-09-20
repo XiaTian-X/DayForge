@@ -30,7 +30,9 @@ async def get_or_create_server_identity(session: AsyncSession) -> ServerInstance
             session.add(identity)
             await session.flush()
     except IntegrityError:
-        result = await session.execute(select(ServerInstance).where(ServerInstance.id == 1))
+        result = await session.execute(
+            select(ServerInstance).where(ServerInstance.id == 1)
+        )
         identity = result.scalar_one()
     return identity
 

@@ -9,7 +9,9 @@ from tests.account_fixtures import TEST_ACCOUNT_PASSWORD, account_password_hash
 def test_seed_hash_is_generated_once_with_real_password_security():
     account_password_hash.cache_clear()
     try:
-        with patch.object(service, "get_password_hash", wraps=service.get_password_hash) as generate:
+        with patch.object(
+            service, "get_password_hash", wraps=service.get_password_hash
+        ) as generate:
             first = account_password_hash()
             assert account_password_hash() == first
             generate.assert_called_once_with(TEST_ACCOUNT_PASSWORD)

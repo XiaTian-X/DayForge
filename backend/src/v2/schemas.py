@@ -5,27 +5,111 @@ from decimal import Decimal
 from typing import Annotated, Any, Literal, Optional, Union
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from src.v2.time_utils import local_date_at, require_iana_timezone
 
 
 ANDROID_ICON_NAMES = frozenset(
     {
-        "water", "exercise", "sleep", "food", "book", "meditation", "work", "health",
-        "fitness_center", "directions_bike", "sports_gymnastics", "sports", "pool", "hiking",
-        "directions_walk", "sports_soccer", "sports_basketball", "local_hospital",
-        "medical_services", "healing", "bloodtype", "sanitizer", "restaurant", "local_pharmacy",
-        "vaccines", "school", "menu_book", "lightbulb", "calculate", "translate", "science",
-        "edit_note", "psychology", "code", "spa", "sentiment_satisfied", "mood",
-        "psychology_alt", "sentiment_very_satisfied", "nature", "forest", "grain",
-        "self_improvement", "home", "shopping_bag", "shopping_cart", "cleaning_services",
-        "local_laundry_service", "pets", "family_restroom", "celebration", "nightlife", "task_alt",
-        "shower", "bathtub", "wash", "brush_teeth", "face_wash", "hair_brush", "shave",
-        "nail_care", "people", "group", "chat", "forum", "handshake", "account_balance",
-        "savings", "payment", "receipt", "attach_money", "brush", "music_note", "camera", "edit",
-        "design_services", "directions_car", "train", "flight", "movie", "tv", "sports_esports",
-        "kitchen", "build", "iron", "park", "landscape", "terrain", "phone", "computer", "devices",
+        "water",
+        "exercise",
+        "sleep",
+        "food",
+        "book",
+        "meditation",
+        "work",
+        "health",
+        "fitness_center",
+        "directions_bike",
+        "sports_gymnastics",
+        "sports",
+        "pool",
+        "hiking",
+        "directions_walk",
+        "sports_soccer",
+        "sports_basketball",
+        "local_hospital",
+        "medical_services",
+        "healing",
+        "bloodtype",
+        "sanitizer",
+        "restaurant",
+        "local_pharmacy",
+        "vaccines",
+        "school",
+        "menu_book",
+        "lightbulb",
+        "calculate",
+        "translate",
+        "science",
+        "edit_note",
+        "psychology",
+        "code",
+        "spa",
+        "sentiment_satisfied",
+        "mood",
+        "psychology_alt",
+        "sentiment_very_satisfied",
+        "nature",
+        "forest",
+        "grain",
+        "self_improvement",
+        "home",
+        "shopping_bag",
+        "shopping_cart",
+        "cleaning_services",
+        "local_laundry_service",
+        "pets",
+        "family_restroom",
+        "celebration",
+        "nightlife",
+        "task_alt",
+        "shower",
+        "bathtub",
+        "wash",
+        "brush_teeth",
+        "face_wash",
+        "hair_brush",
+        "shave",
+        "nail_care",
+        "people",
+        "group",
+        "chat",
+        "forum",
+        "handshake",
+        "account_balance",
+        "savings",
+        "payment",
+        "receipt",
+        "attach_money",
+        "brush",
+        "music_note",
+        "camera",
+        "edit",
+        "design_services",
+        "directions_car",
+        "train",
+        "flight",
+        "movie",
+        "tv",
+        "sports_esports",
+        "kitchen",
+        "build",
+        "iron",
+        "park",
+        "landscape",
+        "terrain",
+        "phone",
+        "computer",
+        "devices",
     }
 )
 
@@ -149,7 +233,9 @@ class GoalPayload(ApiModel):
     due_date: Optional[date] = None
     target_cycles: Optional[int] = Field(default=None, gt=0, le=2_147_483_647)
     failure_policy: FailurePolicy = Field(default_factory=StrictFailurePolicy)
-    evaluation_policy: GoalEvaluationPolicy = Field(default_factory=ManualGoalEvaluation)
+    evaluation_policy: GoalEvaluationPolicy = Field(
+        default_factory=ManualGoalEvaluation
+    )
     manual_result: Optional[Literal["succeeded", "failed"]] = None
 
     @model_validator(mode="after")
@@ -187,16 +273,28 @@ class ActivityPayload(ApiModel):
         if self.tracking_mode in {"count", "duration"} and self.target_value <= 0:
             raise ValueError("count and duration targets must be greater than zero")
         if self.is_countdown and self.tracking_mode not in {"count", "duration"}:
-            raise ValueError("countdown mode is only valid for count and duration activities")
-        if self.tracking_mode == "count" and self.target_value != self.target_value.to_integral_value():
-            raise ValueError("count targets must be whole numbers for Android compatibility")
+            raise ValueError(
+                "countdown mode is only valid for count and duration activities"
+            )
+        if (
+            self.tracking_mode == "count"
+            and self.target_value != self.target_value.to_integral_value()
+        ):
+            raise ValueError(
+                "count targets must be whole numbers for Android compatibility"
+            )
         if self.tracking_mode == "count" and self.target_value > 2_147_483_647:
             raise ValueError("count targets must fit the Android integer range")
         if self.tracking_mode == "duration":
             if self.target_unit not in (None, "second"):
                 raise ValueError("duration targets must use seconds")
-            if self.target_value != self.target_value.to_integral_value() or self.target_value % 60 != 0:
-                raise ValueError("duration targets must be whole minutes expressed in seconds")
+            if (
+                self.target_value != self.target_value.to_integral_value()
+                or self.target_value % 60 != 0
+            ):
+                raise ValueError(
+                    "duration targets must be whole minutes expressed in seconds"
+                )
             if self.target_value > 2_147_483_640:
                 raise ValueError("duration targets must fit the Android integer range")
             self.target_unit = "second"
@@ -231,12 +329,16 @@ class PlanNodePayload(ApiModel):
             if expected_status is not None and self.status != expected_status:
                 raise ValueError("goal status must match its manual result")
             if expected_status is None and self.status not in {"active", "archived"}:
-                raise ValueError("goal statuses completed and failed require a manual result")
+                raise ValueError(
+                    "goal statuses completed and failed require a manual result"
+                )
         else:
             if self.activity is None or self.goal is not None:
                 raise ValueError("activity nodes require activity details only")
             if self.status not in {"active", "archived"}:
-                raise ValueError("Android activities only support active or archived status")
+                raise ValueError(
+                    "Android activities only support active or archived status"
+                )
         return self
 
     @field_validator("icon")
@@ -264,7 +366,9 @@ class ActivityEventPayload(ApiModel):
     local_date: date
     timezone: str = Field(min_length=1, max_length=64)
     note: str = Field(default="", max_length=1000)
-    source_type: Literal["app", "widget", "api", "smart_device", "automation", "import"] = "app"
+    source_type: Literal[
+        "app", "widget", "api", "smart_device", "automation", "import"
+    ] = "app"
     source_device_id: Optional[UUID] = None
     external_event_id: Optional[str] = Field(default=None, max_length=200)
     reverts_event_uuid: Optional[UUID] = None
@@ -287,8 +391,14 @@ class ActivityEventPayload(ApiModel):
         if self.event_type in {"count_delta", "count_snapshot"} and self.value is None:
             raise ValueError("count events require value")
         if self.event_type == "duration_session":
-            if self.duration_seconds is None or self.started_at is None or self.ended_at is None:
-                raise ValueError("duration_session requires duration_seconds, started_at and ended_at")
+            if (
+                self.duration_seconds is None
+                or self.started_at is None
+                or self.ended_at is None
+            ):
+                raise ValueError(
+                    "duration_session requires duration_seconds, started_at and ended_at"
+                )
             if self.ended_at < self.started_at:
                 raise ValueError("ended_at must not be before started_at")
             if self.duration_seconds > 86_400:
@@ -296,18 +406,33 @@ class ActivityEventPayload(ApiModel):
             if self.duration_milliseconds is None:
                 self.duration_milliseconds = self.duration_seconds * 1000
             if self.duration_milliseconds // 1000 != self.duration_seconds:
-                raise ValueError("duration milliseconds must agree with duration seconds")
-            if self.duration_milliseconds > int((self.ended_at - self.started_at).total_seconds() * 1000):
-                raise ValueError("active duration must not exceed the wall-clock interval")
+                raise ValueError(
+                    "duration milliseconds must agree with duration seconds"
+                )
+            if self.duration_milliseconds > int(
+                (self.ended_at - self.started_at).total_seconds() * 1000
+            ):
+                raise ValueError(
+                    "active duration must not exceed the wall-clock interval"
+                )
         if self.event_type == "revert" and self.reverts_event_uuid is None:
             raise ValueError("revert events require reverts_event_uuid")
         if self.event_type != "revert" and self.reverts_event_uuid is not None:
             raise ValueError("reverts_event_uuid is only valid for revert events")
-        if self.source_type in {"smart_device", "automation"} and not self.external_event_id:
+        if (
+            self.source_type in {"smart_device", "automation"}
+            and not self.external_event_id
+        ):
             raise ValueError("automated sources require external_event_id")
-        date_basis = self.started_at if self.event_type == "duration_session" else self.occurred_at
+        date_basis = (
+            self.started_at
+            if self.event_type == "duration_session"
+            else self.occurred_at
+        )
         if local_date_at(date_basis, self.timezone) != self.local_date:
-            raise ValueError("local_date does not match the event timestamp and timezone")
+            raise ValueError(
+                "local_date does not match the event timestamp and timezone"
+            )
         return self
 
 
@@ -330,7 +455,9 @@ class MetricPayload(ApiModel):
             if self.target_value is None or self.target_value_upper is None:
                 raise ValueError("range targets require lower and upper values")
             if self.target_value_upper < self.target_value:
-                raise ValueError("target_value_upper must not be less than target_value")
+                raise ValueError(
+                    "target_value_upper must not be less than target_value"
+                )
         return self
 
     @field_validator("icon")
@@ -347,7 +474,9 @@ class MetricObservationPayload(ApiModel):
     local_date: date
     timezone: str = Field(min_length=1, max_length=64)
     note: str = Field(default="", max_length=1000)
-    source_type: Literal["app", "widget", "api", "smart_device", "automation", "import"] = "app"
+    source_type: Literal[
+        "app", "widget", "api", "smart_device", "automation", "import"
+    ] = "app"
     source_device_id: Optional[UUID] = None
     external_event_id: Optional[str] = Field(default=None, max_length=200)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -388,10 +517,15 @@ class DeviceRegisterRequest(ApiModel):
 
     @model_validator(mode="after")
     def validate_device_identity(self):
-        if self.device_class == "interactive" and self.platform in {"hardware", "service"}:
+        if self.device_class == "interactive" and self.platform in {
+            "hardware",
+            "service",
+        }:
             raise ValueError("interactive devices must use an app platform")
         if self.device_class != "interactive" and self.platform in {"android", "ios"}:
-            raise ValueError("hardware and automation devices must use hardware, service or desktop")
+            raise ValueError(
+                "hardware and automation devices must use hardware, service or desktop"
+            )
         return self
 
 
@@ -466,14 +600,30 @@ class TimerCommandRequest(ApiModel):
     @model_validator(mode="after")
     def validate_command_shape(self):
         if self.command_type == "start":
-            if self.sequence != 1 or self.activity_uuid is None or self.timezone is None:
-                raise ValueError("start requires sequence 1, activity_uuid and timezone")
-            if self.expected_control_generation != 0 or self.expected_revision is not None:
-                raise ValueError("start must not expect an existing generation or revision")
+            if (
+                self.sequence != 1
+                or self.activity_uuid is None
+                or self.timezone is None
+            ):
+                raise ValueError(
+                    "start requires sequence 1, activity_uuid and timezone"
+                )
+            if (
+                self.expected_control_generation != 0
+                or self.expected_revision is not None
+            ):
+                raise ValueError(
+                    "start must not expect an existing generation or revision"
+                )
         elif self.activity_uuid is not None or self.timezone is not None:
             raise ValueError("activity_uuid and timezone are only valid for start")
-        if self.command_type not in {"pause", "stop", "cancel"} and self.active_elapsed_ms is not None:
-            raise ValueError("active_elapsed_ms is only valid for pause, stop or cancel")
+        if (
+            self.command_type not in {"pause", "stop", "cancel"}
+            and self.active_elapsed_ms is not None
+        ):
+            raise ValueError(
+                "active_elapsed_ms is only valid for pause, stop or cancel"
+            )
         return self
 
 
@@ -515,7 +665,11 @@ class TimerHeartbeatResponse(ApiModel):
 class SyncOperationRequest(ApiModel):
     operation_id: UUID
     entity_type: Literal[
-        "plan_node", "activity_event", "metric", "metric_observation", "activity_metric_link"
+        "plan_node",
+        "activity_event",
+        "metric",
+        "metric_observation",
+        "activity_metric_link",
     ]
     entity_uuid: UUID
     action: Literal["upsert", "delete"]

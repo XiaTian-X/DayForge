@@ -5,7 +5,7 @@ from src.auth.service import (
     get_password_hash,
     create_access_token,
     create_refresh_token,
-    verify_token
+    verify_token,
 )
 
 
@@ -20,19 +20,20 @@ class TestRefreshTokenEndpoint:
         user = User(
             username="testuser",
             email="refresh1@example.com",
-            password_hash=get_password_hash("password123")
+            password_hash=get_password_hash("password123"),
         )
         async_session.add(user)
         await async_session.commit()
         await async_session.refresh(user)
 
         # Create refresh token for the user
-        refresh_token = create_refresh_token({"sub": str(user.id), "ver": user.auth_version})
+        refresh_token = create_refresh_token(
+            {"sub": str(user.id), "ver": user.auth_version}
+        )
 
         # Call refresh endpoint
         response = await test_client.post(
-            "/api/v1/auth/refresh",
-            json={"refresh_token": refresh_token}
+            "/api/v1/auth/refresh", json={"refresh_token": refresh_token}
         )
 
         assert response.status_code == 200
@@ -55,8 +56,7 @@ class TestRefreshTokenEndpoint:
     async def test_refresh_token_invalid_returns_401(self, test_client):
         """Test 2: Invalid refresh token returns 401."""
         response = await test_client.post(
-            "/api/v1/auth/refresh",
-            json={"refresh_token": "invalid-token-string"}
+            "/api/v1/auth/refresh", json={"refresh_token": "invalid-token-string"}
         )
 
         assert response.status_code == 401
@@ -71,35 +71,33 @@ class TestRefreshTokenEndpoint:
         user = User(
             username="testuser",
             email="wrongtype@example.com",
-            password_hash=get_password_hash("password123")
+            password_hash=get_password_hash("password123"),
         )
         async_session.add(user)
         await async_session.commit()
         await async_session.refresh(user)
 
         # Create an ACCESS token instead of refresh token
-        access_token = create_access_token({"sub": str(user.id), "ver": user.auth_version})
+        access_token = create_access_token(
+            {"sub": str(user.id), "ver": user.auth_version}
+        )
 
         # Try to use access token for refresh
         response = await test_client.post(
-            "/api/v1/auth/refresh",
-            json={"refresh_token": access_token}
+            "/api/v1/auth/refresh", json={"refresh_token": access_token}
         )
 
         assert response.status_code == 401
         data = response.json()
         assert "detail" in data
 
-    async def test_refresh_token_nonexistent_user_returns_401(
-        self, test_client
-    ):
+    async def test_refresh_token_nonexistent_user_returns_401(self, test_client):
         """Test 4: Refresh token for non-existent user returns 401."""
         # Create a valid refresh token for a non-existent user ID
         refresh_token = create_refresh_token({"sub": "99999", "ver": 1})
 
         response = await test_client.post(
-            "/api/v1/auth/refresh",
-            json={"refresh_token": refresh_token}
+            "/api/v1/auth/refresh", json={"refresh_token": refresh_token}
         )
 
         assert response.status_code == 401

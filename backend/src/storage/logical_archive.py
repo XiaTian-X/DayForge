@@ -13,7 +13,16 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import Boolean, Date, DateTime, MetaData, Numeric, Time, create_engine, select
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    MetaData,
+    Numeric,
+    Time,
+    create_engine,
+    select,
+)
 from sqlalchemy.engine import Connection, Engine
 
 from src.storage.sqlite_maintenance import StorageValidationError
@@ -54,13 +63,16 @@ def _canonical(value: Any) -> Any:
     if isinstance(value, Decimal):
         return format(value, "f")
     if isinstance(value, bytes):
-        raise StorageValidationError("binary database values are not supported by archive v1")
+        raise StorageValidationError(
+            "binary database values are not supported by archive v1"
+        )
     return value
 
 
 def _json_line(value: dict[str, Any]) -> bytes:
     return (
-        json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n"
+        json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        + "\n"
     ).encode("utf-8")
 
 
@@ -73,14 +85,21 @@ def _reflect(engine: Engine) -> MetaData:
     metadata.reflect(bind=engine)
     missing = {"server_instances", "users"} - set(metadata.tables)
     if missing:
-        raise StorageValidationError(f"database is missing required tables: {sorted(missing)}")
+        raise StorageValidationError(
+            f"database is missing required tables: {sorted(missing)}"
+        )
     return metadata
 
 
-def _source_rows(connection: Connection, metadata: MetaData) -> dict[str, list[dict[str, Any]]]:
+def _source_rows(
+    connection: Connection, metadata: MetaData
+) -> dict[str, list[dict[str, Any]]]:
     names = ["server_instances", *TABLE_ORDER]
     return {
-        name: [dict(row._mapping) for row in connection.execute(select(metadata.tables[name]))]
+        name: [
+            dict(row._mapping)
+            for row in connection.execute(select(metadata.tables[name]))
+        ]
         for name in names
         if name in metadata.tables
     }
@@ -102,9 +121,13 @@ def _identity_key(
     if table in {"goal_details", "activity_details"}:
         return f"node:{primary_keys[('plan_nodes', row['node_id'])]}"
     if table == "timer_segments":
-        return f"{primary_keys[('timer_sessions', row['session_id'])]}:{row['sequence']}"
+        return (
+            f"{primary_keys[('timer_sessions', row['session_id'])]}:{row['sequence']}"
+        )
     if table == "timer_commands":
-        return f"{primary_keys[('client_devices', row['device_id'])]}:{row['command_id']}"
+        return (
+            f"{primary_keys[('client_devices', row['device_id'])]}:{row['command_id']}"
+        )
     if table == "duration_day_allocations":
         return f"{primary_keys[('activity_events', row['activity_event_id'])]}:{row['local_date']}"
     if table == "sync_operations":
@@ -165,7 +188,10 @@ def _portable_collections(
                         raise StorageValidationError(
                             f"unresolved source reference {table_name}.{column.name}={value}"
                         ) from error
-                    data[column.name] = {"$ref": referenced_table, "key": referenced_key}
+                    data[column.name] = {
+                        "$ref": referenced_table,
+                        "key": referenced_key,
+                    }
                 else:
                     data[column.name] = _canonical(value)
             records.append({"key": key, "data": data})
@@ -186,11 +212,17 @@ def export_archive(database_url: str, archive_path: Path) -> Path:
                     select(timer.c.id).where(timer.c.state.in_(("running", "paused")))
                 ).fetchall()
             if active:
-                raise StorageValidationError("logical export requires a maintenance window without active timers")
+                raise StorageValidationError(
+                    "logical export requires a maintenance window without active timers"
+                )
             collections, identity = _portable_collections(connection, metadata)
-            alembic_head = connection.execute(
-                select(metadata.tables["alembic_version"].c.version_num)
-            ).scalar_one() if "alembic_version" in metadata.tables else None
+            alembic_head = (
+                connection.execute(
+                    select(metadata.tables["alembic_version"].c.version_num)
+                ).scalar_one()
+                if "alembic_version" in metadata.tables
+                else None
+            )
     finally:
         engine.dispose()
 
@@ -217,10 +249,13 @@ def export_archive(database_url: str, archive_path: Path) -> Path:
     os.close(descriptor)
     temporary = Path(temporary_name)
     try:
-        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        with zipfile.ZipFile(
+            temporary, "w", compression=zipfile.ZIP_DEFLATED
+        ) as archive:
             archive.writestr(
                 "manifest.json",
-                json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True)
+                + "\n",
             )
             for name, content in collections.items():
                 archive.writestr(f"collections/{name}.jsonl", content)
@@ -231,7 +266,9 @@ def export_archive(database_url: str, archive_path: Path) -> Path:
     return archive_path
 
 
-def _read_archive(archive_path: Path) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
+def _read_archive(
+    archive_path: Path,
+) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
     with zipfile.ZipFile(archive_path) as archive:
         names = set(archive.namelist())
         if "manifest.json" not in names:
@@ -303,7 +340,9 @@ def _insert_collection(
             result = connection.execute(table.insert().values(**values))
             primary_columns = list(table.primary_key.columns)
             if len(primary_columns) != 1:
-                raise StorageValidationError(f"unsupported composite primary key in {table.name}")
+                raise StorageValidationError(
+                    f"unsupported composite primary key in {table.name}"
+                )
             primary_name = primary_columns[0].name
             primary_value = values.get(primary_name)
             if primary_value is None:
@@ -324,20 +363,27 @@ def import_archive(database_url: str, archive_path: Path) -> str:
     new_epoch = str(uuid4())
     try:
         metadata = _reflect(engine)
-        if manifest.get("alembic_head") is not None and "alembic_version" in metadata.tables:
+        if (
+            manifest.get("alembic_head") is not None
+            and "alembic_version" in metadata.tables
+        ):
             with engine.connect() as connection:
                 target_head = connection.execute(
                     select(metadata.tables["alembic_version"].c.version_num)
                 ).scalar_one()
             if target_head != manifest["alembic_head"]:
-                raise StorageValidationError("target Alembic head differs from the archive")
+                raise StorageValidationError(
+                    "target Alembic head differs from the archive"
+                )
 
         with engine.begin() as connection:
             for name in TABLE_ORDER:
                 if name in metadata.tables:
                     count = connection.execute(select(metadata.tables[name])).first()
                     if count is not None:
-                        raise StorageValidationError(f"target table is not empty: {name}")
+                        raise StorageValidationError(
+                            f"target table is not empty: {name}"
+                        )
 
             server_records = collections.get("server_instances", [])
             if len(server_records) != 1:
@@ -348,17 +394,25 @@ def import_archive(database_url: str, archive_path: Path) -> str:
                 for name, value in server_records[0]["data"].items()
             }
             server_values["sync_epoch"] = new_epoch
-            existing = connection.execute(select(server.c.id).where(server.c.id == 1)).first()
+            existing = connection.execute(
+                select(server.c.id).where(server.c.id == 1)
+            ).first()
             if existing:
-                connection.execute(server.update().where(server.c.id == 1).values(**server_values))
+                connection.execute(
+                    server.update().where(server.c.id == 1).values(**server_values)
+                )
             else:
                 connection.execute(server.insert().values(id=1, **server_values))
 
-            target_keys: dict[tuple[str, str], Any] = {("server_instances", "singleton"): 1}
+            target_keys: dict[tuple[str, str], Any] = {
+                ("server_instances", "singleton"): 1
+            }
             for name in TABLE_ORDER:
                 if name in collections:
                     if name not in metadata.tables:
-                        raise StorageValidationError(f"target schema has no collection table {name}")
+                        raise StorageValidationError(
+                            f"target schema has no collection table {name}"
+                        )
                     _insert_collection(
                         connection,
                         metadata.tables[name],
@@ -376,7 +430,9 @@ def import_archive(database_url: str, archive_path: Path) -> str:
             for name, specification in manifest["collections"].items():
                 content = rebuilt.get(name)
                 if content is None or _digest(content) != specification["sha256"]:
-                    raise StorageValidationError(f"post-import logical verification failed: {name}")
+                    raise StorageValidationError(
+                        f"post-import logical verification failed: {name}"
+                    )
     finally:
         engine.dispose()
     return new_epoch

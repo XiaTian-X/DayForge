@@ -1,4 +1,5 @@
 """FastAPI application entry point."""
+
 from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -52,7 +53,7 @@ app = FastAPI(
     title="DayForge API",
     description="Backend API for DayForge application",
     version="0.1.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # CORS middleware
@@ -66,8 +67,8 @@ app.add_middleware(
 )
 
 # Include routers with /api/v1 prefix
-app.include_router(auth_router, prefix='/api/v1')
-app.include_router(admin_router, prefix='/api/v1')
+app.include_router(auth_router, prefix="/api/v1")
+app.include_router(admin_router, prefix="/api/v1")
 app.include_router(tokens_router, prefix="/api/v1")
 app.include_router(admin_tokens_router, prefix="/api/v1")
 app.include_router(v2_router)
