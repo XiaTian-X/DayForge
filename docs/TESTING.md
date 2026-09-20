@@ -209,3 +209,11 @@ assets 读取同一份 `contracts/sync-v2` 样例，不复制或自动生成测�
 确认边界、epoch 保护和合并失败，关键断言在关闭并重开存储后执行。
 传输边界模拟异常不代表真实服务器幂等已验证；游标与 Room 分属不同存储，也不能据此宣称跨存储原子性。
 本批验证结果、故障注入和剩余迁移清单见 [同步持久性报告](reviews/2026-09-20-sync-durability.md)。
+
+## Room 迁移真机回归（Issue #128）
+
+`FactTimeMigrationTest` 通过生产 `HabitDatabaseProvider` 和提交的 v1 schema 验证真实升级路径，
+禁止测试另建一套与生产不同的 migration / fallback 配置。未知 schema / 降级须断言明确失败与磁盘数据保留。
+迁移失败后应关闭 Room，用独立 SQLite 连接检查版本、DDL、事实、触发器和完整 outbox 是否回滚，
+并验证移除故障后的重试。时区边界预期使用独立日期和毫秒字面量，覆盖实际完成时间与计划日期不同的情况。
+本批结果、故障注入和限制见 [Room 迁移报告](reviews/2026-09-20-room-migration.md)。

@@ -2,12 +2,15 @@ package com.dayforge.data.local
 
 import android.content.ContentValues
 import android.content.Context
+import android.database.Cursor
+import android.database.sqlite.SQLiteException
 import android.database.sqlite.SQLiteDatabase
-import androidx.room.Room
 import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.SupportSQLiteOpenHelper
 import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import com.dayforge.data.api.dto.SyncV2Change
 import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.MetricLogEntity
@@ -24,39 +27,45 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 class FactTimeMigrationTest {
     private lateinit var context: Context
     private var room: HabitDatabase? = null
-    private val databaseName = "fact-time-${UUID.randomUUID()}"
+    private val databaseName = "habit_database"
     private val originalZone = TimeZone.getDefault()
     private val occurredAt = Instant.parse("2026-09-11T16:15:00Z").toEpochMilli()
     private val habitUuid = UUID.randomUUID().toString()
     private val metricUuid = UUID.randomUUID().toString()
     private val schema by lazy {
-        val text = requireNotNull(javaClass.classLoader!!.getResourceAsStream(
-            "com.dayforge.data.local.HabitDatabase/1.json")).bufferedReader().use { it.readText() }
+        val text = InstrumentationRegistry.getInstrumentation().context.assets
+            .open("com.dayforge.data.local.HabitDatabase/1.json").bufferedReader().use { it.readText() }
         Json.parseToJsonElement(text).jsonObject.getValue("database").jsonObject
     }
 
     @Before fun setup() {
         context = ApplicationProvider.getApplicationContext()
+        check(context.packageName == "com.dayforge.testbed")
+        HabitDatabaseProvider.clearInstanceForTesting()
+        context.deleteDatabase(databaseName)
         TimeZone.setDefault(TimeZone.getTimeZone("America/Los_Angeles"))
     }
 
     @After fun cleanup() {
         room?.close()
-        context.deleteDatabase(databaseName)
+        if (::context.isInitialized && context.packageName == "com.dayforge.testbed") {
+            HabitDatabaseProvider.clearInstanceForTesting()
+            context.deleteDatabase(databaseName)
+        }
         TimeZone.setDefault(originalZone)
     }
 
     private fun seed(block: (SupportSQLiteDatabase) -> Unit = {}) {
         val helper = FrameworkSQLiteOpenHelperFactory().create(SupportSQLiteOpenHelper.Configuration.builder(context)
             .name(databaseName).callback(object : SupportSQLiteOpenHelper.Callback(1) {
+                override fun onConfigure(db: SupportSQLiteDatabase) {
+                    db.setForeignKeyConstraintsEnabled(true)
+                }
                 override fun onCreate(db: SupportSQLiteDatabase) {
                     schema.getValue("entities").jsonArray.forEach { element ->
                         val entity = element.jsonObject
@@ -103,8 +112,12 @@ class FactTimeMigrationTest {
         db.insert(table, SQLiteDatabase.CONFLICT_ABORT, values)
     }
 
-    private fun open(): HabitDatabase = Room.databaseBuilder(context, HabitDatabase::class.java, databaseName)
-        .addMigrations(FactTimeMigration).addCallback(SyncSchemaCallback).build().also { room = it }
+    // Exercise the actual migration registration and fallback policy used by the app.
+    private fun open(): HabitDatabase {
+        room?.close()
+        HabitDatabaseProvider.clearInstanceForTesting()
+        return HabitDatabaseProvider.getInstance(context).also { room = it }
+    }
 
     private fun payload(zone: String, at: Long = occurredAt) = buildJsonObject {
         put("occurred_at", Instant.ofEpochMilli(at).toString())
@@ -115,6 +128,7 @@ class FactTimeMigrationTest {
     @Test fun migrationRestoresKnownMetadataAndMarksFallbackWithoutChangingFactsOrQueue() = runBlocking {
         val uuids = List(5) { UUID.randomUUID().toString() }
         val prepared = payload("America/New_York").toString()
+        var originalQueue = emptyList<List<String?>>()
         seed { db ->
             uuids.forEachIndexed { index, uuid ->
                 insert(db, "completions", mapOf("id" to index + 1, "habitId" to 1, "uuid" to uuid,
@@ -135,6 +149,7 @@ class FactTimeMigrationTest {
             insert(db, "metric_logs", mapOf("id" to 1, "metricId" to 1, "uuid" to "observation", "date" to occurredAt))
             insert(db, "sync_entity_state", mapOf("entityType" to "metric_observation", "entityUuid" to "observation",
                 "payloadJson" to payload("Asia/Shanghai").toString()))
+            originalQueue = queueSnapshot(db)
             // A v1 update trigger must not observe the metadata backfill.
             db.execSQL("CREATE TRIGGER sync_completions_update AFTER UPDATE ON completions BEGIN SELECT RAISE(ABORT, 'unexpected backfill event'); END")
         }
@@ -156,6 +171,7 @@ class FactTimeMigrationTest {
         assertEquals("legacy_sync", rows.getValue(uuids[0]).timeMetadataSource)
         assertEquals("Asia/Shanghai", db.metricLogDao().getById(1)!!.recordedTimezone)
         val pending = db.syncOutboxDao().getAll()
+        assertEquals(originalQueue, queueSnapshot(db.openHelper.readableDatabase))
         assertEquals(2, pending.size)
         assertEquals(prepared, pending[0].payloadJson)
         assertEquals(1, pending[0].attemptCount)
@@ -216,7 +232,10 @@ class FactTimeMigrationTest {
     @Test fun unsupportedDowngradeFailsWithoutErasingRows() {
         seed { it.version = 3 }
         val db = open()
-        assertTrue(runCatching { db.openHelper.writableDatabase }.isFailure)
+        val failure = runCatching { db.openHelper.writableDatabase }.exceptionOrNull()
+        assertTrue(failure is IllegalStateException)
+        assertTrue(failure!!.message.orEmpty().contains("3 to 2"))
+        db.close()
         SQLiteDatabase.openDatabase(context.getDatabasePath(databaseName).path, null, SQLiteDatabase.OPEN_READONLY).use { raw ->
             raw.rawQuery("SELECT COUNT(*) FROM habits", null).use { assertTrue(it.moveToFirst()); assertEquals(1, it.getInt(0)) }
             assertEquals(3, raw.version)
@@ -243,5 +262,188 @@ class FactTimeMigrationTest {
         }
         merger.applyAuthoritativeEntity("metric_observation", log.uuid, 1, original)
         assertEquals("legacy_device_fallback", db.metricLogDao().getLogByUuid(log.uuid)!!.timeMetadataSource)
+    }
+
+    private fun snapshot(cursor: Cursor): List<List<String?>> = cursor.use {
+        buildList {
+            while (it.moveToNext()) add(List(it.columnCount) { column ->
+                if (it.isNull(column)) null else it.getString(column)
+            })
+        }
+    }
+
+    private fun queueSnapshot(db: SupportSQLiteDatabase) =
+        snapshot(db.query("SELECT * FROM sync_outbox ORDER BY id"))
+
+    private fun rawDatabase() = SQLiteDatabase.openDatabase(
+        context.getDatabasePath(databaseName).path, null, SQLiteDatabase.OPEN_READWRITE)
+
+    private fun columns(db: SQLiteDatabase, table: String): Set<String> =
+        db.rawQuery("PRAGMA table_info($table)", null).use { cursor ->
+            buildSet { while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name"))) }
+        }
+
+    private fun metadata(zone: String, localDate: String, at: Long = occurredAt) = buildJsonObject {
+        put("occurred_at", Instant.ofEpochMilli(at).toString())
+        put("timezone", zone)
+        put("local_date", localDate)
+    }
+
+    @Test fun failedBackfillRollsBackSchemaFactsAndQueueThenCanRetry() = runBlocking {
+        var originalQueue = emptyList<List<String?>>()
+        seed { db ->
+            insert(db, "completions", mapOf("id" to 1, "habitId" to 1, "habitUuid" to habitUuid,
+                "uuid" to "completion", "date" to occurredAt, "actualCompletedAt" to occurredAt, "value" to 4))
+            insert(db, "metric_logs", mapOf("id" to 1, "metricId" to 1, "uuid" to "observation",
+                "date" to occurredAt, "value" to 12))
+            insert(db, "sync_outbox", mapOf("id" to 1, "operationId" to UUID.randomUUID().toString(),
+                "recordType" to "completion", "entityUuid" to "completion", "wireEntityUuid" to "completion",
+                "action" to "upsert", "payloadJson" to metadata("Asia/Shanghai", "2026-09-12").toString(),
+                "attemptedAt" to occurredAt, "attemptCount" to 2, "lastError" to "response lost"))
+            originalQueue = queueSnapshot(db)
+            db.execSQL("CREATE TRIGGER sync_completions_update AFTER UPDATE ON completions BEGIN SELECT RAISE(ABORT, 'unexpected backfill event'); END")
+            db.execSQL("CREATE TRIGGER reject_metric_backfill BEFORE UPDATE ON metric_logs BEGIN SELECT RAISE(ABORT, 'injected migration failure'); END")
+        }
+        val failure = runCatching { open().openHelper.writableDatabase }.exceptionOrNull()
+        assertTrue("Expected SQLite failure, got $failure", failure is SQLiteException)
+        assertTrue(failure!!.message.orEmpty().contains("injected migration failure"))
+        room!!.close()
+        rawDatabase().use { raw ->
+            assertEquals(1, raw.version)
+            for (table in listOf("completions", "metric_logs")) {
+                assertTrue(columns(raw, table).intersect(setOf("recordedTimezone", "recordedLocalDate", "timeMetadataSource")).isEmpty())
+            }
+            assertEquals(listOf(listOf(occurredAt.toString(), occurredAt.toString(), "4")),
+                snapshot(raw.rawQuery("SELECT date, actualCompletedAt, value FROM completions", null)))
+            raw.rawQuery("SELECT date, value FROM metric_logs", null).use {
+                assertTrue(it.moveToFirst()); assertEquals(occurredAt, it.getLong(0)); assertEquals(12.0, it.getDouble(1), 0.0)
+            }
+            assertEquals(originalQueue, snapshot(raw.rawQuery("SELECT * FROM sync_outbox ORDER BY id", null)))
+            assertEquals(listOf(listOf("sync_completions_update")), snapshot(raw.rawQuery(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = 'sync_completions_update'", null)))
+            assertEquals(listOf(listOf(schema.getValue("identityHash").jsonPrimitive.content)),
+                snapshot(raw.rawQuery("SELECT identity_hash FROM room_master_table WHERE id = 42", null)))
+            raw.execSQL("DROP TRIGGER reject_metric_backfill")
+        }
+        val retried = open()
+        assertEquals(2, retried.openHelper.writableDatabase.version)
+        assertEquals(originalQueue, queueSnapshot(retried.openHelper.readableDatabase))
+        assertEquals("Asia/Shanghai", retried.completionDao().getCompletionByUuid("completion")!!.recordedTimezone)
+        assertEquals("America/Los_Angeles", retried.metricLogDao().getById(1)!!.recordedTimezone)
+        retried.openHelper.writableDatabase.execSQL("UPDATE metric_logs SET value = 13 WHERE id = 1")
+        assertEquals(2, retried.syncOutboxDao().count())
+    }
+
+    @Test fun unknownDevelopmentSchemaFailsValidationWithoutErasingRows() {
+        seed { db ->
+            insert(db, "completions", mapOf("id" to 1, "habitId" to 1, "habitUuid" to habitUuid,
+                "uuid" to "completion", "date" to occurredAt, "value" to 4))
+            db.execSQL("ALTER TABLE habits ADD COLUMN unexpectedDeveloperColumn TEXT NOT NULL DEFAULT 'legacy'")
+        }
+        val failure = runCatching { open().openHelper.writableDatabase }.exceptionOrNull()
+        assertTrue("Expected schema validation failure, got $failure", failure is IllegalStateException)
+        assertTrue(failure!!.message.orEmpty().contains("Migration didn't properly handle: habits"))
+        room!!.close()
+        rawDatabase().use { raw ->
+            assertEquals(1, raw.version)
+            assertEquals(listOf(listOf("Habit", "legacy")),
+                snapshot(raw.rawQuery("SELECT name, unexpectedDeveloperColumn FROM habits", null)))
+            assertEquals(listOf(listOf("completion", occurredAt.toString(), "4")),
+                snapshot(raw.rawQuery("SELECT uuid, date, value FROM completions", null)))
+            assertFalse(columns(raw, "completions").contains("recordedTimezone"))
+            assertFalse(columns(raw, "metric_logs").contains("recordedTimezone"))
+        }
+    }
+
+    @Test fun migrationUsesNewestValidPreparedMetadataBeforeShadowAndRejectsInvalidCandidates() = runBlocking {
+        data class Case(val queued: List<String>, val shadow: JsonObject?, val zone: String, val date: String,
+                        val source: String = "legacy_sync")
+        val ny = metadata("America/New_York", "2026-09-11")
+        val tokyo = metadata("Asia/Tokyo", "2026-09-12")
+        val shanghai = metadata("Asia/Shanghai", "2026-09-12")
+        val cases = listOf(
+            Case(listOf(ny.toString(), tokyo.toString()), shanghai, "Asia/Tokyo", "2026-09-12"),
+            Case(listOf(ny.toString(), "invalid json"), shanghai, "America/New_York", "2026-09-11"),
+            Case(listOf(JsonObject(tokyo + ("event_type" to JsonPrimitive("revert"))).toString()), ny, "America/New_York", "2026-09-11"),
+            Case(listOf(metadata("Asia/Tokyo", "2026-09-10").toString()), null, "America/Los_Angeles", "2026-09-11", "legacy_device_fallback"),
+            Case(listOf(metadata("Mars/Olympus", "2026-09-12").toString()), shanghai, "Asia/Shanghai", "2026-09-12"),
+            Case(listOf(metadata("Asia/Tokyo", "2026-09-12", occurredAt + 1).toString()), null, "America/Los_Angeles", "2026-09-11", "legacy_device_fallback"),
+            Case(listOf(metadata("+08:00", "2026-09-12").toString()), null, "America/Los_Angeles", "2026-09-11", "legacy_device_fallback")
+        )
+        var originalQueue = emptyList<List<String?>>()
+        seed { db ->
+            var operation = 0
+            cases.forEachIndexed { index, case ->
+                val uuid = "candidate-$index"
+                insert(db, "completions", mapOf("id" to index + 1, "habitId" to 1, "habitUuid" to habitUuid,
+                    "uuid" to uuid, "date" to occurredAt, "actualCompletedAt" to occurredAt, "value" to index + 1))
+                case.queued.forEach { json ->
+                    insert(db, "sync_outbox", mapOf("id" to ++operation, "operationId" to UUID.randomUUID().toString(),
+                        "recordType" to "completion", "entityUuid" to uuid, "wireEntityUuid" to uuid,
+                        "action" to "upsert", "payloadJson" to json, "attemptedAt" to occurredAt, "attemptCount" to 2,
+                        "baseRevision" to 7, "basePayloadJson" to "{\"previous\":true}", "lastError" to "response lost"))
+                }
+                case.shadow?.let { insert(db, "sync_entity_state", mapOf("entityType" to "activity_event",
+                    "entityUuid" to uuid, "revision" to 7, "payloadJson" to it.toString())) }
+            }
+            originalQueue = queueSnapshot(db)
+        }
+        val db = open()
+        cases.forEachIndexed { index, case ->
+            val row = db.completionDao().getCompletionByUuid("candidate-$index")!!
+            assertEquals("case $index", case.zone, row.recordedTimezone)
+            assertEquals("case $index", case.date, row.recordedLocalDate)
+            assertEquals("case $index", case.source, row.timeMetadataSource)
+            assertEquals(occurredAt, row.date)
+            assertEquals(occurredAt, row.actualCompletedAt)
+            assertEquals(index + 1, row.value)
+        }
+        assertEquals(originalQueue, queueSnapshot(db.openHelper.readableDatabase))
+    }
+
+    @Test fun migrationPreservesExactUtcInstantsAcrossMidnightAndDstBoundariesAfterReopen() = runBlocking {
+        data class Boundary(val millis: Long, val zone: String, val date: String, val completionDate: Long = millis)
+        // Literal UTC milliseconds and local dates: expected dates do not use the migration's conversion path.
+        val cases = listOf(
+            Boundary(1789085700123L, "America/Los_Angeles", "2026-09-10", 1788999300123L),
+            Boundary(1789129800456L, "Pacific/Kiritimati", "2026-09-12"),
+            Boundary(1772953199987L, "America/New_York", "2026-03-08"),
+            Boundary(1772953200123L, "America/New_York", "2026-03-08"),
+            Boundary(1793511000456L, "America/New_York", "2026-11-01"),
+            Boundary(1793514600789L, "America/New_York", "2026-11-01")
+        )
+        seed { db ->
+            cases.forEachIndexed { index, case ->
+                for ((table, entityType) in listOf("completions" to "activity_event", "metric_logs" to "metric_observation")) {
+                    val common = mapOf("id" to index + 1, "uuid" to "$table-$index", "date" to case.millis, "value" to index + 1)
+                    val parent = if (table == "completions") mapOf("habitId" to 1, "habitUuid" to habitUuid,
+                        "actualCompletedAt" to case.millis, "date" to case.completionDate) else mapOf("metricId" to 1)
+                    insert(db, table, common + parent)
+                    insert(db, "sync_entity_state", mapOf("entityType" to entityType, "entityUuid" to "$table-$index",
+                        "payloadJson" to metadata(case.zone, case.date, case.millis).toString()))
+                }
+            }
+        }
+        TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
+        assertEquals(2, open().openHelper.writableDatabase.version)
+        room!!.close()
+        TimeZone.setDefault(TimeZone.getTimeZone("Asia/Tokyo"))
+        val db = open()
+        cases.forEachIndexed { index, case ->
+            val completion = db.completionDao().getCompletionByUuid("completions-$index")!!
+            val observation = db.metricLogDao().getLogByUuid("metric_logs-$index")!!
+            assertEquals(case.completionDate, completion.date)
+            assertEquals(case.millis, completion.actualCompletedAt)
+            assertEquals(case.millis, observation.date)
+            assertEquals(index + 1, completion.value)
+            assertEquals((index + 1).toDouble(), observation.value, 0.0)
+            assertEquals(case.zone, completion.recordedTimezone)
+            assertEquals(case.zone, observation.recordedTimezone)
+            assertEquals(case.date, completion.recordedLocalDate)
+            assertEquals(case.date, observation.recordedLocalDate)
+            assertEquals("legacy_sync", completion.timeMetadataSource)
+            assertEquals("legacy_sync", observation.timeMetadataSource)
+        }
+        assertEquals(0, db.syncOutboxDao().count())
     }
 }
