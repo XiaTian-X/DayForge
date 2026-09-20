@@ -17,29 +17,29 @@ import com.dayforge.data.repository.SyncV2Merger
 import java.time.Instant
 import java.time.ZoneId
 import java.util.UUID
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.put
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
+import androidx.test.ext.junit.runners.AndroidJUnit4
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 class SyncV2OutboxTest {
     private lateinit var database: HabitDatabase
 
     @Before
     fun setup() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        check(context.packageName == "com.dayforge.testbed")
         HabitDatabaseProvider.clearInstanceForTesting()
         context.deleteDatabase("habit_database")
         database = HabitDatabaseProvider.getInstance(context)
@@ -52,7 +52,7 @@ class SyncV2OutboxTest {
     }
 
     @Test
-    fun `fresh database captures inserts and meaningful updates`() = runTest {
+    fun fresh_database_captures_inserts_and_meaningful_updates() = runBlocking {
         val habitId = database.habitDao().insert(testHabit())
         assertEquals(1, database.syncOutboxDao().count())
 
@@ -65,7 +65,45 @@ class SyncV2OutboxTest {
     }
 
     @Test
-    fun `completion outbox retains its parent activity uuid`() = runTest {
+    fun failed_outbox_insert_rolls_back_the_business_insert() = runBlocking {
+        val sqlite = database.openHelper.writableDatabase
+        sqlite.execSQL("CREATE TRIGGER reject_outbox BEFORE INSERT ON sync_outbox BEGIN SELECT RAISE(ABORT, 'test outbox failure'); END")
+        val failure = runCatching { database.habitDao().insert(testHabit()) }.exceptionOrNull()
+        assertTrue(failure is android.database.sqlite.SQLiteException)
+        reopenDatabase()
+        assertNull(database.habitDao().getHabitByName("Water"))
+        assertEquals(0, database.syncOutboxDao().count())
+        database.openHelper.writableDatabase.execSQL("DROP TRIGGER reject_outbox")
+        database.habitDao().insert(testHabit())
+        assertNotNull(database.habitDao().getHabitByName("Water"))
+        assertEquals(1, database.syncOutboxDao().count())
+    }
+
+    @Test
+    fun failed_outbox_update_keeps_the_prior_business_row_and_queue() = runBlocking {
+        val id = database.habitDao().insert(testHabit())
+        val before = database.habitDao().getHabitById(id)!!
+        val queue = database.syncOutboxDao().getAll()
+        database.openHelper.writableDatabase.execSQL("CREATE TRIGGER reject_outbox BEFORE INSERT ON sync_outbox BEGIN SELECT RAISE(ABORT, 'test outbox failure'); END")
+        val failure = runCatching { database.habitDao().updateIsActive(id, false) }.exceptionOrNull()
+        assertTrue(failure is android.database.sqlite.SQLiteException)
+        reopenDatabase()
+        assertEquals(before, database.habitDao().getHabitById(id))
+        assertEquals(queue, database.syncOutboxDao().getAll())
+        database.openHelper.writableDatabase.execSQL("DROP TRIGGER reject_outbox")
+        database.habitDao().updateIsActive(id, false)
+        assertEquals(false, database.habitDao().getHabitById(id)!!.isActive)
+        assertEquals(2, database.syncOutboxDao().count())
+    }
+
+    private fun reopenDatabase() {
+        database.close()
+        HabitDatabaseProvider.clearInstanceForTesting()
+        database = HabitDatabaseProvider.getInstance(ApplicationProvider.getApplicationContext())
+    }
+
+    @Test
+    fun completion_outbox_retains_its_parent_activity_uuid() = runBlocking {
         val habitId = database.habitDao().insert(testHabit())
         val habit = database.habitDao().getHabitById(habitId)!!
         database.completionDao().insert(
@@ -82,7 +120,7 @@ class SyncV2OutboxTest {
     }
 
     @Test
-    fun `fresh database captures config and fact changes while timers use command sync`() = runTest {
+    fun fresh_database_captures_config_and_fact_changes_while_timers_use_command_sync() = runBlocking {
         val activityId = database.habitDao().insert(testHabit())
         val activity = database.habitDao().getHabitById(activityId)!!
         val timerId = database.habitDao().insert(
@@ -143,7 +181,7 @@ class SyncV2OutboxTest {
     }
 
     @Test
-    fun `clear all data restores outbox trigger control`() = runTest {
+    fun clear_all_data_restores_outbox_trigger_control() = runBlocking {
         database.habitDao().insert(testHabit())
         database.clearAllData()
         assertEquals(0, database.syncOutboxDao().count())
@@ -152,7 +190,7 @@ class SyncV2OutboxTest {
     }
 
     @Test
-    fun `accepting server timer state clears every command for the session`() = runTest {
+    fun accepting_server_timer_state_clears_every_command_for_the_session() = runBlocking {
         val dao = database.timeLogDao()
         val sessionUuid = UUID.randomUUID().toString()
         dao.insertTimerCommand(timerCommand(sessionUuid, 1, "start"))
@@ -167,7 +205,7 @@ class SyncV2OutboxTest {
     }
 
     @Test
-    fun `bootstrap replacement refuses to overwrite pending local intent`() = runTest {
+    fun bootstrap_replacement_refuses_to_overwrite_pending_local_intent() = runBlocking {
         database.habitDao().insert(testHabit())
         val merger = SyncV2Merger(
             database,
@@ -189,7 +227,7 @@ class SyncV2OutboxTest {
     }
 
     @Test
-    fun `server countdown and goal policy survive the Room merge`() = runTest {
+    fun server_countdown_and_goal_policy_survive_the_Room_merge() = runBlocking {
         val merger = merger()
         val timerUuid = UUID.randomUUID().toString()
         merger.applyAuthoritativeEntity(
@@ -244,7 +282,7 @@ class SyncV2OutboxTest {
     }
 
     @Test
-    fun `server metric observation preserves its exact occurrence time`() = runTest {
+    fun server_metric_observation_preserves_its_exact_occurrence_time() = runBlocking {
         val merger = merger()
         val metricUuid = UUID.randomUUID().toString()
         merger.applyAuthoritativeEntity(
@@ -283,7 +321,7 @@ class SyncV2OutboxTest {
     }
 
     @Test
-    fun `server timer merge preserves exact milliseconds and cross-day allocations`() = runTest {
+    fun server_timer_merge_preserves_exact_milliseconds_and_cross_day_allocations() = runBlocking {
         val merger = merger()
         val activityUuid = UUID.randomUUID().toString()
         merger.applyAuthoritativeEntity(
@@ -345,7 +383,7 @@ class SyncV2OutboxTest {
     }
 
     @Test
-    fun `unallocated and allocated timer sessions on the same day share one daily bucket`() = runTest {
+    fun unallocated_and_allocated_timer_sessions_on_the_same_day_share_one_daily_bucket() = runBlocking {
         val habitId = database.habitDao().insert(
             testHabit().copy(habitType = HabitType.TIMER, targetValue = 1)
         )
@@ -389,7 +427,7 @@ class SyncV2OutboxTest {
     }
 
     @Test
-    fun `server timer recovery atomically clears rejected command and local session`() = runTest {
+    fun server_timer_recovery_atomically_clears_rejected_command_and_local_session() = runBlocking {
         val habitId = database.habitDao().insert(
             testHabit().copy(habitType = HabitType.TIMER, targetValue = 1)
         )
@@ -435,7 +473,7 @@ class SyncV2OutboxTest {
     }
 
     @Test
-    fun `dead letter no longer blocks pending queue and can be retried`() = runTest {
+    fun dead_letter_no_longer_blocks_pending_queue_and_can_be_retried() = runBlocking {
         database.habitDao().insert(testHabit())
         val row = database.syncOutboxDao().getAll().single()
 
@@ -462,7 +500,7 @@ class SyncV2OutboxTest {
     }
 
     @Test
-    fun `newer entity edit is detected without deleting the request snapshot`() = runTest {
+    fun newer_entity_edit_is_detected_without_deleting_the_request_snapshot() = runBlocking {
         val habitId = database.habitDao().insert(testHabit())
         val snapshot = database.syncOutboxDao().getAll().single()
         database.habitDao().updateIsActive(habitId, false)
@@ -488,7 +526,7 @@ class SyncV2OutboxTest {
     }
 
     @Test
-    fun `retry restores rejected revert to a local delete intent`() = runTest {
+    fun retry_restores_rejected_revert_to_a_local_delete_intent() = runBlocking {
         val originalEventUuid = UUID.randomUUID().toString()
         val rowId = database.syncOutboxDao().insert(
             SyncOutboxEntity(

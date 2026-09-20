@@ -1,5 +1,8 @@
 package com.dayforge.data.api
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import org.junit.runner.RunWith
 import com.dayforge.data.api.dto.ServerIdentityResponse
 import com.dayforge.data.api.dto.SyncV2BootstrapResponse
 import com.dayforge.data.api.dto.SyncV2PullResponse
@@ -17,11 +20,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** Keeps Android's wire DTOs executable against the repository-level Sync V2 fixtures. */
+@RunWith(AndroidJUnit4::class)
 class SyncV2ContractFixtureTest {
     private val json = Json { ignoreUnknownKeys = false }
 
     @Test
-    fun `all valid client push fixtures round trip without wire drift`() {
+    fun all_valid_client_push_fixtures_round_trip_without_wire_drift() {
         listOf(
             "client/push-all-entities.json",
             "client/delete-goal.json",
@@ -34,7 +38,7 @@ class SyncV2ContractFixtureTest {
     }
 
     @Test
-    fun `ordered timer commands round trip without losing command preconditions`() {
+    fun ordered_timer_commands_round_trip_without_losing_command_preconditions() {
         val request = assertExactRoundTrip<TimerCommandBatchRequest>(
             "client/timer-commands.json"
         )
@@ -45,7 +49,7 @@ class SyncV2ContractFixtureTest {
     }
 
     @Test
-    fun `all canonical server fixtures decode and round trip`() {
+    fun all_canonical_server_fixtures_decode_and_round_trip() {
         assertExactRoundTrip<SyncV2BootstrapResponse>("server/bootstrap-response.json")
         val pull = assertExactRoundTrip<SyncV2PullResponse>(
             "server/pull-with-tombstone-response.json"
@@ -59,7 +63,7 @@ class SyncV2ContractFixtureTest {
     }
 
     @Test
-    fun `epoch transition fixtures keep server identity but change epoch`() {
+    fun epoch_transition_fixtures_keep_server_identity_but_change_epoch() {
         val before = assertExactRoundTrip<ServerIdentityResponse>(
             "server/identity-before-response.json"
         )
@@ -73,7 +77,7 @@ class SyncV2ContractFixtureTest {
     }
 
     @Test
-    fun `malformed client fixture is rejected before it can be sent`() {
+    fun malformed_client_fixture_is_rejected_before_it_can_be_sent() {
         val failure = runCatching {
             json.decodeFromString<SyncV2PushRequest>(
                 fixture("invalid/push-missing-operation-id.json")
@@ -96,7 +100,7 @@ class SyncV2ContractFixtureTest {
         return decoded
     }
 
-    private fun fixture(path: String): String = requireNotNull(
-        javaClass.classLoader?.getResource("sync-v2/$path")
-    ) { "Missing shared contract fixture: $path" }.readText()
+    private fun fixture(path: String): String =
+        InstrumentationRegistry.getInstrumentation()
+            .context.assets.open("sync-v2/$path").bufferedReader().use { it.readText() }
 }

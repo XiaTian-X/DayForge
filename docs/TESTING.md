@@ -200,3 +200,12 @@ Compose 布局测试使用合成 insets 验证嵌套标题、底栏、键盘开�
   `runtime_client`，不 override `get_session`。CORS 方法必须发送真实 OPTIONS 预检并断言状态及允许头。
 - 修改测试预期前先说明来自哪个契约或用户行为；用有代表性的错误实现确认断言会失败。
   覆盖率和测试总数均不代表测试预期一定正确。
+
+## 同步持久性真机回归（Issue #126）
+
+`SyncV2OutboxTest` 与 `SyncV2ContractFixtureTest` 已从 JVM 迁移到真机；后者从 instrumentation
+assets 读取同一份 `contracts/sync-v2` 样例，不复制或自动生成测试预期。
+`SyncDurabilityTest` 通过真实 Room、DataStore、Retrofit 与同步仓库验证请求重放、分页恢复、
+确认边界、epoch 保护和合并失败，关键断言在关闭并重开存储后执行。
+传输边界模拟异常不代表真实服务器幂等已验证；游标与 Room 分属不同存储，也不能据此宣称跨存储原子性。
+本批验证结果、故障注入和剩余迁移清单见 [同步持久性报告](reviews/2026-09-20-sync-durability.md)。
