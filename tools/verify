@@ -110,6 +110,7 @@ verify_android() {
   fi
   rm -f "$warning_log"
   if [[ "$scope" != "android-build" ]]; then
+    python3 "$repo_root/tools/check_android_results.py"
     python3 "$repo_root/tools/check_android_coverage.py"
   else
     echo "Android build/static checks passed; physical-device tests NOT RUN."

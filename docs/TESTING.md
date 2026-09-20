@@ -30,6 +30,8 @@ ANDROID_SERIAL=<设备序列号> ./tools/verify android
 `connectedDeviceTestAndroidTest` 和 `createDeviceTestCoverageReport`。真机测试结果位于
 `android/app/build/outputs/androidTest-results/connected/deviceTest/`；覆盖率报告位于
 `android/app/build/reports/coverage/androidTest/deviceTest/connected/`。
+`tools/check_android_results.py` 拒绝缺失/空报告、失败、错误、跳过，以及与 testcase 不一致的统计；
+不能把被忽略的用例算成绿色验收。该检查不证明用例发现完整，仍须核对迁移清单和完整运行范围。
 `tools/check_android_coverage.py` 要求输入校验、指标仓库和计时服务三个实际执行的应用类均有
 非零源代码行覆盖，防止“测试执行了，但插桩没有记录”的报告被当作可靠统计。
 这只是统计校准，不是百分比达标，也不能代替异常路径断言。
@@ -119,8 +121,8 @@ HTTP 提交边界测试必须使用生产 `get_session` 依赖和启用外键的
 
 账户/令牌 UTC 回归覆盖服务器处于 UTC、Asia/Shanghai、America/Los_Angeles，SQLite 往返和
 隐式 updated_at 更新、历史无时区 UTC 值不被重写、正负偏移与夏令时重叠、微秒保留、令牌过期
-前后一微秒及恰好到期。Android Retrofit 测试覆盖规范 `Z` 和旧时间字符串及可空字段；不代表
-真机已验收。集中验收时追加一组：管理员新建/禁用用户、普通用户及管理员新建/查看令牌，确认
+前后一微秒及恰好到期。Android Retrofit 测试已在真机覆盖规范 `Z` 和旧时间字符串及可空字段；
+固定响应转换不代表真实服务器联合验收。集中验收时追加一组：管理员新建/禁用用户、普通用户及管理员新建/查看令牌，确认
 页面正常、日期未因格式变化异常；页面当前仅展示时间字符串的日期部分，不在本批改为本地时区显示。
 
 - 无网络、有移动网络但局域网服务器不可达、Wi-Fi 可用但端口不可达。
@@ -138,7 +140,7 @@ HTTP 提交边界测试必须使用生产 `get_session` 依赖和启用外键的
 ## 网络监控整改的集中真机验收（待执行）
 
 Issue #20 的 NetworkMonitor 变更已按用户约定延后真机/NAS/外网验收，由用户在集中验收时操作。
-Robolectric 和模拟路由可以验证状态机与调用契约，不能代替设备厂商的网络路由、VPN 和后台策略。
+真机内的受控网络回调和本机 HTTP 测试验证状态机与调用契约，不能代替设备厂商的实际网络路由、VPN 和后台策略。
 
 1. 手机同时启用移动数据与仅能访问 NAS 的 Wi-Fi：冷启动登录/同步，新增打卡与指标，确认同步成功；
    若有 Ethernet 转接器，重复非默认以太网连接。检查“设备有网络”不被解释为“服务器已连接”。
@@ -175,9 +177,10 @@ Issue #20 的配色 API 迁移使用迁移前固定输出验证 43 个种子、�
 
 ## 主窗口系统栏整改的集中真机验收（待执行）
 
-Issue #20 的主窗口迁移按用户约定延后真机验收。Robolectric 覆盖 API 26/29/35 的图标和窗口策略，
+Issue #20 的主窗口外观按用户约定延后集中验收。当前自动化只在 API 35 真机验证图标和窗口策略，
 Compose 布局测试使用合成 insets 验证嵌套标题、底栏、键盘开关、侧边刘海、标题栏及 RTL；
-不代表实际厂商系统栏、键盘动画、旋转或分屏已验收。测试工具仅进入 test/debug 配置，不进入 release。
+不代表其他 API、实际厂商系统栏、键盘动画、旋转或分屏已验收。历史 Robolectric 的 API 26/29 结果不算当前证据。
+测试工具仅进入测试/debug 配置，不进入 release。
 
 1. 一次检查登录页、四个主页标签、设置和新建/编辑页：系统栏文字和图标清楚，标题不重复留白，
    底部按钮没有被系统导航遮挡。切换浅色、深色、OLED，以及系统与应用相反的明暗模式；
@@ -230,7 +233,7 @@ assets 读取同一份 `contracts/sync-v2` 样例，不复制或自动生成测�
 
 ## 持续真机迁移
 
-剩余历史测试按 [真机迁移总账](reviews/2026-09-20-device-migration-status.md) 持续推进；单个 PR 完成不是总目标完成。
+历史测试已按 [真机迁移总账](reviews/2026-09-20-device-migration-status.md) 完成迁移；后续新增及修改也须遵守以下约束。
 纯算法也在 instrumentation 中执行；参数化展开数须与静态方法数区分。Retrofit 请求预期直接使用仓库样例，
 不能用被测 DTO 自己编解码生成唯一预期；网络边界只采集请求，断言回到测试协程执行。
 
@@ -288,3 +291,11 @@ Room/outbox，并检查数据库重开、取消/确认删除和回调次数。�
 账户清理检查调用当时的绑定状态及失败传播，不能只断言最终空值。Glance 状态、派发边界与 Worker
 替身断言不代表实际 launcher、后台调度或设备重启验收。完整迁移和豁免见
 [组件审查报告](reviews/2026-09-20-widget-timer-device.md) 与 [最终验收](reviews/2026-09-20-test-confidence-final.md)。
+
+### 测试迁移后的独立复审（Issue #149）
+
+计时服务测试必须从命令调用前后的真实单调时钟获得有效时长上下界，排除暂停/重建时间。
+仅检查 `durationSeconds >= 60`，或把实际记录重读后与自己比较，都不能拒绝时长被错误放大的实现。
+完成后还须核对记录、stop 命令、运行区间、日分摊及重开数据库的一致性；不得修改系统时钟或手造完成记录。
+错误放大时长、计入暂停时间的可编译变体都须被断言拒绝。复审范围和证据见
+[二次审查报告](reviews/2026-09-20-test-confidence-followup.md)。
