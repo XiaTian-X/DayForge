@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.room.Room
 import androidx.test.core.app.ActivityScenario
@@ -107,16 +108,22 @@ class TimerServicePersistenceTest {
     }
 
     @Test fun startPauseRecreateResumeStopPersistsOneCompleteSession() = runBlocking {
+        val startBefore = SystemClock.elapsedRealtime()
         send(TimerService.ACTION_START)
         awaitCommands(1)
+        val startAfter = SystemClock.elapsedRealtime()
         val started = requireNotNull(database.timeLogDao().getActiveTimeLog())
         assertEquals(habitId, started.habitId)
         assertEquals(java.time.ZoneId.systemDefault().id, started.timerTimezone)
         // Real elapsed time: no system clock changes or fabricated completed timer rows.
         delay(61_000)
+        val pauseBefore = SystemClock.elapsedRealtime()
         send(TimerService.ACTION_PAUSE)
         awaitCommands(2)
-        assertTrue(database.timeLogDao().getById(started.id)!!.isPaused)
+        val pauseAfter = SystemClock.elapsedRealtime()
+        val paused = requireNotNull(database.timeLogDao().getById(started.id))
+        assertTrue(paused.isPaused)
+        assertTrue(paused.timerActiveElapsedMillis in (pauseBefore - startAfter)..(pauseAfter - startBefore))
         stopService()
         send(null)
         val pausedTitle = context.getString(R.string.timer_notification_title_paused)
@@ -125,25 +132,57 @@ class TimerServicePersistenceTest {
                 it.notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() == pausedTitle
             }
         }
+        // A real pause makes accidental inclusion of paused/recreation time observable.
+        delay(5_000)
+        val restored = requireNotNull(database.timeLogDao().getById(started.id))
+        assertTrue(restored.isPaused)
+        assertEquals(paused.timerActiveElapsedMillis, restored.timerActiveElapsedMillis)
+        val resumeBefore = SystemClock.elapsedRealtime()
         send(TimerService.ACTION_RESUME)
         awaitCommands(3)
+        val resumeAfter = SystemClock.elapsedRealtime()
         assertFalse(database.timeLogDao().getById(started.id)!!.isPaused)
+        delay(1_100)
+        val stopBefore = SystemClock.elapsedRealtime()
         send(TimerService.ACTION_STOP)
         awaitCommands(4)
+        val stopAfter = SystemClock.elapsedRealtime()
         awaitState { database.timeLogDao().getActiveTimeLog() == null }
         awaitServiceStopped()
         val completed = database.timeLogDao().getById(started.id)!!
         assertNotNull(completed.endTime)
         assertTrue(completed.durationSeconds >= 60)
+        // Independent monotonic observations bound each active interval. Do not derive the
+        // only duration oracle from the service's own stored duration, segments or commands.
+        val minimumActiveMillis = pauseBefore - startAfter + stopBefore - resumeAfter
+        val maximumActiveMillis = pauseAfter - startBefore + stopAfter - resumeBefore
+        assertTrue("Active milliseconds must exclude the observed pause: $completed",
+            completed.timerActiveElapsedMillis in minimumActiveMillis..maximumActiveMillis)
+        assertTrue("Saved seconds must match independently observed active time: $completed",
+            completed.durationSeconds.toLong() in (minimumActiveMillis / 1_000)..(maximumActiveMillis / 1_000))
+        assertEquals(completed.timerActiveElapsedMillis / 1_000, completed.durationSeconds.toLong())
         val commands = database.timeLogDao().getPendingTimerCommands()
         assertEquals(listOf("start", "pause", "resume", "stop"), commands.map { it.commandType })
         assertEquals(listOf(1, 2, 3, 4), commands.map { it.sequence })
         assertEquals(setOf(started.uuid), commands.map { it.sessionUuid }.toSet())
+        assertEquals(paused.timerActiveElapsedMillis, commands[1].activeElapsedMillis)
+        assertEquals(completed.timerActiveElapsedMillis, commands.last().activeElapsedMillis)
+        assertEquals(completed.endTime, commands.last().occurredAt)
         val segments = database.timeLogDao().getTimerSegments(started.uuid)
         assertEquals(2, segments.size)
         assertTrue(segments.all { it.endedAt != null })
+        assertEquals(completed.timerActiveElapsedMillis, segments.sumOf { requireNotNull(it.endedAt) - it.startedAt })
+        val allocations = database.timeLogDao().getDayAllocations(started.uuid)
+        assertFalse(allocations.isEmpty())
+        assertEquals(completed.timerActiveElapsedMillis, allocations.sumOf { it.durationMillis })
+        assertTrue(allocations.all { it.sessionUuid == started.uuid && it.habitId == habitId && it.timezone == started.timerTimezone })
         Room.databaseBuilder(context, HabitDatabase::class.java, databaseName).build().let { reopened ->
-            try { assertEquals(completed, reopened.timeLogDao().getById(started.id)) }
+            try {
+                assertEquals(completed, reopened.timeLogDao().getById(started.id))
+                assertEquals(commands, reopened.timeLogDao().getPendingTimerCommands())
+                assertEquals(segments, reopened.timeLogDao().getTimerSegments(started.uuid))
+                assertEquals(allocations, reopened.timeLogDao().getDayAllocations(started.uuid))
+            }
             finally { reopened.close() }
         }
         send(TimerService.ACTION_STOP)
