@@ -1,5 +1,6 @@
 package com.dayforge.data.api
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import android.content.Context
 import android.net.Network
 import io.mockk.coEvery
@@ -17,7 +18,14 @@ import java.io.File
 import java.net.InetAddress
 import java.net.ServerSocket
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
+import java.net.SocketException
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -27,12 +35,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [28])
+@RunWith(AndroidJUnit4::class)
 class EndpointResolverTest {
+    private val storeJob = SupervisorJob()
+    private val serverError = AtomicReference<Throwable?>()
     private lateinit var store: DataStore<Preferences>
     private lateinit var file: File
     private lateinit var preferences: PreferencesManager
@@ -45,8 +52,8 @@ class EndpointResolverTest {
     @Before
     fun setup() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        file = File(context.cacheDir, "endpoint-resolver.preferences_pb")
-        store = PreferenceDataStoreFactory.create(produceFile = { file })
+        file = File(context.cacheDir, "endpoint-resolver-${UUID.randomUUID()}.preferences_pb")
+        store = PreferenceDataStoreFactory.create(scope = CoroutineScope(storeJob + Dispatchers.IO), produceFile = { file })
         preferences = PreferencesManager(store)
         tokens = TokenManager(store)
         selectedTransport = SelectedNetworkTransport()
@@ -54,8 +61,9 @@ class EndpointResolverTest {
         coEvery { networks.localNetworks() } returns listOf(route())
         server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
         serverThread = Thread {
-            runCatching {
+            try {
                 while (!server.isClosed) server.accept().use { socket ->
+                    socket.soTimeout = 2_000
                     val reader = socket.getInputStream().bufferedReader()
                     while (!reader.readLine().isNullOrEmpty()) Unit
                     val body = IDENTITY.toByteArray()
@@ -67,6 +75,8 @@ class EndpointResolverTest {
                         writer.write(IDENTITY)
                     }
                 }
+            } catch (error: Throwable) {
+                if (error !is SocketException || !server.isClosed) serverError.set(error)
             }
         }
         serverThread.start()
@@ -75,12 +85,15 @@ class EndpointResolverTest {
     @After
     fun teardown() {
         server.close()
-        serverThread.join(1_000)
-        file.delete()
+        serverThread.join(3_000)
+        runBlocking { storeJob.cancelAndJoin() }
+        assertTrue("DataStore fixture was not removed", file.delete() || !file.exists())
+        assertTrue("HTTP fixture thread did not stop", !serverThread.isAlive)
+        assertNull("Unexpected HTTP fixture failure", serverError.get())
     }
 
     @Test
-    fun `reachable local endpoint is selected and remembered`() = runTest {
+    fun reachable_local_endpoint_is_selected_and_remembered() = runBlocking {
         val url = "http://127.0.0.1:${server.localPort}"
         preferences.setServerUrl(url)
 
@@ -92,7 +105,7 @@ class EndpointResolverTest {
     }
 
     @Test
-    fun `known server identity prevents failover to a different instance`() = runTest {
+    fun known_server_identity_prevents_failover_to_a_different_instance() = runBlocking {
         preferences.setServerUrl("http://127.0.0.1:${server.localPort}")
         tokens.saveServerIdentity("00000000-0000-4000-8000-000000000099", EPOCH)
 
@@ -103,7 +116,7 @@ class EndpointResolverTest {
     }
 
     @Test
-    fun `a failed wifi route falls through to working ethernet`() = runTest {
+    fun a_failed_wifi_route_falls_through_to_working_ethernet() = runBlocking {
         val broken = mockk<Network>()
         every { broken.socketFactory } throws java.io.IOException("network disappeared")
         val working = route()
@@ -114,7 +127,7 @@ class EndpointResolverTest {
     }
 
     @Test
-    fun `failed bound paths fall through to the default VPN route`() = runTest {
+    fun failed_bound_paths_fall_through_to_the_default_VPN_route() = runBlocking {
         val broken = mockk<Network>()
         every { broken.socketFactory } throws java.io.IOException("network disappeared")
         coEvery { networks.localNetworks() } returns listOf(broken)
@@ -124,7 +137,7 @@ class EndpointResolverTest {
     }
 
     @Test
-    fun `unknown or empty network observation does not block local server probing`() = runTest {
+    fun unknown_or_empty_network_observation_does_not_block_local_server_probing() = runBlocking {
         coEvery { networks.localNetworks() } returns emptyList()
         preferences.setServerUrl("http://127.0.0.1:${server.localPort}")
         assertEquals(SERVER_ID, resolver().resolve()?.serverInstanceId)
@@ -132,7 +145,7 @@ class EndpointResolverTest {
     }
 
     @Test
-    fun `cancellation during a probe never selects or falls back to another route`() = runTest {
+    fun cancellation_during_a_probe_never_selects_or_falls_back_to_another_route() = runBlocking {
         val cancelled = mockk<Network>()
         every { cancelled.socketFactory } throws CancellationException("cancelled")
         coEvery { networks.localNetworks() } returns listOf(cancelled, route())
@@ -143,7 +156,7 @@ class EndpointResolverTest {
     }
 
     @Test
-    fun `no configured address clears selection without waiting for network discovery`() = runTest {
+    fun no_configured_address_clears_selection_without_waiting_for_network_discovery() = runBlocking {
         selectedTransport.select(route())
         preferences.setActiveServerUrl("http://example.invalid")
         assertNull(resolver().resolve())
@@ -153,7 +166,7 @@ class EndpointResolverTest {
     }
 
     @Test
-    fun `all failed candidates clear a previously selected network`() = runTest {
+    fun all_failed_candidates_clear_a_previously_selected_network() = runBlocking {
         val port = server.localPort
         server.close()
         selectedTransport.select(route())
@@ -163,7 +176,7 @@ class EndpointResolverTest {
     }
 
     @Test
-    fun `remote endpoint refuses cleartext even when reachable`() = runTest {
+    fun remote_endpoint_refuses_cleartext_even_when_reachable() = runBlocking {
         preferences.setRemoteServerUrl("http://127.0.0.1:${server.localPort}")
 
         val error = runCatching { resolver().resolve() }.exceptionOrNull()

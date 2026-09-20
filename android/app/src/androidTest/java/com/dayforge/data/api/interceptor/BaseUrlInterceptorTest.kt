@@ -1,5 +1,7 @@
 package com.dayforge.data.api.interceptor
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.runner.RunWith
 import com.dayforge.data.local.PreferencesManager
 import io.mockk.every
 import io.mockk.mockk
@@ -8,6 +10,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
+@RunWith(AndroidJUnit4::class)
 class BaseUrlInterceptorTest {
     private val preferences = mockk<PreferencesManager>(relaxed = true).also {
         every { it.serverUrl } returns flowOf(null)
@@ -16,7 +19,7 @@ class BaseUrlInterceptorTest {
     private val interceptor = BaseUrlInterceptor(preferences)
 
     @Test
-    fun `custom host preserves v2 path and query`() {
+    fun custom_host_preserves_v2_path_and_query() {
         val original = "http://localhost:8000/api/v2/sync/changes?cursor=12".toHttpUrl()
         val custom = "https://family.example:9443/old/path".toHttpUrl()
 
@@ -30,7 +33,7 @@ class BaseUrlInterceptorTest {
     }
 
     @Test
-    fun `custom host also preserves current v1 auth path`() {
+    fun custom_host_also_preserves_current_v1_auth_path() {
         val rebuilt = interceptor.rebuildUrl(
             "http://localhost:8000/api/v1/auth/login".toHttpUrl(),
             "http://192.168.1.10:8000/api/v1/".toHttpUrl()

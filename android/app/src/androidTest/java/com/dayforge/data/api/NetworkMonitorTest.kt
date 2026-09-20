@@ -1,5 +1,6 @@
 package com.dayforge.data.api
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
@@ -14,16 +15,9 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.Shadows.shadowOf
-import org.robolectric.shadows.ShadowNetwork
-import org.robolectric.util.ReflectionHelpers
-import org.robolectric.util.ReflectionHelpers.ClassParameter
-import org.robolectric.annotation.Config
 
-@RunWith(RobolectricTestRunner::class)
+@RunWith(AndroidJUnit4::class)
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-@Config(sdk = [26, 34])
 class NetworkMonitorTest {
     private lateinit var connectivity: ConnectivityManager
     private val callback = slot<ConnectivityManager.NetworkCallback>()
@@ -43,15 +37,40 @@ class NetworkMonitorTest {
     }
 
     private fun start() { monitor = NetworkMonitor(connectivity) }
-    private fun caps(transport: Int) = NetworkCapabilities().also { shadowOf(it).addTransportType(transport) }
-    private fun available(id: Int, transport: Int): Network = ShadowNetwork.newInstance(id).also {
+    private val networkHandles = mutableMapOf<Int, Network>()
+    private fun network(id: Int): Network = networkHandles.getOrPut(id) { mockk(name = "network-$id") }
+
+    // Test fixture only: Android 15 NetworkRequest parcels start with NetworkCapabilities.
+    // AOSP android15-release/framework/src/android/net/NetworkRequest.java#writeToParcel.
+    // Public builders/CREATOR construct real values, so the production defensive copy is exercised.
+    // Explicit assertions below fail if the platform parcel format or builder defaults change.
+    private fun caps(vararg transports: Int, validated: Boolean = false): NetworkCapabilities {
+        val builder = NetworkRequest.Builder().clearCapabilities()
+        transports.forEach { builder.addTransportType(it) }
+        if (validated) builder.addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        val parcel = android.os.Parcel.obtain()
+        try {
+            builder.build().writeToParcel(parcel, 0)
+            parcel.setDataPosition(0)
+            return NetworkCapabilities.CREATOR.createFromParcel(parcel).also {
+                assertEquals(transports.toSet(), (0..10).filter(it::hasTransport).toSet())
+                assertEquals(
+                    if (validated) setOf(NetworkCapabilities.NET_CAPABILITY_VALIDATED) else emptySet<Int>(),
+                    it.capabilities.toSet()
+                )
+            }
+        } finally {
+            parcel.recycle()
+        }
+    }
+    private fun available(id: Int, transport: Int): Network = network(id).also {
         callback.captured.onAvailable(it)
         callback.captured.onCapabilitiesChanged(it, caps(transport))
     }
 
-    @Test fun `LAN without internet and VPN both match the subscription`() {
+    @Test fun LAN_without_internet_and_VPN_both_match_the_subscription() {
         start()
-        val requested = ReflectionHelpers.getField<NetworkCapabilities>(request.captured, "networkCapabilities")
+        val requested = request.captured
         assertFalse(requested.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET))
         assertFalse(requested.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED))
         assertFalse(requested.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN))
@@ -60,8 +79,8 @@ class NetworkMonitorTest {
         assertTrue(monitor.state.value.mayBeConnected)
     }
 
-    @Test fun `default cellular does not hide non default wifi or ethernet`() {
-        val mobile = ShadowNetwork.newInstance(1)
+    @Test fun default_cellular_does_not_hide_non_default_wifi_or_ethernet() {
+        val mobile = network(1)
         every { connectivity.activeNetwork } returns mobile
         every { connectivity.getNetworkCapabilities(mobile) } returns caps(NetworkCapabilities.TRANSPORT_CELLULAR)
         start()
@@ -76,16 +95,15 @@ class NetworkMonitorTest {
         assertFalse(monitor.state.value.mayBeConnected)
     }
 
-    @Test fun `VPN underlying wifi is not mistaken for direct LAN`() {
+    @Test fun VPN_underlying_wifi_is_not_mistaken_for_direct_LAN() {
         start()
         val vpn = available(1, NetworkCapabilities.TRANSPORT_VPN)
-        callback.captured.onCapabilitiesChanged(vpn, caps(NetworkCapabilities.TRANSPORT_VPN)
-            .also { shadowOf(it).addTransportType(NetworkCapabilities.TRANSPORT_WIFI) })
+        callback.captured.onCapabilitiesChanged(vpn, caps(NetworkCapabilities.TRANSPORT_VPN, NetworkCapabilities.TRANSPORT_WIFI))
         assertTrue(monitor.state.value.mayBeConnected)
         assertTrue(monitor.state.value.localNetworks.isEmpty())
     }
 
-    @Test @Config(sdk = [34]) fun `capabilities and blocked transitions update selectable paths`() {
+    @Test fun capabilities_and_blocked_transitions_update_selectable_paths() {
         start()
         val network = available(1, NetworkCapabilities.TRANSPORT_CELLULAR)
         callback.captured.onCapabilitiesChanged(network, caps(NetworkCapabilities.TRANSPORT_WIFI))
@@ -97,7 +115,7 @@ class NetworkMonitorTest {
         assertEquals(listOf(network), monitor.state.value.localNetworks)
     }
 
-    @Test fun `late callbacks do not resurrect a lost network`() {
+    @Test fun late_callbacks_do_not_resurrect_a_lost_network() {
         start()
         val network = available(1, NetworkCapabilities.TRANSPORT_WIFI)
         callback.captured.onLost(network)
@@ -109,32 +127,30 @@ class NetworkMonitorTest {
         assertEquals(snapshot, monitor.state.value)
     }
 
-    @Test fun `duplicate events are quiet but DNS and validation changes notify sync`() {
+    @Test fun duplicate_events_are_quiet_but_DNS_and_validation_changes_notify_sync() {
         start()
         val wifi = available(1, NetworkCapabilities.TRANSPORT_WIFI)
         val before = monitor.state.value.revision
         callback.captured.onAvailable(wifi)
         callback.captured.onCapabilitiesChanged(wifi, caps(NetworkCapabilities.TRANSPORT_WIFI))
         assertEquals(before, monitor.state.value.revision)
-        callback.captured.onCapabilitiesChanged(wifi, caps(NetworkCapabilities.TRANSPORT_WIFI)
-            .also { shadowOf(it).addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) })
+        callback.captured.onCapabilitiesChanged(wifi, caps(NetworkCapabilities.TRANSPORT_WIFI, validated = true))
         assertTrue(monitor.state.value.revision > before)
         val links = LinkProperties().apply { interfaceName = "wlan0" }
         callback.captured.onLinkPropertiesChanged(wifi, links)
         val afterLinks = monitor.state.value.revision
         callback.captured.onLinkPropertiesChanged(wifi, links)
         assertEquals(afterLinks, monitor.state.value.revision)
-        ReflectionHelpers.callInstanceMethod<Void>(links, "setDnsServers",
-            ClassParameter.from(Collection::class.java, listOf(java.net.InetAddress.getByName("192.0.2.1"))))
+        links.setDnsServers(listOf(java.net.InetAddress.getByName("192.0.2.1")))
         callback.captured.onLinkPropertiesChanged(wifi, links)
         assertTrue(monitor.state.value.revision > afterLinks)
     }
 
-    @Test fun `cold start waits for capabilities rather than onAvailable alone`() = runTest {
+    @Test fun cold_start_waits_for_capabilities_rather_than_onAvailable_alone() = runTest {
         start()
         val result = async { monitor.localNetworks() }
         yield()
-        val wifi = ShadowNetwork.newInstance(1)
+        val wifi = network(1)
         callback.captured.onAvailable(wifi)
         yield()
         assertFalse(result.isCompleted)
@@ -142,13 +158,13 @@ class NetworkMonitorTest {
         assertEquals(listOf(wifi), result.await())
     }
 
-    @Test fun `cold start discovery is bounded when no LAN exists`() = runTest {
+    @Test fun cold_start_discovery_is_bounded_when_no_LAN_exists() = runTest {
         start()
         assertTrue(monitor.localNetworks().isEmpty())
         assertTrue(testScheduler.currentTime in 1..1_000)
     }
 
-    @Test fun `cancelling discovery does not close shared observation`() = runTest {
+    @Test fun cancelling_discovery_does_not_close_shared_observation() = runTest {
         start()
         val result = async { monitor.localNetworks() }
         yield()
@@ -159,7 +175,7 @@ class NetworkMonitorTest {
         verify(exactly = 0) { connectivity.unregisterNetworkCallback(any<ConnectivityManager.NetworkCallback>()) }
     }
 
-    @Test fun `callbacks do not synchronously query Android network properties`() {
+    @Test fun callbacks_do_not_synchronously_query_Android_network_properties() {
         start()
         clearMocks(connectivity, answers = false)
         val wifi = available(1, NetworkCapabilities.TRANSPORT_WIFI)
@@ -168,7 +184,7 @@ class NetworkMonitorTest {
         verify(exactly = 0) { connectivity.activeNetwork }
     }
 
-    @Test fun `registration failure is unknown and discovery returns without waiting`() = runTest {
+    @Test fun registration_failure_is_unknown_and_discovery_returns_without_waiting() = runTest {
         every { connectivity.registerNetworkCallback(any<NetworkRequest>(), any<ConnectivityManager.NetworkCallback>()) } throws SecurityException("denied")
         every { connectivity.registerDefaultNetworkCallback(any<ConnectivityManager.NetworkCallback>()) } throws SecurityException("denied")
         start()
@@ -180,14 +196,14 @@ class NetworkMonitorTest {
         verify(exactly = 0) { connectivity.unregisterNetworkCallback(any<ConnectivityManager.NetworkCallback>()) }
     }
 
-    @Test fun `snapshot failure still allows subsequent callbacks`() {
+    @Test fun snapshot_failure_still_allows_subsequent_callbacks() {
         every { connectivity.activeNetwork } throws SecurityException("denied")
         start()
         assertTrue(monitor.state.value.monitoring)
         assertEquals(listOf(available(1, NetworkCapabilities.TRANSPORT_WIFI)), monitor.state.value.localNetworks)
     }
 
-    @Test fun `close unregisters once and ignores queued callbacks`() {
+    @Test fun close_unregisters_once_and_ignores_queued_callbacks() {
         start()
         val wifi = available(1, NetworkCapabilities.TRANSPORT_WIFI)
         monitor.close()
@@ -200,7 +216,7 @@ class NetworkMonitorTest {
         verify(exactly = 1) { connectivity.unregisterNetworkCallback(defaultCallback.captured) }
     }
 
-    @Test fun `default route switches wake observers without removing connected paths`() {
+    @Test fun default_route_switches_wake_observers_without_removing_connected_paths() {
         start()
         val mobile = available(1, NetworkCapabilities.TRANSPORT_CELLULAR)
         val wifi = available(2, NetworkCapabilities.TRANSPORT_WIFI)
@@ -218,9 +234,9 @@ class NetworkMonitorTest {
         assertTrue(monitor.state.value.mayBeConnected)
     }
 
-    @Test fun `default subscription failure leaves all-network observation usable`() {
+    @Test fun default_subscription_failure_leaves_all_network_observation_usable() {
         every { connectivity.registerDefaultNetworkCallback(any<ConnectivityManager.NetworkCallback>()) } throws SecurityException("denied")
-        val seeded = ShadowNetwork.newInstance(1)
+        val seeded = network(1)
         every { connectivity.activeNetwork } returns seeded
         every { connectivity.getNetworkCapabilities(seeded) } returns caps(NetworkCapabilities.TRANSPORT_WIFI)
         start()
@@ -235,9 +251,9 @@ class NetworkMonitorTest {
         verify(exactly = 1) { connectivity.unregisterNetworkCallback(callback.captured) }
     }
 
-    @Test fun `concurrent paths cannot overwrite each others updates`() {
+    @Test fun concurrent_paths_cannot_overwrite_each_others_updates() {
         start()
-        val paths = (1..12).map { ShadowNetwork.newInstance(it) }
+        val paths = (1..12).map { network(it) }
         paths.map { network ->
             Thread {
                 callback.captured.onAvailable(network)
@@ -252,8 +268,8 @@ class NetworkMonitorTest {
         assertTrue(monitor.state.value.mayBeConnected)
     }
 
-    @Test fun `observation is registered before default seeding and seeded disconnect is removed`() {
-        val wifi = ShadowNetwork.newInstance(1)
+    @Test fun observation_is_registered_before_default_seeding_and_seeded_disconnect_is_removed() {
+        val wifi = network(1)
         every { connectivity.activeNetwork } returns wifi
         every { connectivity.getNetworkCapabilities(wifi) } returns caps(NetworkCapabilities.TRANSPORT_WIFI)
         start()

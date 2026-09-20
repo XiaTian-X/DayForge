@@ -1,5 +1,7 @@
 package com.dayforge.domain.service
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.runner.RunWith
 import com.dayforge.data.model.SyncProgress
 import com.dayforge.data.repository.IncrementalSyncRepository
 import io.mockk.coEvery
@@ -15,6 +17,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
+@RunWith(AndroidJUnit4::class)
 class SyncManagerTest {
 
     private lateinit var repository: IncrementalSyncRepository
@@ -27,7 +30,7 @@ class SyncManagerTest {
     }
 
     @Test
-    fun `sync delegates exclusively to incremental repository`() = runTest {
+    fun sync_delegates_exclusively_to_incremental_repository() = runTest {
         coEvery { repository.sync(any()) } answers {
             firstArg<(SyncProgress) -> Unit>()(SyncProgress.UploadingChanges(1, 1))
         }
@@ -40,7 +43,7 @@ class SyncManagerTest {
     }
 
     @Test
-    fun `sync failure is exposed as result and progress`() = runTest {
+    fun sync_failure_is_exposed_as_result_and_progress() = runTest {
         coEvery { repository.sync(any()) } throws IllegalStateException("offline")
 
         val result = manager.sync()
@@ -50,7 +53,7 @@ class SyncManagerTest {
     }
 
     @Test
-    fun `network failure is classified without discarding its diagnostic message`() = runTest {
+    fun network_failure_is_classified_without_discarding_its_diagnostic_message() = runTest {
         coEvery { repository.sync(any()) } throws IOException("unexpected end of stream")
 
         val result = manager.sync()
@@ -63,7 +66,7 @@ class SyncManagerTest {
     }
 
     @Test
-    fun `queue status and last sync time come from incremental repository`() = runTest {
+    fun queue_status_and_last_sync_time_come_from_incremental_repository() = runTest {
         coEvery { repository.hasPendingChanges() } returns true
         every { repository.getLastSyncTime() } returns flowOf(123L)
 

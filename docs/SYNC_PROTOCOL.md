@@ -71,6 +71,7 @@
 - start、pause、resume、stop、cancel 都必须满足状态和 revision 前置条件。
 - 完成记录只由合法 stop 产生。
 - 网络不可用时命令保存在本地；恢复后按同一 session 和 operation ID 重放。
+- 客户端只接受 command ID 与 session ID 均匹配的命令结果；错配结果报错并保留该命令，不能删除或隔离其他会话的待同步意图。
 - 正在计时不阻止其他实体同步。
 - 服务端接管会递增 control generation；旧控制端后续命令和心跳必须以 HTTP 409/`CONTROL_LOST` 被隔离，不能改变权威计时。
 
