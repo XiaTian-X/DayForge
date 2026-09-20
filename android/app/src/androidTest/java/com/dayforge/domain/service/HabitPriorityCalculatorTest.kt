@@ -1,5 +1,8 @@
 package com.dayforge.domain.service
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.runner.RunWith
+
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.model.HabitSchedule
@@ -8,6 +11,7 @@ import org.junit.Test
 import java.time.ZonedDateTime
 import java.time.ZoneId
 
+@RunWith(AndroidJUnit4::class)
 class HabitPriorityCalculatorTest {
 
     private val zoneId = ZoneId.systemDefault()

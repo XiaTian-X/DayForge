@@ -1,5 +1,8 @@
 package com.dayforge.data.api
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.runner.RunWith
+
 import com.dayforge.data.api.dto.DeviceRegisterRequest
 import com.dayforge.data.api.dto.SyncV2BootstrapResponse
 import com.dayforge.data.api.dto.SyncV2Operation
@@ -18,11 +21,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** Locks Android serialization to the backend's Sync V2 wire format. */
+@RunWith(AndroidJUnit4::class)
 class SyncV2AcceptanceTest {
     private val json = Json { ignoreUnknownKeys = true }
 
     @Test
-    fun `android device registration always includes required platform`() {
+    fun android_device_registration_always_includes_required_platform() {
         val request = DeviceRegisterRequest(
             installationId = "android-installation",
             protocolVersion = 4,
@@ -42,7 +46,7 @@ class SyncV2AcceptanceTest {
     }
 
     @Test
-    fun `android decodes a canonical backend bootstrap snapshot`() {
+    fun android_decodes_a_canonical_backend_bootstrap_snapshot() {
         val body = """
             {
               "changes": [{
@@ -81,7 +85,7 @@ class SyncV2AcceptanceTest {
     }
 
     @Test
-    fun `android encodes offline operations with backend snake case fields`() {
+    fun android_encodes_offline_operations_with_backend_snake_case_fields() {
         val request = SyncV2PushRequest(
             deviceId = "33333333-3333-4333-8333-333333333333",
             operations = listOf(
@@ -111,7 +115,7 @@ class SyncV2AcceptanceTest {
     }
 
     @Test
-    fun `android decodes missing base snapshot as a recoverable conflict`() {
+    fun android_decodes_missing_base_snapshot_as_a_recoverable_conflict() {
         val body = """
             {
               "results": [{

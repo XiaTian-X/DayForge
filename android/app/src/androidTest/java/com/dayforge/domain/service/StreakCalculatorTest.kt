@@ -1,10 +1,14 @@
 package com.dayforge.domain.service
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.runner.RunWith
+
 import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.util.DateTimeUtils
 import org.junit.Assert.*
 import org.junit.Test
 
+@RunWith(AndroidJUnit4::class)
 class StreakCalculatorTest {
 
     @Test
@@ -430,4 +434,19 @@ class StreakCalculatorTest {
     private fun getStartOfDayMillis(): Long {
         return DateTimeUtils.startOfDayMillis()
     }
+    @Test
+    fun captured_calendar_dates_override_shared_legacy_dates_and_do_not_let_future_history_hide_the_streak() {
+        val today = java.time.LocalDate.parse("2026-03-10")
+        val completions = listOf("2026-03-08", "2026-03-09", "2026-03-10", "2026-03-12").flatMap { date ->
+            listOf(1, 2).map { value -> CompletionEntity(habitId = 1, date = 0, value = value,
+                actualCompletedAt = java.time.Instant.parse("${date}T16:00:00Z").toEpochMilli(),
+                recordedTimezone = "America/New_York", recordedLocalDate = date) }
+        }
+        assertEquals(3, StreakCalculator.calculateCurrentStreak(completions, today))
+        assertEquals(3, StreakCalculator.calculateBestStreak(completions))
+        assertEquals(3, StreakCalculator.calculateCurrentStreakWithTarget(completions, 3, today))
+        assertEquals(3, StreakCalculator.calculateBestStreakWithTarget(completions, 3))
+        assertEquals(0, StreakCalculator.calculateCurrentStreakWithTarget(completions, 4, today))
+    }
+
 }

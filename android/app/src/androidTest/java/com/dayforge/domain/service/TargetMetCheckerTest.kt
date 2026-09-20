@@ -1,5 +1,8 @@
 package com.dayforge.domain.service
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.runner.RunWith
+
 import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.data.model.HabitType
@@ -7,18 +10,19 @@ import com.dayforge.util.DateTimeUtils
 import org.junit.Assert.*
 import org.junit.Test
 
+@RunWith(AndroidJUnit4::class)
 class TargetMetCheckerTest {
 
     // ========== COUNTING/CHECK_IN Tests ==========
 
     @Test
-    fun `getTargetMetDates returns empty list for empty completions`() {
+    fun getTargetMetDates_returns_empty_list_for_empty_completions() {
         val result = TargetMetChecker.getTargetMetDates(emptyList(), targetValue = 5)
         assertTrue(result.isEmpty())
     }
 
     @Test
-    fun `getTargetMetDates returns empty list for zero target`() {
+    fun getTargetMetDates_returns_empty_list_for_zero_target() {
         val today = DateTimeUtils.startOfDayMillis()
         val completions = listOf(
             CompletionEntity(habitId = 1, date = today, value = 3)
@@ -28,7 +32,7 @@ class TargetMetCheckerTest {
     }
 
     @Test
-    fun `getTargetMetDates filters days meeting target`() {
+    fun getTargetMetDates_filters_days_meeting_target() {
         val today = DateTimeUtils.startOfDayMillis()
         val yesterday = today - DateTimeUtils.MILLIS_PER_DAY
 
@@ -47,7 +51,7 @@ class TargetMetCheckerTest {
     }
 
     @Test
-    fun `countTargetMetDays returns correct count`() {
+    fun countTargetMetDays_returns_correct_count() {
         val today = DateTimeUtils.startOfDayMillis()
         val yesterday = today - DateTimeUtils.MILLIS_PER_DAY
         val twoDaysAgo = today - 2 * DateTimeUtils.MILLIS_PER_DAY
@@ -67,7 +71,7 @@ class TargetMetCheckerTest {
     }
 
     @Test
-    fun `isTargetMetOnDate returns true when target met`() {
+    fun isTargetMetOnDate_returns_true_when_target_met() {
         val today = DateTimeUtils.startOfDayMillis()
         val completions = listOf(
             CompletionEntity(habitId = 1, date = today, value = 3),
@@ -80,7 +84,7 @@ class TargetMetCheckerTest {
     }
 
     @Test
-    fun `isTargetMetOnDate returns false when target not met`() {
+    fun isTargetMetOnDate_returns_false_when_target_not_met() {
         val today = DateTimeUtils.startOfDayMillis()
         val completions = listOf(
             CompletionEntity(habitId = 1, date = today, value = 3)
@@ -92,7 +96,7 @@ class TargetMetCheckerTest {
     }
 
     @Test
-    fun `isTargetMetOnDate returns false for wrong date`() {
+    fun isTargetMetOnDate_returns_false_for_wrong_date() {
         val today = DateTimeUtils.startOfDayMillis()
         val yesterday = today - DateTimeUtils.MILLIS_PER_DAY
         val completions = listOf(
@@ -107,7 +111,7 @@ class TargetMetCheckerTest {
     // ========== TIMER Tests ==========
 
     @Test
-    fun `getTimerTargetMetDates filters days meeting target`() {
+    fun getTimerTargetMetDates_filters_days_meeting_target() {
         val today = DateTimeUtils.startOfDayMillis()
         val yesterday = today - DateTimeUtils.MILLIS_PER_DAY
 
@@ -126,7 +130,7 @@ class TargetMetCheckerTest {
     }
 
     @Test
-    fun `countTimerTargetMetDays returns correct count`() {
+    fun countTimerTargetMetDays_returns_correct_count() {
         val today = DateTimeUtils.startOfDayMillis()
         val yesterday = today - DateTimeUtils.MILLIS_PER_DAY
 
@@ -143,7 +147,7 @@ class TargetMetCheckerTest {
     }
 
     @Test
-    fun `isTimerTargetMetOnDate returns true when target met`() {
+    fun isTimerTargetMetOnDate_returns_true_when_target_met() {
         val today = DateTimeUtils.startOfDayMillis()
         val timeLogs = listOf(
             TimeLogEntity(habitId = 1, date = today, startTime = today, endTime = today + 300_000, durationSeconds = 300)
@@ -155,7 +159,7 @@ class TargetMetCheckerTest {
     }
 
     @Test
-    fun `isTimerTargetMetOnDate returns false when target not met`() {
+    fun isTimerTargetMetOnDate_returns_false_when_target_not_met() {
         val today = DateTimeUtils.startOfDayMillis()
         val timeLogs = listOf(
             TimeLogEntity(habitId = 1, date = today, startTime = today, endTime = today + 200_000, durationSeconds = 200)
@@ -169,7 +173,7 @@ class TargetMetCheckerTest {
     // ========== Universal Method Tests ==========
 
     @Test
-    fun `isTargetMetOnDateUniversal for CHECK_IN returns true for any completion`() {
+    fun isTargetMetOnDateUniversal_for_CHECK_IN_returns_true_for_any_completion() {
         val today = DateTimeUtils.startOfDayMillis()
         val completions = listOf(
             CompletionEntity(habitId = 1, date = today, value = 1)
@@ -185,7 +189,7 @@ class TargetMetCheckerTest {
     }
 
     @Test
-    fun `isTargetMetOnDateUniversal for CHECK_IN returns false for no completions`() {
+    fun isTargetMetOnDateUniversal_for_CHECK_IN_returns_false_for_no_completions() {
         val result = TargetMetChecker.isTargetMetOnDateUniversal(
             habitType = HabitType.CHECK_IN,
             completions = emptyList(),
@@ -196,7 +200,7 @@ class TargetMetCheckerTest {
     }
 
     @Test
-    fun `isTargetMetOnDateUniversal for COUNTING returns true when target met`() {
+    fun isTargetMetOnDateUniversal_for_COUNTING_returns_true_when_target_met() {
         val today = DateTimeUtils.startOfDayMillis()
         val completions = listOf(
             CompletionEntity(habitId = 1, date = today, value = 5)
@@ -212,7 +216,7 @@ class TargetMetCheckerTest {
     }
 
     @Test
-    fun `isTargetMetOnDateUniversal for COUNTING returns false when target not met`() {
+    fun isTargetMetOnDateUniversal_for_COUNTING_returns_false_when_target_not_met() {
         val today = DateTimeUtils.startOfDayMillis()
         val completions = listOf(
             CompletionEntity(habitId = 1, date = today, value = 3)
@@ -228,7 +232,7 @@ class TargetMetCheckerTest {
     }
 
     @Test
-    fun `isTargetMetOnDateUniversal for TIMER returns true when target met`() {
+    fun isTargetMetOnDateUniversal_for_TIMER_returns_true_when_target_met() {
         val today = DateTimeUtils.startOfDayMillis()
         val timeLogs = listOf(
             TimeLogEntity(habitId = 1, date = today, startTime = today, endTime = today + 300_000, durationSeconds = 300)
@@ -244,7 +248,7 @@ class TargetMetCheckerTest {
     }
 
     @Test
-    fun `isTargetMetOnDateUniversal for TIMER returns false when target not met`() {
+    fun isTargetMetOnDateUniversal_for_TIMER_returns_false_when_target_not_met() {
         val today = DateTimeUtils.startOfDayMillis()
         val timeLogs = listOf(
             TimeLogEntity(habitId = 1, date = today, startTime = today, endTime = today + 200_000, durationSeconds = 200)
@@ -260,7 +264,7 @@ class TargetMetCheckerTest {
     }
 
     @Test
-    fun `isTargetMetOnDateUniversal for GOAL returns false`() {
+    fun isTargetMetOnDateUniversal_for_GOAL_returns_false() {
         val result = TargetMetChecker.isTargetMetOnDateUniversal(
             habitType = HabitType.GOAL,
             completions = emptyList(),

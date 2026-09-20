@@ -1,5 +1,8 @@
 package com.dayforge.domain.service
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.runner.RunWith
+
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.util.DateTimeUtils
 import org.junit.Assert.*
@@ -7,6 +10,7 @@ import org.junit.Test
 import java.time.LocalDate
 import java.time.ZoneId
 
+@RunWith(AndroidJUnit4::class)
 class ActivityRateCalculatorTest {
 
     // ========== Deduction per miss tests ==========
