@@ -1,4 +1,4 @@
-"""Executable contracts for the scoped, locked backend type gate."""
+"""Executable contracts for the whole-backend, locked gradual type gate."""
 
 from pathlib import Path
 import hashlib
@@ -151,13 +151,14 @@ def test_admin_and_device_boundaries_return_typed_models(type_cache):
 
 def test_type_gate_scope_is_explicit_without_error_or_import_suppression():
     config = tomllib.loads((BACKEND / "pyproject.toml").read_text())["tool"]["mypy"]
-    assert config["files"] == ["src"]
+    assert config["files"] == ["src", "tests", "scripts", "alembic"]
     assert config["check_untyped_defs"] is True
     assert not config.get("ignore_errors", False)
     assert not config.get("ignore_missing_imports", False)
     assert config.get("follow_imports", "normal") == "normal"
     assert not config.get("disable_error_code", [])
     assert not config.get("overrides", [])
+    assert not config.get("exclude", [])
 
 
 def test_internal_guard_preserves_concrete_type(type_cache):
@@ -171,3 +172,46 @@ def test_internal_guard_preserves_concrete_type(type_cache):
         type_cache,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_default_gate_discovers_errors_in_every_backend_area(tmp_path):
+    # Invoke the default configured discovery, not explicit CLI file arguments.
+    config_text = (BACKEND / "pyproject.toml").read_text()
+    (tmp_path / "pyproject.toml").write_text(config_text)
+    areas = tomllib.loads(config_text)["tool"]["mypy"]["files"]
+    for area in areas:
+        directory = tmp_path / area
+        directory.mkdir()
+        (directory / "__init__.py").write_text("")
+        (directory / "type_probe.py").write_text(
+            'def broken() -> int:\n    return "bad"\n'
+        )
+    result = subprocess.run(
+        [sys.executable, "-m", "mypy", "--config-file", "pyproject.toml"],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    for area in areas:
+        assert f"{area}/type_probe.py:2: error:" in result.stdout
+    assert result.stdout.count("[return-value]") == len(areas)
+
+
+def test_all_tracked_backend_python_files_are_in_type_gate():
+    areas = tomllib.loads((BACKEND / "pyproject.toml").read_text())["tool"]["mypy"][
+        "files"
+    ]
+    result = subprocess.run(
+        ["git", "ls-files", "--", "*.py"],
+        cwd=BACKEND,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=10,
+    )
+    paths = result.stdout.splitlines()
+    assert paths
+    assert all(any(path.startswith(f"{area}/") for area in areas) for path in paths)

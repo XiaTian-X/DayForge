@@ -71,6 +71,9 @@ def test_nested_recurrence_rule_is_one_conflict_field_not_a_recursive_dict_merge
     error = caught.value
     assert error.code == "REVISION_CONFLICT"
     assert error.conflicting_fields == ["activity.recurrence_rule"]
+    assert error.base_entity is not None
+    assert error.local_entity is not None
+    assert error.entity is not None
     assert error.base_entity["activity"]["recurrence_rule"]["weekdays"] == [1]
     assert (
         error.local_entity["activity"]["recurrence_rule"]["start_date"] == "2026-09-14"

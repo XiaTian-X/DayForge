@@ -38,6 +38,7 @@ def test_goal_status_and_manual_result_matrix(manual_result, status):
     if valid:
         model = PlanNodePayload.model_validate(payload)
         assert model.status == status
+        assert model.goal is not None
         assert model.goal.manual_result == manual_result
     else:
         message = (

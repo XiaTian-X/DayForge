@@ -43,6 +43,7 @@ def test_auth_response_validates_uuid_without_changing_internal_jwt_subject(publ
         (response.refresh_token, "refresh"),
     ]:
         payload = verify_token(token)
+        assert payload is not None
         assert payload["sub"] == "17"
         assert payload["ver"] == 4
         assert payload["type"] == kind
@@ -82,6 +83,7 @@ async def test_token_response_requires_generated_id_after_commit_and_refresh(
     session.refresh.side_effect = refresh
 
     async def create():
+        assert user.id is not None
         if entry == "admin":
             return await create_user_token(
                 user.id, TokenCreate(name="boundary"), user, session

@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import delete
-from sqlmodel import select
+from sqlmodel import col, select
 
 from src.auth.models import User
 from src.v2.models import EntityRevisionSnapshot, SyncChange, SyncOperation
@@ -52,9 +52,9 @@ async def assert_history(session, operation, revisions):
             await session.execute(
                 select(EntityRevisionSnapshot)
                 .where(
-                    EntityRevisionSnapshot.entity_uuid == entity_uuid,
+                    col(EntityRevisionSnapshot.entity_uuid) == entity_uuid,
                 )
-                .order_by(EntityRevisionSnapshot.revision)
+                .order_by(col(EntityRevisionSnapshot.revision))
             )
         )
         .scalars()
@@ -64,8 +64,8 @@ async def assert_history(session, operation, revisions):
         (
             await session.execute(
                 select(SyncChange)
-                .where(SyncChange.entity_uuid == entity_uuid)
-                .order_by(SyncChange.sequence)
+                .where(col(SyncChange.entity_uuid) == entity_uuid)
+                .order_by(col(SyncChange.sequence))
             )
         )
         .scalars()
@@ -115,6 +115,8 @@ async def test_omitted_default_fields_preserve_remote_changes_across_structural_
     merge_client,
     entity_type,
 ):
+    remote_value: str | bool
+    local_value: str | bool
     if entity_type == "goal":
         base = goal_operation()
         remote_field, remote_value = "description", "Remote description"
@@ -275,9 +277,9 @@ async def test_another_accounts_same_uuid_snapshot_cannot_replace_missing_merge_
     assert response.json()["results"][0]["status"] == "applied"
     await async_session.execute(
         delete(EntityRevisionSnapshot).where(
-            EntityRevisionSnapshot.owner_user_id == owner_id,
-            EntityRevisionSnapshot.entity_uuid == base["entity_uuid"],
-            EntityRevisionSnapshot.revision == 1,
+            col(EntityRevisionSnapshot.owner_user_id) == owner_id,
+            col(EntityRevisionSnapshot.entity_uuid) == base["entity_uuid"],
+            col(EntityRevisionSnapshot.revision) == 1,
         )
     )
     await async_session.commit()

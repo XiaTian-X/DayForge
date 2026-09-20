@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
-from sqlmodel import select
+from sqlmodel import col, select
 
 from src.v2.models import (
     ActivityEvent,
@@ -124,7 +124,7 @@ async def test_fact_link_rejection_is_cached_without_appending_history(
             (row.entity_uuid, row.revision, row.payload_json)
             for row in (
                 await async_session.execute(
-                    select(model).order_by(model.entity_uuid, model.revision)
+                    select(model).order_by(model.entity_uuid, col(model.revision))
                 )
             ).scalars()
         ]
@@ -138,7 +138,7 @@ async def test_fact_link_rejection_is_cached_without_appending_history(
     for model, expected in before.items():
         rows = (
             await async_session.execute(
-                select(model).order_by(model.entity_uuid, model.revision)
+                select(model).order_by(model.entity_uuid, col(model.revision))
             )
         ).scalars()
         assert [
@@ -334,11 +334,15 @@ async def test_fact_link_journal_failure_rolls_back_and_preserves_batch_progress
             [] if mutation.endswith("create") else [1]
         )
     if mutation.endswith("create"):
-        model = ActivityEvent if mutation == "event-create" else ActivityMetricLinkV2
+        entity_model = (
+            ActivityEvent if mutation == "event-create" else ActivityMetricLinkV2
+        )
         rows = (
             (
                 await async_session.execute(
-                    select(model).where(model.public_id == failing["entity_uuid"])
+                    select(entity_model).where(
+                        entity_model.public_id == failing["entity_uuid"]
+                    )
                 )
             )
             .scalars()

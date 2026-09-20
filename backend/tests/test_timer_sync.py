@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
-from sqlmodel import select
+from sqlmodel import col, select
 
 from src.auth.models import User
 from tests.account_fixtures import (
@@ -201,7 +201,7 @@ async def test_cross_midnight_stop_is_idempotent_and_allocates_both_days(
                 .where(
                     DurationDayAllocation.activity_event_id == timer.completed_event_id
                 )
-                .order_by(DurationDayAllocation.local_date)
+                .order_by(col(DurationDayAllocation.local_date))
             )
         ).scalars()
     )
@@ -275,7 +275,7 @@ async def test_pause_spanning_midnight_is_excluded_from_daily_allocations(
                 .where(
                     DurationDayAllocation.activity_event_id == timer.completed_event_id
                 )
-                .order_by(DurationDayAllocation.local_date)
+                .order_by(col(DurationDayAllocation.local_date))
             )
         ).scalars()
     )
