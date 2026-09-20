@@ -43,10 +43,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.job
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -83,9 +82,11 @@ class SettingsViewModelTest {
     private lateinit var timeLogDao: TimeLogDao
     private lateinit var database: HabitDatabase
     private lateinit var context: Context
-    private val testDispatcher = UnconfinedTestDispatcher()
+    // Drive Main and the real DataStore with the same scheduler so preference writes
+    // and collection are deterministic without replacing persistence with a mock.
+    private val testDispatcher = StandardTestDispatcher()
     private val viewModelStore = ViewModelStore()
-    private val dataStoreScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val dataStoreScope = CoroutineScope(SupervisorJob() + testDispatcher)
     private lateinit var dataStoreFile: File
 
     @Before
@@ -166,7 +167,7 @@ class SettingsViewModelTest {
     fun teardown() {
         viewModelStore.clear()
         testDispatcher.scheduler.runCurrent()
-        runBlocking { dataStoreScope.coroutineContext.job.cancelAndJoin() }
+        runTest(testDispatcher) { dataStoreScope.coroutineContext.job.cancelAndJoin() }
         database.close()
         dataStoreFile.delete()
         Dispatchers.resetMain()
@@ -174,12 +175,16 @@ class SettingsViewModelTest {
 
     @Test
     fun `settings follows shared connectivity and callback failure remains unknown`() = runTest {
+        testDispatcher.scheduler.runCurrent()
         assertFalse(viewModel.isOnline.value)
         networkState.value = NetworkMonitor.Snapshot(listOf(NetworkMonitor.Path(mockk<Network>(), true, false)))
+        testDispatcher.scheduler.runCurrent()
         assertTrue(viewModel.isOnline.value)
         networkState.value = NetworkMonitor.Snapshot()
+        testDispatcher.scheduler.runCurrent()
         assertFalse(viewModel.isOnline.value)
         networkState.value = NetworkMonitor.Snapshot(monitoring = false)
+        testDispatcher.scheduler.runCurrent()
         assertTrue(viewModel.isOnline.value)
     }
 
@@ -253,11 +258,15 @@ class SettingsViewModelTest {
 
     @Test
     fun `appearance changes remain observable through settings contract`() = runTest {
-        viewModel.changeCardColorStyle("personalized")
-        viewModel.setGlobalNotificationsEnabled(false)
-
-        assertEquals("personalized", preferencesManager.cardColorStyle.first { it == "personalized" })
-        assertFalse(preferencesManager.globalNotificationsEnabled.first { !it })
+        // Alternate both preferences to require a fresh persisted value every time.
+        repeat(100) { index ->
+            val style = if (index % 2 == 0) "personalized" else "follow_theme"
+            val enabled = index % 2 != 0
+            viewModel.changeCardColorStyle(style)
+            viewModel.setGlobalNotificationsEnabled(enabled)
+            assertEquals(style, preferencesManager.cardColorStyle.first { it == style })
+            assertEquals(enabled, preferencesManager.globalNotificationsEnabled.first { it == enabled })
+        }
     }
 
     @Test
