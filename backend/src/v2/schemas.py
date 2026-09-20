@@ -3,6 +3,7 @@
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from typing import Annotated, Any, Literal, Optional, Union
+from typing import overload as _overload
 from uuid import UUID
 
 from pydantic import (
@@ -126,6 +127,14 @@ def utc_iso(value: datetime) -> str:
     if value.tzinfo is None or value.utcoffset() is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+@_overload
+def require_aware_utc(value: datetime) -> datetime: ...
+
+
+@_overload
+def require_aware_utc(value: None) -> None: ...
 
 
 def require_aware_utc(value: Optional[datetime]) -> Optional[datetime]:
@@ -322,10 +331,11 @@ class PlanNodePayload(ApiModel):
                 raise ValueError("goal nodes must be top-level")
             if self.goal is None or self.activity is not None:
                 raise ValueError("goal nodes require goal details only")
-            expected_status = {
+            status_by_result: dict[str | None, str] = {
                 "succeeded": "completed",
                 "failed": "failed",
-            }.get(self.goal.manual_result)
+            }
+            expected_status = status_by_result.get(self.goal.manual_result)
             if expected_status is not None and self.status != expected_status:
                 raise ValueError("goal status must match its manual result")
             if expected_status is None and self.status not in {"active", "archived"}:
@@ -415,6 +425,9 @@ class ActivityEventPayload(ApiModel):
                 raise ValueError(
                     "active duration must not exceed the wall-clock interval"
                 )
+            date_basis = self.started_at
+        else:
+            date_basis = self.occurred_at
         if self.event_type == "revert" and self.reverts_event_uuid is None:
             raise ValueError("revert events require reverts_event_uuid")
         if self.event_type != "revert" and self.reverts_event_uuid is not None:
@@ -424,11 +437,6 @@ class ActivityEventPayload(ApiModel):
             and not self.external_event_id
         ):
             raise ValueError("automated sources require external_event_id")
-        date_basis = (
-            self.started_at
-            if self.event_type == "duration_session"
-            else self.occurred_at
-        )
         if local_date_at(date_basis, self.timezone) != self.local_date:
             raise ValueError(
                 "local_date does not match the event timestamp and timezone"

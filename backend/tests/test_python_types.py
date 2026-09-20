@@ -1,4 +1,4 @@
-"""Executable contracts for the scoped, locked infrastructure type gate."""
+"""Executable contracts for the scoped, locked backend type gate."""
 
 from pathlib import Path
 import hashlib
@@ -33,6 +33,10 @@ def type_cache(tmp_path_factory):
         ),
         (
             "from src.storage.cli import _current_alembic_head\nhead: str = _current_alembic_head()\n",
+            "assignment",
+        ),
+        (
+            "from datetime import datetime\nfrom src.v2.schemas import require_aware_utc\nvalue: datetime = require_aware_utc(None)\n",
             "assignment",
         ),
     ],
@@ -80,6 +84,20 @@ def test_type_gate_accepts_real_immutable_adapter_and_typed_engine(type_cache):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_utc_normalizer_retains_required_and_optional_types(type_cache):
+    source = (
+        "from datetime import datetime, timezone\n"
+        "from typing import assert_type\n"
+        "from src.v2.schemas import require_aware_utc\n"
+        "assert_type(require_aware_utc(datetime.now(timezone.utc)), datetime)\n"
+        "assert_type(require_aware_utc(None), None)\n"
+        "def optional(value: datetime | None) -> None:\n"
+        "    assert_type(require_aware_utc(value), datetime | None)\n"
+    )
+    result = run_mypy(source, type_cache)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_type_gate_scope_is_explicit_without_error_or_import_suppression():
     config = tomllib.loads((BACKEND / "pyproject.toml").read_text())["tool"]["mypy"]
     assert set(config["files"]) == {
@@ -88,6 +106,10 @@ def test_type_gate_scope_is_explicit_without_error_or_import_suppression():
         "src/database.py",
         "src/time_utils.py",
         "src/v2/time_utils.py",
+        "src/v2/schemas.py",
+        "src/v2/encoding.py",
+        "src/v2/merge.py",
+        "src/v2/errors.py",
     }
     assert config["check_untyped_defs"] is True
     assert not config.get("ignore_errors", False)
