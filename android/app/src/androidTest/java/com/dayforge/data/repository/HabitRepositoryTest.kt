@@ -1,7 +1,6 @@
 package com.dayforge.data.repository
 
 import android.content.Context
-import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.dao.HabitDao
@@ -18,20 +17,19 @@ import com.dayforge.widget.WidgetRefreshScheduler
 import io.mockk.*
 import app.cash.turbine.test
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.util.Calendar
 import java.util.TimeZone
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 class HabitRepositoryTest {
+    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
 
     private lateinit var repository: HabitRepository
     private lateinit var habitDao: HabitDao
@@ -44,11 +42,7 @@ class HabitRepositoryTest {
         context = ApplicationProvider.getApplicationContext()
         mockkObject(WidgetRefreshScheduler)
         every { WidgetRefreshScheduler.request(context) } returns mockk()
-        // Use in-memory database for test isolation
-        database = Room.inMemoryDatabaseBuilder(
-            context,
-            HabitDatabase::class.java
-        ).build()
+        database = storage.database
         habitDao = database.habitDao()
         completionDao = database.completionDao()
         repository = HabitRepository(habitDao, completionDao, database.timeLogDao(), database)
@@ -61,7 +55,7 @@ class HabitRepositoryTest {
     }
 
     @Test
-    fun `create edit delete and clear queue refresh after successful writes`() = runTest {
+    fun create_edit_delete_and_clear_queue_refresh_after_successful_writes() = runBlocking {
         val id = repository.createHabit("Refresh", "", HabitType.CHECK_IN, 1, "#2196F3",
             HabitSchedule.Daily, context = context)
         verify(exactly = 1) { WidgetRefreshScheduler.request(context) }
@@ -77,7 +71,7 @@ class HabitRepositoryTest {
     }
 
     @Test
-    fun `subtree deletion schedules one refresh for all deleted descendants`() = runTest {
+    fun subtree_deletion_schedules_one_refresh_for_all_deleted_descendants() = runBlocking {
         val goal = HabitEntity(name = "Goal", description = "", habitType = HabitType.GOAL,
             iconResId = 1, colorHex = "#2196F3", schedule = HabitSchedule.Daily, targetValue = 1)
         val goalId = habitDao.insert(goal)
@@ -89,7 +83,7 @@ class HabitRepositoryTest {
     }
 
     @Test
-    fun createHabit_insertsViaDaoAndReturnsId() = runTest {
+    fun createHabit_insertsViaDaoAndReturnsId() = runBlocking {
         val habitId = repository.createHabit(
             name = "Test Habit",
             description = "Test Description",
@@ -108,7 +102,7 @@ class HabitRepositoryTest {
     }
 
     @Test
-    fun allHabitsFlow_emitsEmptyListInitially() = runTest {
+    fun allHabitsFlow_emitsEmptyListInitially() = runBlocking {
         repository.allHabits.test {
             val initialHabits = awaitItem()
             assertTrue("Initial habits list should be empty", initialHabits.isEmpty())
@@ -116,10 +110,9 @@ class HabitRepositoryTest {
     }
 
     @Test
-    fun allHabitsFlow_emitsUpdatedListAfterInsert() = runTest {
+    fun allHabitsFlow_emitsUpdatedListAfterInsert() = runBlocking {
         repository.allHabits.test {
-            // Skip initial empty emission
-            skipItems(1)
+            assertTrue(awaitItem().isEmpty())
 
             // Insert a habit
             repository.createHabit(
@@ -141,7 +134,7 @@ class HabitRepositoryTest {
     }
 
     @Test
-    fun getHabit_returnsCorrectHabitById() = runTest {
+    fun getHabit_returnsCorrectHabitById() = runBlocking {
         val habitId = repository.createHabit(
             name = "Test Habit",
             description = "Test Description",
@@ -163,7 +156,7 @@ class HabitRepositoryTest {
     }
 
     @Test
-    fun updateHabit_callsDaoUpdate() = runTest {
+    fun updateHabit_callsDaoUpdate() = runBlocking {
         val habitId = repository.createHabit(
             name = "Original Name",
             description = "",
@@ -186,7 +179,7 @@ class HabitRepositoryTest {
     }
 
     @Test
-    fun deleteHabit_callsDaoDelete() = runTest {
+    fun deleteHabit_callsDaoDelete() = runBlocking {
         val habitId = repository.createHabit(
             name = "To Delete",
             description = "",
@@ -207,7 +200,7 @@ class HabitRepositoryTest {
     }
 
     @Test
-    fun deleteHabit_isOfflineSafeAndDoesNotRequireServerState() = runTest {
+    fun deleteHabit_isOfflineSafeAndDoesNotRequireServerState() = runBlocking {
         val habitId = repository.createHabit(
             name = "Synced Habit",
             description = "",
@@ -226,7 +219,7 @@ class HabitRepositoryTest {
     }
 
     @Test
-    fun updateHabit_withMissingMetric_rollsBackHabitAndExistingLinks() = runTest {
+    fun updateHabit_withMissingMetric_rollsBackHabitAndExistingLinks() = runBlocking {
         val habitId = repository.createHabit(
             name = "Original",
             description = "",
@@ -262,7 +255,7 @@ class HabitRepositoryTest {
     }
 
     @Test
-    fun repositoryIsSingleSourceOfTruth_allOperationsGoThroughIt() = runTest {
+    fun repositoryIsSingleSourceOfTruth_allOperationsGoThroughIt() = runBlocking {
         // Verify repository provides the only way to access data
         val habitId = repository.createHabit(
             name = "Test",
@@ -290,7 +283,7 @@ class HabitRepositoryTest {
     // ==================== NEW COMPLETION METHODS TESTS ====================
 
     @Test
-    fun logCompletion_insertsCompletionWithCorrectDate() = runTest {
+    fun logCompletion_insertsCompletionWithCorrectDate() = runBlocking {
         val habitId = repository.createHabit(
             name = "Test Habit",
             description = "",
@@ -321,7 +314,7 @@ class HabitRepositoryTest {
     }
 
     @Test
-    fun undoCompletion_deletesSpecificCompletion() = runTest {
+    fun undoCompletion_deletesSpecificCompletion() = runBlocking {
         val habitId = repository.createHabit(
             name = "Test Habit",
             description = "",
@@ -347,7 +340,7 @@ class HabitRepositoryTest {
     }
 
     @Test
-    fun getTodayCompletionCount_returnsCorrectCount() = runTest {
+    fun getTodayCompletionCount_returnsCorrectCount() = runBlocking {
         val habitId = repository.createHabit(
             name = "Test Habit",
             description = "",
@@ -369,7 +362,7 @@ class HabitRepositoryTest {
     }
 
     @Test
-    fun getTodayCompletionCount_returnsZeroForNoCompletions() = runTest {
+    fun getTodayCompletionCount_returnsZeroForNoCompletions() = runBlocking {
         val habitId = repository.createHabit(
             name = "Test Habit",
             description = "",
@@ -386,7 +379,7 @@ class HabitRepositoryTest {
     }
 
     @Test
-    fun getTodayCompletionCount_onlyCountsToday() = runTest {
+    fun getTodayCompletionCount_onlyCountsToday() = runBlocking {
         val habitId = repository.createHabit(
             name = "Test Habit",
             description = "",
@@ -420,7 +413,7 @@ class HabitRepositoryTest {
     }
 
     @Test
-    fun getStreakStats_emitsCurrentAndBestStreak() = runTest {
+    fun getStreakStats_emitsCurrentAndBestStreak() = runBlocking {
         val habitId = repository.createHabit(
             name = "Test Habit",
             description = "",
@@ -457,7 +450,7 @@ class HabitRepositoryTest {
     }
 
     @Test
-    fun getStreakStats_handlesBrokenStreak() = runTest {
+    fun getStreakStats_handlesBrokenStreak() = runBlocking {
         val habitId = repository.createHabit(
             name = "Test Habit",
             description = "",
@@ -504,7 +497,7 @@ class HabitRepositoryTest {
     }
 
     @Test
-    fun getStreakStats_returnsZeroForNoCompletions() = runTest {
+    fun getStreakStats_returnsZeroForNoCompletions() = runBlocking {
         val habitId = repository.createHabit(
             name = "Test Habit",
             description = "",
@@ -525,7 +518,7 @@ class HabitRepositoryTest {
     // ==================== ISCOUNTDOWN PARAMETER TESTS ====================
 
     @Test
-    fun createHabit_defaultIsCountdownFalse() = runTest {
+    fun createHabit_defaultIsCountdownFalse() = runBlocking {
         val habitId = repository.createHabit(
             name = "Countup Habit",
             description = "",
@@ -542,7 +535,7 @@ class HabitRepositoryTest {
     }
 
     @Test
-    fun createHabit_withIsCountdownTrue_savesCorrectly() = runTest {
+    fun createHabit_withIsCountdownTrue_savesCorrectly() = runBlocking {
         val habitId = repository.createHabit(
             name = "Countdown Habit",
             description = "Countdown timer",
@@ -562,7 +555,7 @@ class HabitRepositoryTest {
     }
 
     @Test
-    fun createHabit_withIsCountdownFalse_savesCorrectly() = runTest {
+    fun createHabit_withIsCountdownFalse_savesCorrectly() = runBlocking {
         val habitId = repository.createHabit(
             name = "Explicit Countup Habit",
             description = "",

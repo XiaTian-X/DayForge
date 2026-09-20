@@ -19,7 +19,10 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
+import androidx.test.ext.junit.runners.AndroidJUnit4
 
+@RunWith(AndroidJUnit4::class)
 class HabitLifecycleCoordinatorTest {
     private lateinit var context: Context
     private lateinit var habitRepository: HabitRepository
@@ -33,7 +36,7 @@ class HabitLifecycleCoordinatorTest {
     }
 
     @Test
-    fun `goal request exposes habit progress and target`() {
+    fun goal_request_exposes_habit_progress_and_target() {
         coordinator.showGoalCompletion(habit(targetCycles = 3), progress = 2)
 
         assertTrue(coordinator.showGoalDialog.value)
@@ -43,7 +46,7 @@ class HabitLifecycleCoordinatorTest {
     }
 
     @Test
-    fun `goal visibility is published after its payload`() = runTest {
+    fun goal_visibility_is_published_after_its_payload() = runTest {
         combine(
             coordinator.showGoalDialog,
             coordinator.goalHabitId,
@@ -65,7 +68,7 @@ class HabitLifecycleCoordinatorTest {
     }
 
     @Test
-    fun `goal request ignores habits without a cycle target`() {
+    fun goal_request_ignores_habits_without_a_cycle_target() {
         coordinator.showGoalCompletion(habit(targetCycles = null), progress = 2)
 
         assertFalse(coordinator.showGoalDialog.value)
@@ -73,7 +76,7 @@ class HabitLifecycleCoordinatorTest {
     }
 
     @Test
-    fun `confirm goal deactivates habit and closes dialog`() = runTest {
+    fun confirm_goal_deactivates_habit_and_closes_dialog() = runTest {
         coordinator.showGoalCompletion(habit(targetCycles = 1), progress = 1)
         coJustRun { habitRepository.updateIsActive(7L, false, context) }
 
@@ -85,7 +88,7 @@ class HabitLifecycleCoordinatorTest {
     }
 
     @Test
-    fun `dismiss strict goal switches to loose and closes dialog`() = runTest {
+    fun dismiss_strict_goal_switches_to_loose_and_closes_dialog() = runTest {
         val habit = habit(targetCycles = 1, failMode = FailMode.STRICT)
         coordinator.showGoalCompletion(habit, progress = 1)
         coJustRun { habitRepository.updateFailMode(7L, FailMode.LOOSE, context) }
@@ -97,7 +100,7 @@ class HabitLifecycleCoordinatorTest {
     }
 
     @Test
-    fun `reactivation success clears dialog state`() = runTest {
+    fun reactivation_success_clears_dialog_state() = runTest {
         val habit = habit(targetCycles = 1)
         coordinator.showReactivationDialog(habit)
         coJustRun { habitRepository.clearHabitHistory(habit, context) }
@@ -111,7 +114,7 @@ class HabitLifecycleCoordinatorTest {
     }
 
     @Test
-    fun `reactivation visibility is published after its payload`() = runTest {
+    fun reactivation_visibility_is_published_after_its_payload() = runTest {
         combine(
             coordinator.showReactivationDialog,
             coordinator.reactivationHabitId,
@@ -131,7 +134,7 @@ class HabitLifecycleCoordinatorTest {
     }
 
     @Test
-    fun `reactivation failure is reported and clears dialog state`() = runTest {
+    fun reactivation_failure_is_reported_and_clears_dialog_state() = runTest {
         val habit = habit(targetCycles = 1)
         coordinator.showReactivationDialog(habit)
         coEvery { habitRepository.clearHabitHistory(habit, context) } throws
@@ -142,6 +145,31 @@ class HabitLifecycleCoordinatorTest {
         assertEquals(ReactivationResult.FAILURE, result)
         assertFalse(coordinator.showReactivationDialog.value)
         assertNull(coordinator.reactivationHabitId.value)
+    }
+
+    @Test
+    fun failedGoalCommitKeepsDialogVisibleForRetry() = runTest {
+        coordinator.showGoalCompletion(habit(targetCycles = 3), progress = 3)
+        val failure = java.io.IOException("goal update failed")
+        coEvery { habitRepository.updateIsActive(7L, false, context) } throws failure
+        assertEquals(failure, runCatching { coordinator.confirmGoalCompletion() }.exceptionOrNull())
+        assertTrue(coordinator.showGoalDialog.value)
+        assertEquals(7L, coordinator.goalHabitId.value)
+        coJustRun { habitRepository.updateIsActive(7L, false, context) }
+        assertTrue(coordinator.confirmGoalCompletion())
+        assertFalse(coordinator.showGoalDialog.value)
+    }
+
+    @Test
+    fun reactivationCancellationPropagatesAndPreservesPendingRequest() = runTest {
+        val habit = habit(targetCycles = 1)
+        coordinator.showReactivationDialog(habit)
+        val cancellation = kotlinx.coroutines.CancellationException("cancelled")
+        coEvery { habitRepository.clearHabitHistory(habit, context) } throws cancellation
+        assertEquals(cancellation, runCatching { coordinator.confirmReactivation(habit) }.exceptionOrNull())
+        assertTrue(coordinator.showReactivationDialog.value)
+        assertEquals(7L, coordinator.reactivationHabitId.value)
+        assertEquals("Target habit", coordinator.reactivationHabitName.value)
     }
 
     private fun habit(targetCycles: Int?, failMode: FailMode = FailMode.STRICT) = HabitEntity(

@@ -14,7 +14,10 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
+import androidx.test.ext.junit.runners.AndroidJUnit4
 
+@RunWith(AndroidJUnit4::class)
 class HabitTimerCoordinatorTest {
     private lateinit var timerManager: TimerManager
     private lateinit var stateProvider: ActiveTimerStateProvider
@@ -28,7 +31,7 @@ class HabitTimerCoordinatorTest {
     }
 
     @Test
-    fun `start and recovery delegate to timer manager`() = runTest {
+    fun start_and_recovery_delegate_to_timer_manager() = runTest {
         coJustRun { timerManager.startTimer(7L, 1) }
         coJustRun { timerManager.recoverRunningTimer() }
 
@@ -40,7 +43,7 @@ class HabitTimerCoordinatorTest {
     }
 
     @Test
-    fun `pause and resume ignore missing active timer`() {
+    fun pause_and_resume_ignore_missing_active_timer() {
         coordinator.pauseTimer(null)
         coordinator.resumeTimer(null)
 
@@ -49,7 +52,7 @@ class HabitTimerCoordinatorTest {
     }
 
     @Test
-    fun `pause and resume forward active timer details`() {
+    fun pause_and_resume_forward_active_timer_details() {
         val activeTimer = activeTimer()
         justRun { timerManager.pauseTimer(7L, 1) }
         justRun { timerManager.resumeTimer(7L, 1) }
@@ -62,7 +65,7 @@ class HabitTimerCoordinatorTest {
     }
 
     @Test
-    fun `stop returns accepted habit identity`() = runTest {
+    fun stop_returns_accepted_habit_identity() = runTest {
         coEvery { timerManager.stopTimer(7L, 1) } returns 7L
 
         val result = coordinator.stopTimer(activeTimer())
@@ -72,7 +75,7 @@ class HabitTimerCoordinatorTest {
     }
 
     @Test
-    fun `stop ignores missing active timer`() = runTest {
+    fun stop_ignores_missing_active_timer() = runTest {
         val result = coordinator.stopTimer(null)
 
         assertNull(result)
@@ -80,7 +83,7 @@ class HabitTimerCoordinatorTest {
     }
 
     @Test
-    fun `active timer match uses habit identity`() {
+    fun active_timer_match_uses_habit_identity() {
         assertTrue(coordinator.isHabitTimerActive(activeTimer(), 7L))
         assertFalse(coordinator.isHabitTimerActive(activeTimer(), 8L))
         assertFalse(coordinator.isHabitTimerActive(null, 7L))

@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "habits": [
+    {
+      "uuid": "10000000-0000-4000-8000-000000000002",
+      "name": "Drink water",
+      "description": "literal child",
+      "type": "COUNTING",
+      "icon": "water",
+      "color": "#123456",
+      "isActive": false,
+      "schedule": "{\"type\":\"weekly\",\"daysOfWeek\":[1,4]}",
+      "targetCycles": 9,
+      "targetValue": 3,
+      "isCountdown": false,
+      "failMode": "LOOSE",
+      "parentHabitUuid": "10000000-0000-4000-8000-000000000001",
+      "bestTime": 487
+    },
+    {
+      "uuid": "10000000-0000-4000-8000-000000000001",
+      "name": "Hydration",
+      "type": "GOAL",
+      "icon": "health",
+      "color": "#345678",
+      "isActive": true,
+      "schedule": "{\"type\":\"daily\"}",
+      "targetCycles": 12,
+      "targetValue": 1,
+      "isCountdown": false,
+      "failMode": "STRICT",
+      "parentHabitUuid": null
+    }
+  ],
+  "metrics": [
+    {
+      "uuid": "20000000-0000-4000-8000-000000000001",
+      "name": "Balance",
+      "description": "literal metric",
+      "unit": "kg",
+      "icon": "health",
+      "color": "#567890",
+      "isActive": false,
+      "decimalPlaces": 2,
+      "targetDirection": "range",
+      "targetValue": -2.0,
+      "targetValueUpper": 5.5,
+      "aggregationType": "by_time"
+    }
+  ],
+  "links": [
+    {
+      "uuid": "30000000-0000-4000-8000-000000000001",
+      "habitUuid": "10000000-0000-4000-8000-000000000002",
+      "metricUuid": "20000000-0000-4000-8000-000000000001",
+      "coefficient": 2.5,
+      "showInHabitDetail": false,
+      "promptOnComplete": true,
+      "isActive": true
+    }
+  ]
+}
