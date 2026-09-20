@@ -20,7 +20,10 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
+import androidx.test.ext.junit.runners.AndroidJUnit4
 
+@RunWith(AndroidJUnit4::class)
 class HabitCompletionCoordinatorTest {
     private lateinit var context: Context
     private lateinit var checkInService: CheckInService
@@ -43,7 +46,7 @@ class HabitCompletionCoordinatorTest {
     }
 
     @Test
-    fun `normal successful check-in requests goal and metric follow-ups`() = runTest {
+    fun normal_successful_check_in_requests_goal_and_metric_follow_ups() = runTest {
         val habit = habit(targetCycles = 2)
         coEvery { checkInService.toggleCheckIn(context, 7L) } returns
             CheckInResult.Success(completed = true, progress = 2, goalReached = true)
@@ -57,7 +60,7 @@ class HabitCompletionCoordinatorTest {
     }
 
     @Test
-    fun `temporary task without prompt metrics requests deletion only`() = runTest {
+    fun temporary_task_without_prompt_metrics_requests_deletion_only() = runTest {
         val habit = temporaryTask()
         coEvery { checkInService.toggleCheckIn(context, 7L) } returns
             CheckInResult.Success(completed = true, progress = 1, goalReached = true)
@@ -72,7 +75,7 @@ class HabitCompletionCoordinatorTest {
     }
 
     @Test
-    fun `temporary task with prompt metric is retained for prompt`() = runTest {
+    fun temporary_task_with_prompt_metric_is_retained_for_prompt() = runTest {
         val habit = temporaryTask()
         coEvery { checkInService.toggleCheckIn(context, 7L) } returns
             CheckInResult.Success(completed = true, progress = 1, goalReached = true)
@@ -87,7 +90,7 @@ class HabitCompletionCoordinatorTest {
     }
 
     @Test
-    fun `screen without temporary-task finalization treats task as a normal habit`() = runTest {
+    fun screen_without_temporary_task_finalization_treats_task_as_a_normal_habit() = runTest {
         val habit = temporaryTask()
         coEvery { checkInService.toggleCheckIn(context, 7L) } returns
             CheckInResult.Success(completed = true, progress = 1, goalReached = true)
@@ -101,7 +104,7 @@ class HabitCompletionCoordinatorTest {
     }
 
     @Test
-    fun `check-in undo has no follow-up action`() = runTest {
+    fun check_in_undo_has_no_follow_up_action() = runTest {
         coEvery { checkInService.toggleCheckIn(context, 7L) } returns
             CheckInResult.Success(completed = false, progress = 0, goalReached = false)
 
@@ -111,7 +114,7 @@ class HabitCompletionCoordinatorTest {
     }
 
     @Test
-    fun `count increment preserves existing prompt behavior when action reports error`() = runTest {
+    fun count_increment_preserves_existing_prompt_behavior_when_action_reports_error() = runTest {
         val habit = habit(type = HabitType.COUNTING)
         coEvery { checkInService.incrementCount(context, 7L) } returns
             CheckInResult.Error("failed")
@@ -123,7 +126,7 @@ class HabitCompletionCoordinatorTest {
     }
 
     @Test
-    fun `record and undo delegate to repository`() = runTest {
+    fun record_and_undo_delegate_to_repository() = runTest {
         coEvery { habitRepository.logCompletion(context, 7L, 3) } returns 11L
         coJustRun { habitRepository.undoCompletion(context, 11L) }
 

@@ -1,21 +1,19 @@
 package com.dayforge.domain.service
 
-import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.export.dto.ConfigExportDto
 import com.dayforge.data.export.ConfigMapper
 import com.dayforge.data.export.dto.HabitMetricLinkConfigDto
 import com.dayforge.data.local.HabitDatabase
-import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.MetricEntity
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.CancellationException
 import io.mockk.coEvery
 import io.mockk.mockk
 import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.*
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -23,21 +21,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
+import androidx.test.ext.junit.runners.AndroidJUnit4
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 class ConfigImportServiceTest {
+    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
     private lateinit var database: HabitDatabase
     private lateinit var service: ConfigImportService
 
     @Before
     fun setup() {
-        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
-        HabitDatabaseProvider.clearInstanceForTesting()
-        context.deleteDatabase("habit_database")
-        database = HabitDatabaseProvider.getInstance(context)
+        database = storage.database
         service = ConfigImportService(
             database.habitDao(),
             database.metricDao(),
@@ -49,11 +43,10 @@ class ConfigImportServiceTest {
     @After
     fun teardown() {
         database.close()
-        HabitDatabaseProvider.clearInstanceForTesting()
     }
 
     @Test
-    fun `invalid link leaves configuration and generated outbox unchanged`() = runTest {
+    fun invalid_link_leaves_configuration_and_generated_outbox_unchanged() = runBlocking {
         database.habitDao().insert(
             HabitEntity(
                 name = "Existing habit",
@@ -94,7 +87,7 @@ class ConfigImportServiceTest {
     }
 
     @Test
-    fun `write failure after replacement starts rolls back rows and outbox`() = runTest {
+    fun write_failure_after_replacement_starts_rolls_back_rows_and_outbox() = runBlocking {
         val original = HabitEntity(name = "Original", habitType = HabitType.CHECK_IN,
             iconResId = 1, colorHex = "#2196F3", schedule = HabitSchedule.Daily)
         database.habitDao().insert(original)
@@ -103,19 +96,28 @@ class ConfigImportServiceTest {
         val metric = ConfigMapper.metricEntityToDto(MetricEntity(name = "New metric", unit = "kg", iconResId = 1, colorHex = "#2196F3"))
         val config = ConfigExportDto(habits = listOf(habit), metrics = listOf(metric), links = listOf(
             HabitMetricLinkConfigDto(uuid = java.util.UUID.randomUUID().toString(), habitUuid = habit.uuid, metricUuid = metric.uuid)))
-        val linkDao = mockk<com.dayforge.data.local.dao.HabitMetricLinkDao>()
-        coEvery { linkDao.deleteAll() } coAnswers { database.habitMetricLinkDao().deleteAll() }
-        coEvery { linkDao.insert(any()) } throws java.io.IOException("injected write failure")
-        val importer = ConfigImportService(database.habitDao(), database.metricDao(), linkDao, database)
-
-        assertTrue(importer.importConfig(Json.encodeToString(config)).isFailure)
+        database.openHelper.writableDatabase.execSQL("""
+            CREATE TRIGGER fail_test_import BEFORE INSERT ON habit_metric_links
+            BEGIN SELECT RAISE(ABORT, 'test import link failure'); END
+        """.trimIndent())
+        val result = service.importConfig(Json.encodeToString(config))
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull()?.cause is android.database.sqlite.SQLiteConstraintException)
+        assertTrue(result.exceptionOrNull()?.message.orEmpty().contains("test import link failure"))
+        database = storage.reopen()
         assertEquals(listOf("Original"), database.habitDao().getAllHabitsOnce().map { it.name })
         assertTrue(database.metricDao().getAllMetricsOnce().isEmpty())
         assertEquals(outbox, database.syncOutboxDao().getAll())
+        database.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_test_import")
+        val retry = ConfigImportService(database.habitDao(), database.metricDao(), database.habitMetricLinkDao(), database)
+        assertTrue(retry.importConfig(Json.encodeToString(config)).isSuccess)
+        database = storage.reopen()
+        assertEquals(listOf("New"), database.habitDao().getAllHabitsOnce().map { it.name })
+        assertEquals(listOf("New metric"), database.metricDao().getAllMetricsOnce().map { it.name })
     }
 
     @Test
-    fun `invalid configuration leaves business rows and outbox untouched`() = runTest {
+    fun invalid_configuration_leaves_business_rows_and_outbox_untouched() = runBlocking {
         val original = HabitEntity(name = "Original", habitType = HabitType.CHECK_IN,
             iconResId = 1, colorHex = "#2196F3", schedule = HabitSchedule.Daily)
         database.habitDao().insert(original)
@@ -159,7 +161,7 @@ class ConfigImportServiceTest {
     }
 
     @Test
-    fun `valid configuration round trip preserves links and supported values`() = runTest {
+    fun valid_configuration_round_trip_preserves_links_and_supported_values() = runBlocking {
         val habitId = database.habitDao().insert(HabitEntity(name = "Weekly", habitType = HabitType.COUNTING,
             iconResId = 1, colorHex = "#2196F3", schedule = HabitSchedule.Weekly(emptyList()), targetValue = 3))
         val metricId = database.metricDao().insert(MetricEntity(name = "Range", unit = "kg", iconResId = 1,
@@ -176,7 +178,59 @@ class ConfigImportServiceTest {
     }
 
     @Test
-    fun `import and export preserve coroutine cancellation`() = runTest {
+    fun literalPortableConfigurationPreservesMeaningOnDiskAndInExport() = runBlocking {
+        val raw = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().context.assets
+            .open("config/literal-portable.json").bufferedReader().use { it.readText() }
+        assertTrue(service.importConfig(raw).isSuccess)
+        database = storage.reopen()
+        val child = requireNotNull(database.habitDao().getHabitByUuid("10000000-0000-4000-8000-000000000002"))
+        assertEquals("Drink water", child.name)
+        assertEquals("literal child", child.description)
+        assertEquals(HabitType.COUNTING, child.habitType)
+        assertEquals("10000000-0000-4000-8000-000000000001", child.parentHabitId)
+        assertEquals(HabitSchedule.Weekly(listOf(1, 4)), child.schedule)
+        assertEquals(3, child.targetValue)
+        assertEquals(9, child.targetCycles)
+        assertEquals(487L, child.bestTime)
+        assertEquals(com.dayforge.data.model.FailMode.LOOSE, child.failMode)
+        org.junit.Assert.assertFalse(child.isActive)
+        val metric = requireNotNull(database.metricDao().getMetricByUuid("20000000-0000-4000-8000-000000000001"))
+        assertEquals("Balance", metric.name)
+        assertEquals("kg", metric.unit)
+        assertEquals(2, metric.decimalPlaces)
+        assertEquals("range", metric.targetDirection)
+        assertEquals(-2.0, metric.targetValue)
+        assertEquals(5.5, metric.targetValueUpper)
+        assertEquals("by_time", metric.aggregationType)
+        org.junit.Assert.assertFalse(metric.isActive)
+        val link = requireNotNull(database.habitMetricLinkDao().getLink(child.id, metric.id))
+        assertEquals("30000000-0000-4000-8000-000000000001", link.uuid)
+        assertEquals(2.5, link.coefficient, 0.0)
+        org.junit.Assert.assertFalse(link.showInHabitDetail)
+        assertTrue(link.promptOnComplete)
+        val exported = Json.parseToJsonElement(ConfigExportService(database.habitDao(), database.metricDao(),
+            database.habitMetricLinkDao()).exportConfigToJson().getOrThrow()).jsonObject
+        val habits = exported.getValue("habits").jsonArray
+        assertEquals(listOf("Hydration", "Drink water"), habits.map { it.jsonObject.getValue("name").jsonPrimitive.content })
+        val outputChild = habits[1].jsonObject
+        assertEquals("COUNTING", outputChild.getValue("type").jsonPrimitive.content)
+        assertEquals("water", outputChild.getValue("icon").jsonPrimitive.content)
+        assertEquals(487, outputChild.getValue("bestTime").jsonPrimitive.int)
+        assertEquals(3, outputChild.getValue("targetValue").jsonPrimitive.int)
+        assertEquals("#123456", outputChild.getValue("color").jsonPrimitive.content)
+        val outputMetric = exported.getValue("metrics").jsonArray.single().jsonObject
+        assertEquals("by_time", outputMetric.getValue("aggregationType").jsonPrimitive.content)
+        assertEquals(5.5, outputMetric.getValue("targetValueUpper").jsonPrimitive.double, 0.0)
+        val outputLink = exported.getValue("links").jsonArray.single().jsonObject
+        assertEquals(2.5, outputLink.getValue("coefficient").jsonPrimitive.double, 0.0)
+        assertEquals(false, outputLink.getValue("showInHabitDetail").jsonPrimitive.boolean)
+        for (entity in habits + exported.getValue("metrics").jsonArray + exported.getValue("links").jsonArray) {
+            org.junit.Assert.assertFalse(entity.jsonObject.keys.any { it in setOf("id", "createdAt", "updatedAt") })
+        }
+    }
+
+    @Test
+    fun import_and_export_preserve_coroutine_cancellation() = runBlocking {
         val guard = mockk<StructuralEditGuard>()
         coEvery { guard.requireAllowed() } throws CancellationException("cancelled")
         val importer = ConfigImportService(database.habitDao(), database.metricDao(), database.habitMetricLinkDao(), database, guard)

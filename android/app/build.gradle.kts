@@ -110,6 +110,15 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
     }
 }
 
+androidComponents {
+    onVariants(selector().withBuildType("deviceTest")) { variant ->
+        // Retain all notices from the instrumentation-only MockK/JUnit dependencies.
+        variant.androidTest?.packaging?.resources?.merges?.addAll(
+            "META-INF/LICENSE.md", "META-INF/LICENSE-notice.md"
+        )
+    }
+}
+
 dependencies {
     // Core Android
     implementation(libs.core.ktx)
@@ -185,6 +194,8 @@ dependencies {
     debugImplementation(libs.ui.test.manifest)
     add("deviceTestImplementation", libs.ui.test.manifest)
     kspAndroidTest(libs.hilt.compiler)
+    androidTestImplementation(libs.mockk.android)
+    androidTestImplementation(libs.coroutines.test)
     androidTestImplementation(libs.turbine)
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.core)

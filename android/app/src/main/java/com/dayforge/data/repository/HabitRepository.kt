@@ -79,6 +79,7 @@ class HabitRepository @Inject constructor(
             bestTime = bestTime
         )
         val id = database.withTransaction {
+            requireValidHierarchy(habit)
             val habitId = habitDao.insert(habit)
             selectedMetricIds.forEach { metricId ->
                 val metric = requireNotNull(database.metricDao().getMetricById(metricId)) {
@@ -161,6 +162,7 @@ class HabitRepository @Inject constructor(
             val previous = requireNotNull(habitDao.getHabitById(habit.id)) {
                 "Habit no longer exists: ${habit.id}"
             }
+            requireValidHierarchy(persistedHabit)
             habitDao.update(persistedHabit)
             selectedMetricIds?.let { reconcileMetricLinks(persistedHabit, it) }
             previous
@@ -197,6 +199,24 @@ class HabitRepository @Inject constructor(
                     persistedHabit.habitType,
                     persistedHabit.targetValue
                 )
+            }
+        }
+    }
+
+    /** D-003 must hold at the write boundary, including callers outside the editors. */
+    private suspend fun requireValidHierarchy(habit: HabitEntity) {
+        require(habit.parentHabitId != habit.uuid) { "A habit cannot be its own parent" }
+        if (habit.habitType == HabitType.GOAL) {
+            require(habit.parentHabitId == null) { "Goals must be top-level" }
+        } else {
+            require(habitDao.getChildrenByParentUuidOnce(habit.uuid).isEmpty()) {
+                "Only goals can have children"
+            }
+        }
+        habit.parentHabitId?.let { parentUuid ->
+            val parent = requireNotNull(habitDao.getHabitByUuid(parentUuid)) { "Missing parent goal" }
+            require(parent.habitType == HabitType.GOAL && parent.parentHabitId == null) {
+                "Parent must be a top-level goal"
             }
         }
     }

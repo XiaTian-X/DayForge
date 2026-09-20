@@ -14,7 +14,10 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
+import androidx.test.ext.junit.runners.AndroidJUnit4
 
+@RunWith(AndroidJUnit4::class)
 class HabitDeletionCoordinatorTest {
     private lateinit var context: Context
     private lateinit var repository: HabitRepository
@@ -28,7 +31,7 @@ class HabitDeletionCoordinatorTest {
     }
 
     @Test
-    fun `leaf habit is deleted without opening confirmation`() = runTest {
+    fun leaf_habit_is_deleted_without_opening_confirmation() = runTest {
         val habit = habit("parent")
         coEvery { repository.getHabitChildren(habit.uuid) } returns emptyList()
         coJustRun { repository.deleteHabit(habit, context) }
@@ -40,7 +43,7 @@ class HabitDeletionCoordinatorTest {
     }
 
     @Test
-    fun `parent habit opens confirmation with direct child count`() = runTest {
+    fun parent_habit_opens_confirmation_with_direct_child_count() = runTest {
         val parent = habit("parent")
         coEvery { repository.getHabitChildren(parent.uuid) } returns
             listOf(habit("child-1"), habit("child-2"))
@@ -52,7 +55,7 @@ class HabitDeletionCoordinatorTest {
     }
 
     @Test
-    fun `confirmed cascade deletion clears pending state`() = runTest {
+    fun confirmed_cascade_deletion_clears_pending_state() = runTest {
         val parent = preparePendingDeletion()
         coJustRun { repository.deleteHabitWithChildren(parent, context) }
 
@@ -63,7 +66,7 @@ class HabitDeletionCoordinatorTest {
     }
 
     @Test
-    fun `keeping children orphans them and clears pending state`() = runTest {
+    fun keeping_children_orphans_them_and_clears_pending_state() = runTest {
         val parent = preparePendingDeletion()
         coJustRun { repository.deleteHabitOrphanChildren(parent, context) }
 
@@ -71,6 +74,20 @@ class HabitDeletionCoordinatorTest {
 
         assertNull(coordinator.pendingDeletion.value)
         coVerify(exactly = 1) { repository.deleteHabitOrphanChildren(parent, context) }
+    }
+
+    @Test
+    fun failedCascadeRetainsConfirmationForRetry() = runTest {
+        val parent = preparePendingDeletion()
+        val pending = coordinator.pendingDeletion.value
+        val failure = java.io.IOException("delete failed")
+        coEvery { repository.deleteHabitWithChildren(parent, context) } throws failure
+        assertEquals(failure, runCatching { coordinator.deleteWithChildren() }.exceptionOrNull())
+        assertEquals(pending, coordinator.pendingDeletion.value)
+        coJustRun { repository.deleteHabitWithChildren(parent, context) }
+        coordinator.deleteWithChildren()
+        assertNull(coordinator.pendingDeletion.value)
+        coVerify(exactly = 2) { repository.deleteHabitWithChildren(parent, context) }
     }
 
     private suspend fun preparePendingDeletion(): HabitEntity {

@@ -1,7 +1,10 @@
 package com.dayforge.domain.service
 
+import io.mockk.every
+import io.mockk.mockkObject
+import io.mockk.unmockkObject
+import com.dayforge.widget.WidgetRefreshScheduler
 import android.content.Context
-import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.dao.CompletionDao
@@ -12,14 +15,13 @@ import com.dayforge.data.model.CheckInResult
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.HabitRepository
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.time.LocalDate
 import java.time.ZoneId
 
@@ -35,9 +37,9 @@ import java.time.ZoneId
  * - CHECK-07: isCompleted returns false when below target
  * - CHECK-08: Continue adjusting count after reaching target
  */
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26])
+@RunWith(AndroidJUnit4::class)
 class CheckInServiceTest {
+    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
 
     private lateinit var service: CheckInService
     private lateinit var repository: HabitRepository
@@ -50,10 +52,9 @@ class CheckInServiceTest {
     @Before
     fun setup() {
         context = ApplicationProvider.getApplicationContext()
-        database = Room.inMemoryDatabaseBuilder(
-            context,
-            HabitDatabase::class.java
-        ).build()
+        mockkObject(WidgetRefreshScheduler)
+        every { WidgetRefreshScheduler.request(context) } returns null
+        database = storage.database
         habitDao = database.habitDao()
         completionDao = database.completionDao()
         timeLogDao = database.timeLogDao()
@@ -63,13 +64,14 @@ class CheckInServiceTest {
 
     @After
     fun teardown() {
+        unmockkObject(WidgetRefreshScheduler)
         database.close()
     }
 
     // ==================== CHECK-01: Toggle check-in creates completion ====================
 
     @Test
-    fun testToggleCheckIn_completesHabit() = runTest {
+    fun testToggleCheckIn_completesHabit() = runBlocking {
         // Create a CHECK_IN habit
         val habitId = createTestHabit(HabitType.CHECK_IN, targetValue = 1)
 
@@ -93,7 +95,7 @@ class CheckInServiceTest {
     // ==================== CHECK-02: Toggle check-in undoes completion ====================
 
     @Test
-    fun testToggleCheckIn_undoesCompletion() = runTest {
+    fun testToggleCheckIn_undoesCompletion() = runBlocking {
         // Create a CHECK_IN habit
         val habitId = createTestHabit(HabitType.CHECK_IN, targetValue = 1)
 
@@ -123,7 +125,7 @@ class CheckInServiceTest {
     // ==================== CHECK-04: Increment count ====================
 
     @Test
-    fun testIncrementCount_increasesByOne() = runTest {
+    fun testIncrementCount_increasesByOne() = runBlocking {
         // Create a COUNTING habit with target of 5
         val habitId = createTestHabit(HabitType.COUNTING, targetValue = 5)
 
@@ -151,7 +153,7 @@ class CheckInServiceTest {
     // ==================== CHECK-05: Decrement count (minimum 0) ====================
 
     @Test
-    fun testDecrementCount_decreasesButNotBelowZero() = runTest {
+    fun testDecrementCount_decreasesButNotBelowZero() = runBlocking {
         // Create a COUNTING habit
         val habitId = createTestHabit(HabitType.COUNTING, targetValue = 5)
 
@@ -182,7 +184,7 @@ class CheckInServiceTest {
     }
 
     @Test
-    fun testDecrementCount_atZeroReturnsZero() = runTest {
+    fun testDecrementCount_atZeroReturnsZero() = runBlocking {
         // Create a COUNTING habit
         val habitId = createTestHabit(HabitType.COUNTING, targetValue = 5)
 
@@ -206,7 +208,7 @@ class CheckInServiceTest {
     // ==================== CHECK-06: isCompleted returns true when target reached ====================
 
     @Test
-    fun testIsCompleted_returnsTrueWhenTargetReached() = runTest {
+    fun testIsCompleted_returnsTrueWhenTargetReached() = runBlocking {
         // Create a COUNTING habit with target of 3
         val habitId = createTestHabit(HabitType.COUNTING, targetValue = 3)
 
@@ -222,7 +224,7 @@ class CheckInServiceTest {
     }
 
     @Test
-    fun testIsCompleted_returnsTrueWhenExceedsTarget() = runTest {
+    fun testIsCompleted_returnsTrueWhenExceedsTarget() = runBlocking {
         // Create a COUNTING habit with target of 3
         val habitId = createTestHabit(HabitType.COUNTING, targetValue = 3)
 
@@ -241,7 +243,7 @@ class CheckInServiceTest {
     // ==================== CHECK-07: isCompleted returns false when below target ====================
 
     @Test
-    fun testIsCompleted_returnsFalseWhenBelowTarget() = runTest {
+    fun testIsCompleted_returnsFalseWhenBelowTarget() = runBlocking {
         // Create a COUNTING habit with target of 5
         val habitId = createTestHabit(HabitType.COUNTING, targetValue = 5)
 
@@ -258,7 +260,7 @@ class CheckInServiceTest {
     // ==================== CHECK-08: Continue adjusting after target reached ====================
 
     @Test
-    fun testIncrementCount_worksAfterTargetReached() = runTest {
+    fun testIncrementCount_worksAfterTargetReached() = runBlocking {
         // Create a COUNTING habit with target of 2
         val habitId = createTestHabit(HabitType.COUNTING, targetValue = 2)
 
@@ -282,7 +284,7 @@ class CheckInServiceTest {
     }
 
     @Test
-    fun testDecrementCount_worksAfterTargetReached() = runTest {
+    fun testDecrementCount_worksAfterTargetReached() = runBlocking {
         // Create a COUNTING habit with target of 2
         val habitId = createTestHabit(HabitType.COUNTING, targetValue = 2)
 
@@ -329,7 +331,7 @@ class CheckInServiceTest {
     // === Wave 0: TDD Tests for CheckInResult and goal detection (Wave 1-2 implementation) ===
 
     @Test
-    fun testToggleCheckInReturnsResult() = runTest {
+    fun testToggleCheckInReturnsResult() = runBlocking {
         // Given: A habit exists
         val habitId = createTestHabit(habitType = HabitType.CHECK_IN, targetCycles = 10)
 
@@ -343,7 +345,7 @@ class CheckInServiceTest {
     }
 
     @Test
-    fun testGoalReachedTrue() = runTest {
+    fun testGoalReachedTrue() = runBlocking {
         // Given: A habit with targetCycles = 2, and 1 completion for yesterday
         // When we toggle check-in today, we get 2 distinct days → goalReached = true
         val habitId = createTestHabit(habitType = HabitType.CHECK_IN, targetCycles = 2)
@@ -362,7 +364,7 @@ class CheckInServiceTest {
     }
 
     @Test
-    fun testGoalReachedFalseNullTarget() = runTest {
+    fun testGoalReachedFalseNullTarget() = runBlocking {
         // Given: A habit with targetCycles = null (infinite tracking)
         val habitId = createTestHabit(habitType = HabitType.CHECK_IN, targetCycles = null)
 
@@ -375,7 +377,7 @@ class CheckInServiceTest {
     }
 
     @Test
-    fun testGoalReachedAfterUndo() = runTest {
+    fun testGoalReachedAfterUndo() = runBlocking {
         // Given: A habit with targetCycles = 1, already at goal (1 day completed)
         val habitId = createTestHabit(habitType = HabitType.CHECK_IN, targetCycles = 1)
 
