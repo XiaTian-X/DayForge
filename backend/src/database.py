@@ -1,8 +1,8 @@
 """Database session management over the configured storage adapter."""
 
 from sqlmodel import SQLModel
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from typing import AsyncGenerator, Optional, Any
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from typing import AsyncGenerator
 
 from src.config import get_database_adapter
 
@@ -12,10 +12,10 @@ DATABASE_URL = DATABASE_ADAPTER.async_url
 
 
 # Async engine for SQLModel - can be overridden for testing
-_engine: Optional[Any] = None
+_engine: AsyncEngine | None = None
 
 
-def get_engine() -> Any:
+def get_engine() -> AsyncEngine:
     """Get the database engine, creating if necessary."""
     global _engine
     if _engine is None:
@@ -23,7 +23,7 @@ def get_engine() -> Any:
     return _engine
 
 
-def set_engine(engine: Any) -> None:
+def set_engine(engine: AsyncEngine) -> None:
     """Set the engine (for testing)."""
     global _engine
     _engine = engine
@@ -51,7 +51,7 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
-async def create_db_and_tables():
+async def create_db_and_tables() -> None:
     """Create registered tables for isolated tests only.
 
     Runtime and deployment must use Alembic. This helper remains for existing

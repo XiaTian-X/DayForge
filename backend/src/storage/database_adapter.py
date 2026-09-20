@@ -23,9 +23,14 @@ class DatabaseConfigurationError(ValueError):
 class DatabaseAdapter(Protocol):
     """Engine boundary required from every supported database implementation."""
 
-    kind: str
-    async_url: str
-    migration_url: str
+    @property
+    def kind(self) -> str: ...
+
+    @property
+    def async_url(self) -> str: ...
+
+    @property
+    def migration_url(self) -> str: ...
 
     def create_async_engine(self) -> AsyncEngine: ...
 

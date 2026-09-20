@@ -56,7 +56,9 @@ chore(deps): upgrade FastAPI compatibility group
 格式化使用同一锁定工具，在 `backend/` 执行 `uv run --frozen ruff format --config pyproject.toml .`；
 CI 仅运行 `format --check`，有格式差异即失败。稳定配置使用 88 列、4 空格、双引号、LF，
 不启用 preview；编辑器须遵循仓库配置和锁定版本，升级时单独审查格式变化。
-类型检查的接入进度以 `TESTING.md` 为准，不把尚未配置的检查写成已通过。
+类型检查使用开发组锁定的 mypy，在 `backend/` 执行 `uv run --frozen mypy --config-file pyproject.toml`。
+配置中的 `files` 是当前接入范围，默认正常跟踪导入，不把未接入模块转换为 `Any` 或全局忽略错误。
+扩大范围与提高严格程度须独立审查，并同步测试和 `TESTING.md`；不要将分批通过写成全后端类型检查通过。
 
 ## 公开仓库与本地文件
 
