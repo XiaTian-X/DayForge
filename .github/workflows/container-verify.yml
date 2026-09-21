@@ -1,0 +1,54 @@
+name: Container verification
+
+on:
+  pull_request:
+    paths:
+      - 'backend/**'
+      - 'contracts/**'
+      - 'tools/**'
+      - '.github/workflows/container-verify.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'contracts/**'
+      - 'tools/**'
+      - '.github/workflows/container-verify.yml'
+  workflow_dispatch:
+
+# Validation only: no registry login, image push, OIDC or NAS credentials.
+permissions:
+  contents: read
+
+jobs:
+  container:
+    name: container-${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Build local image on its native architecture
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          docker build --pull --platform "linux/$TARGET_ARCH" \
+            --tag "dayforge-ci:$GITHUB_SHA" --iidfile "$RUNNER_TEMP/dayforge-image-id" backend
+          test "$(docker image inspect --format '{{.Architecture}}' "dayforge-ci:$GITHUB_SHA")" = "$TARGET_ARCH"
+      - name: Verify startup, sync, failed upgrade and backup recovery
+        run: python3 tools/verify_container.py --image "$(cat "$RUNNER_TEMP/dayforge-image-id")"
+      - name: Record scope
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          printf 'Validated local %s image for commit %s. No image published; no NAS or Android acceptance performed.\n' \
+            "$TARGET_ARCH" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
