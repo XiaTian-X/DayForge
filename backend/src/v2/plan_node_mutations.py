@@ -7,10 +7,11 @@ savepoint as the parent; this module does not own sessions or commits.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from pydantic import ValidationError
 from sqlalchemy import update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
@@ -164,7 +165,8 @@ async def mutate_plan_node(
                 deleted_at=now,
             )
         )
-        if result.rowcount != 1:
+        # Single non-bulk UPDATE returns CursorResult, unlike generic execute.
+        if cast(CursorResult, result).rowcount != 1:
             raise DomainError(
                 "REVISION_CONFLICT", "Plan node changed concurrently", conflict=True
             )
@@ -350,7 +352,8 @@ async def mutate_plan_node(
         )
         .values(**node_values)
     )
-    if result.rowcount != 1:
+    # Preserve affected-row conflict detection without introducing RETURNING.
+    if cast(CursorResult, result).rowcount != 1:
         raise DomainError(
             "REVISION_CONFLICT", "Plan node changed concurrently", conflict=True
         )

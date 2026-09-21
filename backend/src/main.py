@@ -12,7 +12,7 @@ from src.tokens.router import router as tokens_router
 from src.tokens.admin_router import router as admin_tokens_router
 from src.v2.router import router as v2_router
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from src.database import get_engine, get_session
+from src.database import dispose_engine, get_engine, get_session
 from src.auth.models import User
 from src.auth.service import get_password_hash
 from src.config import get_settings
@@ -44,9 +44,11 @@ async def _create_admin_if_missing():
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown events."""
     # The schema is migrated explicitly before the application starts.
-    await _create_admin_if_missing()
-    yield
-    # Shutdown: cleanup if needed
+    try:
+        await _create_admin_if_missing()
+        yield
+    finally:
+        await dispose_engine()
 
 
 app = FastAPI(

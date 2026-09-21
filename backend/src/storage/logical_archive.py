@@ -350,7 +350,12 @@ def _insert_collection(
             primary_name = primary_columns[0].name
             primary_value = values.get(primary_name)
             if primary_value is None:
-                primary_value = result.inserted_primary_key[0]
+                inserted_key = result.inserted_primary_key
+                if inserted_key is None or inserted_key[0] is None:
+                    raise StorageValidationError(
+                        f"missing inserted primary key in {table.name}"
+                    )
+                primary_value = inserted_key[0]
             target_keys[(table.name, record["key"])] = primary_value
             progressed = True
         if not progressed and deferred:
