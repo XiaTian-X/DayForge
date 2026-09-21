@@ -72,11 +72,19 @@ interface MetricLogDao {
     @Query("SELECT * FROM metric_logs WHERE uuid = :uuid LIMIT 1")
     suspend fun getLogByUuid(uuid: String): MetricLogEntity?
 
-    /**
-     * Insert or replace a log. Used for sync downloads.
-     */
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(log: MetricLogEntity): Long
+    /** Update the merger-resolved local ID; reject identity/constraint conflicts. */
+    @Transaction
+    suspend fun upsert(log: MetricLogEntity): Long {
+        if (log.id == 0L) return insertForSync(log)
+        check(updateForSync(log) == 1) { "Sync target disappeared before update" }
+        return log.id
+    }
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertForSync(log: MetricLogEntity): Long
+
+    @Update(onConflict = OnConflictStrategy.ABORT)
+    suspend fun updateForSync(log: MetricLogEntity): Int
 
     /**
      * Get a log by its local ID.

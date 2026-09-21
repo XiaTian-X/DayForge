@@ -19,6 +19,9 @@ import com.dayforge.data.local.SyncSchemaCallback
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
+import com.dayforge.data.api.dto.SyncV2Change
+import com.dayforge.data.repository.SyncV2Merger
+import kotlinx.serialization.json.Json
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import java.util.UUID
@@ -189,6 +192,47 @@ class TimerServicePersistenceTest {
         instrumentation.waitForIdleSync()
         awaitServiceStopped()
         assertEquals(commands, database.timeLogDao().getPendingTimerCommands())
+    }
+
+    @Test fun countdownSurvivesParentSyncAndAutomaticallyQueuesOneStop() = runBlocking {
+        val habit = requireNotNull(database.habitDao().getHabitById(habitId)).copy(isCountdown = true)
+        database.habitDao().update(habit)
+        val beforeStart = SystemClock.elapsedRealtime()
+        send(TimerService.ACTION_START)
+        awaitCommands(1)
+        val started = requireNotNull(database.timeLogDao().getActiveTimeLog())
+        val merger = SyncV2Merger(database, database.habitDao(), database.completionDao(),
+            database.timeLogDao(), database.metricDao(), database.metricLogDao(),
+            database.habitMetricLinkDao(), database.syncOutboxDao(), database.syncConflictDao())
+        val change = Json.decodeFromString<SyncV2Change>("""{"sequence":1,"entity_type":"plan_node","entity_uuid":"${habit.uuid}","operation":"upsert","revision":1,"payload":{"node_kind":"activity","title":"Focus synced","status":"active","activity":{"tracking_mode":"duration","target_value":60,"is_countdown":true}},"changed_at":"2026-09-21T00:00:00Z"}""")
+        repeat(2) { merger.apply(listOf(change)) }
+        assertEquals(started, database.timeLogDao().getActiveTimeLog())
+        assertEquals(1, database.timeLogDao().getTimerSegments(started.uuid).size)
+        // Observe the real one-minute automatic completion; never fabricate a stop/fact.
+        withTimeout(75_000) {
+            while (database.timeLogDao().getPendingTimerCommands().size < 2) delay(100)
+        }
+        assertTrue(SystemClock.elapsedRealtime() - beforeStart >= 60_000)
+        awaitServiceStopped()
+        val completed = requireNotNull(database.timeLogDao().getById(started.id))
+        assertEquals(60, completed.durationSeconds)
+        assertEquals(60_000L, completed.timerActiveElapsedMillis)
+        assertNotNull(completed.endTime)
+        assertNull(database.timeLogDao().getActiveTimeLog())
+        val commands = database.timeLogDao().getPendingTimerCommands()
+        assertEquals(listOf("start", "stop"), commands.map { it.commandType })
+        assertEquals(listOf(1, 2), commands.map { it.sequence })
+        assertEquals(setOf(started.uuid), commands.map { it.sessionUuid }.toSet())
+        assertEquals(60_000L, commands.last().activeElapsedMillis)
+        val segments = database.timeLogDao().getTimerSegments(started.uuid)
+        val allocations = database.timeLogDao().getDayAllocations(started.uuid)
+        assertEquals(60_000L, segments.sumOf { requireNotNull(it.endedAt) - it.startedAt })
+        assertEquals(60_000L, allocations.sumOf { it.durationMillis })
+        merger.apply(listOf(change))
+        assertEquals(completed, database.timeLogDao().getById(started.id))
+        assertEquals(commands, database.timeLogDao().getPendingTimerCommands())
+        assertEquals(segments, database.timeLogDao().getTimerSegments(started.uuid))
+        assertEquals(allocations, database.timeLogDao().getDayAllocations(started.uuid))
     }
 
     @Test fun runningRecoveryAndStaleCommandsCannotCreateASecondSession() = runBlocking {

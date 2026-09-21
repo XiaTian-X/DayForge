@@ -82,11 +82,19 @@ interface MetricDao {
     @Query("SELECT * FROM metrics WHERE uuid = :uuid LIMIT 1")
     suspend fun getMetricByUuid(uuid: String): MetricEntity?
 
-    /**
-     * Insert or replace a metric. Used for sync downloads.
-     */
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(metric: MetricEntity): Long
+    /** The merger resolves UUID to local ID; REPLACE would delete dependent records. */
+    @Transaction
+    suspend fun upsert(metric: MetricEntity): Long {
+        if (metric.id == 0L) return insertForSync(metric)
+        check(updateForSync(metric) == 1) { "Sync target disappeared before update" }
+        return metric.id
+    }
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertForSync(metric: MetricEntity): Long
+
+    @Update(onConflict = OnConflictStrategy.ABORT)
+    suspend fun updateForSync(metric: MetricEntity): Int
 
     // Import queries
 

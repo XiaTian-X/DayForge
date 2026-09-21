@@ -99,8 +99,19 @@ interface CompletionDao {
     @Query("SELECT MIN(recordedLocalDate) FROM completions WHERE habitId = :habitId")
     suspend fun getFirstCompletionDate(habitId: Long): LocalDate?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(completion: CompletionEntity): Long
+    /** Update the merger-resolved local ID; reject identity/constraint conflicts. */
+    @Transaction
+    suspend fun upsert(completion: CompletionEntity): Long {
+        if (completion.id == 0L) return insertForSync(completion)
+        check(updateForSync(completion) == 1) { "Sync target disappeared before update" }
+        return completion.id
+    }
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertForSync(completion: CompletionEntity): Long
+
+    @Update(onConflict = OnConflictStrategy.ABORT)
+    suspend fun updateForSync(completion: CompletionEntity): Int
 
     /**
      * Delete all completions for a habit.

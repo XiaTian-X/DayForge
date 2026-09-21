@@ -46,8 +46,19 @@ interface HabitDao {
     @Query("SELECT * FROM habits WHERE name = :name LIMIT 1")
     suspend fun getHabitByName(name: String): HabitEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(habit: HabitEntity): Long
+    /** The merger resolves UUID to local ID; REPLACE would delete dependent records. */
+    @Transaction
+    suspend fun upsert(habit: HabitEntity): Long {
+        if (habit.id == 0L) return insertForSync(habit)
+        check(updateForSync(habit) == 1) { "Sync target disappeared before update" }
+        return habit.id
+    }
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertForSync(habit: HabitEntity): Long
+
+    @Update(onConflict = OnConflictStrategy.ABORT)
+    suspend fun updateForSync(habit: HabitEntity): Int
 
     // Parent-child relationship queries (Task 42-01)
 
