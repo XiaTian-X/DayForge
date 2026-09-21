@@ -245,6 +245,11 @@ assets 读取同一份 `contracts/sync-v2` 样例，不复制或自动生成测�
 
 ## Room 迁移真机回归（Issue #128）
 
+Room 依赖升级还须执行 `RoomUpgradeCompatibilityTest`：从已提交的当前 schema 独立建库，
+通过生产入口打开及重开，检查全部业务 / 同步表、schema identity、触发器、事务回滚和 Flow 通知。
+库升级不应凭空变更 schema；无结构变化时保留原 schema 文件，并记录无差异证据。
+本批边界与结果见 [Room 兼容升级报告](reviews/2026-09-21-room-compatibility.md)。
+
 `FactTimeMigrationTest` 通过生产 `HabitDatabaseProvider` 和提交的 v1 schema 验证真实升级路径，
 禁止测试另建一套与生产不同的 migration / fallback 配置。未知 schema / 降级须断言明确失败与磁盘数据保留。
 迁移失败后应关闭 Room，用独立 SQLite 连接检查版本、DDL、事实、触发器和完整 outbox 是否回滚，
