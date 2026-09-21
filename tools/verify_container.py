@@ -166,18 +166,25 @@ def probe(stage):
             "activity_event",
             "metric_observation",
             "activity_metric_link",
-            "timer_session",
         },
         "Missing entity type in HTTP bootstrap",
     )
-    sessions = [
-        item["payload"] for item in changes if item["entity_type"] == "timer_session"
-    ]
+    # Timer sessions use their dedicated endpoint, not the fact bootstrap stream.
+    timer = client.request(
+        "GET",
+        f"/api/v2/timers/80000000-0000-4000-8000-000000000001?device_id={device}",
+        token=token,
+    )["session"]
     require(
-        len(sessions) == 1
-        and sessions[0]["state"] == "completed"
-        and sessions[0]["active_elapsed_ms"] == 60000,
+        timer is not None
+        and timer["state"] == "completed"
+        and timer["active_elapsed_ms"] == 60000
+        and timer["completed_event_id"] is not None,
         "Completed timer missing",
+    )
+    require(
+        timer["completed_event_id"] in {item["entity_uuid"] for item in changes},
+        "Timer completion fact missing from bootstrap",
     )
     # Fixture processing must populate the recovery-sensitive collections, not just an empty DB.
     snapshot = database_snapshot()
