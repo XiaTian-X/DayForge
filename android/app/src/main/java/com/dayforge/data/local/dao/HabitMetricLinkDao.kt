@@ -78,8 +78,19 @@ interface HabitMetricLinkDao {
     @Query("SELECT * FROM habit_metric_links WHERE uuid = :uuid LIMIT 1")
     suspend fun getLinkByUuid(uuid: String): HabitMetricLinkEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(link: HabitMetricLinkEntity): Long
+    /** Update the merger-resolved local ID; never replace a different link on pair conflict. */
+    @Transaction
+    suspend fun upsert(link: HabitMetricLinkEntity): Long {
+        if (link.id == 0L) return insertForSync(link)
+        check(updateForSync(link) == 1) { "Sync target disappeared before update" }
+        return link.id
+    }
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertForSync(link: HabitMetricLinkEntity): Long
+
+    @Update(onConflict = OnConflictStrategy.ABORT)
+    suspend fun updateForSync(link: HabitMetricLinkEntity): Int
 
     // Import queries
 

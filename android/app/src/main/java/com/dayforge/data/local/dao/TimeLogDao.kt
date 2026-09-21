@@ -226,8 +226,19 @@ interface TimeLogDao {
     @Query("SELECT * FROM timelogs WHERE uuid = :uuid LIMIT 1")
     suspend fun getTimeLogByUuid(uuid: String): TimeLogEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(timeLog: TimeLogEntity): Long
+    /** The merger resolves UUID to local ID; REPLACE would delete dependent records. */
+    @Transaction
+    suspend fun upsert(timeLog: TimeLogEntity): Long {
+        if (timeLog.id == 0L) return insertForSync(timeLog)
+        check(updateForSync(timeLog) == 1) { "Sync target disappeared before update" }
+        return timeLog.id
+    }
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertForSync(timeLog: TimeLogEntity): Long
+
+    @Update(onConflict = OnConflictStrategy.ABORT)
+    suspend fun updateForSync(timeLog: TimeLogEntity): Int
 
     // Active timer query methods
 
