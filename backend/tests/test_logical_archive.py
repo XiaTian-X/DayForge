@@ -1,4 +1,4 @@
-"""SQLite-to-SQLite round-trip contract for portable archive format v1."""
+"""SQLite-to-SQLite round-trip contract for the current portable archive."""
 
 from __future__ import annotations
 
@@ -323,7 +323,7 @@ def test_logical_archive_round_trip_remaps_ids_and_preserves_domain_data(
     source_url = migrate(tmp_path / "source.db")
     target_url = migrate(tmp_path / "target.db")
     instance_id, old_epoch = seed_source(source_url)
-    archive = export_archive(source_url, tmp_path / "dayforge-logical-v1.zip")
+    archive = export_archive(source_url, tmp_path / "dayforge-logical.zip")
     new_epoch = import_archive(target_url, archive)
 
     assert new_epoch != old_epoch

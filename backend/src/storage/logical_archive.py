@@ -28,7 +28,8 @@ from sqlalchemy.engine import Connection, Engine
 from src.storage.sqlite_maintenance import StorageValidationError
 
 
-LOGICAL_FORMAT_VERSION = 1
+LOGICAL_FORMAT_VERSION = 2
+READABLE_FORMAT_VERSIONS = frozenset({1, LOGICAL_FORMAT_VERSION})
 TABLE_ORDER = (
     "users",
     "user_profiles",
@@ -64,7 +65,7 @@ def _canonical(value: Any) -> Any:
         return format(value, "f")
     if isinstance(value, bytes):
         raise StorageValidationError(
-            "binary database values are not supported by archive v1"
+            "binary database values are not supported by logical archives"
         )
     return value
 
@@ -109,10 +110,22 @@ def _identity_key(
     table: str,
     row: dict[str, Any],
     primary_keys: dict[tuple[str, Any], str],
+    *,
+    format_version: int = LOGICAL_FORMAT_VERSION,
 ) -> str:
     if table == "server_instances":
         return "singleton"
     if row.get("public_id") is not None:
+        # Public domain UUIDs are unique within an owner, not across accounts.
+        # v1 is retained only to verify/import existing unambiguous archives.
+        if format_version >= 2 and "owner_user_id" in row:
+            try:
+                owner = primary_keys[("users", row["owner_user_id"])]
+            except KeyError as error:
+                raise StorageValidationError(
+                    f"unresolved source owner reference in {table}"
+                ) from error
+            return f"owner:{owner}:{row['public_id']}"
         return str(row["public_id"])
     if table == "api_tokens":
         return str(row["token_hash"])
@@ -135,12 +148,14 @@ def _identity_key(
     if table == "entity_revision_snapshots":
         owner = primary_keys[("users", row["owner_user_id"])]
         return f"{owner}:{row['entity_type']}:{row['entity_uuid']}:{row['revision']}"
-    raise StorageValidationError(f"archive v1 has no logical key for table {table}")
+    raise StorageValidationError(f"archive has no logical key for table {table}")
 
 
 def _build_primary_keys(
     metadata: MetaData,
     rows: dict[str, list[dict[str, Any]]],
+    *,
+    format_version: int = LOGICAL_FORMAT_VERSION,
 ) -> dict[tuple[str, Any], str]:
     identities: dict[tuple[str, Any], str] = {}
     for table_name in ("server_instances", *TABLE_ORDER):
@@ -148,8 +163,14 @@ def _build_primary_keys(
         if table is None:
             continue
         primary_columns = list(table.primary_key.columns)
+        seen: set[str] = set()
         for row in rows.get(table_name, []):
-            key = _identity_key(table_name, row, identities)
+            key = _identity_key(
+                table_name, row, identities, format_version=format_version
+            )
+            if key in seen:
+                raise StorageValidationError(f"duplicate logical key in {table_name}")
+            seen.add(key)
             if len(primary_columns) == 1:
                 identities[(table_name, row[primary_columns[0].name])] = key
     return identities
@@ -158,9 +179,11 @@ def _build_primary_keys(
 def _portable_collections(
     connection: Connection,
     metadata: MetaData,
+    *,
+    format_version: int = LOGICAL_FORMAT_VERSION,
 ) -> tuple[dict[str, bytes], dict[str, Any]]:
     rows = _source_rows(connection, metadata)
-    identities = _build_primary_keys(metadata, rows)
+    identities = _build_primary_keys(metadata, rows, format_version=format_version)
     collections: dict[str, bytes] = {}
     identity_row = rows["server_instances"]
     if len(identity_row) != 1:
@@ -171,7 +194,9 @@ def _portable_collections(
             continue
         records: list[dict[str, Any]] = []
         for row in rows.get(table_name, []):
-            key = _identity_key(table_name, row, identities)
+            key = _identity_key(
+                table_name, row, identities, format_version=format_version
+            )
             data: dict[str, Any] = {}
             for column in table.columns:
                 if column.name == "id" and column.primary_key:
@@ -278,7 +303,8 @@ def _read_archive(
         if "manifest.json" not in names:
             raise StorageValidationError("logical archive has no manifest")
         manifest = json.loads(archive.read("manifest.json"))
-        if manifest.get("format_version") != LOGICAL_FORMAT_VERSION:
+        version = manifest.get("format_version")
+        if type(version) is not int or version not in READABLE_FORMAT_VERSIONS:
             raise StorageValidationError("unsupported logical archive version")
         expected = {"manifest.json"}
         collections: dict[str, list[dict[str, Any]]] = {}
@@ -435,7 +461,9 @@ def import_archive(database_url: str, archive_path: Path) -> str:
                 connection.exec_driver_sql(
                     "DELETE FROM sqlite_sequence WHERE name IN ('sync_changes','sync_cursors')"
                 )
-            rebuilt, _ = _portable_collections(connection, metadata)
+            rebuilt, _ = _portable_collections(
+                connection, metadata, format_version=manifest["format_version"]
+            )
             for name, specification in manifest["collections"].items():
                 content = rebuilt.get(name)
                 if content is None or _digest(content) != specification["sha256"]:
