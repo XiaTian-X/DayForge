@@ -1,11 +1,18 @@
 """End-to-end tests for the complete SQLite Alembic migration chain."""
 
 import os
+import sqlite3
 import tempfile
+import warnings
+from contextlib import closing
 
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import CheckConstraint, ForeignKeyConstraint, UniqueConstraint
+from sqlmodel import SQLModel
+
+from tests.test_logical_archive import seed_source
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -16,6 +23,75 @@ def alembic_config(database_path: str) -> Config:
     config.set_main_option("script_location", os.path.join(PROJECT_ROOT, "alembic"))
     config.set_main_option("sqlalchemy.url", f"sqlite:///{database_path}")
     return config
+
+
+def test_upgrade_existing_database_preserves_all_rows_and_schema(tmp_path):
+    path = tmp_path / "existing.sqlite"
+    config = alembic_config(str(path))
+    command.upgrade(config, "head")
+    seed_source(f"sqlite:///{path}")
+
+    def snapshot():
+        with closing(sqlite3.connect(path)) as connection:
+            return list(connection.iterdump())
+
+    before = snapshot()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        command.upgrade(config, "head")
+        command.check(config)
+    assert snapshot() == before
+
+
+def test_migrated_constraints_and_indexes_match_models(tmp_path):
+    path = tmp_path / "constraints.sqlite"
+    command.upgrade(alembic_config(str(path)), "head")
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        inspector = inspect(engine)
+        for table in SQLModel.metadata.sorted_tables:
+            checks = {
+                item["name"]: " ".join(item["sqltext"].split())
+                for item in inspector.get_check_constraints(table.name)
+            }
+            assert checks == {
+                constraint.name: " ".join(str(constraint.sqltext).split())
+                for constraint in table.constraints
+                if isinstance(constraint, CheckConstraint)
+            }, table.name
+            assert {
+                (tuple(item["column_names"]), bool(item["unique"]))
+                for item in inspector.get_indexes(table.name)
+            } == {
+                (tuple(column.name for column in index.columns), bool(index.unique))
+                for index in table.indexes
+            }, table.name
+            assert {
+                tuple(item["column_names"])
+                for item in inspector.get_unique_constraints(table.name)
+            } == {
+                tuple(column.name for column in constraint.columns)
+                for constraint in table.constraints
+                if isinstance(constraint, UniqueConstraint)
+            }, table.name
+            assert {
+                (
+                    tuple(item["constrained_columns"]),
+                    item["referred_table"],
+                    tuple(item["referred_columns"]),
+                )
+                for item in inspector.get_foreign_keys(table.name)
+            } == {
+                (
+                    tuple(column.name for column in constraint.columns),
+                    constraint.referred_table.name,
+                    tuple(element.column.name for element in constraint.elements),
+                )
+                for constraint in table.constraints
+                if isinstance(constraint, ForeignKeyConstraint)
+            }, table.name
+    finally:
+        engine.dispose()
 
 
 def test_clean_database_upgrades_to_complete_v2_schema():
