@@ -51,7 +51,6 @@ fun SettingsScreen(
     val canEditStructure by viewModel.canEditStructure.collectAsState()
     val isPrimaryEditor by viewModel.isPrimaryEditor.collectAsState()
     val userEmail by viewModel.userEmail.collectAsState()
-    val showSyncSuccess by viewModel.showSyncSuccess.collectAsState()
     val showSyncError by viewModel.showSyncError.collectAsState()
     val syncErrorMessage by viewModel.syncErrorMessage.collectAsState()
     val isLoggingOut by viewModel.isLoggingOut.collectAsState()

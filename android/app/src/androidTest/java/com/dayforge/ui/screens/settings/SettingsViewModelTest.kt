@@ -28,6 +28,7 @@ import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
+import com.dayforge.data.model.SyncProgress
 import com.dayforge.data.repository.HabitRepository
 import com.dayforge.domain.service.ConfigExportService
 import com.dayforge.domain.service.ConfigImportService
@@ -38,6 +39,7 @@ import com.dayforge.domain.service.ThemeImportService
 import com.dayforge.domain.service.ThemeExportService
 import com.dayforge.domain.repository.CustomThemeRepository
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
@@ -70,8 +72,10 @@ class SettingsViewModelTest {
     private lateinit var tokenManager: TokenManager
     private lateinit var preferencesManager: PreferencesManager
     private lateinit var configWorkflow: SettingsConfigWorkflow
+    private lateinit var appearanceWorkflow: SettingsAppearanceWorkflow
     private lateinit var testDataStore: DataStore<Preferences>
     private lateinit var mockSyncManager: SyncManager
+    private lateinit var syncProgressState: MutableStateFlow<SyncProgress>
     private val networkState = MutableStateFlow(NetworkMonitor.Snapshot())
     private lateinit var networkMonitor: NetworkMonitor
     private lateinit var habitRepository: HabitRepository
@@ -80,6 +84,7 @@ class SettingsViewModelTest {
     private lateinit var timeLogDao: TimeLogDao
     private lateinit var database: HabitDatabase
     private lateinit var context: Context
+    private lateinit var accountSessionCoordinator: AccountSessionCoordinator
     // Drive Main and the real DataStore with the same scheduler so preference writes
     // and collection are deterministic without replacing persistence with a mock.
     private val testDispatcher = StandardTestDispatcher()
@@ -107,6 +112,8 @@ class SettingsViewModelTest {
 
         habitRepository = HabitRepository(habitDao, completionDao, timeLogDao, database)
         mockSyncManager = mockk(relaxed = true)
+        syncProgressState = MutableStateFlow(SyncProgress.Idle)
+        every { mockSyncManager.syncProgress } returns syncProgressState
 
         networkMonitor = mockk()
         every { networkMonitor.state } returns networkState
@@ -132,7 +139,7 @@ class SettingsViewModelTest {
             configExportService = mockConfigExportService,
             configImportService = mockConfigImportService
         )
-        val appearanceWorkflow = SettingsAppearanceWorkflow(
+        appearanceWorkflow = SettingsAppearanceWorkflow(
             context = context,
             preferencesManager = preferencesManager,
             themeManager = mockThemeManager,
@@ -140,7 +147,12 @@ class SettingsViewModelTest {
             themeExportService = mockThemeExportService,
             customThemeRepository = mockCustomThemeRepository
         )
+        accountSessionCoordinator = AccountSessionCoordinator()
 
+        replaceViewModel()
+    }
+
+    private fun replaceViewModel() {
         viewModel = SettingsViewModel(
             context = context,
             syncManager = mockSyncManager,
@@ -152,7 +164,7 @@ class SettingsViewModelTest {
             timeLogDao = timeLogDao,
             configWorkflow = configWorkflow,
             appearanceWorkflow = appearanceWorkflow,
-            accountSessionCoordinator = AccountSessionCoordinator()
+            accountSessionCoordinator = accountSessionCoordinator
         )
         viewModelStore.put("settings", viewModel)
     }
@@ -181,6 +193,103 @@ class SettingsViewModelTest {
         testDispatcher.scheduler.runCurrent()
         assertTrue(viewModel.isOnline.value)
     }
+
+    @Test
+    fun stale_background_failure_is_status_only_across_settings_recreation() =
+        runTest(testDispatcher.scheduler) {
+            val staleFailure = SyncProgress.Error("offline", isNetworkFailure = true)
+            syncProgressState.value = staleFailure
+
+            replaceViewModel()
+            testDispatcher.scheduler.runCurrent()
+
+            assertEquals(staleFailure, viewModel.syncProgress.value)
+            assertFalse(viewModel.showSyncError.value)
+
+            replaceViewModel()
+            testDispatcher.scheduler.runCurrent()
+
+            assertEquals(staleFailure, viewModel.syncProgress.value)
+            assertFalse(viewModel.showSyncError.value)
+        }
+
+    @Test
+    fun background_failure_while_settings_is_open_does_not_show_modal_error() =
+        runTest(testDispatcher.scheduler) {
+            testDispatcher.scheduler.runCurrent()
+
+            syncProgressState.value = SyncProgress.Error("offline", isNetworkFailure = true)
+            testDispatcher.scheduler.runCurrent()
+
+            assertTrue(viewModel.syncProgress.value is SyncProgress.Error)
+            assertFalse(viewModel.showSyncError.value)
+        }
+
+    @Test
+    fun manual_sync_failure_shows_current_network_error_and_dismiss_does_not_reset_global_state() =
+        runTest(testDispatcher.scheduler) {
+            coEvery { mockSyncManager.sync(any()) } returns
+                Result.failure(java.io.IOException("offline"))
+
+            viewModel.sync()
+            testDispatcher.scheduler.runCurrent()
+
+            assertTrue(viewModel.showSyncError.value)
+            assertEquals(
+                context.getString(com.dayforge.R.string.error_network_failed),
+                viewModel.syncErrorMessage.value
+            )
+
+            viewModel.dismissSyncError()
+
+            assertFalse(viewModel.showSyncError.value)
+            coVerify(exactly = 0) { mockSyncManager.resetProgress() }
+        }
+
+    @Test
+    fun retry_is_user_owned_reactivates_rejected_changes_and_clears_the_old_modal() =
+        runTest(testDispatcher.scheduler) {
+            coEvery { mockSyncManager.sync(any()) } returnsMany listOf(
+                Result.failure(java.io.IOException("offline")),
+                Result.success(Unit)
+            )
+
+            viewModel.sync()
+            testDispatcher.scheduler.runCurrent()
+            assertTrue(viewModel.showSyncError.value)
+
+            viewModel.retrySync()
+            testDispatcher.scheduler.runCurrent()
+
+            assertFalse(viewModel.showSyncError.value)
+            coVerify(exactly = 1) { mockSyncManager.retryRejectedChanges() }
+            coVerify(exactly = 2) { mockSyncManager.sync(any()) }
+        }
+
+    @Test
+    fun concurrent_global_failure_does_not_complete_or_duplicate_a_pending_manual_request() =
+        runTest(testDispatcher.scheduler) {
+            val result = CompletableDeferred<Result<Unit>>()
+            coEvery { mockSyncManager.sync(any()) } coAnswers { result.await() }
+
+            viewModel.sync()
+            viewModel.sync()
+            testDispatcher.scheduler.runCurrent()
+            syncProgressState.value = SyncProgress.Error("background offline", isNetworkFailure = true)
+            testDispatcher.scheduler.runCurrent()
+
+            assertFalse(viewModel.showSyncError.value)
+            coVerify(exactly = 1) { mockSyncManager.sync(any()) }
+
+            result.complete(Result.failure(java.io.IOException("manual offline")))
+            testDispatcher.scheduler.runCurrent()
+
+            assertTrue(viewModel.showSyncError.value)
+            assertEquals(
+                context.getString(com.dayforge.R.string.error_network_failed),
+                viewModel.syncErrorMessage.value
+            )
+        }
 
     @Test
     fun sync_before_logout_probes_despite_empty_network_hints_and_preserves_account_on_failure() = runTest {
