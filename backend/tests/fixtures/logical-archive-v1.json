@@ -1,0 +1,139 @@
+{
+  "manifest": {
+    "alembic_head": "000000000001",
+    "collections": {
+      "activity_details": {
+        "file": "collections/activity_details.jsonl",
+        "rows": 2,
+        "sha256": "034747ed0d9a20b7e9dc094d2a82eeab119529b68293eb1768137d8d386682a6"
+      },
+      "activity_events": {
+        "file": "collections/activity_events.jsonl",
+        "rows": 1,
+        "sha256": "4818ebaaa2f3f9df733fdf7be20e45a2275ca090f9946af7149e8eddae6290f1"
+      },
+      "activity_metric_links_v2": {
+        "file": "collections/activity_metric_links_v2.jsonl",
+        "rows": 1,
+        "sha256": "dbb94c2ff9901f6a8886bd85f32a8bae66cb32faff7df2e79595ff8d1aca0a17"
+      },
+      "api_tokens": {
+        "file": "collections/api_tokens.jsonl",
+        "rows": 1,
+        "sha256": "817c24f209389071e79a1022eed7e1d9d14150927d5ccf83cf13f0c8361aa077"
+      },
+      "client_devices": {
+        "file": "collections/client_devices.jsonl",
+        "rows": 1,
+        "sha256": "b8d8651267b0f15e2d5a21f0751335f6e9763ab489825341e4860759bd60af33"
+      },
+      "duration_day_allocations": {
+        "file": "collections/duration_day_allocations.jsonl",
+        "rows": 2,
+        "sha256": "0e1028555ec40e5813651bfad942e69b50406323d0be6c99d2e9cd287fe7e4e5"
+      },
+      "entity_revision_snapshots": {
+        "file": "collections/entity_revision_snapshots.jsonl",
+        "rows": 1,
+        "sha256": "9adb52f75b6a382c3b9248a17ddc277a4a537f482eebe9a936fcbb135d0d1623"
+      },
+      "goal_details": {
+        "file": "collections/goal_details.jsonl",
+        "rows": 1,
+        "sha256": "2ee4e74dd26ba3c96a4f85ba06a92c8c49e982b4ecd61b55321ee7f263ac7b51"
+      },
+      "household_memberships": {
+        "file": "collections/household_memberships.jsonl",
+        "rows": 2,
+        "sha256": "3dcfb1ccd9f86751f8c1e4d008e4abb65ecabba72eb3cd06b90637210412d872"
+      },
+      "households": {
+        "file": "collections/households.jsonl",
+        "rows": 1,
+        "sha256": "7a14d38d0760b2a379a178d94788a48bbdbbeb5f2e058bf54512e453c2deb018"
+      },
+      "metric_observations": {
+        "file": "collections/metric_observations.jsonl",
+        "rows": 1,
+        "sha256": "b08245dcb168c16b6ddaf172d637a3cd7a133d339656a8080552b887b627ae77"
+      },
+      "plan_nodes": {
+        "file": "collections/plan_nodes.jsonl",
+        "rows": 3,
+        "sha256": "d29039e4d3df8a30fdd88af1cb9722f66effe5c814ed556182633f740f8aeb85"
+      },
+      "server_instances": {
+        "file": "collections/server_instances.jsonl",
+        "rows": 1,
+        "sha256": "361107234ce95a8ee47a206a73d13d77f8b00c6383abffa703c46f0a568cd560"
+      },
+      "sync_operations": {
+        "file": "collections/sync_operations.jsonl",
+        "rows": 1,
+        "sha256": "555d752ca8b72d6ebc664b19097f1bc3170cd265ac583f1fb8241b93c16d1545"
+      },
+      "timer_commands": {
+        "file": "collections/timer_commands.jsonl",
+        "rows": 1,
+        "sha256": "bf2e99f24e771f86cd614401c8167e8d21506a5956ebfd569c8d61d108e7fcfa"
+      },
+      "timer_segments": {
+        "file": "collections/timer_segments.jsonl",
+        "rows": 1,
+        "sha256": "c9f7d5f908c6528ceadba002870ed0b46a320052ea5cd02f4feabc30f5c090ef"
+      },
+      "timer_sessions": {
+        "file": "collections/timer_sessions.jsonl",
+        "rows": 1,
+        "sha256": "11b2f9cffe81fd403ef0bf4d6357169e131a9d23095e193da452921c7b40324d"
+      },
+      "tracked_metrics": {
+        "file": "collections/tracked_metrics.jsonl",
+        "rows": 1,
+        "sha256": "11347b94c8e6686844241989b12a7e5d2e747c2de55bc88b60fb004d0be027d5"
+      },
+      "user_profiles": {
+        "file": "collections/user_profiles.jsonl",
+        "rows": 1,
+        "sha256": "f27baba929efbfecebc126a79b2a58ec7c3ac322f6b0f7e9ff655a5ee569e298"
+      },
+      "user_sync_policies": {
+        "file": "collections/user_sync_policies.jsonl",
+        "rows": 1,
+        "sha256": "7a700d973b36dbd173e71a8e2543eff972fb030bedd58dfbe8908c6e5de3e722"
+      },
+      "users": {
+        "file": "collections/users.jsonl",
+        "rows": 2,
+        "sha256": "192f7614f22a660e1dd07d50e728eba1fcfd4eb508e9f336890b081a490163ac"
+      }
+    },
+    "created_at": "2026-09-21T08:17:22.425518Z",
+    "format_version": 1,
+    "server_instance_id": "31387156-d397-43eb-9254-2697f9d109a4",
+    "source_sync_epoch": "1b646a9c-88dd-4e04-b332-a0ee2d165ae7"
+  },
+  "collections": {
+    "activity_details": "{\"data\":{\"completion_policy\":\"recurring\",\"failure_policy_json\":\"{\\\"schema_version\\\":1,\\\"type\\\":\\\"strict\\\"}\",\"is_countdown\":false,\"node_id\":{\"$ref\":\"plan_nodes\",\"key\":\"30000000-0000-4000-8000-000000000002\"},\"origin_assignment_id\":null,\"preferred_local_time\":null,\"recurrence_rule_json\":\"{\\\"schema_version\\\":1,\\\"type\\\":\\\"daily\\\",\\\"interval\\\":1}\",\"target_cycles\":null,\"target_unit\":\"second\",\"target_value\":\"60.0000\",\"timezone\":\"Asia/Shanghai\",\"tracking_mode\":\"duration\"},\"key\":\"node:30000000-0000-4000-8000-000000000002\"}\n{\"data\":{\"completion_policy\":\"recurring\",\"failure_policy_json\":\"{\\\"schema_version\\\":1,\\\"type\\\":\\\"strict\\\"}\",\"is_countdown\":false,\"node_id\":{\"$ref\":\"plan_nodes\",\"key\":\"30000000-0000-4000-8000-000000000003\"},\"origin_assignment_id\":null,\"preferred_local_time\":null,\"recurrence_rule_json\":\"{\\\"schema_version\\\":1,\\\"type\\\":\\\"daily\\\",\\\"interval\\\":1}\",\"target_cycles\":null,\"target_unit\":null,\"target_value\":\"1.0000\",\"timezone\":\"Asia/Shanghai\",\"tracking_mode\":\"check\"},\"key\":\"node:30000000-0000-4000-8000-000000000003\"}\n",
+    "activity_events": "{\"data\":{\"activity_node_id\":{\"$ref\":\"activity_details\",\"key\":\"node:30000000-0000-4000-8000-000000000002\"},\"created_at\":\"2026-09-21T08:17:22.328843Z\",\"deleted_at\":null,\"duration_milliseconds\":120000,\"duration_seconds\":120,\"ended_at\":\"2026-08-14T00:01:30Z\",\"event_type\":\"duration_session\",\"external_event_id\":null,\"local_date\":\"2026-08-14\",\"note\":\"\",\"occurred_at\":\"2026-08-14T00:01:30Z\",\"owner_user_id\":{\"$ref\":\"users\",\"key\":\"00000000-0000-4000-8000-000000000001\"},\"payload_json\":\"{}\",\"public_id\":\"50000000-0000-4000-8000-000000000001\",\"received_at\":\"2026-09-21T08:17:22.328861Z\",\"recorded_by_user_id\":null,\"reverts_event_id\":null,\"revision\":1,\"source_device_public_id\":\"20000000-0000-4000-8000-000000000001\",\"source_type\":\"app\",\"started_at\":\"2026-08-13T23:59:30Z\",\"timezone\":\"Asia/Shanghai\",\"updated_at\":\"2026-09-21T08:17:22.328849Z\",\"value\":null},\"key\":\"50000000-0000-4000-8000-000000000001\"}\n",
+    "activity_metric_links_v2": "{\"data\":{\"activity_node_id\":{\"$ref\":\"activity_details\",\"key\":\"node:30000000-0000-4000-8000-000000000002\"},\"coefficient\":\"1.250000\",\"created_at\":\"2026-09-21T08:17:22.328732Z\",\"deleted_at\":null,\"is_active\":true,\"metric_id\":{\"$ref\":\"tracked_metrics\",\"key\":\"40000000-0000-4000-8000-000000000001\"},\"owner_user_id\":{\"$ref\":\"users\",\"key\":\"00000000-0000-4000-8000-000000000001\"},\"prompt_on_complete\":false,\"public_id\":\"41000000-0000-4000-8000-000000000001\",\"revision\":1,\"show_in_activity_detail\":true,\"updated_at\":\"2026-09-21T08:17:22.328739Z\"},\"key\":\"41000000-0000-4000-8000-000000000001\"}\n",
+    "api_tokens": "{\"data\":{\"created_at\":\"2026-09-21T08:17:22.318422Z\",\"expires_at\":null,\"last_used_at\":null,\"name\":\"家庭自动化\",\"prefix\":\"df_token_01\",\"token_hash\":\"token-hash\",\"user_id\":{\"$ref\":\"users\",\"key\":\"00000000-0000-4000-8000-000000000001\"}},\"key\":\"token-hash\"}\n",
+    "client_devices": "{\"data\":{\"app_version\":null,\"capability_revision\":1,\"created_at\":\"2026-09-21T08:17:22.320792Z\",\"device_class\":\"interactive\",\"display_name\":null,\"installation_id\":\"phone-installation\",\"last_seen_at\":\"2026-09-21T08:17:22.320803Z\",\"platform\":\"android\",\"public_id\":\"20000000-0000-4000-8000-000000000001\",\"revoked_at\":null,\"structural_edit_enabled\":false,\"user_id\":{\"$ref\":\"users\",\"key\":\"00000000-0000-4000-8000-000000000001\"}},\"key\":\"20000000-0000-4000-8000-000000000001\"}\n",
+    "duration_day_allocations": "{\"data\":{\"activity_event_id\":{\"$ref\":\"activity_events\",\"key\":\"50000000-0000-4000-8000-000000000001\"},\"duration_ms\":30000,\"local_date\":\"2026-08-13\",\"timezone\":\"Asia/Shanghai\"},\"key\":\"50000000-0000-4000-8000-000000000001:2026-08-13\"}\n{\"data\":{\"activity_event_id\":{\"$ref\":\"activity_events\",\"key\":\"50000000-0000-4000-8000-000000000001\"},\"duration_ms\":90000,\"local_date\":\"2026-08-14\",\"timezone\":\"Asia/Shanghai\"},\"key\":\"50000000-0000-4000-8000-000000000001:2026-08-14\"}\n",
+    "entity_revision_snapshots": "{\"data\":{\"created_at\":\"2026-09-21T08:17:22.360974Z\",\"entity_type\":\"plan_node\",\"entity_uuid\":\"30000000-0000-4000-8000-000000000001\",\"operation\":\"upsert\",\"origin_device_id\":{\"$ref\":\"client_devices\",\"key\":\"20000000-0000-4000-8000-000000000001\"},\"origin_operation_id\":\"80000000-0000-4000-8000-000000000001\",\"owner_user_id\":{\"$ref\":\"users\",\"key\":\"00000000-0000-4000-8000-000000000001\"},\"payload_hash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"payload_json\":\"{\\\"title\\\":\\\"健康目标\\\"}\",\"revision\":1},\"key\":\"00000000-0000-4000-8000-000000000001:plan_node:30000000-0000-4000-8000-000000000001:1\"}\n",
+    "goal_details": "{\"data\":{\"due_date\":null,\"evaluation_policy_json\":\"{\\\"schema_version\\\":1,\\\"type\\\":\\\"manual\\\"}\",\"failure_policy_json\":\"{\\\"schema_version\\\":1,\\\"type\\\":\\\"strict\\\"}\",\"manual_result\":null,\"node_id\":{\"$ref\":\"plan_nodes\",\"key\":\"30000000-0000-4000-8000-000000000001\"},\"start_date\":null,\"target_cycles\":30},\"key\":\"node:30000000-0000-4000-8000-000000000001\"}\n",
+    "household_memberships": "{\"data\":{\"created_at\":\"2026-09-21T08:17:22.320608Z\",\"deleted_at\":null,\"household_id\":{\"$ref\":\"households\",\"key\":\"10000000-0000-4000-8000-000000000001\"},\"joined_at\":null,\"public_id\":\"11000000-0000-4000-8000-000000000001\",\"revision\":1,\"role\":\"owner\",\"status\":\"active\",\"updated_at\":\"2026-09-21T08:17:22.320615Z\",\"user_id\":{\"$ref\":\"users\",\"key\":\"00000000-0000-4000-8000-000000000001\"}},\"key\":\"11000000-0000-4000-8000-000000000001\"}\n{\"data\":{\"created_at\":\"2026-09-21T08:17:22.320680Z\",\"deleted_at\":null,\"household_id\":{\"$ref\":\"households\",\"key\":\"10000000-0000-4000-8000-000000000001\"},\"joined_at\":null,\"public_id\":\"11000000-0000-4000-8000-000000000002\",\"revision\":1,\"role\":\"member\",\"status\":\"active\",\"updated_at\":\"2026-09-21T08:17:22.320684Z\",\"user_id\":{\"$ref\":\"users\",\"key\":\"00000000-0000-4000-8000-000000000002\"}},\"key\":\"11000000-0000-4000-8000-000000000002\"}\n",
+    "households": "{\"data\":{\"created_at\":\"2026-09-21T08:17:22.318481Z\",\"created_by_user_id\":{\"$ref\":\"users\",\"key\":\"00000000-0000-4000-8000-000000000001\"},\"deleted_at\":null,\"name\":\"测试家庭\",\"public_id\":\"10000000-0000-4000-8000-000000000001\",\"revision\":1,\"updated_at\":\"2026-09-21T08:17:22.318486Z\"},\"key\":\"10000000-0000-4000-8000-000000000001\"}\n",
+    "metric_observations": "{\"data\":{\"created_at\":\"2026-09-21T08:17:22.358782Z\",\"deleted_at\":null,\"external_event_id\":null,\"local_date\":\"2026-08-14\",\"metric_id\":{\"$ref\":\"tracked_metrics\",\"key\":\"40000000-0000-4000-8000-000000000001\"},\"note\":\"\",\"occurred_at\":\"2026-08-14T00:01:30Z\",\"owner_user_id\":{\"$ref\":\"users\",\"key\":\"00000000-0000-4000-8000-000000000001\"},\"payload_json\":\"{}\",\"public_id\":\"60000000-0000-4000-8000-000000000001\",\"received_at\":\"2026-09-21T08:17:22.358802Z\",\"recorded_by_user_id\":null,\"revision\":1,\"source_device_public_id\":null,\"source_type\":\"app\",\"timezone\":\"Asia/Shanghai\",\"unit\":\"kg\",\"updated_at\":\"2026-09-21T08:17:22.358791Z\",\"value\":\"67.125000\"},\"key\":\"60000000-0000-4000-8000-000000000001\"}\n",
+    "plan_nodes": "{\"data\":{\"color_hex\":\"#2196F3\",\"created_at\":\"2026-09-21T08:17:22.322605Z\",\"created_by_user_id\":{\"$ref\":\"users\",\"key\":\"00000000-0000-4000-8000-000000000001\"},\"deleted_at\":null,\"description\":\"\",\"icon\":\"favorite\",\"node_kind\":\"goal\",\"owner_user_id\":{\"$ref\":\"users\",\"key\":\"00000000-0000-4000-8000-000000000001\"},\"parent_node_id\":null,\"public_id\":\"30000000-0000-4000-8000-000000000001\",\"revision\":1,\"sort_order\":0,\"status\":\"active\",\"title\":\"健康目标\",\"updated_at\":\"2026-09-21T08:17:22.322611Z\",\"visibility\":\"private\"},\"key\":\"30000000-0000-4000-8000-000000000001\"}\n{\"data\":{\"color_hex\":\"#2196F3\",\"created_at\":\"2026-09-21T08:17:22.324183Z\",\"created_by_user_id\":{\"$ref\":\"users\",\"key\":\"00000000-0000-4000-8000-000000000001\"},\"deleted_at\":null,\"description\":\"\",\"icon\":\"favorite\",\"node_kind\":\"activity\",\"owner_user_id\":{\"$ref\":\"users\",\"key\":\"00000000-0000-4000-8000-000000000001\"},\"parent_node_id\":{\"$ref\":\"plan_nodes\",\"key\":\"30000000-0000-4000-8000-000000000001\"},\"public_id\":\"30000000-0000-4000-8000-000000000002\",\"revision\":1,\"sort_order\":0,\"status\":\"active\",\"title\":\"睡前阅读\",\"updated_at\":\"2026-09-21T08:17:22.324190Z\",\"visibility\":\"private\"},\"key\":\"30000000-0000-4000-8000-000000000002\"}\n{\"data\":{\"color_hex\":\"#2196F3\",\"created_at\":\"2026-09-21T08:17:22.324238Z\",\"created_by_user_id\":{\"$ref\":\"users\",\"key\":\"00000000-0000-4000-8000-000000000001\"},\"deleted_at\":\"2026-08-14T00:01:30Z\",\"description\":\"\",\"icon\":\"favorite\",\"node_kind\":\"activity\",\"owner_user_id\":{\"$ref\":\"users\",\"key\":\"00000000-0000-4000-8000-000000000001\"},\"parent_node_id\":null,\"public_id\":\"30000000-0000-4000-8000-000000000003\",\"revision\":1,\"sort_order\":0,\"status\":\"active\",\"title\":\"已删除测试\",\"updated_at\":\"2026-09-21T08:17:22.324242Z\",\"visibility\":\"private\"},\"key\":\"30000000-0000-4000-8000-000000000003\"}\n",
+    "server_instances": "{\"data\":{\"created_at\":\"2026-09-21T08:17:22Z\",\"instance_uuid\":\"31387156-d397-43eb-9254-2697f9d109a4\",\"protocol_version\":4},\"key\":\"singleton\"}\n",
+    "sync_operations": "{\"data\":{\"action\":\"upsert\",\"base_revision\":0,\"completed_at\":null,\"device_id\":{\"$ref\":\"client_devices\",\"key\":\"20000000-0000-4000-8000-000000000001\"},\"entity_type\":\"plan_node\",\"entity_uuid\":\"30000000-0000-4000-8000-000000000001\",\"error_code\":null,\"operation_id\":\"80000000-0000-4000-8000-000000000001\",\"received_at\":\"2026-09-21T08:17:22.360905Z\",\"request_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"result_json\":\"{\\\"status\\\":\\\"applied\\\"}\",\"status\":\"applied\",\"user_id\":{\"$ref\":\"users\",\"key\":\"00000000-0000-4000-8000-000000000001\"}},\"key\":\"20000000-0000-4000-8000-000000000001:80000000-0000-4000-8000-000000000001\"}\n",
+    "timer_commands": "{\"data\":{\"command_id\":\"71000000-0000-4000-8000-000000000001\",\"command_sequence\":1,\"command_type\":\"start\",\"completed_at\":null,\"device_id\":{\"$ref\":\"client_devices\",\"key\":\"20000000-0000-4000-8000-000000000001\"},\"error_code\":null,\"received_at\":\"2026-09-21T08:17:22.360770Z\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"result_json\":\"{}\",\"session_public_id\":\"70000000-0000-4000-8000-000000000001\",\"status\":\"applied\",\"user_id\":{\"$ref\":\"users\",\"key\":\"00000000-0000-4000-8000-000000000001\"}},\"key\":\"20000000-0000-4000-8000-000000000001:71000000-0000-4000-8000-000000000001\"}\n",
+    "timer_segments": "{\"data\":{\"duration_ms\":120000,\"ended_at\":\"2026-08-14T00:01:30Z\",\"sequence\":1,\"session_id\":{\"$ref\":\"timer_sessions\",\"key\":\"70000000-0000-4000-8000-000000000001\"},\"started_at\":\"2026-08-13T23:59:30Z\"},\"key\":\"70000000-0000-4000-8000-000000000001:1\"}\n",
+    "timer_sessions": "{\"data\":{\"active_elapsed_ms\":120000,\"activity_node_id\":{\"$ref\":\"activity_details\",\"key\":\"node:30000000-0000-4000-8000-000000000002\"},\"completed_event_id\":{\"$ref\":\"activity_events\",\"key\":\"50000000-0000-4000-8000-000000000001\"},\"control_generation\":1,\"controller_device_id\":{\"$ref\":\"client_devices\",\"key\":\"20000000-0000-4000-8000-000000000001\"},\"created_at\":\"2026-09-21T08:17:22.358921Z\",\"ended_at\":\"2026-08-14T00:01:30Z\",\"is_countdown\":false,\"last_heartbeat_at\":null,\"max_duration_seconds\":3600,\"next_command_sequence\":2,\"owner_user_id\":{\"$ref\":\"users\",\"key\":\"00000000-0000-4000-8000-000000000001\"},\"public_id\":\"70000000-0000-4000-8000-000000000001\",\"revision\":1,\"started_at\":\"2026-08-13T23:59:30Z\",\"state\":\"completed\",\"state_changed_at\":\"2026-08-14T00:01:30Z\",\"target_seconds\":60,\"timezone\":\"Asia/Shanghai\",\"updated_at\":\"2026-09-21T08:17:22.358926Z\"},\"key\":\"70000000-0000-4000-8000-000000000001\"}\n",
+    "tracked_metrics": "{\"data\":{\"aggregation_type\":\"average\",\"color_hex\":\"#2196F3\",\"created_at\":\"2026-09-21T08:17:22.326525Z\",\"created_by_user_id\":{\"$ref\":\"users\",\"key\":\"00000000-0000-4000-8000-000000000001\"},\"decimal_places\":2,\"deleted_at\":null,\"description\":\"\",\"icon\":\"favorite\",\"name\":\"体重\",\"owner_user_id\":{\"$ref\":\"users\",\"key\":\"00000000-0000-4000-8000-000000000001\"},\"public_id\":\"40000000-0000-4000-8000-000000000001\",\"revision\":1,\"status\":\"active\",\"target_direction\":null,\"target_value\":\"65.500000\",\"target_value_upper\":null,\"unit\":\"kg\",\"updated_at\":\"2026-09-21T08:17:22.326539Z\"},\"key\":\"40000000-0000-4000-8000-000000000001\"}\n",
+    "user_profiles": "{\"data\":{\"avatar_url\":null,\"created_at\":\"2026-09-21T08:17:22.318330Z\",\"display_name\":\"家庭管理员\",\"locale\":\"zh-CN\",\"timezone\":\"Asia/Shanghai\",\"updated_at\":\"2026-09-21T08:17:22.318339Z\",\"user_id\":{\"$ref\":\"users\",\"key\":\"00000000-0000-4000-8000-000000000001\"}},\"key\":\"user:00000000-0000-4000-8000-000000000001\"}\n",
+    "user_sync_policies": "{\"data\":{\"primary_editor_device_id\":{\"$ref\":\"client_devices\",\"key\":\"20000000-0000-4000-8000-000000000001\"},\"revision\":1,\"updated_at\":\"2026-09-21T08:17:22.322529Z\",\"user_id\":{\"$ref\":\"users\",\"key\":\"00000000-0000-4000-8000-000000000001\"}},\"key\":\"user:00000000-0000-4000-8000-000000000001\"}\n",
+    "users": "{\"data\":{\"auth_version\":1,\"created_at\":\"2026-09-21T08:17:22.314940Z\",\"email\":null,\"is_active\":true,\"is_admin\":false,\"is_verified\":false,\"password_hash\":\"hash-1\",\"phone\":null,\"public_id\":\"00000000-0000-4000-8000-000000000001\",\"status\":\"active\",\"updated_at\":\"2026-09-21T08:17:22.314970Z\",\"username\":\"父亲\"},\"key\":\"00000000-0000-4000-8000-000000000001\"}\n{\"data\":{\"auth_version\":1,\"created_at\":\"2026-09-21T08:17:22.315108Z\",\"email\":null,\"is_active\":true,\"is_admin\":false,\"is_verified\":false,\"password_hash\":\"hash-2\",\"phone\":null,\"public_id\":\"00000000-0000-4000-8000-000000000002\",\"status\":\"active\",\"updated_at\":\"2026-09-21T08:17:22.315114Z\",\"username\":\"孩子\"},\"key\":\"00000000-0000-4000-8000-000000000002\"}\n"
+  }
+}
