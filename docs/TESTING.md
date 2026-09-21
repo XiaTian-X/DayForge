@@ -146,6 +146,20 @@ HTTP 提交边界测试必须使用生产 `get_session` 依赖和启用外键的
 
 自动化、模拟器、真机、外网和 NAS 是不同证据。未执行的层级必须写为“未执行/豁免”，不能由其他层级替代。
 
+### 发布前容器 CI（#22）
+
+`Container verification` 对 backend/contracts/tools 相关 PR 和主分支变更，在 GitHub 托管的
+原生 amd64、arm64 runner 中分别执行真实 Docker 构建及 `tools/verify_container.py`。
+本设备不运行 Docker。仓库级 Python 测试只验证脚本的环境门槛、确认数量和恢复比较器，
+不能代替两个架构的实际作业；任一失败均不能称为容器验证通过。
+
+HTTP 演练读取共享 wire fixtures，覆盖全部六类实体、计时命令和幂等重放。备份前确认事实、
+计时区间/日分摊、命令、变更日志及 revision snapshot 非空；恢复逐表核对内容而非仅比数量。
+损坏校验和与无效 Alembic revision 必须因预期原因失败，失败前后数据库保持不变。
+成功恢复后身份保留、epoch 轮换，再启动服务验证登录、bootstrap 与幂等记录。
+这是合成数据的容器运行/恢复验证，不是设备计时、真实 NAS 更新或跨版本回滚证明。
+不发布镜像、备份或认证信息；公开发布、签名及 NAS 验收仍由 #22 后续阶段处理。
+
 ## 网络监控整改的集中真机验收（待执行）
 
 Issue #20 的 NetworkMonitor 变更已按用户约定延后真机/NAS/外网验收，由用户在集中验收时操作。
