@@ -5,15 +5,20 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, text
+from sqlalchemy import Column, Integer, MetaData, Table, create_engine, text
 from sqlmodel import Session
 
 from src.auth.models import User
-from src.storage.logical_archive import export_archive, import_archive
+from src.storage.logical_archive import (
+    _insert_collection,
+    export_archive,
+    import_archive,
+)
 from src.storage.sqlite_maintenance import StorageValidationError
 from src.tokens.models import ApiToken
 from src.v2.models import (
@@ -39,6 +44,19 @@ from src.v2.models import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("inserted_key", [None, (None,)])
+def test_import_rejects_missing_generated_primary_key(inserted_key):
+    table = Table("missing_key", MetaData(), Column("id", Integer, primary_key=True))
+    connection = Mock()
+    connection.execute.return_value.inserted_primary_key = inserted_key
+    target_keys: dict[tuple[str, str], object] = {}
+    with pytest.raises(StorageValidationError, match="missing inserted primary key"):
+        _insert_collection(
+            connection, table, [{"key": "synthetic", "data": {}}], target_keys
+        )
+    assert target_keys == {}
 
 
 def migrate(path: Path) -> str:

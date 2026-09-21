@@ -29,6 +29,20 @@ def set_engine(engine: AsyncEngine) -> None:
     _engine = engine
 
 
+async def dispose_engine() -> None:
+    """Release an existing engine after requests drain, without creating one.
+
+    Keep the reference on failure so cleanup can be retried. Do not clear an
+    engine installed while the previous engine's disposal was awaiting I/O.
+    """
+    global _engine
+    engine = _engine
+    if engine is not None:
+        await engine.dispose()
+        if _engine is engine:
+            _engine = None
+
+
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     """Async database session dependency.
 
@@ -66,6 +80,7 @@ __all__ = [
     "get_session",
     "create_db_and_tables",
     "get_engine",
+    "dispose_engine",
     "set_engine",
     "DATABASE_ADAPTER",
     "DATABASE_URL",

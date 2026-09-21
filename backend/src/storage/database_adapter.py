@@ -14,6 +14,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine, URL, make_url
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.pool import NullPool, StaticPool
 
 
 class DatabaseConfigurationError(ValueError):
@@ -56,11 +57,20 @@ class SQLiteDatabaseAdapter:
     kind: str = "sqlite"
 
     def create_async_engine(self) -> AsyncEngine:
+        url = make_url(self.async_url)
+        is_memory = (
+            not url.database
+            or url.database == ":memory:"
+            or url.query.get("mode") == "memory"
+        )
         engine = create_async_engine(
             self.async_url,
             echo=False,
             future=True,
             connect_args={"check_same_thread": False},
+            # Preserve the pre-2.0.38 async SQLite policy across driver upgrades.
+            # Memory databases need one retained connection to keep their data.
+            poolclass=StaticPool if is_memory else NullPool,
         )
         event.listen(engine.sync_engine, "connect", _apply_sqlite_pragmas)
         return engine

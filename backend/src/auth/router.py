@@ -1,6 +1,8 @@
 """Authentication endpoints for administrator-managed local accounts."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from typing import cast
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import update
 from sqlmodel import col, select
@@ -74,7 +76,9 @@ async def login(
             .values(password_hash=get_password_hash(credentials.password))
             .execution_options(synchronize_session=False)
         )
-        if upgrade_result.rowcount != 1:
+        # Single UPDATE (not bulk/RETURNING) returns CursorResult; the async
+        # execute annotation is the wider Result. Keep the same rowcount guard.
+        if cast(CursorResult, upgrade_result).rowcount != 1:
             raise HTTPException(status_code=401, detail="Incorrect credentials")
     return _token_response(user)
 
