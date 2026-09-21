@@ -9,6 +9,7 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import java.io.IOException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
@@ -63,6 +64,37 @@ class SyncManagerTest {
             SyncProgress.Error("unexpected end of stream", isNetworkFailure = true),
             manager.syncProgress.first()
         )
+    }
+
+    @Test
+    fun sync_cancellation_is_rethrown_without_publishing_a_stale_error() = runTest {
+        coEvery { repository.sync(any()) } throws CancellationException("screen left")
+
+        var cancelled = false
+        try {
+            manager.sync()
+        } catch (_: CancellationException) {
+            cancelled = true
+        }
+
+        assertTrue(cancelled)
+        assertEquals(SyncProgress.Idle, manager.syncProgress.first())
+    }
+
+    @Test
+    fun sync_and_then_cancellation_is_rethrown_without_publishing_a_stale_error() = runTest {
+        coEvery { repository.syncAndThen<Unit>(any(), any()) } throws
+            CancellationException("account action cancelled")
+
+        var cancelled = false
+        try {
+            manager.syncAndThen {}
+        } catch (_: CancellationException) {
+            cancelled = true
+        }
+
+        assertTrue(cancelled)
+        assertEquals(SyncProgress.Idle, manager.syncProgress.first())
     }
 
     @Test

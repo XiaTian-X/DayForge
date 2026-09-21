@@ -6,6 +6,7 @@ import com.dayforge.data.local.entity.SyncConflictEntity
 import com.dayforge.data.local.entity.TimerCommandEntity
 import com.dayforge.data.repository.IncrementalSyncRepository
 import java.io.IOException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -39,6 +40,8 @@ class SyncManager @Inject constructor(
             _syncProgress.value = SyncProgress.Success
             progressCallback(SyncProgress.Success)
             Result.success(Unit)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             val errorProgress = SyncProgress.Error(
                 message = e.message ?: "Unknown error",
@@ -59,6 +62,8 @@ class SyncManager @Inject constructor(
             )
             _syncProgress.value = SyncProgress.Success
             Result.success(Unit)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             _syncProgress.value = SyncProgress.Error(
                 message = e.message ?: "Unknown error",

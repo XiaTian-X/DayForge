@@ -20,6 +20,8 @@ import com.dayforge.domain.service.AccountLocalStateCleaner
 import com.dayforge.domain.service.TimerElapsedCalculator
 import com.dayforge.domain.model.GlobalColorTheme
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -62,9 +64,6 @@ class SettingsViewModel @Inject constructor(
     val isOnline: StateFlow<Boolean> = networkMonitor.state
         .map { it.mayBeConnected }
         .stateIn(viewModelScope, SharingStarted.Eagerly, networkMonitor.state.value.mayBeConnected)
-
-    private val _showSyncSuccess = MutableStateFlow(false)
-    val showSyncSuccess: StateFlow<Boolean> = _showSyncSuccess.asStateFlow()
 
     private val _showSyncError = MutableStateFlow(false)
     val showSyncError: StateFlow<Boolean> = _showSyncError.asStateFlow()
@@ -158,34 +157,22 @@ class SettingsViewModel @Inject constructor(
     val allLightThemes: StateFlow<List<GlobalColorTheme>> = appearanceWorkflow.allLightThemes
     val allDarkThemes: StateFlow<List<GlobalColorTheme>> = appearanceWorkflow.allDarkThemes
 
+    private var manualSyncJob: Job? = null
+
     init {
-        // Observe sync progress from SyncManager
+        // Global progress is durable process state used for non-blocking status only.
+        // Modal feedback is owned by the settings action that initiated a sync.
         viewModelScope.launch {
             syncManager.syncProgress.collect { progress ->
                 _syncProgress.value = progress
-                when (progress) {
-                    is SyncProgress.Success -> {
-                        _showSyncSuccess.value = true
-                        // Reschedule reminders after successful sync (new habits may have bestTime)
-                        try {
-                            HabitReminderScheduler.rescheduleAllReminders(context)
-                        } catch (e: Exception) {
-                            // Log error but don't block sync success
-                        }
-                        // Auto-reset success after delay
-                        kotlinx.coroutines.delay(1000)
-                        _showSyncSuccess.value = false
-                        syncManager.resetProgress()
+                if (progress is SyncProgress.Success) {
+                    try {
+                        HabitReminderScheduler.rescheduleAllReminders(context)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        // Reminder refresh is best-effort and does not change sync success.
                     }
-                    is SyncProgress.Error -> {
-                        _syncErrorMessage.value = if (progress.isNetworkFailure) {
-                            context.getString(R.string.error_network_failed)
-                        } else {
-                            progress.message
-                        }
-                        _showSyncError.value = true
-                    }
-                    else -> {}
                 }
             }
         }
@@ -222,10 +209,7 @@ class SettingsViewModel @Inject constructor(
      * Performs the actual sync operation.
      */
     private fun performSync() {
-        viewModelScope.launch {
-            val result = syncManager.sync()
-            // Result is handled via syncProgress flow observation
-        }
+        startManualSync(retryRejected = false)
     }
 
     /**
@@ -233,7 +217,6 @@ class SettingsViewModel @Inject constructor(
      */
     fun dismissSyncError() {
         _showSyncError.value = false
-        syncManager.resetProgress()
     }
 
     /**
@@ -241,13 +224,38 @@ class SettingsViewModel @Inject constructor(
      */
     fun retrySync() {
         _showSyncError.value = false
-        viewModelScope.launch {
-            // A retry explicitly requested by the user also reactivates
-            // quarantined operations; ordinary background sync leaves them
-            // isolated so one bad row cannot block downloads.
-            syncManager.retryRejectedChanges()
-            syncManager.sync()
+        startManualSync(retryRejected = true)
+    }
+
+    private fun startManualSync(retryRejected: Boolean) {
+        if (manualSyncJob?.isActive == true) return
+        manualSyncJob = viewModelScope.launch {
+            val failure = try {
+                if (retryRejected) {
+                    // A retry explicitly requested by the user also reactivates
+                    // quarantined operations; ordinary background sync leaves them
+                    // isolated so one bad row cannot block downloads.
+                    syncManager.retryRejectedChanges()
+                }
+                syncManager.sync().exceptionOrNull()?.also { error ->
+                    if (error is CancellationException) throw error
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                error
+            }
+            failure?.let(::showManualSyncIssue)
         }
+    }
+
+    private fun showManualSyncIssue(error: Throwable) {
+        _syncErrorMessage.value = if (error.hasIOExceptionCause()) {
+            context.getString(R.string.error_network_failed)
+        } else {
+            error.message ?: context.getString(R.string.sync_rejected_unknown_error)
+        }
+        _showSyncError.value = true
     }
 
     fun retryRejectedChange(id: Long) {
