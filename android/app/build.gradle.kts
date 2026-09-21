@@ -95,6 +95,8 @@ android {
 ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
     arg("room.incremental", "true")
+    // Keep the existing Java generator; a Kotlin-generation migration needs separate DAO review.
+    arg("room.generateKotlin", "false")
 }
 
 check(fileTree("src") { include("test*/**/*.kt", "test*/**/*.java") }.isEmpty) {
