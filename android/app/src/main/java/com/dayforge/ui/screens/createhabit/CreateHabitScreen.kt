@@ -26,6 +26,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.graphics.toColorInt
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.dayforge.R
 import com.dayforge.data.local.entity.HabitEntity
@@ -530,7 +531,7 @@ fun CreateHabitScreen(
                         modifier = Modifier
                             .size(24.dp)
                             .background(
-                                color = Color(android.graphics.Color.parseColor(uiState.colorHex)),
+                                color = Color(uiState.colorHex.toColorInt()),
                                 shape = MaterialTheme.shapes.small
                             )
                     )

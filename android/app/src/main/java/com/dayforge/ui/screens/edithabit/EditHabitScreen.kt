@@ -1,6 +1,5 @@
 package com.dayforge.ui.screens.edithabit
 
-import android.graphics.Color.parseColor
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -25,6 +24,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.core.graphics.toColorInt
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.dayforge.R
 import com.dayforge.data.model.FailMode
@@ -460,7 +460,7 @@ fun EditHabitScreen(
                             modifier = Modifier
                                 .size(24.dp)
                                 .background(
-                                    color = ComposeColor(parseColor(uiState.colorHex)),
+                                    color = ComposeColor(uiState.colorHex.toColorInt()),
                                     shape = MaterialTheme.shapes.small
                                 )
                         )

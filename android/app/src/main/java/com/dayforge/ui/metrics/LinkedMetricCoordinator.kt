@@ -34,7 +34,7 @@ data class LinkedMetricPromptState(
 
 /** Coordinates linked-metric card, prompt, and recording behavior for habit screens. */
 class LinkedMetricCoordinator @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val preferencesManager: PreferencesManager,
     private val metricRepository: MetricRepository,
     private val habitRepository: HabitRepository

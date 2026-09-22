@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.core.graphics.toColorInt
 import androidx.compose.ui.graphics.Color
 import com.dayforge.domain.model.GlobalColorTheme
 import com.dayforge.domain.service.SeedColorPalette
@@ -151,15 +152,15 @@ object ColorSchemeGenerator {
 
     private fun parseSeedColor(seedColorHex: String): Int {
         return try {
-            android.graphics.Color.parseColor(seedColorHex)
+            seedColorHex.toColorInt()
         } catch (e: IllegalArgumentException) {
-            android.graphics.Color.parseColor("#1976D2")
+            "#1976D2".toColorInt()
         }
     }
 
     private fun String.toColor(): Color {
         return try {
-            Color(android.graphics.Color.parseColor(this))
+            Color(this.toColorInt())
         } catch (e: Exception) {
             Color.Black
         }

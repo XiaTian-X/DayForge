@@ -86,7 +86,7 @@ class EditHabitViewModel @Inject constructor(
     private val metricDao: MetricDao,
     private val habitMetricLinkDao: HabitMetricLinkDao,
     private val preferencesManager: PreferencesManager,
-    @ApplicationContext private val context: Context
+    @param:ApplicationContext private val context: Context
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(EditHabitUiState())

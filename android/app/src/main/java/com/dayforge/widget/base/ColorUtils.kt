@@ -1,5 +1,6 @@
 package com.dayforge.widget.base
 
+import androidx.core.graphics.toColorInt
 import androidx.compose.ui.graphics.Color
 
 /**
@@ -18,7 +19,7 @@ object ColorUtils {
      */
     fun parseColor(hex: String, fallback: Color = Color(0xFF4CAF50)): Color {
         return try {
-            Color(android.graphics.Color.parseColor(hex))
+            Color(hex.toColorInt())
         } catch (e: Exception) {
             fallback
         }

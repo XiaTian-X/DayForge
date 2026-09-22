@@ -12,6 +12,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.core.graphics.toColorInt
 import androidx.compose.ui.unit.dp
 import com.dayforge.R
 
@@ -355,7 +356,7 @@ internal fun LightThemeSelectorCard(
                 modifier = Modifier
                     .size(24.dp)
                     .background(
-                        color = androidx.compose.ui.graphics.Color(android.graphics.Color.parseColor(theme.seedColor)),
+                        color = androidx.compose.ui.graphics.Color(theme.seedColor.toColorInt()),
                         shape = MaterialTheme.shapes.extraSmall
                     )
             )
@@ -419,7 +420,7 @@ internal fun DarkThemeSelectorCard(
                 modifier = Modifier
                     .size(24.dp)
                     .background(
-                        color = androidx.compose.ui.graphics.Color(android.graphics.Color.parseColor(theme.seedColor)),
+                        color = androidx.compose.ui.graphics.Color(theme.seedColor.toColorInt()),
                         shape = MaterialTheme.shapes.extraSmall
                     )
             )
@@ -576,7 +577,7 @@ internal fun GlobalColorThemeOption(
             modifier = Modifier
                 .size(24.dp)
                 .background(
-                    color = androidx.compose.ui.graphics.Color(android.graphics.Color.parseColor(theme.seedColor)),
+                    color = androidx.compose.ui.graphics.Color(theme.seedColor.toColorInt()),
                     shape = MaterialTheme.shapes.extraSmall
                 )
         )

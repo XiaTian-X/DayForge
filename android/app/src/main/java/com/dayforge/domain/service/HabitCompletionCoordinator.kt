@@ -12,7 +12,7 @@ import javax.inject.Inject
 
 /** Coordinates completion mutations and returns the follow-up actions required by habit screens. */
 class HabitCompletionCoordinator @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val checkInService: CheckInService,
     private val habitRepository: HabitRepository,
     private val metricRepository: MetricRepository

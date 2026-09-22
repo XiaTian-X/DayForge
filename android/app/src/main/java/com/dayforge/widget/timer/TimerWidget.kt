@@ -7,6 +7,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.graphics.toColorInt
 import androidx.datastore.preferences.core.*
 import androidx.glance.*
 import androidx.glance.action.ActionParameters
@@ -311,7 +312,7 @@ class TimerWidget : GlanceAppWidget() {
                     val hasFailed = state[HAS_FAILED_KEY] ?: false
                     val isGoalReached = state[IS_GOAL_REACHED_KEY] ?: false
                     // Read pre-computed colors from state (Int ARGB)
-                    val backgroundColorArgb = state[BACKGROUND_COLOR_KEY] ?: android.graphics.Color.parseColor("#2196F3")
+                    val backgroundColorArgb = state[BACKGROUND_COLOR_KEY] ?: "#2196F3".toColorInt()
                     val textColorArgb = state[TEXT_COLOR_KEY] ?: android.graphics.Color.WHITE
                     TimerWidgetContent(
                         habitName = state[HABIT_NAME_KEY] ?: "",

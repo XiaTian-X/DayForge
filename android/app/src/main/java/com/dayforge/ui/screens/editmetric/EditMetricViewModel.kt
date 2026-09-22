@@ -70,7 +70,7 @@ data class EditMetricUiState(
  */
 @HiltViewModel
 class EditMetricViewModel @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val metricDao: MetricDao,
     private val metricRepository: MetricRepository,
     savedStateHandle: SavedStateHandle

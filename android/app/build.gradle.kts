@@ -1,5 +1,6 @@
 import java.util.Properties
 import java.time.Duration
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 val localProperties = Properties().apply {
     val file = rootProject.file("local.properties")
@@ -34,10 +35,6 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    kotlinOptions {
-        jvmTarget = "17"
     }
 
     signingConfigs {
@@ -92,6 +89,12 @@ android {
     }
 }
 
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
+    }
+}
+
 ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
     arg("room.incremental", "true")
@@ -106,7 +109,9 @@ check(fileTree("src") { include("test*/**/*.kt", "test*/**/*.java") }.isEmpty) {
 androidComponents {
     // All historical tests now live in androidTest and run only on physical devices.
     // Do not create an empty JVM variant that could be mistaken for behavior validation.
-    beforeVariants { it.enableUnitTest = false }
+    beforeVariants { variant ->
+        variant.hostTests.values.forEach { it.enable = false }
+    }
 
     onVariants(selector().withBuildType("deviceTest")) { variant ->
         // Retain all notices from the instrumentation-only MockK/JUnit dependencies.

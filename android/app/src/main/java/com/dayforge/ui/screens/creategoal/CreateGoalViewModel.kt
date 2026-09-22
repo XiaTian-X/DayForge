@@ -43,7 +43,7 @@ data class CreateGoalUiState(
 
 @HiltViewModel
 class CreateGoalViewModel @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val habitRepository: HabitRepository,
     private val savedStateHandle: SavedStateHandle
 ) : ViewModel() {

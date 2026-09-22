@@ -201,7 +201,6 @@ object HabitPriorityCalculator {
                     HabitType.COUNTING -> todayCount >= habit.targetValue  // All slots completed
                     HabitType.TIMER -> todayCount >= habit.targetValue * 60  // Target seconds met
                     HabitType.GOAL -> false  // GOAL habits don't have check-ins
-                    else -> todayCount > 0
                 }
 
                 // Calculate completion score (方案I：COUNTING当前slot已完成时使用中等得分)

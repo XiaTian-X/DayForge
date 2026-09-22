@@ -37,6 +37,12 @@ chore(deps): upgrade FastAPI compatibility group
 
 兼容升级组：Gradle/AGP、Kotlin/KSP/Compose Compiler、FastAPI/Starlette/Pydantic、SQLModel/SQLAlchemy/Alembic。Room、targetSdk 和 Compose BOM 分别单独升级。
 
+Android 工具链升级须同时核对 KSP 实现、Hilt 插件/处理器/运行与测试库的版本一致性，
+以及构建变体中没有重新启用主机测试。Wrapper 的 jar 与启动脚本须同版本生成，
+分发包写入官方 SHA256 并核对 jar 校验值；不能只改下载 URL。
+新编译器的注解目标、默认方法或 lint 行为变化须逐项审查，保留原业务语义，
+重新执行干净构建和完整真机测试，不能沿用前一兼容组的通过结果。
+
 ## 本地工具发现
 
 后端固定使用 Python 3.12 和锁文件，安装 `uv` 后执行 `uv sync --frozen`。Android 固定使用 JDK 17；根验证脚本优先使用 `JAVA_HOME`，并能识别常见的 Homebrew JDK 安装。不要假定 AI Agent 进程会继承交互式终端的 PATH。

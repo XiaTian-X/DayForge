@@ -20,7 +20,7 @@ import javax.inject.Inject
 
 /** Owns settings appearance mutations and theme file workflow state. */
 class SettingsAppearanceWorkflow @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val preferencesManager: PreferencesManager,
     private val themeManager: ThemeManager,
     private val themeImportService: ThemeImportService,

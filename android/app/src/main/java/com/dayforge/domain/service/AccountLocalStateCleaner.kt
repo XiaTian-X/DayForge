@@ -6,6 +6,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import androidx.core.content.edit
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.state.updateAppWidgetState
@@ -75,9 +76,7 @@ object AccountLocalStateCleaner {
                 TimerWidget.PREFS_NAME
             ).forEach { name ->
                 context.getSharedPreferences(name, Context.MODE_PRIVATE)
-                    .edit()
-                    .clear()
-                    .commit()
+                    .edit(commit = true) { clear() }
             }
         }
 

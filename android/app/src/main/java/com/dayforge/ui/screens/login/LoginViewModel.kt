@@ -37,7 +37,7 @@ class LoginViewModel @Inject constructor(
     private val habitRepository: HabitRepository,
     private val preferencesManager: PreferencesManager,
     private val accountSessionCoordinator: AccountSessionCoordinator,
-    @ApplicationContext private val context: Context
+    @param:ApplicationContext private val context: Context
 ) : ViewModel() {
     private val _username = MutableStateFlow("")
     val username: StateFlow<String> = _username.asStateFlow()

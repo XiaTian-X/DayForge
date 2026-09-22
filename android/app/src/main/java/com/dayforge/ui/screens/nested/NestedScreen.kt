@@ -3,7 +3,6 @@ package com.dayforge.ui.screens.nested
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
@@ -31,6 +30,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.dayforge.R
 import com.dayforge.domain.model.CardColorStyle
@@ -422,13 +422,13 @@ fun NestedScreen(
                         }
                         try {
                             val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                                data = Uri.parse("package:${context.packageName}")
+                                data = "package:${context.packageName}".toUri()
                             }
                             context.startActivity(intent)
                         } catch (e: Exception) {
                             try {
                                 val fallbackIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                    data = Uri.parse("package:${context.packageName}")
+                                    data = "package:${context.packageName}".toUri()
                                 }
                                 context.startActivity(fallbackIntent)
                             } catch (e2: Exception) {

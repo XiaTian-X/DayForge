@@ -1,6 +1,5 @@
 package com.dayforge.ui.components
 
-import android.graphics.Color.parseColor
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -23,6 +22,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.core.graphics.toColorInt
 import androidx.compose.ui.unit.dp
 import com.dayforge.R
 import com.dayforge.widget.base.ColorUtils
@@ -247,7 +247,7 @@ fun ColorPicker(
                             modifier = Modifier
                                 .size(48.dp)
                                 .background(
-                                    color = Color(parseColor(color)),
+                                    color = Color(color.toColorInt()),
                                     shape = MaterialTheme.shapes.small
                                 )
                                 .clickable {

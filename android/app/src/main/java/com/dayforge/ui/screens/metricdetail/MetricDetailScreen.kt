@@ -51,6 +51,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.core.graphics.toColorInt
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.dayforge.R
 import com.dayforge.ui.components.MetricValueInput
@@ -199,7 +200,7 @@ fun MetricDetailScreen(
                         ) {
                             // Metric name with color indicator
                             val metricColor = try {
-                                Color(android.graphics.Color.parseColor(metric.colorHex))
+                                Color(metric.colorHex.toColorInt())
                             } catch (e: Exception) {
                                 MaterialTheme.colorScheme.primary
                             }

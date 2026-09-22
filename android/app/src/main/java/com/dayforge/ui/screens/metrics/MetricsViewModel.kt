@@ -23,7 +23,7 @@ import javax.inject.Inject
 
 @HiltViewModel
 class MetricsViewModel @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val preferencesManager: PreferencesManager,
     private val metricRepository: MetricRepository,
     private val metricOverviewProvider: MetricOverviewProvider

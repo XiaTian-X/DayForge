@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /** Shared goal-completion and reactivation state for habit list screens. */
 class HabitLifecycleCoordinator @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val habitRepository: HabitRepository
 ) {
     private val _showGoalDialog = MutableStateFlow(false)

@@ -73,7 +73,7 @@ data class HabitDetailUiState(
 
 @HiltViewModel
 class HabitDetailViewModel @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val habitRepository: HabitRepository,
     private val preferencesManager: PreferencesManager,
     private val timeLogDao: TimeLogDao,

@@ -17,6 +17,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.core.content.edit
+import androidx.core.graphics.toColorInt
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import com.dayforge.R
 import com.dayforge.data.local.HabitDatabaseProvider
@@ -80,9 +82,9 @@ class TimerWidgetConfigActivity : ComponentActivity() {
 
         // Save to SharedPreferences
         val prefs = applicationContext.getSharedPreferences(TimerWidget.PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit()
-            .putLong(TimerWidget.PREF_HABIT_ID_PREFIX + appWidgetId, habit.id)
-            .commit()
+        prefs.edit(commit = true) {
+            putLong(TimerWidget.PREF_HABIT_ID_PREFIX + appWidgetId, habit.id)
+        }
         Log.d(TAG, "Saved habitId=${habit.id} for widget $appWidgetId to SharedPreferences")
 
         // Load habit data into Glance state and trigger update
@@ -192,7 +194,7 @@ private fun HabitSelectionItem(habit: HabitEntity, onClick: () -> Unit) {
             .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(
             containerColor = try {
-                androidx.compose.ui.graphics.Color(android.graphics.Color.parseColor(habit.colorHex))
+                androidx.compose.ui.graphics.Color(habit.colorHex.toColorInt())
             } catch (e: Exception) {
                 MaterialTheme.colorScheme.primary
             }

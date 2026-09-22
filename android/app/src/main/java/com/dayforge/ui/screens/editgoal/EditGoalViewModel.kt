@@ -54,7 +54,7 @@ data class EditGoalUiState(
 
 @HiltViewModel
 class EditGoalViewModel @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val habitDao: HabitDao,
     private val habitRepository: HabitRepository,
     private val preferencesManager: PreferencesManager

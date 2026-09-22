@@ -26,7 +26,7 @@ import javax.inject.Inject
 @HiltViewModel
 class AdminViewModel @Inject constructor(
     private val adminApi: AdminApi,
-    @ApplicationContext private val context: Context
+    @param:ApplicationContext private val context: Context
 ) : ViewModel() {
 
     private val _users = MutableStateFlow<List<AdminUserResponse>>(emptyList())

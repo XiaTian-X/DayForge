@@ -34,7 +34,7 @@ data class SettingsImportConfirmData(
 
 /** Owns the settings configuration import/export workflow and its transient UI state. */
 class SettingsConfigWorkflow @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val habitDao: HabitDao,
     private val metricDao: MetricDao,
     private val timeLogDao: TimeLogDao,

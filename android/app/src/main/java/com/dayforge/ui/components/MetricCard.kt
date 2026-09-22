@@ -1,6 +1,5 @@
 package com.dayforge.ui.components
 
-import android.graphics.Color.parseColor
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
@@ -21,6 +20,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.core.graphics.toColorInt
 import androidx.compose.ui.unit.dp
 import com.dayforge.R
 import com.dayforge.data.local.entity.MetricEntity
@@ -81,7 +81,7 @@ private fun formatDate(timestamp: Long): String {
  */
 private fun getContrastingColor(colorHex: String): Color {
     return try {
-        val color = parseColor(colorHex)
+        val color = colorHex.toColorInt()
         // Calculate luminance
         val r = android.graphics.Color.red(color) / 255.0
         val g = android.graphics.Color.green(color) / 255.0

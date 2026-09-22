@@ -3,7 +3,6 @@ package com.dayforge.ui.screens.dashboard
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
@@ -31,6 +30,7 @@ import androidx.compose.ui.text.style.TextAlign
 import com.dayforge.R
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.model.CardColorStyle
@@ -425,14 +425,14 @@ fun DashboardScreen(
                         // Open battery optimization settings
                         try {
                             val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                                data = Uri.parse("package:${context.packageName}")
+                                data = "package:${context.packageName}".toUri()
                             }
                             context.startActivity(intent)
                         } catch (e: Exception) {
                             // Fallback to app settings if battery optimization settings unavailable
                             try {
                                 val fallbackIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                    data = Uri.parse("package:${context.packageName}")
+                                    data = "package:${context.packageName}".toUri()
                                 }
                                 context.startActivity(fallbackIntent)
                             } catch (e2: Exception) {

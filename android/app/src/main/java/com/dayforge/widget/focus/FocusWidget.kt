@@ -6,6 +6,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.graphics.toColorInt
 import androidx.datastore.preferences.core.*
 import androidx.glance.*
 import androidx.glance.action.ActionParameters
@@ -368,7 +369,7 @@ class FocusWidget : GlanceAppWidget() {
         // Read primary habit state
         val habitId = state[PRIMARY_HABIT_ID_KEY] ?: -1L
         val habitName = state[PRIMARY_HABIT_NAME_KEY] ?: ""
-        val backgroundColorArgb = state[PRIMARY_BACKGROUND_COLOR_KEY] ?: android.graphics.Color.parseColor("#4CAF50")
+        val backgroundColorArgb = state[PRIMARY_BACKGROUND_COLOR_KEY] ?: "#4CAF50".toColorInt()
         val textColorArgb = state[PRIMARY_TEXT_COLOR_KEY] ?: android.graphics.Color.WHITE
         val habitType = try {
             HabitType.valueOf(state[PRIMARY_HABIT_TYPE_KEY] ?: "CHECK_IN")
