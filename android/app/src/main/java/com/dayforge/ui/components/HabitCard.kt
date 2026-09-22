@@ -296,19 +296,19 @@ fun HabitCard(
                 }
                 val isTimerActive = timerState == TimerState.RUNNING || timerState == TimerState.PAUSED
 
-                // Progress indicator and Completion button in a single row
-                Spacer(modifier = Modifier.height(12.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // LEFT: Completion Button (if not GOAL)
-                    Box(
-                        modifier = if (isTimerActive) Modifier.fillMaxWidth() else Modifier.wrapContentWidth(), 
-                        contentAlignment = if (isTimerActive) Alignment.Center else Alignment.CenterStart
+                // Top Action Row (Button + Streak)
+                if (habit.habitType != HabitType.GOAL) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        if (habit.habitType != HabitType.GOAL) {
+                        // Button
+                        Box(
+                            modifier = if (isTimerActive) Modifier.fillMaxWidth() else Modifier.wrapContentWidth(), 
+                            contentAlignment = if (isTimerActive) Alignment.Center else Alignment.CenterStart
+                        ) {
                             val displayCount = if (activeTimer?.habitId == habit.id) {
                                 activeTimer.elapsedSeconds
                             } else {
@@ -341,21 +341,11 @@ fun HabitCard(
                                 modifier = Modifier
                             )
                         }
-                    }
-                    
-                    if (!isTimerActive) {
-                        Spacer(modifier = Modifier.width(16.dp))
                         
-                        // RIGHT: Progress Indicator
-                        Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
-                            if (habit.targetCycles != null) {
-                                TargetProgressIndicator(
-                                    progress = targetProgress,
-                                    target = habit.targetCycles,
-                                    textColor = resolvedColors.textColor,
-                                    modifier = Modifier
-                                )
-                            } else {
+                        // Streak Indicator (Only if no targetCycles and timer not taking full width)
+                        if (!isTimerActive && habit.targetCycles == null) {
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
                                 StreakIndicator(
                                     activityRate = activityRate,
                                     textColor = resolvedColors.textColor,
@@ -364,6 +354,17 @@ fun HabitCard(
                             }
                         }
                     }
+                }
+
+                // Bottom Row: Target Progress Indicator
+                if (habit.targetCycles != null) {
+                    Spacer(modifier = Modifier.height(if (habit.habitType == HabitType.GOAL) 12.dp else 16.dp))
+                    TargetProgressIndicator(
+                        progress = targetProgress,
+                        target = habit.targetCycles,
+                        textColor = resolvedColors.textColor,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
                 // Linked metrics section (D-12 to D-14)
                 if (linkedMetrics.isNotEmpty()) {
