@@ -359,25 +359,6 @@ fun HabitCard(
                     }
                 }
 
-                // Bottom Edge Progress Bar (Text-less, matches ChildHabitRow)
-                if (habit.targetCycles != null && habit.targetCycles > 0) {
-                    val progressFraction = (targetProgress.toFloat() / habit.targetCycles.toFloat()).coerceIn(0f, 1f)
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(2.dp)
-                            .clip(RoundedCornerShape(1.dp))
-                            .background(resolvedColors.textColor.copy(alpha = 0.2f))
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(fraction = progressFraction)
-                                .height(2.dp)
-                                .background(resolvedColors.textColor)
-                        )
-                    }
-                }
                 // Linked metrics section (D-12 to D-14)
                 if (linkedMetrics.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(8.dp))
@@ -385,6 +366,28 @@ fun HabitCard(
                         linkedMetrics = linkedMetrics,
                         onMetricClick = onMetricClick,
                         textColor = resolvedColors.textColor
+                    )
+                }
+            }
+
+            // Bottom Edge Progress Bar (Text-less, matches ChildHabitRow)
+            if (habit.targetCycles != null && habit.targetCycles > 0) {
+                val progressFraction = (targetProgress.toFloat() / habit.targetCycles.toFloat()).coerceIn(0f, 1f)
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(horizontal = 4.dp)
+                        .padding(bottom = 2.dp)
+                        .fillMaxWidth()
+                        .height(2.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(resolvedColors.textColor.copy(alpha = 0.2f))
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(fraction = progressFraction)
+                            .height(2.dp)
+                            .background(resolvedColors.textColor)
                     )
                 }
             }
