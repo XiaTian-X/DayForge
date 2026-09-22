@@ -187,117 +187,66 @@ fun MetricDetailScreen(
                 ) {
                     uiState.metric?.let { metric ->
 
-                    // Metric Header Card
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant
-                        ),
-                        shape = MaterialTheme.shapes.medium
+                    // Hero Section
+                    val metricColor = try {
+                        androidx.compose.ui.graphics.Color(metric.colorHex.toColorInt())
+                    } catch (e: Exception) {
+                        MaterialTheme.colorScheme.primary
+                    }
+                    
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp)
-                        ) {
-                            // Metric name with color indicator
-                            val metricColor = try {
-                                Color(metric.colorHex.toColorInt())
-                            } catch (e: Exception) {
-                                MaterialTheme.colorScheme.primary
-                            }
-
+                        Icon(
+                            imageVector = com.dayforge.ui.components.getIconForResId(metric.iconResId),
+                            contentDescription = null,
+                            tint = metricColor,
+                            modifier = Modifier.size(64.dp).padding(bottom = 16.dp)
+                        )
+                        
+                        // Latest value display
+                        uiState.latestValue?.let { value ->
                             Text(
-                                text = metric.name,
-                                style = MaterialTheme.typography.headlineMedium,
-                                color = metricColor
+                                text = "${formatMetricValue(value, metric.decimalPlaces)} ${metric.unit}",
+                                style = MaterialTheme.typography.displayMedium,
+                                color = MaterialTheme.colorScheme.onBackground
                             )
-
-                            // Latest value display
-                            uiState.latestValue?.let { value ->
-                                Spacer(modifier = Modifier.height(8.dp))
+                            Spacer(modifier = Modifier.height(4.dp))
+                            
+                            val lastLogStr = uiState.logs.firstOrNull()?.date?.let { 
+                                val sdf = java.text.SimpleDateFormat("MMM dd", java.util.Locale.getDefault())
+                                sdf.format(java.util.Date(it))
+                            }
+                            if (lastLogStr != null) {
                                 Text(
-                                    text = "${formatMetricValue(value, metric.decimalPlaces)} ${metric.unit}",
-                                    style = MaterialTheme.typography.titleLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            } ?: run {
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    text = stringResource(R.string.metric_no_records_yet),
+                                    text = stringResource(R.string.metric_card_last_recorded, lastLogStr).replace("最后记录：", "最后记录: "),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    // Metric Info Card
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surface
-                        ),
-                        shape = MaterialTheme.shapes.medium
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp)
-                        ) {
+                        } ?: run {
                             Text(
-                                text = stringResource(R.string.metric_details_section),
-                                style = MaterialTheme.typography.titleMedium,
+                                text = stringResource(R.string.metric_no_records_yet),
+                                style = MaterialTheme.typography.titleLarge,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            // Unit
-                            MetricInfoRow(
-                                label = stringResource(R.string.metric_unit_label),
-                                value = metric.unit
-                            )
-
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            // Decimal places
-                            MetricInfoRow(
-                                label = stringResource(R.string.metric_decimal_places_label),
-                                value = metric.decimalPlaces.toString()
-                            )
-
-                            // Target info
-                            metric.targetValue?.let { target ->
-                                Spacer(modifier = Modifier.height(8.dp))
-                                val directionLabel = when (metric.targetDirection) {
-                                    "increase" -> stringResource(R.string.metric_target_increase)
-                                    "decrease" -> stringResource(R.string.metric_target_decrease)
-                                    "range" -> stringResource(R.string.metric_target_range)
-                                    else -> stringResource(R.string.metric_target_label)
-                                }
-
-                                val targetDisplay = if (metric.targetDirection == "range" && metric.targetValueUpper != null) {
-                                    "${formatMetricValue(target, metric.decimalPlaces)} - ${formatMetricValue(metric.targetValueUpper, metric.decimalPlaces)} ${metric.unit}"
-                                } else {
-                                    "${formatMetricValue(target, metric.decimalPlaces)} ${metric.unit}"
-                                }
-
-                                MetricInfoRow(
-                                    label = directionLabel,
-                                    value = targetDisplay
-                                )
-                            }
                         }
                     }
-
-                    Spacer(modifier = Modifier.height(24.dp))
 
                     // Record Value Button
                     Button(
                         onClick = { viewModel.toggleValueInput() },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().height(56.dp),
+                        shape = MaterialTheme.shapes.large
                     ) {
-                        Text(text = stringResource(R.string.metric_record_value))
+                        Text(
+                            text = stringResource(R.string.metric_record_value),
+                            style = MaterialTheme.typography.titleMedium
+                        )
                     }
+
+                    Spacer(modifier = Modifier.height(32.dp))
 
                     // Trend Chart Section (D-01)
                     Spacer(modifier = Modifier.height(24.dp))
@@ -453,6 +402,65 @@ fun MetricDetailScreen(
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(text = stringResource(R.string.metric_link_habit))
                     }
+
+                    // Metric Info Card
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surface
+                        ),
+                        shape = MaterialTheme.shapes.medium
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp)
+                        ) {
+                            Text(
+                                text = stringResource(R.string.metric_details_section),
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            // Unit
+                            MetricInfoRow(
+                                label = stringResource(R.string.metric_unit_label),
+                                value = metric.unit
+                            )
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            // Decimal places
+                            MetricInfoRow(
+                                label = stringResource(R.string.metric_decimal_places_label),
+                                value = metric.decimalPlaces.toString()
+                            )
+
+                            // Target info
+                            metric.targetValue?.let { target ->
+                                Spacer(modifier = Modifier.height(8.dp))
+                                val directionLabel = when (metric.targetDirection) {
+                                    "increase" -> stringResource(R.string.metric_target_increase)
+                                    "decrease" -> stringResource(R.string.metric_target_decrease)
+                                    "range" -> stringResource(R.string.metric_target_range)
+                                    else -> stringResource(R.string.metric_target_label)
+                                }
+
+                                val targetDisplay = if (metric.targetDirection == "range" && metric.targetValueUpper != null) {
+                                    "${formatMetricValue(target, metric.decimalPlaces)} - ${formatMetricValue(metric.targetValueUpper, metric.decimalPlaces)} ${metric.unit}"
+                                } else {
+                                    "${formatMetricValue(target, metric.decimalPlaces)} ${metric.unit}"
+                                }
+
+                                MetricInfoRow(
+                                    label = directionLabel,
+                                    value = targetDisplay
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(24.dp))
 
                     // Delete Section
                     Spacer(modifier = Modifier.height(24.dp))
