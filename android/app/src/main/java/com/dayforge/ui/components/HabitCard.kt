@@ -309,8 +309,8 @@ fun HabitCard(
                     ) {
                         // Button
                         Box(
-                            modifier = if (isTimerActive) Modifier.fillMaxWidth() else Modifier.wrapContentWidth(), 
-                            contentAlignment = if (isTimerActive) Alignment.Center else Alignment.CenterStart
+                            modifier = Modifier.wrapContentWidth(), 
+                            contentAlignment = Alignment.CenterStart
                         ) {
                             val displayCount = if (activeTimer?.habitId == habit.id) {
                                 activeTimer.elapsedSeconds
