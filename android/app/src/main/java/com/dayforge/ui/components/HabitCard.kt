@@ -23,6 +23,9 @@ import com.dayforge.domain.model.CardColorStyle
 import com.dayforge.domain.service.CardColorResolver
 import com.dayforge.domain.model.ActiveTimerState
 import java.time.LocalDate
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 
 /**
  * Get icon for a given icon resource ID.
@@ -356,15 +359,24 @@ fun HabitCard(
                     }
                 }
 
-                // Bottom Row: Target Progress Indicator
-                if (habit.targetCycles != null) {
-                    Spacer(modifier = Modifier.height(if (habit.habitType == HabitType.GOAL) 12.dp else 16.dp))
-                    TargetProgressIndicator(
-                        progress = targetProgress,
-                        target = habit.targetCycles,
-                        textColor = resolvedColors.textColor,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                // Bottom Edge Progress Bar (Text-less, matches ChildHabitRow)
+                if (habit.targetCycles != null && habit.targetCycles > 0) {
+                    val progressFraction = (targetProgress.toFloat() / habit.targetCycles.toFloat()).coerceIn(0f, 1f)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(2.dp)
+                            .clip(RoundedCornerShape(1.dp))
+                            .background(resolvedColors.textColor.copy(alpha = 0.2f))
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(fraction = progressFraction)
+                                .height(2.dp)
+                                .background(resolvedColors.textColor)
+                        )
+                    }
                 }
                 // Linked metrics section (D-12 to D-14)
                 if (linkedMetrics.isNotEmpty()) {
