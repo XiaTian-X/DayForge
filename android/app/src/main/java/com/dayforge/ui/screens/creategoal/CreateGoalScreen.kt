@@ -1,6 +1,5 @@
 package com.dayforge.ui.screens.creategoal
 
-import android.graphics.Color.parseColor
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -21,6 +20,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.graphics.toColorInt
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.dayforge.R
 import com.dayforge.data.model.FailMode
@@ -129,7 +129,7 @@ fun CreateGoalScreen(
                             modifier = Modifier
                                 .size(24.dp)
                                 .background(
-                                    color = Color(parseColor(uiState.colorHex)),
+                                    color = Color(uiState.colorHex.toColorInt()),
                                     shape = MaterialTheme.shapes.small
                                 )
                         )

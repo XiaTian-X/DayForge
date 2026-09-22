@@ -27,7 +27,7 @@ class CreateTempTaskViewModel @Inject constructor(
     private val habitRepository: HabitRepository,
     private val habitDao: HabitDao,
     private val metricDao: MetricDao,
-    @ApplicationContext private val context: Context
+    @param:ApplicationContext private val context: Context
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(CreateTempTaskUiState())

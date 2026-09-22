@@ -10,6 +10,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
+import androidx.core.graphics.toColorInt
 import androidx.compose.ui.graphics.Color
 import com.dayforge.ui.theme.ColorSchemeGenerator
 
@@ -27,7 +28,7 @@ private const val TAG = "ThemeExportService"
 class ThemeExportService @Inject constructor(
     private val themeManager: ThemeManager,
     private val customThemeRepository: CustomThemeRepository,
-    @ApplicationContext private val context: Context
+    @param:ApplicationContext private val context: Context
 ) {
     private val json = Json {
         prettyPrint = true
@@ -179,9 +180,9 @@ class ThemeExportService @Inject constructor(
 
     private fun parseSeedColor(seedColorHex: String): Int {
         return try {
-            android.graphics.Color.parseColor(seedColorHex)
+            seedColorHex.toColorInt()
         } catch (e: IllegalArgumentException) {
-            android.graphics.Color.parseColor("#1976D2")
+            "#1976D2".toColorInt()
         }
     }
 

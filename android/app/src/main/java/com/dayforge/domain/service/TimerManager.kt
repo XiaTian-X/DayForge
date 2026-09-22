@@ -16,7 +16,7 @@ import javax.inject.Inject
  * Handles starting, pausing, resuming, and stopping timers.
  */
 class TimerManager @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val habitDao: HabitDao,
     private val timeLogDao: TimeLogDao
 ) {

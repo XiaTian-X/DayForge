@@ -82,7 +82,7 @@ data class HabitForLinking(
  */
 @HiltViewModel
 class MetricDetailViewModel @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val metricDao: MetricDao,
     private val metricLogDao: MetricLogDao,
     private val habitMetricLinkDao: HabitMetricLinkDao,

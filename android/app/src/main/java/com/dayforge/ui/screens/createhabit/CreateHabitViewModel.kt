@@ -70,7 +70,7 @@ class CreateHabitViewModel @Inject constructor(
     private val habitDao: HabitDao,
     private val metricDao: MetricDao,
     private val preferencesManager: PreferencesManager,
-    @ApplicationContext private val context: Context
+    @param:ApplicationContext private val context: Context
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(CreateHabitUiState())

@@ -5,7 +5,6 @@ import android.app.AlarmManager
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -26,6 +25,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -132,7 +132,7 @@ fun PermissionScreen(
                             Pair(stringResource(R.string.permission_open_settings)) {
                                 try {
                                     val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                        data = Uri.parse("package:${context.packageName}")
+                                        data = "package:${context.packageName}".toUri()
                                     }
                                     context.startActivity(intent)
                                 } catch (e: Exception) {
@@ -163,7 +163,7 @@ fun PermissionScreen(
                         Pair(stringResource(R.string.permission_open_settings)) {
                             try {
                                 val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
-                                    data = Uri.parse("package:${context.packageName}")
+                                    data = "package:${context.packageName}".toUri()
                                 }
                                 context.startActivity(intent)
                             } catch (e: Exception) {
@@ -207,7 +207,7 @@ fun PermissionScreen(
                                 Pair(stringResource(R.string.permission_open_settings)) {
                                     try {
                                         val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
-                                            data = Uri.parse("package:${context.packageName}")
+                                            data = "package:${context.packageName}".toUri()
                                         }
                                         context.startActivity(intent)
                                     } catch (e: Exception) {

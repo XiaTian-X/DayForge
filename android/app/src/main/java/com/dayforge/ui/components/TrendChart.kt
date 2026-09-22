@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.size
+import androidx.core.graphics.toColorInt
 import androidx.compose.material3.CircularProgressIndicator
 import com.patrykandpatrick.vico.compose.cartesian.CartesianChartHost
 import com.patrykandpatrick.vico.compose.cartesian.layer.rememberLineCartesianLayer
@@ -341,7 +342,7 @@ fun TrendChart(
 private fun rememberColor(colorHex: String): Color {
     return remember {
         try {
-            Color(android.graphics.Color.parseColor(colorHex))
+            Color(colorHex.toColorInt())
         } catch (e: Exception) {
             Color.Unspecified
         }

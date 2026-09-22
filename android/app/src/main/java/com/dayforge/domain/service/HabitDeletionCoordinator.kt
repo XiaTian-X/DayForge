@@ -11,7 +11,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /** Coordinates hierarchical habit deletion while keeping confirmation state screen-independent. */
 class HabitDeletionCoordinator @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val habitRepository: HabitRepository
 ) {
     private val _pendingDeletion = MutableStateFlow<PendingHabitDeletion?>(null)

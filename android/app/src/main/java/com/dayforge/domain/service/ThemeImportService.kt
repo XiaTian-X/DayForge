@@ -28,7 +28,7 @@ private const val TAG = "ThemeImportService"
 class ThemeImportService @Inject constructor(
     private val customThemeRepository: CustomThemeRepository,
     private val themeManager: ThemeManager,
-    @ApplicationContext private val context: Context
+    @param:ApplicationContext private val context: Context
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 

@@ -54,7 +54,7 @@ import javax.inject.Inject
 @HiltViewModel
 @OptIn(ExperimentalCoroutinesApi::class)
 class DashboardViewModel @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val habitRepository: HabitRepository,
     private val completionCoordinator: HabitCompletionCoordinator,
     private val deletionCoordinator: HabitDeletionCoordinator,

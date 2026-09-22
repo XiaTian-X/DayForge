@@ -2,39 +2,6 @@
 <issues format="6" by="lint 8.7.3" type="baseline" client="gradle" dependencies="false" name="AGP (8.7.3)" variant="all" version="8.7.3">
 
     <issue
-        id="ApplySharedPref"
-        message="Consider using `apply()` instead; `commit` writes its data to persistent storage immediately, whereas `apply` will handle it in the background"
-        errorLine1="            .commit()"
-        errorLine2="             ~~~~~~~~">
-        <location
-            file="src/main/java/com/dayforge/widget/checkin/CheckInWidgetConfigActivity.kt"
-            line="81"
-            column="14"/>
-    </issue>
-
-    <issue
-        id="ApplySharedPref"
-        message="Consider using `apply()` instead; `commit` writes its data to persistent storage immediately, whereas `apply` will handle it in the background"
-        errorLine1="            .commit()"
-        errorLine2="             ~~~~~~~~">
-        <location
-            file="src/main/java/com/dayforge/widget/counting/CountingWidgetConfigActivity.kt"
-            line="86"
-            column="14"/>
-    </issue>
-
-    <issue
-        id="ApplySharedPref"
-        message="Consider using `apply()` instead; `commit` writes its data to persistent storage immediately, whereas `apply` will handle it in the background"
-        errorLine1="            .commit()"
-        errorLine2="             ~~~~~~~~">
-        <location
-            file="src/main/java/com/dayforge/widget/timer/TimerWidgetConfigActivity.kt"
-            line="85"
-            column="14"/>
-    </issue>
-
-    <issue
         id="OldTargetApi"
         message="Not targeting the latest versions of Android; compatibility modes apply. Consider testing and updating this version. Consult the `android.os.Build.VERSION_CODES` javadoc for details."
         errorLine1="        targetSdk = 35"

@@ -21,7 +21,7 @@ private const val TAG = "CustomThemeRepository"
  */
 @Singleton
 class CustomThemeRepository @Inject constructor(
-    @ApplicationContext private val context: Context
+    @param:ApplicationContext private val context: Context
 ) {
     private val themesDir: File = File(context.filesDir, "themes")
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }

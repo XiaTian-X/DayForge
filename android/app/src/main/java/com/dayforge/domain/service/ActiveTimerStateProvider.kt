@@ -22,7 +22,7 @@ import javax.inject.Inject
 class ActiveTimerStateProvider @Inject constructor(
     private val timeLogDao: TimeLogDao,
     private val habitRepository: HabitRepository,
-    @ApplicationContext private val context: Context
+    @param:ApplicationContext private val context: Context
 ) {
     /**
      * Active timer state for real-time UI updates.

@@ -21,6 +21,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.dayforge.R
+import androidx.core.content.edit
+import androidx.core.graphics.toColorInt
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.local.entity.HabitEntity
@@ -76,9 +78,9 @@ class CheckInWidgetConfigActivity : ComponentActivity() {
 
         // Save to SharedPreferences (for backward compat / other readers)
         val prefs = applicationContext.getSharedPreferences(CheckInWidget.PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit()
-            .putLong(CheckInWidget.PREF_HABIT_ID_PREFIX + appWidgetId, habit.id)
-            .commit()
+        prefs.edit(commit = true) {
+            putLong(CheckInWidget.PREF_HABIT_ID_PREFIX + appWidgetId, habit.id)
+        }
         Log.d(TAG, "Saved habitId=${habit.id} for widget $appWidgetId to SharedPreferences")
 
         // Load habit data into Glance state and trigger update
@@ -188,7 +190,7 @@ private fun HabitSelectionItem(habit: HabitEntity, onClick: () -> Unit) {
             .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(
             containerColor = try {
-                Color(android.graphics.Color.parseColor(habit.colorHex))
+                Color(habit.colorHex.toColorInt())
             } catch (e: Exception) {
                 MaterialTheme.colorScheme.primary
             }

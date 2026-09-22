@@ -76,7 +76,7 @@ data class CreateMetricUiState(
  */
 @HiltViewModel
 class CreateMetricViewModel @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val metricRepository: MetricRepository,
     private val metricDao: MetricDao,
     private val habitDao: HabitDao

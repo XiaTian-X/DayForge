@@ -1,6 +1,5 @@
 package com.dayforge.ui.components
 
-import android.graphics.Color.parseColor
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -14,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.core.graphics.toColorInt
 import androidx.compose.ui.unit.dp
 import com.dayforge.R
 import com.dayforge.data.local.entity.HabitEntity
@@ -85,7 +85,7 @@ private fun PresetListItem(
             .clickable(onClick = onClick)
             .padding(vertical = 4.dp),
         colors = CardDefaults.cardColors(
-            containerColor = Color(parseColor(preset.colorHex)).copy(alpha = 0.1f)
+            containerColor = Color(preset.colorHex.toColorInt()).copy(alpha = 0.1f)
         )
     ) {
         Row(
@@ -111,7 +111,7 @@ private fun PresetListItem(
             Icon(
                 Icons.Default.Add,
                 contentDescription = stringResource(R.string.content_description_select),
-                tint = Color(parseColor(preset.colorHex))
+                tint = Color(preset.colorHex.toColorInt())
             )
         }
     }
