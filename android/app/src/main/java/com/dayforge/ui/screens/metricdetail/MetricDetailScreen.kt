@@ -414,27 +414,25 @@ fun MetricDetailScreen(
                         Column(
                             modifier = Modifier.padding(16.dp)
                         ) {
-                            Text(
-                                text = stringResource(R.string.metric_details_section),
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            // Details arranged horizontally
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                // Unit
+                                MetricInfoRow(
+                                    label = stringResource(R.string.metric_unit_label),
+                                    value = metric.unit,
+                                    modifier = Modifier.weight(1f)
+                                )
 
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            // Unit
-                            MetricInfoRow(
-                                label = stringResource(R.string.metric_unit_label),
-                                value = metric.unit
-                            )
-
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            // Decimal places
-                            MetricInfoRow(
-                                label = stringResource(R.string.metric_decimal_places_label),
-                                value = metric.decimalPlaces.toString()
-                            )
+                                // Decimal places
+                                MetricInfoRow(
+                                    label = stringResource(R.string.metric_decimal_places_label),
+                                    value = metric.decimalPlaces.toString(),
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
 
                             // Target info
                             metric.targetValue?.let { target ->
@@ -660,9 +658,10 @@ fun MetricDetailScreen(
 @Composable
 private fun MetricInfoRow(
     label: String,
-    value: String
+    value: String,
+    modifier: Modifier = Modifier
 ) {
-    Column {
+    Column(modifier = modifier) {
         Text(
             text = label,
             style = MaterialTheme.typography.bodySmall,
