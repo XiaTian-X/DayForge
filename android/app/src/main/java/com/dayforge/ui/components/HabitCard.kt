@@ -289,71 +289,73 @@ fun HabitCard(
                     }
                 }
 
-                // Progress indicator below habit name/description
-                // Conditional: StreakIndicator for unlimited habits, TargetProgressIndicator for target-based habits
+                // Progress indicator and Completion button in a single row
                 Spacer(modifier = Modifier.height(12.dp))
-                if (habit.targetCycles != null) {
-                    TargetProgressIndicator(
-                        progress = targetProgress,
-                        target = habit.targetCycles,
-                        textColor = resolvedColors.textColor,
-                        modifier = Modifier
-                    )
-                } else {
-                    StreakIndicator(
-                        activityRate = activityRate,
-                        textColor = resolvedColors.textColor,
-                        modifier = Modifier
-                    )
-                }
-
-                // Completion button at end (hidden for GOAL type)
-                // GOAL 类型不需要打卡按钮
-                if (habit.habitType != HabitType.GOAL) {
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // Calculate timer state for this habit
-                    val timerState = when {
-                        activeTimer?.habitId == habit.id && !activeTimer.isPaused -> TimerState.RUNNING
-                        activeTimer?.habitId == habit.id && activeTimer.isPaused -> TimerState.PAUSED
-                        else -> TimerState.NOT_RUNNING
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // LEFT: Completion Button (if not GOAL)
+                    Box(modifier = Modifier.weight(1f, fill=false), contentAlignment = Alignment.CenterStart) {
+                        if (habit.habitType != HabitType.GOAL) {
+                            val timerState = when {
+                                activeTimer?.habitId == habit.id && !activeTimer.isPaused -> TimerState.RUNNING
+                                activeTimer?.habitId == habit.id && activeTimer.isPaused -> TimerState.PAUSED
+                                else -> TimerState.NOT_RUNNING
+                            }
+                            val displayCount = if (activeTimer?.habitId == habit.id) {
+                                activeTimer.elapsedSeconds
+                            } else {
+                                todayCount
+                            }
+                            CompletionButton(
+                                completed = completed,
+                                undoAvailable = undoAvailable,
+                                habitType = habit.habitType,
+                                targetValue = habit.targetValue,
+                                currentCount = displayCount,
+                                timerState = timerState,
+                                isCountdown = habit.isCountdown,
+                                onCheckIn = onCheckIn,
+                                onUndo = onUndo,
+                                onIncrement = onIncrement,
+                                onDecrement = onDecrement,
+                                onTimerStart = onTimerStart,
+                                onTimerPause = onTimerPause,
+                                onTimerResume = onTimerResume,
+                                onTimerStop = onTimerStop,
+                                showMetricPrompt = showMetricPrompt,
+                                onRecordMetrics = onRecordMetrics,
+                                isCheckInAllowed = isCheckInAllowed,
+                                nextCheckInDate = nextCheckInDate,
+                                hasFailed = hasFailed,
+                                isGoalCompleted = isGoalCompleted,
+                                onReactivation = onReactivation,
+                                textColor = resolvedColors.textColor,
+                                modifier = Modifier
+                            )
+                        }
                     }
-
-                    // For active timer, use elapsedSeconds; otherwise use todayCount (accumulated)
-                    val displayCount = if (activeTimer?.habitId == habit.id) {
-                        activeTimer.elapsedSeconds
-                    } else {
-                        todayCount
+                    
+                    // RIGHT: Progress Indicator
+                    Box(contentAlignment = Alignment.CenterEnd) {
+                        if (habit.targetCycles != null) {
+                            TargetProgressIndicator(
+                                progress = targetProgress,
+                                target = habit.targetCycles,
+                                textColor = resolvedColors.textColor,
+                                modifier = Modifier
+                            )
+                        } else {
+                            StreakIndicator(
+                                activityRate = activityRate,
+                                textColor = resolvedColors.textColor,
+                                modifier = Modifier
+                            )
+                        }
                     }
-
-                    CompletionButton(
-                        completed = completed,
-                        undoAvailable = undoAvailable,
-                        habitType = habit.habitType,
-                        targetValue = habit.targetValue,
-                        currentCount = displayCount,
-                        timerState = timerState,
-                        isCountdown = habit.isCountdown,
-                        onCheckIn = onCheckIn,
-                        onUndo = onUndo,
-                        onIncrement = onIncrement,
-                        onDecrement = onDecrement,
-                        onTimerStart = onTimerStart,
-                        onTimerPause = onTimerPause,
-                        onTimerResume = onTimerResume,
-                        onTimerStop = onTimerStop,
-                        showMetricPrompt = showMetricPrompt,
-                        onRecordMetrics = onRecordMetrics,
-                        isCheckInAllowed = isCheckInAllowed,
-                        nextCheckInDate = nextCheckInDate,
-                        hasFailed = hasFailed,
-                        isGoalCompleted = isGoalCompleted,
-                        onReactivation = onReactivation,
-                        textColor = resolvedColors.textColor,
-                        modifier = Modifier
-                    )
                 }
-
                 // Linked metrics section (D-12 to D-14)
                 if (linkedMetrics.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(8.dp))

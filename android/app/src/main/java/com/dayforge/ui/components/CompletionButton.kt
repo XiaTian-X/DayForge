@@ -10,6 +10,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -27,7 +28,10 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.contentColorFor
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -37,6 +41,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextOverflow
 import com.dayforge.R
 import com.dayforge.data.model.HabitType
 import java.time.LocalDate
@@ -196,11 +201,10 @@ fun CompletionButton(
                     modifier = Modifier.height(48.dp)
                 ) {
                     // Pause button
-                    IconButton(onClick = onTimerPause) {
+                    FilledIconButton(onClick = onTimerPause, modifier = Modifier.offset(x = (-4).dp)) {
                         Icon(
                             imageVector = Icons.Default.Pause,
-                            contentDescription = stringResource(R.string.action_pause),
-                            tint = resolvedTextColor
+                            contentDescription = stringResource(R.string.action_pause)
                         )
                     }
 
@@ -208,15 +212,17 @@ fun CompletionButton(
                     Text(
                         text = displayText,
                         style = MaterialTheme.typography.labelLarge,
-                        color = resolvedTextColor
+                        color = resolvedTextColor,
+                        modifier = Modifier.weight(1f, fill=false).offset(y = (-1.5).dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
 
                     // Stop button
-                    IconButton(onClick = onTimerStop) {
+                    FilledIconButton(onClick = onTimerStop) {
                         Icon(
                             imageVector = Icons.Default.Stop,
-                            contentDescription = stringResource(R.string.action_stop),
-                            tint = resolvedTextColor
+                            contentDescription = stringResource(R.string.action_stop)
                         )
                     }
 
@@ -260,11 +266,10 @@ fun CompletionButton(
                     modifier = Modifier.height(48.dp)
                 ) {
                     // Resume button
-                    IconButton(onClick = onTimerResume) {
+                    FilledIconButton(onClick = onTimerResume, modifier = Modifier.offset(x = (-4).dp)) {
                         Icon(
                             imageVector = Icons.Default.PlayArrow,
-                            contentDescription = stringResource(R.string.action_resume),
-                            tint = resolvedTextColor
+                            contentDescription = stringResource(R.string.action_resume)
                         )
                     }
 
@@ -272,15 +277,17 @@ fun CompletionButton(
                     Text(
                         text = displayText,
                         style = MaterialTheme.typography.labelLarge,
-                        color = resolvedTextColor
+                        color = resolvedTextColor.copy(alpha = 0.5f),
+                        modifier = Modifier.weight(1f, fill=false).offset(y = (-1.5).dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
 
                     // Stop button
-                    IconButton(onClick = onTimerStop) {
+                    FilledIconButton(onClick = onTimerStop) {
                         Icon(
                             imageVector = Icons.Default.Stop,
-                            contentDescription = stringResource(R.string.action_stop),
-                            tint = resolvedTextColor
+                            contentDescription = stringResource(R.string.action_stop)
                         )
                     }
 
@@ -304,11 +311,10 @@ fun CompletionButton(
                     modifier = Modifier.height(48.dp)
                 ) {
                     // Start button
-                    IconButton(onClick = onTimerStart) {
+                    FilledIconButton(onClick = onTimerStart, modifier = Modifier.offset(x = (-4).dp)) {
                         Icon(
                             imageVector = Icons.Default.PlayArrow,
-                            contentDescription = stringResource(R.string.action_start_timer),
-                            tint = resolvedTextColor
+                            contentDescription = stringResource(R.string.action_start_timer)
                         )
                     }
 
@@ -316,7 +322,10 @@ fun CompletionButton(
                     Text(
                         text = progressText,
                         style = MaterialTheme.typography.labelLarge,
-                        color = resolvedTextColor
+                        color = resolvedTextColor,
+                        modifier = Modifier.weight(1f, fill=false).offset(y = (-1.5).dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -336,7 +345,10 @@ fun CompletionButton(
                     Text(
                         text = stringResource(R.string.habit_card_status_completed),
                         style = MaterialTheme.typography.labelLarge,
-                        color = resolvedTextColor
+                        color = resolvedTextColor,
+                        modifier = Modifier.weight(1f, fill=false).offset(y = (-1.5).dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
 
                     // Record metrics button for timer habits with pending metrics
@@ -396,7 +408,10 @@ fun CompletionButton(
                         Text(
                             text = stringResource(R.string.habit_card_status_completed),
                             style = MaterialTheme.typography.labelLarge,
-                            color = resolvedTextColor
+                            color = resolvedTextColor,
+                        modifier = Modifier.weight(1f, fill=false).offset(y = (-1.5).dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                         )
                     } else {
                         // 正计数或倒计数未完成：显示打卡按钮 + 进度
@@ -432,7 +447,10 @@ fun CompletionButton(
                         Text(
                             text = progressText,
                             style = MaterialTheme.typography.labelLarge,
-                            color = resolvedTextColor
+                            color = resolvedTextColor,
+                        modifier = Modifier.weight(1f, fill=false).offset(y = (-1.5).dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -455,7 +473,10 @@ fun CompletionButton(
                     Text(
                         text = stringResource(R.string.habit_card_status_completed),
                         style = MaterialTheme.typography.labelLarge,
-                        color = resolvedTextColor.copy(alpha = 0.9f)
+                        color = resolvedTextColor.copy(alpha = 0.9f),
+                        modifier = Modifier.weight(1f, fill=false).offset(y = (-1.5).dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -475,7 +496,10 @@ fun CompletionButton(
                     Text(
                         text = stringResource(R.string.habit_card_status_non_checkin_day),
                         style = MaterialTheme.typography.labelLarge,
-                        color = resolvedTextColor.copy(alpha = 0.5f)
+                        color = resolvedTextColor.copy(alpha = 0.5f),
+                        modifier = Modifier.weight(1f, fill=false).offset(y = (-1.5).dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     if (nextCheckInDate != null) {
                         Spacer(modifier = Modifier.width(8.dp))
@@ -515,7 +539,10 @@ fun CompletionButton(
                         Text(
                             text = stringResource(R.string.status_already_failed),
                             style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.error
+                            color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.weight(1f, fill=false).offset(y = (-1.5).dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -542,7 +569,8 @@ fun CompletionButton(
                         Text(
                             text = stringResource(R.string.status_goal_completed),
                             style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary  // Use theme primary color
+                            color = MaterialTheme.colorScheme.primary,  // Use theme primary color
+                        modifier = Modifier.offset(y = (-1.5).dp)
                         )
                     }
                 }

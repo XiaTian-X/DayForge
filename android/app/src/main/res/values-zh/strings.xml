@@ -418,8 +418,8 @@
     <!-- Timer Display Formats -->
     <string name="timer_remaining_format">还剩 %1$02d:%2$02d / %3$d 分钟</string>
     <string name="timer_elapsed_format">已计时 %1$02d:%2$02d / %3$d 分钟</string>
-    <string name="timer_remaining_paused_format">还剩 %1$02d:%2$02d / %3$d 分钟 (已暂停)</string>
-    <string name="timer_elapsed_paused_format">已计时 %1$02d:%2$02d / %3$d 分钟 (已暂停)</string>
+    <string name="timer_remaining_paused_format">还剩 %1$02d:%2$02d / %3$d 分钟</string>
+    <string name="timer_elapsed_paused_format">已计时 %1$02d:%2$02d / %3$d 分钟</string>
     <string name="timer_target_format">目标 %1$d 分钟</string>
     <string name="timer_countdown_remaining">还剩 %1$d</string>
     <string name="timer_countup_progress">%1$d/%2$d</string>
