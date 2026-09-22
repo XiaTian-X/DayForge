@@ -377,7 +377,6 @@ fun HabitCard(
                     modifier = Modifier
                         .align(Alignment.BottomStart)
                         .padding(horizontal = 4.dp)
-                        .padding(bottom = 2.dp)
                         .fillMaxWidth()
                         .height(2.dp)
                         .clip(RoundedCornerShape(12.dp))
