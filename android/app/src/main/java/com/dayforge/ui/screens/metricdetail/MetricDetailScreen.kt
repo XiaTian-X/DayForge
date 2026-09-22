@@ -225,6 +225,27 @@ fun MetricDetailScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
+                            
+                            // Target info in Hero Section
+                            metric.targetValue?.let { target ->
+                                val directionLabel = when (metric.targetDirection) {
+                                    "increase" -> stringResource(R.string.metric_target_increase)
+                                    "decrease" -> stringResource(R.string.metric_target_decrease)
+                                    "range" -> stringResource(R.string.metric_target_range)
+                                    else -> stringResource(R.string.metric_target_label)
+                                }
+                                val targetDisplay = if (metric.targetDirection == "range" && metric.targetValueUpper != null) {
+                                    "${formatMetricValue(target, metric.decimalPlaces)} - ${formatMetricValue(metric.targetValueUpper, metric.decimalPlaces)} ${metric.unit}"
+                                } else {
+                                    "${formatMetricValue(target, metric.decimalPlaces)} ${metric.unit}"
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "$directionLabel: $targetDisplay",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         } ?: run {
                             Text(
                                 text = stringResource(R.string.metric_no_records_yet),
@@ -402,63 +423,6 @@ fun MetricDetailScreen(
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(text = stringResource(R.string.metric_link_habit))
                     }
-
-                    // Metric Info Card
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surface
-                        ),
-                        shape = MaterialTheme.shapes.medium
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp)
-                        ) {
-                            // Details arranged horizontally
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(16.dp)
-                            ) {
-                                // Unit
-                                MetricInfoRow(
-                                    label = stringResource(R.string.metric_unit_label),
-                                    value = metric.unit,
-                                    modifier = Modifier.weight(1f)
-                                )
-
-                                // Decimal places
-                                MetricInfoRow(
-                                    label = stringResource(R.string.metric_decimal_places_label),
-                                    value = metric.decimalPlaces.toString(),
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
-
-                            // Target info
-                            metric.targetValue?.let { target ->
-                                Spacer(modifier = Modifier.height(8.dp))
-                                val directionLabel = when (metric.targetDirection) {
-                                    "increase" -> stringResource(R.string.metric_target_increase)
-                                    "decrease" -> stringResource(R.string.metric_target_decrease)
-                                    "range" -> stringResource(R.string.metric_target_range)
-                                    else -> stringResource(R.string.metric_target_label)
-                                }
-
-                                val targetDisplay = if (metric.targetDirection == "range" && metric.targetValueUpper != null) {
-                                    "${formatMetricValue(target, metric.decimalPlaces)} - ${formatMetricValue(metric.targetValueUpper, metric.decimalPlaces)} ${metric.unit}"
-                                } else {
-                                    "${formatMetricValue(target, metric.decimalPlaces)} ${metric.unit}"
-                                }
-
-                                MetricInfoRow(
-                                    label = directionLabel,
-                                    value = targetDisplay
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(24.dp))
 
                     // Delete Section
                     Spacer(modifier = Modifier.height(24.dp))
@@ -652,28 +616,6 @@ fun MetricDetailScreen(
     }
 }
 
-/**
- * Row component for displaying metric info label-value pairs.
- */
-@Composable
-private fun MetricInfoRow(
-    label: String,
-    value: String,
-    modifier: Modifier = Modifier
-) {
-    Column(modifier = modifier) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-    }
-}
 
 /**
  * Formats a metric value according to its decimal places setting.
