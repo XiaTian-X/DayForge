@@ -378,14 +378,14 @@ fun HabitCard(
                         .align(Alignment.BottomStart)
                         .padding(horizontal = 4.dp)
                         .fillMaxWidth()
-                        .height(2.dp)
+                        .height(2.5.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .background(resolvedColors.textColor.copy(alpha = 0.2f))
                 ) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth(fraction = progressFraction)
-                            .height(2.dp)
+                            .height(2.5.dp)
                             .background(resolvedColors.textColor)
                     )
                 }
