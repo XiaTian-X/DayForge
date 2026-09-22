@@ -297,7 +297,7 @@ fun HabitCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     // LEFT: Completion Button (if not GOAL)
-                    Box(modifier = Modifier.weight(1f, fill=false), contentAlignment = Alignment.CenterStart) {
+                    Box(modifier = Modifier.wrapContentWidth(), contentAlignment = Alignment.CenterStart) {
                         if (habit.habitType != HabitType.GOAL) {
                             val timerState = when {
                                 activeTimer?.habitId == habit.id && !activeTimer.isPaused -> TimerState.RUNNING
@@ -338,8 +338,10 @@ fun HabitCard(
                         }
                     }
                     
+                    Spacer(modifier = Modifier.width(16.dp))
+                    
                     // RIGHT: Progress Indicator
-                    Box(contentAlignment = Alignment.CenterEnd) {
+                    Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
                         if (habit.targetCycles != null) {
                             TargetProgressIndicator(
                                 progress = targetProgress,
