@@ -289,6 +289,13 @@ fun HabitCard(
                     }
                 }
 
+                val timerState = when {
+                    activeTimer?.habitId == habit.id && !activeTimer.isPaused -> TimerState.RUNNING
+                    activeTimer?.habitId == habit.id && activeTimer.isPaused -> TimerState.PAUSED
+                    else -> TimerState.NOT_RUNNING
+                }
+                val isTimerActive = timerState == TimerState.RUNNING || timerState == TimerState.PAUSED
+
                 // Progress indicator and Completion button in a single row
                 Spacer(modifier = Modifier.height(12.dp))
                 Row(
@@ -297,13 +304,11 @@ fun HabitCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     // LEFT: Completion Button (if not GOAL)
-                    Box(modifier = Modifier.wrapContentWidth(), contentAlignment = Alignment.CenterStart) {
+                    Box(
+                        modifier = if (isTimerActive) Modifier.fillMaxWidth() else Modifier.wrapContentWidth(), 
+                        contentAlignment = if (isTimerActive) Alignment.Center else Alignment.CenterStart
+                    ) {
                         if (habit.habitType != HabitType.GOAL) {
-                            val timerState = when {
-                                activeTimer?.habitId == habit.id && !activeTimer.isPaused -> TimerState.RUNNING
-                                activeTimer?.habitId == habit.id && activeTimer.isPaused -> TimerState.PAUSED
-                                else -> TimerState.NOT_RUNNING
-                            }
                             val displayCount = if (activeTimer?.habitId == habit.id) {
                                 activeTimer.elapsedSeconds
                             } else {
@@ -338,23 +343,25 @@ fun HabitCard(
                         }
                     }
                     
-                    Spacer(modifier = Modifier.width(16.dp))
-                    
-                    // RIGHT: Progress Indicator
-                    Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
-                        if (habit.targetCycles != null) {
-                            TargetProgressIndicator(
-                                progress = targetProgress,
-                                target = habit.targetCycles,
-                                textColor = resolvedColors.textColor,
-                                modifier = Modifier
-                            )
-                        } else {
-                            StreakIndicator(
-                                activityRate = activityRate,
-                                textColor = resolvedColors.textColor,
-                                modifier = Modifier
-                            )
+                    if (!isTimerActive) {
+                        Spacer(modifier = Modifier.width(16.dp))
+                        
+                        // RIGHT: Progress Indicator
+                        Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+                            if (habit.targetCycles != null) {
+                                TargetProgressIndicator(
+                                    progress = targetProgress,
+                                    target = habit.targetCycles,
+                                    textColor = resolvedColors.textColor,
+                                    modifier = Modifier
+                                )
+                            } else {
+                                StreakIndicator(
+                                    activityRate = activityRate,
+                                    textColor = resolvedColors.textColor,
+                                    modifier = Modifier
+                                )
+                            }
                         }
                     }
                 }
