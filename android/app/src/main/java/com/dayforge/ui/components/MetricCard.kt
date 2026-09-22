@@ -71,7 +71,7 @@ private fun formatMetricValue(value: Double, decimalPlaces: Int): String {
  * Used for "Last recorded" display in expanded mode.
  */
 private fun formatDate(timestamp: Long): String {
-    val sdf = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault())
+    val sdf = SimpleDateFormat("MMM dd", Locale.getDefault())
     return sdf.format(Date(timestamp))
 }
 
@@ -168,53 +168,56 @@ fun MetricCard(
 
                 Spacer(modifier = Modifier.width(16.dp))
 
-                // Name
-                Text(
-                    text = metric.name,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = resolvedColors.textColor,
-                    modifier = Modifier.weight(1f, fill = false),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                // Name and Last Recorded Date
+                Column(
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(
+                        text = metric.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = resolvedColors.textColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    
+                    if (latestLogDate != null) {
+                        Text(
+                            text = stringResource(R.string.metric_card_last_recorded, formatDate(latestLogDate)),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = resolvedColors.secondaryTextColor,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    } else {
+                        Text(
+                            text = stringResource(R.string.metric_card_never_recorded),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = resolvedColors.secondaryTextColor,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
 
-                Spacer(modifier = Modifier.width(12.dp))
+                Spacer(modifier = Modifier.width(8.dp))
 
-                // Value + Unit + Direction
+                // Value + Unit
                 if (latestValue != null) {
                     Text(
                         text = "${formatMetricValue(latestValue, metric.decimalPlaces)} ${metric.unit}",
                         style = MaterialTheme.typography.titleLarge,
                         color = resolvedColors.textColor
                     )
-
-                    // Direction arrow (D-03)
-                    metric.targetDirection?.let { direction ->
-                        Spacer(modifier = Modifier.width(4.dp))
-                        val directionLabel = when (direction) {
-                            "increase" -> stringResource(R.string.edit_metric_target_increase)
-                            "decrease" -> stringResource(R.string.edit_metric_target_decrease)
-                            "range" -> stringResource(R.string.edit_metric_target_range)
-                            else -> stringResource(R.string.metric_target_label)
-                        }
-                        Icon(
-                            imageVector = getDirectionIcon(direction),
-                            contentDescription = stringResource(R.string.metric_card_target_direction, directionLabel),
-                            tint = resolvedColors.textColor,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
                 } else {
-                    // No records placeholder
                     Text(
-                        text = stringResource(R.string.metric_card_no_records),
-                        style = MaterialTheme.typography.bodyMedium,
+                        text = "--",
+                        style = MaterialTheme.typography.titleLarge,
                         color = resolvedColors.secondaryTextColor
                     )
                 }
 
-                // Expand/collapse button (clicking arrow toggles expand/collapse)
-                Spacer(modifier = Modifier.width(8.dp))
+                // Expand/collapse button
+                Spacer(modifier = Modifier.width(4.dp))
                 IconButton(
                     onClick = { isExpanded = !isExpanded },
                     modifier = Modifier.size(32.dp)
@@ -228,7 +231,6 @@ fun MetricCard(
                 }
             }
 
-            // Expanded content (D-04): Last recorded date
             AnimatedVisibility(
                 visible = isExpanded,
                 enter = fadeIn(animationSpec = spring(stiffness = Spring.StiffnessLow)),
@@ -248,33 +250,7 @@ fun MetricCard(
                         }
                     )
 
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    latestLogDate?.let { date ->
-                        Text(
-                            text = stringResource(R.string.metric_card_last_recorded, formatDate(date)),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = resolvedColors.secondaryTextColor
-                        )
-                    } ?: run {
-                        Text(
-                            text = stringResource(R.string.metric_card_never_recorded),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = resolvedColors.secondaryTextColor
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Hint to view details - clickable to navigate to detail
-                    Text(
-                        text = stringResource(R.string.metric_card_tap_details),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = resolvedColors.secondaryTextColor,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onClick() }
-                    )
+                    
                 }
             }
         }
