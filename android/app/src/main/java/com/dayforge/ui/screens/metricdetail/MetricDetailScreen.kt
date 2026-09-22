@@ -195,24 +195,40 @@ fun MetricDetailScreen(
                     }
                     
                     Column(
-                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 24.dp),
+                        modifier = Modifier.fillMaxWidth().padding(top = 48.dp, bottom = 24.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Icon(
-                            imageVector = com.dayforge.ui.components.getIconForResId(metric.iconResId),
-                            contentDescription = null,
-                            tint = metricColor,
-                            modifier = Modifier.size(64.dp).padding(bottom = 16.dp)
-                        )
-                        
-                        // Latest value display
-                        uiState.latestValue?.let { value ->
-                            Text(
-                                text = "${formatMetricValue(value, metric.decimalPlaces)} ${metric.unit}",
-                                style = MaterialTheme.typography.displayMedium,
-                                color = MaterialTheme.colorScheme.onBackground
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = com.dayforge.ui.components.getIconForResId(metric.iconResId),
+                                contentDescription = null,
+                                tint = metricColor,
+                                modifier = Modifier.size(56.dp)
                             )
-                            Spacer(modifier = Modifier.height(4.dp))
+                            
+                            Spacer(modifier = Modifier.width(16.dp))
+                            
+                            // Latest value display
+                            uiState.latestValue?.let { value ->
+                                Text(
+                                    text = "${formatMetricValue(value, metric.decimalPlaces)} ${metric.unit}",
+                                    style = MaterialTheme.typography.displayMedium,
+                                    color = MaterialTheme.colorScheme.onBackground
+                                )
+                            } ?: run {
+                                Text(
+                                    text = stringResource(R.string.metric_no_records_yet),
+                                    style = MaterialTheme.typography.headlineMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        
+                        uiState.latestValue?.let {
+                            Spacer(modifier = Modifier.height(12.dp))
                             
                             val lastLogStr = uiState.logs.firstOrNull()?.date?.let { 
                                 val sdf = java.text.SimpleDateFormat("MMM dd", java.util.Locale.getDefault())
@@ -246,12 +262,6 @@ fun MetricDetailScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                        } ?: run {
-                            Text(
-                                text = stringResource(R.string.metric_no_records_yet),
-                                style = MaterialTheme.typography.titleLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
                         }
                     }
 
@@ -271,30 +281,20 @@ fun MetricDetailScreen(
 
                     // Trend Chart Section (D-01)
                     Spacer(modifier = Modifier.height(24.dp))
-                    Card(
+                    Text(
+                        text = stringResource(R.string.metric_trend_section),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    TrendChart(
+                        metric = metric,
+                        logs = uiState.logs,
                         modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surface
-                        ),
-                        shape = MaterialTheme.shapes.medium
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Text(
-                                text = stringResource(R.string.metric_trend_section),
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            TrendChart(
-                                metric = metric,
-                                logs = uiState.logs,
-                                modifier = Modifier.fillMaxWidth(),
-                                onAggregationTypeChange = { aggregationType ->
-                                    viewModel.updateAggregationType(aggregationType.value)
-                                }
-                            )
+                        onAggregationTypeChange = { aggregationType ->
+                            viewModel.updateAggregationType(aggregationType.value)
                         }
-                    }
+                    )
 
                     // History Section
                     Spacer(modifier = Modifier.height(24.dp))
