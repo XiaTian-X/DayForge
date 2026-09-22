@@ -213,7 +213,7 @@ fun CompletionButton(
                         text = displayText,
                         style = MaterialTheme.typography.labelLarge,
                         color = resolvedTextColor,
-                        modifier = Modifier.weight(1f, fill=false).offset(y = (-1.5).dp),
+                        modifier = Modifier.weight(1f, fill=false),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -278,7 +278,7 @@ fun CompletionButton(
                         text = displayText,
                         style = MaterialTheme.typography.labelLarge,
                         color = resolvedTextColor.copy(alpha = 0.5f),
-                        modifier = Modifier.weight(1f, fill=false).offset(y = (-1.5).dp),
+                        modifier = Modifier.weight(1f, fill=false),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -323,7 +323,7 @@ fun CompletionButton(
                         text = progressText,
                         style = MaterialTheme.typography.labelLarge,
                         color = resolvedTextColor,
-                        modifier = Modifier.weight(1f, fill=false).offset(y = (-1.5).dp),
+                        modifier = Modifier.weight(1f, fill=false),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -346,7 +346,7 @@ fun CompletionButton(
                         text = stringResource(R.string.habit_card_status_completed),
                         style = MaterialTheme.typography.labelLarge,
                         color = resolvedTextColor,
-                        modifier = Modifier.weight(1f, fill=false).offset(y = (-1.5).dp),
+                        modifier = Modifier.weight(1f, fill=false),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -409,7 +409,7 @@ fun CompletionButton(
                             text = stringResource(R.string.habit_card_status_completed),
                             style = MaterialTheme.typography.labelLarge,
                             color = resolvedTextColor,
-                        modifier = Modifier.weight(1f, fill=false).offset(y = (-1.5).dp),
+                        modifier = Modifier.weight(1f, fill=false),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                         )
@@ -448,7 +448,7 @@ fun CompletionButton(
                             text = progressText,
                             style = MaterialTheme.typography.labelLarge,
                             color = resolvedTextColor,
-                        modifier = Modifier.weight(1f, fill=false).offset(y = (-1.5).dp),
+                        modifier = Modifier.weight(1f, fill=false),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                         )
@@ -474,7 +474,7 @@ fun CompletionButton(
                         text = stringResource(R.string.habit_card_status_completed),
                         style = MaterialTheme.typography.labelLarge,
                         color = resolvedTextColor.copy(alpha = 0.9f),
-                        modifier = Modifier.weight(1f, fill=false).offset(y = (-1.5).dp),
+                        modifier = Modifier.weight(1f, fill=false),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -497,7 +497,7 @@ fun CompletionButton(
                         text = stringResource(R.string.habit_card_status_non_checkin_day),
                         style = MaterialTheme.typography.labelLarge,
                         color = resolvedTextColor.copy(alpha = 0.5f),
-                        modifier = Modifier.weight(1f, fill=false).offset(y = (-1.5).dp),
+                        modifier = Modifier.weight(1f, fill=false),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -540,7 +540,7 @@ fun CompletionButton(
                             text = stringResource(R.string.status_already_failed),
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.weight(1f, fill=false).offset(y = (-1.5).dp),
+                        modifier = Modifier.weight(1f, fill=false),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                         )
@@ -570,7 +570,7 @@ fun CompletionButton(
                             text = stringResource(R.string.status_goal_completed),
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.primary,  // Use theme primary color
-                        modifier = Modifier.offset(y = (-1.5).dp)
+                        modifier = Modifier
                         )
                     }
                 }
