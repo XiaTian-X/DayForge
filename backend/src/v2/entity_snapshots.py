@@ -22,6 +22,7 @@ from src.v2.models import (
     TrackedMetric,
 )
 from src.v2.schemas import SyncOperationRequest
+from src.v2.one_time_storage import stored_event_proof
 
 
 async def serialize_plan_node(session: AsyncSession, node: PlanNode) -> dict[str, Any]:
@@ -81,7 +82,7 @@ async def serialize_plan_node(session: AsyncSession, node: PlanNode) -> dict[str
 def serialize_activity_event(
     event: ActivityEvent, activity_uuid: str, revert_uuid: Optional[str]
 ) -> dict[str, Any]:
-    return jsonable_utc(
+    result = jsonable_utc(
         {
             "public_id": event.public_id,
             "revision": event.revision,
@@ -107,6 +108,13 @@ def serialize_activity_event(
             "received_at": event.received_at,
         }
     )
+    proof = stored_event_proof(event, activity_uuid, revert_uuid)
+    if proof is not None:
+        result["one_time"] = proof.one_time.model_dump(mode="json")
+        result["one_time_state_after"] = proof.one_time_state_after.model_dump(
+            mode="json"
+        )
+    return result
 
 
 async def serialize_activity_event_with_allocations(

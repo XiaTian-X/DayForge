@@ -18,6 +18,14 @@ from src.v2.invariants import require_internal
 from src.v2.models import ActivityDetail, ActivityEvent, ClientDevice, PlanNode
 from src.v2.plan_node_mutations import get_plan_node
 from src.v2.schemas import ActivityEventPayload, SyncOperationRequest
+from src.v2.one_time import OneTimeTransitionError
+from src.v2.one_time_sync import NextActivityEventPayload, validate_one_time_binding
+from src.v2.one_time_storage import (
+    advance_stored_one_time,
+    capture_one_time_intent,
+    load_one_time_activity,
+    validate_stored_intent,
+)
 
 
 async def mutate_activity_event(
@@ -25,6 +33,8 @@ async def mutate_activity_event(
     user_id: int,
     device: ClientDevice,
     operation: SyncOperationRequest,
+    *,
+    one_time_contract: bool = False,
 ) -> tuple[int, dict[str, Any]]:
     result = await session.execute(
         select(ActivityEvent).where(
@@ -64,18 +74,49 @@ async def mutate_activity_event(
             "INVALID_BASE_REVISION", "New events must not have a positive base revision"
         )
     try:
-        payload = ActivityEventPayload.model_validate(operation.payload)
+        payload = (
+            NextActivityEventPayload if one_time_contract else ActivityEventPayload
+        ).model_validate(operation.payload)
     except ValidationError as exc:
         raise DomainError("INVALID_PAYLOAD", str(exc)) from exc
 
     activity = await get_plan_node(
-        session, user_id, str(payload.activity_uuid), include_deleted=False
+        session, user_id, str(payload.activity_uuid), include_deleted=one_time_contract
     )
     if activity is None or activity.node_kind != "activity":
         raise DomainError("ACTIVITY_NOT_FOUND", "Activity was not found")
+    if activity.deleted_at is not None:
+        raise DomainError("ENTITY_DELETED", "Activity has been deleted")
     detail = require_internal(
         await session.get(ActivityDetail, activity.id), "ActivityDetail"
     )
+    intent = payload.one_time if isinstance(payload, NextActivityEventPayload) else None
+    if one_time_contract:
+        try:
+            validate_one_time_binding(
+                entity_uuid=str(operation.entity_uuid),
+                event_type=payload.event_type,
+                reverts_event_uuid=str(payload.reverts_event_uuid)
+                if payload.reverts_event_uuid
+                else None,
+                intent=intent,
+                completion_policy=detail.completion_policy,
+            )
+        except OneTimeTransitionError as exc:
+            raise DomainError(
+                "INVALID_PAYLOAD",
+                "Event intent does not match the stored activity policy",
+            ) from exc
+        if intent is not None:
+            current = await load_one_time_activity(session, user_id, activity.public_id)
+            # Read-only preflight gives stable task errors before generic revert
+            # checks; the later SQL CAS still rechecks the durable version/head.
+            validate_stored_intent(current.projection, intent)
+    elif detail.one_time_version is not None:
+        raise DomainError(
+            "CLIENT_UPGRADE_REQUIRED",
+            "This activity requires the one-time event protocol",
+        )
     allowed_types = {
         "check": {"check_in", "revert"},
         "count": {"count_delta", "count_snapshot", "revert"},
@@ -161,6 +202,13 @@ async def mutate_activity_event(
         reverts_event_id=revert_event.id if revert_event else None,
         payload_json=canonical_json(payload.metadata),
     )
+    if intent is not None:
+        capture_one_time_intent(
+            event,
+            intent,
+            str(payload.reverts_event_uuid) if payload.reverts_event_uuid else None,
+        )
+        await advance_stored_one_time(session, user_id, activity.public_id, intent)
     session.add(event)
     try:
         await session.flush()

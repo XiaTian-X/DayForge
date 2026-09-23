@@ -252,6 +252,16 @@ class ActivityDetail(SQLModel, table=True):
             "target_cycles IS NULL OR target_cycles > 0",
             name="ck_activity_target_cycles",
         ),
+        CheckConstraint(
+            "(one_time_version IS NULL AND one_time_head_event_uuid IS NULL AND one_time_completion_event_uuid IS NULL) OR "
+            "(completion_policy = 'one_and_done' AND tracking_mode = 'check' AND one_time_version IS NOT NULL "
+            "AND one_time_version >= 0 AND one_time_version <= 2147483647 AND "
+            "((one_time_version = 0 AND one_time_head_event_uuid IS NULL AND one_time_completion_event_uuid IS NULL) OR "
+            "(one_time_version > 0 AND one_time_head_event_uuid IS NOT NULL AND length(one_time_head_event_uuid) = 36 AND "
+            "((one_time_version % 2 = 1 AND one_time_completion_event_uuid IS NOT NULL AND one_time_completion_event_uuid = one_time_head_event_uuid) OR "
+            "(one_time_version % 2 = 0 AND one_time_completion_event_uuid IS NULL)))))",
+            name="ck_activity_one_time_state",
+        ),
     )
 
     node_id: int = Field(foreign_key="plan_nodes.id", primary_key=True)
@@ -270,6 +280,11 @@ class ActivityDetail(SQLModel, table=True):
     preferred_local_time: Optional[time] = Field(default=None)
     timezone: str = Field(default="UTC", max_length=64)
     origin_assignment_id: Optional[str] = Field(default=None, max_length=36, index=True)
+    # NULL is pre-v5/uninitialized, not a guessed empty history. Recurring activities
+    # remain NULL; coordinated v5 creation explicitly initializes one-time state.
+    one_time_version: Optional[int] = Field(default=None)
+    one_time_head_event_uuid: Optional[str] = Field(default=None, max_length=36)
+    one_time_completion_event_uuid: Optional[str] = Field(default=None, max_length=36)
 
 
 class ActivityEvent(SyncableFields, table=True):
@@ -302,6 +317,16 @@ class ActivityEvent(SyncableFields, table=True):
             "duration_milliseconds IS NULL OR duration_milliseconds >= 0",
             name="ck_activity_event_duration_ms",
         ),
+        CheckConstraint(
+            "(one_time_expected_version IS NULL AND one_time_expected_head_event_uuid IS NULL) OR "
+            "(one_time_expected_version IS NOT NULL AND one_time_expected_version >= 0 AND one_time_expected_version < 2147483647 AND "
+            "((one_time_expected_version = 0 AND one_time_expected_head_event_uuid IS NULL) OR "
+            "(one_time_expected_version > 0 AND one_time_expected_head_event_uuid IS NOT NULL AND length(one_time_expected_head_event_uuid) = 36 "
+            "AND one_time_expected_head_event_uuid != public_id)) AND "
+            "((event_type = 'check_in' AND one_time_expected_version % 2 = 0 AND reverts_event_id IS NULL) OR "
+            "(event_type = 'revert' AND one_time_expected_version % 2 = 1 AND reverts_event_id IS NOT NULL)))",
+            name="ck_activity_event_one_time_intent",
+        ),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -332,6 +357,12 @@ class ActivityEvent(SyncableFields, table=True):
     )
     payload_json: str = Field(default="{}")
     received_at: datetime = Field(default_factory=utc_now)
+    # Immutable proof: action/revert are existing event columns; state_after is
+    # derived from these captured preconditions, never from the activity's head.
+    one_time_expected_version: Optional[int] = Field(default=None)
+    one_time_expected_head_event_uuid: Optional[str] = Field(
+        default=None, max_length=36
+    )
 
 
 class TrackedMetric(SyncableFields, table=True):
