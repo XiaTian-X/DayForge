@@ -12,6 +12,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import app.cash.turbine.test
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.*
 import org.junit.After
 import org.junit.Assert.*
@@ -210,5 +211,58 @@ class RoomUpgradeCompatibilityTest {
         assertEquals(listOf("pending-operation", "habit", "habit"), reopened.syncOutboxDao().getAll().map {
             if (it.id == 1L) it.operationId else it.entityUuid
         })
+    }
+
+    @Test fun closedDatabaseRejectsSuspendingReadsAndWritesWithoutChangingStoredData() = runBlocking {
+        seed()
+        val db = open()
+        val habit = db.habitDao().getHabitById(1)!!
+        val before = snapshot(db.openHelper.readableDatabase)
+        db.close()
+        assertFalse(db.isOpen)
+
+        // Room's close contract must fail promptly, not reopen or silently accept late writes.
+        val readFailure = withTimeout(5_000) {
+            runCatching { db.habitDao().getHabitById(1) }.exceptionOrNull()
+        }
+        assertTrue("Expected closed-database error, got $readFailure", readFailure is IllegalStateException)
+        val writeFailure = withTimeout(5_000) {
+            runCatching { db.habitDao().update(habit.copy(name = "Late write")) }.exceptionOrNull()
+        }
+        assertTrue("Expected closed-database error, got $writeFailure", writeFailure is IllegalStateException)
+        assertFalse(db.isOpen)
+
+        val reopened = open()
+        assertEquals(before, snapshot(reopened.openHelper.readableDatabase))
+        assertEquals("Stored habit", reopened.habitDao().getHabitById(1)!!.name)
+    }
+
+    @Test fun rapidWritesReachLatestFlowValueAfterCollectorCancellationAndReopen() = runBlocking {
+        seed()
+        var expectedName = "Stored habit"
+        repeat(3) { round ->
+            val db = open()
+            val habit = db.habitDao().getHabitById(1)!!
+            val finalName = "Round $round write 4"
+            db.habitDao().getHabitByIdFlow(1).test {
+                assertEquals(expectedName, awaitItem()!!.name)
+                repeat(5) { write ->
+                    db.withTransaction {
+                        db.habitDao().update(habit.copy(name = "Round $round write $write"))
+                    }
+                }
+                // Invalidation may coalesce intermediate values, but must deliver the final commit.
+                while (awaitItem()!!.name != finalName) { /* Turbine bounds each wait. */ }
+                cancelAndIgnoreRemainingEvents()
+            }
+            assertEquals(finalName, db.habitDao().getHabitById(1)!!.name)
+            assertEquals(1 + (round + 1) * 5, db.syncOutboxDao().count())
+            expectedName = finalName
+            db.close()
+            assertFalse(db.isOpen)
+        }
+        val reopened = open()
+        assertEquals(expectedName, reopened.habitDao().getHabitById(1)!!.name)
+        assertEquals(16, reopened.syncOutboxDao().count())
     }
 }
