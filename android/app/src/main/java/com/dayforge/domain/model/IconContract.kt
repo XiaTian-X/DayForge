@@ -1,10 +1,16 @@
+@file:kotlinx.serialization.UseSerializers(ContractStringSerializer::class)
+
 package com.dayforge.domain.model
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.json.JsonClassDiscriminator
 
 /** Immutable metadata contract. Parsing this does not authorize or validate the image bytes. */
 @Serializable
+@OptIn(ExperimentalSerializationApi::class)
+@JsonClassDiscriminator("kind")
 sealed interface IconReference {
     @Serializable
     @SerialName("role")
@@ -49,7 +55,7 @@ data class IconAsset(
 ) {
     init {
         require(isContractUuid(assetId))
-        require(isIconName(name))
+        require(isContractName(name))
         require(purpose == "general" || purpose == "task")
         require(colorMode == "template" || colorMode == "original")
     }
@@ -71,7 +77,7 @@ data class IconPack(
     init {
         require(format == "dayforge.icon-pack" && formatVersion == 1)
         require(isContractUuid(packId) && revision > 0)
-        require(isIconName(name))
+        require(isContractName(name))
         require(assets.size in 1..128 && roles.size <= 256)
         val byId = assets.associateBy { it.assetId }
         require(byId.size == assets.size)
@@ -96,6 +102,3 @@ fun iconAllowed(icon: IconReference, oneTime: Boolean, asset: IconAsset? = null)
 private val iconRole = Regex("(habit|metric|goal|task)\\.[a-z][a-z0-9_]{0,47}")
 
 private fun isIconRole(value: String): Boolean = iconRole.matches(value)
-
-private fun isIconName(value: String): Boolean = value.isNotBlank() &&
-    value.codePointCount(0, value.length) <= 80 && value.none { it.code < 32 }
