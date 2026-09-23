@@ -240,9 +240,21 @@ ready_variants 不放不可变目录，其变化通过独立 GET 查询。同 ha
 
 未声明/非本账户身份统一 404；元数据不可变冲突为 409 `ASSET_ID_REUSED` / `PACK_VERSION_REUSED`；
 未上传内容为 409 `ASSET_CONTENT_PENDING`；已标就绪但文件缺失/损坏为 503 `ASSET_CONTENT_UNAVAILABLE`，
-不得作为空图成功。格式/路径错配 422，输入/配额超限 413；身份、认证、设备和 epoch 错误沿用
-既有机器码，权限错误不泄露他人元数据。中断/临时错误保留原 ID 和持久队列并退避重试。
+不得作为空图成功。格式/路径错配 422，输入/配额超限 413；设备和权限沿用 DEVICE_NOT_FOUND /
+DEVICE_CAPABILITY_DENIED；新服务端上下文检查使用 SERVER_IDENTITY_MISMATCH / SYNC_EPOCH_MISMATCH，
+不复用“素材不存在”掩盖恢复后的身份变化。账户素材/包不存在分别为 ASSET_NOT_FOUND / PACK_NOT_FOUND，
+同账户 hash 描述冲突为 ASSET_BLOB_METADATA_MISMATCH，额度/目录序号耗尽为 ASSET_QUOTA_EXCEEDED；
+存储目录或描述损坏为 ASSET_METADATA_CORRUPT，不能作为空结果成功。认证仍由现有 JWT/API Token
+依赖处理，权限错误不泄露他人元数据。中断/临时错误保留原 ID 和持久队列并退避重试。
 本节的模型只验证值与响应绑定；实际授权、流式限额、安全解码、额度竞争和安装恢复须在接入时验证。
+
+已实现但未挂载在线路由的声明服务在同一调用方事务校验账户设备、能力、服务器身份/epoch，
+条件更新 quota 并追加 blob/素材或包/目录。相同内容重放不追加目录，不受后来降低限额影响；
+新增声明只检查本次增加的额度维度，不能用已超额的字节维度阻止仅增加元数据的合法包版本。
+SQLite 旧快照升级写入失败必须整笔回滚后重试，不在旧事务内循环；恢复检查与声明共用规范 JSON。
+目录独立读取冻结的 through，连续完整的条目才允许推进；缺记录不作为正常空末页。
+读取设备能力不创建 policy、不更新 last_seen；API Token 认证自身的短事务写入仍由统一依赖管理。
+这些服务与测试专用 HTTP bridge 不代表生产 v5 路由或版本门禁已启用。
 
 ## 3. 主题、设备偏好与小组件
 
