@@ -18,12 +18,12 @@ from uuid import UUID, uuid4
 
 from src.appearance.input import read_icon_bytes
 from src.appearance.png import inspect_png
+from src.appearance.profiles import IMAGE_PROFILES
 from src.appearance.svg import inspect_svg
 from src.v2.appearance import IconBlob
 
 
 MAX_JOURNAL = 8192
-PROFILES = {"image/png": "png-v1", "image/svg+xml": "svg-v1"}
 DIGEST = re.compile(r"[0-9a-f]{64}")
 JOURNAL_NAME = re.compile(r"\.install-([0-9a-f-]{36})\.json")
 
@@ -50,7 +50,7 @@ def _blob(value: IconBlob) -> IconBlob:
 
 
 def _inspect(data: bytes, blob: IconBlob, profile: str) -> None:
-    if PROFILES[blob.media_type] != profile:
+    if IMAGE_PROFILES[blob.media_type] != profile:
         raise AssetFileError("ASSET_STORAGE_PROFILE")
     if blob.media_type == "image/png":
         inspect_png(data, blob)
@@ -69,7 +69,7 @@ class InstallReceipt:
         _uuid(self.operation_id)
         _uuid(self.owner_public_id)
         _blob(self.blob)
-        if PROFILES[self.blob.media_type] != self.profile:
+        if IMAGE_PROFILES[self.blob.media_type] != self.profile:
             raise AssetFileError("ASSET_STORAGE_PROFILE")
 
     @property
@@ -208,7 +208,7 @@ class AssetFiles:
         """
         _uuid(owner)
         blob = _blob(expected)
-        profile = PROFILES[blob.media_type]
+        profile = IMAGE_PROFILES[blob.media_type]
         data = read_icon_bytes(source, blob)
         _inspect(data, blob, profile)
         receipt = InstallReceipt(str(uuid4()), owner, blob, profile)
@@ -251,7 +251,7 @@ class AssetFiles:
     def read(self, owner: str, expected: IconBlob, profile: str) -> bytes:
         """Recheck a same-handle file, never trust a ready flag or filename alone."""
         blob = _blob(expected)
-        if PROFILES[blob.media_type] != profile:
+        if IMAGE_PROFILES[blob.media_type] != profile:
             raise AssetFileError("ASSET_STORAGE_PROFILE")
         with self._directory(owner) as directory:
             with _regular(directory, blob.sha256) as source:

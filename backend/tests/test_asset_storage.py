@@ -338,6 +338,7 @@ TAMPERING = [
     "blob",
     "cross-owner",
     "ready",
+    "pending-profile",
     "missing-account",
 ]
 
@@ -354,6 +355,7 @@ def corrupt(bundle, case):
         "blob": "account_icon_blobs",
         "cross-owner": "account_icon_assets",
         "ready": "account_icon_blobs",
+        "pending-profile": "account_icon_blobs",
         "missing-account": "appearance_accounts",
     }[case]
     records = [json.loads(line) for line in bundle["collections"][name].splitlines()]
@@ -386,6 +388,8 @@ def corrupt(bundle, case):
         data["light_blob_id"] = {"$ref": "account_icon_blobs", "key": others[1]["key"]}
     elif case == "ready":
         data["ready_at"] = "2026-09-23T01:00:00Z"
+    elif case == "pending-profile":
+        data["validation_profile"] = "png-v1"
     elif case == "missing-account":
         records.clear()
     replace_records(bundle, name, records)
@@ -418,7 +422,7 @@ def test_recomputed_archive_checksum_cannot_hide_invalid_metadata(
         "UPDATE appearance_accounts SET asset_limit=2.5 WHERE user_id=101",
         "DELETE FROM appearance_catalog WHERE owner_user_id=101 AND sequence=4",
         "UPDATE account_icon_blobs SET width=25 WHERE owner_user_id=101",
-        "UPDATE account_icon_blobs SET ready_at='2026-09-23 01:00:00' WHERE owner_user_id=101",
+        "UPDATE account_icon_blobs SET ready_at='2026-09-23 01:00:00', validation_profile='png-v1' WHERE owner_user_id=101",
     ],
 )
 def test_physical_backup_and_logical_export_reject_inconsistent_source(

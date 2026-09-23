@@ -1,8 +1,10 @@
 """Fail-closed decoding of immutable records at staged service read boundaries."""
 
+from datetime import datetime
 from typing import TypeVar
 
 from pydantic import ValidationError
+from src.appearance.profiles import IMAGE_PROFILES
 
 from src.v2.appearance import IconAsset, IconBlob, IconPack
 from src.v2.asset_api_contract import AppearanceQuota
@@ -64,6 +66,24 @@ def blob_value(row: AccountIconBlob) -> IconBlob:
         )
     except ValidationError as error:
         raise _corrupt() from error
+
+
+def blob_ready(row: AccountIconBlob) -> bool:
+    """Readiness is only meaningful together with a known media-matched profile.
+
+    This validates metadata, not filesystem availability or authorization.
+    """
+    if row.ready_at is None:
+        if row.validation_profile is not None:
+            raise _corrupt()
+        return False
+    if (
+        not isinstance(row.ready_at, datetime)
+        or row.media_type not in IMAGE_PROFILES
+        or row.validation_profile != IMAGE_PROFILES[row.media_type]
+    ):
+        raise _corrupt()
+    return True
 
 
 def quota_value(row: AppearanceAccount) -> AppearanceQuota:
