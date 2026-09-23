@@ -38,7 +38,11 @@ import com.dayforge.domain.service.ThemeManager
 import com.dayforge.domain.service.ThemeImportService
 import com.dayforge.domain.service.ThemeExportService
 import com.dayforge.domain.repository.CustomThemeRepository
+import com.dayforge.widget.WidgetRefreshScheduler
 import io.mockk.mockk
+import io.mockk.mockkObject
+import io.mockk.unmockkObject
+import io.mockk.verify
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
@@ -96,6 +100,10 @@ class SettingsViewModelTest {
     fun setup() {
         Dispatchers.setMain(testDispatcher)
         context = ApplicationProvider.getApplicationContext()
+        // This suite verifies settings persistence and dispatch, not background widget rendering.
+        // Real queued workers must not outlive the per-test Room instance.
+        mockkObject(WidgetRefreshScheduler)
+        every { WidgetRefreshScheduler.request(context) } returns mockk()
 
         // Create test DataStore for TokenManager
         dataStoreFile = File(context.cacheDir, "settings_${java.util.UUID.randomUUID()}.preferences_pb")
@@ -177,6 +185,7 @@ class SettingsViewModelTest {
         database.close()
         dataStoreFile.delete()
         Dispatchers.resetMain()
+        unmockkObject(WidgetRefreshScheduler)
     }
 
     @Test
@@ -370,6 +379,8 @@ class SettingsViewModelTest {
             assertEquals(style, preferencesManager.cardColorStyle.first { it == style })
             assertEquals(enabled, preferencesManager.globalNotificationsEnabled.first { it == enabled })
         }
+        testDispatcher.scheduler.runCurrent()
+        verify(exactly = 100) { WidgetRefreshScheduler.request(context) }
     }
 
     @Test

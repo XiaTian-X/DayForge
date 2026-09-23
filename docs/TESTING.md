@@ -250,6 +250,10 @@ Room 依赖升级还须执行 `RoomUpgradeCompatibilityTest`：从已提交的�
 库升级不应凭空变更 schema；无结构变化时保留原 schema 文件，并记录无差异证据。
 本批边界与结果见 [Room 兼容升级报告](reviews/2026-09-21-room-compatibility.md)。
 
+Room 后续升级还须验证关闭后的挂起读写明确失败且不隐式重开，重开后全表数据保持不变；
+Flow 允许合并连续写入的中间通知，但取消订阅/关闭/重开后必须仍到达最新提交值，且 outbox 数量准确。
+不得吞掉关闭异常或让遗留订阅跨测试存活。新系列结果见 [Room 稳定版报告](reviews/2026-09-22-room-stable.md)。
+
 `FactTimeMigrationTest` 通过生产 `HabitDatabaseProvider` 和提交的 v1 schema 验证真实升级路径，
 禁止测试另建一套与生产不同的 migration / fallback 配置。未知 schema / 降级须断言明确失败与磁盘数据保留。
 迁移失败后应关闭 Room，用独立 SQLite 连接检查版本、DDL、事实、触发器和完整 outbox 是否回滚，
