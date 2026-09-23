@@ -1,7 +1,6 @@
 import base64
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-import hashlib
 from io import BytesIO
 import json
 import os
@@ -14,31 +13,7 @@ import pytest
 from src.appearance.input import ImageInputError
 from src.appearance.svg_path import SvgValidationError
 from src.storage.asset_files import AssetFileError, AssetFiles, MAX_JOURNAL
-from src.v2.appearance import IconBlob
-
-
-OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
-SVG = b'<svg width="1" height="1"><rect width="1" height="1"/></svg>'
-
-
-def blob(data=SVG, media_type="image/svg+xml") -> IconBlob:
-    return IconBlob(
-        sha256=hashlib.sha256(data).hexdigest(),
-        byte_length=len(data),
-        media_type=media_type,
-        width=1,
-        height=1,
-    )
-
-
-def directory(root, owner=OWNER):
-    return root / "accounts" / owner / "blobs"
-
-
-def intents(store, owner=OWNER):
-    with store.pending(owner) as pending:
-        return list(pending)
+from tests.asset_file_fixtures import OTHER, OWNER, SVG, blob, directory, intents
 
 
 def test_publish_reopen_retry_isolated_namespaces_and_exact_cleanup(tmp_path):
