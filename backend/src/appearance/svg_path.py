@@ -59,7 +59,14 @@ class NumberScanner:
         if len(token) > 64:
             raise SvgValidationError("SVG_NUMBER_LIMIT")
         value = float(token)
-        if not math.isfinite(value) or abs(value) > MAX_NUMBER:
+        if (
+            not math.isfinite(value)
+            or abs(value) > MAX_NUMBER
+            or (
+                value == 0
+                and any(c in "123456789" for c in token.lower().split("e")[0])
+            )
+        ):
             raise SvgValidationError("SVG_NUMBER_LIMIT")
         self.position = found.end()
         return value

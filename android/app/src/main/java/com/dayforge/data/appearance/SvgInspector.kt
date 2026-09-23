@@ -5,8 +5,9 @@ import com.dayforge.domain.appearance.SVG_MAX_COMMANDS
 import com.dayforge.domain.appearance.SVG_MAX_NUMBER
 import com.dayforge.domain.appearance.SVG_MAX_TEXT
 import com.dayforge.domain.appearance.SvgValidationException
+import com.dayforge.domain.appearance.SvgGeometry
+import com.dayforge.domain.appearance.resolveSvgPath
 import com.dayforge.domain.appearance.parseSvgNumbers
-import com.dayforge.domain.appearance.parseSvgPath
 import com.dayforge.domain.appearance.svgRequire
 import com.dayforge.domain.model.IconBlob
 import org.xml.sax.Attributes
@@ -23,6 +24,13 @@ import kotlin.math.sin
 import kotlin.math.tan
 
 data class SvgInspection(val width: Int, val height: Int, val elements: Int, val commands: Int)
+
+/** Private to the image pipeline: produced only after a complete validated parse. */
+internal data class SvgNode(
+    val tag: String, val attrs: Map<String, String>, val style: Map<String, String>,
+    val matrix: List<Double>, val geometry: SvgGeometry?, val children: MutableList<SvgNode> = mutableListOf()
+)
+internal data class SvgDocument(val inspection: SvgInspection, val root: SvgNode)
 
 private const val SVG_NS = "http://www.w3.org/2000/svg"
 private const val WSP = " \t\r\n"
@@ -99,7 +107,7 @@ private fun transforms(value: String): Pair<List<Double>, Int> {
     return result to count
 }
 
-private data class AttributeInspection(val commands: Int, val matrix: List<Double>, val transforms: Int)
+private data class AttributeInspection(val commands: Int, val matrix: List<Double>, val transforms: Int, val path: SvgGeometry?)
 
 private fun attributes(tag: String, attrs: Map<String, String>): AttributeInspection {
     svgRequire(attrs.keys.all { it in geometry.getValue(tag) || it in common } &&
@@ -107,12 +115,13 @@ private fun attributes(tag: String, attrs: Map<String, String>): AttributeInspec
     var commands = 0
     var matrix = identity
     var transformCount = 0
+    var path: SvgGeometry? = null
     attrs.forEach { (key, value) ->
         when {
             key == "id" -> svgRequire(identifier.matches(value), "SVG_ATTRIBUTES")
             key in enums -> svgRequire(value in enums.getValue(key), "SVG_ATTRIBUTES")
             key == "fill" || key == "stroke" -> svgRequire(color.matches(value), "SVG_ATTRIBUTES")
-            key == "d" -> commands += parseSvgPath(value).size
+            key == "d" -> resolveSvgPath(value).let { path = it; commands += it.sourceCommands }
             key == "transform" -> transforms(value).let { matrix = it.first; transformCount = it.second }
             key == "stroke-dasharray" && value == "none" -> Unit
             else -> {
@@ -136,11 +145,13 @@ private fun attributes(tag: String, attrs: Map<String, String>): AttributeInspec
             }
         }
     }
-    return AttributeInspection(commands, matrix, transformCount)
+    return AttributeInspection(commands, matrix, transformCount, path)
 }
 
 /** Verifies immutable input bytes and the complete static profile. Does not render/install/upload. */
-fun inspectSvg(source: ByteArray, expected: IconBlob): SvgInspection {
+fun inspectSvg(source: ByteArray, expected: IconBlob): SvgInspection = parseSvgDocument(source, expected).inspection
+
+internal fun parseSvgDocument(source: ByteArray, expected: IconBlob): SvgDocument {
     svgRequire(expected.mediaType == "image/svg+xml", "SVG_MEDIA_TYPE")
     svgRequire(source.size <= SVG_MAX_TEXT && source.size == expected.byteLength, "SVG_BYTE_LENGTH")
     val data = source.copyOf()
@@ -164,6 +175,9 @@ fun inspectSvg(source: ByteArray, expected: IconBlob): SvgInspection {
     var width = 0
     var height = 0
     val stack = mutableListOf<Pair<String, List<Double>>>()
+    val nodes = mutableListOf<SvgNode>()
+    var root: SvgNode? = null
+    var dashWork = 0.0
     val handler = object : DefaultHandler() {
         override fun startPrefixMapping(prefix: String?, uri: String?) {
             svgRequire(uri.orEmpty() in setOf("", SVG_NS), "SVG_NAMESPACE")
@@ -187,19 +201,31 @@ fun inspectSvg(source: ByteArray, expected: IconBlob): SvgInspection {
             transformCount += inspected.transforms
             svgRequire(commands <= SVG_MAX_COMMANDS, "SVG_COMMAND_LIMIT")
             svgRequire(transformCount <= 256, "SVG_TRANSFORM_LIMIT")
+            var matrix = inspected.matrix
             if (stack.isEmpty()) {
                 val dimensions = listOf("width", "height").map { parseSvgNumbers(attrs.getValue(it).removeSuffix("px")).single() }
                 svgRequire(dimensions.all { it % 1.0 == 0.0 && it in 1.0..1024.0 }, "SVG_DIMENSIONS")
                 width = dimensions[0].toInt()
                 height = dimensions[1].toInt()
                 svgRequire(width == expected.width && height == expected.height, "SVG_DIMENSIONS")
+                matrix = matrixProduct(matrix, svgViewport(attrs, width, height))
             }
-            stack.add(tag to matrixProduct(stack.lastOrNull()?.second ?: identity, inspected.matrix))
+            val cumulative = matrixProduct(stack.lastOrNull()?.second ?: identity, matrix)
+            (matrix + cumulative).forEach(::svgNativeNumber)
+            val style = nodes.lastOrNull()?.style.orEmpty() + attrs.filterKeys { it in svgInherited }
+            val path = inspected.path
+            dashWork += svgStrokeWork(tag, attrs, style, path)
+            svgRequire(dashWork <= SVG_MAX_DASH_WORK, "SVG_DASH_LIMIT")
+            val node = SvgNode(tag, attrs.toMap(), style, matrix, path)
+            if (nodes.isEmpty()) root = node else nodes.last().children.add(node)
+            nodes.add(node)
+            stack.add(tag to cumulative)
         }
 
         override fun endElement(uri: String, localName: String, qName: String) {
             svgRequire(stack.isNotEmpty(), "SVG_STRUCTURE")
             stack.removeAt(stack.lastIndex)
+            nodes.removeAt(nodes.lastIndex)
         }
 
         override fun characters(chars: CharArray, start: Int, length: Int) {
@@ -223,7 +249,7 @@ fun inspectSvg(source: ByteArray, expected: IconBlob): SvgInspection {
         throw SvgValidationException("SVG_XML_SYNTAX")
     }
     svgRequire(elements > 0 && stack.isEmpty(), "SVG_STRUCTURE")
-    return SvgInspection(width, height, elements, commands)
+    return SvgDocument(SvgInspection(width, height, elements, commands), requireNotNull(root))
 }
 
 /** Reads once with bounds before XML parsing. Caller still owns the stream. */

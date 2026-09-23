@@ -4,11 +4,12 @@
 不是通用 SVG 浏览器，也不承诺接受任意设计工具的默认导出。生成/导出图标须按此 profile
 转为静态几何；不支持的输入明确拒绝，不静默删除内容后安装。
 
-当前 `inspect_svg` / `inspectSvg` 校验实际字节、完整 XML 与数值语法，返回尺寸和复杂度统计。
-它们不产生像素、不安装、不上传、不改变 blob 就绪状态。SVG 像素渲染、ZIP、
-文件持久化、账户授权、备份闭包和实际 UI 接入仍是独立交付门槛。
+`inspect_svg` / `inspectSvg` 校验实际字节、完整 XML、数值语法及绘制预算，返回尺寸和复杂度统计。
+Android `renderSvg` 从同一完整校验生成的受限场景实际绘制像素；不将原始 SVG 交给 WebView 或通用解码器。
+后端只验证静态绘制条件，不声称产生与 Android 相同的 SVG 像素。两端均不安装、不上传、不改变
+blob 就绪状态；ZIP、文件持久化、账户授权、备份闭包和实际 UI 接入仍是独立交付门槛。
 
-`inspect_svg_stream` / InputStream 版 `inspectSvg` 先调用共享限量读取器，读取一次并要求 EOF，
+`inspect_svg_stream` / InputStream 版 `inspectSvg`、`renderSvg` 先调用共享限量读取器，读取一次并要求 EOF，
 最多消费已声明长度加 1 字节；长度和 SHA-256 一致后才解析返回的冻结字节。不使用 available、
 文件头或 Content-Length 代替实际读取，不在校验后重开来源。短读会继续，截断/超长/错 hash
 明确失败；I/O 错误和取消原样传播。调用方负责关闭、后台执行与传输超时，不能在主线程调用，
@@ -58,6 +59,7 @@
 ASCII 十进制（允许小数和 e/E 指数），每个 token 最多 64 字符，解析后必须有限且绝对值
 不超过 1000000。不接受 NaN、Infinity、十六进制、Unicode 数字或 Unicode 空白。
 完整消费输入，不用“找到几个数字”的正则提取代替语法校验。
+非零十进制值若下溢成 Double 零则拒绝；数学上的零（如 `0e999`）仍合法。
 
 路径支持 SVG 1.1 的 M/L/H/V/C/S/Q/T/A/Z 及其小写版本、隐式重复和 moveto 后隐式 lineto；
 非空路径必须以 moveto 开始。圆弧半径是无符号非负数，两个 flag 各恰为 0/1；
@@ -71,9 +73,38 @@ transform 支持 matrix(6)、translate(1/2)、scale(1/2)、rotate(1/3)、skewX(1
 参数与相邻 transform 之间必须符合 comma-wsp；不接受 `translate(1)scale(2)`。
 每属性最多 64 个、整文件最多 256 个变换。组合矩阵与所有祖先累计矩阵的每一系数均须
 有限且绝对值不超过 1000000；skew 的 abs(cos(angle)) 必须大于 0.000001，防止奇异变换。
+viewBox 映射也计入根与祖先累计矩阵预算，不允许借极小 viewBox 绕过。既有 root transform
+按 SVG 2 的外层语义处理：`rootTransform × viewBoxMapping × descendants`；这是 profile
+明确支持的扩展，不表示支持其他 SVG 2 特性。
 
 上述复杂度与数值限制是 profile 的额外安全约束，不意味着 SVG 规范要求这些上限。
-template/original 共享同一白名单；alpha 着色须在实际渲染阶段测试，不由检查器虚构结果。
+template/original 共享同一白名单。
+
+## 静态几何与原生绘制
+
+- 路径先转为绝对 M/L/C/Q/Z，保留相对命令、隐式重复、close 后当前点及 S/T 的原命令反射语义。
+  close 后继续绘制时显式开启同起点新子路径，计入 contour 预算并重置虚线相位；
+  自动补出的 moveto 只计展开预算，不改变原始命令数。
+  圆弧端点相同则省略、任一半径为零则为直线，否则按端点算法校正半径；每段不超过 45°，
+  一个圆弧最多 8 段 cubic。这是受限贝塞尔近似，不承诺逐像素匹配浏览器栅格化。
+- 推导的半径、中心、端点和控制点须有限且绝对值不超过 10^12，展开最多 131072 个命令。
+  中间乘除采用缩放计算，合法极小圆弧半径不会仅因中间上溢被误判。
+- matrix 系数、stroke-width、miterlimit、dashoffset 和正 dash interval 转原生 Float 后须仍有限、
+  非零值不变零，失败为 SVG_DRAW_PRECISION；防止零线宽被解释为 hairline，或虚线参数失效。
+  几何坐标允许正常的亚像素舍入；虚线计算量同时检查原坐标与实际 Float 坐标。
+- 每个描边图形虚线工作上界为 `(ceil(lengthBound / period) + contourCount) × intervalCount`，
+  整文件相加最多 65536。路径 lengthBound 用控制多边形长度，形状使用外接矩形/圆周等保守上界；
+  取原始与 Float 几何较大者，period 取 Double 加总与 Float 逐次加总较小者。
+  奇数 pattern 先重复、零 interval 保留；无描边/零线宽不计绘制工作。超预算为 SVG_DASH_LIMIT。
+- 继承 fill/stroke 与对应透明度、填充规则和描边配置；默认黑填充、无描边、线宽 1、miter 4。
+  `opacity` 不继承，元素的填充与描边、组的全部子图形先合成，再应用一次元素/组透明度。
+  支持非零/奇偶填充、端帽、连接、偏移虚线；零尺寸形状不绘制，零线宽不转为 hairline。
+- 仅产生声明原尺寸、density-none、sRGB ARGB_8888 位图。位图和中间 opacity 层始终裁在
+  1–1024px 画布；深度 16 最多 16 个同时存在的中间组/元素层，加结果位图最多 68 MiB 像素存储
+  （不包含路径、运行时和解码对象开销）。不以图形坐标范围分配巨大离屏画布。
+- null tint 保留原色；template tint 在整图 alpha 合成完成后以 SRC_IN 着色，包含 tint 自身 alpha。
+  每次返回独立位图，调用方负责回收并在后台执行；异常时回收本次已创建的结果位图，不吞掉错误。
+  缓存、并发调度、包安装与资源就绪属于上层职责，不能由本入口伪造成功。
 
 ## 双端验证
 
@@ -82,6 +113,15 @@ template/original 共享同一白名单；alpha 着色须在实际渲染阶段�
 另测每个字节/元素/深度/命令/变换/尺寸边界的等于上限和超出上限情况。
 解析失败不能创建就绪素材或触发文件/网络外部实体读取。
 
+[几何样例](../contracts/next/svg-geometry.json) 独立验证端点、控制点和圆弧展开；
+[绘制样例](../contracts/next/svg-drawing.json) 由后端验证预检结果，Android `SvgRendererTest`
+另在真机读取实际像素，覆盖组/元素透明度、继承、几何、viewBox、dash 和预算失败。
+着色、独立位图、真实 EOF 流入口、累计预算及画布限制另外断言；不以非空图片代替像素预期。
+
 语法依据：[SVG 路径 BNF](https://www.w3.org/TR/SVG11/paths.html#PathDataBNF)、
 [变换](https://www.w3.org/TR/SVG11/coords.html)、[points](https://www.w3.org/TR/SVG11/shapes.html)。
 XML 防护参考 [Android XXE 指南](https://developer.android.com/privacy-and-security/risks/xml-external-entities-injection)。
+绘制语义参考 [SVG 圆弧实现注记](https://www.w3.org/TR/SVG11/implnote.html#ArcImplementationNotes)、
+[组透明度](https://www.w3.org/TR/SVG11/masking.html#ObjectAndGroupOpacityProperties) 和
+[Android Canvas](https://developer.android.com/reference/android/graphics/Canvas)；根变换顺序依据
+[SVG 2 viewBox](https://www.w3.org/TR/SVG2/coords.html#ViewBoxAttribute)。
