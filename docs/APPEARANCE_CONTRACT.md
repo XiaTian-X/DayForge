@@ -198,6 +198,8 @@ SVG 只允许静态 svg/g/path/rect/circle/ellipse/line/polyline/polygon、明�
 禁止 DTD/实体、script、事件属性、image/use/text/font、动画、外部引用、CSS、filter、渐变和 URL。
 未知元素/属性拒绝，不“删掉危险部分后当成功”。透明/单色与原色都仍受同样安全约束。
 完整 XML/path 数值语法、安全解码器及压缩总量实测是安装功能上线门槛，元数据模型不是安全沙箱。
+精确 SVG 属性、数值、路径与复杂度白名单见 [静态 SVG profile](SVG_PROFILE.md)。
+实际字节检查器不代表像素渲染或安装已经接入，也不会将元数据自动标记为就绪。
 
 文件暂存、fsync、同目录原子 rename、数据库安装日志配合恢复；不能将文件 move 与数据库事务
 宣称为跨存储原子提交。取消或校验失败保留旧活动包；重启清理仅触及该次暂存和未提交安装。
