@@ -18,6 +18,7 @@ DayForge 是面向家庭自托管场景的习惯与目标管理系统。Android 
 - [测试规范](docs/TESTING.md)
 - [系统架构](docs/ARCHITECTURE.md)
 - [Android UI/UX 重构交接与功能基线](docs/DESIGN.md)
+- [一次性事项与外观目标契约（分阶段启用）](docs/APPEARANCE_CONTRACT.md)
 - [同步协议](docs/SYNC_PROTOCOL.md)
 - [部署与恢复](docs/DEPLOYMENT.md)
 

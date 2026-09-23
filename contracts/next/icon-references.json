@@ -1,0 +1,12 @@
+[
+  {"icon": {"kind": "role", "role": "habit.water"}, "one_time": false, "asset_index": null, "allowed": true},
+  {"icon": {"kind": "role", "role": "task.default"}, "one_time": true, "asset_index": null, "allowed": true},
+  {"icon": {"kind": "role", "role": "task.default"}, "one_time": false, "asset_index": null, "allowed": false},
+  {"icon": {"kind": "role", "role": "habit.water"}, "one_time": true, "asset_index": null, "allowed": false},
+  {"icon": {"kind": "role", "role": "habit.imported_custom_role"}, "one_time": false, "asset_index": null, "allowed": true},
+  {"icon": {"kind": "asset", "asset_id": "40000000-0000-0000-0000-000000000001"}, "one_time": false, "asset_index": 0, "allowed": true},
+  {"icon": {"kind": "asset", "asset_id": "40000000-0000-0000-0000-000000000002"}, "one_time": true, "asset_index": 1, "allowed": true},
+  {"icon": {"kind": "asset", "asset_id": "40000000-0000-0000-0000-000000000002"}, "one_time": false, "asset_index": 1, "allowed": false},
+  {"icon": {"kind": "asset", "asset_id": "40000000-0000-0000-0000-000000000002"}, "one_time": true, "asset_index": null, "allowed": false},
+  {"icon": {"kind": "asset", "asset_id": "40000000-0000-0000-0000-000000000002"}, "one_time": false, "asset_index": 0, "allowed": false}
+]

@@ -1,0 +1,72 @@
+[
+  {
+    "name": "complete",
+    "state": {"version": 0, "head_event_uuid": null, "completion_event_uuid": null},
+    "intent": {"event_uuid": "10000000-0000-0000-0000-000000000001", "action": "complete", "expected_version": 0, "expected_head_event_uuid": null, "reverts_event_uuid": null},
+    "deleted": false,
+    "result": {"version": 1, "head_event_uuid": "10000000-0000-0000-0000-000000000001", "completion_event_uuid": "10000000-0000-0000-0000-000000000001"}
+  },
+  {
+    "name": "undo_on_any_day",
+    "state": {"version": 1, "head_event_uuid": "10000000-0000-0000-0000-000000000001", "completion_event_uuid": "10000000-0000-0000-0000-000000000001"},
+    "intent": {"event_uuid": "10000000-0000-0000-0000-000000000002", "action": "undo", "expected_version": 1, "expected_head_event_uuid": "10000000-0000-0000-0000-000000000001", "reverts_event_uuid": "10000000-0000-0000-0000-000000000001"},
+    "deleted": false,
+    "result": {"version": 2, "head_event_uuid": "10000000-0000-0000-0000-000000000002", "completion_event_uuid": null}
+  },
+  {
+    "name": "complete_again_new_identity",
+    "state": {"version": 2, "head_event_uuid": "10000000-0000-0000-0000-000000000002", "completion_event_uuid": null},
+    "intent": {"event_uuid": "10000000-0000-0000-0000-000000000003", "action": "complete", "expected_version": 2, "expected_head_event_uuid": "10000000-0000-0000-0000-000000000002", "reverts_event_uuid": null},
+    "deleted": false,
+    "result": {"version": 3, "head_event_uuid": "10000000-0000-0000-0000-000000000003", "completion_event_uuid": "10000000-0000-0000-0000-000000000003"}
+  },
+  {
+    "name": "other_offline_complete_cannot_duplicate",
+    "state": {"version": 1, "head_event_uuid": "10000000-0000-0000-0000-000000000001", "completion_event_uuid": "10000000-0000-0000-0000-000000000001"},
+    "intent": {"event_uuid": "20000000-0000-0000-0000-000000000001", "action": "complete", "expected_version": 0, "expected_head_event_uuid": null, "reverts_event_uuid": null},
+    "deleted": false,
+    "error": "TASK_STATE_CONFLICT"
+  },
+  {
+    "name": "late_complete_after_undo_cannot_resurrect",
+    "state": {"version": 2, "head_event_uuid": "10000000-0000-0000-0000-000000000002", "completion_event_uuid": null},
+    "intent": {"event_uuid": "20000000-0000-0000-0000-000000000001", "action": "complete", "expected_version": 0, "expected_head_event_uuid": null, "reverts_event_uuid": null},
+    "deleted": false,
+    "error": "TASK_STATE_CONFLICT"
+  },
+  {
+    "name": "same_version_wrong_branch",
+    "state": {"version": 2, "head_event_uuid": "10000000-0000-0000-0000-000000000002", "completion_event_uuid": null},
+    "intent": {"event_uuid": "20000000-0000-0000-0000-000000000003", "action": "complete", "expected_version": 2, "expected_head_event_uuid": "20000000-0000-0000-0000-000000000002", "reverts_event_uuid": null},
+    "deleted": false,
+    "error": "TASK_STATE_CONFLICT"
+  },
+  {
+    "name": "undo_must_target_current_completion",
+    "state": {"version": 3, "head_event_uuid": "10000000-0000-0000-0000-000000000003", "completion_event_uuid": "10000000-0000-0000-0000-000000000003"},
+    "intent": {"event_uuid": "10000000-0000-0000-0000-000000000004", "action": "undo", "expected_version": 3, "expected_head_event_uuid": "10000000-0000-0000-0000-000000000003", "reverts_event_uuid": "10000000-0000-0000-0000-000000000001"},
+    "deleted": false,
+    "error": "TASK_COMPLETION_MISMATCH"
+  },
+  {
+    "name": "completion_is_not_a_daily_counter",
+    "state": {"version": 1, "head_event_uuid": "10000000-0000-0000-0000-000000000001", "completion_event_uuid": "10000000-0000-0000-0000-000000000001"},
+    "intent": {"event_uuid": "20000000-0000-0000-0000-000000000001", "action": "complete", "expected_version": 1, "expected_head_event_uuid": "10000000-0000-0000-0000-000000000001", "reverts_event_uuid": null},
+    "deleted": false,
+    "error": "TASK_ALREADY_COMPLETED"
+  },
+  {
+    "name": "delete_wins",
+    "state": {"version": 0, "head_event_uuid": null, "completion_event_uuid": null},
+    "intent": {"event_uuid": "10000000-0000-0000-0000-000000000001", "action": "complete", "expected_version": 0, "expected_head_event_uuid": null, "reverts_event_uuid": null},
+    "deleted": true,
+    "error": "ENTITY_DELETED"
+  },
+  {
+    "name": "bounded_integer_does_not_wrap",
+    "state": {"version": 2147483647, "head_event_uuid": "10000000-0000-0000-0000-000000000001", "completion_event_uuid": "10000000-0000-0000-0000-000000000001"},
+    "intent": {"event_uuid": "10000000-0000-0000-0000-000000000002", "action": "undo", "expected_version": 2147483647, "expected_head_event_uuid": "10000000-0000-0000-0000-000000000001", "reverts_event_uuid": "10000000-0000-0000-0000-000000000001"},
+    "deleted": false,
+    "error": "TASK_STATE_EXHAUSTED"
+  }
+]
