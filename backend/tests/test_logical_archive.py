@@ -59,11 +59,11 @@ def test_import_rejects_missing_generated_primary_key(inserted_key):
     assert target_keys == {}
 
 
-def migrate(path: Path) -> str:
+def migrate(path: Path, *, revision: str = "head") -> str:
     config = Config(PROJECT_ROOT / "alembic.ini")
     config.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
     config.set_main_option("sqlalchemy.url", f"sqlite:///{path}")
-    command.upgrade(config, "head")
+    command.upgrade(config, revision)
     return f"sqlite:///{path}"
 
 

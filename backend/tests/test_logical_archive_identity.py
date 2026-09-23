@@ -188,7 +188,11 @@ def test_same_public_ids_round_trip_without_crossing_accounts(tmp_path):
 
 def test_frozen_v1_archive_imports_then_exports_v2(tmp_path):
     bundle = json.loads(FIXTURE.read_text())
-    target_url = migrate(tmp_path / "target.sqlite")
+    # Archives require an exact schema match; restore the immutable old fixture
+    # to its declared revision, not an implicitly changing current head.
+    target_url = migrate(
+        tmp_path / "target.sqlite", revision=bundle["manifest"]["alembic_head"]
+    )
     epoch = import_archive(target_url, write_bundle(tmp_path / "v1.zip", bundle))
     assert epoch != bundle["manifest"]["source_sync_epoch"]
     exported = read_bundle(export_archive(target_url, tmp_path / "v2.zip"))
@@ -251,7 +255,7 @@ def test_bad_archive_rolls_back_identity_and_every_table(
     if damage == "checksum":
         bundle["manifest"]["collections"][name]["sha256"] = "0" * 64
     target = tmp_path / "target.sqlite"
-    url = migrate(target)
+    url = migrate(target, revision=bundle["manifest"]["alembic_head"])
     before = database_dump(target)
     with pytest.raises(StorageValidationError, match=message):
         import_archive(url, write_bundle(tmp_path / "bad.zip", bundle))

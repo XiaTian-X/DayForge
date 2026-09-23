@@ -347,6 +347,18 @@ JSON 深度仍为 16；单独主题文件上限 1 MiB。数量上限和字节上
 
 SQLite 继续单 worker；asset 元数据属于数据库，字节在服务端私有受控目录。
 数据库变更新增 Alembic/Room 迁移并提交 schema，不重写已合并历史（D-007 不被暗中撤销）。
+后端事项存储预备迁移 `000000000002` 在 activity_details 增加 one_time_version、
+one_time_head_event_uuid、one_time_completion_event_uuid；全 null 表示尚未启用 v5，
+不解释为已知无历史。新事项在协调启用后显式写入 0/null/null，普通习惯保持全 null。
+activity_events 保存不可变 one_time_expected_version / one_time_expected_head_event_uuid，
+action 与撤销目标复用现有事件列。事实的 state_after 从其自身预条件和事件身份精确还原，
+不读取事项当前 head，不重复保存可产生矛盾的第二份事件状态。
+投影条件更新同时检查账户/未删除父记录与 version/head/completion；调用方仍须在同一事务
+写事实、change log、snapshot 和幂等结果。存储原语本身不提供认证或业务成功确认。
+迁移只追加可空列和约束，不猜测/转换旧事项。所有新增字段未使用时允许降级；一旦初始化
+新状态（包括版本 0）或写入新事实预条件，降级明确停止，不能删除新数据来获得成功。
+逻辑归档继续要求精确 Alembic head 匹配；旧归档先恢复到其记录的 schema，再运行增量迁移，
+不能改写归档 head 或校验和来强行导入新 schema。
 用户不要求保留当前测试数据，因此不建设依赖旧图标猜测事项的存量分类迁移。
 正式切换以双方空业务基线为前提：有旧业务数据时明确停止并提示受控重建，不能自动 destructive fallback。
 
