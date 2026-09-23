@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional, overload
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +41,12 @@ from src.v2.schemas import (
     SyncPushRequest,
     SyncPushResponse,
 )
+from src.v2.next_sync_contract import (
+    NextSyncOperationResult,
+    NextSyncPushResponse,
+    validate_task_result_binding,
+)
+from src.v2.one_time_storage import OneTimeStateConflict
 
 
 async def _prepare_three_way_merge(
@@ -91,7 +97,13 @@ async def _dispatch_operation(
     user_id: int,
     device: ClientDevice,
     operation: SyncOperationRequest,
+    *,
+    one_time_events: bool = False,
 ) -> tuple[int, dict[str, Any]]:
+    if one_time_events and operation.entity_type == "activity_event":
+        return await mutate_activity_event(
+            session, user_id, device, operation, one_time_contract=True
+        )
     handlers = {
         "plan_node": mutate_plan_node,
         "activity_event": mutate_activity_event,
@@ -158,6 +170,8 @@ def _replay_result(
     operation: SyncOperationRequest,
     previous: SyncOperation,
     request_hash: str,
+    *,
+    one_time_events: bool = False,
 ) -> SyncOperationResult:
     """Apply identical replay rules to normal lookups and unique-insert races."""
     if previous.request_hash != request_hash:
@@ -179,14 +193,46 @@ def _replay_result(
         )
     if stored.get("status") == "applied":
         stored["status"] = "already_applied"
+    if one_time_events:
+        result = NextSyncOperationResult.model_validate(stored)
+        validate_task_result_binding(operation, result)
+        return result
     return SyncOperationResult.model_validate(stored)
+
+
+@overload
+async def process_push(
+    user: User,
+    request: SyncPushRequest,
+    session: AsyncSession,
+    *,
+    one_time_events: Literal[False] = False,
+) -> SyncPushResponse: ...
+
+
+@overload
+async def process_push(
+    user: User,
+    request: SyncPushRequest,
+    session: AsyncSession,
+    *,
+    one_time_events: Literal[True],
+) -> NextSyncPushResponse: ...
 
 
 async def process_push(
     user: User,
     request: SyncPushRequest,
     session: AsyncSession,
-) -> SyncPushResponse:
+    *,
+    one_time_events: bool = False,
+) -> SyncPushResponse | NextSyncPushResponse:
+    """Share transaction/replay orchestration without activating v5 HTTP.
+
+    The internal switch enables only the new fact semantics and result context;
+    structural appearance payloads and protocol negotiation are separate rollout
+    steps. No current route takes this switch from client input or enables it.
+    """
     user_id = require_internal(user.id, "User.id")
     device = await require_device(user_id, str(request.device_id), session)
     device_capabilities, _ = await capabilities_for_device(session, device)
@@ -203,7 +249,11 @@ async def process_push(
         )
         previous = previous_result.scalar_one_or_none()
         if previous is not None:
-            results.append(_replay_result(operation, previous, request_hash))
+            results.append(
+                _replay_result(
+                    operation, previous, request_hash, one_time_events=one_time_events
+                )
+            )
             continue
 
         try:
@@ -245,7 +295,11 @@ async def process_push(
                     )
                 )
             else:
-                results.append(_replay_result(operation, raced, request_hash))
+                results.append(
+                    _replay_result(
+                        operation, raced, request_hash, one_time_events=one_time_events
+                    )
+                )
             continue
 
         try:
@@ -253,8 +307,11 @@ async def process_push(
                 if (
                     operation.entity_type in STRUCTURAL_ENTITY_TYPES
                     and not can_write_structure
-                    and not await _is_fact_derived_one_time_delete(
-                        session, user_id, operation
+                    and (
+                        one_time_events
+                        or not await _is_fact_derived_one_time_delete(
+                            session, user_id, operation
+                        )
                     )
                 ):
                     raise DomainError(
@@ -274,6 +331,7 @@ async def process_push(
                         user_id,
                         device,
                         prepared_operation,
+                        one_time_events=one_time_events,
                     )
             result = SyncOperationResult(
                 operation_id=operation.operation_id,
@@ -284,6 +342,20 @@ async def process_push(
                 entity=entity,
             )
             operation_record.status = "applied"
+        except OneTimeStateConflict as exc:
+            if not one_time_events:
+                raise  # Never serialize a new task conflict through the old DTO.
+            result = NextSyncOperationResult(
+                operation_id=operation.operation_id,
+                entity_type=operation.entity_type,
+                entity_uuid=operation.entity_uuid,
+                status="conflict",
+                error_code=exc.code,
+                message=exc.message,
+                one_time_conflict=exc.projection,
+            )
+            operation_record.status = result.status
+            operation_record.error_code = exc.code
         except DomainError as exc:
             if exc.conflict and (exc.revision is None or exc.entity is None):
                 current_revision, current_entity = await current_entity_snapshot(
@@ -323,6 +395,11 @@ async def process_push(
             operation_record.status = "rejected"
             operation_record.error_code = "CONSTRAINT_VIOLATION"
 
+        if one_time_events:
+            result = NextSyncOperationResult.model_validate(
+                result.model_dump(mode="json")
+            )
+            validate_task_result_binding(operation, result)
         operation_record.result_json = canonical_json(result.model_dump(mode="json"))
         operation_record.completed_at = utc_now()
         results.append(result)
@@ -339,6 +416,10 @@ async def process_push(
         session.add(cursor)
     cursor.last_push_at = utc_now()
     await session.flush()
+    if one_time_events:
+        return NextSyncPushResponse.model_validate(
+            {"results": [result.model_dump(mode="json") for result in results]}
+        )
     return SyncPushResponse(results=results)
 
 
