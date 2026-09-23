@@ -26,7 +26,7 @@ class SvgGeometryTest {
     fun sharedAbsoluteCommandsAndArcGeometry() {
         val cases = InstrumentationRegistry.getInstrumentation().context.assets.open("next/svg-geometry.json")
             .bufferedReader().use { Json.parseToJsonElement(it.readText()).jsonArray }
-        assertEquals(12, cases.size)
+        assertEquals(14, cases.size)
         cases.forEach { raw ->
             val case = raw.jsonObject
             val source = case.getValue("d").jsonPrimitive.content

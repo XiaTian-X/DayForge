@@ -152,6 +152,10 @@ def resolve_path(value: str) -> SvgGeometry:
 
     def append(command: str, values: tuple[float, ...]) -> None:
         nonlocal x, y, sx, sy, length, contours
+        if result and result[-1].command == "Z" and command not in {"M", "Z"}:
+            # SVG closepath ends the subpath. Drawing afterwards starts another
+            # at the same point; make the native contour and dash reset explicit.
+            append("M", (x, y))
         for item in values:
             coordinate(item)
         if len(result) >= MAX_EXPANDED_COMMANDS:

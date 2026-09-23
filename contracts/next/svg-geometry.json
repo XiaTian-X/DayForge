@@ -24,5 +24,9 @@
    "curve_ends":[[0.2928932188134524,-0.7071067811865476],[1,-1],[1.7071067811865475,-0.7071067811865476],[2,0]],
    "first_control":[0,-0.265216489839544]},
   {"name":"unbounded-derived-radius", "d":"M0 0 A1000000 1e-300 0 0 1 0 2", "error":"SVG_GEOMETRY_LIMIT"},
-  {"name":"derived-radius-one-step-over-limit", "d":"M0 0 A1000000 0.000000999999 0 0 1 0 2", "error":"SVG_GEOMETRY_LIMIT"}
+  {"name":"derived-radius-one-step-over-limit", "d":"M0 0 A1000000 0.000000999999 0 0 1 0 2", "error":"SVG_GEOMETRY_LIMIT"},
+  {"name":"implicit-subpath-after-close", "d":"M2 3 L5 7 Z l1 0 q1 1 2 0 z", "contours":2, "source_commands":6,
+   "commands":[["M",2,3],["L",5,7],["Z"],["M",2,3],["L",3,3],["Q",4,4,5,3],["Z"]]},
+  {"name":"arc-after-close-and-repeated-close", "d":"M0 0Z A0 1 0 0 1 2 0 Z Z L1 0", "contours":3, "source_commands":6,
+   "commands":[["M",0,0],["Z"],["M",0,0],["L",2,0],["Z"],["Z"],["M",0,0],["L",1,0]]}
 ]

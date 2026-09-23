@@ -36,5 +36,7 @@
   {"name":"float-rounded-polygon-budget", "body":"<polygon points=\"999999.968749999,0 999999.968750001,0 999999.968749999,.000000001\" stroke=\"#000\" stroke-dasharray=\".00000001 .00000001\"/>", "error":"SVG_DASH_LIMIT"},
   {"name":"round-linecap", "body":"<line x1=\"8\" y1=\"12\" x2=\"16\" y2=\"12\" stroke=\"#f00\" stroke-width=\"8\" stroke-linecap=\"round\"/>", "pixels":[[5,12,255,0,0,255],[3,12,0,0,0,0],[12,12,255,0,0,255]]},
   {"name":"square-linecap", "body":"<line x1=\"8\" y1=\"12\" x2=\"16\" y2=\"12\" stroke=\"#f00\" stroke-width=\"8\" stroke-linecap=\"square\"/>", "pixels":[[4,8,255,0,0,255],[3,12,0,0,0,0],[19,15,255,0,0,255]]},
-  {"name":"zero-dash-interval-dots", "body":"<line x1=\"4\" y1=\"12\" x2=\"20\" y2=\"12\" stroke=\"#f00\" stroke-width=\"4\" stroke-linecap=\"round\" stroke-dasharray=\"0 8\"/>", "pixels":[[4,12,255,0,0,255],[8,12,0,0,0,0],[12,12,255,0,0,255]]}
+  {"name":"zero-dash-interval-dots", "body":"<line x1=\"4\" y1=\"12\" x2=\"20\" y2=\"12\" stroke=\"#f00\" stroke-width=\"4\" stroke-linecap=\"round\" stroke-dasharray=\"0 8\"/>", "pixels":[[4,12,255,0,0,255],[8,12,0,0,0,0],[12,12,255,0,0,255]]},
+  {"name":"implicit-contour-exact-dash-budget", "body":"<path d=\"M0 12 L32765 12 Z L1 12 Z\" fill=\"none\" stroke=\"#f00\" stroke-width=\"2\" stroke-dasharray=\"1 1\"/>", "pixels":[[12,12,255,0,0,255],[12,20,0,0,0,0]]},
+  {"name":"implicit-contour-over-dash-budget", "body":"<path d=\"M0 0 L32766 0 Z L1 0 Z\" stroke=\"#000\" stroke-dasharray=\"1 1\"/>", "error":"SVG_DASH_LIMIT"}
 ]

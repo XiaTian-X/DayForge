@@ -33,7 +33,7 @@ class SvgRendererTest {
     fun sharedScenesHaveRealPixelsAndFailClosedBeforeDrawing() {
         val cases = InstrumentationRegistry.getInstrumentation().context.assets.open("next/svg-drawing.json")
             .bufferedReader().use { Json.parseToJsonElement(it.readText()).jsonArray }
-        assertEquals(38, cases.size)
+        assertEquals(40, cases.size)
         cases.forEach { raw ->
             val case = raw.jsonObject
             val name = case.getValue("name").jsonPrimitive.content

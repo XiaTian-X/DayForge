@@ -96,6 +96,10 @@ internal fun resolveSvgPath(value: String): SvgGeometry {
     var length = 0.0
     var contours = 0
     fun append(command: Char, values: List<Double>) {
+        if (result.lastOrNull()?.command == 'Z' && command != 'M' && command != 'Z') {
+            // Closing ends a subpath; subsequent drawing starts a new contour.
+            append('M', listOf(x, y))
+        }
         values.forEach(::coordinate)
         svgRequire(result.size < SVG_MAX_EXPANDED_COMMANDS, "SVG_GEOMETRY_LIMIT")
         if (command == 'Z') length += norm(x - sx, y - sy)
