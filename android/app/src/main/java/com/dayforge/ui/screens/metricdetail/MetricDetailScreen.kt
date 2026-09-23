@@ -193,7 +193,7 @@ fun MetricDetailScreen(
                     } catch (e: Exception) {
                         MaterialTheme.colorScheme.primary
                     }
-                    
+
                     Column(
                         modifier = Modifier.fillMaxWidth().padding(top = 48.dp, bottom = 24.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
@@ -208,9 +208,9 @@ fun MetricDetailScreen(
                                 tint = metricColor,
                                 modifier = Modifier.size(56.dp)
                             )
-                            
+
                             Spacer(modifier = Modifier.width(16.dp))
-                            
+
                             // Latest value display
                             uiState.latestValue?.let { value ->
                                 Text(
@@ -226,11 +226,11 @@ fun MetricDetailScreen(
                                 )
                             }
                         }
-                        
+
                         uiState.latestValue?.let {
                             Spacer(modifier = Modifier.height(12.dp))
-                            
-                            val lastLogStr = uiState.logs.firstOrNull()?.date?.let { 
+
+                            val lastLogStr = uiState.logs.firstOrNull()?.date?.let {
                                 val sdf = java.text.SimpleDateFormat("MMM dd", java.util.Locale.getDefault())
                                 sdf.format(java.util.Date(it))
                             }
@@ -241,7 +241,7 @@ fun MetricDetailScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            
+
                         }
 
                         // Configuration remains visible even before the first record.

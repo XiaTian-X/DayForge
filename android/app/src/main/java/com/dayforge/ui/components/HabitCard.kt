@@ -310,7 +310,7 @@ fun HabitCard(
                     ) {
                         // Button
                         Box(
-                            modifier = Modifier.wrapContentWidth(), 
+                            modifier = Modifier.wrapContentWidth(),
                             contentAlignment = Alignment.CenterStart
                         ) {
                             val displayCount = if (activeTimer?.habitId == habit.id) {
@@ -345,7 +345,7 @@ fun HabitCard(
                                 modifier = Modifier
                             )
                         }
-                        
+
                         // Streak Indicator (Only if no targetCycles and timer not taking full width)
                         if (!isTimerActive && habit.targetCycles == null) {
                             Spacer(modifier = Modifier.width(16.dp))

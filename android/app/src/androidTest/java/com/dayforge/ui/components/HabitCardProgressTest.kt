@@ -19,6 +19,7 @@ import com.dayforge.R
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
+import com.dayforge.domain.model.ActiveTimerState
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -81,5 +82,61 @@ class HabitCardProgressTest {
                 "lines=${layout.lineCount}, constraints=${layout.layoutInput.constraints}, text=${layout.layoutInput.text}",
             layout.hasVisualOverflow
         )
+    }
+
+    @Test fun countup_timer_actions_remain_touchable_without_opening_card() =
+        assertTimerActions(isCountdown = false)
+
+    @Test fun countdown_timer_actions_remain_touchable_without_opening_card() =
+        assertTimerActions(isCountdown = true)
+
+    private fun assertTimerActions(isCountdown: Boolean) {
+        val timerHabit = habit.copy(id = 7, habitType = HabitType.TIMER,
+            targetValue = 1, isCountdown = isCountdown)
+        val timer = mutableStateOf<ActiveTimerState?>(null)
+        val completed = mutableStateOf(false)
+        val actions = mutableListOf<String>()
+        var opened = 0
+        compose.setContent { MaterialTheme {
+            CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, fontScale = 2f)) {
+                Box(Modifier.width(320.dp)) {
+                    HabitCard(timerHabit, { opened++ }, {}, {},
+                        completed = completed.value,
+                        activeTimer = timer.value,
+                        onTimerStart = {
+                            actions += "start"
+                            timer.value = ActiveTimerState(7, 10, false, 1)
+                        },
+                        onTimerPause = {
+                            actions += "pause"
+                            timer.value = requireNotNull(timer.value).copy(isPaused = true)
+                        },
+                        onTimerResume = {
+                            actions += "resume"
+                            timer.value = requireNotNull(timer.value).copy(isPaused = false)
+                        },
+                        onTimerStop = {
+                            actions += "stop"
+                            timer.value = null
+                            completed.value = true
+                        }
+                    )
+                }
+            }
+        } }
+        listOf(R.string.action_start_timer, R.string.action_pause,
+            R.string.action_resume, R.string.action_stop).forEach { label ->
+            compose.onNodeWithContentDescription(compose.activity.getString(label))
+                .assertIsDisplayed().performTouchInput { click() }
+            compose.waitForIdle()
+        }
+        compose.onNodeWithText(compose.activity.getString(R.string.habit_card_status_completed))
+            .assertIsDisplayed()
+        compose.onNodeWithContentDescription(compose.activity.getString(R.string.action_start_timer))
+            .assertDoesNotExist()
+        compose.runOnIdle {
+            assertEquals(listOf("start", "pause", "resume", "stop"), actions)
+            assertEquals(0, opened)
+        }
     }
 }

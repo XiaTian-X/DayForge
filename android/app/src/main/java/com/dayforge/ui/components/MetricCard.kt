@@ -179,7 +179,7 @@ fun MetricCard(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    
+
                     if (latestLogDate != null) {
                         Text(
                             text = stringResource(R.string.metric_card_last_recorded, formatDate(latestLogDate)),
@@ -267,7 +267,7 @@ fun MetricCard(
                         }
                     )
 
-                    
+
                 }
             }
         }

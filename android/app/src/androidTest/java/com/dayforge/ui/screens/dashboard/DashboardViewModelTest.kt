@@ -33,9 +33,13 @@ import com.dayforge.domain.service.StructuralEditGuard
 import com.dayforge.domain.service.TimerManager
 import com.dayforge.ui.metrics.LinkedMetricCoordinator
 import com.dayforge.util.DateTimeUtils
+import com.dayforge.widget.WidgetRefreshScheduler
 import app.cash.turbine.test
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkObject
+import io.mockk.unmockkObject
+import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -82,6 +86,10 @@ class DashboardViewModelTest {
     fun setup() {
         Dispatchers.setMain(testDispatcher)
         context = ApplicationProvider.getApplicationContext()
+        // Test persistence and dispatch here; real rendering belongs to the widget suites.
+        // Queued workers must not escape this fixture's per-test database lifetime.
+        mockkObject(WidgetRefreshScheduler)
+        every { WidgetRefreshScheduler.request(any()) } returns null
         database = storage.database
         // Finish lazy Room initialization before starting ViewModel queries. Cancellation can
         // finish before a blocking query returns; closing while its first open is in progress
@@ -145,11 +153,15 @@ class DashboardViewModelTest {
 
     @After
     fun teardown() = runBlocking {
-        if (::viewModel.isInitialized) {
-            viewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+        try {
+            if (::viewModel.isInitialized) {
+                viewModel.viewModelScope.coroutineContext[Job]?.cancelAndJoin()
+            }
+            if (::database.isInitialized) database.close()
+        } finally {
+            unmockkObject(WidgetRefreshScheduler)
+            Dispatchers.resetMain()
         }
-        if (::database.isInitialized) database.close()
-        Dispatchers.resetMain()
     }
 
     @Test
@@ -285,6 +297,7 @@ class DashboardViewModelTest {
             progress = awaitItem()
             assertEquals("Completed should be 1 after logging", 1, progress.first)
             assertEquals("Total should still be 1", 1, progress.second)
+            verify(exactly = 1) { WidgetRefreshScheduler.request(context) }
         }
     }
 
