@@ -26,6 +26,8 @@ from sqlalchemy import (
 from sqlalchemy.engine import Connection, Engine
 
 from src.storage.sqlite_maintenance import StorageValidationError
+from src.storage.database_adapter import configure_sqlite_transactions
+from src.v2.one_time_recovery import OneTimeRecoveryError, read_connection_history
 
 
 LOGICAL_FORMAT_VERSION = 2
@@ -225,8 +227,25 @@ def _portable_collections(
     return collections, identity_row[0]
 
 
-def export_archive(database_url: str, archive_path: Path) -> Path:
+def _archive_engine(database_url: str) -> Engine:
     engine = create_engine(database_url, future=True)
+    if engine.dialect.name == "sqlite":
+        configure_sqlite_transactions(engine)
+    return engine
+
+
+def _validate_one_time_history(connection: Connection, metadata: MetaData) -> None:
+    details = metadata.tables.get("activity_details")
+    if details is None or "one_time_version" not in details.c:
+        return  # Matching pre-v5 schema has no projection to recover or infer.
+    try:
+        read_connection_history(connection)
+    except OneTimeRecoveryError as error:
+        raise StorageValidationError(f"invalid one-time history: {error}") from error
+
+
+def export_archive(database_url: str, archive_path: Path) -> Path:
+    engine = _archive_engine(database_url)
     try:
         metadata = _reflect(engine)
         with engine.connect() as connection:
@@ -244,6 +263,7 @@ def export_archive(database_url: str, archive_path: Path) -> Path:
                 raise StorageValidationError(
                     "logical export requires a maintenance window without active timers"
                 )
+            _validate_one_time_history(connection, metadata)
             collections, identity = _portable_collections(connection, metadata)
             alembic_head = (
                 connection.execute(
@@ -394,7 +414,7 @@ def _insert_collection(
 
 def import_archive(database_url: str, archive_path: Path) -> str:
     manifest, collections = _read_archive(archive_path.resolve())
-    engine = create_engine(database_url, future=True)
+    engine = _archive_engine(database_url)
     new_epoch = str(uuid4())
     try:
         metadata = _reflect(engine)
@@ -454,6 +474,7 @@ def import_archive(database_url: str, archive_path: Path) -> str:
                         collections[name],
                         target_keys,
                     )
+            _validate_one_time_history(connection, metadata)
             for name in TRANSPORT_TABLES:
                 if name in metadata.tables:
                     connection.execute(metadata.tables[name].delete())
