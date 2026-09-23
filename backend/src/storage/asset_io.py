@@ -43,6 +43,10 @@ class AssetIoPool:
         if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("asset worker pool belongs to a different event loop")
 
+    @property
+    def capacity(self) -> int:
+        return self._capacity
+
     async def run(self, operation: Callable[[], Result]) -> Result:
         self._check_loop()
         if self._closing:

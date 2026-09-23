@@ -33,6 +33,14 @@ class _Binding:
     blob: IconBlob
 
 
+@dataclass(frozen=True)
+class InstalledTransfer:
+    """Committed acknowledgement plus internal cleanup state, not a wire model."""
+
+    receipt: AssetTransferReceipt
+    cleanup_pending: bool
+
+
 class AssetTransfers:
     """The transport provides immutable, already bounded bytes, never a path.
 
@@ -101,7 +109,7 @@ class AssetTransfers:
         asset_id: str,
         variant: Variant,
         data: bytes,
-    ) -> AssetTransferReceipt:
+    ) -> InstalledTransfer:
         if type(data) is not bytes:
             raise TypeError("asset transfer requires immutable bytes")
         if len(data) > 2_097_152:
@@ -144,17 +152,22 @@ class AssetTransfers:
                 await final.flush()
         # Reaching here proves COMMIT, not just flush. A cancelled/failed commit
         # leaves its intent: recovery must inspect DB state, never guess rollback.
+        cleanup_pending = False
         try:
             await self.pool.run(lambda: self.files.finish(installed))
         except Exception:
+            cleanup_pending = True
             # Already committed bytes remain available. No credentials, original
             # exception text or user filenames are written to diagnostics.
             logger.warning(
                 "Asset installation cleanup deferred",
                 extra={"operation_id": installed.operation_id},
             )
-        return AssetTransferReceipt(
-            context=context, asset_id=asset_id, variant=variant, blob=before.blob
+        return InstalledTransfer(
+            AssetTransferReceipt(
+                context=context, asset_id=asset_id, variant=variant, blob=before.blob
+            ),
+            cleanup_pending,
         )
 
     async def read(
