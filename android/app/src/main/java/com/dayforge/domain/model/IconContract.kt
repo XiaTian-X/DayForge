@@ -9,6 +9,18 @@ import kotlinx.serialization.json.JsonClassDiscriminator
 
 /** Immutable metadata contract. Parsing this does not authorize or validate the image bytes. */
 @Serializable
+data class ObjectAppearance(
+    val icon: IconReference,
+    @SerialName("accent_color") val accentColor: String,
+    @SerialName("icon_tint") val iconTint: String
+) {
+    init {
+        require(isAccentColor(accentColor))
+        require(iconTint == "theme" || iconTint == "object")
+    }
+}
+
+@Serializable
 @OptIn(ExperimentalSerializationApi::class)
 @JsonClassDiscriminator("kind")
 sealed interface IconReference {

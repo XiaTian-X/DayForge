@@ -8,13 +8,12 @@ from pydantic import Field, field_validator, model_validator
 from src.v2.appearance import (
     AssetIcon,
     IconPack,
-    IconReference,
+    ObjectAppearance,
     RoleIcon,
     RoleKey,
     icon_allowed,
 )
 from src.v2.contract_types import (
-    AccentColor,
     ContractModel,
     exact_integer,
     visible_name,
@@ -84,12 +83,6 @@ ConfigSchedule = Annotated[
 ]
 
 
-class ConfigAppearance(ContractModel):
-    icon: IconReference
-    accent_color: AccentColor
-    icon_tint: Literal["theme", "object"]
-
-
 class ConfigActivity(ContractModel):
     tracking_mode: Literal["check", "count", "duration"]
     completion_policy: Literal["recurring", "one_and_done"]
@@ -152,7 +145,7 @@ class ConfigNode(ContractModel):
     description: str = Field(max_length=1000)
     is_active: bool
     parent_key: LocalId | None
-    appearance: ConfigAppearance
+    appearance: ObjectAppearance
     goal: ConfigGoal | None
     activity: ConfigActivity | None
 
@@ -184,7 +177,7 @@ class ConfigMetric(ContractModel):
     target_direction: Literal["increase", "decrease", "range"] | None
     target_value: float | None = Field(allow_inf_nan=False)
     target_value_upper: float | None = Field(allow_inf_nan=False)
-    appearance: ConfigAppearance
+    appearance: ObjectAppearance
 
     @model_validator(mode="after")
     def valid_metric(self):
