@@ -24,12 +24,14 @@ from sqlalchemy import (
     Time,
     create_engine,
     select,
+    text,
 )
 from sqlalchemy.engine import Connection, Engine
 
 from src.storage.sqlite_maintenance import StorageValidationError
 from src.storage.database_adapter import configure_sqlite_transactions
 from src.v2.one_time_recovery import OneTimeRecoveryError, read_connection_history
+from src.v2.asset_recovery import AssetRecoveryError, read_asset_metadata
 
 
 LOGICAL_FORMAT_VERSION = 2
@@ -37,6 +39,11 @@ READABLE_FORMAT_VERSIONS = frozenset({1, LOGICAL_FORMAT_VERSION})
 TABLE_ORDER = (
     "users",
     "user_profiles",
+    "appearance_accounts",
+    "account_icon_blobs",
+    "account_icon_assets",
+    "account_icon_packs",
+    "appearance_catalog",
     "api_tokens",
     "households",
     "household_memberships",
@@ -133,8 +140,15 @@ def _identity_key(
         return str(row["public_id"])
     if table == "api_tokens":
         return str(row["token_hash"])
-    if table in {"user_profiles", "user_sync_policies"}:
+    if table in {"user_profiles", "user_sync_policies", "appearance_accounts"}:
         return f"user:{primary_keys[('users', row['user_id'])]}"
+    if table in {"account_icon_blobs", "account_icon_packs", "appearance_catalog"}:
+        owner = primary_keys[("users", row["owner_user_id"])]
+        if table == "account_icon_blobs":
+            return f"owner:{owner}:sha256:{row['sha256']}"
+        if table == "account_icon_packs":
+            return f"owner:{owner}:pack:{row['pack_uuid']}:{row['revision']}"
+        return f"owner:{owner}:sequence:{row['sequence']}"
     if table in {"goal_details", "activity_details"}:
         return f"node:{primary_keys[('plan_nodes', row['node_id'])]}"
     if table == "timer_segments":
@@ -269,6 +283,19 @@ def _validate_one_time_history(connection: Connection, metadata: MetaData) -> No
         raise StorageValidationError(f"invalid one-time history: {error}") from error
 
 
+def _validate_appearance(connection: Connection, metadata: MetaData) -> None:
+    if "appearance_accounts" not in metadata.tables:
+        return
+    try:
+        read_asset_metadata(
+            lambda statement: [
+                dict(row) for row in connection.execute(text(statement)).mappings()
+            ]
+        )
+    except AssetRecoveryError as error:
+        raise StorageValidationError(f"invalid appearance metadata: {error}") from error
+
+
 def export_archive(database_url: str, archive_path: Path) -> Path:
     engine = _archive_engine(database_url)
     try:
@@ -289,6 +316,7 @@ def export_archive(database_url: str, archive_path: Path) -> Path:
                     "logical export requires a maintenance window without active timers"
                 )
             _validate_one_time_history(connection, metadata)
+            _validate_appearance(connection, metadata)
             collections, identity = _portable_collections(connection, metadata)
             alembic_head = (
                 connection.execute(
@@ -500,6 +528,7 @@ def import_archive(database_url: str, archive_path: Path) -> str:
                         target_keys,
                     )
             _validate_one_time_history(connection, metadata)
+            _validate_appearance(connection, metadata)
             for name in TRANSPORT_TABLES:
                 if name in metadata.tables:
                     connection.execute(metadata.tables[name].delete())
