@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from src.v2.one_time_recovery import OneTimeRecoveryError, read_one_time_history
+
 
 BACKUP_FORMAT_VERSION = 1
 BACKUP_PREFIX = "dayforge-"
@@ -73,6 +75,7 @@ def inspect_database(path: Path) -> DatabaseInspection:
         raise StorageValidationError(f"database not found: {path}")
     with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as connection:
         connection.row_factory = sqlite3.Row
+        connection.execute("BEGIN")  # All inspection fields describe one snapshot.
         integrity_rows = connection.execute("PRAGMA integrity_check").fetchall()
         integrity = (
             "ok"
@@ -122,6 +125,21 @@ def inspect_database(path: Path) -> DatabaseInspection:
             )
 
         domain_errors: list[str] = []
+        if "activity_details" in tables:
+            detail_columns = {
+                row[1]
+                for row in connection.execute('PRAGMA table_info("activity_details")')
+            }
+            if "one_time_version" in detail_columns:
+                try:
+                    read_one_time_history(
+                        lambda statement, parameters: [
+                            dict(row)
+                            for row in connection.execute(statement, parameters)
+                        ]
+                    )
+                except OneTimeRecoveryError as error:
+                    domain_errors.append(f"invalid one-time history: {error}")
         if "server_instances" in tables and row_counts["server_instances"] != 1:
             domain_errors.append("server_instances must contain exactly one row")
         if "plan_nodes" in tables:
@@ -209,6 +227,20 @@ def _write_manifest(path: Path, manifest: dict[str, Any]) -> Path:
     return manifest_path
 
 
+def _discard_temporary_database(path: Path) -> None:
+    """Only caller-created private temporaries, after all connections are closed.
+
+    Read-only inspection of a WAL-mode copy can leave empty WAL/SHM companions.
+    Never call this for the source database or an installed/active restore target.
+    """
+    for candidate in (
+        path,
+        path.with_name(path.name + "-wal"),
+        path.with_name(path.name + "-shm"),
+    ):
+        candidate.unlink(missing_ok=True)
+
+
 def create_backup(
     database_path: Path,
     backup_directory: Path,
@@ -235,7 +267,7 @@ def create_backup(
             target, _manifest_for(target, inspection, kind=kind)
         )
     finally:
-        temporary.unlink(missing_ok=True)
+        _discard_temporary_database(temporary)
     if apply_retention:
         prune_backups(backup_directory)
     return target, manifest_path
@@ -345,7 +377,7 @@ def restore_backup(
         database_path.with_name(database_path.name + "-wal").unlink(missing_ok=True)
         database_path.with_name(database_path.name + "-shm").unlink(missing_ok=True)
     finally:
-        temporary.unlink(missing_ok=True)
+        _discard_temporary_database(temporary)
     return safety_backup, new_epoch
 
 
