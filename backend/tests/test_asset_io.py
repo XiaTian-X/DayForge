@@ -116,6 +116,19 @@ async def test_disk_failure_propagates_and_releases_capacity():
         assert await pool.run(lambda: 19) == 19
 
 
+async def test_broken_iterator_exception_cannot_leave_async_request_hanging():
+    failure = StopIteration("broken blocking reader")
+
+    def fail():
+        raise failure
+
+    async with AssetIoPool(1) as pool:
+        with pytest.raises(RuntimeError) as caught:
+            await asyncio.wait_for(pool.run(fail), timeout=1)
+        assert caught.value.__cause__ is failure
+        assert await pool.run(lambda: 23) == 23
+
+
 async def test_failure_after_request_cancellation_is_observed_without_db_publication():
     loop = asyncio.get_running_loop()
     release, started = Event(), asyncio.Event()
