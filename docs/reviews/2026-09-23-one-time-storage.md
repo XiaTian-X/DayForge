@@ -47,8 +47,12 @@ SQLite 追加列时附加命名 CHECK，避免重建被外键引用的父表或�
   覆盖真实 deferred-FK COMMIT、幂等结果落库和 cursor 写入失败：全部表回到请求前，原身份之后
   可安全重试。它验证真实 HTTP 事务边界，不替代尚未激活的生产 v5 路由/版本门禁验收。
 - 本批 push 定向回归连同已有编排矩阵 44 项通过，27.98 秒；mypy 133 文件通过。
-- `./tools/verify root`：22 项通过。`./tools/verify backend`：1062 项通过，312.73 秒；
-  Ruff/格式/mypy 128 文件、警告预算与当前 OpenAPI 一致性通过。
+- 合入 #189 基线后最终 `./tools/verify root`：22 项通过。
+  最终 `./tools/verify backend`：1170 项通过，445.22 秒；Ruff/格式/mypy 133 文件、
+  警告预算与当前/前向 OpenAPI 一致性通过；最终树与 rebase 前经核对一致。
+- 独立临时 Uvicorn/TCP 再次通过当前 v4：登录/设备注册、六类实体、计时命令、幂等重放及 bootstrap，
+  生产物理备份/恢复/重启后数据和原结果保持、服务器身份保留且 epoch 更新。仅新建临时合成数据库，
+  未操作部署实例；该证据不是 v5 在线路由验收。
 
 存储测试中的事务调用器不替代生产同步 service；push 和测试专用 HTTP bridge 的证据分别记录。
 生产 v5 路由、结构外观、恢复、协议门禁仍在 #188 / #160 后续接入。未进行 Android、人工 UI、NAS、
