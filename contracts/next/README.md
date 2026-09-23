@@ -2,7 +2,7 @@
 
 These synthetic vectors freeze incremental parts of #181 and #196. They are not requests
 that the current server accepts or an installable pack. Catalog hashes describe fictional
-blobs; SVG vectors instead contain actual XML strings for byte validation. Installation
+blobs; SVG/PNG vectors instead contain actual image bytes for validation. Installation
 must independently validate all bytes. All identities are synthetic; no real
 account/device identifiers or credentials are here.
 
@@ -29,6 +29,10 @@ account/device identifiers or credentials are here.
   the bounded static SVG profile. Both `test_svg_inspection.py` and physical-device
   `SvgInspectorTest` validate bytes and complete syntax; neither claims pixel rendering
   or durable installation. Hashes are calculated from these synthetic strings at test time.
+- `png.json`: synthetic base64 PNGs with independent RGBA values or rejection categories.
+  `test_png_shared.py` and physical-device `PngInspectorTest` use the same bytes, including
+  all filters, seven Adam7 passes, 16-bit and transparent images, ICC and malformed inputs.
+  These checks perform actual pixel decoding but do not install or transport assets.
 - `openapi.json`: reproducible **planned**, not mounted, v5 delta API. Generate with
   `cd backend && uv run --frozen python scripts/export_next_openapi.py`; `--check` is
   included in the backend suite. Unchanged live endpoints remain in `../openapi.json`.

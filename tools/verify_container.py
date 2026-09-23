@@ -48,6 +48,46 @@ def compare_restored(before, after):
     require(before["epoch"] != after["epoch"], "Restore did not rotate sync epoch")
 
 
+def verify_png_vectors(path):
+    """Exercise the installed native PNG decoder, not merely dependency installation."""
+    import base64
+    from io import BytesIO
+
+    from PIL import Image
+    from src.appearance.png import inspect_png
+    from src.appearance.png_structure import PngValidationError
+    from src.v2.appearance import IconBlob
+
+    cases = json.loads(path.read_text())
+    require(bool(cases), "Missing PNG vectors")
+    for case in cases:
+        data = base64.b64decode(case["png"], validate=True)
+        expected = IconBlob(
+            sha256=hashlib.sha256(data).hexdigest(),
+            byte_length=len(data),
+            media_type="image/png",
+            width=case["width"],
+            height=case["height"],
+        )
+        if "error" in case:
+            try:
+                inspect_png(data, expected)
+            except PngValidationError as error:
+                require(str(error) == case["error"], "Unexpected PNG rejection")
+            else:
+                raise RuntimeError("Invalid PNG accepted")
+        else:
+            inspected = inspect_png(data, expected)
+            require(
+                (inspected.width, inspected.height) == (case["width"], case["height"]),
+                "PNG dimensions changed",
+            )
+            with Image.open(BytesIO(data), formats=("PNG",)) as decoded:
+                decoded.load()
+                with decoded.convert("RGBA") as pixels:
+                    require(pixels.tobytes() == bytes(case["rgba"]), "PNG pixels changed")
+
+
 def database_snapshot():
     with closing(sqlite3.connect(f"file:{DATABASE}?mode=ro", uri=True)) as db:
         require(
@@ -85,6 +125,9 @@ def database_snapshot():
 
 
 def probe(stage):
+    if stage == "png":
+        verify_png_vectors(Path("/ci-contracts/next/png.json"))
+        return
     if stage == "snapshot":
         print(json.dumps(database_snapshot()))
         return
@@ -320,6 +363,7 @@ def run(image):
         created = True
         docker("run", "--detach", "--name", name, *common, image)
         ready()
+        inside("png", online=True)
         inside("seed", online=True)
         docker("stop", name)
         before = json.loads(inside("snapshot"))
@@ -366,7 +410,7 @@ def run(image):
         ready()
         inside("verify", online=True)
         print(
-            "PASS: non-root startup, migration, six-entity HTTP sync, timer replay, backup, rejected corruption/upgrade, restore and epoch rotation"
+            "PASS: native PNG decoding, non-root startup, migration, six-entity HTTP sync, timer replay, backup, rejected corruption/upgrade, restore and epoch rotation"
         )
     finally:
         subprocess.run(
@@ -389,6 +433,7 @@ if __name__ == "__main__":
         "--probe",
         choices=(
             "health",
+            "png",
             "seed",
             "verify",
             "mutate",

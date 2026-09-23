@@ -44,7 +44,7 @@ jobs:
           docker build --pull --platform "linux/$TARGET_ARCH" \
             --tag "dayforge-ci:$GITHUB_SHA" --iidfile "$RUNNER_TEMP/dayforge-image-id" backend
           test "$(docker image inspect --format '{{.Architecture}}' "dayforge-ci:$GITHUB_SHA")" = "$TARGET_ARCH"
-      - name: Verify startup, sync, failed upgrade and backup recovery
+      - name: Verify native PNG, startup, sync, failed upgrade and backup recovery
         run: python3 tools/verify_container.py --image "$(cat "$RUNNER_TEMP/dayforge-image-id")"
       - name: Record scope
         env:
