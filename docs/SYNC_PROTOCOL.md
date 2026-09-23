@@ -31,6 +31,11 @@ Android 合并已存在实体时按公共 UUID 找到本地主键并原位 UPDAT
 成功响应必须晚于数据库最终 COMMIT；提交失败时不能确认任何本批操作成功。
 计时命令和设备注册同样遵循此边界，不能只依据 flush 或内层保存点完成就发送成功结果。
 
+SQLite 锁竞争或旧快照写升级失败返回 HTTP 503，响应为
+`{"detail":{"code":"DATABASE_BUSY","message":"Database is temporarily busy; retry the original request"}}`，
+附 `Retry-After: 1`。此时整笔请求已回滚，不含任何成功确认；终端保留原 operation/command ID
+及冻结内容，按既有瞬时错误退避重新发送。服务端不在过期快照内自动重试，也不返回逐项永久拒绝。
+
 正常查询及唯一键插入冲突后的查询使用相同的重放规则：不同请求重用 operation ID 返回
 `OPERATION_ID_REUSED`；已完成结果原样复用，仅成功状态转换为 `already_applied`。
 若发现仍为 processing 或缺少结果的操作记录，返回 HTTP 409/`OPERATION_IN_PROGRESS`，

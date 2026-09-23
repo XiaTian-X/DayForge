@@ -2,9 +2,11 @@
 
 from sqlmodel import SQLModel
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.exc import OperationalError
 from typing import AsyncGenerator
 
 from src.config import get_database_adapter
+from src.storage.database_adapter import DatabaseBusyError, is_sqlite_busy
 
 
 DATABASE_ADAPTER = get_database_adapter()
@@ -58,6 +60,14 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             await session.commit()
+        except OperationalError as error:
+            await session.rollback()
+            if is_sqlite_busy(error):
+                # No retry inside a stale snapshot and no partial batch acknowledgement.
+                raise DatabaseBusyError(
+                    "Database transaction must be retried"
+                ) from error
+            raise
         except Exception:
             await session.rollback()
             raise
