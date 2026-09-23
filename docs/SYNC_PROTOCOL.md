@@ -9,6 +9,9 @@
 
 本文件描述稳定语义；字段级契约最终以版本控制中的 OpenAPI 和同步 fixtures 为准。
 
+一次性事项与素材的目标契约见 [APPEARANCE_CONTRACT](APPEARANCE_CONTRACT.md)。
+`contracts/next/` 是未启用的分阶段契约，不替代本文件或当前 v4 OpenAPI。
+
 ## 操作生命周期
 
 1. 客户端在本地事务中修改业务数据并写入具有稳定 operation ID 的 outbox。

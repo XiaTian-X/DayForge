@@ -1,0 +1,30 @@
+{
+  "format": "dayforge.icon-pack",
+  "format_version": 1,
+  "pack_id": "30000000-0000-0000-0000-000000000001",
+  "revision": 1,
+  "name": "Synthetic monochrome",
+  "assets": [
+    {
+      "asset_id": "40000000-0000-0000-0000-000000000001",
+      "name": "Water",
+      "purpose": "general",
+      "color_mode": "template",
+      "light": {"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "byte_length": 128, "media_type": "image/svg+xml", "width": 24, "height": 24},
+      "dark": null
+    },
+    {
+      "asset_id": "40000000-0000-0000-0000-000000000002",
+      "name": "Task",
+      "purpose": "task",
+      "color_mode": "original",
+      "light": {"sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "byte_length": 256, "media_type": "image/png", "width": 96, "height": 96},
+      "dark": {"sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "byte_length": 256, "media_type": "image/png", "width": 96, "height": 96}
+    }
+  ],
+  "roles": {
+    "habit.water": "40000000-0000-0000-0000-000000000001",
+    "task.default": "40000000-0000-0000-0000-000000000002"
+  },
+  "placeholder_asset_id": "40000000-0000-0000-0000-000000000001"
+}
