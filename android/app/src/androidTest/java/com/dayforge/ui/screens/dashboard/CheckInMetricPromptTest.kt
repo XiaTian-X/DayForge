@@ -54,6 +54,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 
 @RunWith(AndroidJUnit4::class)
 class CheckInMetricPromptTest {
+    @get:Rule(order = 0) val widgetRefresh = com.dayforge.widget.IsolatedWidgetRefreshRule()
 
     private lateinit var viewModel: DashboardViewModel
     private lateinit var repository: HabitRepository
@@ -169,6 +170,7 @@ class CheckInMetricPromptTest {
         assertEquals("Walk", prompt.habitName)
         assertEquals(listOf(metricId), prompt.linkedMetrics.map { it.metricId })
         assertEquals(1, completionDao.getAllCompletionsOnce().size)
+        assertEquals(1, widgetRefresh.requestCount)
         assertTrue(viewModel.recordMetricValues(habitId, listOf(MetricValueInput(metricId, 68.5))))
         assertEquals(68.5, metricLogDao.getLatestLog(metricId)!!.value, 0.0)
         database.openHelper.readableDatabase.query(

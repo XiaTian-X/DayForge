@@ -35,7 +35,8 @@ import org.junit.runner.RunWith
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 class CreateHabitViewModelTest {
-    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
+    @get:org.junit.Rule(order = 0) val widgetRefresh = com.dayforge.widget.IsolatedWidgetRefreshRule()
+    @get:org.junit.Rule(order = 1) val storage = com.dayforge.data.local.PhysicalDatabaseRule()
 
     private lateinit var viewModel: CreateHabitViewModel
     private lateinit var repository: HabitRepository
@@ -245,6 +246,7 @@ class CreateHabitViewModelTest {
         assertEquals(HabitType.COUNTING, saved.habitType)
         assertEquals(8, saved.targetValue)
         assertEquals(1, database.syncOutboxDao().count())
+        assertEquals(1, widgetRefresh.requestCount)
     }
 
     @Test

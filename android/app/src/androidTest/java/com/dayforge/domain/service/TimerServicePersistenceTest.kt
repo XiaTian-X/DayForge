@@ -40,7 +40,8 @@ import org.junit.runner.RunWith
 @HiltAndroidTest
 @RunWith(AndroidJUnit4::class)
 class TimerServicePersistenceTest {
-    @get:Rule val hilt = HiltAndroidRule(this)
+    @get:Rule(order = 0) val widgetRefresh = com.dayforge.widget.IsolatedWidgetRefreshRule()
+    @get:Rule(order = 1) val hilt = HiltAndroidRule(this)
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context: Context get() = ApplicationProvider.getApplicationContext()
     private lateinit var database: HabitDatabase
@@ -192,6 +193,7 @@ class TimerServicePersistenceTest {
         instrumentation.waitForIdleSync()
         awaitServiceStopped()
         assertEquals(commands, database.timeLogDao().getPendingTimerCommands())
+        assertEquals(1, widgetRefresh.requestCount)
     }
 
     @Test fun countdownSurvivesParentSyncAndAutomaticallyQueuesOneStop() = runBlocking {
@@ -217,6 +219,7 @@ class TimerServicePersistenceTest {
         val completed = requireNotNull(database.timeLogDao().getById(started.id))
         assertEquals(60, completed.durationSeconds)
         assertEquals(60_000L, completed.timerActiveElapsedMillis)
+        assertEquals(1, widgetRefresh.requestCount)
         assertNotNull(completed.endTime)
         assertNull(database.timeLogDao().getActiveTimeLog())
         val commands = database.timeLogDao().getPendingTimerCommands()

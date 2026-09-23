@@ -30,7 +30,8 @@ import org.junit.runner.RunWith
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 class GoalDraftTest {
-    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
+    @get:org.junit.Rule(order = 0) val widgetRefresh = com.dayforge.widget.IsolatedWidgetRefreshRule()
+    @get:org.junit.Rule(order = 1) val storage = com.dayforge.data.local.PhysicalDatabaseRule()
     private val dispatcher = StandardTestDispatcher()
     private val store = ViewModelStore()
     private lateinit var db: HabitDatabase
@@ -147,5 +148,6 @@ class GoalDraftTest {
         }
         assertNotNull(vm.uiState.value.savedGoalId)
         assertEquals(2, db.habitDao().getAllHabitsOnce().size)
+        assertEquals(1, widgetRefresh.requestCount)
     }
 }
