@@ -85,3 +85,5 @@ backups/
 *.tmp
 *.swp
 *~
+# Local UI review captures; application image assets must remain trackable.
+/screenshots/

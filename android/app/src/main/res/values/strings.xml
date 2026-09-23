@@ -418,8 +418,8 @@
     <!-- Timer Display Formats -->
     <string name="timer_remaining_format">%1$02d:%2$02d left / %3$d min</string>
     <string name="timer_elapsed_format">Elapsed %1$02d:%2$02d / %3$d min</string>
-    <string name="timer_remaining_paused_format">%1$02d:%2$02d left / %3$d min (paused)</string>
-    <string name="timer_elapsed_paused_format">Elapsed %1$02d:%2$02d / %3$d min (paused)</string>
+    <string name="timer_remaining_paused_format">%1$02d:%2$02d left / %3$d min</string>
+    <string name="timer_elapsed_paused_format">Elapsed %1$02d:%2$02d / %3$d min</string>
     <string name="timer_target_format">Target %1$d min</string>
     <string name="timer_countdown_remaining">%1$d left</string>
     <string name="timer_countup_progress">%1$d/%2$d</string>
@@ -690,6 +690,7 @@
     <!-- Target Progress -->
     <string name="target_completed_format">Completed %1$d</string>
     <string name="target_label_format">Target: %1$d</string>
+    <string name="habit_target_progress_format">Completed %1$d / Target %2$d</string>
 
     <!-- Linked Metrics -->
     <string name="linked_metrics_title">Linked Metrics</string>
@@ -810,9 +811,7 @@
     <string name="metric_detail_title">Metric Detail</string>
     <string name="metric_not_found">Metric not found</string>
     <string name="metric_no_records_yet">No records yet</string>
-    <string name="metric_details_section">Details</string>
-    <string name="metric_unit_label">Unit</string>
-    <string name="metric_decimal_places_label">Decimal Places</string>
+    <string name="metric_configuration_summary">Unit: %1$s · Decimal places: %2$d</string>
     <string name="metric_target_increase">Target (Increase)</string>
     <string name="metric_target_decrease">Target (Decrease)</string>
     <string name="metric_target_range">Target Range</string>
@@ -850,7 +849,6 @@
     <string name="metric_card_no_records">No records</string>
     <string name="metric_card_last_recorded">Last recorded: %1$s</string>
     <string name="metric_card_never_recorded">Never recorded</string>
-    <string name="metric_card_tap_details">Tap to view details</string>
     <string name="metric_card_target_direction">Target: %1$s</string>
 
     <!-- Metric Value Input -->

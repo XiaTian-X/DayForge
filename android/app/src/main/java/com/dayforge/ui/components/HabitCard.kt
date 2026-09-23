@@ -23,6 +23,10 @@ import com.dayforge.domain.model.CardColorStyle
 import com.dayforge.domain.service.CardColorResolver
 import com.dayforge.domain.model.ActiveTimerState
 import java.time.LocalDate
+import androidx.compose.foundation.background
+import androidx.compose.foundation.progressSemantics
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 
 /**
  * Get icon for a given icon resource ID.
@@ -289,68 +293,82 @@ fun HabitCard(
                     }
                 }
 
-                // Progress indicator below habit name/description
-                // Conditional: StreakIndicator for unlimited habits, TargetProgressIndicator for target-based habits
-                Spacer(modifier = Modifier.height(12.dp))
-                if (habit.targetCycles != null) {
-                    TargetProgressIndicator(
-                        progress = targetProgress,
-                        target = habit.targetCycles,
-                        textColor = resolvedColors.textColor,
-                        modifier = Modifier
-                    )
-                } else {
-                    StreakIndicator(
-                        activityRate = activityRate,
-                        textColor = resolvedColors.textColor,
-                        modifier = Modifier
-                    )
+                val timerState = when {
+                    activeTimer?.habitId == habit.id && !activeTimer.isPaused -> TimerState.RUNNING
+                    activeTimer?.habitId == habit.id && activeTimer.isPaused -> TimerState.PAUSED
+                    else -> TimerState.NOT_RUNNING
                 }
+                val isTimerActive = timerState == TimerState.RUNNING || timerState == TimerState.PAUSED
 
-                // Completion button at end (hidden for GOAL type)
-                // GOAL 类型不需要打卡按钮
+                // Top Action Row (Button + Streak)
                 if (habit.habitType != HabitType.GOAL) {
                     Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Button
+                        Box(
+                            modifier = Modifier.wrapContentWidth(),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            val displayCount = if (activeTimer?.habitId == habit.id) {
+                                activeTimer.elapsedSeconds
+                            } else {
+                                todayCount
+                            }
+                            CompletionButton(
+                                completed = completed,
+                                undoAvailable = undoAvailable,
+                                habitType = habit.habitType,
+                                targetValue = habit.targetValue,
+                                currentCount = displayCount,
+                                timerState = timerState,
+                                isCountdown = habit.isCountdown,
+                                onCheckIn = onCheckIn,
+                                onUndo = onUndo,
+                                onIncrement = onIncrement,
+                                onDecrement = onDecrement,
+                                onTimerStart = onTimerStart,
+                                onTimerPause = onTimerPause,
+                                onTimerResume = onTimerResume,
+                                onTimerStop = onTimerStop,
+                                showMetricPrompt = showMetricPrompt,
+                                onRecordMetrics = onRecordMetrics,
+                                isCheckInAllowed = isCheckInAllowed,
+                                nextCheckInDate = nextCheckInDate,
+                                hasFailed = hasFailed,
+                                isGoalCompleted = isGoalCompleted,
+                                onReactivation = onReactivation,
+                                textColor = resolvedColors.textColor,
+                                modifier = Modifier
+                            )
+                        }
 
-                    // Calculate timer state for this habit
-                    val timerState = when {
-                        activeTimer?.habitId == habit.id && !activeTimer.isPaused -> TimerState.RUNNING
-                        activeTimer?.habitId == habit.id && activeTimer.isPaused -> TimerState.PAUSED
-                        else -> TimerState.NOT_RUNNING
+                        // Streak Indicator (Only if no targetCycles and timer not taking full width)
+                        if (!isTimerActive && habit.targetCycles == null) {
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+                                StreakIndicator(
+                                    activityRate = activityRate,
+                                    textColor = resolvedColors.textColor,
+                                    modifier = Modifier
+                                )
+                            }
+                        }
                     }
+                }
 
-                    // For active timer, use elapsedSeconds; otherwise use todayCount (accumulated)
-                    val displayCount = if (activeTimer?.habitId == habit.id) {
-                        activeTimer.elapsedSeconds
-                    } else {
-                        todayCount
-                    }
-
-                    CompletionButton(
-                        completed = completed,
-                        undoAvailable = undoAvailable,
-                        habitType = habit.habitType,
-                        targetValue = habit.targetValue,
-                        currentCount = displayCount,
-                        timerState = timerState,
-                        isCountdown = habit.isCountdown,
-                        onCheckIn = onCheckIn,
-                        onUndo = onUndo,
-                        onIncrement = onIncrement,
-                        onDecrement = onDecrement,
-                        onTimerStart = onTimerStart,
-                        onTimerPause = onTimerPause,
-                        onTimerResume = onTimerResume,
-                        onTimerStop = onTimerStop,
-                        showMetricPrompt = showMetricPrompt,
-                        onRecordMetrics = onRecordMetrics,
-                        isCheckInAllowed = isCheckInAllowed,
-                        nextCheckInDate = nextCheckInDate,
-                        hasFailed = hasFailed,
-                        isGoalCompleted = isGoalCompleted,
-                        onReactivation = onReactivation,
-                        textColor = resolvedColors.textColor,
-                        modifier = Modifier
+                // Keep exact long-term counts accessible; the bottom edge is only a visual summary.
+                habit.targetCycles?.takeIf { it > 0 }?.let { target ->
+                    val progressFraction = (targetProgress.toFloat() / target).coerceIn(0f, 1f)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = stringResource(R.string.habit_target_progress_format, targetProgress, target),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = resolvedColors.textColor,
+                        modifier = Modifier.fillMaxWidth().progressSemantics(progressFraction)
                     )
                 }
 
@@ -361,6 +379,27 @@ fun HabitCard(
                         linkedMetrics = linkedMetrics,
                         onMetricClick = onMetricClick,
                         textColor = resolvedColors.textColor
+                    )
+                }
+            }
+
+            // Decorative edge progress; exact counts and progress semantics are provided above.
+            if (habit.targetCycles != null && habit.targetCycles > 0) {
+                val progressFraction = (targetProgress.toFloat() / habit.targetCycles.toFloat()).coerceIn(0f, 1f)
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(horizontal = 4.dp)
+                        .fillMaxWidth()
+                        .height(2.5.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(resolvedColors.textColor.copy(alpha = 0.2f))
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(fraction = progressFraction)
+                            .height(2.5.dp)
+                            .background(resolvedColors.textColor)
                     )
                 }
             }

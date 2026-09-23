@@ -418,8 +418,8 @@
     <!-- Timer Display Formats -->
     <string name="timer_remaining_format">还剩 %1$02d:%2$02d / %3$d 分钟</string>
     <string name="timer_elapsed_format">已计时 %1$02d:%2$02d / %3$d 分钟</string>
-    <string name="timer_remaining_paused_format">还剩 %1$02d:%2$02d / %3$d 分钟 (已暂停)</string>
-    <string name="timer_elapsed_paused_format">已计时 %1$02d:%2$02d / %3$d 分钟 (已暂停)</string>
+    <string name="timer_remaining_paused_format">还剩 %1$02d:%2$02d / %3$d 分钟</string>
+    <string name="timer_elapsed_paused_format">已计时 %1$02d:%2$02d / %3$d 分钟</string>
     <string name="timer_target_format">目标 %1$d 分钟</string>
     <string name="timer_countdown_remaining">还剩 %1$d</string>
     <string name="timer_countup_progress">%1$d/%2$d</string>
@@ -690,6 +690,7 @@
     <!-- Target Progress -->
     <string name="target_completed_format">已完成 %1$d</string>
     <string name="target_label_format">目标：%1$d</string>
+    <string name="habit_target_progress_format">已完成 %1$d / 目标 %2$d</string>
 
     <!-- Linked Metrics -->
     <string name="linked_metrics_title">关联指标</string>
@@ -810,9 +811,7 @@
     <string name="metric_detail_title">指标详情</string>
     <string name="metric_not_found">指标不存在</string>
     <string name="metric_no_records_yet">暂无记录</string>
-    <string name="metric_details_section">详情</string>
-    <string name="metric_unit_label">单位</string>
-    <string name="metric_decimal_places_label">小数位数</string>
+    <string name="metric_configuration_summary">单位：%1$s · 小数位数：%2$d</string>
     <string name="metric_target_increase">目标（增加）</string>
     <string name="metric_target_decrease">目标（减少）</string>
     <string name="metric_target_range">目标范围</string>
@@ -850,7 +849,6 @@
     <string name="metric_card_no_records">无记录</string>
     <string name="metric_card_last_recorded">最后记录：%1$s</string>
     <string name="metric_card_never_recorded">从未记录</string>
-    <string name="metric_card_tap_details">点击查看详情</string>
     <string name="metric_card_target_direction">目标：%1$s</string>
 
     <!-- Metric Value Input -->
