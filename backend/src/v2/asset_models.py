@@ -62,6 +62,13 @@ class AccountIconBlob(SQLModel, table=True):
             "width >= 1 AND width <= 1024 AND height >= 1 AND height <= 1024",
             name="ck_icon_blob_dimensions",
         ),
+        CheckConstraint(
+            "(ready_at IS NULL AND validation_profile IS NULL) OR "
+            "(ready_at IS NOT NULL AND validation_profile IS NOT NULL AND "
+            "((media_type = 'image/png' AND validation_profile = 'png-v1') OR "
+            "(media_type = 'image/svg+xml' AND validation_profile = 'svg-v1')))",
+            name="ck_icon_blob_ready_profile",
+        ),
     )
 
     id: int | None = Field(default=None, primary_key=True)
@@ -73,6 +80,7 @@ class AccountIconBlob(SQLModel, table=True):
     height: int
     # Set only by the future verified file-install transaction, never declaration.
     ready_at: datetime | None = None
+    validation_profile: str | None = Field(default=None, max_length=16)
     created_at: datetime = Field(default_factory=utc_now)
 
 

@@ -37,14 +37,26 @@ async def get_current_user(
         # current_user is the authenticated user
     ```
     """
+    return await authenticate_header(request.headers.get("Authorization"), session)
+
+
+async def authenticate_header(
+    auth_header: str | None, session: AsyncSession, *, record_token_use: bool = True
+) -> User:
+    """Authenticate against this caller-owned snapshot, without committing.
+
+    Existing routes record API-token use in their normal transaction. Staged
+    asset transfers use read-only initial authentication, close that session
+    before I/O, then reauthenticate the same credentials in a fresh transaction.
+    A returned User must never be reused as proof of current authorization after
+    a file transfer. Never log or persist the supplied header in an install log.
+    """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    # Get the raw Authorization header
-    auth_header = request.headers.get("Authorization")
     if not auth_header:
         raise credentials_exception
 
@@ -105,10 +117,11 @@ async def get_current_user(
             raise credentials_exception
 
         # Update last_used_at
-        api_token.last_used_at = utc_now()
-        # Keep authentication inside the request transaction. The session
-        # dependency owns the final commit/rollback boundary.
-        await session.flush()
+        if record_token_use:
+            api_token.last_used_at = utc_now()
+            # The caller owns the final commit/rollback boundary. Initial file
+            # authorization must not start a write transaction for this stamp.
+            await session.flush()
 
         # Get the associated user
         result = await session.execute(select(User).where(User.id == api_token.user_id))

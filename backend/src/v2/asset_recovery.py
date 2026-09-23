@@ -84,6 +84,10 @@ def validate_asset_rows(rows: dict[str, list[dict[str, Any]]]) -> None:
             raise AssetRecoveryError("duplicate account blob")
         if row["ready_at"] is not None:
             raise AssetRecoveryError("appearance byte backup is not implemented")
+        if row.get("validation_profile") is not None:
+            raise AssetRecoveryError(
+                "pending appearance blob cannot have a validation profile"
+            )
         blobs[identity] = blob
         digests.add((owner, blob.sha256))
 

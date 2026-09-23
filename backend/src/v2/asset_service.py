@@ -29,7 +29,13 @@ from src.v2.asset_models import (
 )
 from src.v2.errors import DomainError
 from src.v2.invariants import require_internal
-from src.v2.asset_records import asset_value, blob_value, pack_value, quota_value
+from src.v2.asset_records import (
+    asset_value,
+    blob_ready,
+    blob_value,
+    pack_value,
+    quota_value,
+)
 
 
 MAX_SEQUENCE = 9_223_372_036_854_775_807
@@ -89,7 +95,7 @@ async def _asset_record(
             raise DomainError(
                 "ASSET_METADATA_CORRUPT", "Stored asset metadata is inconsistent"
             )
-        if blob.ready_at is not None:
+        if blob_ready(blob):
             ready.append(variant)
     return AssetRecord.model_validate(
         dict(context=context, asset=asset, ready_variants=ready)
