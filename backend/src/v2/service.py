@@ -123,6 +123,7 @@ async def _is_fact_derived_one_time_delete(
             col(PlanNode.public_id) == str(operation.entity_uuid),
             col(PlanNode.deleted_at).is_(None),
             col(ActivityDetail.completion_policy) == "one_and_done",
+            col(ActivityDetail.one_time_version).is_(None),
         )
     )
     row = result.one_or_none()

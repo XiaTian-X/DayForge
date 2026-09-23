@@ -57,6 +57,8 @@ async def seed(engine):
                     node_id=node_id,
                     tracking_mode="check",
                     completion_policy="one_and_done",
+                    recurrence_rule_json='{"schema_version":1,"type":"once","due_date":null}',
+                    failure_policy_json='{"schema_version":1,"type":"loose"}',
                     one_time_version=0,
                 )
             )

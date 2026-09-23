@@ -40,6 +40,15 @@ class OneTimeStateConflict(DomainError):
         self.projection = projection
 
 
+def validate_stored_intent(
+    projection: OneTimeProjection, intent: OneTimeIntent
+) -> OneTimeState:
+    try:
+        return advance_one_time(projection.state, intent)
+    except OneTimeTransitionError as exc:
+        raise OneTimeStateConflict(str(exc), projection) from exc
+
+
 async def load_one_time_activity(
     session: AsyncSession, user_id: int, activity_uuid: str
 ) -> StoredOneTimeActivity:
@@ -107,10 +116,7 @@ async def advance_stored_one_time(
             "ENTITY_ALREADY_EXISTS", "An event with this UUID already exists"
         )
     state = current.projection.state
-    try:
-        after = advance_one_time(state, intent)
-    except OneTimeTransitionError as exc:
-        raise OneTimeStateConflict(str(exc), current.projection) from exc
+    after = validate_stored_intent(current.projection, intent)
     owned_live = select(col(PlanNode.id)).where(
         col(PlanNode.owner_user_id) == user_id,
         col(PlanNode.id) == current.node_id,
