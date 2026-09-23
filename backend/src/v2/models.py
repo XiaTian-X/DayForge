@@ -194,6 +194,7 @@ class UserSyncPolicy(SQLModel, table=True):
 class PlanNode(SyncableFields, table=True):
     __tablename__ = "plan_nodes"
     __table_args__ = (
+        Index("uq_plan_node_owner_identity", "owner_user_id", "id", unique=True),
         UniqueConstraint(
             "owner_user_id", "public_id", name="uq_plan_node_owner_public_id"
         ),
@@ -368,6 +369,7 @@ class ActivityEvent(SyncableFields, table=True):
 class TrackedMetric(SyncableFields, table=True):
     __tablename__ = "tracked_metrics"
     __table_args__ = (
+        Index("uq_metric_owner_identity", "owner_user_id", "id", unique=True),
         UniqueConstraint(
             "owner_user_id", "public_id", name="uq_tracked_metric_owner_public_id"
         ),

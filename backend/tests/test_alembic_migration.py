@@ -167,7 +167,7 @@ def test_clean_database_upgrades_to_complete_v2_schema():
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert revision == "000000000003"
+            assert revision == "000000000004"
             identity = connection.execute(
                 text(
                     "SELECT instance_uuid, sync_epoch, protocol_version FROM server_instances"

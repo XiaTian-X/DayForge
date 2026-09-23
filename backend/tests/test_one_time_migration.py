@@ -135,4 +135,4 @@ def test_downgrade_refuses_even_initialized_zero_state_without_erasing_data(tmp_
     with closing(sqlite3.connect(path)) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == ("000000000003",)
+        ).fetchone() == ("000000000004",)

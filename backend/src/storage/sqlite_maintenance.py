@@ -16,6 +16,10 @@ from uuid import uuid4
 
 from src.v2.one_time_recovery import OneTimeRecoveryError, read_one_time_history
 from src.v2.asset_recovery import AssetRecoveryError, read_asset_metadata
+from src.v2.object_appearance_recovery import (
+    ObjectAppearanceRecoveryError,
+    read_object_appearances,
+)
 
 
 BACKUP_FORMAT_VERSION = 1
@@ -135,6 +139,15 @@ def inspect_database(path: Path) -> DatabaseInspection:
                 )
             except AssetRecoveryError as error:
                 domain_errors.append(f"invalid appearance metadata: {error}")
+        if "plan_node_appearances" in tables:
+            try:
+                read_object_appearances(
+                    lambda statement: [
+                        dict(row) for row in connection.execute(statement)
+                    ]
+                )
+            except ObjectAppearanceRecoveryError as error:
+                domain_errors.append(f"invalid object appearance: {error}")
         if "activity_details" in tables:
             detail_columns = {
                 row[1]

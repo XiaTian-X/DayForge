@@ -13,6 +13,7 @@ from src.tokens.router import router as tokens_router
 from src.tokens.admin_router import router as admin_tokens_router
 from src.v2.router import router as v2_router
 from src.v2 import asset_models as asset_models  # Register the full database model.
+from src.v2 import object_appearance_models as object_appearance_models
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from src.database import dispose_engine, get_engine, get_session
 from src.auth.models import User
