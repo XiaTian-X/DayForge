@@ -4,177 +4,156 @@ import android.content.Context
 import android.util.Log
 import com.dayforge.domain.model.GlobalColorTheme
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
+import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
-private const val TAG = "CustomThemeRepository"
-
-/**
- * Repository for managing user custom themes stored in files/themes/ directory as JSON files.
- *
- * Custom themes are stored in the app's private files directory.
- * Provides CRUD operations for custom themes with JSON serialization.
- */
+/** App-private theme files. Imported IDs are data, never relative paths. */
 @Singleton
 class CustomThemeRepository @Inject constructor(
     @param:ApplicationContext private val context: Context
 ) {
-    private val themesDir: File = File(context.filesDir, "themes")
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
 
-    /**
-     * Get all custom themes from files/themes/ directory as JSON files.
-     *
-     * @return List of GlobalColorTheme from custom theme files
-     */
-    suspend fun getAllCustomThemes(): List<GlobalColorTheme> {
-        ensureThemesDirExists()
+    suspend fun getAllCustomThemes(): List<GlobalColorTheme> = access {
+        val directory = themeDirectory()
+        val files = directory.listFiles() ?: throw IOException("Cannot list themes")
+        files.filter { it.extension == "json" }.sortedBy { it.name }.mapNotNull { file ->
+            safely {
+                val checked = themeFile(file.nameWithoutExtension)
+                decodeTheme(checked, readJson(checked)).copy(isCustom = true, isDefault = false)
+            }.getOrNull()
+        }
+    }.getOrDefault(emptyList())
 
-        val themeFiles = themesDir.listFiles { file ->
-            file.extension == "json"
-        } ?: return emptyList()
+    suspend fun addTheme(theme: GlobalColorTheme): Result<String> = access {
+        require(!theme.isDefault) { "Cannot add preset theme as custom" }
+        val file = themeFile(theme.id)
+        require(!Files.exists(file.toPath(), NOFOLLOW_LINKS)) { "Theme already exists" }
+        val bytes = json.encodeToString(theme.copy(isCustom = true, isDefault = false))
+            .toByteArray(Charsets.UTF_8)
+        require(bytes.size <= MAX_JSON_BYTES) { "Theme file is too large" }
 
-        return themeFiles.mapNotNull { file ->
-            try {
-                val jsonString = file.readText()
-                Log.d(TAG, "Loading theme from ${file.name}: ${jsonString.take(200)}...")
-                val theme = json.decodeFromString<GlobalColorTheme>(jsonString)
-                Log.d(TAG, "Parsed theme: id=${theme.id}, primary=${theme.primary}, background=${theme.background}")
-                // Mark as custom theme (override isCustom if not set)
-                theme.copy(isCustom = true, isDefault = false)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to load theme from ${file.name}: ${e.message}")
-                // Skip invalid files
-                null
+        // Publish only after a complete, flushed write. A stopped process may leave
+        // an unreferenced .tmp file, which is never discovered as an installed theme.
+        val temporary = File.createTempFile(".theme-", ".tmp", file.parentFile)
+        try {
+            FileOutputStream(temporary).use { stream ->
+                stream.write(bytes)
+                stream.fd.sync()
+            }
+            currentCoroutineContext().ensureActive()
+            // All instances share the lock. Never copy partial bytes to the live file.
+            check(themeFile(theme.id) == file)
+            require(!Files.exists(file.toPath(), NOFOLLOW_LINKS)) { "Theme already exists" }
+            Files.move(temporary.toPath(), file.toPath(), ATOMIC_MOVE)
+            theme.id
+        } finally {
+            if (temporary.exists() && !temporary.delete()) {
+                Log.w(TAG, "Could not remove an uncommitted theme file")
             }
         }
     }
 
-    /**
-     * Add a new custom theme.
-     *
-     * @param theme The theme to add (id will be used as filename)
-     * @return Result.success with theme id, or Result.failure on error
-     */
-    suspend fun addTheme(theme: GlobalColorTheme): Result<String> {
-        return try {
-            ensureThemesDirExists()
+    suspend fun deleteTheme(themeId: String): Result<Unit> = access {
+        val file = themeFile(themeId)
+        require(!decodeTheme(file, readJson(file)).isDefault) { "Cannot delete preset theme" }
+        Files.delete(file.toPath())
+    }
 
-            // Validate theme ID doesn't conflict with preset themes
-            if (theme.isDefault) {
-                return Result.failure(IllegalArgumentException("Cannot add preset theme as custom"))
+    suspend fun getThemeById(themeId: String): GlobalColorTheme? = access {
+        val file = themeFile(themeId)
+        decodeTheme(file, readJson(file)).copy(isCustom = true, isDefault = false)
+    }.getOrNull()
+
+    /** Preserve raw JSON for normal export, but never export a mismatched ID. */
+    suspend fun getThemeJson(themeId: String): String? = access {
+        val file = themeFile(themeId)
+        readJson(file).also { decodeTheme(file, it) }
+    }.getOrNull()
+
+    suspend fun exists(themeId: String): Boolean = access {
+        Files.isRegularFile(themeFile(themeId).toPath(), NOFOLLOW_LINKS)
+    }.getOrDefault(false)
+
+    private fun themeDirectory(): File {
+        // filesDir can have a system-managed alias; only its trusted parent is resolved.
+        val directory = File(context.filesDir.canonicalFile, "themes")
+        require(!Files.isSymbolicLink(directory.toPath())) { "Invalid theme directory" }
+        if (!directory.isDirectory && !directory.mkdirs()) {
+            throw IOException("Cannot create theme directory")
+        }
+        require(directory.canonicalFile == directory) { "Invalid theme directory" }
+        return directory
+    }
+
+    private fun themeFile(id: String): File {
+        require(id.isNotBlank() && id != "." && id != ".." &&
+            id.none { it == '/' || it == '\\' || it.isISOControl() } &&
+            id.toByteArray(Charsets.UTF_8).size <= MAX_ID_BYTES) { "Invalid theme ID" }
+        val directory = themeDirectory()
+        val file = File(directory, "$id.json")
+        require(!Files.isSymbolicLink(file.toPath()) && file.canonicalFile == file) {
+            "Invalid theme path"
+        }
+        return file
+    }
+
+    private fun decodeTheme(file: File, content: String): GlobalColorTheme =
+        json.decodeFromString<GlobalColorTheme>(content).also {
+            require(it.id == file.nameWithoutExtension) { "Theme ID does not match its file" }
+        }
+
+    private fun readJson(file: File): String {
+        require(Files.isRegularFile(file.toPath(), NOFOLLOW_LINKS)) { "Theme not found" }
+        return file.inputStream().use { input ->
+            val output = ByteArrayOutputStream()
+            val buffer = ByteArray(8192)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                require(output.size() + count <= MAX_JSON_BYTES) { "Theme file is too large" }
+                output.write(buffer, 0, count)
             }
-
-            // Write to file: files/themes/{id}.json
-            val file = File(themesDir, "${theme.id}.json")
-
-            // Check for duplicate ID
-            if (file.exists()) {
-                return Result.failure(IllegalArgumentException("Theme with ID '${theme.id}' already exists"))
-            }
-
-            val themeToSave = theme.copy(isCustom = true, isDefault = false)
-            val jsonString = json.encodeToString(themeToSave)
-            Log.d(TAG, "Saving theme to ${file.name}: primary=${theme.primary}, background=${theme.background}")
-            Log.d(TAG, "JSON content: $jsonString")
-            file.writeText(jsonString)
-
-            Result.success(theme.id)
-        } catch (e: IOException) {
-            Result.failure(e)
-        } catch (e: Exception) {
-            Result.failure(IOException("Failed to add theme: ${e.message}", e))
+            output.toString(Charsets.UTF_8.name())
         }
     }
 
-    /**
-     * Delete a custom theme by ID.
-     *
-     * @param themeId The theme ID to delete
-     * @return Result.success on deletion, Result.failure if not found or is preset
-     */
-    suspend fun deleteTheme(themeId: String): Result<Unit> {
-        return try {
-            ensureThemesDirExists()
-
-            val file = File(themesDir, "$themeId.json")
-
-            if (!file.exists()) {
-                return Result.failure(IllegalArgumentException("Theme '$themeId' not found"))
-            }
-
-            // Verify it's not a preset theme (shouldn't happen, but safety check)
-            val jsonString = file.readText()
-            val theme = json.decodeFromString<GlobalColorTheme>(jsonString)
-            if (theme.isDefault) {
-                return Result.failure(IllegalArgumentException("Cannot delete preset theme"))
-            }
-
-            file.delete()
-            Result.success(Unit)
-        } catch (e: Exception) {
-            Result.failure(IOException("Failed to delete theme: ${e.message}", e))
+    private suspend fun <T> access(block: suspend () -> T): Result<T> =
+        withContext(Dispatchers.IO) {
+            fileMutex.withLock { safely { block() } }
         }
+
+    private inline fun <T> safely(block: () -> T): Result<T> = try {
+        Result.success(block())
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        // Imported content, names and arbitrary exception messages stay out of logs.
+        Log.w(TAG, "Theme storage operation failed: ${error.javaClass.simpleName}")
+        Result.failure(error)
     }
 
-    /**
-     * Get a custom theme by ID.
-     *
-     * @param themeId The theme ID
-     * @return GlobalColorTheme or null if not found
-     */
-    suspend fun getThemeById(themeId: String): GlobalColorTheme? {
-        ensureThemesDirExists()
-
-        val file = File(themesDir, "$themeId.json")
-        if (!file.exists()) return null
-
-        return try {
-            val jsonString = file.readText()
-            val theme = json.decodeFromString<GlobalColorTheme>(jsonString)
-            theme.copy(isCustom = true, isDefault = false)
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    /**
-     * Get the raw JSON string for a theme by ID.
-     *
-     * @param themeId The theme ID
-     * @return JSON string or null if not found
-     */
-    suspend fun getThemeJson(themeId: String): String? {
-        ensureThemesDirExists()
-
-        val file = File(themesDir, "$themeId.json")
-        if (!file.exists()) return null
-
-        return try {
-            file.readText()
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    /**
-     * Check if a theme ID exists as a custom theme.
-     */
-    suspend fun exists(themeId: String): Boolean {
-        ensureThemesDirExists()
-        return File(themesDir, "$themeId.json").exists()
-    }
-
-    /**
-     * Ensure themes directory exists, create if not.
-     */
-    private fun ensureThemesDirExists() {
-        if (!themesDir.exists()) {
-            themesDir.mkdirs()
-        }
+    private companion object {
+        const val TAG = "CustomThemeRepository"
+        const val MAX_ID_BYTES = 240
+        const val MAX_JSON_BYTES = 1024 * 1024
+        // One app process; separate injected/test instances must also serialize.
+        val fileMutex = Mutex()
     }
 }
