@@ -18,11 +18,13 @@ from sqlmodel import col, select
 
 from src.v2.change_log import append_change
 from src.v2.encoding import canonical_json
-from src.v2.entity_snapshots import serialize_metric, serialize_observation
+from src.v2.entity_snapshots import serialize_metric_snapshot, serialize_observation
 from src.v2.errors import DomainError
 from src.v2.invariants import require_internal
 from src.v2.models import ClientDevice, MetricObservation, TrackedMetric, utc_now
 from src.v2.schemas import MetricObservationPayload, MetricPayload, SyncOperationRequest
+from src.v2.next_sync_contract import NextMetricPayload
+from src.v2.object_appearance import set_metric_appearance
 
 
 async def get_metric(
@@ -47,15 +49,21 @@ async def mutate_metric(
     user_id: int,
     device: ClientDevice,
     operation: SyncOperationRequest,
+    *,
+    next_protocol: bool = False,
 ) -> tuple[int, dict[str, Any]]:
     existing = await get_metric(session, user_id, str(operation.entity_uuid))
     if operation.action == "delete":
         if existing is None:
             raise DomainError("ENTITY_NOT_FOUND", "Metric was not found")
         if existing.deleted_at is not None:
-            return existing.revision, serialize_metric(existing)
+            return existing.revision, await serialize_metric_snapshot(
+                session, existing, next_protocol=next_protocol
+            )
         if operation.base_revision != existing.revision:
-            entity = serialize_metric(existing)
+            entity = await serialize_metric_snapshot(
+                session, existing, next_protocol=next_protocol
+            )
             raise DomainError(
                 "REVISION_CONFLICT",
                 "Metric changed on another client",
@@ -86,7 +94,9 @@ async def mutate_metric(
             await get_metric(session, user_id, str(operation.entity_uuid)),
             "updated TrackedMetric",
         )
-        entity = serialize_metric(existing)
+        entity = await serialize_metric_snapshot(
+            session, existing, next_protocol=next_protocol
+        )
         await append_change(
             session,
             user_id=user_id,
@@ -101,7 +111,11 @@ async def mutate_metric(
         return existing.revision, entity
 
     try:
-        payload = MetricPayload.model_validate(operation.payload)
+        payload = (
+            NextMetricPayload.model_validate(operation.payload)
+            if next_protocol
+            else MetricPayload.model_validate(operation.payload)
+        )
     except ValidationError as exc:
         raise DomainError("INVALID_PAYLOAD", str(exc)) from exc
 
@@ -114,7 +128,7 @@ async def mutate_metric(
             public_id=str(operation.entity_uuid),
             owner_user_id=user_id,
             created_by_user_id=user_id,
-            **payload.model_dump(),
+            **payload.model_dump(exclude={"appearance"}),
         )
         session.add(metric)
         await session.flush()
@@ -125,7 +139,9 @@ async def mutate_metric(
                 "Deleted metrics cannot be implicitly restored",
                 conflict=True,
                 revision=existing.revision,
-                entity=serialize_metric(existing),
+                entity=await serialize_metric_snapshot(
+                    session, existing, next_protocol=next_protocol
+                ),
                 conflict_kind="deleted_conflict",
             )
         if operation.base_revision != existing.revision:
@@ -134,10 +150,12 @@ async def mutate_metric(
                 "Metric changed on another client",
                 conflict=True,
                 revision=existing.revision,
-                entity=serialize_metric(existing),
+                entity=await serialize_metric_snapshot(
+                    session, existing, next_protocol=next_protocol
+                ),
             )
         now = utc_now()
-        values = payload.model_dump()
+        values = payload.model_dump(exclude={"appearance"})
         values.update(revision=col(TrackedMetric.revision) + 1, updated_at=now)
         result = await session.execute(
             update(TrackedMetric)
@@ -160,7 +178,16 @@ async def mutate_metric(
             "updated TrackedMetric",
         )
 
-    entity = serialize_metric(metric)
+    if isinstance(payload, NextMetricPayload):
+        await set_metric_appearance(
+            session,
+            user_id,
+            require_internal(metric.id, "TrackedMetric.id"),
+            payload.appearance,
+        )
+    entity = await serialize_metric_snapshot(
+        session, metric, next_protocol=next_protocol
+    )
     await append_change(
         session,
         user_id=user_id,

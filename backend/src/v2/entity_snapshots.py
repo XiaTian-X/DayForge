@@ -23,9 +23,12 @@ from src.v2.models import (
 )
 from src.v2.schemas import SyncOperationRequest
 from src.v2.one_time_storage import stored_event_proof
+from src.v2.object_appearance import read_object_appearance
 
 
-async def serialize_plan_node(session: AsyncSession, node: PlanNode) -> dict[str, Any]:
+async def serialize_plan_node(
+    session: AsyncSession, node: PlanNode, *, next_protocol: bool = False
+) -> dict[str, Any]:
     parent_uuid = None
     if node.parent_node_id is not None:
         parent = await session.get(PlanNode, node.parent_node_id)
@@ -76,6 +79,14 @@ async def serialize_plan_node(session: AsyncSession, node: PlanNode) -> dict[str
                 "timezone": activity_detail.timezone,
                 "origin_assignment_id": activity_detail.origin_assignment_id,
             }
+    if next_protocol:
+        result.pop("icon")
+        result.pop("color_hex")
+        result["appearance"] = (
+            await read_object_appearance(
+                session, node.owner_user_id, require_internal(node.id, "PlanNode.id")
+            )
+        ).model_dump(mode="json")
     return jsonable_utc(result)
 
 
@@ -165,6 +176,24 @@ def serialize_metric(metric: TrackedMetric) -> dict[str, Any]:
     )
 
 
+async def serialize_metric_snapshot(
+    session: AsyncSession, metric: TrackedMetric, *, next_protocol: bool = False
+) -> dict[str, Any]:
+    result = serialize_metric(metric)
+    if next_protocol:
+        result.pop("icon")
+        result.pop("color_hex")
+        result["appearance"] = (
+            await read_object_appearance(
+                session,
+                metric.owner_user_id,
+                require_internal(metric.id, "TrackedMetric.id"),
+                metric=True,
+            )
+        ).model_dump(mode="json")
+    return result
+
+
 def serialize_observation(
     observation: MetricObservation, metric_uuid: str
 ) -> dict[str, Any]:
@@ -215,6 +244,8 @@ async def current_entity_snapshot(
     session: AsyncSession,
     user_id: int,
     operation: SyncOperationRequest,
+    *,
+    next_protocol: bool = False,
 ) -> tuple[Optional[int], Optional[dict[str, Any]]]:
     """Load the authoritative entity for a conflict response.
 
@@ -234,7 +265,10 @@ async def current_entity_snapshot(
         )
         entity = result.scalar_one_or_none()
         return (
-            (entity.revision, await serialize_plan_node(session, entity))
+            (
+                entity.revision,
+                await serialize_plan_node(session, entity, next_protocol=next_protocol),
+            )
             if entity
             else (None, None)
         )
@@ -277,7 +311,16 @@ async def current_entity_snapshot(
             .execution_options(populate_existing=True)
         )
         metric = metric_result.scalar_one_or_none()
-        return (metric.revision, serialize_metric(metric)) if metric else (None, None)
+        return (
+            (
+                metric.revision,
+                await serialize_metric_snapshot(
+                    session, metric, next_protocol=next_protocol
+                ),
+            )
+            if metric
+            else (None, None)
+        )
 
     if operation.entity_type == "metric_observation":
         observation_result = await session.execute(

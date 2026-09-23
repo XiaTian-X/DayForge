@@ -57,7 +57,7 @@ async def submit(factory, operations, owner=1):
         user = await session.get(User, owner)
         assert user is not None
         result = await process_push(
-            user, request(operations, owner), session, one_time_events=True
+            user, request(operations, owner), session, next_protocol=True
         )
         return result.model_dump(mode="json")["results"]
 
@@ -176,7 +176,7 @@ async def test_replay_precedes_domain_validation_and_rejects_changed_body(
                 monkeypatch, session, str(original.operation_id)
             )
         replay = await process_push(
-            owner, request([original]), session, one_time_events=True
+            owner, request([original]), session, next_protocol=True
         )
         assert replay.results[0].model_dump(mode="json") == {
             **first,
@@ -235,7 +235,7 @@ async def test_invalid_device_cannot_replay_or_see_task_state(runtime_engine, ki
             user = await session.get(User, 2 if kind == "foreign" else 1)
             assert user is not None
             await process_push(
-                user, request([operation()]), session, one_time_events=True
+                user, request([operation()]), session, next_protocol=True
             )
     assert error.value.code == "DEVICE_NOT_FOUND" and error.value.entity is None
     assert (await state(factory, 1)).version == 1
@@ -297,7 +297,7 @@ async def one_time_http(runtime_engine, request):
         session: AsyncSession = Depends(get_session, scope="function"),
     ):
         try:
-            return await process_push(user, body, session, one_time_events=True)
+            return await process_push(user, body, session, next_protocol=True)
         except DomainError as error:
             raise _http_error(error) from error
 

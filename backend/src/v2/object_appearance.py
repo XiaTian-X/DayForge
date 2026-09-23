@@ -1,5 +1,7 @@
 """Owner-bound object appearance primitives; caller owns revision and transaction."""
 
+from pydantic import ValidationError
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
@@ -14,6 +16,43 @@ from src.v2.object_appearance_models import (
     ObjectAppearanceFields,
     PlanNodeAppearance,
 )
+from src.v2.object_appearance_recovery import (
+    METRIC_SQL,
+    NODE_SQL,
+    ObjectAppearanceRecoveryError,
+    validate_object_row,
+)
+
+
+async def read_object_appearance(
+    session: AsyncSession, owner: int, object_id: int, *, metric: bool = False
+) -> ObjectAppearance:
+    statement = METRIC_SQL if metric else NODE_SQL
+    identity = "metric_id" if metric else "node_id"
+    row = (
+        (
+            await session.execute(
+                text(
+                    statement
+                    + f" WHERE a.owner_user_id=:owner AND a.{identity}=:identity"
+                ),
+                {"owner": owner, "identity": object_id},
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None:
+        raise DomainError(
+            "APPEARANCE_STATE_UNINITIALIZED",
+            "Pre-v5 object requires the coordinated data baseline",
+        )
+    try:
+        return validate_object_row(dict(row), metric=metric)
+    except (ValidationError, ObjectAppearanceRecoveryError) as error:
+        raise DomainError(
+            "APPEARANCE_STATE_INVALID", "Stored object appearance is invalid"
+        ) from error
 
 
 async def _resolved_fields(
