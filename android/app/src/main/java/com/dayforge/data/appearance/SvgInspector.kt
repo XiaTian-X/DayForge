@@ -12,6 +12,7 @@ import com.dayforge.domain.model.IconBlob
 import org.xml.sax.Attributes
 import org.xml.sax.SAXException
 import org.xml.sax.helpers.DefaultHandler
+import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.CodingErrorAction
@@ -223,4 +224,10 @@ fun inspectSvg(source: ByteArray, expected: IconBlob): SvgInspection {
     }
     svgRequire(elements > 0 && stack.isEmpty(), "SVG_STRUCTURE")
     return SvgInspection(width, height, elements, commands)
+}
+
+/** Reads once with bounds before XML parsing. Caller still owns the stream. */
+fun inspectSvg(source: InputStream, expected: IconBlob): SvgInspection {
+    svgRequire(expected.mediaType == "image/svg+xml", "SVG_MEDIA_TYPE")
+    return inspectSvg(readIconBytes(source, expected), expected)
 }

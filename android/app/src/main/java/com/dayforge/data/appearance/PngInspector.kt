@@ -7,6 +7,7 @@ import android.graphics.ColorSpace
 import androidx.core.graphics.createBitmap
 import com.dayforge.domain.model.IconBlob
 import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.CodingErrorAction
@@ -321,4 +322,10 @@ fun decodePng(source: ByteArray, expected: IconBlob): Bitmap {
     } finally {
         result.recycle()
     }
+}
+
+/** Bounded stream variant. Caller owns both stream lifetime and returned bitmap. */
+fun decodePng(source: InputStream, expected: IconBlob): Bitmap {
+    pngRequire(expected.mediaType == "image/png", "PNG_MEDIA_TYPE")
+    return decodePng(readIconBytes(source, expected), expected)
 }

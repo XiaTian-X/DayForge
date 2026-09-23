@@ -44,8 +44,12 @@ Android 先读 BitmapFactory bounds 再实际解码，统一到不随设备 dens
 断言，因为平台使用预乘 alpha；原始文件仍保留，alpha 本身必须精确一致。
 额外生成恰好上限/超限的字节、像素、块数和元数据样本，避免把大测试文件提交进仓库。
 
-当前接收已在内存中的有界输入。实际 URI/HTTP/ZIP 接入还必须边读边限制总量、冻结一次读取的字节，
-在全部校验和实际解码成功后才能进入安装恢复流程；不能先更新素材就绪状态再异步检查。
+阻塞流入口 inspect_png_stream / InputStream 版 decodePng 先验证声明类型，然后按声明长度
+分段读取至 EOF，最多消费声明长度加 1 字节，并核对实际 hash；之后只解码这次独立读取的字节。
+调用方负责关闭、I/O 调度、传输超时和取消；短读继续，截断/超长/错 hash 失败，原始 I/O
+异常与取消不转换为成功或普通格式错误。此入口不是已接入的 URI/HTTP/ZIP 传输层。
+实际包/网络接入仍须约束外层总量与授权；全部校验和实际解码成功后才可进入安装恢复流程，
+不能重开来源、先更新素材就绪状态再异步检查，或只凭 header/声明长度跳过实际读取。
 本 profile 不代替账户授权、文件原子替换/日志、队列恢复、备份引用闭包或人工外观验收。
 
 依据：[PNG 规范](https://www.w3.org/TR/png/)、[Pillow PNG](https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html#png)、

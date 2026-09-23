@@ -4,8 +4,10 @@ from dataclasses import dataclass
 import hashlib
 import math
 import re
+from typing import BinaryIO
 from xml.parsers import expat
 
+from src.appearance.input import read_icon_bytes
 from src.appearance.svg_path import (
     MAX_COMMANDS,
     MAX_NUMBER,
@@ -311,3 +313,9 @@ def inspect_svg(data: bytes, expected: IconBlob) -> SvgInspection:
         raise SvgValidationError("SVG_XML_SYNTAX") from error
     require(elements > 0 and not stack, "SVG_STRUCTURE")
     return SvgInspection(width, height, elements, commands)
+
+
+def inspect_svg_stream(source: BinaryIO, expected: IconBlob) -> SvgInspection:
+    """Read once with limits, then validate exactly the frozen bytes; do not close."""
+    require(expected.media_type == "image/svg+xml", "SVG_MEDIA_TYPE")
+    return inspect_svg(read_icon_bytes(source, expected), expected)
