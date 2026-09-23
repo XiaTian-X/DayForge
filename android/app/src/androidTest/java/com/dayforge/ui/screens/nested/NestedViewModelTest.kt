@@ -73,7 +73,8 @@ import java.io.File
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 class NestedViewModelTest {
-    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
+    @get:org.junit.Rule(order = 0) val widgetRefresh = com.dayforge.widget.IsolatedWidgetRefreshRule()
+    @get:org.junit.Rule(order = 1) val storage = com.dayforge.data.local.PhysicalDatabaseRule()
 
     private lateinit var context: Context
     private lateinit var database: HabitDatabase
@@ -221,6 +222,7 @@ class NestedViewModelTest {
         assertEquals(childId, after.children.single().habit.id)
         assertTrue(after.children.single().completedToday)
         assertEquals(1, after.children.single().todayCount)
+        assertEquals(1, widgetRefresh.requestCount)
     }
 
     @Test

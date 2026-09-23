@@ -62,6 +62,13 @@ Room schema、计时、后台任务或 Android 平台行为变化时还需要相
 仍保留时间补零、目标分钟和参数顺序检查，不据旧文案断言恢复已明确删除的后缀。
 首页 ViewModel 测试保留真实 Room，在小组件调度边界使用替身并验证打卡刷新请求，避免后台刷新
 越过单用例数据库生命周期；调度器、刷新器、Worker 的专门真机测试不能因此移除。
+创建习惯/目标、习惯详情、嵌套目标、关联指标提示及计时服务持久性测试使用显式的
+`IsolatedWidgetRefreshRule`：它必须位于数据库、Activity/Hilt 规则外层，覆盖 setup、测试体和
+teardown，最后恢复真实调度对象。测试仍检查真实业务数据/outbox，并断言刷新请求次数；
+不能在全局 runner 或所有数据库测试中自动屏蔽 WorkManager。该规则自身覆盖异常退出恢复与
+重复文件数据库生命周期，专门的小组件调度/Worker/刷新器测试不能使用它。
+完整结果除 XML 计数外，还须检查 `SQLiteConnection ... was leaked`、`file unlinked while open`、
+关闭后访问及致命异常日志；GC 报告所在用例不等于资源创建者，须结合前序请求链定位。
 
 ### 后端改动
 

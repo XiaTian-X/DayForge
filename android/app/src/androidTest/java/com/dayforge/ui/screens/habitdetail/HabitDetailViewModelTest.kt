@@ -49,7 +49,8 @@ import java.util.TimeZone
 @RunWith(AndroidJUnit4::class)
 @OptIn(ExperimentalCoroutinesApi::class)
 class HabitDetailViewModelTest {
-    @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
+    @get:org.junit.Rule(order = 0) val widgetRefresh = com.dayforge.widget.IsolatedWidgetRefreshRule()
+    @get:org.junit.Rule(order = 1) val storage = com.dayforge.data.local.PhysicalDatabaseRule()
 
     private val testDispatcher = StandardTestDispatcher()
     private val viewModelStore = ViewModelStore()
@@ -151,6 +152,7 @@ class HabitDetailViewModelTest {
         val state = viewModel.uiState.value
         assertNotNull("lastCompletionId should be set after logging", state.lastCompletionId)
         assertTrue("lastCompletionId should be greater than 0", state.lastCompletionId!! > 0)
+        assertEquals(1, widgetRefresh.requestCount)
     }
 
     @Test
