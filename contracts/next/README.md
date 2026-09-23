@@ -1,9 +1,10 @@
 # Forward contracts — not active protocol v4
 
-These synthetic vectors freeze incremental parts of #181. They are not requests
-that the current server accepts, not image files, and not an installable pack.
-The repeated hashes describe fictional blobs; actual installation must validate
-bytes independently. All identities are synthetic; no real account/device identifiers or credentials are here.
+These synthetic vectors freeze incremental parts of #181 and #196. They are not requests
+that the current server accepts or an installable pack. Catalog hashes describe fictional
+blobs; SVG vectors instead contain actual XML strings for byte validation. Installation
+must independently validate all bytes. All identities are synthetic; no real
+account/device identifiers or credentials are here.
 
 - `one-time-transitions.json`: state/intent/result or exact domain error. The
   reducer deliberately does not implement authentication, storage or operation replay.
@@ -24,6 +25,10 @@ bytes independently. All identities are synthetic; no real account/device identi
   checkpoints, separate rejection context and authenticated asset transport values.
   Wrong server/device/epoch/content acknowledgements are rejected by binding helpers;
   helpers are not authorization or durable storage.
+- `svg.json`: actual UTF-8 XML strings and independent path/structure expectations for
+  the bounded static SVG profile. Both `test_svg_inspection.py` and physical-device
+  `SvgInspectorTest` validate bytes and complete syntax; neither claims pixel rendering
+  or durable installation. Hashes are calculated from these synthetic strings at test time.
 - `openapi.json`: reproducible **planned**, not mounted, v5 delta API. Generate with
   `cd backend && uv run --frozen python scripts/export_next_openapi.py`; `--check` is
   included in the backend suite. Unchanged live endpoints remain in `../openapi.json`.
