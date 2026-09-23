@@ -15,6 +15,7 @@ from typing import Any
 from uuid import uuid4
 
 from src.v2.one_time_recovery import OneTimeRecoveryError, read_one_time_history
+from src.v2.asset_recovery import AssetRecoveryError, read_asset_metadata
 
 
 BACKUP_FORMAT_VERSION = 1
@@ -125,6 +126,15 @@ def inspect_database(path: Path) -> DatabaseInspection:
             )
 
         domain_errors: list[str] = []
+        if "appearance_accounts" in tables:
+            try:
+                read_asset_metadata(
+                    lambda statement: [
+                        dict(row) for row in connection.execute(statement)
+                    ]
+                )
+            except AssetRecoveryError as error:
+                domain_errors.append(f"invalid appearance metadata: {error}")
         if "activity_details" in tables:
             detail_columns = {
                 row[1]

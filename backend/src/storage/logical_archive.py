@@ -15,19 +15,23 @@ from uuid import uuid4
 
 from sqlalchemy import (
     Boolean,
+    Column,
     Date,
     DateTime,
+    ForeignKey,
     MetaData,
     Numeric,
     Time,
     create_engine,
     select,
+    text,
 )
 from sqlalchemy.engine import Connection, Engine
 
 from src.storage.sqlite_maintenance import StorageValidationError
 from src.storage.database_adapter import configure_sqlite_transactions
 from src.v2.one_time_recovery import OneTimeRecoveryError, read_connection_history
+from src.v2.asset_recovery import AssetRecoveryError, read_asset_metadata
 
 
 LOGICAL_FORMAT_VERSION = 2
@@ -35,6 +39,11 @@ READABLE_FORMAT_VERSIONS = frozenset({1, LOGICAL_FORMAT_VERSION})
 TABLE_ORDER = (
     "users",
     "user_profiles",
+    "appearance_accounts",
+    "account_icon_blobs",
+    "account_icon_assets",
+    "account_icon_packs",
+    "appearance_catalog",
     "api_tokens",
     "households",
     "household_memberships",
@@ -131,8 +140,15 @@ def _identity_key(
         return str(row["public_id"])
     if table == "api_tokens":
         return str(row["token_hash"])
-    if table in {"user_profiles", "user_sync_policies"}:
+    if table in {"user_profiles", "user_sync_policies", "appearance_accounts"}:
         return f"user:{primary_keys[('users', row['user_id'])]}"
+    if table in {"account_icon_blobs", "account_icon_packs", "appearance_catalog"}:
+        owner = primary_keys[("users", row["owner_user_id"])]
+        if table == "account_icon_blobs":
+            return f"owner:{owner}:sha256:{row['sha256']}"
+        if table == "account_icon_packs":
+            return f"owner:{owner}:pack:{row['pack_uuid']}:{row['revision']}"
+        return f"owner:{owner}:sequence:{row['sequence']}"
     if table in {"goal_details", "activity_details"}:
         return f"node:{primary_keys[('plan_nodes', row['node_id'])]}"
     if table == "timer_segments":
@@ -178,6 +194,29 @@ def _build_primary_keys(
     return identities
 
 
+def _archive_reference(column: Column) -> ForeignKey | None:
+    """Resolve a logical identity, not an arbitrary member of ownership FKs.
+
+    An owner column may reference users.id and also participate in composite
+    ownership constraints. Only the scalar primary identity can be represented
+    by the archive's single $ref. Reject genuinely ambiguous/unsupported shapes
+    instead of relying on set iteration order.
+    """
+    candidates = {
+        (foreign.column.table.name, foreign.column.name): foreign
+        for foreign in column.foreign_keys
+        if foreign.column.primary_key
+        and len(foreign.column.table.primary_key.columns) == 1
+    }
+    if len(candidates) == 1:
+        return next(iter(candidates.values()))
+    if column.foreign_keys:
+        raise StorageValidationError(
+            f"unsupported or ambiguous identity reference: {column.table.name}.{column.name}"
+        )
+    return None
+
+
 def _portable_collections(
     connection: Connection,
     metadata: MetaData,
@@ -206,7 +245,7 @@ def _portable_collections(
                 if table_name == "server_instances" and column.name == "sync_epoch":
                     continue
                 value = row[column.name]
-                foreign_key = next(iter(column.foreign_keys), None)
+                foreign_key = _archive_reference(column)
                 if value is not None and foreign_key is not None:
                     referenced_table = foreign_key.column.table.name
                     try:
@@ -244,6 +283,19 @@ def _validate_one_time_history(connection: Connection, metadata: MetaData) -> No
         raise StorageValidationError(f"invalid one-time history: {error}") from error
 
 
+def _validate_appearance(connection: Connection, metadata: MetaData) -> None:
+    if "appearance_accounts" not in metadata.tables:
+        return
+    try:
+        read_asset_metadata(
+            lambda statement: [
+                dict(row) for row in connection.execute(text(statement)).mappings()
+            ]
+        )
+    except AssetRecoveryError as error:
+        raise StorageValidationError(f"invalid appearance metadata: {error}") from error
+
+
 def export_archive(database_url: str, archive_path: Path) -> Path:
     engine = _archive_engine(database_url)
     try:
@@ -264,6 +316,7 @@ def export_archive(database_url: str, archive_path: Path) -> Path:
                     "logical export requires a maintenance window without active timers"
                 )
             _validate_one_time_history(connection, metadata)
+            _validate_appearance(connection, metadata)
             collections, identity = _portable_collections(connection, metadata)
             alembic_head = (
                 connection.execute(
@@ -475,6 +528,7 @@ def import_archive(database_url: str, archive_path: Path) -> str:
                         target_keys,
                     )
             _validate_one_time_history(connection, metadata)
+            _validate_appearance(connection, metadata)
             for name in TRANSPORT_TABLES:
                 if name in metadata.tables:
                     connection.execute(metadata.tables[name].delete())
