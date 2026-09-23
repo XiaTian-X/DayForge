@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional, overload
 
 from sqlalchemy import func
 from sqlalchemy.engine import Result
@@ -15,7 +15,7 @@ from src.v2.encoding import parse_json
 from src.v2.entity_snapshots import (
     serialize_activity_event_with_allocations,
     serialize_link,
-    serialize_metric,
+    serialize_metric_snapshot,
     serialize_observation,
     serialize_plan_node,
 )
@@ -33,6 +33,8 @@ from src.v2.models import (
     utc_now,
 )
 from src.v2.schemas import SyncBootstrapResponse, SyncChangeResponse, SyncPullResponse
+from src.v2.next_sync_contract import NextSyncBootstrapResponse, NextSyncPullResponse
+from src.v2.one_time_recovery import read_one_time_checkpoints
 
 
 def _change_response(
@@ -53,12 +55,38 @@ def _change_response(
     )
 
 
+@overload
 async def pull_changes(
     user: User,
     device_public_id: str,
     cursor_value: int,
     limit: int,
     session: AsyncSession,
+    *,
+    next_protocol: Literal[False] = False,
+) -> SyncPullResponse: ...
+
+
+@overload
+async def pull_changes(
+    user: User,
+    device_public_id: str,
+    cursor_value: int,
+    limit: int,
+    session: AsyncSession,
+    *,
+    next_protocol: Literal[True],
+) -> NextSyncPullResponse: ...
+
+
+async def pull_changes(
+    user: User,
+    device_public_id: str,
+    cursor_value: int,
+    limit: int,
+    session: AsyncSession,
+    *,
+    next_protocol: bool = False,
 ) -> SyncPullResponse:
     device = await require_device(
         require_internal(user.id, "User.id"), device_public_id, session
@@ -103,7 +131,8 @@ async def pull_changes(
     # Never move a server-side observation cursor backwards.
     cursor_row.last_pulled_sequence = max(cursor_row.last_pulled_sequence, next_cursor)
     cursor_row.last_pull_at = utc_now()
-    return SyncPullResponse(
+    response_type = NextSyncPullResponse if next_protocol else SyncPullResponse
+    return response_type(
         changes=changes,
         next_cursor=next_cursor,
         has_more=has_more,
@@ -111,10 +140,32 @@ async def pull_changes(
     )
 
 
+@overload
 async def bootstrap(
     user: User,
     device_public_id: str,
     session: AsyncSession,
+    *,
+    next_protocol: Literal[False] = False,
+) -> SyncBootstrapResponse: ...
+
+
+@overload
+async def bootstrap(
+    user: User,
+    device_public_id: str,
+    session: AsyncSession,
+    *,
+    next_protocol: Literal[True],
+) -> NextSyncBootstrapResponse: ...
+
+
+async def bootstrap(
+    user: User,
+    device_public_id: str,
+    session: AsyncSession,
+    *,
+    next_protocol: bool = False,
 ) -> SyncBootstrapResponse:
     device = await require_device(
         require_internal(user.id, "User.id"), device_public_id, session
@@ -146,7 +197,9 @@ async def bootstrap(
                     "entity_uuid": node.public_id,
                     "operation": "upsert",
                     "revision": node.revision,
-                    "payload": await serialize_plan_node(session, node),
+                    "payload": await serialize_plan_node(
+                        session, node, next_protocol=next_protocol
+                    ),
                     "changed_at": node.updated_at,
                     "origin_device_id": None,
                 }
@@ -208,7 +261,9 @@ async def bootstrap(
                     "entity_uuid": metric.public_id,
                     "operation": "upsert",
                     "revision": metric.revision,
-                    "payload": serialize_metric(metric),
+                    "payload": await serialize_metric_snapshot(
+                        session, metric, next_protocol=next_protocol
+                    ),
                     "changed_at": metric.updated_at,
                     "origin_device_id": None,
                 }
@@ -288,6 +343,15 @@ async def bootstrap(
         session.add(cursor)
     cursor.last_pulled_sequence = high_watermark
     cursor.last_pull_at = utc_now()
+    if next_protocol:
+        return NextSyncBootstrapResponse(
+            changes=synthetic,
+            next_cursor=high_watermark,
+            server_time=utc_now(),
+            one_time_checkpoints=await read_one_time_checkpoints(
+                session, require_internal(user.id, "User.id")
+            ),
+        )
     return SyncBootstrapResponse(
         changes=synthetic,
         next_cursor=high_watermark,

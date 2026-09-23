@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from src.v2.encoding import jsonable_utc, parse_json
 from src.v2.errors import DomainError
+from src.v2.next_sync_contract import NextMetricPayload, NextPlanNodePayload
 from src.v2.schemas import (
     ActivityMetricLinkPayload,
     ApiModel,
@@ -82,6 +83,17 @@ MERGE_PATHS: dict[str, tuple[tuple[str, ...], ...]] = {
     ),
 }
 _MISSING = object()
+NEXT_MERGE_PATHS = {
+    kind: tuple(path for path in paths if path not in {("icon",), ("color_hex",)})
+    + (
+        ("appearance", "icon"),
+        ("appearance", "accent_color"),
+        ("appearance", "icon_tint"),
+    )
+    if kind in {"plan_node", "metric"}
+    else paths
+    for kind, paths in MERGE_PATHS.items()
+}
 
 
 def _get_path(payload: dict[str, Any], path: tuple[str, ...]) -> Any:
@@ -116,10 +128,12 @@ def _delete_path(payload: dict[str, Any], path: tuple[str, ...]) -> None:
 
 def _normalized_operation_payload(
     operation: SyncOperationRequest,
+    *,
+    next_protocol: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     models: dict[str, type[ApiModel]] = {
-        "plan_node": PlanNodePayload,
-        "metric": MetricPayload,
+        "plan_node": NextPlanNodePayload if next_protocol else PlanNodePayload,
+        "metric": NextMetricPayload if next_protocol else MetricPayload,
         "activity_metric_link": ActivityMetricLinkPayload,
     }
     try:
@@ -172,6 +186,7 @@ def merge_structural_payload(
     current_revision: int,
     server_payload: dict[str, Any],
     base_snapshot_json: Optional[str],
+    next_protocol: bool = False,
 ) -> tuple[SyncOperationRequest, Optional[tuple[int, dict[str, Any]]]]:
     """Rebase a stale structural upsert, or return the existing no-op result.
 
@@ -180,8 +195,10 @@ def merge_structural_payload(
     or None if unavailable. Keeping normalization before base decoding preserves
     validation order and the original missing-base conflict representation.
     """
-    paths = MERGE_PATHS[operation.entity_type]
-    local_full, local_set = _normalized_operation_payload(operation)
+    paths = (NEXT_MERGE_PATHS if next_protocol else MERGE_PATHS)[operation.entity_type]
+    local_full, local_set = _normalized_operation_payload(
+        operation, next_protocol=next_protocol
+    )
     if base_snapshot_json is None:
         raise DomainError(
             "BASE_SNAPSHOT_UNAVAILABLE",

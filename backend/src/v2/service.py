@@ -53,6 +53,8 @@ async def _prepare_three_way_merge(
     session: AsyncSession,
     user_id: int,
     operation: SyncOperationRequest,
+    *,
+    next_protocol: bool = False,
 ) -> tuple[SyncOperationRequest, Optional[tuple[int, dict[str, Any]]]]:
     if (
         operation.entity_type not in MERGE_PATHS
@@ -62,7 +64,7 @@ async def _prepare_three_way_merge(
         return operation, None
 
     current_revision, server_payload = await current_entity_snapshot(
-        session, user_id, operation
+        session, user_id, operation, next_protocol=next_protocol
     )
     if (
         current_revision is None
@@ -89,6 +91,7 @@ async def _prepare_three_way_merge(
         base_snapshot_json=base_snapshot.payload_json
         if base_snapshot is not None
         else None,
+        next_protocol=next_protocol,
     )
 
 
@@ -98,9 +101,17 @@ async def _dispatch_operation(
     device: ClientDevice,
     operation: SyncOperationRequest,
     *,
-    one_time_events: bool = False,
+    next_protocol: bool = False,
 ) -> tuple[int, dict[str, Any]]:
-    if one_time_events and operation.entity_type == "activity_event":
+    if next_protocol and operation.entity_type == "plan_node":
+        return await mutate_plan_node(
+            session, user_id, device, operation, next_protocol=True
+        )
+    if next_protocol and operation.entity_type == "metric":
+        return await mutate_metric(
+            session, user_id, device, operation, next_protocol=True
+        )
+    if next_protocol and operation.entity_type == "activity_event":
         return await mutate_activity_event(
             session, user_id, device, operation, one_time_contract=True
         )
@@ -171,7 +182,7 @@ def _replay_result(
     previous: SyncOperation,
     request_hash: str,
     *,
-    one_time_events: bool = False,
+    next_protocol: bool = False,
 ) -> SyncOperationResult:
     """Apply identical replay rules to normal lookups and unique-insert races."""
     if previous.request_hash != request_hash:
@@ -193,7 +204,7 @@ def _replay_result(
         )
     if stored.get("status") == "applied":
         stored["status"] = "already_applied"
-    if one_time_events:
+    if next_protocol:
         result = NextSyncOperationResult.model_validate(stored)
         validate_task_result_binding(operation, result)
         return result
@@ -206,7 +217,7 @@ async def process_push(
     request: SyncPushRequest,
     session: AsyncSession,
     *,
-    one_time_events: Literal[False] = False,
+    next_protocol: Literal[False] = False,
 ) -> SyncPushResponse: ...
 
 
@@ -216,7 +227,7 @@ async def process_push(
     request: SyncPushRequest,
     session: AsyncSession,
     *,
-    one_time_events: Literal[True],
+    next_protocol: Literal[True],
 ) -> NextSyncPushResponse: ...
 
 
@@ -225,13 +236,13 @@ async def process_push(
     request: SyncPushRequest,
     session: AsyncSession,
     *,
-    one_time_events: bool = False,
+    next_protocol: bool = False,
 ) -> SyncPushResponse | NextSyncPushResponse:
     """Share transaction/replay orchestration without activating v5 HTTP.
 
-    The internal switch enables only the new fact semantics and result context;
-    structural appearance payloads and protocol negotiation are separate rollout
-    steps. No current route takes this switch from client input or enables it.
+    The internal switch enables explicit appearance and item policy, new fact
+    semantics and result context. Protocol negotiation remains a separate rollout
+    step. No current route takes this switch from client input or enables it.
     """
     user_id = require_internal(user.id, "User.id")
     device = await require_device(user_id, str(request.device_id), session)
@@ -251,7 +262,7 @@ async def process_push(
         if previous is not None:
             results.append(
                 _replay_result(
-                    operation, previous, request_hash, one_time_events=one_time_events
+                    operation, previous, request_hash, next_protocol=next_protocol
                 )
             )
             continue
@@ -297,7 +308,7 @@ async def process_push(
             else:
                 results.append(
                     _replay_result(
-                        operation, raced, request_hash, one_time_events=one_time_events
+                        operation, raced, request_hash, next_protocol=next_protocol
                     )
                 )
             continue
@@ -308,7 +319,7 @@ async def process_push(
                     operation.entity_type in STRUCTURAL_ENTITY_TYPES
                     and not can_write_structure
                     and (
-                        one_time_events
+                        next_protocol
                         or not await _is_fact_derived_one_time_delete(
                             session, user_id, operation
                         )
@@ -322,6 +333,7 @@ async def process_push(
                     session,
                     user_id,
                     operation,
+                    next_protocol=next_protocol,
                 )
                 if no_op is not None:
                     revision, entity = no_op
@@ -331,7 +343,7 @@ async def process_push(
                         user_id,
                         device,
                         prepared_operation,
-                        one_time_events=one_time_events,
+                        next_protocol=next_protocol,
                     )
             result = SyncOperationResult(
                 operation_id=operation.operation_id,
@@ -343,7 +355,7 @@ async def process_push(
             )
             operation_record.status = "applied"
         except OneTimeStateConflict as exc:
-            if not one_time_events:
+            if not next_protocol:
                 raise  # Never serialize a new task conflict through the old DTO.
             result = NextSyncOperationResult(
                 operation_id=operation.operation_id,
@@ -362,6 +374,7 @@ async def process_push(
                     session,
                     user_id,
                     operation,
+                    next_protocol=next_protocol,
                 )
                 exc.revision = (
                     exc.revision if exc.revision is not None else current_revision
@@ -395,7 +408,7 @@ async def process_push(
             operation_record.status = "rejected"
             operation_record.error_code = "CONSTRAINT_VIOLATION"
 
-        if one_time_events:
+        if next_protocol:
             result = NextSyncOperationResult.model_validate(
                 result.model_dump(mode="json")
             )
@@ -416,7 +429,7 @@ async def process_push(
         session.add(cursor)
     cursor.last_push_at = utc_now()
     await session.flush()
-    if one_time_events:
+    if next_protocol:
         return NextSyncPushResponse.model_validate(
             {"results": [result.model_dump(mode="json") for result in results]}
         )

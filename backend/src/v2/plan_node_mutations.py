@@ -22,6 +22,9 @@ from src.v2.errors import DomainError
 from src.v2.invariants import require_internal
 from src.v2.models import ActivityDetail, ClientDevice, GoalDetail, PlanNode, utc_now
 from src.v2.schemas import GoalPayload, PlanNodePayload, SyncOperationRequest
+from src.v2.next_sync_contract import NextPlanNodePayload
+from src.v2.object_appearance import set_node_appearance
+from src.v2.activity_policy import prepare_completion_policy
 
 
 async def get_plan_node(
@@ -82,6 +85,8 @@ async def mutate_plan_node(
     user_id: int,
     device: ClientDevice,
     operation: SyncOperationRequest,
+    *,
+    next_protocol: bool = False,
 ) -> tuple[int, dict[str, Any]]:
     existing = await get_plan_node(session, user_id, str(operation.entity_uuid))
 
@@ -89,9 +94,13 @@ async def mutate_plan_node(
         if existing is None:
             raise DomainError("ENTITY_NOT_FOUND", "Plan node was not found")
         if existing.deleted_at is not None:
-            return existing.revision, await serialize_plan_node(session, existing)
+            return existing.revision, await serialize_plan_node(
+                session, existing, next_protocol=next_protocol
+            )
         if operation.base_revision != existing.revision:
-            entity = await serialize_plan_node(session, existing)
+            entity = await serialize_plan_node(
+                session, existing, next_protocol=next_protocol
+            )
             raise DomainError(
                 "REVISION_CONFLICT",
                 "Plan node changed on another client",
@@ -124,7 +133,9 @@ async def mutate_plan_node(
                 child.updated_at = now
                 if policy == "cascade_children":
                     child.deleted_at = now
-                    child_payload = await serialize_plan_node(session, child)
+                    child_payload = await serialize_plan_node(
+                        session, child, next_protocol=next_protocol
+                    )
                     await append_change(
                         session,
                         user_id=user_id,
@@ -138,7 +149,9 @@ async def mutate_plan_node(
                     )
                 else:
                     child.parent_node_id = None
-                    child_payload = await serialize_plan_node(session, child)
+                    child_payload = await serialize_plan_node(
+                        session, child, next_protocol=next_protocol
+                    )
                     await append_change(
                         session,
                         user_id=user_id,
@@ -175,7 +188,9 @@ async def mutate_plan_node(
             await get_plan_node(session, user_id, str(operation.entity_uuid)),
             "updated PlanNode",
         )
-        entity = await serialize_plan_node(session, existing)
+        entity = await serialize_plan_node(
+            session, existing, next_protocol=next_protocol
+        )
         await append_change(
             session,
             user_id=user_id,
@@ -190,7 +205,11 @@ async def mutate_plan_node(
         return existing.revision, entity
 
     try:
-        payload = PlanNodePayload.model_validate(operation.payload)
+        payload = (
+            NextPlanNodePayload.model_validate(operation.payload)
+            if next_protocol
+            else PlanNodePayload.model_validate(operation.payload)
+        )
     except ValidationError as exc:
         raise DomainError("INVALID_PAYLOAD", str(exc)) from exc
 
@@ -221,8 +240,11 @@ async def mutate_plan_node(
             node_kind=payload.node_kind,
             title=payload.title,
             description=payload.description,
-            icon=payload.icon,
-            color_hex=payload.color_hex,
+            **(
+                {"icon": payload.icon, "color_hex": payload.color_hex}
+                if isinstance(payload, PlanNodePayload)
+                else {}
+            ),
             status=payload.status,
             visibility=payload.visibility,
             sort_order=payload.sort_order,
@@ -261,6 +283,10 @@ async def mutate_plan_node(
                         created_activity.recurrence_rule.model_dump(mode="json")
                     ),
                     completion_policy=created_activity.completion_policy,
+                    one_time_version=0
+                    if next_protocol
+                    and created_activity.completion_policy == "one_and_done"
+                    else None,
                     target_value=created_activity.target_value,
                     target_unit=created_activity.target_unit,
                     target_cycles=created_activity.target_cycles,
@@ -275,7 +301,14 @@ async def mutate_plan_node(
                 )
             )
         await session.flush()
-        entity = await serialize_plan_node(session, node)
+        if isinstance(payload, NextPlanNodePayload):
+            await set_node_appearance(
+                session,
+                user_id,
+                require_internal(node.id, "PlanNode.id"),
+                payload.appearance,
+            )
+        entity = await serialize_plan_node(session, node, next_protocol=next_protocol)
         await append_change(
             session,
             user_id=user_id,
@@ -290,7 +323,9 @@ async def mutate_plan_node(
         return node.revision, entity
 
     if existing.deleted_at is not None:
-        entity = await serialize_plan_node(session, existing)
+        entity = await serialize_plan_node(
+            session, existing, next_protocol=next_protocol
+        )
         raise DomainError(
             "ENTITY_DELETED",
             "Deleted nodes cannot be implicitly restored",
@@ -302,7 +337,9 @@ async def mutate_plan_node(
     if existing.node_kind != payload.node_kind:
         raise DomainError("IMMUTABLE_NODE_KIND", "node_kind cannot be changed")
     if operation.base_revision != existing.revision:
-        entity = await serialize_plan_node(session, existing)
+        entity = await serialize_plan_node(
+            session, existing, next_protocol=next_protocol
+        )
         raise DomainError(
             "REVISION_CONFLICT",
             "Plan node changed on another client",
@@ -333,8 +370,11 @@ async def mutate_plan_node(
         "parent_node_id": parent.id if parent else None,
         "title": payload.title,
         "description": payload.description,
-        "icon": payload.icon,
-        "color_hex": payload.color_hex,
+        **(
+            {"icon": payload.icon, "color_hex": payload.color_hex}
+            if isinstance(payload, PlanNodePayload)
+            else {}
+        ),
         "status": payload.status,
         "visibility": payload.visibility,
         "revision": col(PlanNode.revision) + 1,
@@ -380,6 +420,10 @@ async def mutate_plan_node(
         activity_payload = require_internal(
             payload.activity, "validated activity payload"
         )
+        if next_protocol:
+            await prepare_completion_policy(
+                session, user_id, stored_activity, activity_payload.completion_policy
+            )
         stored_activity.tracking_mode = activity_payload.tracking_mode
         stored_activity.is_countdown = activity_payload.is_countdown
         recurrence_rule = activity_payload.recurrence_rule.model_dump(mode="json")
@@ -415,7 +459,14 @@ async def mutate_plan_node(
         await get_plan_node(session, user_id, str(operation.entity_uuid)),
         "updated PlanNode",
     )
-    entity = await serialize_plan_node(session, existing)
+    if isinstance(payload, NextPlanNodePayload):
+        await set_node_appearance(
+            session,
+            user_id,
+            require_internal(existing.id, "PlanNode.id"),
+            payload.appearance,
+        )
+    entity = await serialize_plan_node(session, existing, next_protocol=next_protocol)
     await append_change(
         session,
         user_id=user_id,
