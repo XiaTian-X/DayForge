@@ -15,8 +15,10 @@ from uuid import uuid4
 
 from sqlalchemy import (
     Boolean,
+    Column,
     Date,
     DateTime,
+    ForeignKey,
     MetaData,
     Numeric,
     Time,
@@ -178,6 +180,29 @@ def _build_primary_keys(
     return identities
 
 
+def _archive_reference(column: Column) -> ForeignKey | None:
+    """Resolve a logical identity, not an arbitrary member of ownership FKs.
+
+    An owner column may reference users.id and also participate in composite
+    ownership constraints. Only the scalar primary identity can be represented
+    by the archive's single $ref. Reject genuinely ambiguous/unsupported shapes
+    instead of relying on set iteration order.
+    """
+    candidates = {
+        (foreign.column.table.name, foreign.column.name): foreign
+        for foreign in column.foreign_keys
+        if foreign.column.primary_key
+        and len(foreign.column.table.primary_key.columns) == 1
+    }
+    if len(candidates) == 1:
+        return next(iter(candidates.values()))
+    if column.foreign_keys:
+        raise StorageValidationError(
+            f"unsupported or ambiguous identity reference: {column.table.name}.{column.name}"
+        )
+    return None
+
+
 def _portable_collections(
     connection: Connection,
     metadata: MetaData,
@@ -206,7 +231,7 @@ def _portable_collections(
                 if table_name == "server_instances" and column.name == "sync_epoch":
                     continue
                 value = row[column.name]
-                foreign_key = next(iter(column.foreign_keys), None)
+                foreign_key = _archive_reference(column)
                 if value is not None and foreign_key is not None:
                     referenced_table = foreign_key.column.table.name
                     try:
