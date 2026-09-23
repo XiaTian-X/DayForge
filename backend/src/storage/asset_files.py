@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 import re
 import stat
-from typing import BinaryIO, Iterator
+from typing import BinaryIO, Generator, Iterator
 from uuid import UUID, uuid4
 
 from src.appearance.input import read_icon_bytes
@@ -270,7 +270,7 @@ class AssetFiles:
         with self._directory(owner) as directory:
             with os.scandir(directory) as entries:
 
-                def load() -> Iterator[InstallReceipt]:
+                def load() -> Generator[InstallReceipt, None, None]:
                     for entry in entries:
                         match = JOURNAL_NAME.fullmatch(entry.name)
                         if match:
