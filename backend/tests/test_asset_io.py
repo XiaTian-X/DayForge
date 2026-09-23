@@ -261,8 +261,46 @@ async def test_different_event_loop_is_rejected_without_work_or_shutdown():
                     await pool.run(lambda: pytest.fail("wrong-loop work ran"))
                 with pytest.raises(RuntimeError, match="different event loop"):
                     await pool.aclose()
+                with pytest.raises(RuntimeError, match="different event loop"):
+                    await pool.drain()
 
             asyncio.run(attempt())
 
         await asyncio.to_thread(other_loop)
         assert await pool.run(lambda: 7) == 7
+
+
+@pytest.mark.parametrize("cancel_wait", [False, True])
+async def test_recovery_drain_waits_for_cancelled_request_worker_and_keeps_pool_usable(
+    cancel_wait,
+):
+    loop = asyncio.get_running_loop()
+    started, release = asyncio.Event(), Event()
+    async with AssetIoPool(1) as pool:
+        task = asyncio.create_task(pool.run(blocker(loop, started, release)))
+        waiting = None
+        try:
+            await reached(started)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            waiting = asyncio.create_task(pool.drain())
+            await asyncio.sleep(0)
+            assert not waiting.done()
+            if cancel_wait:
+                waiting.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await waiting
+                waiting = asyncio.create_task(pool.drain())
+                await asyncio.sleep(0)
+                assert not waiting.done()
+            with pytest.raises(AssetIoBusy):
+                await pool.run(lambda: pytest.fail("worker slot was released early"))
+            release.set()
+            await asyncio.wait_for(waiting, timeout=5)
+            assert await pool.run(lambda: 29) == 29
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+            if waiting is not None:
+                await asyncio.gather(waiting, return_exceptions=True)

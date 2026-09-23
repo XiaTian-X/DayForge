@@ -80,6 +80,16 @@ class AssetIoPool:
         if not self._active:
             self._idle.set()
 
+    async def drain(self) -> None:
+        """Wait for actual workers without reopening or closing admission.
+
+        Recovery must separately exclude new request submissions before calling
+        this method. An idle observation alone is not an exclusive storage lease.
+        Cancelling this wait cannot cancel threads or release their capacity.
+        """
+        self._check_loop()
+        await self._idle.wait()
+
     async def aclose(self) -> None:
         """Stop admission, await actual threads, then release the executor.
 
@@ -88,7 +98,7 @@ class AssetIoPool:
         """
         self._check_loop()
         self._closing = True
-        await self._idle.wait()
+        await self.drain()
         # All submitted futures really completed; no event-loop blocking join.
         self._executor.shutdown(wait=False, cancel_futures=False)
 
