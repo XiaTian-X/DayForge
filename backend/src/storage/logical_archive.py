@@ -32,6 +32,10 @@ from src.storage.sqlite_maintenance import StorageValidationError
 from src.storage.database_adapter import configure_sqlite_transactions
 from src.v2.one_time_recovery import OneTimeRecoveryError, read_connection_history
 from src.v2.asset_recovery import AssetRecoveryError, read_asset_metadata
+from src.v2.object_appearance_recovery import (
+    ObjectAppearanceRecoveryError,
+    read_object_appearances,
+)
 
 
 LOGICAL_FORMAT_VERSION = 2
@@ -52,7 +56,9 @@ TABLE_ORDER = (
     "plan_nodes",
     "goal_details",
     "activity_details",
+    "plan_node_appearances",
     "tracked_metrics",
+    "metric_appearances",
     "activity_metric_links_v2",
     "activity_events",
     "metric_observations",
@@ -149,8 +155,10 @@ def _identity_key(
         if table == "account_icon_packs":
             return f"owner:{owner}:pack:{row['pack_uuid']}:{row['revision']}"
         return f"owner:{owner}:sequence:{row['sequence']}"
-    if table in {"goal_details", "activity_details"}:
+    if table in {"goal_details", "activity_details", "plan_node_appearances"}:
         return f"node:{primary_keys[('plan_nodes', row['node_id'])]}"
+    if table == "metric_appearances":
+        return f"metric:{primary_keys[('tracked_metrics', row['metric_id'])]}"
     if table == "timer_segments":
         return (
             f"{primary_keys[('timer_sessions', row['session_id'])]}:{row['sequence']}"
@@ -294,6 +302,17 @@ def _validate_appearance(connection: Connection, metadata: MetaData) -> None:
         )
     except AssetRecoveryError as error:
         raise StorageValidationError(f"invalid appearance metadata: {error}") from error
+    if "plan_node_appearances" in metadata.tables:
+        try:
+            read_object_appearances(
+                lambda statement: [
+                    dict(row) for row in connection.execute(text(statement)).mappings()
+                ]
+            )
+        except ObjectAppearanceRecoveryError as error:
+            raise StorageValidationError(
+                f"invalid object appearance: {error}"
+            ) from error
 
 
 def export_archive(database_url: str, archive_path: Path) -> Path:

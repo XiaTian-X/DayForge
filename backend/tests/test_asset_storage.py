@@ -172,12 +172,17 @@ def test_incremental_migration_never_creates_accounts_or_rewrites_existing_data(
     path = baseline_database(tmp_path)
     command.upgrade(alembic_config(str(path)), "000000000002")
     before = table_snapshot(path)
-    command.upgrade(alembic_config(str(path)), "head")
+    command.upgrade(alembic_config(str(path)), "000000000003")
     after = table_snapshot(path)
     assert {name: after[name] for name in before} == before
     assert set(after) - set(before) == set(TABLES)
     assert all(after[name][1] == [] for name in TABLES)
+    # Keep this frozen migration's five-table contract, and still check the full
+    # evolving model at head before proving downgrade preserves this boundary.
+    command.upgrade(alembic_config(str(path)), "head")
     command.check(alembic_config(str(path)))
+    command.downgrade(alembic_config(str(path)), "000000000003")
+    assert table_snapshot(path) == after
     command.downgrade(alembic_config(str(path)), "000000000002")
     assert table_snapshot(path) == before
 

@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.auth.models import User  # noqa: F401
 from src.tokens.models import ApiToken  # noqa: F401
 from src.v2 import asset_models as asset_models  # Register appearance tables.
+from src.v2 import object_appearance_models as object_appearance_models
 from src.v2.models import (  # noqa: F401
     ActivityDetail,
     ActivityEvent,

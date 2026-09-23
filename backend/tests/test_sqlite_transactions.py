@@ -124,7 +124,7 @@ def test_alembic_failure_leaves_no_partial_schema_and_can_retry(tmp_path):
                 connection.execute(
                     text("SELECT version_num FROM alembic_version")
                 ).scalar_one()
-                == "000000000003"
+                == "000000000004"
             )
     finally:
         engine.dispose()
