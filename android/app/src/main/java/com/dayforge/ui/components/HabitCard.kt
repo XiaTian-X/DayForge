@@ -24,6 +24,7 @@ import com.dayforge.domain.service.CardColorResolver
 import com.dayforge.domain.model.ActiveTimerState
 import java.time.LocalDate
 import androidx.compose.foundation.background
+import androidx.compose.foundation.progressSemantics
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 
@@ -359,6 +360,18 @@ fun HabitCard(
                     }
                 }
 
+                // Keep exact long-term counts accessible; the bottom edge is only a visual summary.
+                habit.targetCycles?.takeIf { it > 0 }?.let { target ->
+                    val progressFraction = (targetProgress.toFloat() / target).coerceIn(0f, 1f)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = stringResource(R.string.habit_target_progress_format, targetProgress, target),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = resolvedColors.textColor,
+                        modifier = Modifier.fillMaxWidth().progressSemantics(progressFraction)
+                    )
+                }
+
                 // Linked metrics section (D-12 to D-14)
                 if (linkedMetrics.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(8.dp))
@@ -370,7 +383,7 @@ fun HabitCard(
                 }
             }
 
-            // Bottom Edge Progress Bar (Text-less, matches ChildHabitRow)
+            // Decorative edge progress; exact counts and progress semantics are provided above.
             if (habit.targetCycles != null && habit.targetCycles > 0) {
                 val progressFraction = (targetProgress.toFloat() / habit.targetCycles.toFloat()).coerceIn(0f, 1f)
                 Box(

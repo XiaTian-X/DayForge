@@ -21,6 +21,7 @@ import org.junit.Assert.*
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.runner.RunWith
 import org.junit.Test
+import java.util.Locale
 
 /**
  * Physical Compose interaction tests plus preserved UI-state contracts.
@@ -38,11 +39,13 @@ class MetricDetailScreenTest {
         runBlocking { viewModel?.viewModelScope?.coroutineContext?.get(Job)?.cancelAndJoin() }
     }
 
-    private fun showMetric(): Long {
+    private fun showMetric(targetDirection: String? = null, targetUpper: Double? = null): Long {
         val db = storage.database
         val repository = MetricRepository(db, db.metricDao(), db.metricLogDao(), db.habitDao(), db.habitMetricLinkDao())
         val id = runBlocking { repository.createMetric(MetricEntity(
-            name = "Device weight", unit = "kg", decimalPlaces = 1, iconResId = 1, colorHex = "#123456"
+            name = "Device weight", unit = "kg", decimalPlaces = 1, iconResId = 1, colorHex = "#123456",
+            targetDirection = targetDirection, targetValue = targetDirection?.let { 60.0 },
+            targetValueUpper = targetUpper
         )) }
         compose.runOnUiThread {
             viewModel = MetricDetailViewModel(context, db.metricDao(), db.metricLogDao(),
@@ -52,10 +55,40 @@ class MetricDetailScreenTest {
             MetricDetailScreen(id, onNavigateBack = {}, onDeleted = { deleted++ }, viewModel = requireNotNull(viewModel))
         } }
         compose.waitUntil(5_000) { viewModel?.uiState?.value?.isLoading == false }
-        // The app bar title and the metric summary both show the name.
-        compose.onAllNodesWithText("Device weight").assertCountEquals(2)[0].assertIsDisplayed()
+        // The app bar owns the name; the hero shows the value/configuration without duplicating it.
+        compose.onNodeWithText("Device weight").assertIsDisplayed()
+        compose.onNodeWithText(context.getString(R.string.metric_configuration_summary, "kg", 1))
+            .performScrollTo().assertIsDisplayed()
         return id
     }
+
+    private fun assertTargetBeforeAndAfterRecording(direction: String, labelRes: Int, upper: Double? = null) {
+        val id = showMetric(direction, upper)
+        val lowerText = String.format(Locale.getDefault(), "%.1f", 60.0)
+        val range = upper?.let { " - ${String.format(Locale.getDefault(), "%.1f", it)}" } ?: ""
+        val expected = "${label(labelRes)}: $lowerText$range kg"
+        compose.onNodeWithText(expected).performScrollTo().assertIsDisplayed()
+        runBlocking { assertTrue(storage.database.metricLogDao().getAllLogsForMetric(id).isEmpty()) }
+        submitValue()
+        compose.onNodeWithText(expected).performScrollTo().assertIsDisplayed()
+        runBlocking {
+            val stored = requireNotNull(storage.database.metricDao().getMetricById(id))
+            assertEquals(direction, stored.targetDirection)
+            assertEquals(60.0, requireNotNull(stored.targetValue), 0.0)
+            assertEquals(upper, stored.targetValueUpper)
+            assertEquals(1, storage.database.metricLogDao().getAllLogsForMetric(id).size)
+            assertEquals(2, storage.database.syncOutboxDao().count())
+        }
+    }
+
+    @Test fun increaseTargetIsVisibleBeforeAndAfterFirstRecord() =
+        assertTargetBeforeAndAfterRecording("increase", R.string.metric_target_increase)
+
+    @Test fun decreaseTargetIsVisibleBeforeAndAfterFirstRecord() =
+        assertTargetBeforeAndAfterRecording("decrease", R.string.metric_target_decrease)
+
+    @Test fun rangeTargetIsVisibleBeforeAndAfterFirstRecord() =
+        assertTargetBeforeAndAfterRecording("range", R.string.metric_target_range, 70.0)
 
     private fun submitValue() {
         compose.onNodeWithText(label(R.string.metric_record_value)).performScrollTo().performClick()

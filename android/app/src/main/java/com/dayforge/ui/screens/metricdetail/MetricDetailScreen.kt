@@ -236,32 +236,40 @@ fun MetricDetailScreen(
                             }
                             if (lastLogStr != null) {
                                 Text(
-                                    text = stringResource(R.string.metric_card_last_recorded, lastLogStr).replace("最后记录：", "最后记录: "),
+                                    text = stringResource(R.string.metric_card_last_recorded, lastLogStr),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                             
-                            // Target info in Hero Section
-                            metric.targetValue?.let { target ->
-                                val directionLabel = when (metric.targetDirection) {
-                                    "increase" -> stringResource(R.string.metric_target_increase)
-                                    "decrease" -> stringResource(R.string.metric_target_decrease)
-                                    "range" -> stringResource(R.string.metric_target_range)
-                                    else -> stringResource(R.string.metric_target_label)
-                                }
-                                val targetDisplay = if (metric.targetDirection == "range" && metric.targetValueUpper != null) {
-                                    "${formatMetricValue(target, metric.decimalPlaces)} - ${formatMetricValue(metric.targetValueUpper, metric.decimalPlaces)} ${metric.unit}"
-                                } else {
-                                    "${formatMetricValue(target, metric.decimalPlaces)} ${metric.unit}"
-                                }
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = "$directionLabel: $targetDisplay",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                        }
+
+                        // Configuration remains visible even before the first record.
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = stringResource(R.string.metric_configuration_summary, metric.unit, metric.decimalPlaces),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        // Target info in Hero Section
+                        metric.targetValue?.let { target ->
+                            val directionLabel = when (metric.targetDirection) {
+                                "increase" -> stringResource(R.string.metric_target_increase)
+                                "decrease" -> stringResource(R.string.metric_target_decrease)
+                                "range" -> stringResource(R.string.metric_target_range)
+                                else -> stringResource(R.string.metric_target_label)
                             }
+                            val targetDisplay = if (metric.targetDirection == "range" && metric.targetValueUpper != null) {
+                                "${formatMetricValue(target, metric.decimalPlaces)} - ${formatMetricValue(metric.targetValueUpper, metric.decimalPlaces)} ${metric.unit}"
+                            } else {
+                                "${formatMetricValue(target, metric.decimalPlaces)} ${metric.unit}"
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "$directionLabel: $targetDisplay",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
 

@@ -1,8 +1,8 @@
 package com.dayforge.ui.components
 
-import android.app.Application
 import androidx.activity.ComponentActivity
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import com.dayforge.data.local.entity.MetricEntity
@@ -29,18 +29,55 @@ class MetricCardTest {
         compose.runOnIdle { assertEquals(1, clicks) }
     }
 
-    @Test fun empty_card_expansion_reveals_never_recorded_without_navigating() {
+    @Test fun empty_card_keeps_status_visible_and_only_toggles_chart_without_navigating() {
         var clicks = 0
         compose.setContent { MaterialTheme {
             MetricCard(metric, null, null, onClick = { clicks++ })
         } }
         val never = compose.activity.getString(R.string.metric_card_never_recorded)
-        compose.onNodeWithText(compose.activity.getString(R.string.metric_card_no_records)).assertIsDisplayed()
-        compose.onNodeWithText(never).assertDoesNotExist()
+        val emptyChart = compose.activity.getString(R.string.chart_no_data)
+        compose.onNodeWithText("--").assertIsDisplayed()
+        compose.onNodeWithText(never).assertIsDisplayed()
+        compose.onNodeWithText(emptyChart).assertDoesNotExist()
         compose.onNodeWithContentDescription(compose.activity.getString(R.string.content_description_expand)).performClick()
         compose.onNodeWithText(never).assertIsDisplayed()
+        compose.onNodeWithText(emptyChart).assertIsDisplayed()
         compose.runOnIdle { assertEquals(0, clicks) }
         compose.onNodeWithContentDescription(compose.activity.getString(R.string.content_description_collapse)).performClick()
-        compose.onNodeWithText(never).assertDoesNotExist()
+        compose.onNodeWithText(never).assertIsDisplayed()
+        compose.onNodeWithText(emptyChart).assertDoesNotExist()
+        compose.runOnIdle { assertEquals(0, clicks) }
+    }
+
+    @Test fun configured_directions_remain_accessible_with_and_without_records() {
+        val current = mutableStateOf(metric)
+        val value = mutableStateOf<Double?>(null)
+        compose.setContent { MaterialTheme {
+            MetricCard(current.value, value.value, null, onClick = {})
+        } }
+        val directions = listOf(
+            "increase" to R.string.edit_metric_target_increase,
+            "decrease" to R.string.edit_metric_target_decrease,
+            "range" to R.string.edit_metric_target_range
+        )
+        directions.forEach { (direction, label) ->
+            val description = compose.activity.getString(
+                R.string.metric_card_target_direction, compose.activity.getString(label)
+            )
+            listOf(null, 68.5).forEach { latest ->
+                compose.runOnIdle {
+                    current.value = metric.copy(targetDirection = direction, targetValue = 60.0,
+                        targetValueUpper = if (direction == "range") 70.0 else null)
+                    value.value = latest
+                }
+                compose.onNodeWithContentDescription(description).assertIsDisplayed()
+            }
+        }
+        compose.runOnIdle { current.value = metric }
+        directions.forEach { (_, label) ->
+            compose.onNodeWithContentDescription(compose.activity.getString(
+                R.string.metric_card_target_direction, compose.activity.getString(label)
+            )).assertDoesNotExist()
+        }
     }
 }

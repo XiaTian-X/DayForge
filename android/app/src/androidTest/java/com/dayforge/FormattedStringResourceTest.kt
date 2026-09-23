@@ -24,6 +24,25 @@ class FormattedStringResourceTest {
             "第2次/共4次 (已完成1次)",
             context.getString(R.string.notification_slot_progress, 2, 4, 1)
         )
+        // User-approved compact copy omits a paused suffix; numeric meaning remains unchanged.
+        assertEquals(
+            "03:07 left / 5 min",
+            context.getString(R.string.timer_remaining_paused_format, 3, 7, 5)
+        )
+        assertEquals(
+            "Elapsed 03:07 / 5 min",
+            context.getString(R.string.timer_elapsed_paused_format, 3, 7, 5)
+        )
+    }
+
+    @Test
+    fun progressAndMetricConfigurationPreserveValuesInBothLanguages() {
+        val english = localizedContext("en")
+        val chinese = localizedContext("zh-CN")
+        assertEquals("Completed 7 / Target 30", english.getString(R.string.habit_target_progress_format, 7, 30))
+        assertEquals("已完成 7 / 目标 30", chinese.getString(R.string.habit_target_progress_format, 7, 30))
+        assertEquals("Unit: kg · Decimal places: 1", english.getString(R.string.metric_configuration_summary, "kg", 1))
+        assertEquals("单位：kg · 小数位数：1", chinese.getString(R.string.metric_configuration_summary, "kg", 1))
     }
 
     @Test
@@ -55,11 +74,11 @@ class FormattedStringResourceTest {
             context.getString(R.string.timer_elapsed_format, 3, 7, 5)
         )
         assertEquals(
-            "还剩 03:07 / 5 分钟 (已暂停)",
+            "还剩 03:07 / 5 分钟",
             context.getString(R.string.timer_remaining_paused_format, 3, 7, 5)
         )
         assertEquals(
-            "已计时 03:07 / 5 分钟 (已暂停)",
+            "已计时 03:07 / 5 分钟",
             context.getString(R.string.timer_elapsed_paused_format, 3, 7, 5)
         )
     }

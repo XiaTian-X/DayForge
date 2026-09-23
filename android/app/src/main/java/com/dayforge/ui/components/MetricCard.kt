@@ -104,7 +104,7 @@ private fun getContrastingColor(colorHex: String): Color {
  * MetricCard displays a metric with its current value and target direction.
  *
  * Per METRIC-07: Users can see metrics in a separate section on main screen.
- * Per D-01 to D-04: Simple mode (collapsed) and expanded mode with last recorded date.
+ * Per D-01 to D-04: Collapsed summary includes the last recorded date; expanded mode adds the chart.
  * Per D-03: Shows icon + name + value + unit + direction arrow in simple mode.
  * Per D-11: Whole card is clickable to navigate to detail.
  *
@@ -213,6 +213,23 @@ fun MetricCard(
                         text = "--",
                         style = MaterialTheme.typography.titleLarge,
                         color = resolvedColors.secondaryTextColor
+                    )
+                }
+
+                // Target direction is configuration, including before the first recorded value.
+                metric.targetDirection?.let { direction ->
+                    val directionLabel = when (direction) {
+                        "increase" -> stringResource(R.string.edit_metric_target_increase)
+                        "decrease" -> stringResource(R.string.edit_metric_target_decrease)
+                        "range" -> stringResource(R.string.edit_metric_target_range)
+                        else -> stringResource(R.string.metric_target_label)
+                    }
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Icon(
+                        imageVector = getDirectionIcon(direction),
+                        contentDescription = stringResource(R.string.metric_card_target_direction, directionLabel),
+                        tint = resolvedColors.textColor,
+                        modifier = Modifier.size(20.dp)
                     )
                 }
 
