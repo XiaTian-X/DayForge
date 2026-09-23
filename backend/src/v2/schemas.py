@@ -310,12 +310,10 @@ class ActivityPayload(ApiModel):
         return self
 
 
-class PlanNodePayload(ApiModel):
+class PlanNodeCore(ApiModel):
     node_kind: Literal["goal", "activity"]
     title: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=1000)
-    icon: str = Field(default="health", max_length=100)
-    color_hex: str = Field(default="#2196F3", pattern=r"^#[0-9A-Fa-f]{6,8}$")
     status: Literal["active", "paused", "completed", "failed", "archived"] = "active"
     visibility: Literal["private"] = "private"
     sort_order: int = 0
@@ -351,15 +349,20 @@ class PlanNodePayload(ApiModel):
                 )
         return self
 
-    @field_validator("icon")
-    @classmethod
-    def validate_icon(cls, value: str) -> str:
-        return normalize_android_icon(value)
-
     @field_validator("created_at")
     @classmethod
     def normalize_created_at(cls, value: Optional[datetime]) -> Optional[datetime]:
         return require_aware_utc(value)
+
+
+class PlanNodePayload(PlanNodeCore):
+    icon: str = Field(default="health", max_length=100)
+    color_hex: str = Field(default="#2196F3", pattern=r"^#[0-9A-Fa-f]{6,8}$")
+
+    @field_validator("icon")
+    @classmethod
+    def validate_icon(cls, value: str) -> str:
+        return normalize_android_icon(value)
 
 
 class ActivityEventPayload(ApiModel):
@@ -444,7 +447,7 @@ class ActivityEventPayload(ApiModel):
         return self
 
 
-class MetricPayload(ApiModel):
+class MetricCore(ApiModel):
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=1000)
     unit: str = Field(min_length=1, max_length=50)
@@ -453,8 +456,6 @@ class MetricPayload(ApiModel):
     target_direction: Optional[Literal["increase", "decrease", "range"]] = None
     target_value: Optional[Decimal] = None
     target_value_upper: Optional[Decimal] = None
-    icon: str = Field(default="health", max_length=100)
-    color_hex: str = Field(default="#2196F3", pattern=r"^#[0-9A-Fa-f]{6,8}$")
     status: Literal["active", "archived"] = "active"
 
     @model_validator(mode="after")
@@ -467,6 +468,11 @@ class MetricPayload(ApiModel):
                     "target_value_upper must not be less than target_value"
                 )
         return self
+
+
+class MetricPayload(MetricCore):
+    icon: str = Field(default="health", max_length=100)
+    color_hex: str = Field(default="#2196F3", pattern=r"^#[0-9A-Fa-f]{6,8}$")
 
     @field_validator("icon")
     @classmethod

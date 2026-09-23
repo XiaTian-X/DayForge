@@ -1,0 +1,3047 @@
+{
+  "components": {
+    "schemas": {
+      "AppearanceCatalogPage": {
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "$ref": "#/components/schemas/AssetSyncContext"
+          },
+          "entries": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "asset": "#/components/schemas/AssetCatalogEntry",
+                  "pack": "#/components/schemas/PackCatalogEntry"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/AssetCatalogEntry"
+                },
+                {
+                  "$ref": "#/components/schemas/PackCatalogEntry"
+                }
+              ]
+            },
+            "maxItems": 100,
+            "title": "Entries",
+            "type": "array"
+          },
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "maximum": 9223372036854775807,
+            "minimum": 0,
+            "title": "Next Cursor",
+            "type": "integer"
+          },
+          "through_sequence": {
+            "maximum": 9223372036854775807,
+            "minimum": 0,
+            "title": "Through Sequence",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "context",
+          "entries",
+          "next_cursor",
+          "through_sequence",
+          "has_more"
+        ],
+        "title": "AppearanceCatalogPage",
+        "type": "object"
+      },
+      "AppearanceQuota": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_limit": {
+            "maximum": 9223372036854775807,
+            "minimum": 0,
+            "title": "Asset Limit",
+            "type": "integer"
+          },
+          "byte_limit": {
+            "maximum": 9223372036854775807,
+            "minimum": 0,
+            "title": "Byte Limit",
+            "type": "integer"
+          },
+          "metadata_byte_limit": {
+            "maximum": 9223372036854775807,
+            "minimum": 0,
+            "title": "Metadata Byte Limit",
+            "type": "integer"
+          },
+          "reserved_assets": {
+            "maximum": 9223372036854775807,
+            "minimum": 0,
+            "title": "Reserved Assets",
+            "type": "integer"
+          },
+          "reserved_bytes": {
+            "maximum": 9223372036854775807,
+            "minimum": 0,
+            "title": "Reserved Bytes",
+            "type": "integer"
+          },
+          "reserved_metadata_bytes": {
+            "maximum": 9223372036854775807,
+            "minimum": 0,
+            "title": "Reserved Metadata Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "byte_limit",
+          "reserved_bytes",
+          "asset_limit",
+          "reserved_assets",
+          "metadata_byte_limit",
+          "reserved_metadata_bytes"
+        ],
+        "title": "AppearanceQuota",
+        "type": "object"
+      },
+      "AssetCatalogEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "$ref": "#/components/schemas/IconAsset"
+          },
+          "kind": {
+            "const": "asset",
+            "title": "Kind",
+            "type": "string"
+          },
+          "sequence": {
+            "maximum": 9223372036854775807,
+            "minimum": 1,
+            "title": "Sequence",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sequence",
+          "kind",
+          "asset"
+        ],
+        "title": "AssetCatalogEntry",
+        "type": "object"
+      },
+      "AssetDeclaration": {
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "$ref": "#/components/schemas/IconAsset"
+          },
+          "context": {
+            "$ref": "#/components/schemas/AssetSyncContext"
+          }
+        },
+        "required": [
+          "context",
+          "asset"
+        ],
+        "title": "AssetDeclaration",
+        "type": "object"
+      },
+      "AssetIcon": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "asset",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "asset_id"
+        ],
+        "title": "AssetIcon",
+        "type": "object"
+      },
+      "AssetRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "$ref": "#/components/schemas/IconAsset"
+          },
+          "context": {
+            "$ref": "#/components/schemas/AssetSyncContext"
+          },
+          "ready_variants": {
+            "items": {
+              "enum": [
+                "light",
+                "dark"
+              ],
+              "type": "string"
+            },
+            "maxItems": 2,
+            "title": "Ready Variants",
+            "type": "array"
+          }
+        },
+        "required": [
+          "context",
+          "asset",
+          "ready_variants"
+        ],
+        "title": "AssetRecord",
+        "type": "object"
+      },
+      "AssetSyncContext": {
+        "additionalProperties": false,
+        "properties": {
+          "device_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Device Id",
+            "type": "string"
+          },
+          "server_instance_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Server Instance Id",
+            "type": "string"
+          },
+          "sync_epoch": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Sync Epoch",
+            "type": "string"
+          }
+        },
+        "required": [
+          "server_instance_id",
+          "sync_epoch",
+          "device_id"
+        ],
+        "title": "AssetSyncContext",
+        "type": "object"
+      },
+      "AssetTransferReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "blob": {
+            "$ref": "#/components/schemas/IconBlob"
+          },
+          "context": {
+            "$ref": "#/components/schemas/AssetSyncContext"
+          },
+          "variant": {
+            "enum": [
+              "light",
+              "dark"
+            ],
+            "title": "Variant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "context",
+          "asset_id",
+          "variant",
+          "blob"
+        ],
+        "title": "AssetTransferReceipt",
+        "type": "object"
+      },
+      "DailyRule": {
+        "additionalProperties": false,
+        "properties": {
+          "interval": {
+            "const": 1,
+            "default": 1,
+            "title": "Interval",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Start Date"
+          },
+          "type": {
+            "const": "daily",
+            "default": "daily",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "title": "DailyRule",
+        "type": "object"
+      },
+      "GoalPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "due_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Due Date"
+          },
+          "evaluation_policy": {
+            "discriminator": {
+              "mapping": {
+                "manual": "#/components/schemas/ManualGoalEvaluation"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ManualGoalEvaluation"
+              }
+            ],
+            "title": "Evaluation Policy"
+          },
+          "failure_policy": {
+            "discriminator": {
+              "mapping": {
+                "loose": "#/components/schemas/LooseFailurePolicy",
+                "strict": "#/components/schemas/StrictFailurePolicy"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StrictFailurePolicy"
+              },
+              {
+                "$ref": "#/components/schemas/LooseFailurePolicy"
+              }
+            ],
+            "title": "Failure Policy"
+          },
+          "manual_result": {
+            "anyOf": [
+              {
+                "enum": [
+                  "succeeded",
+                  "failed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Manual Result"
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Start Date"
+          },
+          "target_cycles": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "maximum": 2147483647,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target Cycles"
+          }
+        },
+        "title": "GoalPayload",
+        "type": "object"
+      },
+      "IconAsset": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "color_mode": {
+            "enum": [
+              "template",
+              "original"
+            ],
+            "title": "Color Mode",
+            "type": "string"
+          },
+          "dark": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IconBlob"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "light": {
+            "$ref": "#/components/schemas/IconBlob"
+          },
+          "name": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "purpose": {
+            "enum": [
+              "general",
+              "task"
+            ],
+            "title": "Purpose",
+            "type": "string"
+          }
+        },
+        "required": [
+          "asset_id",
+          "name",
+          "purpose",
+          "color_mode",
+          "light",
+          "dark"
+        ],
+        "title": "IconAsset",
+        "type": "object"
+      },
+      "IconBlob": {
+        "additionalProperties": false,
+        "properties": {
+          "byte_length": {
+            "maximum": 2097152,
+            "minimum": 1,
+            "title": "Byte Length",
+            "type": "integer"
+          },
+          "height": {
+            "maximum": 1024,
+            "minimum": 1,
+            "title": "Height",
+            "type": "integer"
+          },
+          "media_type": {
+            "enum": [
+              "image/png",
+              "image/svg+xml"
+            ],
+            "title": "Media Type",
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          },
+          "width": {
+            "maximum": 1024,
+            "minimum": 1,
+            "title": "Width",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sha256",
+          "byte_length",
+          "media_type",
+          "width",
+          "height"
+        ],
+        "title": "IconBlob",
+        "type": "object"
+      },
+      "IconPack": {
+        "additionalProperties": false,
+        "properties": {
+          "assets": {
+            "items": {
+              "$ref": "#/components/schemas/IconAsset"
+            },
+            "maxItems": 128,
+            "minItems": 1,
+            "title": "Assets",
+            "type": "array"
+          },
+          "format": {
+            "const": "dayforge.icon-pack",
+            "title": "Format",
+            "type": "string"
+          },
+          "format_version": {
+            "const": 1,
+            "title": "Format Version",
+            "type": "integer"
+          },
+          "name": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "pack_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Pack Id",
+            "type": "string"
+          },
+          "placeholder_asset_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Placeholder Asset Id"
+          },
+          "revision": {
+            "maximum": 2147483647,
+            "minimum": 1,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "roles": {
+            "maxProperties": 256,
+            "patternProperties": {
+              "^(habit|metric|goal|task)\\.[a-z][a-z0-9_]{0,47}$": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              }
+            },
+            "title": "Roles",
+            "type": "object"
+          }
+        },
+        "required": [
+          "format",
+          "format_version",
+          "pack_id",
+          "revision",
+          "name",
+          "assets",
+          "roles",
+          "placeholder_asset_id"
+        ],
+        "title": "IconPack",
+        "type": "object"
+      },
+      "IntervalRule": {
+        "additionalProperties": false,
+        "properties": {
+          "every_days": {
+            "maximum": 3650,
+            "minimum": 1,
+            "title": "Every Days",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "start_date": {
+            "format": "date",
+            "title": "Start Date",
+            "type": "string"
+          },
+          "type": {
+            "const": "interval",
+            "default": "interval",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "every_days",
+          "start_date"
+        ],
+        "title": "IntervalRule",
+        "type": "object"
+      },
+      "LooseFailurePolicy": {
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "type": {
+            "const": "loose",
+            "default": "loose",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "title": "LooseFailurePolicy",
+        "type": "object"
+      },
+      "ManualGoalEvaluation": {
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "type": {
+            "const": "manual",
+            "default": "manual",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "title": "ManualGoalEvaluation",
+        "type": "object"
+      },
+      "MonthlyRule": {
+        "additionalProperties": false,
+        "properties": {
+          "day_of_month": {
+            "maximum": 31,
+            "minimum": 1,
+            "title": "Day Of Month",
+            "type": "integer"
+          },
+          "interval": {
+            "const": 1,
+            "default": 1,
+            "title": "Interval",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Start Date"
+          },
+          "type": {
+            "const": "monthly",
+            "default": "monthly",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "day_of_month"
+        ],
+        "title": "MonthlyRule",
+        "type": "object"
+      },
+      "NextActivityEventPayload": {
+        "additionalProperties": false,
+        "description": "Existing UTC/source rules plus explicit intent; DB policy is checked later.",
+        "properties": {
+          "activity_uuid": {
+            "format": "uuid",
+            "title": "Activity Uuid",
+            "type": "string"
+          },
+          "duration_milliseconds": {
+            "anyOf": [
+              {
+                "maximum": 86400000,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Duration Milliseconds"
+          },
+          "duration_seconds": {
+            "anyOf": [
+              {
+                "maximum": 2147483647,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Duration Seconds"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ended At"
+          },
+          "event_type": {
+            "enum": [
+              "check_in",
+              "count_delta",
+              "count_snapshot",
+              "duration_session",
+              "revert"
+            ],
+            "title": "Event Type",
+            "type": "string"
+          },
+          "external_event_id": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "External Event Id"
+          },
+          "local_date": {
+            "format": "date",
+            "title": "Local Date",
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Note",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "one_time": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OneTimeIntent"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "reverts_event_uuid": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reverts Event Uuid"
+          },
+          "source_device_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Device Id"
+          },
+          "source_type": {
+            "default": "app",
+            "enum": [
+              "app",
+              "widget",
+              "api",
+              "smart_device",
+              "automation",
+              "import"
+            ],
+            "title": "Source Type",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Started At"
+          },
+          "timezone": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Timezone",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Value"
+          }
+        },
+        "required": [
+          "activity_uuid",
+          "event_type",
+          "occurred_at",
+          "local_date",
+          "timezone"
+        ],
+        "title": "NextActivityEventPayload",
+        "type": "object"
+      },
+      "NextActivityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "completion_policy": {
+            "enum": [
+              "recurring",
+              "one_and_done"
+            ],
+            "title": "Completion Policy",
+            "type": "string"
+          },
+          "failure_policy": {
+            "discriminator": {
+              "mapping": {
+                "loose": "#/components/schemas/LooseFailurePolicy",
+                "strict": "#/components/schemas/StrictFailurePolicy"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StrictFailurePolicy"
+              },
+              {
+                "$ref": "#/components/schemas/LooseFailurePolicy"
+              }
+            ],
+            "title": "Failure Policy"
+          },
+          "is_countdown": {
+            "default": false,
+            "title": "Is Countdown",
+            "type": "boolean"
+          },
+          "origin_assignment_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Origin Assignment Id"
+          },
+          "preferred_local_time": {
+            "anyOf": [
+              {
+                "format": "time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Preferred Local Time"
+          },
+          "recurrence_rule": {
+            "discriminator": {
+              "mapping": {
+                "daily": "#/components/schemas/DailyRule",
+                "interval": "#/components/schemas/IntervalRule",
+                "monthly": "#/components/schemas/MonthlyRule",
+                "once": "#/components/schemas/OnceRule",
+                "weekly": "#/components/schemas/WeeklyRule"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DailyRule"
+              },
+              {
+                "$ref": "#/components/schemas/WeeklyRule"
+              },
+              {
+                "$ref": "#/components/schemas/MonthlyRule"
+              },
+              {
+                "$ref": "#/components/schemas/IntervalRule"
+              },
+              {
+                "$ref": "#/components/schemas/OnceRule"
+              }
+            ],
+            "title": "Recurrence Rule"
+          },
+          "target_cycles": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "maximum": 2147483647,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target Cycles"
+          },
+          "target_unit": {
+            "anyOf": [
+              {
+                "maxLength": 50,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target Unit"
+          },
+          "target_value": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "default": "1",
+            "title": "Target Value"
+          },
+          "timezone": {
+            "default": "UTC",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Timezone",
+            "type": "string"
+          },
+          "tracking_mode": {
+            "enum": [
+              "check",
+              "count",
+              "duration"
+            ],
+            "title": "Tracking Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tracking_mode",
+          "completion_policy"
+        ],
+        "title": "NextActivityPayload",
+        "type": "object"
+      },
+      "NextMetricPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "aggregation_type": {
+            "default": "average",
+            "enum": [
+              "average",
+              "sum",
+              "by_time"
+            ],
+            "title": "Aggregation Type",
+            "type": "string"
+          },
+          "appearance": {
+            "$ref": "#/components/schemas/ObjectAppearance"
+          },
+          "decimal_places": {
+            "default": 0,
+            "maximum": 6,
+            "minimum": 0,
+            "title": "Decimal Places",
+            "type": "integer"
+          },
+          "description": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Description",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "status": {
+            "default": "active",
+            "enum": [
+              "active",
+              "archived"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "target_direction": {
+            "anyOf": [
+              {
+                "enum": [
+                  "increase",
+                  "decrease",
+                  "range"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target Direction"
+          },
+          "target_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target Value"
+          },
+          "target_value_upper": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target Value Upper"
+          },
+          "unit": {
+            "maxLength": 50,
+            "minLength": 1,
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "unit",
+          "appearance"
+        ],
+        "title": "NextMetricPayload",
+        "type": "object"
+      },
+      "NextPlanNodePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "activity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NextActivityPayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "appearance": {
+            "$ref": "#/components/schemas/ObjectAppearance"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Created At"
+          },
+          "description": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Description",
+            "type": "string"
+          },
+          "goal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GoalPayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "node_kind": {
+            "enum": [
+              "goal",
+              "activity"
+            ],
+            "title": "Node Kind",
+            "type": "string"
+          },
+          "parent_uuid": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Parent Uuid"
+          },
+          "sort_order": {
+            "default": 0,
+            "title": "Sort Order",
+            "type": "integer"
+          },
+          "status": {
+            "default": "active",
+            "enum": [
+              "active",
+              "paused",
+              "completed",
+              "failed",
+              "archived"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "visibility": {
+            "const": "private",
+            "default": "private",
+            "title": "Visibility",
+            "type": "string"
+          }
+        },
+        "required": [
+          "node_kind",
+          "title",
+          "appearance"
+        ],
+        "title": "NextPlanNodePayload",
+        "type": "object"
+      },
+      "NextSyncBootstrapResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/SyncChangeResponse"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "next_cursor": {
+            "title": "Next Cursor",
+            "type": "integer"
+          },
+          "one_time_checkpoints": {
+            "items": {
+              "$ref": "#/components/schemas/OneTimeProjection"
+            },
+            "title": "One Time Checkpoints",
+            "type": "array"
+          },
+          "server_time": {
+            "format": "date-time",
+            "title": "Server Time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "changes",
+          "next_cursor",
+          "server_time",
+          "one_time_checkpoints"
+        ],
+        "title": "NextSyncBootstrapResponse",
+        "type": "object"
+      },
+      "NextSyncOperationResult": {
+        "additionalProperties": false,
+        "properties": {
+          "base_entity": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Base Entity"
+          },
+          "conflict_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Conflict Kind"
+          },
+          "conflicting_fields": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Conflicting Fields",
+            "type": "array"
+          },
+          "entity": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Entity"
+          },
+          "entity_type": {
+            "title": "Entity Type",
+            "type": "string"
+          },
+          "entity_uuid": {
+            "format": "uuid",
+            "title": "Entity Uuid",
+            "type": "string"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error Code"
+          },
+          "local_entity": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Local Entity"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Message"
+          },
+          "one_time_conflict": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OneTimeProjection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Revision"
+          },
+          "status": {
+            "enum": [
+              "applied",
+              "already_applied",
+              "conflict",
+              "rejected"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "entity_type",
+          "entity_uuid",
+          "status"
+        ],
+        "title": "NextSyncOperationResult",
+        "type": "object"
+      },
+      "NextSyncPullResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/SyncChangeResponse"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "title": "Next Cursor",
+            "type": "integer"
+          },
+          "server_time": {
+            "format": "date-time",
+            "title": "Server Time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "changes",
+          "next_cursor",
+          "has_more",
+          "server_time"
+        ],
+        "title": "NextSyncPullResponse",
+        "type": "object"
+      },
+      "NextSyncPushRequest": {
+        "additionalProperties": false,
+        "description": "Envelope only: invalid domain payloads receive per-operation rejections.",
+        "properties": {
+          "device_id": {
+            "format": "uuid",
+            "title": "Device Id",
+            "type": "string"
+          },
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/SyncOperationRequest"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Operations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "device_id",
+          "operations"
+        ],
+        "title": "NextSyncPushRequest",
+        "type": "object"
+      },
+      "NextSyncPushResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/NextSyncOperationResult"
+            },
+            "title": "Results",
+            "type": "array"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "title": "NextSyncPushResponse",
+        "type": "object"
+      },
+      "ObjectAppearance": {
+        "additionalProperties": false,
+        "properties": {
+          "accent_color": {
+            "pattern": "^#(?:[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+            "title": "Accent Color",
+            "type": "string"
+          },
+          "icon": {
+            "discriminator": {
+              "mapping": {
+                "asset": "#/components/schemas/AssetIcon",
+                "role": "#/components/schemas/RoleIcon"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RoleIcon"
+              },
+              {
+                "$ref": "#/components/schemas/AssetIcon"
+              }
+            ],
+            "title": "Icon"
+          },
+          "icon_tint": {
+            "enum": [
+              "theme",
+              "object"
+            ],
+            "title": "Icon Tint",
+            "type": "string"
+          }
+        },
+        "required": [
+          "icon",
+          "accent_color",
+          "icon_tint"
+        ],
+        "title": "ObjectAppearance",
+        "type": "object"
+      },
+      "OnceRule": {
+        "additionalProperties": false,
+        "properties": {
+          "due_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Due Date"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "type": {
+            "const": "once",
+            "default": "once",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "title": "OnceRule",
+        "type": "object"
+      },
+      "OneTimeIntent": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "complete",
+              "undo"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "event_uuid": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Event Uuid",
+            "type": "string"
+          },
+          "expected_head_event_uuid": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Head Event Uuid"
+          },
+          "expected_version": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "reverts_event_uuid": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reverts Event Uuid"
+          }
+        },
+        "required": [
+          "event_uuid",
+          "action",
+          "expected_version",
+          "expected_head_event_uuid",
+          "reverts_event_uuid"
+        ],
+        "title": "OneTimeIntent",
+        "type": "object"
+      },
+      "OneTimeProjection": {
+        "additionalProperties": false,
+        "description": "Also the shape of result.one_time_conflict; not an activity_event entity.",
+        "properties": {
+          "activity_uuid": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Activity Uuid",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/OneTimeState"
+          }
+        },
+        "required": [
+          "activity_uuid",
+          "state"
+        ],
+        "title": "OneTimeProjection",
+        "type": "object"
+      },
+      "OneTimeState": {
+        "additionalProperties": false,
+        "properties": {
+          "completion_event_uuid": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion Event Uuid"
+          },
+          "head_event_uuid": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Event Uuid"
+          },
+          "version": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "head_event_uuid",
+          "completion_event_uuid"
+        ],
+        "title": "OneTimeState",
+        "type": "object"
+      },
+      "PackCatalogEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "pack",
+            "title": "Kind",
+            "type": "string"
+          },
+          "pack": {
+            "$ref": "#/components/schemas/IconPack"
+          },
+          "sequence": {
+            "maximum": 9223372036854775807,
+            "minimum": 1,
+            "title": "Sequence",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sequence",
+          "kind",
+          "pack"
+        ],
+        "title": "PackCatalogEntry",
+        "type": "object"
+      },
+      "PackDeclaration": {
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "$ref": "#/components/schemas/AssetSyncContext"
+          },
+          "pack": {
+            "$ref": "#/components/schemas/IconPack"
+          }
+        },
+        "required": [
+          "context",
+          "pack"
+        ],
+        "title": "PackDeclaration",
+        "type": "object"
+      },
+      "RoleIcon": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "role",
+            "title": "Kind",
+            "type": "string"
+          },
+          "role": {
+            "pattern": "^(habit|metric|goal|task)\\.[a-z][a-z0-9_]{0,47}$",
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "role"
+        ],
+        "title": "RoleIcon",
+        "type": "object"
+      },
+      "StrictFailurePolicy": {
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "type": {
+            "const": "strict",
+            "default": "strict",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "title": "StrictFailurePolicy",
+        "type": "object"
+      },
+      "SyncChangeResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "changed_at": {
+            "format": "date-time",
+            "title": "Changed At",
+            "type": "string"
+          },
+          "entity_type": {
+            "title": "Entity Type",
+            "type": "string"
+          },
+          "entity_uuid": {
+            "format": "uuid",
+            "title": "Entity Uuid",
+            "type": "string"
+          },
+          "operation": {
+            "enum": [
+              "upsert",
+              "delete"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "origin_device_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Origin Device Id"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "sequence": {
+            "title": "Sequence",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sequence",
+          "entity_type",
+          "entity_uuid",
+          "operation",
+          "revision",
+          "payload",
+          "changed_at"
+        ],
+        "title": "SyncChangeResponse",
+        "type": "object"
+      },
+      "SyncOperationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "upsert",
+              "delete"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "base_revision": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Base Revision"
+          },
+          "entity_type": {
+            "enum": [
+              "plan_node",
+              "activity_event",
+              "metric",
+              "metric_observation",
+              "activity_metric_link"
+            ],
+            "title": "Entity Type",
+            "type": "string"
+          },
+          "entity_uuid": {
+            "format": "uuid",
+            "title": "Entity Uuid",
+            "type": "string"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          }
+        },
+        "required": [
+          "operation_id",
+          "entity_type",
+          "entity_uuid",
+          "action"
+        ],
+        "title": "SyncOperationRequest",
+        "type": "object"
+      },
+      "WeeklyRule": {
+        "additionalProperties": false,
+        "properties": {
+          "interval": {
+            "const": 1,
+            "default": 1,
+            "title": "Interval",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Start Date"
+          },
+          "type": {
+            "const": "weekly",
+            "default": "weekly",
+            "title": "Type",
+            "type": "string"
+          },
+          "weekdays": {
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 7,
+            "minItems": 1,
+            "title": "Weekdays",
+            "type": "array"
+          }
+        },
+        "required": [
+          "weekdays"
+        ],
+        "title": "WeeklyRule",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "ApiTokenAuth": {
+        "description": "Token <account API token>",
+        "in": "header",
+        "name": "Authorization",
+        "type": "apiKey"
+      },
+      "BearerAuth": {
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "Activation requires coordinated backend/Android release and an explicitly confirmed empty baseline. Unchanged auth/device/timer payloads remain in ../openapi.json; v5 registration and every sync/timer/appearance request must satisfy the protocol gate described in APPEARANCE_CONTRACT.md. This document is a contract, not deployed routes.",
+    "title": "DayForge v5 appearance and one-time delta (NOT ACTIVE)",
+    "version": "5-planned"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v2/appearance/assets/{asset_id}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "server_instance_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sync_epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetRecord"
+                }
+              }
+            },
+            "description": "Success after durable acknowledgement; immutable retries return the same identity"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "Read owned metadata and advisory availability; requires sync.read"
+      },
+      "put": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssetDeclaration"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetRecord"
+                }
+              }
+            },
+            "description": "Success after durable acknowledgement; immutable retries return the same identity"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "Declare immutable asset metadata and reserve account quota; requires structure.write"
+      }
+    },
+    "/api/v2/appearance/assets/{asset_id}/content/{variant}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "variant",
+            "required": true,
+            "schema": {
+              "enum": [
+                "light",
+                "dark"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "server_instance_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sync_epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/svg+xml": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Verified original bytes; private, no-store; declared media type, hash and length must match. Missing dark is 404, not an implicit light redirect.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "private, no-store",
+                  "type": "string"
+                }
+              },
+              "X-Content-Type-Options": {
+                "schema": {
+                  "const": "nosniff",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "Owned asset variant only; never an arbitrary URL or bare hash; requires sync.read"
+      },
+      "put": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "variant",
+            "required": true,
+            "schema": {
+              "enum": [
+                "light",
+                "dark"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "server_instance_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sync_epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetTransferReceipt"
+                }
+              }
+            },
+            "description": "Success after durable acknowledgement; immutable retries return the same identity"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "Bounded validated bytes; requires structure.write; no database transaction across streaming/decode; reauthorize before finalization"
+      }
+    },
+    "/api/v2/appearance/catalog": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "server_instance_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sync_epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "through",
+            "required": false,
+            "schema": {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppearanceCatalogPage"
+                }
+              }
+            },
+            "description": "Success after durable acknowledgement; immutable retries return the same identity"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "Append-only owned metadata, frozen through_sequence; never a cross-account hash lookup"
+      }
+    },
+    "/api/v2/appearance/packs/{pack_id}/versions/{revision}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "pack_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "revision",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "server_instance_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sync_epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PackDeclaration"
+                }
+              }
+            },
+            "description": "Success after durable acknowledgement; immutable retries return the same identity"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "Read owned immutable pack version; requires sync.read"
+      },
+      "put": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "pack_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "revision",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PackDeclaration"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PackDeclaration"
+                }
+              }
+            },
+            "description": "Success after durable acknowledgement; immutable retries return the same identity"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "Declare immutable pack version; all asset descriptors must exactly match owned declarations; requires structure.write"
+      }
+    },
+    "/api/v2/appearance/quota": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "server_instance_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sync_epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppearanceQuota"
+                }
+              }
+            },
+            "description": "Success after durable acknowledgement; immutable retries return the same identity"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "Account reservations include pending uploads; lowering limits does not erase existing metadata"
+      }
+    },
+    "/api/v2/sync/bootstrap": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NextSyncBootstrapResponse"
+                }
+              }
+            },
+            "description": "Success after durable acknowledgement; immutable retries return the same identity"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "One snapshot of facts, task checkpoints and cursor"
+      }
+    },
+    "/api/v2/sync/changes": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": true,
+            "schema": {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NextSyncPullResponse"
+                }
+              }
+            },
+            "description": "Success after durable acknowledgement; immutable retries return the same identity"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "Immutable incremental facts; task state is not a structural revision"
+      }
+    },
+    "/api/v2/sync/push": {
+      "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NextSyncPushRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NextSyncPushResponse"
+                }
+              }
+            },
+            "description": "Success after durable acknowledgement; immutable retries return the same identity"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "v5 sync push; payload type is selected by entity_type, not client metadata"
+      }
+    }
+  },
+  "x-activation-state": "planned"
+}

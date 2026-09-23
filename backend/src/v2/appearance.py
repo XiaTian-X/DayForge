@@ -8,7 +8,13 @@ from typing import Annotated, Literal
 
 from pydantic import Field, TypeAdapter, field_validator, model_validator
 
-from src.v2.contract_types import ContractModel, PublicId, exact_integer, visible_name
+from src.v2.contract_types import (
+    AccentColor,
+    ContractModel,
+    PublicId,
+    exact_integer,
+    visible_name,
+)
 
 
 RoleKey = Annotated[
@@ -30,6 +36,12 @@ class AssetIcon(ContractModel):
 
 IconReference = Annotated[RoleIcon | AssetIcon, Field(discriminator="kind")]
 ICON_REFERENCE: TypeAdapter[RoleIcon | AssetIcon] = TypeAdapter(IconReference)
+
+
+class ObjectAppearance(ContractModel):
+    icon: IconReference
+    accent_color: AccentColor
+    icon_tint: Literal["theme", "object"]
 
 
 class IconBlob(ContractModel):

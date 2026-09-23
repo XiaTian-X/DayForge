@@ -1,0 +1,1216 @@
+{
+  "context": {
+    "server_instance_id": "81000000-0000-4000-8000-000000000001",
+    "sync_epoch": "81000000-0000-4000-8000-000000000002",
+    "device_id": "81000000-0000-4000-8000-000000000003"
+  },
+  "task": {
+    "node_kind": "activity",
+    "title": "One-time check",
+    "description": "",
+    "status": "active",
+    "visibility": "private",
+    "sort_order": 0,
+    "created_at": null,
+    "parent_uuid": null,
+    "goal": null,
+    "activity": {
+      "tracking_mode": "check",
+      "completion_policy": "one_and_done",
+      "is_countdown": false,
+      "target_value": "1",
+      "target_unit": null,
+      "target_cycles": null,
+      "failure_policy": {
+        "schema_version": 1,
+        "type": "loose"
+      },
+      "preferred_local_time": null,
+      "timezone": "Asia/Shanghai",
+      "origin_assignment_id": null,
+      "recurrence_rule": {
+        "schema_version": 1,
+        "type": "once",
+        "due_date": null
+      }
+    },
+    "appearance": {
+      "icon": {
+        "kind": "role",
+        "role": "task.default"
+      },
+      "accent_color": "#4488AA",
+      "icon_tint": "theme"
+    }
+  },
+  "metric": {
+    "name": "Weight",
+    "unit": "kg",
+    "appearance": {
+      "icon": {
+        "kind": "role",
+        "role": "metric.weight"
+      },
+      "accent_color": "#FF557788",
+      "icon_tint": "object"
+    }
+  },
+  "push": {
+    "device_id": "81000000-0000-4000-8000-000000000003",
+    "operations": [
+      {
+        "operation_id": "72000000-0000-0000-0000-000000000001",
+        "entity_type": "activity_event",
+        "entity_uuid": "71000000-0000-0000-0000-000000000001",
+        "action": "upsert",
+        "base_revision": null,
+        "payload": {
+          "activity_uuid": "a7000000-0000-0000-0000-000000000001",
+          "event_type": "check_in",
+          "occurred_at": "2026-09-23T00:01:00Z",
+          "local_date": "2026-09-23",
+          "timezone": "Asia/Shanghai",
+          "source_type": "app",
+          "reverts_event_uuid": null,
+          "one_time": {
+            "event_uuid": "71000000-0000-0000-0000-000000000001",
+            "action": "complete",
+            "expected_version": 0,
+            "expected_head_event_uuid": null,
+            "reverts_event_uuid": null
+          }
+        }
+      }
+    ]
+  },
+  "bootstrap": {
+    "changes": [
+      {
+        "sequence": 0,
+        "entity_type": "plan_node",
+        "entity_uuid": "a7000000-0000-0000-0000-000000000001",
+        "operation": "upsert",
+        "revision": 1,
+        "payload": {
+          "node_kind": "activity",
+          "title": "One-time check",
+          "description": "",
+          "status": "active",
+          "visibility": "private",
+          "sort_order": 0,
+          "created_at": null,
+          "parent_uuid": null,
+          "goal": null,
+          "activity": {
+            "tracking_mode": "check",
+            "completion_policy": "one_and_done",
+            "is_countdown": false,
+            "target_value": "1",
+            "target_unit": null,
+            "target_cycles": null,
+            "failure_policy": {
+              "schema_version": 1,
+              "type": "loose"
+            },
+            "preferred_local_time": null,
+            "timezone": "Asia/Shanghai",
+            "origin_assignment_id": null,
+            "recurrence_rule": {
+              "schema_version": 1,
+              "type": "once",
+              "due_date": null
+            }
+          },
+          "appearance": {
+            "icon": {
+              "kind": "role",
+              "role": "task.default"
+            },
+            "accent_color": "#4488AA",
+            "icon_tint": "theme"
+          }
+        },
+        "changed_at": "2026-09-23T00:01:00Z",
+        "origin_device_id": null
+      },
+      {
+        "sequence": 0,
+        "entity_type": "activity_event",
+        "entity_uuid": "71000000-0000-0000-0000-000000000001",
+        "operation": "upsert",
+        "revision": 1,
+        "payload": {
+          "activity_uuid": "a7000000-0000-0000-0000-000000000001",
+          "event_type": "check_in",
+          "occurred_at": "2026-09-23T00:01:00Z",
+          "local_date": "2026-09-23",
+          "timezone": "Asia/Shanghai",
+          "source_type": "app",
+          "reverts_event_uuid": null,
+          "one_time": {
+            "event_uuid": "71000000-0000-0000-0000-000000000001",
+            "action": "complete",
+            "expected_version": 0,
+            "expected_head_event_uuid": null,
+            "reverts_event_uuid": null
+          },
+          "public_id": "71000000-0000-0000-0000-000000000001",
+          "one_time_state_after": {
+            "version": 1,
+            "head_event_uuid": "71000000-0000-0000-0000-000000000001",
+            "completion_event_uuid": "71000000-0000-0000-0000-000000000001"
+          }
+        },
+        "changed_at": "2026-09-23T00:01:00Z",
+        "origin_device_id": null
+      }
+    ],
+    "one_time_checkpoints": [
+      {
+        "activity_uuid": "a7000000-0000-0000-0000-000000000001",
+        "state": {
+          "version": 1,
+          "head_event_uuid": "71000000-0000-0000-0000-000000000001",
+          "completion_event_uuid": "71000000-0000-0000-0000-000000000001"
+        }
+      }
+    ],
+    "next_cursor": 7,
+    "server_time": "2026-09-23T00:01:01Z"
+  },
+  "conflict": {
+    "operation_id": "72000000-0000-0000-0000-000000000001",
+    "entity_type": "activity_event",
+    "entity_uuid": "71000000-0000-0000-0000-000000000001",
+    "status": "conflict",
+    "error_code": "TASK_STATE_CONFLICT",
+    "one_time_conflict": {
+      "activity_uuid": "a7000000-0000-0000-0000-000000000001",
+      "state": {
+        "version": 1,
+        "head_event_uuid": "71000000-0000-0000-0000-000000000001",
+        "completion_event_uuid": "71000000-0000-0000-0000-000000000001"
+      }
+    }
+  },
+  "accepted": {
+    "operation_id": "72000000-0000-0000-0000-000000000001",
+    "entity_type": "activity_event",
+    "entity_uuid": "71000000-0000-0000-0000-000000000001",
+    "status": "applied",
+    "revision": 1,
+    "entity": {
+      "public_id": "71000000-0000-0000-0000-000000000001",
+      "activity_uuid": "a7000000-0000-0000-0000-000000000001",
+      "event_type": "check_in",
+      "occurred_at": "2026-09-23T00:01:00Z",
+      "local_date": "2026-09-23",
+      "timezone": "Asia/Shanghai",
+      "source_type": "app",
+      "reverts_event_uuid": null,
+      "one_time": {
+        "event_uuid": "71000000-0000-0000-0000-000000000001",
+        "action": "complete", "expected_version": 0,
+        "expected_head_event_uuid": null, "reverts_event_uuid": null
+      },
+      "one_time_state_after": {
+        "version": 1, "head_event_uuid": "71000000-0000-0000-0000-000000000001",
+        "completion_event_uuid": "71000000-0000-0000-0000-000000000001"
+      }
+    }
+  },
+  "asset_declaration": {
+    "context": {
+      "server_instance_id": "81000000-0000-4000-8000-000000000001",
+      "sync_epoch": "81000000-0000-4000-8000-000000000002",
+      "device_id": "81000000-0000-4000-8000-000000000003"
+    },
+    "asset": {
+      "asset_id": "40000000-0000-0000-0000-000000000001",
+      "name": "Water",
+      "purpose": "general",
+      "color_mode": "template",
+      "light": {
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "byte_length": 128,
+        "media_type": "image/svg+xml",
+        "width": 24,
+        "height": 24
+      },
+      "dark": null
+    }
+  },
+  "asset_record": {
+    "context": {
+      "server_instance_id": "81000000-0000-4000-8000-000000000001",
+      "sync_epoch": "81000000-0000-4000-8000-000000000002",
+      "device_id": "81000000-0000-4000-8000-000000000003"
+    },
+    "asset": {
+      "asset_id": "40000000-0000-0000-0000-000000000001",
+      "name": "Water",
+      "purpose": "general",
+      "color_mode": "template",
+      "light": {
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "byte_length": 128,
+        "media_type": "image/svg+xml",
+        "width": 24,
+        "height": 24
+      },
+      "dark": null
+    },
+    "ready_variants": []
+  },
+  "receipt": {
+    "context": {
+      "server_instance_id": "81000000-0000-4000-8000-000000000001",
+      "sync_epoch": "81000000-0000-4000-8000-000000000002",
+      "device_id": "81000000-0000-4000-8000-000000000003"
+    },
+    "asset_id": "40000000-0000-0000-0000-000000000001",
+    "variant": "light",
+    "blob": {
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "byte_length": 128,
+      "media_type": "image/svg+xml",
+      "width": 24,
+      "height": 24
+    }
+  },
+  "pack_declaration": {
+    "context": {
+      "server_instance_id": "81000000-0000-4000-8000-000000000001",
+      "sync_epoch": "81000000-0000-4000-8000-000000000002",
+      "device_id": "81000000-0000-4000-8000-000000000003"
+    },
+    "pack": {
+      "format": "dayforge.icon-pack",
+      "format_version": 1,
+      "pack_id": "30000000-0000-0000-0000-000000000001",
+      "revision": 1,
+      "name": "Synthetic monochrome",
+      "assets": [
+        {
+          "asset_id": "40000000-0000-0000-0000-000000000001",
+          "name": "Water",
+          "purpose": "general",
+          "color_mode": "template",
+          "light": {
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "byte_length": 128,
+            "media_type": "image/svg+xml",
+            "width": 24,
+            "height": 24
+          },
+          "dark": null
+        },
+        {
+          "asset_id": "40000000-0000-0000-0000-000000000002",
+          "name": "Task",
+          "purpose": "task",
+          "color_mode": "original",
+          "light": {
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "byte_length": 256,
+            "media_type": "image/png",
+            "width": 96,
+            "height": 96
+          },
+          "dark": {
+            "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "byte_length": 256,
+            "media_type": "image/png",
+            "width": 96,
+            "height": 96
+          }
+        }
+      ],
+      "roles": {
+        "habit.water": "40000000-0000-0000-0000-000000000001",
+        "task.default": "40000000-0000-0000-0000-000000000002"
+      },
+      "placeholder_asset_id": "40000000-0000-0000-0000-000000000001"
+    }
+  },
+  "catalog": {
+    "context": {
+      "server_instance_id": "81000000-0000-4000-8000-000000000001",
+      "sync_epoch": "81000000-0000-4000-8000-000000000002",
+      "device_id": "81000000-0000-4000-8000-000000000003"
+    },
+    "entries": [
+      {
+        "sequence": 1,
+        "kind": "asset",
+        "asset": {
+          "asset_id": "40000000-0000-0000-0000-000000000001",
+          "name": "Water",
+          "purpose": "general",
+          "color_mode": "template",
+          "light": {
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "byte_length": 128,
+            "media_type": "image/svg+xml",
+            "width": 24,
+            "height": 24
+          },
+          "dark": null
+        }
+      },
+      {
+        "sequence": 2,
+        "kind": "asset",
+        "asset": {
+          "asset_id": "40000000-0000-0000-0000-000000000002",
+          "name": "Task",
+          "purpose": "task",
+          "color_mode": "original",
+          "light": {
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "byte_length": 256,
+            "media_type": "image/png",
+            "width": 96,
+            "height": 96
+          },
+          "dark": {
+            "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "byte_length": 256,
+            "media_type": "image/png",
+            "width": 96,
+            "height": 96
+          }
+        }
+      },
+      {
+        "sequence": 3,
+        "kind": "pack",
+        "pack": {
+          "format": "dayforge.icon-pack",
+          "format_version": 1,
+          "pack_id": "30000000-0000-0000-0000-000000000001",
+          "revision": 1,
+          "name": "Synthetic monochrome",
+          "assets": [
+            {
+              "asset_id": "40000000-0000-0000-0000-000000000001",
+              "name": "Water",
+              "purpose": "general",
+              "color_mode": "template",
+              "light": {
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "byte_length": 128,
+                "media_type": "image/svg+xml",
+                "width": 24,
+                "height": 24
+              },
+              "dark": null
+            },
+            {
+              "asset_id": "40000000-0000-0000-0000-000000000002",
+              "name": "Task",
+              "purpose": "task",
+              "color_mode": "original",
+              "light": {
+                "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "byte_length": 256,
+                "media_type": "image/png",
+                "width": 96,
+                "height": 96
+              },
+              "dark": {
+                "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "byte_length": 256,
+                "media_type": "image/png",
+                "width": 96,
+                "height": 96
+              }
+            }
+          ],
+          "roles": {
+            "habit.water": "40000000-0000-0000-0000-000000000001",
+            "task.default": "40000000-0000-0000-0000-000000000002"
+          },
+          "placeholder_asset_id": "40000000-0000-0000-0000-000000000001"
+        }
+      }
+    ],
+    "next_cursor": 3,
+    "through_sequence": 3,
+    "has_more": false
+  },
+  "quota": {
+    "byte_limit": 268435456,
+    "reserved_bytes": 640,
+    "asset_limit": 1000,
+    "reserved_assets": 2,
+    "metadata_byte_limit": 8388608,
+    "reserved_metadata_bytes": 4096
+  },
+  "invalid": [
+    {"name": "task-null-target", "model": "task", "path": ["activity", "target_value"], "value": null},
+    {"name": "task-string-countdown", "model": "task", "path": ["activity", "is_countdown"], "value": "false"},
+    {"name": "task-string-enabled-countdown", "model": "task", "path": ["activity", "is_countdown"], "value": "yes"},
+    {"name": "task-null-countdown", "model": "task", "path": ["activity", "is_countdown"], "value": null},
+    {"name": "push-read-only-state", "model": "push", "path": ["operations", 0, "payload", "one_time_state_after"], "value": null},
+    {
+      "model": "task",
+      "name": "legacy-icon",
+      "path": [
+        "icon"
+      ],
+      "value": "task_alt",
+      "operation": "set"
+    },
+    {
+      "model": "task",
+      "name": "habit-task-role",
+      "path": [
+        "activity",
+        "completion_policy"
+      ],
+      "value": "recurring",
+      "operation": "set"
+    },
+    {
+      "model": "task",
+      "name": "task-count",
+      "path": [
+        "activity",
+        "tracking_mode"
+      ],
+      "value": "count",
+      "operation": "set"
+    },
+    {
+      "model": "task",
+      "name": "task-cycles",
+      "path": [
+        "activity",
+        "target_cycles"
+      ],
+      "value": 1,
+      "operation": "set"
+    },
+    {
+      "model": "task",
+      "name": "task-strict",
+      "path": [
+        "activity",
+        "failure_policy",
+        "type"
+      ],
+      "value": "strict",
+      "operation": "set"
+    },
+    {
+      "model": "task",
+      "name": "task-time-preference",
+      "path": [
+        "activity",
+        "preferred_local_time"
+      ],
+      "value": "12:00:00",
+      "operation": "set"
+    },
+    {
+      "model": "task",
+      "name": "task-role-general",
+      "path": [
+        "appearance",
+        "icon",
+        "role"
+      ],
+      "value": "habit.water",
+      "operation": "set"
+    },
+    {
+      "model": "task",
+      "name": "task-assignment",
+      "path": [
+        "activity",
+        "origin_assignment_id"
+      ],
+      "value": "a7000000-0000-0000-0000-000000000001",
+      "operation": "set"
+    },
+    {
+      "model": "metric",
+      "name": "metric-task-role",
+      "path": [
+        "appearance",
+        "icon",
+        "role"
+      ],
+      "value": "task.default",
+      "operation": "set"
+    },
+    {
+      "model": "metric",
+      "name": "metric-legacy-color",
+      "path": [
+        "color_hex"
+      ],
+      "value": "#112233",
+      "operation": "set"
+    },
+    {
+      "model": "push",
+      "name": "wrong-outer-event",
+      "path": [
+        "operations",
+        0,
+        "entity_uuid"
+      ],
+      "value": "a7000000-0000-0000-0000-000000000001",
+      "operation": "set"
+    },
+    {
+      "model": "bootstrap",
+      "name": "missing-checkpoint",
+      "path": [
+        "one_time_checkpoints"
+      ],
+      "value": [],
+      "operation": "set"
+    },
+    {
+      "model": "bootstrap",
+      "name": "duplicate-checkpoint",
+      "path": [
+        "one_time_checkpoints"
+      ],
+      "value": [
+        {
+          "activity_uuid": "a7000000-0000-0000-0000-000000000001",
+          "state": {
+            "version": 1,
+            "head_event_uuid": "71000000-0000-0000-0000-000000000001",
+            "completion_event_uuid": "71000000-0000-0000-0000-000000000001"
+          }
+        },
+        {
+          "activity_uuid": "a7000000-0000-0000-0000-000000000001",
+          "state": {
+            "version": 1,
+            "head_event_uuid": "71000000-0000-0000-0000-000000000001",
+            "completion_event_uuid": "71000000-0000-0000-0000-000000000001"
+          }
+        }
+      ],
+      "operation": "set"
+    },
+    {
+      "model": "bootstrap",
+      "name": "foreign-checkpoint",
+      "path": [
+        "one_time_checkpoints",
+        0,
+        "activity_uuid"
+      ],
+      "value": "81000000-0000-4000-8000-000000000001",
+      "operation": "set"
+    },
+    {
+      "model": "bootstrap",
+      "name": "missing-all-history",
+      "path": [
+        "changes"
+      ],
+      "value": [
+        {
+          "sequence": 0,
+          "entity_type": "plan_node",
+          "entity_uuid": "a7000000-0000-0000-0000-000000000001",
+          "operation": "upsert",
+          "revision": 1,
+          "payload": {
+            "node_kind": "activity",
+            "title": "One-time check",
+            "description": "",
+            "status": "active",
+            "visibility": "private",
+            "sort_order": 0,
+            "created_at": null,
+            "parent_uuid": null,
+            "goal": null,
+            "activity": {
+              "tracking_mode": "check",
+              "completion_policy": "one_and_done",
+              "is_countdown": false,
+              "target_value": "1",
+              "target_unit": null,
+              "target_cycles": null,
+              "failure_policy": {
+                "schema_version": 1,
+                "type": "loose"
+              },
+              "preferred_local_time": null,
+              "timezone": "Asia/Shanghai",
+              "origin_assignment_id": null,
+              "recurrence_rule": {
+                "schema_version": 1,
+                "type": "once",
+                "due_date": null
+              }
+            },
+            "appearance": {
+              "icon": {
+                "kind": "role",
+                "role": "task.default"
+              },
+              "accent_color": "#4488AA",
+              "icon_tint": "theme"
+            }
+          },
+          "changed_at": "2026-09-23T00:01:00Z",
+          "origin_device_id": null
+        }
+      ],
+      "operation": "set"
+    },
+    {
+      "model": "bootstrap",
+      "name": "missing-proof",
+      "path": [
+        "changes",
+        1,
+        "payload",
+        "one_time"
+      ],
+      "value": null,
+      "operation": "set"
+    },
+    {
+      "model": "bootstrap",
+      "name": "wrong-proof-id",
+      "path": [
+        "changes",
+        1,
+        "entity_uuid"
+      ],
+      "value": "a7000000-0000-0000-0000-000000000001",
+      "operation": "set"
+    },
+    {
+      "model": "bootstrap",
+      "name": "duplicate-entity",
+      "path": [
+        "changes"
+      ],
+      "value": [
+        {
+          "sequence": 0,
+          "entity_type": "plan_node",
+          "entity_uuid": "a7000000-0000-0000-0000-000000000001",
+          "operation": "upsert",
+          "revision": 1,
+          "payload": {
+            "node_kind": "activity",
+            "title": "One-time check",
+            "description": "",
+            "status": "active",
+            "visibility": "private",
+            "sort_order": 0,
+            "created_at": null,
+            "parent_uuid": null,
+            "goal": null,
+            "activity": {
+              "tracking_mode": "check",
+              "completion_policy": "one_and_done",
+              "is_countdown": false,
+              "target_value": "1",
+              "target_unit": null,
+              "target_cycles": null,
+              "failure_policy": {
+                "schema_version": 1,
+                "type": "loose"
+              },
+              "preferred_local_time": null,
+              "timezone": "Asia/Shanghai",
+              "origin_assignment_id": null,
+              "recurrence_rule": {
+                "schema_version": 1,
+                "type": "once",
+                "due_date": null
+              }
+            },
+            "appearance": {
+              "icon": {
+                "kind": "role",
+                "role": "task.default"
+              },
+              "accent_color": "#4488AA",
+              "icon_tint": "theme"
+            }
+          },
+          "changed_at": "2026-09-23T00:01:00Z",
+          "origin_device_id": null
+        },
+        {
+          "sequence": 0,
+          "entity_type": "activity_event",
+          "entity_uuid": "71000000-0000-0000-0000-000000000001",
+          "operation": "upsert",
+          "revision": 1,
+          "payload": {
+            "activity_uuid": "a7000000-0000-0000-0000-000000000001",
+            "event_type": "check_in",
+            "occurred_at": "2026-09-23T00:01:00Z",
+            "local_date": "2026-09-23",
+            "timezone": "Asia/Shanghai",
+            "source_type": "app",
+            "reverts_event_uuid": null,
+            "one_time": {
+              "event_uuid": "71000000-0000-0000-0000-000000000001",
+              "action": "complete",
+              "expected_version": 0,
+              "expected_head_event_uuid": null,
+              "reverts_event_uuid": null
+            },
+            "public_id": "71000000-0000-0000-0000-000000000001",
+            "one_time_state_after": {
+              "version": 1,
+              "head_event_uuid": "71000000-0000-0000-0000-000000000001",
+              "completion_event_uuid": "71000000-0000-0000-0000-000000000001"
+            }
+          },
+          "changed_at": "2026-09-23T00:01:00Z",
+          "origin_device_id": null
+        },
+        {
+          "sequence": 0,
+          "entity_type": "activity_event",
+          "entity_uuid": "71000000-0000-0000-0000-000000000001",
+          "operation": "upsert",
+          "revision": 1,
+          "payload": {
+            "activity_uuid": "a7000000-0000-0000-0000-000000000001",
+            "event_type": "check_in",
+            "occurred_at": "2026-09-23T00:01:00Z",
+            "local_date": "2026-09-23",
+            "timezone": "Asia/Shanghai",
+            "source_type": "app",
+            "reverts_event_uuid": null,
+            "one_time": {
+              "event_uuid": "71000000-0000-0000-0000-000000000001",
+              "action": "complete",
+              "expected_version": 0,
+              "expected_head_event_uuid": null,
+              "reverts_event_uuid": null
+            },
+            "public_id": "71000000-0000-0000-0000-000000000001",
+            "one_time_state_after": {
+              "version": 1,
+              "head_event_uuid": "71000000-0000-0000-0000-000000000001",
+              "completion_event_uuid": "71000000-0000-0000-0000-000000000001"
+            }
+          },
+          "changed_at": "2026-09-23T00:01:00Z",
+          "origin_device_id": null
+        }
+      ],
+      "operation": "set"
+    },
+    {
+      "model": "bootstrap",
+      "name": "tombstone",
+      "path": [
+        "changes",
+        0,
+        "payload",
+        "deleted_at"
+      ],
+      "value": "2026-09-23T00:00:00Z",
+      "operation": "set"
+    },
+    {
+      "model": "bootstrap",
+      "name": "missing-activity",
+      "path": [
+        "changes"
+      ],
+      "value": [
+        {
+          "sequence": 0,
+          "entity_type": "activity_event",
+          "entity_uuid": "71000000-0000-0000-0000-000000000001",
+          "operation": "upsert",
+          "revision": 1,
+          "payload": {
+            "activity_uuid": "a7000000-0000-0000-0000-000000000001",
+            "event_type": "check_in",
+            "occurred_at": "2026-09-23T00:01:00Z",
+            "local_date": "2026-09-23",
+            "timezone": "Asia/Shanghai",
+            "source_type": "app",
+            "reverts_event_uuid": null,
+            "one_time": {
+              "event_uuid": "71000000-0000-0000-0000-000000000001",
+              "action": "complete",
+              "expected_version": 0,
+              "expected_head_event_uuid": null,
+              "reverts_event_uuid": null
+            },
+            "public_id": "71000000-0000-0000-0000-000000000001",
+            "one_time_state_after": {
+              "version": 1,
+              "head_event_uuid": "71000000-0000-0000-0000-000000000001",
+              "completion_event_uuid": "71000000-0000-0000-0000-000000000001"
+            }
+          },
+          "changed_at": "2026-09-23T00:01:00Z",
+          "origin_device_id": null
+        }
+      ],
+      "operation": "set"
+    },
+    {
+      "model": "conflict",
+      "name": "missing-state-context",
+      "path": [
+        "one_time_conflict"
+      ],
+      "value": null,
+      "operation": "set"
+    },
+    {
+      "model": "conflict",
+      "name": "wrong-status",
+      "path": [
+        "status"
+      ],
+      "value": "applied",
+      "operation": "set"
+    },
+    {
+      "model": "conflict",
+      "name": "fake-success-entity",
+      "path": [
+        "entity"
+      ],
+      "value": {
+        "activity_uuid": "a7000000-0000-0000-0000-000000000001",
+        "event_type": "check_in",
+        "occurred_at": "2026-09-23T00:01:00Z",
+        "local_date": "2026-09-23",
+        "timezone": "Asia/Shanghai",
+        "source_type": "app",
+        "reverts_event_uuid": null,
+        "one_time": {
+          "event_uuid": "71000000-0000-0000-0000-000000000001",
+          "action": "complete",
+          "expected_version": 0,
+          "expected_head_event_uuid": null,
+          "reverts_event_uuid": null
+        },
+        "public_id": "71000000-0000-0000-0000-000000000001",
+        "one_time_state_after": {
+          "version": 1,
+          "head_event_uuid": "71000000-0000-0000-0000-000000000001",
+          "completion_event_uuid": "71000000-0000-0000-0000-000000000001"
+        }
+      },
+      "operation": "set"
+    },
+    {
+      "model": "conflict",
+      "name": "fake-event-revision",
+      "path": [
+        "revision"
+      ],
+      "value": 1,
+      "operation": "set"
+    },
+    {
+      "model": "conflict",
+      "name": "unauthorized-context",
+      "path": [
+        "error_code"
+      ],
+      "value": "DEVICE_CAPABILITY_DENIED",
+      "operation": "set"
+    },
+    {
+      "model": "asset_declaration",
+      "name": "caller-owner",
+      "path": [
+        "owner_id"
+      ],
+      "value": 1,
+      "operation": "set"
+    },
+    {
+      "model": "asset_declaration",
+      "name": "missing-epoch",
+      "path": [
+        "context",
+        "sync_epoch"
+      ],
+      "value": null,
+      "operation": "remove"
+    },
+    {
+      "model": "asset_declaration",
+      "name": "remote-url",
+      "path": [
+        "asset",
+        "url"
+      ],
+      "value": "https://invalid.example/icon.svg",
+      "operation": "set"
+    },
+    {
+      "model": "asset_record",
+      "name": "undeclared-dark",
+      "path": [
+        "ready_variants"
+      ],
+      "value": [
+        "dark"
+      ],
+      "operation": "set"
+    },
+    {
+      "model": "asset_record",
+      "name": "duplicate-ready",
+      "path": [
+        "ready_variants"
+      ],
+      "value": [
+        "light",
+        "light"
+      ],
+      "operation": "set"
+    },
+    {
+      "model": "receipt",
+      "name": "invalid-variant",
+      "path": [
+        "variant"
+      ],
+      "value": "auto",
+      "operation": "set"
+    },
+    {
+      "model": "catalog",
+      "name": "duplicate-sequence",
+      "path": [
+        "entries",
+        1,
+        "sequence"
+      ],
+      "value": 1,
+      "operation": "set"
+    },
+    {
+      "model": "catalog",
+      "name": "unsorted-sequence",
+      "path": [
+        "entries",
+        0,
+        "sequence"
+      ],
+      "value": 4,
+      "operation": "set"
+    },
+    {
+      "model": "catalog",
+      "name": "watermark-past-cursor",
+      "path": [
+        "next_cursor"
+      ],
+      "value": 2,
+      "operation": "set"
+    },
+    {
+      "model": "catalog",
+      "name": "incomplete-continuation",
+      "path": [
+        "has_more"
+      ],
+      "value": true,
+      "operation": "set"
+    },
+    {
+      "model": "catalog",
+      "name": "float-sequence",
+      "path": [
+        "entries",
+        0,
+        "sequence"
+      ],
+      "value": 1.25,
+      "operation": "set"
+    },
+    {
+      "model": "catalog",
+      "name": "string-cursor",
+      "path": [
+        "next_cursor"
+      ],
+      "value": "3",
+      "operation": "set"
+    },
+    {
+      "model": "catalog",
+      "name": "sequence-overflow",
+      "path": [
+        "through_sequence"
+      ],
+      "value": "9223372036854775808",
+      "operation": "set"
+    },
+    {
+      "model": "quota",
+      "name": "negative-quota",
+      "path": [
+        "byte_limit"
+      ],
+      "value": -1,
+      "operation": "set"
+    },
+    {
+      "model": "quota",
+      "name": "string-usage",
+      "path": [
+        "reserved_bytes"
+      ],
+      "value": "640",
+      "operation": "set"
+    }
+  ],
+  "bindings": [
+    {"name": "accepted-original-intent", "type": "accepted_task", "path": [], "value": null, "valid": true},
+    {"name": "accepted-wrong-activity", "type": "accepted_task", "path": ["entity", "activity_uuid"], "value": "a7000000-0000-0000-0000-000000000002", "valid": false},
+    {"name": "accepted-missing-entity", "type": "accepted_task", "path": ["entity"], "value": null, "valid": false},
+    {"name": "accepted-missing-proof", "type": "accepted_task", "path": ["entity"], "value": {}, "valid": false},
+    {"name": "accepted-error-code", "type": "accepted_task", "path": ["error_code"], "value": "OTHER_ERROR", "valid": false},
+    {"name": "accepted-another-valid-intent", "type": "accepted_task", "path": ["entity"], "value": {
+      "public_id": "71000000-0000-0000-0000-000000000001",
+      "activity_uuid": "a7000000-0000-0000-0000-000000000001",
+      "event_type": "check_in", "reverts_event_uuid": null,
+      "one_time": {"event_uuid": "71000000-0000-0000-0000-000000000001", "action": "complete", "expected_version": 2, "expected_head_event_uuid": "71000000-0000-0000-0000-000000000009", "reverts_event_uuid": null},
+      "one_time_state_after": {"version": 3, "head_event_uuid": "71000000-0000-0000-0000-000000000001", "completion_event_uuid": "71000000-0000-0000-0000-000000000001"}
+    }, "valid": false},
+    {"name": "same-pack", "type": "pack", "path": [], "value": null, "valid": true},
+    {"name": "changed-pack-revision", "type": "pack", "path": ["pack", "revision"], "value": 2, "valid": false},
+    {"name": "changed-pack-device", "type": "pack", "path": ["context", "device_id"], "value": "a7000000-0000-0000-0000-000000000001", "valid": false},
+    {
+      "name": "same-asset",
+      "type": "asset",
+      "path": [],
+      "value": null,
+      "valid": true
+    },
+    {
+      "name": "other-device",
+      "type": "asset",
+      "path": [
+        "context",
+        "device_id"
+      ],
+      "value": "a7000000-0000-0000-0000-000000000001",
+      "valid": false
+    },
+    {
+      "name": "other-epoch",
+      "type": "asset",
+      "path": [
+        "context",
+        "sync_epoch"
+      ],
+      "value": "a7000000-0000-0000-0000-000000000001",
+      "valid": false
+    },
+    {
+      "name": "changed-metadata",
+      "type": "asset",
+      "path": [
+        "asset",
+        "name"
+      ],
+      "value": "Other",
+      "valid": false
+    },
+    {
+      "name": "same-transfer",
+      "type": "transfer",
+      "path": [],
+      "value": null,
+      "valid": true
+    },
+    {
+      "name": "other-server",
+      "type": "transfer",
+      "path": [
+        "context",
+        "server_instance_id"
+      ],
+      "value": "a7000000-0000-0000-0000-000000000001",
+      "valid": false
+    },
+    {
+      "name": "other-asset",
+      "type": "transfer",
+      "path": [
+        "asset_id"
+      ],
+      "value": "a7000000-0000-0000-0000-000000000001",
+      "valid": false
+    },
+    {
+      "name": "changed-hash",
+      "type": "transfer",
+      "path": [
+        "blob",
+        "sha256"
+      ],
+      "value": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "valid": false
+    },
+    {
+      "name": "same-task",
+      "type": "task",
+      "path": [],
+      "value": null,
+      "valid": true
+    },
+    {
+      "name": "other-task",
+      "type": "task",
+      "path": [
+        "one_time_conflict",
+        "activity_uuid"
+      ],
+      "value": "81000000-0000-4000-8000-000000000001",
+      "valid": false
+    },
+    {
+      "name": "other-operation",
+      "type": "task",
+      "path": [
+        "operation_id"
+      ],
+      "value": "a7000000-0000-0000-0000-000000000001",
+      "valid": false
+    },
+    {
+      "name": "same-catalog",
+      "type": "catalog",
+      "path": [],
+      "value": null,
+      "valid": true
+    },
+    {
+      "name": "other-catalog-epoch",
+      "type": "catalog",
+      "path": [
+        "context",
+        "sync_epoch"
+      ],
+      "value": "a7000000-0000-0000-0000-000000000001",
+      "valid": false
+    }
+  ]
+}

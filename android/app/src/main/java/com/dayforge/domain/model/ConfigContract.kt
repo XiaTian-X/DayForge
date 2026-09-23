@@ -55,18 +55,6 @@ sealed interface ConfigSchedule {
 }
 
 @Serializable
-data class ConfigAppearance(
-    val icon: IconReference,
-    @SerialName("accent_color") val accentColor: String,
-    @SerialName("icon_tint") val iconTint: String
-) {
-    init {
-        require(isAccentColor(accentColor))
-        require(iconTint == "theme" || iconTint == "object")
-    }
-}
-
-@Serializable
 data class ConfigActivity(
     @SerialName("tracking_mode") val trackingMode: String,
     @SerialName("completion_policy") val completionPolicy: String,
@@ -124,7 +112,7 @@ data class ConfigNode(
     @Serializable(with = ContractBooleanSerializer::class)
     @SerialName("is_active") val isActive: Boolean,
     @SerialName("parent_key") val parentKey: String?,
-    val appearance: ConfigAppearance,
+    val appearance: ObjectAppearance,
     val goal: ConfigGoal?,
     val activity: ConfigActivity?
 ) {
@@ -153,7 +141,7 @@ data class ConfigMetric(
     @SerialName("target_value") val targetValue: Double?,
     @Serializable(with = ContractNumberSerializer::class)
     @SerialName("target_value_upper") val targetValueUpper: Double?,
-    val appearance: ConfigAppearance
+    val appearance: ObjectAppearance
 ) {
     init {
         require(isLocalKey(key) && isContractName(name, 100) && isContractName(unit, 50))
