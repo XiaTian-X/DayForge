@@ -1,0 +1,588 @@
+{
+  "activity_uuid": "70000000-0000-0000-0000-000000000001",
+  "other_activity_uuid": "70000000-0000-0000-0000-000000000002",
+  "states": [
+    {
+      "version": 0,
+      "head_event_uuid": null,
+      "completion_event_uuid": null
+    },
+    {
+      "version": 1,
+      "head_event_uuid": "71000000-0000-0000-0000-000000000001",
+      "completion_event_uuid": "71000000-0000-0000-0000-000000000001"
+    },
+    {
+      "version": 2,
+      "head_event_uuid": "71000000-0000-0000-0000-000000000002",
+      "completion_event_uuid": null
+    },
+    {
+      "version": 3,
+      "head_event_uuid": "71000000-0000-0000-0000-000000000003",
+      "completion_event_uuid": "71000000-0000-0000-0000-000000000003"
+    },
+    {
+      "version": 1,
+      "head_event_uuid": "71000000-0000-0000-0000-000000000004",
+      "completion_event_uuid": "71000000-0000-0000-0000-000000000004"
+    }
+  ],
+  "proofs": [
+    {
+      "public_id": "71000000-0000-0000-0000-000000000001",
+      "activity_uuid": "70000000-0000-0000-0000-000000000001",
+      "event_type": "check_in",
+      "reverts_event_uuid": null,
+      "one_time": {
+        "event_uuid": "71000000-0000-0000-0000-000000000001",
+        "action": "complete",
+        "expected_version": 0,
+        "expected_head_event_uuid": null,
+        "reverts_event_uuid": null
+      },
+      "one_time_state_after": {
+        "version": 1,
+        "head_event_uuid": "71000000-0000-0000-0000-000000000001",
+        "completion_event_uuid": "71000000-0000-0000-0000-000000000001"
+      }
+    },
+    {
+      "public_id": "71000000-0000-0000-0000-000000000002",
+      "activity_uuid": "70000000-0000-0000-0000-000000000001",
+      "event_type": "revert",
+      "reverts_event_uuid": "71000000-0000-0000-0000-000000000001",
+      "one_time": {
+        "event_uuid": "71000000-0000-0000-0000-000000000002",
+        "action": "undo",
+        "expected_version": 1,
+        "expected_head_event_uuid": "71000000-0000-0000-0000-000000000001",
+        "reverts_event_uuid": "71000000-0000-0000-0000-000000000001"
+      },
+      "one_time_state_after": {
+        "version": 2,
+        "head_event_uuid": "71000000-0000-0000-0000-000000000002",
+        "completion_event_uuid": null
+      }
+    },
+    {
+      "public_id": "71000000-0000-0000-0000-000000000003",
+      "activity_uuid": "70000000-0000-0000-0000-000000000001",
+      "event_type": "check_in",
+      "reverts_event_uuid": null,
+      "one_time": {
+        "event_uuid": "71000000-0000-0000-0000-000000000003",
+        "action": "complete",
+        "expected_version": 2,
+        "expected_head_event_uuid": "71000000-0000-0000-0000-000000000002",
+        "reverts_event_uuid": null
+      },
+      "one_time_state_after": {
+        "version": 3,
+        "head_event_uuid": "71000000-0000-0000-0000-000000000003",
+        "completion_event_uuid": "71000000-0000-0000-0000-000000000003"
+      }
+    },
+    {
+      "public_id": "71000000-0000-0000-0000-000000000004",
+      "activity_uuid": "70000000-0000-0000-0000-000000000001",
+      "event_type": "check_in",
+      "reverts_event_uuid": null,
+      "one_time": {
+        "event_uuid": "71000000-0000-0000-0000-000000000004",
+        "action": "complete",
+        "expected_version": 0,
+        "expected_head_event_uuid": null,
+        "reverts_event_uuid": null
+      },
+      "one_time_state_after": {
+        "version": 1,
+        "head_event_uuid": "71000000-0000-0000-0000-000000000004",
+        "completion_event_uuid": "71000000-0000-0000-0000-000000000004"
+      }
+    }
+  ],
+  "pending": [
+    {
+      "operation_id": "72000000-0000-0000-0000-000000000001",
+      "intent": {
+        "event_uuid": "71000000-0000-0000-0000-000000000001",
+        "action": "complete",
+        "expected_version": 0,
+        "expected_head_event_uuid": null,
+        "reverts_event_uuid": null
+      }
+    },
+    {
+      "operation_id": "72000000-0000-0000-0000-000000000002",
+      "intent": {
+        "event_uuid": "71000000-0000-0000-0000-000000000002",
+        "action": "undo",
+        "expected_version": 1,
+        "expected_head_event_uuid": "71000000-0000-0000-0000-000000000001",
+        "reverts_event_uuid": "71000000-0000-0000-0000-000000000001"
+      }
+    },
+    {
+      "operation_id": "72000000-0000-0000-0000-000000000003",
+      "intent": {
+        "event_uuid": "71000000-0000-0000-0000-000000000003",
+        "action": "complete",
+        "expected_version": 2,
+        "expected_head_event_uuid": "71000000-0000-0000-0000-000000000002",
+        "reverts_event_uuid": null
+      }
+    }
+  ],
+  "request": {
+    "operation_id": "72000000-0000-0000-0000-000000000001",
+    "entity_type": "activity_event",
+    "entity_uuid": "71000000-0000-0000-0000-000000000001",
+    "action": "upsert",
+    "base_revision": null,
+    "payload": {
+      "activity_uuid": "70000000-0000-0000-0000-000000000001",
+      "event_type": "check_in",
+      "occurred_at": "2026-09-22T16:00:01Z",
+      "local_date": "2026-09-23",
+      "timezone": "Asia/Shanghai",
+      "note": "Synthetic midnight check",
+      "source_type": "app",
+      "source_device_id": null,
+      "external_event_id": null,
+      "reverts_event_uuid": null,
+      "metadata": {},
+      "one_time": {
+        "event_uuid": "71000000-0000-0000-0000-000000000001",
+        "action": "complete",
+        "expected_version": 0,
+        "expected_head_event_uuid": null,
+        "reverts_event_uuid": null
+      }
+    }
+  },
+  "merges": [
+    {
+      "name": "first_completion",
+      "current": 0,
+      "incoming": 1,
+      "result": 1
+    },
+    {
+      "name": "undo",
+      "current": 1,
+      "incoming": 2,
+      "result": 2
+    },
+    {
+      "name": "later_fact_before_earlier_page",
+      "current": 0,
+      "incoming": 3,
+      "result": 3
+    },
+    {
+      "name": "late_success_cannot_regress",
+      "current": 3,
+      "incoming": 1,
+      "result": 3
+    },
+    {
+      "name": "identical_replay",
+      "current": 2,
+      "incoming": 2,
+      "result": 2
+    },
+    {
+      "name": "same_version_other_head",
+      "current": 1,
+      "incoming": 4,
+      "error": "TASK_STATE_DIVERGED"
+    },
+    {
+      "name": "wrong_activity",
+      "current": 0,
+      "incoming": 1,
+      "other_activity": true,
+      "error": "TASK_ACTIVITY_MISMATCH"
+    },
+    {
+      "name": "deleted_parent",
+      "current": 2,
+      "incoming": 3,
+      "deleted": true,
+      "error": "ENTITY_DELETED"
+    }
+  ],
+  "histories": [
+    {
+      "name": "missing_tail",
+      "events": [0, 1],
+      "checkpoint": 3,
+      "error": "TASK_HISTORY_INCOMPLETE"
+    },
+    {
+      "name": "entire_history_missing",
+      "events": [],
+      "checkpoint": 1,
+      "error": "TASK_HISTORY_INCOMPLETE"
+    },
+    {
+      "name": "events_ahead_of_checkpoint",
+      "events": [0, 1, 2],
+      "checkpoint": 1,
+      "error": "TASK_STATE_DIVERGED"
+    },
+    {
+      "name": "checkpoint_same_version_other_branch",
+      "events": [0],
+      "checkpoint": 4,
+      "error": "TASK_STATE_DIVERGED"
+    },
+    {
+      "name": "same_version_fork",
+      "checkpoint": 1,
+      "events": [0, 3],
+      "error": "TASK_STATE_DIVERGED"
+    },
+    {
+      "name": "empty",
+      "checkpoint": 0,
+      "events": [],
+      "result": 0
+    },
+    {
+      "name": "full",
+      "checkpoint": 3,
+      "events": [
+        0,
+        1,
+        2
+      ],
+      "result": 3
+    },
+    {
+      "name": "out_of_order",
+      "checkpoint": 3,
+      "events": [
+        2,
+        0,
+        1
+      ],
+      "result": 3
+    },
+    {
+      "name": "missing_first",
+      "checkpoint": 3,
+      "events": [
+        1,
+        2
+      ],
+      "error": "TASK_HISTORY_INCOMPLETE"
+    },
+    {
+      "name": "missing_middle",
+      "checkpoint": 3,
+      "events": [
+        0,
+        2
+      ],
+      "error": "TASK_HISTORY_INCOMPLETE"
+    },
+    {
+      "name": "duplicate_event",
+      "checkpoint": 3,
+      "events": [
+        0,
+        0,
+        1
+      ],
+      "error": "TASK_EVENT_ID_REUSED"
+    },
+    {
+      "name": "wrong_activity",
+      "events": [
+        0
+      ],
+      "checkpoint": 1,
+      "other_activity": true,
+      "error": "TASK_ACTIVITY_MISMATCH"
+    }
+  ],
+  "queues": [
+    {
+      "name": "offline_complete_undo_complete",
+      "confirmed": 0,
+      "pending": [
+        0,
+        1,
+        2
+      ],
+      "rejected": null,
+      "result": {
+        "optimistic_state": {
+          "version": 3,
+          "head_event_uuid": "71000000-0000-0000-0000-000000000003",
+          "completion_event_uuid": "71000000-0000-0000-0000-000000000003"
+        },
+        "awaiting_replay_operation_ids": [],
+        "blocked_operation_ids": []
+      }
+    },
+    {
+      "name": "after_first_ack",
+      "confirmed": 1,
+      "pending": [
+        1,
+        2
+      ],
+      "rejected": null,
+      "result": {
+        "optimistic_state": {
+          "version": 3,
+          "head_event_uuid": "71000000-0000-0000-0000-000000000003",
+          "completion_event_uuid": "71000000-0000-0000-0000-000000000003"
+        },
+        "awaiting_replay_operation_ids": [],
+        "blocked_operation_ids": []
+      }
+    },
+    {
+      "name": "no_pending",
+      "confirmed": 3,
+      "pending": [],
+      "rejected": null,
+      "result": {
+        "optimistic_state": {
+          "version": 3,
+          "head_event_uuid": "71000000-0000-0000-0000-000000000003",
+          "completion_event_uuid": "71000000-0000-0000-0000-000000000003"
+        },
+        "awaiting_replay_operation_ids": [],
+        "blocked_operation_ids": []
+      }
+    },
+    {
+      "name": "response_lost_not_automatically_conflict",
+      "confirmed": 3,
+      "pending": [
+        0,
+        1,
+        2
+      ],
+      "rejected": null,
+      "result": {
+        "optimistic_state": {
+          "version": 3,
+          "head_event_uuid": "71000000-0000-0000-0000-000000000003",
+          "completion_event_uuid": "71000000-0000-0000-0000-000000000003"
+        },
+        "awaiting_replay_operation_ids": [
+          "72000000-0000-0000-0000-000000000001",
+          "72000000-0000-0000-0000-000000000002",
+          "72000000-0000-0000-0000-000000000003"
+        ],
+        "blocked_operation_ids": []
+      }
+    },
+    {
+      "name": "rejected_undo_holds_later_completion",
+      "confirmed": 1,
+      "pending": [
+        1,
+        2
+      ],
+      "rejected": "72000000-0000-0000-0000-000000000002",
+      "result": {
+        "optimistic_state": {
+          "version": 1,
+          "head_event_uuid": "71000000-0000-0000-0000-000000000001",
+          "completion_event_uuid": "71000000-0000-0000-0000-000000000001"
+        },
+        "awaiting_replay_operation_ids": [],
+        "blocked_operation_ids": [
+          "72000000-0000-0000-0000-000000000002",
+          "72000000-0000-0000-0000-000000000003"
+        ]
+      }
+    },
+    {
+      "name": "preserve_optimistic_prefix_before_rejection",
+      "confirmed": 0,
+      "pending": [
+        0,
+        1,
+        2
+      ],
+      "rejected": "72000000-0000-0000-0000-000000000002",
+      "result": {
+        "optimistic_state": {
+          "version": 1,
+          "head_event_uuid": "71000000-0000-0000-0000-000000000001",
+          "completion_event_uuid": "71000000-0000-0000-0000-000000000001"
+        },
+        "awaiting_replay_operation_ids": [],
+        "blocked_operation_ids": [
+          "72000000-0000-0000-0000-000000000002",
+          "72000000-0000-0000-0000-000000000003"
+        ]
+      }
+    },
+    {
+      "name": "lost_prefix_response_and_known_rejected_suffix",
+      "confirmed": 1,
+      "pending": [
+        0,
+        1,
+        2
+      ],
+      "rejected": "72000000-0000-0000-0000-000000000002",
+      "result": {
+        "optimistic_state": {
+          "version": 1,
+          "head_event_uuid": "71000000-0000-0000-0000-000000000001",
+          "completion_event_uuid": "71000000-0000-0000-0000-000000000001"
+        },
+        "awaiting_replay_operation_ids": [
+          "72000000-0000-0000-0000-000000000001"
+        ],
+        "blocked_operation_ids": [
+          "72000000-0000-0000-0000-000000000002",
+          "72000000-0000-0000-0000-000000000003"
+        ]
+      }
+    },
+    {
+      "name": "same_version_changed_remote_branch",
+      "confirmed": 4,
+      "pending": [
+        1,
+        2
+      ],
+      "rejected": null,
+      "result": {
+        "optimistic_state": {
+          "version": 1,
+          "head_event_uuid": "71000000-0000-0000-0000-000000000004",
+          "completion_event_uuid": "71000000-0000-0000-0000-000000000004"
+        },
+        "awaiting_replay_operation_ids": [
+          "72000000-0000-0000-0000-000000000002",
+          "72000000-0000-0000-0000-000000000003"
+        ],
+        "blocked_operation_ids": []
+      }
+    },
+    {
+      "name": "missing_dependency",
+      "confirmed": 0,
+      "pending": [
+        0,
+        2
+      ],
+      "rejected": null,
+      "error": "INVALID_PENDING_CHAIN"
+    },
+    {
+      "name": "duplicate_operations",
+      "confirmed": 0,
+      "pending": [
+        0,
+        0
+      ],
+      "rejected": null,
+      "error": "INVALID_PENDING_CHAIN"
+    },
+    {
+      "name": "unknown_rejection",
+      "confirmed": 0,
+      "pending": [
+        0
+      ],
+      "rejected": "72000000-0000-0000-0000-000000000003",
+      "error": "INVALID_PENDING_CHAIN"
+    }
+  ],
+  "invalid_proofs": [
+    {
+      "name": "wrong_outer_uuid",
+      "proof": 0,
+      "path": [
+        "public_id"
+      ],
+      "value": "71000000-0000-0000-0000-000000000004"
+    },
+    {
+      "name": "wrong_outer_type",
+      "proof": 0,
+      "path": [
+        "event_type"
+      ],
+      "value": "revert"
+    },
+    {
+      "name": "wrong_root_revert",
+      "proof": 1,
+      "path": [
+        "reverts_event_uuid"
+      ],
+      "value": "71000000-0000-0000-0000-000000000004"
+    },
+    {
+      "name": "state_from_future",
+      "proof": 0,
+      "path": [
+        "one_time_state_after"
+      ],
+      "value": {
+        "version": 3,
+        "head_event_uuid": "71000000-0000-0000-0000-000000000003",
+        "completion_event_uuid": "71000000-0000-0000-0000-000000000003"
+      }
+    },
+    {
+      "name": "state_same_version_other_event",
+      "proof": 0,
+      "path": [
+        "one_time_state_after"
+      ],
+      "value": {
+        "version": 1,
+        "head_event_uuid": "71000000-0000-0000-0000-000000000004",
+        "completion_event_uuid": "71000000-0000-0000-0000-000000000004"
+      }
+    },
+    {
+      "name": "numeric_version",
+      "proof": 0,
+      "path": [
+        "one_time_state_after",
+        "version"
+      ],
+      "value": "1"
+    },
+    {
+      "name": "check_with_duration_type",
+      "proof": 0,
+      "path": [
+        "event_type"
+      ],
+      "value": "duration_session"
+    },
+    {
+      "name": "unknown_owner_field",
+      "proof": 0,
+      "path": [
+        "owner_id"
+      ],
+      "value": 1
+    },
+    {
+      "name": "missing_intent",
+      "proof": 0,
+      "path": [
+        "one_time"
+      ],
+      "value": null
+    }
+  ]
+}
