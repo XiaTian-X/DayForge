@@ -1,0 +1,432 @@
+{
+  "format": "dayforge.config",
+  "format_version": 2,
+  "nodes": [
+    {
+      "key": "goal",
+      "kind": "goal",
+      "name": "A family goal",
+      "description": "Template only",
+      "is_active": true,
+      "parent_key": null,
+      "appearance": {
+        "icon": {
+          "kind": "role",
+          "role": "goal.default"
+        },
+        "accent_color": "#2196F3",
+        "icon_tint": "theme"
+      },
+      "goal": {
+        "start_date": "2026-09-01",
+        "due_date": "2026-12-31",
+        "target_cycles": 90,
+        "fail_mode": "loose"
+      },
+      "activity": null
+    },
+    {
+      "key": "check",
+      "kind": "activity",
+      "name": "Daily check",
+      "description": "",
+      "is_active": true,
+      "parent_key": "goal",
+      "appearance": {
+        "icon": {
+          "kind": "role",
+          "role": "habit.water"
+        },
+        "accent_color": "#2196F3",
+        "icon_tint": "theme"
+      },
+      "goal": null,
+      "activity": {
+        "tracking_mode": "check",
+        "completion_policy": "recurring",
+        "is_countdown": false,
+        "target_value": 1,
+        "target_cycles": 30,
+        "fail_mode": "loose",
+        "preferred_minute": 480,
+        "timezone": "Asia/Shanghai",
+        "schedule": {
+          "type": "daily",
+          "start_date": null
+        }
+      }
+    },
+    {
+      "key": "count",
+      "kind": "activity",
+      "name": "Positive count",
+      "description": "",
+      "is_active": true,
+      "parent_key": "goal",
+      "appearance": {
+        "icon": {
+          "kind": "asset",
+          "asset_id": "40000000-0000-0000-0000-000000000001"
+        },
+        "accent_color": "#802196F3",
+        "icon_tint": "object"
+      },
+      "goal": null,
+      "activity": {
+        "tracking_mode": "count",
+        "completion_policy": "recurring",
+        "is_countdown": false,
+        "target_value": 5,
+        "target_cycles": 30,
+        "fail_mode": "loose",
+        "preferred_minute": 480,
+        "timezone": "Asia/Shanghai",
+        "schedule": {
+          "type": "weekly",
+          "weekdays": [
+            1,
+            3,
+            5
+          ],
+          "start_date": null
+        }
+      }
+    },
+    {
+      "key": "count_down",
+      "kind": "activity",
+      "name": "Count down",
+      "description": "",
+      "is_active": true,
+      "parent_key": "goal",
+      "appearance": {
+        "icon": {
+          "kind": "role",
+          "role": "habit.water"
+        },
+        "accent_color": "#2196F3",
+        "icon_tint": "theme"
+      },
+      "goal": null,
+      "activity": {
+        "tracking_mode": "count",
+        "completion_policy": "recurring",
+        "is_countdown": true,
+        "target_value": 3,
+        "target_cycles": 30,
+        "fail_mode": "loose",
+        "preferred_minute": 480,
+        "timezone": "Asia/Shanghai",
+        "schedule": {
+          "type": "interval",
+          "start_date": "2026-09-01",
+          "every_days": 2
+        }
+      }
+    },
+    {
+      "key": "timer",
+      "kind": "activity",
+      "name": "One-minute timer",
+      "description": "",
+      "is_active": true,
+      "parent_key": "goal",
+      "appearance": {
+        "icon": {
+          "kind": "role",
+          "role": "habit.water"
+        },
+        "accent_color": "#2196F3",
+        "icon_tint": "theme"
+      },
+      "goal": null,
+      "activity": {
+        "tracking_mode": "duration",
+        "completion_policy": "recurring",
+        "is_countdown": false,
+        "target_value": 60,
+        "target_cycles": 30,
+        "fail_mode": "loose",
+        "preferred_minute": 480,
+        "timezone": "Asia/Shanghai",
+        "schedule": {
+          "type": "monthly",
+          "start_date": null,
+          "day_of_month": 12
+        }
+      }
+    },
+    {
+      "key": "timer_down",
+      "kind": "activity",
+      "name": "One-minute countdown",
+      "description": "",
+      "is_active": true,
+      "parent_key": "goal",
+      "appearance": {
+        "icon": {
+          "kind": "role",
+          "role": "habit.water"
+        },
+        "accent_color": "#2196F3",
+        "icon_tint": "theme"
+      },
+      "goal": null,
+      "activity": {
+        "tracking_mode": "duration",
+        "completion_policy": "recurring",
+        "is_countdown": true,
+        "target_value": 60,
+        "target_cycles": 30,
+        "fail_mode": "loose",
+        "preferred_minute": 480,
+        "timezone": "Asia/Shanghai",
+        "schedule": {
+          "type": "daily",
+          "start_date": null
+        }
+      }
+    },
+    {
+      "key": "task",
+      "kind": "activity",
+      "name": "One-time item",
+      "description": "",
+      "is_active": true,
+      "parent_key": "goal",
+      "appearance": {
+        "icon": {
+          "kind": "role",
+          "role": "task.default"
+        },
+        "accent_color": "#2196F3",
+        "icon_tint": "theme"
+      },
+      "goal": null,
+      "activity": {
+        "tracking_mode": "check",
+        "completion_policy": "one_and_done",
+        "is_countdown": false,
+        "target_value": 1,
+        "target_cycles": null,
+        "fail_mode": "loose",
+        "preferred_minute": null,
+        "timezone": "Asia/Shanghai",
+        "schedule": {
+          "type": "once",
+          "due_date": null
+        }
+      }
+    }
+  ],
+  "metrics": [
+    {
+      "key": "metric",
+      "name": "Observation",
+      "description": "Range target",
+      "unit": "kg",
+      "is_active": true,
+      "decimal_places": 2,
+      "aggregation_type": "by_time",
+      "target_direction": "range",
+      "target_value": 70.5,
+      "target_value_upper": 90.25,
+      "appearance": {
+        "icon": {
+          "kind": "role",
+          "role": "metric.weight"
+        },
+        "accent_color": "#2196F3",
+        "icon_tint": "theme"
+      }
+    }
+  ],
+  "links": [
+    {
+      "key": "link",
+      "activity_key": "task",
+      "metric_key": "metric",
+      "coefficient": 1.25,
+      "show_in_detail": true,
+      "prompt_on_complete": true,
+      "is_active": true
+    }
+  ],
+  "icon_pack": {
+    "format": "dayforge.icon-pack",
+    "format_version": 1,
+    "pack_id": "30000000-0000-0000-0000-000000000001",
+    "revision": 1,
+    "name": "Captured config icons",
+    "assets": [
+      {
+        "asset_id": "40000000-0000-0000-0000-000000000001",
+        "name": "Water",
+        "purpose": "general",
+        "color_mode": "template",
+        "light": {
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "byte_length": 128,
+          "media_type": "image/svg+xml",
+          "width": 24,
+          "height": 24
+        },
+        "dark": null
+      },
+      {
+        "asset_id": "40000000-0000-0000-0000-000000000002",
+        "name": "Task",
+        "purpose": "task",
+        "color_mode": "original",
+        "light": {
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "byte_length": 256,
+          "media_type": "image/png",
+          "width": 96,
+          "height": 96
+        },
+        "dark": null
+      }
+    ],
+    "roles": {
+      "habit.water": "40000000-0000-0000-0000-000000000001",
+      "task.default": "40000000-0000-0000-0000-000000000002"
+    },
+    "placeholder_asset_id": null
+  },
+  "unresolved_roles": [
+    "goal.default",
+    "metric.weight"
+  ],
+  "themes": [
+    {
+      "format": "dayforge.theme",
+      "format_version": 1,
+      "theme_id": "50000000-0000-0000-0000-000000000001",
+      "revision": 1,
+      "name": "Synthetic resolved theme",
+      "generator_id": null,
+      "seed": null,
+      "light": {
+        "material": {
+          "primary": "#245EAC",
+          "on_primary": "#FFFFFF",
+          "primary_container": "#D8E2FF",
+          "on_primary_container": "#001A41",
+          "inverse_primary": "#AFC6FF",
+          "secondary": "#555F71",
+          "on_secondary": "#FFFFFF",
+          "secondary_container": "#D9E3F9",
+          "on_secondary_container": "#121C2B",
+          "tertiary": "#705575",
+          "on_tertiary": "#FFFFFF",
+          "tertiary_container": "#FAD8FD",
+          "on_tertiary_container": "#28132E",
+          "background": "#FDFBFF",
+          "on_background": "#1B1B1F",
+          "surface": "#FDFBFF",
+          "on_surface": "#1B1B1F",
+          "surface_variant": "#E1E2EC",
+          "on_surface_variant": "#44474F",
+          "surface_tint": "#245EAC",
+          "inverse_surface": "#303034",
+          "inverse_on_surface": "#F2F0F4",
+          "error": "#BA1A1A",
+          "on_error": "#FFFFFF",
+          "error_container": "#FFDAD6",
+          "on_error_container": "#410002",
+          "outline": "#74777F",
+          "outline_variant": "#C4C6D0",
+          "scrim": "#000000",
+          "surface_bright": "#FDFBFF",
+          "surface_dim": "#DBD9DD",
+          "surface_container": "#F1EFF3",
+          "surface_container_high": "#EBE9ED",
+          "surface_container_highest": "#E5E3E7",
+          "surface_container_low": "#F7F5F9",
+          "surface_container_lowest": "#FFFFFF"
+        },
+        "status": {
+          "success": "#146C2E",
+          "on_success": "#FFFFFF",
+          "success_container": "#A0F6AC",
+          "on_success_container": "#002109",
+          "warning": "#795900",
+          "on_warning": "#FFFFFF",
+          "warning_container": "#FFDF9B",
+          "on_warning_container": "#261900",
+          "pending": "#245EAC",
+          "on_pending": "#FFFFFF",
+          "pending_container": "#D8E2FF",
+          "on_pending_container": "#001A41"
+        },
+        "chart": {
+          "line": "#245EAC",
+          "target": "#795900",
+          "grid": "#C4C6D0",
+          "selection": "#146C2E"
+        }
+      },
+      "dark": {
+        "material": {
+          "primary": "#AFC6FF",
+          "on_primary": "#002E69",
+          "primary_container": "#004494",
+          "on_primary_container": "#D8E2FF",
+          "inverse_primary": "#245EAC",
+          "secondary": "#BDC7DD",
+          "on_secondary": "#273141",
+          "secondary_container": "#3E4759",
+          "on_secondary_container": "#D9E3F9",
+          "tertiary": "#DCBCE0",
+          "on_tertiary": "#3F2844",
+          "tertiary_container": "#573E5C",
+          "on_tertiary_container": "#FAD8FD",
+          "background": "#131316",
+          "on_background": "#E4E2E6",
+          "surface": "#131316",
+          "on_surface": "#E4E2E6",
+          "surface_variant": "#44474F",
+          "on_surface_variant": "#C4C6D0",
+          "surface_tint": "#AFC6FF",
+          "inverse_surface": "#E4E2E6",
+          "inverse_on_surface": "#303034",
+          "error": "#FFB4AB",
+          "on_error": "#690005",
+          "error_container": "#93000A",
+          "on_error_container": "#FFDAD6",
+          "outline": "#8E9099",
+          "outline_variant": "#44474F",
+          "scrim": "#000000",
+          "surface_bright": "#39393C",
+          "surface_dim": "#131316",
+          "surface_container": "#1F1F23",
+          "surface_container_high": "#29292D",
+          "surface_container_highest": "#343438",
+          "surface_container_low": "#1B1B1F",
+          "surface_container_lowest": "#0E0E11"
+        },
+        "status": {
+          "success": "#85D992",
+          "on_success": "#003914",
+          "success_container": "#005321",
+          "on_success_container": "#A0F6AC",
+          "warning": "#F4BF48",
+          "on_warning": "#402D00",
+          "warning_container": "#5C4300",
+          "on_warning_container": "#FFDF9B",
+          "pending": "#AFC6FF",
+          "on_pending": "#002E69",
+          "pending_container": "#004494",
+          "on_pending_container": "#D8E2FF"
+        },
+        "chart": {
+          "line": "#AFC6FF",
+          "target": "#F4BF48",
+          "grid": "#44474F",
+          "selection": "#85D992"
+        }
+      }
+    }
+  ]
+}

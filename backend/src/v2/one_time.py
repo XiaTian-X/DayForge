@@ -7,18 +7,11 @@ returned projection together with its immutable event and outbox/change log.
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
+from src.v2.contract_types import ContractModel, PublicId
 
-PublicId = Annotated[
-    str,
-    Field(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"),
-]
 StateVersion = Annotated[int, Field(strict=True, ge=0, le=2_147_483_647)]
-
-
-class ContractModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
 
 class OneTimeState(ContractModel):

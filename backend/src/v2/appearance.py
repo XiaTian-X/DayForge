@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, TypeAdapter, field_validator, model_validator
 
-from src.v2.one_time import ContractModel, PublicId
+from src.v2.contract_types import ContractModel, PublicId, exact_integer, visible_name
 
 
 RoleKey = Annotated[
@@ -56,8 +56,7 @@ class IconAsset(ContractModel):
 
     @model_validator(mode="after")
     def display_name(self):
-        if not self.name.strip() or any(ord(char) < 32 for char in self.name):
-            raise ValueError("asset name must contain visible text, without controls")
+        visible_name(self.name)
         return self
 
 
@@ -74,14 +73,11 @@ class IconPack(ContractModel):
     @field_validator("format_version", mode="before")
     @classmethod
     def exact_version_type(cls, value):
-        if type(value) is not int:
-            raise ValueError("format_version must be a JSON integer")
-        return value
+        return exact_integer(value)
 
     @model_validator(mode="after")
     def validate_catalog(self):
-        if not self.name.strip() or any(ord(char) < 32 for char in self.name):
-            raise ValueError("pack name must contain visible text, without controls")
+        visible_name(self.name)
         assets = {asset.asset_id: asset for asset in self.assets}
         if len(assets) != len(self.assets):
             raise ValueError("duplicate asset identity")

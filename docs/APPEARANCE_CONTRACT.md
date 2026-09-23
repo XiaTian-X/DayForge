@@ -151,7 +151,18 @@ SVG 只允许静态 svg/g/path/rect/circle/ellipse/line/polyline/polygon、明�
 主题文件新格式使用 `format=dayforge.theme`、`format_version=1`、theme_id、revision、name、
 generator_id、seed、light、dark。light/dark 保存完整解析后颜色角色，颜色为不透明 `#RRGGBB`；
 生成器版本锁定，升级库不得自动重算已保存主题。每个主题明确提供两套色板，单项编辑也导出完整值。
-下一批必须在编码前冻结具体角色集合及正反样例，不能把当前 27 角色不足的模型直接重新命名。
+角色集合由双端 `ThemeRoles` / `MATERIAL_ROLES` 等常量和 [完整样例](../contracts/next/theme.json)
+共同冻结，不随 UI 库升级隐式增减。每套色板包含三个精确字段集：
+
+- `material`：36 项，覆盖当前 Material 3 的全部颜色角色，包括 surface bright/dim 和五级
+  surface container；不是旧 27 角色的重新命名。完整名称以样例和常量为准。
+- `status`：success、warning、pending 各自的主色、on 色、container、on_container，共 12 项；
+  error 使用 Material 的四个 error 角色，不另建矛盾副本。
+- `chart`：line、target、grid、selection，共 4 项。
+
+缺失和未知角色均拒绝；不从运行时库补默认色。generator_id/seed 要么同时为空，要么同时存在；
+未知但语法合法的 generator_id 仅作来源说明，不能执行生成器或改变已保存颜色。
+对象强调色另允许 `#RRGGBB` / `#AARRGGBB`，保持现有透明度能力；不接受七位颜色。
 拒绝无效颜色，而不是把它悄悄替换为黑色。主题文件导出不再混淆“种子参考模板”和“当前主题”。
 不提供旧文件兼容转换；错误提示必须明确版本不支持，不清理旧配置/本地数据。
 
@@ -180,7 +191,40 @@ revision、墓碑、服务端身份及 outbox。完成事项默认不导出；�
 复用映射和 operation ID，新一次导入重新分配。引用的固定素材与角色解析快照/实际使用的字节
 必须随包提供，离线导入不能依赖来源账户下载权限。复制素材到目标账户时重新分配身份，改写
 包内引用。不自动应用来源设备的全局主题；主题作为可选安装依赖单独预览。
-下一批须补齐具体配置字段、角色快照结构与双端样例后才能启用新导入器。
+配置元数据的全部根字段必填：nodes、metrics、links、nullable icon_pack、unresolved_roles、themes，
+无内容必须显式空数组/null；缺字段不能被解释成“删除全部”。
+[完整样例](../contracts/next/config.json) 和双端 `ConfigBundle` 冻结以下字段：
+
+| 对象 | 保留内容 |
+|---|---|
+| node | 包内 key、kind、名称/描述、启用状态、单父目标 key、appearance，以及互斥 goal/activity 详情 |
+| activity | check/count/duration、completion_policy、正倒模式、目标值/周期、失败模式、preferred_minute、IANA 时区和类型化 schedule |
+| goal | 可选 start_date/due_date、目标周期及失败模式；不带目标结果 |
+| metric | 名称/描述/单位、启用状态、小数位、average/sum/by_time、目标方向及上下限、appearance |
+| link | 局部 key、习惯/事项和指标 key、系数、详情显示/完成提示及启用状态 |
+| appearance | role/asset 引用、对象强调色、icon_tint=theme/object；original 素材仍不参与 tint |
+
+schedule 支持 daily、weekly（ISO 周一=1）、monthly、interval 和 once；日期是有效 YYYY-MM-DD。
+计时目标以秒存储，须为完整分钟；preferred_minute 是当日 0–1439 分钟的偏好，不建立新的提醒调度。
+一次性事项只有 once 计划和单次 check，不带周期目标、严格失败或每日时间偏好。
+配置模型保留字段不等于 Android 现有存储已经接入这些字段，尤其不能改变目标窗口既有语义。
+
+上限为 1000 nodes、1000 metrics、5000 links、16 themes、256 unresolved_roles；
+内嵌 icon_pack 仍受第 2 节上限约束。所有 node/metric/link 的局部 key 在包内全局唯一，
+父节点只能是同包顶层目标，关联端点存在、无重复对，同类对象名称不重复。
+固定素材必须包含元数据及字节；角色必须由内嵌包映射，或明确列入 unresolved_roles。
+缺失角色不能伪造一个映射；未使用、重复或已有映射的 unresolved 声明均拒绝。
+导入预览提示缺失角色并保留原引用，使用既定占位策略。导入安装的角色快照包可供用户选择，
+但不自动替换当前设备图标包，也不将角色偷偷固定为素材；角色仍随当前选择的包解析。
+主题/包/素材的源 UUID 也只是包内身份，导入目标账户时重新分配并持久保存引用映射。
+
+配置 ZIP 同样只包含 manifest.json 和已声明的 blobs/<sha256>；压缩输入 32 MiB，
+去重素材字节 64 MiB。配置清单独立上限为 8 MiB UTF-8（不是图标包的 1 MiB），
+JSON 深度仍为 16；单独主题文件上限 1 MiB。数量上限和字节上限必须同时满足。
+导出超过预算时明确失败并提示减少范围，不能截断对象或丢弃依赖后生成“成功”文件。
+
+数值、字符串和布尔类型不互相隐式转换；未知字段拒绝。完整 ZIP 字节校验、稳定身份映射、
+替换事务及恢复路径仍是新导入器启用门槛，元数据模型不能替代它们。
 
 继续提供替换导入，但确认前展示待删除对象及历史数量，不包装成无损追加。
 先把 URI 一次读成受限不可变暂存并校验，确认后不得重新读取可能改变的 URI。
@@ -225,8 +269,9 @@ SQLite 继续单 worker；asset 元数据属于数据库，字节在服务端私
 
 ## 6. 可执行范围与后续门槛
 
-`contracts/next/` 当前由双端测试消费：事项纯转换、图标引用/包元数据及有效/无效输入。
+`contracts/next/` 当前由双端测试消费：事项纯转换、图标引用/包元数据、完整主题角色和配置包元数据，
+包括有效/无效输入。
 这证明格式和纯规则一致，不证明授权、真实图像解码、数据库竞争、同步恢复或 UI 已接入。
-主题角色集合、配置包字段、同步字段外壳/OpenAPI 尚未冻结；#181 不能仅凭本批关闭。
+同步字段外壳/OpenAPI 尚未冻结；#181 不能仅凭元数据批次关闭。
 之后每批先补契约，再接实际领域/持久化路径并验证，最后移除旧猜测/自动删除/整数图标代码。
 所有习惯模式、目标、指标录入、筛选、配置替换、账户隔离、离线和计时完整性均保持回归门槛。

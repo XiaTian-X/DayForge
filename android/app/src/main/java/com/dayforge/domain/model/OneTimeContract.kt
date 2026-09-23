@@ -65,7 +65,3 @@ fun advanceOneTime(
     }
     return OneTimeState(state.version + 1, intent.eventUuid, completion)
 }
-
-private val contractUuid = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-
-internal fun isContractUuid(value: String): Boolean = contractUuid.matches(value)

@@ -8,8 +8,8 @@ import pytest
 from pydantic import ValidationError
 
 from src.v2.appearance import ICON_REFERENCE, IconPack, icon_allowed
+from src.v2.contract_types import ContractModel
 from src.v2.one_time import (
-    ContractModel,
     OneTimeIntent,
     OneTimeState,
     OneTimeTransitionError,

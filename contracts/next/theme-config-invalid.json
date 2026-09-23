@@ -1,0 +1,561 @@
+[
+  {"name": "numeric_theme_name", "base": "theme", "path": ["name"], "value": 123},
+  {"name": "boolean_node_name", "base": "config", "path": ["nodes", 0, "name"], "value": true},
+  {"name": "numeric_description", "base": "config", "path": ["nodes", 0, "description"], "value": 123},
+  {"name": "numeric_pack_name", "base": "icon-pack", "path": ["name"], "value": 123},
+  {"name": "quoted_countdown", "base": "config", "path": ["nodes", 1, "activity", "is_countdown"], "value": "false"},
+  {"name": "numeric_node_active", "base": "config", "path": ["nodes", 0, "is_active"], "value": 1},
+  {"name": "quoted_metric_active", "base": "config", "path": ["metrics", 0, "is_active"], "value": "true"},
+  {"name": "quoted_link_detail", "base": "config", "path": ["links", 0, "show_in_detail"], "value": "true"},
+  {"name": "quoted_link_active", "base": "config", "path": ["links", 0, "is_active"], "value": "true"},
+  {
+    "name": "missing_material_role",
+    "base": "theme",
+    "path": [
+      "light",
+      "material",
+      "surface_dim"
+    ],
+    "value": null
+  },
+  {
+    "name": "unknown_material_role",
+    "base": "theme",
+    "path": [
+      "light",
+      "material",
+      "future_default"
+    ],
+    "value": "#112233"
+  },
+  {
+    "name": "missing_dark_palette",
+    "base": "theme",
+    "path": [
+      "dark"
+    ],
+    "value": null
+  },
+  {
+    "name": "alpha_theme_color",
+    "base": "theme",
+    "path": [
+      "dark",
+      "material",
+      "surface"
+    ],
+    "value": "#80112233"
+  },
+  {
+    "name": "invalid_color",
+    "base": "theme",
+    "path": [
+      "light",
+      "status",
+      "success"
+    ],
+    "value": "red"
+  },
+  {
+    "name": "invalid_generator_pair",
+    "base": "theme",
+    "path": [
+      "generator_id"
+    ],
+    "value": "dayforge-tonal-v1"
+  },
+  {
+    "name": "boolean_theme_version",
+    "base": "theme",
+    "path": [
+      "format_version"
+    ],
+    "value": true
+  },
+  {
+    "name": "string_theme_revision",
+    "base": "theme",
+    "path": [
+      "revision"
+    ],
+    "value": "1"
+  },
+  {
+    "name": "control_theme_name",
+    "base": "theme",
+    "path": [
+      "name"
+    ],
+    "value": ""
+  },
+  {
+    "name": "control_icon_name",
+    "base": "icon-pack",
+    "path": [
+      "name"
+    ],
+    "value": ""
+  },
+  {
+    "name": "history_in_config",
+    "base": "config",
+    "path": [
+      "completion_history"
+    ],
+    "value": []
+  },
+  {
+    "name": "server_identity_in_config",
+    "base": "config",
+    "path": [
+      "sync_epoch"
+    ],
+    "value": "not-portable"
+  },
+  {
+    "name": "completed_task_state",
+    "base": "config",
+    "path": [
+      "nodes",
+      6,
+      "completion_event_uuid"
+    ],
+    "value": "10000000-0000-0000-0000-000000000001"
+  },
+  {
+    "name": "duplicate_package_key",
+    "base": "config",
+    "path": [
+      "metrics",
+      0,
+      "key"
+    ],
+    "value": "goal"
+  },
+  {
+    "name": "duplicate_node_name",
+    "base": "config",
+    "path": [
+      "nodes",
+      2,
+      "name"
+    ],
+    "value": "Daily check"
+  },
+  {
+    "name": "goal_with_parent",
+    "base": "config",
+    "path": [
+      "nodes",
+      0,
+      "parent_key"
+    ],
+    "value": "check"
+  },
+  {
+    "name": "ordinary_parent",
+    "base": "config",
+    "path": [
+      "nodes",
+      1,
+      "parent_key"
+    ],
+    "value": "count"
+  },
+  {
+    "name": "missing_parent",
+    "base": "config",
+    "path": [
+      "nodes",
+      1,
+      "parent_key"
+    ],
+    "value": "missing"
+  },
+  {
+    "name": "goal_as_link_target",
+    "base": "config",
+    "path": [
+      "links",
+      0,
+      "activity_key"
+    ],
+    "value": "goal"
+  },
+  {
+    "name": "missing_metric",
+    "base": "config",
+    "path": [
+      "links",
+      0,
+      "metric_key"
+    ],
+    "value": "missing"
+  },
+  {
+    "name": "task_with_habit_role",
+    "base": "config",
+    "path": [
+      "nodes",
+      6,
+      "appearance",
+      "icon"
+    ],
+    "value": {
+      "kind": "role",
+      "role": "habit.water"
+    }
+  },
+  {
+    "name": "habit_with_task_role",
+    "base": "config",
+    "path": [
+      "nodes",
+      1,
+      "appearance",
+      "icon"
+    ],
+    "value": {
+      "kind": "role",
+      "role": "task.default"
+    }
+  },
+  {
+    "name": "missing_pinned_asset",
+    "base": "config",
+    "path": [
+      "nodes",
+      2,
+      "appearance",
+      "icon",
+      "asset_id"
+    ],
+    "value": "40000000-0000-0000-0000-000000000099"
+  },
+  {
+    "name": "undeclared_missing_role",
+    "base": "config",
+    "path": [
+      "unresolved_roles"
+    ],
+    "value": [
+      "goal.default"
+    ]
+  },
+  {
+    "name": "unused_missing_role",
+    "base": "config",
+    "path": [
+      "unresolved_roles"
+    ],
+    "value": [
+      "goal.default",
+      "metric.weight",
+      "habit.missing"
+    ]
+  },
+  {
+    "name": "mapped_role_also_missing",
+    "base": "config",
+    "path": [
+      "unresolved_roles"
+    ],
+    "value": [
+      "goal.default",
+      "metric.weight",
+      "habit.water"
+    ]
+  },
+  {
+    "name": "counting_task",
+    "base": "config",
+    "path": [
+      "nodes",
+      6,
+      "activity",
+      "tracking_mode"
+    ],
+    "value": "count"
+  },
+  {
+    "name": "one_time_daily_schedule",
+    "base": "config",
+    "path": [
+      "nodes",
+      6,
+      "activity",
+      "schedule"
+    ],
+    "value": {
+      "type": "daily",
+      "start_date": null
+    }
+  },
+  {
+    "name": "one_time_long_term_cycles",
+    "base": "config",
+    "path": [
+      "nodes",
+      6,
+      "activity",
+      "target_cycles"
+    ],
+    "value": 1
+  },
+  {
+    "name": "one_time_daily_reminder",
+    "base": "config",
+    "path": [
+      "nodes",
+      6,
+      "activity",
+      "preferred_minute"
+    ],
+    "value": 480
+  },
+  {
+    "name": "one_time_strict_failure",
+    "base": "config",
+    "path": [
+      "nodes",
+      6,
+      "activity",
+      "fail_mode"
+    ],
+    "value": "strict"
+  },
+  {
+    "name": "check_countdown",
+    "base": "config",
+    "path": [
+      "nodes",
+      1,
+      "activity",
+      "is_countdown"
+    ],
+    "value": true
+  },
+  {
+    "name": "zero_count_target",
+    "base": "config",
+    "path": [
+      "nodes",
+      2,
+      "activity",
+      "target_value"
+    ],
+    "value": 0
+  },
+  {
+    "name": "partial_minute_timer",
+    "base": "config",
+    "path": [
+      "nodes",
+      4,
+      "activity",
+      "target_value"
+    ],
+    "value": 61
+  },
+  {
+    "name": "string_counter",
+    "base": "config",
+    "path": [
+      "nodes",
+      2,
+      "activity",
+      "target_value"
+    ],
+    "value": "5"
+  },
+  {
+    "name": "boolean_weekday",
+    "base": "config",
+    "path": [
+      "nodes",
+      2,
+      "activity",
+      "schedule",
+      "weekdays"
+    ],
+    "value": [
+      true
+    ]
+  },
+  {
+    "name": "duplicate_weekday",
+    "base": "config",
+    "path": [
+      "nodes",
+      2,
+      "activity",
+      "schedule",
+      "weekdays"
+    ],
+    "value": [
+      1,
+      1
+    ]
+  },
+  {
+    "name": "empty_weekday",
+    "base": "config",
+    "path": [
+      "nodes",
+      2,
+      "activity",
+      "schedule",
+      "weekdays"
+    ],
+    "value": []
+  },
+  {
+    "name": "invalid_month_day",
+    "base": "config",
+    "path": [
+      "nodes",
+      4,
+      "activity",
+      "schedule",
+      "day_of_month"
+    ],
+    "value": 32
+  },
+  {
+    "name": "invalid_interval_start",
+    "base": "config",
+    "path": [
+      "nodes",
+      3,
+      "activity",
+      "schedule",
+      "start_date"
+    ],
+    "value": "2026-02-30"
+  },
+  {
+    "name": "missing_interval_start",
+    "base": "config",
+    "path": [
+      "nodes",
+      3,
+      "activity",
+      "schedule",
+      "start_date"
+    ],
+    "value": null
+  },
+  {
+    "name": "invalid_iana_timezone",
+    "base": "config",
+    "path": [
+      "nodes",
+      1,
+      "activity",
+      "timezone"
+    ],
+    "value": "+08:00"
+  },
+  {
+    "name": "reversed_goal_dates",
+    "base": "config",
+    "path": [
+      "nodes",
+      0,
+      "goal",
+      "due_date"
+    ],
+    "value": "2026-08-01"
+  },
+  {
+    "name": "invalid_goal_date",
+    "base": "config",
+    "path": [
+      "nodes",
+      0,
+      "goal",
+      "due_date"
+    ],
+    "value": "2026-02-30"
+  },
+  {
+    "name": "string_metric_number",
+    "base": "config",
+    "path": [
+      "metrics",
+      0,
+      "target_value"
+    ],
+    "value": "70.5"
+  },
+  {
+    "name": "boolean_metric_number",
+    "base": "config",
+    "path": [
+      "metrics",
+      0,
+      "target_value"
+    ],
+    "value": true
+  },
+  {
+    "name": "reversed_metric_range",
+    "base": "config",
+    "path": [
+      "metrics",
+      0,
+      "target_value_upper"
+    ],
+    "value": 60.5
+  },
+  {
+    "name": "infinite_link_number",
+    "base": "config",
+    "path": [
+      "links",
+      0,
+      "coefficient"
+    ],
+    "value": "Infinity"
+  },
+  {
+    "name": "string_boolean",
+    "base": "config",
+    "path": [
+      "links",
+      0,
+      "is_active"
+    ],
+    "value": "true"
+  },
+  {
+    "name": "seven_digit_accent",
+    "base": "config",
+    "path": [
+      "nodes",
+      2,
+      "appearance",
+      "accent_color"
+    ],
+    "value": "#0123456"
+  },
+  {
+    "name": "unsupported_config_version",
+    "base": "config",
+    "path": [
+      "format_version"
+    ],
+    "value": 1
+  },
+  {
+    "name": "unsupported_tint_mode",
+    "base": "config",
+    "path": [
+      "nodes",
+      0,
+      "appearance",
+      "icon_tint"
+    ],
+    "value": "auto"
+  }
+]
