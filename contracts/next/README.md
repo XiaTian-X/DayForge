@@ -17,12 +17,18 @@ bytes independently. No owner IDs, credentials or device identifiers are here.
   identities must be remapped on import; no completion history is included.
 - `theme-config-invalid.json`: additional typed mutations rejected on both platforms,
   including primitive coercion, incomplete palettes, graph errors and runtime history.
+- `one-time-sync.json`: request/event binding, immutable state-after proofs, monotonic
+  projection merge, complete-history recovery and pending causal-chain views. A lost
+  reply requires original-ID replay, not an inferred rejection or a rewritten intent.
 
 Consumed by `backend/tests/test_next_contracts.py`, `test_theme_config_contract.py`
-and Android instrumentation `NextContractTest`, `ThemeConfigContractTest`.
+and `backend/tests/test_one_time_sync_contract.py`; Android instrumentation
+`NextContractTest`, `ThemeConfigContractTest`, `OneTimeSyncContractTest`.
 Do not copy vectors into either module or generate their
 expected results from the implementation. New vectors must be consumed by both.
 
 See [the target contract and activation gates](../../docs/APPEARANCE_CONTRACT.md).
-The future protocol envelope and projection transport still need executable
-contracts before #181 is complete. Existing `sync-v2/` remains the live v4 contract.
+The one-time portion of future event snapshots is executable; current v4 HTTP does
+not accept the new intent. Full protocol/API activation, persistence and authenticated
+asset transport still have separate gates before #181 is complete.
+Existing `sync-v2/` remains the live v4 contract.

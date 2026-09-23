@@ -79,15 +79,63 @@ action 必须与类型一致。活动 UUID、归属、时间校验和来源规�
 远端完成冲突也不能清理已记录的指标事实；关联已删除时明确提示，不虚构成功。
 完成后重启/同步只恢复待处理提示，不能反复创建相同指标记录。
 
-### 1.3 接入同步前必须补齐的投影约束
+### 1.3 不可变事实传输与投影
 
-纯转换通过不代表 pull/bootstrap 已能正确恢复状态。后续协议外壳批次必须明确状态随哪种
-不可变事实快照传输，不能给同一个 plan_node revision 动态拼上不同完成状态，破坏快照一致性。
+纯转换通过不代表 pull/bootstrap 已能正确恢复状态。新 activity_event 写载荷使用
+`one_time` 携带 OneTimeIntent；一次性事项必填，普通习惯必须省略/null。存储的 completion_policy
+决定规则，不能信任客户端自行指定类别。事件实体 UUID 必须等于 intent.event_uuid，
+check_in 对应 complete，revert 对应 undo，根 reverts_event_uuid 必须与 intent 一致。
+UTC、IANA/业务日、来源设备及自动化 external_event_id 规则沿用原事实校验；
+one_time 不能藏在 metadata 中，也不能携带计数或计时结果来绕过状态机。
+
+被接受的事项事实快照新增只读 `one_time_state_after`，和该事实的 one_time 一起不可变保存。
+请求不能提交 state_after；写入成功响应、重放、pull 和 bootstrap 均返回该事实当时的值，
+不是读取时事项的最新状态。`OneTimeEventProof` 校验完整快照中的六项关联字段：
+public_id、activity_uuid、event_type、reverts_event_uuid、one_time、one_time_state_after；
+它不是替代整份事实 DTO 的新接口，时间/来源等其他快照字段仍然存在。
+验证 state_after 必须恰好是该 intent 的一次合法转换结果，不能只看数字版本或奇偶性。
+不能给同一个 plan_node revision 动态拼上不同完成状态，破坏快照一致性。
 结构编辑 revision 与事项状态 version 独立，改名称/图标不使合法完成意图过期。
 响应丢失重放可能返回旧的成功投影；客户端不得因此让更高版本权威状态倒退。
 全量恢复、分页、重复/乱序变化和本地未确认意图都须验证；已确认基准与本地乐观链分开，
 不能用一次 pull 直接覆盖待确认的完成/撤销。目标子项与小组件使用事项全局完成投影，
 普通习惯继续使用原来的当日/周期判定；两者不能共享一个只查今日记录的快捷判断。
+
+权威状态合并限定在同一已认证账户/服务器 epoch/事项内：低版本只存事实、不回退投影；
+同版本同状态无操作，同版本不同 head/completion 报 `TASK_STATE_DIVERGED` 并中止该合并事务；
+高版本采用已验证服务端投影。删除优先，迟到事实不能复活父事项。
+分页面可先见较新事实；全量 bootstrap 单独返回 `one_time_checkpoints`（每项为
+`{activity_uuid,state}`），与 next_cursor/全部事实来自同一数据库一致快照。
+每个可见事项必须恰有一个校验点，未完成且无历史的事项也显式返回 0/null/null；
+缺失、重复、跨账户、引用普通习惯或不可见事项的校验点均不能用于恢复。
+它不属于 plan_node 的结构快照，也不单独制造结构 revision。
+激活全量恢复前必须完整校验该事项从 1 起的因果链，且结果与校验点完全相等：
+缺段 `TASK_HISTORY_INCOMPLETE`、重复事件 `TASK_EVENT_ID_REUSED`、跨事项 `TASK_ACTIVITY_MISMATCH`，
+同版本分叉或错误因果 head 也必须拒绝。独立校验点用于发现整条链或末尾整段缺失，
+仅检查已收到事件之间连续并不能证明完整；不能把半份历史当成完整恢复。
+
+新事项事实未成功创建时没有可返回的 activity_event 实体。拒绝响应增加独立
+`one_time_conflict={activity_uuid,state}`，只提供本账户事项权威状态，外层保留原 operation_id/
+entity_uuid/error_code。不能把这个状态伪装成成功事件 entity，也不使用事项 version 替代事件 revision。
+没有事项访问权限时不返回该字段；墓碑仍由既有结构删除通道传输，不暴露其他账户状态。
+本批冻结字段与纯合并函数，尚未将新字段加入当前 v4 的 SyncOperationResult/OpenAPI。
+
+### 1.4 本地未确认操作链
+
+`projectPendingOneTime` / `project_pending_one_time` 只计算显示投影，不确认、删除、重写或
+重新定基任何 outbox 条目。输入是同账户/epoch/事项的确认基准、按因果顺序的稳定 operation ID
+和 intent，以及可选已持久化的明确拒绝身份；身份重复、跳过依赖或非法链报告 INVALID_PENDING_CHAIN。
+
+- 基准吻合时顺序计算本地完成→撤销→再次完成的乐观状态。
+- 基准已改变且操作结果未知时，保留原链并列入 awaiting_replay_operation_ids；
+  可能只是成功响应丢失，不能据此制造冲突。仍用原 ID 和原请求体顺序询问服务器重放结果。
+- 只有明确拒绝才将该操作及因果后继列入 blocked_operation_ids；更早待确认操作仍可原样重试。
+  前驱未确认或已拒绝时不继续发送依赖它的后继。
+- 确认前驱后，在同一本地事务更新权威基准、事实和 outbox，再重新计算剩余链；
+  不能凭时间戳或 UUID 看似相同就当成 operation 成功。
+
+指标事实与输入草稿不因这些队列分类而删除；账户切换、epoch 更新、墓碑及数据库 CAS
+仍由接入层在事务中验证。纯函数没有账户授权能力，不取代真实存储/HTTP 竞争和恢复测试。
 
 ## 2. 图标引用与包
 
@@ -270,8 +318,8 @@ SQLite 继续单 worker；asset 元数据属于数据库，字节在服务端私
 ## 6. 可执行范围与后续门槛
 
 `contracts/next/` 当前由双端测试消费：事项纯转换、图标引用/包元数据、完整主题角色和配置包元数据，
-包括有效/无效输入。
+以及事项不可变快照证明、单调投影合并、全量因果链和未确认队列投影，包括有效/无效输入。
 这证明格式和纯规则一致，不证明授权、真实图像解码、数据库竞争、同步恢复或 UI 已接入。
-同步字段外壳/OpenAPI 尚未冻结；#181 不能仅凭元数据批次关闭。
+完整同步响应/OpenAPI 与授权素材接口尚未全部冻结；#181 不能仅凭这些纯规则关闭。
 之后每批先补契约，再接实际领域/持久化路径并验证，最后移除旧猜测/自动删除/整数图标代码。
 所有习惯模式、目标、指标录入、筛选、配置替换、账户隔离、离线和计时完整性均保持回归门槛。
