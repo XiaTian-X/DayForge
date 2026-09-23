@@ -44,6 +44,7 @@ from src.v2.models import (  # noqa: F401
 
 # Import the validated synchronous migration URL from the storage adapter.
 from src.config import get_migration_database_url
+from src.storage.database_adapter import configure_sqlite_transactions
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -122,16 +123,21 @@ def run_migrations_online() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
+    if connectable.dialect.name == "sqlite":
+        configure_sqlite_transactions(connectable)
+    try:
+        with connectable.connect() as connection:
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+                compare_type=compare_type,
+                transactional_ddl=True if connection.dialect.name == "sqlite" else None,
+            )
 
-    with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            compare_type=compare_type,
-        )
-
-        with context.begin_transaction():
-            context.run_migrations()
+            with context.begin_transaction():
+                context.run_migrations()
+    finally:
+        connectable.dispose()
 
 
 if context.is_offline_mode():

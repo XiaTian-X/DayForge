@@ -3,6 +3,7 @@
 from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlmodel import select
 from sqlalchemy import text
 
@@ -16,6 +17,7 @@ from src.database import dispose_engine, get_engine, get_session
 from src.auth.models import User
 from src.auth.service import get_password_hash
 from src.config import get_settings
+from src.storage.database_adapter import DatabaseBusyError
 
 
 async def _create_admin_if_missing():
@@ -57,6 +59,21 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(DatabaseBusyError)
+async def database_busy_handler(_request, _error: DatabaseBusyError):
+    return JSONResponse(
+        status_code=503,
+        headers={"Retry-After": "1"},
+        content={
+            "detail": {
+                "code": "DATABASE_BUSY",
+                "message": "Database is temporarily busy; retry the original request",
+            }
+        },
+    )
+
 
 # CORS middleware
 settings = get_settings()

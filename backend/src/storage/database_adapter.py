@@ -8,17 +8,31 @@ preserving the transaction semantics exercised by the sync contract tests.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import sqlite3
 from typing import Protocol
 
 from sqlalchemy import create_engine, event
-from sqlalchemy.engine import Engine, URL, make_url
-from sqlalchemy.exc import ArgumentError
+from sqlalchemy.engine import Connection, Engine, URL, make_url
+from sqlalchemy.exc import ArgumentError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool, StaticPool
 
 
 class DatabaseConfigurationError(ValueError):
     """Raised when configuration names a database runtime DayForge cannot run."""
+
+
+class DatabaseBusyError(RuntimeError):
+    """The complete transaction was rolled back and may be retried by its caller."""
+
+
+def is_sqlite_busy(error: OperationalError) -> bool:
+    """Use the driver's code, never exception text that can contain SQL or data."""
+    original = error.orig
+    return (
+        isinstance(original, sqlite3.OperationalError)
+        and getattr(original, "sqlite_errorcode", 0) & 0xFF == sqlite3.SQLITE_BUSY
+    )
 
 
 class DatabaseAdapter(Protocol):
@@ -39,6 +53,9 @@ class DatabaseAdapter(Protocol):
 
 
 def _apply_sqlite_pragmas(dbapi_connection, _connection_record) -> None:
+    # Let SQLAlchemy own BEGIN, including SELECT, DDL and an initial SAVEPOINT.
+    # Driver legacy transaction control otherwise skips those statements.
+    dbapi_connection.isolation_level = None
     cursor = dbapi_connection.cursor()
     try:
         cursor.execute("PRAGMA foreign_keys=ON")
@@ -46,6 +63,22 @@ def _apply_sqlite_pragmas(dbapi_connection, _connection_record) -> None:
         cursor.execute("PRAGMA busy_timeout=5000")
     finally:
         cursor.close()
+
+
+def _begin_sqlite_transaction(connection: Connection) -> None:
+    connection.exec_driver_sql("BEGIN")
+
+
+def configure_sqlite_transactions(engine: Engine) -> None:
+    """Apply once to a fresh runtime or Alembic engine, before first connect.
+
+    PRAGMAs run outside a transaction. Deferred BEGIN preserves WAL readers;
+    an outdated reader's write upgrade may fail with SQLITE_BUSY_SNAPSHOT and
+    must roll back the whole request before retry, never only its last statement.
+    Do not combine this policy with SQLAlchemy's driver-level AUTOCOMMIT.
+    """
+    event.listen(engine, "connect", _apply_sqlite_pragmas)
+    event.listen(engine, "begin", _begin_sqlite_transaction)
 
 
 @dataclass(frozen=True)
@@ -72,12 +105,12 @@ class SQLiteDatabaseAdapter:
             # Memory databases need one retained connection to keep their data.
             poolclass=StaticPool if is_memory else NullPool,
         )
-        event.listen(engine.sync_engine, "connect", _apply_sqlite_pragmas)
+        configure_sqlite_transactions(engine.sync_engine)
         return engine
 
     def create_migration_engine(self) -> Engine:
         engine = create_engine(self.migration_url, echo=False, future=True)
-        event.listen(engine, "connect", _apply_sqlite_pragmas)
+        configure_sqlite_transactions(engine)
         return engine
 
 
@@ -126,6 +159,9 @@ def build_database_adapter(
 __all__ = [
     "DatabaseAdapter",
     "DatabaseConfigurationError",
+    "DatabaseBusyError",
     "SQLiteDatabaseAdapter",
     "build_database_adapter",
+    "configure_sqlite_transactions",
+    "is_sqlite_busy",
 ]
