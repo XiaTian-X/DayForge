@@ -46,6 +46,8 @@ internal class SvgNumberScanner(val value: String) {
         val number = token.toDoubleOrNull()
         svgRequire(number != null && number.isFinite() && kotlin.math.abs(number) <= SVG_MAX_NUMBER,
             "SVG_NUMBER_LIMIT")
+        svgRequire(number != 0.0 || token.lowercase().substringBefore('e').none { it in '1'..'9' },
+            "SVG_NUMBER_LIMIT")
         position = found.range.last + 1
         return requireNotNull(number)
     }

@@ -8,6 +8,14 @@ from typing import BinaryIO
 from xml.parsers import expat
 
 from src.appearance.input import read_icon_bytes
+from src.appearance.svg_drawing import (
+    INHERITED,
+    MAX_DASH_WORK,
+    native_number,
+    stroke_work,
+    viewport,
+)
+from src.appearance.svg_geometry import SvgGeometry, resolve_path
 from src.appearance.svg_path import (
     MAX_COMMANDS,
     MAX_NUMBER,
@@ -15,7 +23,6 @@ from src.appearance.svg_path import (
     WSP,
     SvgValidationError,
     parse_numbers,
-    parse_path,
 )
 from src.v2.appearance import IconBlob
 
@@ -173,13 +180,16 @@ class SvgInspection:
     commands: int
 
 
-def _attributes(tag: str, attrs: dict[str, str]) -> tuple[int, tuple[float, ...], int]:
+def _attributes(
+    tag: str, attrs: dict[str, str]
+) -> tuple[int, tuple[float, ...], int, SvgGeometry | None]:
     require(
         set(attrs) <= GEOMETRY[tag] | COMMON and REQUIRED.get(tag, set()) <= set(attrs),
         "SVG_ATTRIBUTES",
     )
     commands = 0
     transform, transform_count = IDENTITY, 0
+    path = None
     for key, value in attrs.items():
         if key == "id":
             require(IDENTIFIER.fullmatch(value) is not None, "SVG_ATTRIBUTES")
@@ -188,7 +198,8 @@ def _attributes(tag: str, attrs: dict[str, str]) -> tuple[int, tuple[float, ...]
         elif key in {"fill", "stroke"}:
             require(COLOR.fullmatch(value) is not None, "SVG_ATTRIBUTES")
         elif key == "d":
-            commands += len(parse_path(value))
+            path = resolve_path(value)
+            commands += path.source_commands
         elif key == "transform":
             transform, transform_count = transforms(value)
         elif key == "stroke-dasharray" and value == "none":
@@ -225,7 +236,7 @@ def _attributes(tag: str, attrs: dict[str, str]) -> tuple[int, tuple[float, ...]
                     require(0 <= number <= 1, "SVG_GEOMETRY")
                 if key == "stroke-miterlimit":
                     require(number >= 1, "SVG_GEOMETRY")
-    return commands, transform, transform_count
+    return commands, transform, transform_count, path
 
 
 def inspect_svg(data: bytes, expected: IconBlob) -> SvgInspection:
@@ -245,11 +256,13 @@ def inspect_svg(data: bytes, expected: IconBlob) -> SvgInspection:
     )
     parser = expat.ParserCreate("UTF-8", "|")
     stack: list[tuple[str, tuple[float, ...]]] = []
+    styles: list[dict[str, str]] = []
+    dash_work = 0.0
     elements = commands = transform_count = 0
     width = height = 0
 
     def start(name: str, attrs: dict[str, str]) -> None:
-        nonlocal elements, commands, transform_count, width, height
+        nonlocal elements, commands, transform_count, width, height, dash_work
         namespace, _, tag = name.rpartition("|")
         require(namespace in {"", SVG_NS} and tag in GEOMETRY, "SVG_ELEMENT")
         require(
@@ -259,7 +272,7 @@ def inspect_svg(data: bytes, expected: IconBlob) -> SvgInspection:
         )
         elements += 1
         require(elements <= 2048 and len(stack) < 16, "SVG_TREE_LIMIT")
-        count, matrix, transforms_count = _attributes(tag, attrs)
+        count, matrix, transforms_count, geometry = _attributes(tag, attrs)
         commands += count
         transform_count += transforms_count
         require(commands <= MAX_COMMANDS, "SVG_COMMAND_LIMIT")
@@ -279,10 +292,22 @@ def inspect_svg(data: bytes, expected: IconBlob) -> SvgInspection:
             require(
                 (width, height) == (expected.width, expected.height), "SVG_DIMENSIONS"
             )
-        stack.append((tag, matrix_product(stack[-1][1] if stack else IDENTITY, matrix)))
+            # Root transform is outside the viewBox mapping, as in SVG 2.
+            matrix = matrix_product(matrix, viewport(attrs, width, height))
+        cumulative = matrix_product(stack[-1][1] if stack else IDENTITY, matrix)
+        for value in (*matrix, *cumulative):
+            native_number(value)
+        style = (styles[-1] if styles else {}) | {
+            key: value for key, value in attrs.items() if key in INHERITED
+        }
+        dash_work += stroke_work(tag, attrs, style, geometry)
+        require(dash_work <= MAX_DASH_WORK, "SVG_DASH_LIMIT")
+        styles.append(style)
+        stack.append((tag, cumulative))
 
     def end(_name: str) -> None:
         stack.pop()
+        styles.pop()
 
     def content(value: str) -> None:
         require(not value.strip(WSP), "SVG_TEXT")
