@@ -113,6 +113,7 @@ async def test_install_replay_read_and_account_isolation_survive_new_service(tra
         await service.read(headers[1], contexts[1], ASSET, "light")
     assert pending.value.code == "ASSET_NOT_READY"
     first = await service.install(headers[1], contexts[1], ASSET, "light", SVG)
+    assert not first.cleanup_pending
     ready = await availability(service)
     assert ready[0] is not None and ready[1] == "svg-v1"
     assert await availability(service, 2) == (None, None)
@@ -285,7 +286,8 @@ async def test_cleanup_failure_does_not_erase_success_or_expose_exception(
 
     monkeypatch.setattr(service.files, "finish", fail)
     result = await service.install(headers[1], contexts[1], ASSET, "light", SVG)
-    assert result.blob == blob()
+    assert result.receipt.blob == blob()
+    assert result.cleanup_pending
     assert (await availability(service))[0] is not None
     assert len(intents(service.files, owners[1])) == 1
     assert "cleanup deferred" in caplog.text
@@ -547,7 +549,8 @@ async def test_png_install_uses_matching_profile_and_rejects_absent_dark_variant
         asset(contexts[1], asset_id=asset_id, light=description, dark=None),
     )
     receipt = await service.install(headers[1], contexts[1], asset_id, "light", data)
-    assert receipt.blob == description
+    assert receipt.receipt.blob == description
+    assert not receipt.cleanup_pending
     assert await service.read(headers[1], contexts[1], asset_id, "light") == data
     async with service.sessions() as session:
         assert (

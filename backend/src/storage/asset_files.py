@@ -5,7 +5,7 @@ a fresh transaction before marking ready. A receipt proves durable bytes only.
 The configured root must already exist; no live route uses this adapter yet.
 """
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 import hashlib
 import json
@@ -159,44 +159,58 @@ def _write_new(directory: int, name: str, data: bytes) -> None:
         os.close(descriptor)
 
 
+def _validate_root(root: Path) -> None:
+    if not root.is_absolute() or len(root.parts) < 2 or ".." in root.parts:
+        raise AssetFileError("ASSET_STORAGE_ROOT")
+
+
+@contextmanager
+def _root_directory(root: Path) -> Iterator[int]:
+    _validate_root(root)
+    descriptor = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for name in root.parts[1:]:
+            child = os.open(
+                name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor
+            )
+            os.close(descriptor)
+            descriptor = child
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def _child_directory(parent: int, name: str) -> Iterator[int]:
+    descriptor = os.open(
+        name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent
+    )
+    try:
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
 class AssetFiles:
     def __init__(self, root: Path):
-        if not root.is_absolute() or len(root.parts) < 2 or ".." in root.parts:
-            raise AssetFileError("ASSET_STORAGE_ROOT")
+        _validate_root(root)
         self.root = root
 
     @contextmanager
     def _directory(self, owner: str, *, create: bool = False) -> Iterator[int]:
         _uuid(owner)
-        descriptor = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            for name in self.root.parts[1:]:
-                child = os.open(
-                    name,
-                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                    dir_fd=descriptor,
-                )
-                os.close(descriptor)
-                descriptor = child
+        with ExitStack() as stack:
+            descriptor = stack.enter_context(_root_directory(self.root))
             for name in ("accounts", owner, "blobs"):
                 if create:
                     try:
                         os.mkdir(name, 0o700, dir_fd=descriptor)
                     except FileExistsError:
                         pass
-                    # Also sync existing parents: a preceding attempt may have
-                    # created the child but failed before its directory fsync.
+                    # Also sync parents created by an interrupted attempt.
                     os.fsync(descriptor)
-                child = os.open(
-                    name,
-                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                    dir_fd=descriptor,
-                )
-                os.close(descriptor)
-                descriptor = child
+                descriptor = stack.enter_context(_child_directory(descriptor, name))
             yield descriptor
-        finally:
-            os.close(descriptor)
 
     def publish(
         self, owner: str, source: BinaryIO, expected: IconBlob
