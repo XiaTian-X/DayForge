@@ -9,6 +9,7 @@ internal const val SVG_MAX_NUMBER = 1_000_000.0
 internal const val SVG_MAX_COMMANDS = 16_384
 internal const val SVG_MAX_TEXT = 524_288
 private const val WSP = " \t\r\n"
+private const val MAX_NUMBER_TOKEN_LENGTH = 64
 private val numberPattern = Regex("[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
 private val arity = mapOf('M' to 2, 'L' to 2, 'H' to 1, 'V' to 1, 'C' to 6, 'S' to 4,
     'Q' to 4, 'T' to 2, 'A' to 7, 'Z' to 0)
@@ -38,17 +39,22 @@ internal class SvgNumberScanner(val value: String) {
             svgRequire(position < value.length && value[position] in "01", "SVG_PATH_SYNTAX")
             return (value[position++].code - '0'.code).toDouble()
         }
-        val found = numberPattern.find(value, position)
-        svgRequire(found != null && found.range.first == position, "SVG_NUMBER_SYNTAX")
+        // Android's regex matcher can copy its input. Never give it the entire path
+        // for every coordinate. Three extra characters detect even a signed exponent
+        // beginning after a 64-character mantissa, without truncating it into a valid
+        // short token. Any longer valid match is rejected before numeric conversion.
+        val windowEnd = minOf(value.length, position + MAX_NUMBER_TOKEN_LENGTH + 3)
+        val found = numberPattern.matchAt(value.substring(position, windowEnd), 0)
+        svgRequire(found != null, "SVG_NUMBER_SYNTAX")
         val token = requireNotNull(found).value
         svgRequire(!unsigned || token.first() !in "+-", "SVG_PATH_SYNTAX")
-        svgRequire(token.length <= 64, "SVG_NUMBER_LIMIT")
+        svgRequire(token.length <= MAX_NUMBER_TOKEN_LENGTH, "SVG_NUMBER_LIMIT")
         val number = token.toDoubleOrNull()
         svgRequire(number != null && number.isFinite() && kotlin.math.abs(number) <= SVG_MAX_NUMBER,
             "SVG_NUMBER_LIMIT")
         svgRequire(number != 0.0 || token.lowercase().substringBefore('e').none { it in '1'..'9' },
             "SVG_NUMBER_LIMIT")
-        position = found.range.last + 1
+        position += token.length
         return requireNotNull(number)
     }
 }
