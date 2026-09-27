@@ -183,6 +183,23 @@ internal class OneTimeAcceptedEventStore(
         }
     }
 
+    /** All accepted bootstrap data, but not cache replacement, cursor activation or acknowledgement. */
+    suspend fun restoreAcceptedData(context: OneTimeSyncContext, response: NextSyncBootstrapResponse): List<OneTimeLocalSnapshot> = sessions.exclusive {
+        access(context)
+        val snapshot = response.copy(changes = response.changes.map {
+            it.copy(payload = Json.parseToJsonElement(it.payload.toString()).jsonObject)
+        }, oneTimeCheckpoints = response.oneTimeCheckpoints.toList())
+        require(snapshot.changes.all { it.entityType in setOf("plan_node", "metric", "activity_event", "metric_observation", "activity_metric_link") })
+        database.withTransaction {
+            NextStructureStore(database).restoreInTransaction(snapshot.changes.filter {
+                it.entityType == "plan_node" || it.entityType == "metric"
+            })
+            val once = restoreHistoriesInTransaction(context, snapshot)
+            NextCommonFactStore(database).restoreInTransaction(snapshot.changes, context.deviceId)
+            once
+        }
+    }
+
     private suspend fun restoreHistoriesInTransaction(context: OneTimeSyncContext, response: NextSyncBootstrapResponse): List<OneTimeLocalSnapshot> {
         // Re-run the complete-history envelope checks, including after caller-owned list mutation.
         val snapshot = response.copy(changes = response.changes.toList(), oneTimeCheckpoints = response.oneTimeCheckpoints.toList())
