@@ -11,6 +11,7 @@ import android.graphics.PorterDuff
 import android.graphics.RectF
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.toColorInt
+import androidx.core.graphics.withClip
 import com.dayforge.domain.appearance.parseSvgNumbers
 import com.dayforge.domain.appearance.SvgValidationException
 import com.dayforge.domain.appearance.svgRequire
@@ -25,14 +26,23 @@ import kotlin.math.roundToInt
  * No I/O, cache, installation or ready-state mutation. Call off the UI thread.
  */
 fun renderSvg(source: ByteArray, expected: IconBlob, tint: Int? = null): Bitmap {
+    return renderSvgAtSize(source, expected, IconRasterSize(expected.width, expected.height), tint)
+}
+
+internal fun renderSvgAtSize(source: ByteArray, expected: IconBlob, size: IconRasterSize, tint: Int?): Bitmap {
     val document = parseSvgDocument(source, expected)
-    val bitmap = createBitmap(document.inspection.width, document.inspection.height,
+    val bitmap = createBitmap(size.width, size.height,
         Bitmap.Config.ARGB_8888, true, ColorSpace.get(ColorSpace.Named.SRGB))
     bitmap.density = Bitmap.DENSITY_NONE
     var completed = false
     try {
         val canvas = Canvas(bitmap)
-        drawSvgNode(canvas, document.root)
+        val fit = size.fit(document.inspection.width, document.inspection.height)
+        canvas.withClip(fit) {
+            translate(fit.left, fit.top)
+            scale(fit.width() / document.inspection.width, fit.height() / document.inspection.height)
+            drawSvgNode(this, document.root)
+        }
         if (tint != null) canvas.drawColor(tint, PorterDuff.Mode.SRC_IN)
         completed = true
         return bitmap

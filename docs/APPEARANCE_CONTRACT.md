@@ -495,6 +495,15 @@ Compose 和 Glance 各有适配器，但使用同一解析结果；Glance 必须
 模式、tint、尺寸与渲染器版本。不在计时每秒 tick 解码/联网。素材到达或主题改变走既有
 WidgetRefreshScheduler 队列；账户切换失效旧缓存/回调，不复用上个账户图片。
 真正输出颜色与 ImageProvider 的回归是交付条件，不能只留下空接口。小组件视觉重排另行处理。
+内部 `renderIcon` 从调用方已授权的素材描述及字节生成同一份不可变 sRGB 图片，Compose
+ImageBitmap 和 Glance ImageProvider 借用这份像素，不依赖 MainActivity，也不二次着色。
+调用方传入 1–1024px 的物理宽高；等比居中，留白透明。PNG 完整验证后按目标大小使用二次幂
+采样，SVG 直接绘制到目标画布并裁剪原视口，不能将原视口外图形画入留白。
+深色模式按声明选 dark，没有 dark 才使用 light；original 不受 tint 影响，template 在完整
+alpha 合成后着色。字节损坏不得被解释为正常缺图回退。中间位图及时回收，发布后的不可变
+位图由消费者引用生命周期管理，不能在 Compose/RemoteViews 仍持有时调用 recycle。
+这不是已接线的账户图片仓库或缓存：调用方仍须控制并行绘制/缓存/整份 RemoteViews 的总量，
+进行账户授权和失效、缺图解析及刷新调度，不得在计时 tick 或重组中重复解码。
 参考官方 [Glance 主题](https://developer.android.com/develop/ui/compose/glance/theme) 和
 [Glance 构建边界](https://developer.android.com/develop/ui/compose/glance/build-ui)：
 Glance 不是 Compose UI，不能直接共用 composable 或假定无 RemoteViews 资源限制。

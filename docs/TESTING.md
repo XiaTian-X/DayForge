@@ -490,6 +490,11 @@ Flow 允许合并连续写入的中间通知，但取消订阅/关闭/重开后�
 
 ## 主题与资源真机回归（Issue #139）
 
+`IconRasterTest` 检查实际 PNG/SVG 图片的等比透明留白、原色/模板双 alpha、明暗变体与回退、
+PNG 采样的奇数/极细尺寸及像素存储上限、SVG 显示分辨率与视口裁剪、尺寸边界和损坏拒绝。
+共享不可变位图必须到达真实 Compose ImageBitmap 像素和 Glance RemoteViews 绘制结果，
+不启动 MainActivity、不回收已发布像素；这不是厂商桌面、账户缓存或全页面接线验收。
+
 `ResolvedThemeTest` 从共享原始主题 JSON 和独立不同角色值核对 36 个实际 Compose 颜色、
 Glance 26 个 Material 角色及明确的 widgetBackground、全部状态/图表值、明暗配置与显式模式。
 它不启动 MainActivity，覆盖输入 Map 后变、不可变快照、非法字段/颜色和不执行未知生成器。

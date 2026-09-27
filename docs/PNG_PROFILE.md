@@ -22,6 +22,11 @@ Android 先读 BitmapFactory bounds 再实际解码，统一到不随设备 dens
 中间解码最多每像素 8 字节，最终位图每像素 4 字节；UI 后续仍须限制并行解码与缓存总量。
 原图色彩模式/模板着色、缩略与小组件共享渲染还需后续接入，不能在计时 tick 中反复解码。
 
+内部显示入口在同样的完整结构/扫描行/hash 验证后设置二次幂 inSampleSize；按实际目标的
+等比矩形选择采样级别，解码结果的尺寸须处于该级别整数取整范围。颜色归一化仍转入受限
+sRGB 画布，不改原始字节。原尺寸 decodePng 的返回尺寸和行为保持不变。
+共享 renderIcon 再生成精确显示尺寸的不可变结果；账户缓存、并发总量和页面接线仍未启用。
+
 ## 附加元数据
 
 白名单为 tRNS、cHRM、gAMA、iCCP、sBIT、sRGB、bKGD、hIST、pHYs、tIME、tEXt、zTXt、iTXt，
