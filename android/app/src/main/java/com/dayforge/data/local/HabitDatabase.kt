@@ -4,6 +4,7 @@ import androidx.room.Database
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 import com.dayforge.data.local.dao.CompletionDao
+import com.dayforge.data.local.dao.CompletionFollowUpDao
 import com.dayforge.data.local.dao.HabitDao
 import com.dayforge.data.local.dao.HabitMetricLinkDao
 import com.dayforge.data.local.dao.MetricDao
@@ -12,6 +13,8 @@ import com.dayforge.data.local.dao.SyncConflictDao
 import com.dayforge.data.local.dao.SyncOutboxDao
 import com.dayforge.data.local.dao.TimeLogDao
 import com.dayforge.data.local.entity.CompletionEntity
+import com.dayforge.data.local.entity.CompletionMetricPromptEntity
+import com.dayforge.data.local.entity.LocalFactSubmissionEntity
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.HabitMetricLinkEntity
 import com.dayforge.data.local.entity.HabitTypeConverter
@@ -48,9 +51,11 @@ import kotlinx.coroutines.withContext
         SyncControlEntity::class,
         TimerCommandEntity::class,
         TimerSegmentEntity::class,
-        TimeLogDayAllocationEntity::class
+        TimeLogDayAllocationEntity::class,
+        LocalFactSubmissionEntity::class,
+        CompletionMetricPromptEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = true
 )
 @TypeConverters(HabitTypeConverter::class)
@@ -59,6 +64,8 @@ abstract class HabitDatabase : RoomDatabase() {
     abstract fun habitDao(): HabitDao
 
     abstract fun completionDao(): CompletionDao
+
+    abstract fun completionFollowUpDao(): CompletionFollowUpDao
 
     abstract fun timeLogDao(): TimeLogDao
 

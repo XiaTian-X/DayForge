@@ -9,6 +9,7 @@ import com.dayforge.data.api.dto.SyncV2Operation
 import com.dayforge.data.api.dto.validateNextSyncOperation
 import com.dayforge.data.local.PhysicalDatabaseRule
 import com.dayforge.data.local.TokenManager
+import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.SyncEntityStateEntity
 import com.dayforge.data.model.FailMode
@@ -46,18 +47,21 @@ class OneTimeLocalIntentStoreTest {
     @get:Rule val rule = PhysicalDatabaseRule()
     private val sessions = AccountSessionCoordinator()
     private lateinit var tokens: TokenManager
+    private lateinit var preferences: PreferencesManager
     private lateinit var scope: CoroutineScope
     private lateinit var file: File
     private lateinit var habit: HabitEntity
     private val db get() = rule.database
-    private fun store(coordinator: AccountSessionCoordinator = sessions) = OneTimeLocalIntentStore(db, tokens, coordinator)
+    private fun store(coordinator: AccountSessionCoordinator = sessions) = OneTimeLocalIntentStore(db, tokens, coordinator, preferences)
     private val midnight = Instant.parse("2026-09-27T15:59:59Z").toEpochMilli()
 
     @Before fun setup() = runBlocking {
         val context: Context = ApplicationProvider.getApplicationContext()
         file = File(context.cacheDir, "once-${UUID.randomUUID()}.preferences_pb")
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        tokens = TokenManager(PreferenceDataStoreFactory.create(scope = scope, produceFile = { file }))
+        val dataStore = PreferenceDataStoreFactory.create(scope = scope, produceFile = { file })
+        tokens = TokenManager(dataStore)
+        preferences = PreferencesManager(dataStore)
         tokens.saveLoginSession("synthetic-a", "synthetic-r", "member", "account-a", false)
         habit = seed()
     }

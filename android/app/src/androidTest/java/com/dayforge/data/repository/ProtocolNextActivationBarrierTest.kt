@@ -3,6 +3,8 @@ package com.dayforge.data.repository
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.SyncOutboxEntity
+import com.dayforge.data.local.entity.CompletionMetricPromptEntity
+import com.dayforge.data.local.entity.LocalFactSubmissionEntity
 import java.util.UUID
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -80,6 +82,16 @@ class ProtocolNextActivationBarrierTest : SyncPersistenceFixture() {
         ))
         database.syncOutboxDao().markDeadLetter(id, "TASK_STATE_CONFLICT", "synthetic", 1)
         reopen()
+        assertAllLegacyWritesRefused()
+    }
+
+    @Test fun orphanedLocalReceiptOrPromptStillBlocksLegacyRecovery() = runBlocking {
+        database.completionFollowUpDao().insertSubmission(LocalFactSubmissionEntity(
+            UUID.randomUUID().toString(), "metric_observation", UUID.randomUUID().toString(), UUID.randomUUID().toString(), "{}"))
+        assertAllLegacyWritesRefused()
+        database.clearAllData()
+        database.completionFollowUpDao().insertPrompt(CompletionMetricPromptEntity(
+            UUID.randomUUID().toString(), UUID.randomUUID().toString(), entriesJson = "[]"))
         assertAllLegacyWritesRefused()
     }
 }
