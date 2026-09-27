@@ -31,8 +31,8 @@ import kotlinx.coroutines.withContext
 /**
  * Production local schema, incrementally migrated from the version-1 baseline.
  *
- * Pre-baseline development databases used versions 3 through 24. They contain
- * test data only and have no supported migration path; they must be reset explicitly.
+ * Pre-baseline development databases have no supported migration path. Even when a version
+ * number overlaps, their schema identity must not be accepted or destructively rebuilt.
  */
 @Database(
     entities = [
@@ -50,7 +50,7 @@ import kotlinx.coroutines.withContext
         TimerSegmentEntity::class,
         TimeLogDayAllocationEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = true
 )
 @TypeConverters(HabitTypeConverter::class)

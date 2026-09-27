@@ -34,5 +34,10 @@ data class CompletionEntity(
     val recordedLocalDate: String = java.time.Instant.ofEpochMilli(actualCompletedAt ?: date)
         .atZone(java.time.ZoneId.of(recordedTimezone)).toLocalDate().toString(),
     @ColumnInfo(defaultValue = "'captured'")
-    val timeMetadataSource: String = "captured"
+    val timeMetadataSource: String = "captured",
+    // Protocol v5 immutable intent; all null for v4 and recurring facts. UUID is this row's uuid.
+    val oneTimeAction: String? = null,
+    val oneTimeExpectedVersion: Int? = null,
+    val oneTimeExpectedHeadEventUuid: String? = null,
+    val oneTimeRevertsEventUuid: String? = null
 )

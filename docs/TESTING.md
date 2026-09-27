@@ -329,6 +329,14 @@ assets 读取同一份 `contracts/sync-v2` 样例，不复制或自动生成测�
 
 ## Room 迁移真机回归（Issue #128）
 
+Room v3 的事项预备列须从提交的 v1/v2 schema 经生产入口升级并重开。`RoomUpgradeCompatibilityTest`
+继续逐表比较全部旧列、冻结 outbox、冲突、计时与时间元数据，另外检查新增列均未初始化，
+不因忽略新增列而放弃旧数据检查。DDL 对比只排除有意追加列的两张表，索引/触发器仍需原样保留，
+最终 schema 和 identity 由 Room 与提交的 v3 schema 双重检查。
+`OneTimePreparationMigrationTest` 覆盖中途 DDL 失败回滚/修复重试、版本号碰撞但 identity 不符时拒绝、
+新增列重开/事务回滚、跨日意图保留和隔离账户清理；这些合成事实只证明存储，不代表 v5 操作链、
+服务端确认或 UI 已接入。完整真机测试继续覆盖当前 v4 行为。
+
 Room 依赖升级还须执行 `RoomUpgradeCompatibilityTest`：从已提交的当前 schema 独立建库，
 通过生产入口打开及重开，检查全部业务 / 同步表、schema identity、触发器、事务回滚和 Flow 通知。
 库升级不应凭空变更 schema；无结构变化时保留原 schema 文件，并记录无差异证据。

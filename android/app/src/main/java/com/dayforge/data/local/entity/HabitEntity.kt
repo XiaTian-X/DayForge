@@ -36,5 +36,11 @@ data class HabitEntity(
     val activityRateUpdatedAt: Long = System.currentTimeMillis(),  // 上次更新活跃度的时间
     val bestTime: Long? = null,  // Nullable Long for best execution time (minutes since midnight)
     val createdAt: Long = System.currentTimeMillis(),
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+    // Protocol v5 preparation only. Null is uninitialized legacy data, not recurring/unfinished.
+    val completionPolicy: String? = null,
+    // Server-confirmed baseline only; pending intents are projected separately, never stored here.
+    val oneTimeConfirmedVersion: Int? = null,
+    val oneTimeConfirmedHeadEventUuid: String? = null,
+    val oneTimeConfirmedCompletionEventUuid: String? = null
 )
