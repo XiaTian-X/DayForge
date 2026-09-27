@@ -10,6 +10,14 @@
 复用 activity、check_in/revert、账户、目标归属、指标关联与同步链路，不建立平行任务表系统。
 Android 明确持久化 `completion_policy`，不再由图标、目标次数或失败模式猜测。
 
+Android Room v3 为接入预备增量列，当前 v4 业务入口仍不使用：`habits.completionPolicy` 为 null
+表示未初始化，不能据此判定普通习惯或未完成事项。`oneTimeConfirmedVersion/HeadEventUuid/
+CompletionEventUuid` 仅保存已确认基准；本地未确认链从独立 outbox 与事实推导，不写入这些字段
+冒充已确认结果。`completions.oneTimeAction/ExpectedVersion/ExpectedHeadEventUuid/RevertsEventUuid`
+保存不可变意图，其事件身份仍为现有 uuid，不复制另一份事件状态。旧事实的这些列保持 null。
+迁移不更新旧行、不改 v4 触发器或冻结请求；新字段完整校验、CAS、同步确认和全部业务消费者
+接线之前不得启用。这是存储准备，不表示旧页面或旧 mapper 已能安全处理新事项。
+
 - `recurring`：现有三类习惯及正倒模式，保持原有计划/统计规则。
 - `one_and_done`：第一版仅 `tracking_mode=check`、`recurrence_rule.type=once`、
   `target_value=1`、非倒数、宽松失败策略；没有每日达标次数、连续天数或长期达标弹窗。

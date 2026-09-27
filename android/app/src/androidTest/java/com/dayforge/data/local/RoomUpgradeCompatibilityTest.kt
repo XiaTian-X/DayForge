@@ -67,12 +67,19 @@ class RoomUpgradeCompatibilityTest {
         }
     }
 
-    private fun snapshot(db: SupportSQLiteDatabase) = (tables + "room_master_table").associateWith {
-        rows(db, "SELECT * FROM `$it` ORDER BY rowid")
+    private fun snapshot(db: SupportSQLiteDatabase) = tables.associateWith { table ->
+        // Compare every original column, including frozen requests, across additive migrations.
+        val columns = schema.getValue("entities").jsonArray.first {
+            it.jsonObject.getValue("tableName").jsonPrimitive.content == table
+        }.jsonObject.getValue("fields").jsonArray.joinToString(",") {
+            "`${it.jsonObject.getValue("columnName").jsonPrimitive.content}`"
+        }
+        rows(db, "SELECT $columns FROM `$table` ORDER BY rowid")
     }
 
     private fun structure(db: SupportSQLiteDatabase) = rows(db,
-        "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name")
+        "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' " +
+            "AND NOT (type = 'table' AND name IN ('habits', 'completions')) ORDER BY type, name")
 
     private fun insert(db: SupportSQLiteDatabase, table: String, overrides: Map<String, Any?>) {
         val entity = schema.getValue("entities").jsonArray.first {
@@ -162,9 +169,19 @@ class RoomUpgradeCompatibilityTest {
         repeat(2) {
             val db = open()
             val sql = db.openHelper.writableDatabase
-            assertEquals(2, sql.version)
+            assertEquals(3, sql.version)
             assertEquals(before, snapshot(sql))
             assertEquals(ddl, structure(sql))
+            assertEquals(listOf(listOf(null, null, null, null), listOf(null, null, null, null)),
+                rows(sql, "SELECT completionPolicy, oneTimeConfirmedVersion, oneTimeConfirmedHeadEventUuid, " +
+                    "oneTimeConfirmedCompletionEventUuid FROM habits ORDER BY id"))
+            assertEquals(listOf(listOf(null, null, null, null)), rows(sql,
+                "SELECT oneTimeAction, oneTimeExpectedVersion, oneTimeExpectedHeadEventUuid, oneTimeRevertsEventUuid FROM completions"))
+            val currentSchema = InstrumentationRegistry.getInstrumentation().context.assets
+                .open("com.dayforge.data.local.HabitDatabase/3.json").bufferedReader().use { it.readText() }
+            assertEquals(listOf(listOf(Json.parseToJsonElement(currentSchema).jsonObject.getValue("database")
+                .jsonObject.getValue("identityHash").jsonPrimitive.content)),
+                rows(sql, "SELECT identity_hash FROM room_master_table WHERE id = 42"))
             assertEquals(listOf(listOf("ok")), rows(sql, "PRAGMA integrity_check"))
             assertTrue(rows(sql, "PRAGMA foreign_key_check").isEmpty())
             val completion = db.completionDao().getCompletionByUuid("completion")!!
