@@ -17,7 +17,9 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 /** Process-owned observation, shared by settings, endpoint resolution and auto sync. */
 @Singleton
-class NetworkMonitor @Inject constructor(private val connectivity: ConnectivityManager) : AutoCloseable {
+class NetworkMonitor internal constructor(private val connectivity: NetworkObservationSource) : AutoCloseable {
+    @Inject constructor(connectivity: ConnectivityManager) : this(AndroidNetworkObservationSource(connectivity))
+
     data class Path(val network: Network, val local: Boolean, val blocked: Boolean)
 
     data class Snapshot(
