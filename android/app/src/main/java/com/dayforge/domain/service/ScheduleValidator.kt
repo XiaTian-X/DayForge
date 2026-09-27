@@ -17,6 +17,7 @@ object ScheduleValidator {
      */
     fun isCheckInAllowedToday(schedule: HabitSchedule, createdAt: Long): Boolean {
         return when (schedule) {
+            is HabitSchedule.Once -> true // Completion is global state, not a daily eligibility window.
             is HabitSchedule.Daily -> true // Daily habits allow check-in every day
             is HabitSchedule.Weekly -> isWeeklyCheckInDay(schedule, createdAt)
             is HabitSchedule.Monthly -> isMonthlyCheckInDay(schedule)
@@ -89,6 +90,7 @@ object ScheduleValidator {
         }
 
         return when (schedule) {
+            is HabitSchedule.Once -> today
             is HabitSchedule.Daily -> today.plusDays(1)
             is HabitSchedule.Weekly -> {
                 if (schedule.daysOfWeek.isEmpty()) {
@@ -149,6 +151,7 @@ object ScheduleValidator {
      */
     fun isCheckInAllowedOnDate(schedule: HabitSchedule, createdAt: Long, date: LocalDate): Boolean {
         return when (schedule) {
+            is HabitSchedule.Once -> false // No recurring due days, missed-day failures or success-rate denominator.
             is HabitSchedule.Daily -> true
             is HabitSchedule.Weekly -> {
                 if (schedule.daysOfWeek.isEmpty()) {

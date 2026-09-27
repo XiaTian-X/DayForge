@@ -56,7 +56,20 @@ class CompletionFollowUpMigrationTest {
         buildList { while (cursor.moveToNext()) add(List(cursor.columnCount) { if (cursor.isNull(it)) null else cursor.getString(it) }) }
     }
 
-    private fun snapshot(db: SupportSQLiteDatabase) = tables.associateWith { rows(db, "SELECT * FROM `$it` ORDER BY rowid") }
+    private fun snapshot(db: SupportSQLiteDatabase) = tables.associateWith { table ->
+        val columns = schema.getValue("entities").jsonArray.first {
+            it.jsonObject.getValue("tableName").jsonPrimitive.content == table
+        }.jsonObject.getValue("fields").jsonArray.joinToString(",") {
+            "`${it.jsonObject.getValue("columnName").jsonPrimitive.content}`"
+        }
+        rows(db, "SELECT $columns FROM `$table` ORDER BY rowid")
+    }
+
+    private fun oldStructure(db: SupportSQLiteDatabase) = rows(db,
+        "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' " +
+            "AND tbl_name NOT IN ('local_fact_submissions','completion_metric_prompts','one_time_transmissions') " +
+            "AND NOT (type='table' AND name IN ('habits','metrics')) " +
+            "AND name NOT IN ('sync_habits_update','sync_metrics_update') ORDER BY type,name")
 
     private fun insert(db: SupportSQLiteDatabase, table: String, overrides: Map<String, Any>) {
         val entity = schema.getValue("entities").jsonArray.first { it.jsonObject.getValue("tableName").jsonPrimitive.content == table }.jsonObject
@@ -110,14 +123,13 @@ class CompletionFollowUpMigrationTest {
     @Test fun versionThreeRowsAndFrozenOperationsRemainUnchangedWithoutInventingPrompts() = runBlocking {
         var before = emptyMap<String, List<List<String?>>>()
         var ddl = emptyList<List<String?>>()
-        seed { before = snapshot(it); ddl = rows(it, "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name") }
+        seed { before = snapshot(it); ddl = oldStructure(it) }
         repeat(2) {
             val db = open()
             val sql = db.openHelper.writableDatabase
-            assertEquals(5, sql.version)
+            assertEquals(6, sql.version)
             assertEquals(before, snapshot(sql))
-            assertEquals(ddl, rows(sql, "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' " +
-                "AND tbl_name NOT IN ('local_fact_submissions','completion_metric_prompts','one_time_transmissions') ORDER BY type,name"))
+            assertEquals(ddl, oldStructure(sql))
             assertTrue(db.completionFollowUpDao().pendingPrompts().isEmpty())
             assertNull(db.completionFollowUpDao().submission("operation"))
             assertEquals(listOf(listOf("ok")), rows(sql, "PRAGMA integrity_check"))
@@ -142,7 +154,7 @@ class CompletionFollowUpMigrationTest {
             }
             raw.execSQL("DROP TABLE completion_metric_prompts") // Only this test's injected collision.
         }
-        assertEquals(5, open().openHelper.writableDatabase.version)
+        assertEquals(6, open().openHelper.writableDatabase.version)
     }
 
     @Test fun receiptUniquenessAndAccountClearIncludeNewTables() = runBlocking {

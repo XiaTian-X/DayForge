@@ -42,5 +42,7 @@ data class HabitEntity(
     // Server-confirmed baseline only; pending intents are projected separately, never stored here.
     val oneTimeConfirmedVersion: Int? = null,
     val oneTimeConfirmedHeadEventUuid: String? = null,
-    val oneTimeConfirmedCompletionEventUuid: String? = null
+    val oneTimeConfirmedCompletionEventUuid: String? = null,
+    // Null is an uninitialized v4 row, never an inferred role or a missing-asset fallback.
+    val appearance: com.dayforge.domain.model.ObjectAppearance? = null
 )

@@ -67,7 +67,7 @@ class OneTimeHistoryStoreTest {
 
     private suspend fun parent(): HabitEntity = db.withTransaction {
         val row = HabitEntity(name = uuid(), uuid = uuid(), habitType = HabitType.CHECK_IN, iconResId = 0,
-            colorHex = "#000000", schedule = HabitSchedule.Daily, failMode = FailMode.LOOSE,
+            colorHex = "#000000", schedule = HabitSchedule.Once(), failMode = FailMode.LOOSE,
             completionPolicy = "one_and_done", oneTimeConfirmedVersion = 0)
         db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
         val id = db.habitDao().insert(row)

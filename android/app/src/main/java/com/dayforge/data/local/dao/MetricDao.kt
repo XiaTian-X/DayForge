@@ -11,6 +11,9 @@ import kotlinx.coroutines.flow.Flow
  */
 @Dao
 interface MetricDao {
+    @Query("SELECT EXISTS(SELECT 1 FROM metrics WHERE appearance IS NOT NULL)")
+    suspend fun hasProtocolNextState(): Boolean
+
     /**
      * Get all active metrics, ordered by creation date (newest first).
      * Used for main screen display.

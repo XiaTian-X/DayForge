@@ -29,6 +29,10 @@ object SyncV2Mapper {
         Instant.ofEpochMilli(epochMillis).atZone(zone).toLocalDate().format(DateTimeFormatter.ISO_DATE)
 
     fun planNode(habit: HabitEntity): JsonObject = buildJsonObject {
+        if (habit.appearance != null || habit.completionPolicy != null || habit.schedule is HabitSchedule.Once ||
+            habit.oneTimeConfirmedVersion != null || habit.oneTimeConfirmedHeadEventUuid != null ||
+            habit.oneTimeConfirmedCompletionEventUuid != null)
+            throw ProtocolNextDataRequiresUpgradeException()
         val isGoal = habit.habitType == HabitType.GOAL
         val isOneTimeTask = habit.habitType == HabitType.CHECK_IN &&
             habit.targetCycles == 1 && habit.failMode == FailMode.LOOSE
@@ -104,6 +108,7 @@ object SyncV2Mapper {
     private fun recurrenceRule(habit: HabitEntity): JsonObject = buildJsonObject {
         put("schema_version", 1)
         when (val schedule = habit.schedule) {
+            is HabitSchedule.Once -> throw ProtocolNextDataRequiresUpgradeException()
             HabitSchedule.Daily -> {
                 put("type", "daily")
                 put("interval", 1)
@@ -151,6 +156,7 @@ object SyncV2Mapper {
     }
 
     fun metric(metric: MetricEntity): JsonObject = buildJsonObject {
+        if (metric.appearance != null) throw ProtocolNextDataRequiresUpgradeException()
         put("name", metric.name)
         put("description", metric.description)
         put("unit", metric.unit)

@@ -40,6 +40,7 @@ internal object ConfigImportValidator {
                 require(parent.type == HabitType.GOAL.name && parent.parentHabitUuid == null) { "Parent must be a top-level goal" }
             }
             when (val schedule = habit.schedule) {
+                is HabitSchedule.Once -> error("Once plans require the new configuration format")
                 HabitSchedule.Daily -> Unit
                 is HabitSchedule.Weekly -> require(schedule.daysOfWeek.all { it in 1..7 }) { "Invalid weekday" }
                 is HabitSchedule.Monthly -> require(schedule.dayOfMonth in 1..31) { "Invalid monthly day" }

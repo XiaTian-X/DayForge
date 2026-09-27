@@ -148,7 +148,7 @@ class OneTimePreparationMigrationTest {
         val db = open()
         assertNull(db.habitDao().getHabitById(1)!!.completionPolicy)
         assertNull(db.completionDao().getCompletionByUuid(eventUuid)!!.oneTimeAction)
-        assertEquals(5, db.openHelper.writableDatabase.version)
+        assertEquals(6, db.openHelper.writableDatabase.version)
         assertEquals(1, db.syncOutboxDao().count())
         assertEquals("{\"frozen\":true}", db.syncOutboxDao().getAll().single().payloadJson)
     }
@@ -166,14 +166,17 @@ class OneTimePreparationMigrationTest {
         }
     }
 
-    @Test fun newColumnsRoundTripAndRollbackWithoutChangingV4TriggerSemantics() = runBlocking {
+    @Test fun policyEditQueuesOnceWhileConfirmedProjectionAndRollbackDoNotQueueStructure() = runBlocking {
         seedV2()
         val db = open()
         val original = db.habitDao().getHabitById(1)!!
-        val initialized = original.copy(completionPolicy = "one_and_done", oneTimeConfirmedVersion = 0)
+        val initialized = original.copy(completionPolicy = "one_and_done", oneTimeConfirmedVersion = 0,
+            schedule = HabitSchedule.Once())
         db.habitDao().update(initialized)
-        // These are preparatory columns. They must not send an incomplete v5 edit through v4.
-        assertEquals(1, db.syncOutboxDao().count())
+        // Structure must be queued atomically; the separate v4 barrier prevents premature sending.
+        assertEquals(2, db.syncOutboxDao().count())
+        assertEquals("habit", db.syncOutboxDao().getAll().last().recordType)
+        assertEquals(habitUuid, db.syncOutboxDao().getAll().last().entityUuid)
         val complete = CompletionEntity(habitId = 1, habitUuid = habitUuid, date = 1790438399000L,
             actualCompletedAt = 1790438399000L, recordedTimezone = "Asia/Shanghai",
             uuid = UUID.randomUUID().toString(), oneTimeAction = "complete", oneTimeExpectedVersion = 0)
@@ -183,14 +186,14 @@ class OneTimePreparationMigrationTest {
                 db.completionDao().insertForSync(complete)
                 db.habitDao().update(initialized.copy(oneTimeConfirmedVersion = 1,
                     oneTimeConfirmedHeadEventUuid = complete.uuid, oneTimeConfirmedCompletionEventUuid = complete.uuid))
-                assertEquals(2, db.syncOutboxDao().count())
+                assertEquals(3, db.syncOutboxDao().count())
                 throw injected
             }
         }.exceptionOrNull()
         assertSame(injected, failure)
         assertNull(db.completionDao().getCompletionByUuid(complete.uuid))
         assertEquals(initialized, db.habitDao().getHabitById(1))
-        assertEquals(1, db.syncOutboxDao().count())
+        assertEquals(2, db.syncOutboxDao().count())
         val undo = complete.copy(uuid = UUID.randomUUID().toString(), date = 1790524801000L,
             actualCompletedAt = 1790524801000L, recordedLocalDate = "2026-09-28", value = 0,
             oneTimeAction = "undo", oneTimeExpectedVersion = 1, oneTimeExpectedHeadEventUuid = complete.uuid,
@@ -204,14 +207,14 @@ class OneTimePreparationMigrationTest {
         val facts = reopened.completionDao().getAllCompletionsOnce().associateBy { it.uuid }
         assertEquals(complete.copy(id = facts.getValue(complete.uuid).id), facts.getValue(complete.uuid))
         assertEquals(undo.copy(id = facts.getValue(undo.uuid).id), facts.getValue(undo.uuid))
-        assertEquals(3, reopened.syncOutboxDao().count())
+        assertEquals(4, reopened.syncOutboxDao().count())
         assertEquals("{\"frozen\":true}", reopened.syncOutboxDao().getAll().first().payloadJson)
     }
 
     @Test fun freshCreationAndAccountClearIncludeAllPreparationColumns() = runBlocking {
         val db = open()
         val habit = HabitEntity(name = "Fresh", habitType = HabitType.CHECK_IN, iconResId = 0,
-            colorHex = "#000000", schedule = HabitSchedule.Daily, completionPolicy = "one_and_done",
+            colorHex = "#000000", schedule = HabitSchedule.Once(), completionPolicy = "one_and_done",
             oneTimeConfirmedVersion = 0)
         val id = db.habitDao().insert(habit)
         db.completionDao().insertForSync(CompletionEntity(habitId = id, habitUuid = habit.uuid,
