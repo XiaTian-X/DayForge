@@ -495,6 +495,12 @@ PNG 采样的奇数/极细尺寸及像素存储上限、SVG 显示分辨率与�
 共享不可变位图必须到达真实 Compose ImageBitmap 像素和 Glance RemoteViews 绘制结果，
 不启动 MainActivity、不回收已发布像素；这不是厂商桌面、账户缓存或全页面接线验收。
 
+`ResolvedThemeTest` 从共享原始主题 JSON 和独立不同角色值核对 36 个实际 Compose 颜色、
+Glance 26 个 Material 角色及明确的 widgetBackground、全部状态/图表值、明暗配置与显式模式。
+它不启动 MainActivity，覆盖输入 Map 后变、不可变快照、非法字段/颜色和不执行未知生成器。
+对比度检查黑白/原色的独立数值、4.5/3 临界灰色、前景/背景 alpha、实际底板及所有 256 个灰阶。
+这不是主题导入持久性、所有页面视觉或厂商桌面验收；新适配器尚未替换旧主题消费者。
+
 `LocalIconFilesTest` 在隔离 testbed 私有临时目录执行真实 PNG/SVG 写入、重开与读取，验证
 短写/零进展/部分写失败、同句柄回读损坏、文件与目录 fsync/rename/清理失败、发布后失败重试、
 已有损坏保留、路径链接/目录/FIFO 拒绝、操作身份及精确清理、输入冻结和文件描述符释放。
