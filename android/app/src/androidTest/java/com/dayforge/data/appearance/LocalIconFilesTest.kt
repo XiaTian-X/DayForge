@@ -269,4 +269,17 @@ class LocalIconFilesTest {
         }
         assertEquals(before, opened())
     }
+
+    @Test fun directoryAndFileDescriptorsAreOpenedWithAtomicCloseOnExec() {
+        if (android.os.Build.VERSION.SDK_INT >= 27) assertEquals(OsConstants.O_CLOEXEC, ICON_OPEN_CLOEXEC)
+        var sawFile = false; var sawDirectory = false
+        LocalIconFiles(root, object : IconFileIo() {
+            override fun sync(fd: FileDescriptor) {
+                assertEquals(OsConstants.FD_CLOEXEC, Os.fcntlInt(fd, OsConstants.F_GETFD, 0) and OsConstants.FD_CLOEXEC)
+                if (OsConstants.S_ISDIR(Os.fstat(fd).st_mode)) sawDirectory = true else sawFile = true
+                super.sync(fd)
+            }
+        }).use { it.publish(op, svg, blob(svg)) }
+        assertTrue(sawFile); assertTrue(sawDirectory)
+    }
 }

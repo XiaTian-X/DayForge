@@ -11,6 +11,11 @@ import java.io.FileDescriptor
 import java.io.IOException
 import java.io.InputStream
 
+// Android's Linux ABI defines O_CLOEXEC as octal 02000000, including API 26; the Java
+// OsConstants field is only public from API 27. Keep open atomic (not open + fcntl).
+// https://android.googlesource.com/platform/bionic/+/android-8.0.0_r1/libc/kernel/uapi/asm-generic/fcntl.h
+internal const val ICON_OPEN_CLOEXEC = 0x80000
+
 /** Fault-injectable syscall boundary; production always uses the actual Android filesystem. */
 internal open class IconFileIo {
     open fun write(fd: FileDescriptor, bytes: ByteArray, offset: Int, length: Int): Int =
@@ -38,7 +43,7 @@ internal class LocalIconFiles(root: File, private val io: IconFileIo = IconFileI
         this.root = root.canonicalFile
         require(this.root.parentFile != null)
         val fd = Os.open(this.root.path, OsConstants.O_RDONLY or OsConstants.O_NONBLOCK or
-            OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC, 0)
+            OsConstants.O_NOFOLLOW or ICON_OPEN_CLOEXEC, 0)
         try {
             require(OsConstants.S_ISDIR(Os.fstat(fd).st_mode))
             directory = fd
@@ -132,7 +137,7 @@ internal class LocalIconFiles(root: File, private val io: IconFileIo = IconFileI
 
     private fun descriptor(path: String, flags: Int): Descriptor {
         // NONBLOCK ensures a pre-existing FIFO cannot hang before fstat rejects it.
-        val fd = Os.open(path, flags or OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC or OsConstants.O_NONBLOCK, 384)
+        val fd = Os.open(path, flags or OsConstants.O_NOFOLLOW or ICON_OPEN_CLOEXEC or OsConstants.O_NONBLOCK, 384)
         try {
             require(OsConstants.S_ISREG(Os.fstat(fd).st_mode))
             return Descriptor(fd)

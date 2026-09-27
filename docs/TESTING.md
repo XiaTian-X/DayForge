@@ -493,6 +493,8 @@ Flow 允许合并连续写入的中间通知，但取消订阅/关闭/重开后�
 `LocalIconFilesTest` 在隔离 testbed 私有临时目录执行真实 PNG/SVG 写入、重开与读取，验证
 短写/零进展/部分写失败、同句柄回读损坏、文件与目录 fsync/rename/清理失败、发布后失败重试、
 已有损坏保留、路径链接/目录/FIFO 拒绝、操作身份及精确清理、输入冻结和文件描述符释放。
+API 26 没有公开 Java O_CLOEXEC 常量，生产使用已核对的 Android Linux ABI 标志进行原子打开；
+真机检查实际文件/目录 FD_CLOEXEC，并在 API 27+ 比较公开常量。API 26 实机仍未验收，不以新版本真机冒充。
 不把 syscall 故障注入当作断电实验，也不将文件原语等同于账户授权、Room 安装提交或启动恢复。
 
 `IconPackArchiveTest` 通过真实 PNG 解码/SVG 绘制验证只读图标包输入，正常包使用平台 ZIP writer，
