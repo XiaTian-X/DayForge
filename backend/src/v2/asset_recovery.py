@@ -1,14 +1,16 @@
 """Check the complete immutable account catalog in the caller's read snapshot.
 
-This metadata-only stage cannot back up installed files. A ready blob therefore
-fails closed until verified byte backup/restore is implemented, never silently
-producing a database-only backup that claims to include all account resources.
+Ready references require an explicit byte verifier after the complete metadata
+graph passes validation. Metadata-only callers still fail closed on ready rows.
 """
 
 from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, TypeVar
 
 from pydantic import ValidationError
+from src.appearance.profiles import IMAGE_PROFILES
 
 from src.v2.appearance import IconAsset, IconBlob, IconPack
 from src.v2.asset_metadata import canonical_metadata
@@ -34,6 +36,42 @@ QUOTA_FIELDS = (
 
 class AssetRecoveryError(ValueError):
     """A stored resource graph cannot be safely restored or exported."""
+
+
+@dataclass(frozen=True)
+class ReadyBlob:
+    owner_user_id: int
+    blob: IconBlob
+    profile: str
+
+
+ReadyVerifier = Callable[[tuple[ReadyBlob, ...]], None]
+
+
+def _ready(row: dict[str, Any], owner: int, blob: IconBlob) -> ReadyBlob:
+    value = row["ready_at"]
+    try:
+        if type(value) is str and (
+            len(value) < 19
+            or value[4] != "-"
+            or value[7] != "-"
+            or value[10] not in ("T", " ")
+            or value[13] != ":"
+            or value[16] != ":"
+        ):
+            raise ValueError
+        stamp = datetime.fromisoformat(value) if type(value) is str else value
+        if not isinstance(stamp, datetime) or stamp.utcoffset() not in (
+            None,
+            timedelta(0),
+        ):
+            raise ValueError
+    except ValueError as error:
+        raise AssetRecoveryError("invalid appearance ready timestamp") from error
+    profile = row.get("validation_profile")
+    if profile != IMAGE_PROFILES[blob.media_type]:
+        raise AssetRecoveryError("unknown or mismatched appearance profile")
+    return ReadyBlob(owner, blob, profile)
 
 
 def _integer(value: Any, *, minimum: int = 0) -> int:
@@ -62,7 +100,10 @@ def _metadata(row: dict[str, Any], model: type[MetadataValue]) -> MetadataValue:
     return value
 
 
-def validate_asset_rows(rows: dict[str, list[dict[str, Any]]]) -> None:
+def validate_asset_rows(
+    rows: dict[str, list[dict[str, Any]]], *, verify_ready: ReadyVerifier | None = None
+) -> None:
+    ready: list[ReadyBlob] = []
     accounts: dict[int, dict[str, Any]] = {}
     for row in rows["appearance_accounts"]:
         owner = _integer(row["user_id"], minimum=1)
@@ -83,8 +124,12 @@ def validate_asset_rows(rows: dict[str, list[dict[str, Any]]]) -> None:
         if identity in blobs or (owner, blob.sha256) in digests:
             raise AssetRecoveryError("duplicate account blob")
         if row["ready_at"] is not None:
-            raise AssetRecoveryError("appearance byte backup is not implemented")
-        if row.get("validation_profile") is not None:
+            if verify_ready is None:
+                raise AssetRecoveryError(
+                    "appearance bytes require a complete byte backup"
+                )
+            ready.append(_ready(row, owner, blob))
+        elif row.get("validation_profile") is not None:
             raise AssetRecoveryError(
                 "pending appearance blob cannot have a validation profile"
             )
@@ -184,12 +229,19 @@ def validate_asset_rows(rows: dict[str, list[dict[str, Any]]]) -> None:
         ):
             raise AssetRecoveryError("inconsistent appearance quota reservation")
         # Lowered limits may legitimately be below existing immutable resources.
+    if ready and verify_ready is not None:
+        verify_ready(tuple(ready))
 
 
-def read_asset_metadata(read_rows: Callable[[str], list[dict[str, Any]]]) -> None:
+def read_asset_metadata(
+    read_rows: Callable[[str], list[dict[str, Any]]],
+    *,
+    verify_ready: ReadyVerifier | None = None,
+) -> None:
     try:
         validate_asset_rows(
-            {name: read_rows(f"SELECT * FROM {name}") for name in TABLES}
+            {name: read_rows(f"SELECT * FROM {name}") for name in TABLES},
+            verify_ready=verify_ready,
         )
     except ValidationError as error:
         raise AssetRecoveryError("invalid stored appearance contract") from error

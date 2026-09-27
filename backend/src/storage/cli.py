@@ -27,6 +27,7 @@ def _parser() -> argparse.ArgumentParser:
     backup.add_argument("--database", type=Path, required=True)
     backup.add_argument("--backup-dir", type=Path, required=True)
     backup.add_argument("--kind", choices=("scheduled", "manual"), default="scheduled")
+    backup.add_argument("--asset-root", type=Path)
 
     restore = commands.add_parser(
         "sqlite-restore", help="restore a verified SQLite backup"
@@ -34,9 +35,11 @@ def _parser() -> argparse.ArgumentParser:
     restore.add_argument("--database", type=Path, required=True)
     restore.add_argument("--backup-file", type=Path, required=True)
     restore.add_argument("--cancel-active-timers", action="store_true")
+    restore.add_argument("--asset-root", type=Path)
 
     verify = commands.add_parser("sqlite-verify", help="verify a live SQLite database")
     verify.add_argument("--database", type=Path, required=True)
+    verify.add_argument("--asset-root", type=Path)
 
     snapshots = commands.add_parser(
         "snapshot-backfill",
@@ -71,6 +74,7 @@ def main() -> int:
                 args.database,
                 args.backup_dir,
                 kind=args.kind,
+                asset_root=args.asset_root,
             )
             print(f"backup={database}")
             print(f"manifest={manifest}")
@@ -80,11 +84,12 @@ def main() -> int:
                 args.database,
                 cancel_active_timers=args.cancel_active_timers,
                 expected_alembic_head=_current_alembic_head(),
+                asset_root=args.asset_root,
             )
             print(f"pre_restore_backup={safety or ''}")
             print(f"sync_epoch={epoch}")
         elif args.command == "sqlite-verify":
-            inspection = inspect_database(args.database)
+            inspection = inspect_database(args.database, asset_root=args.asset_root)
             if not inspection.valid:
                 raise StorageValidationError(str(inspection))
             print(inspection)
