@@ -259,9 +259,9 @@ class LoginViewModel @Inject constructor(
     }
 
     private suspend fun saveCredentials(response: TokenResponse) {
-        // Credentials are written last so startup/background sync can never observe
-        // a new account together with a previous account's cache.
-        tokenManager.saveTokens(
+        // Activate only after cache cleanup/consent. Bind the owner atomically with
+        // credentials: skipping initial sync must not leave new offline data unowned.
+        tokenManager.saveLoginSession(
             accessToken = response.accessToken,
             refreshToken = response.refreshToken,
             email = response.username,

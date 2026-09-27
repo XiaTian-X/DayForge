@@ -57,6 +57,43 @@ class TokenManagerTest {
     }
 
     @Test
+    fun failed_login_session_write_rolls_back_owner_credentials_and_replica_metadata() = runBlocking {
+        manager.prepareSyncAccount("account-a")
+        manager.saveServerIdentity("server-a", "epoch-a")
+        manager.saveDeviceRegistration("device-a", setOf("facts.write"), false, 3)
+        manager.saveSyncCursor(42)
+        manager.saveTokens("access-a", "refresh-a", "member-a", "account-a", false)
+        val before = store.data.first()
+        val failingManager = TokenManager(store, object : TokenCipher {
+            override fun encrypt(value: String): String {
+                check(value != "refresh-b") { "cipher unavailable" }
+                return "encrypted:$value"
+            }
+            override fun decrypt(value: String) = value.removePrefix("encrypted:")
+        })
+
+        try {
+            failingManager.saveLoginSession("access-b", "refresh-b", "member-b", "account-b", true)
+            fail("Partial login must not commit")
+        } catch (expected: IllegalStateException) {
+            assertEquals("cipher unavailable", expected.message)
+        }
+        assertEquals(before, store.data.first())
+
+        manager.saveLoginSession("access-b", "refresh-b", "member-b", "account-b", true)
+        assertEquals("account-b", manager.syncAccountId.first())
+        assertEquals("account-b", manager.userId.first())
+        assertEquals("access-b", manager.accessToken.first())
+        assertTrue(manager.isAdmin.first())
+        assertNull(manager.syncDeviceId.first())
+        assertNull(manager.serverInstanceId.first())
+        assertNull(manager.syncEpoch.first())
+        assertEquals(0L, manager.syncCursor.first())
+        assertFalse(manager.isSyncBootstrapped.first())
+        assertTrue(manager.deviceCapabilities.first().isEmpty())
+    }
+
+    @Test
     fun legacy_plaintext_tokens_migrate_in_place() = runBlocking {
         store.edit {
             it[stringPreferencesKey("access_token")] = "legacy-access"

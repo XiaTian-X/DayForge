@@ -12,6 +12,7 @@ import com.dayforge.data.api.dto.RefreshRequest
 import com.dayforge.data.api.dto.TokenResponse
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
+import com.dayforge.data.local.TokenCipher
 import com.dayforge.data.repository.HabitRepository
 import com.dayforge.domain.service.AccountSessionCoordinator
 import com.dayforge.domain.service.SyncManager
@@ -55,11 +56,13 @@ class LoginViewModelTest {
     private lateinit var viewModel: LoginViewModel
     private lateinit var endpointResolver: EndpointResolver
     private var healthStatus = "ok"
+    private var rejectCredentialWrite = false
     private val dispatcher = UnconfinedTestDispatcher()
 
     private val response = TokenResponse("access", "refresh", userId = "new-account", username = "member", isAdmin = true)
+    private var loginResponse = response
     private val authApi = object : AuthApi {
-        override suspend fun login(request: LoginRequest) = response
+        override suspend fun login(request: LoginRequest) = loginResponse
         override suspend fun refreshToken(request: RefreshRequest) = response
         override suspend fun health() = HealthResponse(healthStatus)
     }
@@ -72,7 +75,13 @@ class LoginViewModelTest {
         file = File(context.cacheDir, "login_vm_v2_${UUID.randomUUID()}.preferences_pb")
         storeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val store = PreferenceDataStoreFactory.create(scope = storeScope, produceFile = { file })
-        tokenManager = TokenManager(store)
+        tokenManager = TokenManager(store, object : TokenCipher {
+            override fun encrypt(value: String): String {
+                check(!rejectCredentialWrite) { "credential storage unavailable" }
+                return value
+            }
+            override fun decrypt(value: String) = value
+        })
         preferences = PreferencesManager(store)
         repository = mockk(relaxed = true)
         syncManager = mockk(relaxed = true)
@@ -110,6 +119,7 @@ class LoginViewModelTest {
         awaitNotLoading()
 
         assertEquals(viewModel.errorMessage.value, "new-account", tokenManager.userId.first())
+        assertEquals("new-account", tokenManager.syncAccountId.first())
         assertTrue(tokenManager.isAdmin.first())
         assertTrue(viewModel.showSyncPrompt.value)
     }
@@ -128,6 +138,7 @@ class LoginViewModelTest {
 
         coVerify(exactly = 1) { repository.clearAllData(context) }
         assertEquals("new-account", tokenManager.userId.first())
+        assertEquals("new-account", tokenManager.syncAccountId.first())
         assertFalse(preferences.getNeverAskAgain(42L).first())
         assertTrue(preferences.getHabitNotificationEnabled(42L).first())
         assertTrue(preferences.pendingMetricHabits.first().isEmpty())
@@ -151,7 +162,7 @@ class LoginViewModelTest {
         awaitNotLoading()
 
         assertEquals("new-account", tokenManager.userId.first())
-        assertNull(tokenManager.syncAccountId.first())
+        assertEquals("new-account", tokenManager.syncAccountId.first())
         assertNull(viewModel.localDataPrompt.value)
         assertTrue(viewModel.showSyncPrompt.value)
         coVerify(exactly = 0) { repository.clearAllData(any()) }
@@ -180,7 +191,93 @@ class LoginViewModelTest {
 
         coVerify(exactly = 1) { repository.clearAllData(context) }
         assertEquals("new-account", tokenManager.userId.first())
+        assertEquals("new-account", tokenManager.syncAccountId.first())
         assertTrue(viewModel.showSyncPrompt.value)
+    }
+
+    @Test
+    fun skipping_first_sync_keeps_offline_data_owned_and_blocks_cross_account_merge() = runTest(dispatcher.scheduler) {
+        viewModel.onUsernameChange("member")
+        viewModel.onPasswordChange("password123")
+        viewModel.onLoginClick()
+        awaitNotLoading()
+        val event = async(start = CoroutineStart.UNDISPATCHED) { viewModel.loginEvent.first() }
+        viewModel.onSyncSkip()
+        assertEquals(LoginViewModel.LoginEvent.Success, event.await())
+        assertEquals("new-account", tokenManager.syncAccountId.first())
+        assertNull(tokenManager.syncDeviceId.first())
+        assertNull(tokenManager.syncEpoch.first())
+        assertFalse(tokenManager.isSyncBootstrapped.first())
+        coVerify(exactly = 0) { syncManager.sync(any()) }
+
+        // Model offline edits followed by expired credentials, before any registration/pull.
+        coEvery { syncManager.hasLocalData() } returns true
+        tokenManager.clearAuthenticationTokens()
+        loginResponse = response.copy(userId = "another-account", username = "another")
+        viewModel.onLoginClick()
+        awaitNotLoading()
+        assertEquals(false, viewModel.localDataPrompt.value?.canMerge)
+        viewModel.onMergeLocalData()
+        advanceUntilIdle()
+        assertNull(tokenManager.userId.first())
+        assertEquals("new-account", tokenManager.syncAccountId.first())
+        // Only the initial empty/unowned cache was cleared, not the subsequent offline data.
+        coVerify(exactly = 1) { repository.clearAllData(context) }
+    }
+
+    @Test
+    fun same_account_relogin_preserves_replica_progress_and_permissions() = runTest(dispatcher.scheduler) {
+        tokenManager.prepareSyncAccount("new-account")
+        tokenManager.saveServerIdentity("server", "epoch")
+        tokenManager.saveDeviceRegistration("device", setOf("facts.write"), false, 7)
+        tokenManager.saveSyncCursor(42)
+        tokenManager.saveTokens("old-access", "old-refresh", "member", "new-account", false)
+        val oldSession = tokenManager.authenticationSnapshot()!!.session
+        coEvery { syncManager.hasLocalData() } returns true
+        viewModel.onUsernameChange("member")
+        viewModel.onPasswordChange("password123")
+        viewModel.onLoginClick()
+        awaitNotLoading()
+
+        assertEquals("new-account", tokenManager.syncAccountId.first())
+        assertEquals("server", tokenManager.serverInstanceId.first())
+        assertEquals("epoch", tokenManager.syncEpoch.first())
+        assertEquals("device", tokenManager.syncDeviceId.first())
+        assertEquals(42L, tokenManager.syncCursor.first())
+        assertTrue(tokenManager.isSyncBootstrapped.first())
+        assertFalse(tokenManager.canEditStructure.first())
+        assertEquals(setOf("facts.write"), tokenManager.deviceCapabilities.first())
+        assertNotEquals(oldSession, tokenManager.authenticationSnapshot()!!.session)
+        assertNull(viewModel.localDataPrompt.value)
+        assertTrue(viewModel.showSyncPrompt.value)
+        coVerify(exactly = 0) { repository.clearAllData(any()) }
+    }
+
+    @Test
+    fun failed_legacy_adoption_does_not_partially_bind_owner_and_can_be_retried() = runTest(dispatcher.scheduler) {
+        coEvery { syncManager.hasLocalData() } returns true
+        viewModel.onUsernameChange("member")
+        viewModel.onPasswordChange("password123")
+        viewModel.onLoginClick()
+        awaitNotLoading()
+        rejectCredentialWrite = true
+        viewModel.onMergeLocalData()
+        awaitNotLoading()
+
+        assertNull(tokenManager.authenticationSnapshot())
+        assertNull(tokenManager.syncAccountId.first())
+        assertEquals(true, viewModel.localDataPrompt.value?.canMerge)
+        assertEquals("credential storage unavailable", viewModel.errorMessage.value)
+        assertFalse(viewModel.showSyncPrompt.value)
+
+        rejectCredentialWrite = false
+        viewModel.onMergeLocalData()
+        awaitNotLoading()
+        assertEquals("new-account", tokenManager.syncAccountId.first())
+        assertEquals("new-account", tokenManager.userId.first())
+        assertNull(viewModel.localDataPrompt.value)
+        assertTrue(viewModel.showSyncPrompt.value)
+        coVerify(exactly = 0) { repository.clearAllData(any()) }
     }
 
     @Test

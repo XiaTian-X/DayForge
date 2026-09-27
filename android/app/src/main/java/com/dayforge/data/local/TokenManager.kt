@@ -2,6 +2,7 @@ package com.dayforge.data.local
 
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -105,8 +106,31 @@ class TokenManager @Inject constructor(
         email: String? = null,
         userId: String,
         isAdmin: Boolean
+    ) = persistTokens(accessToken, refreshToken, email, userId, isAdmin, bindLocalOwner = false)
+
+    /**
+     * Activate a login only after the caller has cleared the previous account's cache or
+     * obtained consent to adopt unowned data, under AccountSessionCoordinator.
+     * Ownership and credentials commit together even when initial sync is skipped.
+     */
+    suspend fun saveLoginSession(
+        accessToken: String,
+        refreshToken: String,
+        email: String?,
+        userId: String,
+        isAdmin: Boolean
+    ) = persistTokens(accessToken, refreshToken, email, userId, isAdmin, bindLocalOwner = true)
+
+    private suspend fun persistTokens(
+        accessToken: String,
+        refreshToken: String,
+        email: String?,
+        userId: String,
+        isAdmin: Boolean,
+        bindLocalOwner: Boolean
     ) {
         dataStore.edit { preferences ->
+            if (bindLocalOwner) prepareSyncAccount(preferences, userId)
             preferences[AUTH_SESSION_KEY] = UUID.randomUUID().toString()
             preferences[ACCESS_TOKEN_KEY] = tokenCipher.encrypt(accessToken)
             preferences[REFRESH_TOKEN_KEY] = tokenCipher.encrypt(refreshToken)
@@ -202,15 +226,19 @@ class TokenManager @Inject constructor(
     /** Reset device/cursor state when the authenticated account changes. */
     suspend fun prepareSyncAccount(accountId: String) {
         dataStore.edit { preferences ->
-            if (preferences[SYNC_ACCOUNT_ID_KEY] != accountId) {
-                preferences[SYNC_ACCOUNT_ID_KEY] = accountId
-                preferences.remove(SYNC_DEVICE_ID_KEY)
-                preferences.remove(SYNC_CURSOR_KEY)
-                preferences.remove(SYNC_BOOTSTRAPPED_KEY)
-                preferences.remove(SERVER_INSTANCE_ID_KEY)
-                preferences.remove(SYNC_EPOCH_KEY)
-                clearDeviceCapabilities(preferences)
-            }
+            prepareSyncAccount(preferences, accountId)
+        }
+    }
+
+    private fun prepareSyncAccount(preferences: MutablePreferences, accountId: String) {
+        if (preferences[SYNC_ACCOUNT_ID_KEY] != accountId) {
+            preferences[SYNC_ACCOUNT_ID_KEY] = accountId
+            preferences.remove(SYNC_DEVICE_ID_KEY)
+            preferences.remove(SYNC_CURSOR_KEY)
+            preferences.remove(SYNC_BOOTSTRAPPED_KEY)
+            preferences.remove(SERVER_INSTANCE_ID_KEY)
+            preferences.remove(SYNC_EPOCH_KEY)
+            clearDeviceCapabilities(preferences)
         }
     }
 
