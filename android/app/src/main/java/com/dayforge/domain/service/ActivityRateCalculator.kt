@@ -27,6 +27,7 @@ object ActivityRateCalculator {
      */
     fun getDeductionPerMiss(schedule: HabitSchedule): Int {
         return when (schedule) {
+            is HabitSchedule.Once -> 0
             is HabitSchedule.Daily -> 15
             is HabitSchedule.Weekly -> {
                 if (schedule.daysOfWeek.isEmpty()) 30  // 每7天
@@ -42,6 +43,7 @@ object ActivityRateCalculator {
      */
     fun getWindowSize(schedule: HabitSchedule): Int {
         return when (schedule) {
+            is HabitSchedule.Once -> 0
             is HabitSchedule.Daily -> 7
             is HabitSchedule.Weekly -> {
                 if (schedule.daysOfWeek.isEmpty()) 4  // 每7天

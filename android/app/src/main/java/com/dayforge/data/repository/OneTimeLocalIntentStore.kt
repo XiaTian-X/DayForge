@@ -172,7 +172,8 @@ internal class OneTimeLocalIntentStore(
         if (habit.completionPolicy != "one_and_done" || habit.oneTimeConfirmedVersion == null) {
             reject(OneTimeLocalException.Reason.UNINITIALIZED)
         }
-        if (habit.habitType != HabitType.CHECK_IN || habit.targetValue != 1 || habit.isCountdown ||
+        if (habit.schedule !is com.dayforge.data.model.HabitSchedule.Once ||
+            habit.habitType != HabitType.CHECK_IN || habit.targetValue != 1 || habit.isCountdown ||
             habit.failMode != FailMode.LOOSE || habit.targetCycles != null || habit.bestTime != null
         ) reject(OneTimeLocalException.Reason.INVALID_LOCAL_STATE)
         val confirmed = OneTimeState(habit.oneTimeConfirmedVersion,

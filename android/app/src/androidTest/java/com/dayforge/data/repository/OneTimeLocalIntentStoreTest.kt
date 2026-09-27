@@ -74,7 +74,7 @@ class OneTimeLocalIntentStoreTest {
     private suspend fun seed(uuid: String = UUID.randomUUID().toString()): HabitEntity = db.withTransaction {
         // A staged v5 activity: schedule/UI creation is not activated by this storage test.
         val row = HabitEntity(name = "Once $uuid", uuid = uuid, habitType = HabitType.CHECK_IN,
-            iconResId = 0, colorHex = "#000000", schedule = HabitSchedule.Daily,
+            iconResId = 0, colorHex = "#000000", schedule = HabitSchedule.Once(),
             failMode = FailMode.LOOSE, completionPolicy = "one_and_done", oneTimeConfirmedVersion = 0)
         db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
         val id = db.habitDao().insert(row)
@@ -278,7 +278,8 @@ class OneTimeLocalIntentStoreTest {
 
     @Test fun uninitializedWrongModeTombstoneAndHistoricalEventIdentityFailWithoutWriting() = runBlocking {
         for (row in listOf(habit.copy(completionPolicy = null), habit.copy(habitType = HabitType.TIMER),
-            habit.copy(habitType = HabitType.COUNTING), habit.copy(isCountdown = true))) {
+            habit.copy(habitType = HabitType.COUNTING), habit.copy(isCountdown = true),
+            habit.copy(schedule = HabitSchedule.Daily))) {
             db.habitDao().update(row)
             assertTrue(runCatching { store().read(habit.uuid) }.isFailure)
         }

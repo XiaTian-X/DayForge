@@ -636,6 +636,7 @@ class EditHabitViewModel @Inject constructor(
      */
     fun getScheduleDays(schedule: HabitSchedule): Int {
         return when (schedule) {
+            is HabitSchedule.Once -> error("Once plans have no recurring cycle length")
             is HabitSchedule.Daily -> 1
             is HabitSchedule.Weekly -> 7
             is HabitSchedule.Monthly -> 30

@@ -104,4 +104,18 @@ class ProtocolNextActivationBarrierTest : SyncPersistenceFixture() {
         assertAllLegacyWritesRefused()
         assertEquals(row, database.completionFollowUpDao().transmission(row.operationId))
     }
+
+    @Test fun appearanceOrBareOnceScheduleCannotBeDowngradedByLegacyEngine() = runBlocking {
+        val goal = insertGoal("appearance")
+        val appearance = com.dayforge.domain.model.ObjectAppearance(
+            com.dayforge.domain.model.IconReference.Role("goal.custom"), "#123456", "object")
+        database.habitDao().update(goal.copy(appearance = appearance))
+        reopen(); assertAllLegacyWritesRefused()
+        database.habitDao().update(goal.copy(schedule = com.dayforge.data.model.HabitSchedule.Once("2026-12-31")))
+        reopen(); assertAllLegacyWritesRefused()
+        database.habitDao().update(goal)
+        database.metricDao().insert(com.dayforge.data.local.entity.MetricEntity(
+            name = "appearance metric", unit = "kg", iconResId = 0, colorHex = "#000000", appearance = appearance))
+        reopen(); assertAllLegacyWritesRefused()
+    }
 }

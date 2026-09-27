@@ -54,9 +54,18 @@ class OneTimeTransmissionMigrationTest {
         buildList { while (cursor.moveToNext()) add(List(cursor.columnCount) { if (cursor.isNull(it)) null else cursor.getString(it) }) }
     }
 
-    private fun snapshot(db: SupportSQLiteDatabase) = tables.associateWith { rows(db, "SELECT * FROM `$it` ORDER BY rowid") }
+    private fun snapshot(db: SupportSQLiteDatabase) = tables.associateWith { table ->
+        val columns = schema.getValue("entities").jsonArray.first {
+            it.jsonObject.getValue("tableName").jsonPrimitive.content == table
+        }.jsonObject.getValue("fields").jsonArray.joinToString(",") {
+            "`${it.jsonObject.getValue("columnName").jsonPrimitive.content}`"
+        }
+        rows(db, "SELECT $columns FROM `$table` ORDER BY rowid")
+    }
     private fun structure(db: SupportSQLiteDatabase) = rows(db,
-        "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND tbl_name != 'one_time_transmissions' ORDER BY type,name")
+        "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND tbl_name != 'one_time_transmissions' " +
+            "AND NOT (type='table' AND name IN ('habits','metrics')) " +
+            "AND name NOT IN ('sync_habits_update','sync_metrics_update') ORDER BY type,name")
 
     private fun seed(block: (SupportSQLiteDatabase) -> Unit = {}) {
         val helper = FrameworkSQLiteOpenHelperFactory().create(SupportSQLiteOpenHelper.Configuration.builder(context)
@@ -91,7 +100,7 @@ class OneTimeTransmissionMigrationTest {
         repeat(2) {
             val db = open()
             val sql = db.openHelper.writableDatabase
-            assertEquals(5, sql.version)
+            assertEquals(6, sql.version)
             assertEquals(before, snapshot(sql))
             assertEquals(ddl, structure(sql))
             assertNull(db.completionFollowUpDao().transmission("op"))
@@ -116,7 +125,7 @@ class OneTimeTransmissionMigrationTest {
             }
             raw.execSQL("ALTER TABLE unavailable_metric_prompts RENAME TO completion_metric_prompts")
         }
-        assertEquals(5, open().openHelper.writableDatabase.version)
+        assertEquals(6, open().openHelper.writableDatabase.version)
     }
 
     @Test fun forgedVersionFourIdentityIsRejectedWithoutDeletingRows() {

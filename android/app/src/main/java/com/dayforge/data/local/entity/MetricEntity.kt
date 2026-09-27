@@ -46,5 +46,6 @@ data class MetricEntity(
     val isActive: Boolean = true,
     val uuid: String = UUID.randomUUID().toString(),
     val createdAt: Long = System.currentTimeMillis(),
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+    val appearance: com.dayforge.domain.model.ObjectAppearance? = null
 )

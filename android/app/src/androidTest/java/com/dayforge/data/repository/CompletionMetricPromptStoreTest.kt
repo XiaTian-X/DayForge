@@ -56,7 +56,7 @@ class CompletionMetricPromptStoreTest {
         db.withTransaction {
             db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
             val row = HabitEntity(name = "One-time", habitType = HabitType.CHECK_IN, iconResId = 0,
-                colorHex = "#000000", schedule = HabitSchedule.Daily, failMode = FailMode.LOOSE,
+                colorHex = "#000000", schedule = HabitSchedule.Once(), failMode = FailMode.LOOSE,
                 completionPolicy = "one_and_done", oneTimeConfirmedVersion = 0)
             habit = row.copy(id = db.habitDao().insert(row))
             metrics = (1..2).map { index ->

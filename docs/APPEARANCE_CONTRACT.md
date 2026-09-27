@@ -15,7 +15,7 @@ Android Room v3 为接入预备增量列，当前 v4 业务入口仍不使用：
 CompletionEventUuid` 仅保存已确认基准；本地未确认链从独立 outbox 与事实推导，不写入这些字段
 冒充已确认结果。`completions.oneTimeAction/ExpectedVersion/ExpectedHeadEventUuid/RevertsEventUuid`
 保存不可变意图，其事件身份仍为现有 uuid，不复制另一份事件状态。旧事实的这些列保持 null。
-迁移不更新旧行、不改 v4 触发器或冻结请求；新字段完整校验、CAS、同步确认和全部业务消费者
+v3 迁移不更新旧行、不改 v4 触发器或冻结请求；v6 的结构触发器扩展见第 2 节。新字段完整校验、CAS、同步确认和全部业务消费者
 接线之前不得启用。这是存储准备，不表示旧页面或旧 mapper 已能安全处理新事项。
 
 - `recurring`：现有三类习惯及正倒模式，保持原有计划/统计规则。
@@ -229,6 +229,19 @@ bootstrap、跨 epoch 恢复或冲突 UI；结构、普通事实、计时、游�
 仍须完成后共同启用，不能从调试入口提前创建事项并交给旧 mapper 处理。
 
 ## 2. 图标引用与包
+
+Android Room v6 在 `habits`（包括目标）与 `metrics` 上各追加一个 nullable `appearance` TEXT，
+经严格类型转换保存 `ObjectAppearance`，不保存 resource ID、路径或图片字节。旧行保持 null，
+不从 `iconResId/colorHex` 猜测新引用或对象类型；旧列暂留供当前 v4/UI 使用。JSON 中的 null、
+未知字段或非法引用不能被当作缺图而静默降级。元数据能持久化不代表该账户拥有素材或已验证其用途。
+迁移保留全部旧列与冻结请求，仅替换习惯/指标的结构更新触发器，加入外观及显式策略变更；
+一笔结构更新仍生成一个 outbox，事项确认投影变化不生成结构操作，事务失败同时回滚。
+
+`HabitSchedule.Once(dueDate)` 保存真实一次性计划及可选严格日期，不再用 Daily 代替内部事项。
+事项写入存储要求显式策略与 Once 同时成立；到期日期不变成提醒、每日失败或周期成功率分母，
+活跃度不扣分。现有旧配置和 v4 mapper/同步入口拒绝新外观或 Once，而不是丢弃字段导出/发送。
+这仍是运行接入的存储基础：新结构 wire 映射、账户素材授权、配置包与 UI/统计消费者须完成后
+共同切换，不能将 typed Room 测试视为这些路径已经上线。
 
 两种引用，不持久化 Android resource ID/ImageVector/文件绝对路径：
 

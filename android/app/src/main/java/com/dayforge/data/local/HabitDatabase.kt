@@ -57,7 +57,7 @@ import kotlinx.coroutines.withContext
         CompletionMetricPromptEntity::class,
         OneTimeTransmissionEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = true
 )
 @TypeConverters(HabitTypeConverter::class)
