@@ -1,16 +1,10 @@
 package com.dayforge.data.appearance
 
-import android.util.JsonReader
-import android.util.JsonToken
 import com.dayforge.domain.model.IconBlob
 import com.dayforge.domain.model.IconPack
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.IOException
-import java.io.StringReader
-import java.nio.ByteBuffer
-import java.nio.charset.CharacterCodingException
-import java.nio.charset.CodingErrorAction
 import java.util.Collections
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -79,50 +73,9 @@ internal fun freezeIconArchive(source: InputStream, checkpoint: () -> Unit): Byt
 }
 
 internal fun decodeIconManifest(bytes: ByteArray, checkpoint: () -> Unit): IconPack {
-    packRequire(bytes.size <= ICON_MANIFEST_LIMIT, "PACK_MANIFEST_LIMIT")
-    val text = try {
-        Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
-            .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString().removePrefix("\uFEFF")
-    } catch (_: CharacterCodingException) { throw IconPackInputException("PACK_MANIFEST_UTF8") }
     try {
-        // Kotlin serialization overwrites duplicate keys; check decoded names before constructing its tree.
-        JsonReader(StringReader(text)).use { reader ->
-            reader.isLenient = false
-            fun string(value: String) {
-                var i = 0
-                while (i < value.length) {
-                    val ch = value[i++]
-                    if (ch.isHighSurrogate()) packRequire(i < value.length && value[i++].isLowSurrogate(), "PACK_MANIFEST_UNICODE")
-                    else packRequire(!ch.isLowSurrogate(), "PACK_MANIFEST_UNICODE")
-                }
-            }
-            fun value(depth: Int) {
-                checkpoint()
-                when (reader.peek()) {
-                    JsonToken.BEGIN_OBJECT -> {
-                        packRequire(depth < 16, "PACK_MANIFEST_DEPTH")
-                        reader.beginObject()
-                        val names = hashSetOf<String>()
-                        while (reader.hasNext()) {
-                            val name = reader.nextName(); string(name)
-                            packRequire(names.add(name), "PACK_MANIFEST_DUPLICATE")
-                            value(depth + 1)
-                        }
-                        reader.endObject()
-                    }
-                    JsonToken.BEGIN_ARRAY -> {
-                        packRequire(depth < 16, "PACK_MANIFEST_DEPTH")
-                        reader.beginArray(); while (reader.hasNext()) value(depth + 1); reader.endArray()
-                    }
-                    JsonToken.STRING -> string(reader.nextString())
-                    JsonToken.NUMBER -> reader.nextString()
-                    JsonToken.BOOLEAN -> reader.nextBoolean()
-                    JsonToken.NULL -> reader.nextNull()
-                    else -> throw IconPackInputException("PACK_MANIFEST_JSON")
-                }
-            }
-            value(0)
-            packRequire(reader.peek() == JsonToken.END_DOCUMENT, "PACK_MANIFEST_JSON")
+        val text = strictAppearanceJson(bytes, ICON_MANIFEST_LIMIT, checkpoint) {
+            throw IconPackInputException("PACK_MANIFEST_$it")
         }
         return Json.decodeFromString<IconPack>(text)
     } catch (error: IconPackInputException) { throw error }
