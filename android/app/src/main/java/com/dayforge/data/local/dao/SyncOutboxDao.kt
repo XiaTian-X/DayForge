@@ -23,7 +23,7 @@ interface SyncOutboxDao {
     @Query("SELECT * FROM sync_outbox WHERE referenceUuid = :activityUuid AND recordType IN ('completion', 'one_time_completion') ORDER BY id")
     suspend fun getActivityIntents(activityUuid: String): List<SyncOutboxEntity>
 
-    @Query("SELECT EXISTS(SELECT 1 FROM sync_outbox WHERE recordType = 'one_time_completion') OR EXISTS(SELECT 1 FROM local_fact_submissions) OR EXISTS(SELECT 1 FROM completion_metric_prompts)")
+    @Query("SELECT EXISTS(SELECT 1 FROM sync_outbox WHERE recordType = 'one_time_completion') OR EXISTS(SELECT 1 FROM local_fact_submissions) OR EXISTS(SELECT 1 FROM completion_metric_prompts) OR EXISTS(SELECT 1 FROM one_time_transmissions)")
     suspend fun hasOneTimeIntents(): Boolean
 
     @Query("SELECT COUNT(*) FROM sync_outbox WHERE deadLetteredAt IS NULL")

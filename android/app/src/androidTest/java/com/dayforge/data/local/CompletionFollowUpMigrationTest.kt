@@ -114,10 +114,10 @@ class CompletionFollowUpMigrationTest {
         repeat(2) {
             val db = open()
             val sql = db.openHelper.writableDatabase
-            assertEquals(4, sql.version)
+            assertEquals(5, sql.version)
             assertEquals(before, snapshot(sql))
             assertEquals(ddl, rows(sql, "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' " +
-                "AND tbl_name NOT IN ('local_fact_submissions','completion_metric_prompts') ORDER BY type,name"))
+                "AND tbl_name NOT IN ('local_fact_submissions','completion_metric_prompts','one_time_transmissions') ORDER BY type,name"))
             assertTrue(db.completionFollowUpDao().pendingPrompts().isEmpty())
             assertNull(db.completionFollowUpDao().submission("operation"))
             assertEquals(listOf(listOf("ok")), rows(sql, "PRAGMA integrity_check"))
@@ -142,7 +142,7 @@ class CompletionFollowUpMigrationTest {
             }
             raw.execSQL("DROP TABLE completion_metric_prompts") // Only this test's injected collision.
         }
-        assertEquals(4, open().openHelper.writableDatabase.version)
+        assertEquals(5, open().openHelper.writableDatabase.version)
     }
 
     @Test fun receiptUniquenessAndAccountClearIncludeNewTables() = runBlocking {

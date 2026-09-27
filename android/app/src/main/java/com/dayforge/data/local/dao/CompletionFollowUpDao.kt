@@ -7,9 +7,19 @@ import androidx.room.Query
 import androidx.room.Update
 import com.dayforge.data.local.entity.CompletionMetricPromptEntity
 import com.dayforge.data.local.entity.LocalFactSubmissionEntity
+import com.dayforge.data.local.entity.OneTimeTransmissionEntity
 
 @Dao
 interface CompletionFollowUpDao {
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertTransmission(row: OneTimeTransmissionEntity)
+
+    @Query("SELECT * FROM one_time_transmissions WHERE operationId = :operationId")
+    suspend fun transmission(operationId: String): OneTimeTransmissionEntity?
+
+    @Query("UPDATE one_time_transmissions SET rejectionJson = :result WHERE operationId = :operationId AND rejectionJson IS NULL")
+    suspend fun recordRejection(operationId: String, result: String): Int
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertSubmission(row: LocalFactSubmissionEntity)
 

@@ -15,6 +15,7 @@ import com.dayforge.data.local.dao.TimeLogDao
 import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.CompletionMetricPromptEntity
 import com.dayforge.data.local.entity.LocalFactSubmissionEntity
+import com.dayforge.data.local.entity.OneTimeTransmissionEntity
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.HabitMetricLinkEntity
 import com.dayforge.data.local.entity.HabitTypeConverter
@@ -53,9 +54,10 @@ import kotlinx.coroutines.withContext
         TimerSegmentEntity::class,
         TimeLogDayAllocationEntity::class,
         LocalFactSubmissionEntity::class,
-        CompletionMetricPromptEntity::class
+        CompletionMetricPromptEntity::class,
+        OneTimeTransmissionEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = true
 )
 @TypeConverters(HabitTypeConverter::class)

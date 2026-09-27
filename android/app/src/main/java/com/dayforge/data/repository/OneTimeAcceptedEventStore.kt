@@ -11,6 +11,7 @@ import com.dayforge.data.local.TokenManager
 import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.SyncEntityStateEntity
 import com.dayforge.data.local.entity.SyncOutboxEntity
+import com.dayforge.data.local.entity.OneTimeTransmissionEntity
 import com.dayforge.domain.model.OneTimeProjection
 import com.dayforge.domain.model.OneTimeTransitionException
 import com.dayforge.domain.model.isContractUuid
@@ -20,11 +21,13 @@ import java.time.ZoneId
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.encodeToString
 
 internal data class OneTimeSyncContext(val session: LocalDataSession, val deviceId: String)
 internal data class PreparedOneTimeSubmission(val context: OneTimeSyncContext, val operation: SyncV2Operation)
 
-/** V5 accepted-fact persistence. Not an HTTP client and never handles rejection as success. */
+/** V5 fact/result persistence. Not an HTTP client and never handles rejection as success. */
 internal class OneTimeAcceptedEventStore(
     private val database: HabitDatabase,
     private val tokens: TokenManager,
@@ -36,6 +39,7 @@ internal class OneTimeAcceptedEventStore(
     private val facts = database.completionDao()
     private val habits = database.habitDao()
     private val receipts = database.completionFollowUpDao()
+    private val json = Json { encodeDefaults = true }
 
     suspend fun context(): OneTimeSyncContext = sessions.exclusive { access() }
 
@@ -48,6 +52,17 @@ internal class OneTimeAcceptedEventStore(
             if (row.deadLetteredAt != null) throw OneTimeLocalException(OneTimeLocalException.Reason.PENDING_REJECTED)
             val operation = operation(row)
             requireReceipt(operation, activityUuid)
+            val binding = receipts.transmission(operation.operationId)
+            if (binding == null) {
+                // No guessing the first device for an old/partially restored attempted operation.
+                require(row.attemptedAt == null && row.attemptCount == 0)
+                receipts.insertTransmission(OneTimeTransmissionEntity(operation.operationId,
+                    context.session.authentication.userId, requireNotNull(context.session.serverInstanceId),
+                    requireNotNull(context.session.syncEpoch), context.deviceId, json.encodeToString(operation)))
+            } else {
+                validateTransmission(binding, context, operation, sending = true)
+                require(binding.rejectionJson == null && row.attemptedAt != null && row.attemptCount > 0)
+            }
             outbox.markPrepared(row.id, row.wireEntityUuid, row.action, requireNotNull(row.payloadJson),
                 row.baseRevision, row.basePayloadJson, now())
             PreparedOneTimeSubmission(context, operation)
@@ -66,6 +81,9 @@ internal class OneTimeAcceptedEventStore(
             val activity = fact.proof.activityUuid
             local.readInTransaction(activity, prepared.context.session)
             requireReceipt(prepared.operation, activity)
+            val binding = requireNotNull(receipts.transmission(prepared.operation.operationId))
+            validateTransmission(binding, prepared.context, prepared.operation, sending = true)
+            require(binding.rejectionJson == null)
             val row = outbox.getByOperationId(prepared.operation.operationId)
             if (row == null) {
                 // A local receipt alone does NOT prove server success. An immutable shadow must agree.
@@ -78,6 +96,41 @@ internal class OneTimeAcceptedEventStore(
             require(outbox.getActivityIntents(activity).firstOrNull()?.operationId == row.operationId)
             merge(fact, prepared.context)
             outbox.deleteById(row.id)
+            local.readInTransaction(activity, prepared.context.session)
+        }
+    }
+
+    /** Only an explicit, bound per-operation result quarantines a causal suffix. */
+    suspend fun reject(prepared: PreparedOneTimeSubmission, result: NextSyncOperationResult): OneTimeLocalSnapshot = sessions.exclusive {
+        access(prepared.context)
+        validateTaskResultBinding(prepared.operation, result)
+        require(result.status in setOf("conflict", "rejected") && !result.errorCode.isNullOrBlank())
+        require(result.entity == null && result.revision == null && result.baseEntity == null && result.localEntity == null &&
+            result.conflictingFields.isEmpty() && result.conflictKind == null)
+        val activity = prepared.operation.payload.getValue("activity_uuid").let {
+            require(it is kotlinx.serialization.json.JsonPrimitive && it.isString)
+            it.content
+        }
+        database.withTransaction {
+            local.readInTransaction(activity, prepared.context.session)
+            requireReceipt(prepared.operation, activity)
+            val binding = requireNotNull(receipts.transmission(prepared.operation.operationId))
+            validateTransmission(binding, prepared.context, prepared.operation, sending = true)
+            val row = requireNotNull(outbox.getByOperationId(prepared.operation.operationId))
+            require(operation(row) == prepared.operation && row.attemptedAt != null && row.attemptCount > 0)
+            require(outbox.getActivityIntents(activity).firstOrNull()?.operationId == row.operationId)
+            // An accepted immutable fact and a rejected result for the same intent cannot coexist.
+            require(outbox.getState("activity_event", row.entityUuid) == null)
+            val serialized = json.encodeToString(result)
+            if (binding.rejectionJson != null) {
+                require(Json.parseToJsonElement(binding.rejectionJson) == Json.parseToJsonElement(serialized) &&
+                    row.deadLetteredAt != null && row.errorCode == result.errorCode)
+            } else {
+                require(row.deadLetteredAt == null)
+                check(receipts.recordRejection(row.operationId, serialized) == 1)
+                outbox.markDeadLetter(row.id, result.errorCode, result.message ?: requireNotNull(result.errorCode), now())
+            }
+            // Do not fabricate the conflict head as a fact or alter any frozen successor/metric.
             local.readInTransaction(activity, prepared.context.session)
         }
     }
@@ -123,6 +176,16 @@ internal class OneTimeAcceptedEventStore(
             receipt.referenceUuid == activityUuid && Json.parseToJsonElement(receipt.payloadJson) == operation.payload)
     }
 
+    private fun validateTransmission(binding: OneTimeTransmissionEntity, context: OneTimeSyncContext,
+        operation: SyncV2Operation, sending: Boolean) {
+        require(binding.operationId == operation.operationId && isContractUuid(binding.deviceId) &&
+            Json.parseToJsonElement(binding.operationJson) == json.encodeToJsonElement(operation))
+        if (binding.accountId != context.session.authentication.userId ||
+            binding.serverInstanceId != context.session.serverInstanceId || binding.syncEpoch != context.session.syncEpoch ||
+            (sending && binding.deviceId != context.deviceId)
+        ) throw OneTimeLocalException(OneTimeLocalException.Reason.TRANSMISSION_CONTEXT_CHANGED)
+    }
+
     private suspend fun merge(fact: OneTimeServerFact, context: OneTimeSyncContext) {
         val proof = fact.proof
         val before = local.readInTransaction(proof.activityUuid, context.session)
@@ -133,8 +196,14 @@ internal class OneTimeAcceptedEventStore(
         if (shadow != null) require(shadow.revision == fact.revision &&
             shadow.payloadJson?.let { Json.parseToJsonElement(it) } == fact.payload)
         val receipt = receipts.submissionForEntity("activity_event", proof.publicId)
-        if (receipt != null) fact.requireOriginal(SyncV2Operation(receipt.operationId, "activity_event", receipt.entityUuid,
-            "upsert", payload = Json.parseToJsonElement(receipt.payloadJson).jsonObject), context.deviceId)
+        if (receipt != null) {
+            val original = SyncV2Operation(receipt.operationId, "activity_event", receipt.entityUuid,
+                "upsert", payload = Json.parseToJsonElement(receipt.payloadJson).jsonObject)
+            val binding = requireNotNull(receipts.transmission(receipt.operationId))
+            validateTransmission(binding, context, original, sending = false)
+            require(binding.rejectionJson == null)
+            fact.requireOriginal(original, binding.deviceId)
+        }
         val habit = requireNotNull(habits.getHabitByUuid(proof.activityUuid))
         // A late, lower-version snapshot may fill a history gap, but cannot fork an already
         // authoritative slot/edge. Unconfirmed local alternatives are deliberately excluded.

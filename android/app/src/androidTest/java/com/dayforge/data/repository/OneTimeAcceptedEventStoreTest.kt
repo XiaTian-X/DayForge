@@ -16,6 +16,7 @@ import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.model.OneTimeIntent
 import com.dayforge.domain.model.OneTimeState
+import com.dayforge.domain.model.OneTimeProjection
 import com.dayforge.domain.model.PendingOneTimeIntent
 import com.dayforge.domain.service.AccountSessionCoordinator
 import java.io.File
@@ -134,19 +135,21 @@ class OneTimeAcceptedEventStoreTest {
 
     @Test fun pullBeforeLostResponseKeepsOriginalOutboxAndReplayDoesNotRegressNewerState() = runBlocking {
         val commands = List(3) { append() }
+        // The first two requests must be confirmed before the causal sender can send the third.
+        commands.take(2).forEach { sync().acknowledge(sync().prepare(habit.uuid)!!, result(it)) }
         val prepared = sync().prepare(habit.uuid)!!
         val original = queued()
-        sync().apply(sync().context(), listOf(change(commands[2]), change(commands[0]), change(commands[1])))
+        val third = commands[2].pending.intent.eventUuid
+        val fourth = command(OneTimeState(3, third, third))
+        val fifth = command(OneTimeState(4, fourth.pending.intent.eventUuid, null))
+        sync().apply(sync().context(), listOf(change(fifth), change(commands[2]), change(fourth), change(commands[0]), change(commands[1])))
         assertEquals(original, queued())
-        assertEquals(3, local().read(habit.uuid).confirmed.version)
-        assertEquals(commands.map { it.pending.operationId }, local().read(habit.uuid).queue.awaitingReplayOperationIds)
+        assertEquals(5, local().read(habit.uuid).confirmed.version)
+        assertEquals(listOf(commands[2].pending.operationId), local().read(habit.uuid).queue.awaitingReplayOperationIds)
         rule.reopen()
         assertEquals(prepared, sync().prepare(habit.uuid))
-        commands.forEach { command ->
-            val request = sync().prepare(habit.uuid)!!
-            sync().acknowledge(request, result(command).copy(status = "already_applied"))
-            assertEquals(3, local().read(habit.uuid).confirmed.version)
-        }
+        sync().acknowledge(prepared, result(commands[2]).copy(status = "already_applied"))
+        assertEquals(5, local().read(habit.uuid).confirmed.version)
         assertTrue(queued().isEmpty())
     }
 
@@ -359,5 +362,202 @@ class OneTimeAcceptedEventStoreTest {
         assertEquals(3, local().read(habit.uuid).confirmed.version)
         assertEquals(4, db.completionDao().getByHabitOnce(habit.id).size)
         assertEquals(pending.pending.operationId, queued().single().operationId)
+    }
+
+    private fun conflict(command: OneTimeLocalCommand) = NextSyncOperationResult(
+        command.pending.operationId, "activity_event", command.pending.intent.eventUuid, "conflict",
+        errorCode = "TASK_STATE_CONFLICT", message = "synthetic conflict",
+        oneTimeConflict = OneTimeProjection(habit.uuid, OneTimeState(1,
+            "22222222-0000-4000-8000-000000000001", "22222222-0000-4000-8000-000000000001")))
+
+    @Test fun firstPreparationFailureRollsBackBindingAndAttemptTogether() = runBlocking {
+        val command = append()
+        val before = queued()
+        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER fail_prepare BEFORE UPDATE ON sync_outbox BEGIN SELECT RAISE(ABORT, 'synthetic preparation failure'); END")
+        rejected { sync().prepare(habit.uuid) }
+        rule.reopen()
+        assertEquals(before, queued())
+        assertNull(db.completionFollowUpDao().transmission(command.pending.operationId))
+        db.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_prepare")
+        sync().prepare(habit.uuid)
+        assertEquals(device, db.completionFollowUpDao().transmission(command.pending.operationId)!!.deviceId)
+        assertEquals(1, queued().single().attemptCount)
+    }
+
+    @Test fun sameAccountReloginReusesDurableBindingButRejectsOldCallback() = runBlocking {
+        val command = append()
+        val first = sync().prepare(habit.uuid)!!
+        val binding = db.completionFollowUpDao().transmission(command.pending.operationId)!!
+        tokens.saveLoginSession("synthetic-new", "synthetic-r", "member", "account-a", false)
+        rule.reopen()
+        rejected { sync().acknowledge(first, result(command)) }
+        val retry = sync().prepare(habit.uuid)!!
+        assertNotEquals(first.context.session.authentication.generation, retry.context.session.authentication.generation)
+        assertEquals(first.operation, retry.operation)
+        assertEquals(binding, db.completionFollowUpDao().transmission(command.pending.operationId))
+        sync().acknowledge(retry, result(command).copy(status = "already_applied"))
+        assertEquals(binding, db.completionFollowUpDao().transmission(command.pending.operationId))
+        assertTrue(queued().isEmpty())
+    }
+
+    @Test fun registrationChangeCannotResendButPullValidatesOriginalSourceDevice() = runBlocking {
+        val command = append()
+        val first = sync().prepare(habit.uuid)!!
+        val before = queued()
+        val other = uuid()
+        tokens.saveSyncDeviceId(other)
+        rule.reopen()
+        val failure = runCatching { sync().prepare(habit.uuid) }.exceptionOrNull()
+        assertEquals(OneTimeLocalException.Reason.TRANSMISSION_CONTEXT_CHANGED, (failure as OneTimeLocalException).reason)
+        rejected { sync().acknowledge(first, result(command)) }
+        rejected { sync().apply(sync().context(), listOf(change(command, entity(command, other)))) }
+        sync().apply(sync().context(), listOf(change(command)))
+        assertEquals(1, local().read(habit.uuid).confirmed.version)
+        assertEquals(before, queued())
+        rejected { sync().prepare(habit.uuid) }
+        tokens.saveSyncDeviceId(device)
+        sync().acknowledge(sync().prepare(habit.uuid)!!, result(command).copy(status = "already_applied"))
+        assertTrue(queued().isEmpty())
+    }
+
+    @Test fun serverOrEpochChangeCannotRebindOldTransmissionEvenWithFreshContext() = runBlocking {
+        append()
+        sync().prepare(habit.uuid)
+        val before = queued()
+        listOf("server-2" to "epoch", "server" to "epoch-2").forEach { (server, epoch) ->
+            tokens.saveServerIdentity(server, epoch)
+            val failure = runCatching { sync().prepare(habit.uuid) }.exceptionOrNull()
+            assertEquals(OneTimeLocalException.Reason.TRANSMISSION_CONTEXT_CHANGED, (failure as OneTimeLocalException).reason)
+            assertEquals(before, queued())
+        }
+    }
+
+    @Test fun missingOrMutatedTransmissionCannotBeGuessedFromLocalFactOrCurrentDevice() = runBlocking {
+        val command = append()
+        rejected { sync().apply(sync().context(), listOf(change(command))) }
+        assertEquals(0, local().read(habit.uuid).confirmed.version)
+        val request = sync().prepare(habit.uuid)!!
+        val before = queued()
+        db.openHelper.writableDatabase.execSQL("UPDATE one_time_transmissions SET operationJson='{}'")
+        rejected { sync().prepare(habit.uuid) }
+        rejected { sync().acknowledge(request, result(command)) }
+        rejected { sync().apply(sync().context(), listOf(change(command))) }
+        db.openHelper.writableDatabase.execSQL("DELETE FROM one_time_transmissions")
+        rule.reopen()
+        rejected { sync().prepare(habit.uuid) }
+        assertEquals(before, queued())
+        assertNull(db.completionFollowUpDao().transmission(command.pending.operationId))
+    }
+
+    @Test fun anotherAuthenticatedOwnerCannotClaimTransmissionUsingTheSameReplicaAndDevice() = runBlocking {
+        val command = append()
+        sync().prepare(habit.uuid)
+        val before = queued()
+        val binding = db.completionFollowUpDao().transmission(command.pending.operationId)
+        // Deliberately leave the old rows to test fail-closed defense beyond normal account cleanup.
+        tokens.saveLoginSession("synthetic-other", "synthetic-r", "member", "account-b", false)
+        tokens.saveServerIdentity("server", "epoch")
+        tokens.saveDeviceRegistration(device, setOf("sync.read", "facts.append"), false, 1)
+        val fresh = sync().context()
+        val failure = runCatching { sync().prepare(habit.uuid) }.exceptionOrNull()
+        assertEquals(OneTimeLocalException.Reason.TRANSMISSION_CONTEXT_CHANGED, (failure as OneTimeLocalException).reason)
+        rejected { sync().apply(fresh, listOf(change(command))) }
+        assertEquals(before, queued())
+        assertEquals(binding, db.completionFollowUpDao().transmission(command.pending.operationId))
+        assertEquals(0, db.habitDao().getHabitByUuid(habit.uuid)!!.oneTimeConfirmedVersion)
+    }
+
+    @Test fun explicitRejectionPersistsAndBlocksTheUnmodifiedCausalSuffixWithoutFabricatingFacts() = runBlocking {
+        val commands = List(3) { append() }
+        val request = sync().prepare(habit.uuid)!!
+        val before = queued()
+        val state = sync().reject(request, conflict(commands[0]))
+        assertEquals(commands.map { it.pending.operationId }, state.queue.blockedOperationIds)
+        assertEquals(0, state.confirmed.version)
+        rule.reopen()
+        assertEquals(before.drop(1), queued().drop(1))
+        assertEquals(before.first().payloadJson, queued().first().payloadJson)
+        assertEquals(before.first().operationId, queued().first().operationId)
+        assertNotNull(db.completionFollowUpDao().transmission(request.operation.operationId)!!.rejectionJson)
+        assertEquals(3, db.completionDao().getByHabitOnce(habit.id).size)
+        assertNull(db.completionDao().getCompletionByUuid(conflict(commands[0]).oneTimeConflict!!.state.headEventUuid!!))
+        val rejectedRows = queued()
+        sync().reject(request, conflict(commands[0]))
+        assertEquals(rejectedRows, queued())
+        rejected { sync().prepare(habit.uuid) }
+        rejected { append() }
+    }
+
+    @Test fun rejectionTransactionFailureDoesNotPersistPartialTerminalResult() = runBlocking {
+        val command = append()
+        val request = sync().prepare(habit.uuid)!!
+        val before = queued()
+        val binding = db.completionFollowUpDao().transmission(command.pending.operationId)
+        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER fail_rejection BEFORE UPDATE ON sync_outbox BEGIN SELECT RAISE(ABORT, 'synthetic rejection failure'); END")
+        rejected { sync().reject(request, conflict(command)) }
+        rule.reopen()
+        assertEquals(before, queued())
+        assertEquals(binding, db.completionFollowUpDao().transmission(command.pending.operationId))
+        db.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_rejection")
+        assertEquals(listOf(command.pending.operationId), sync().reject(request, conflict(command)).queue.blockedOperationIds)
+    }
+
+    @Test fun wrongMissingOrContradictoryResultsCannotBecomePermanentRejections() = runBlocking {
+        val command = append()
+        val request = sync().prepare(habit.uuid)!!
+        val before = queued()
+        val response = conflict(command)
+        listOf(response.copy(operationId = uuid()), response.copy(entityUuid = uuid()),
+            response.copy(oneTimeConflict = response.oneTimeConflict!!.copy(activityUuid = uuid())),
+            response.copy(conflictingFields = listOf("unexpected")),
+            response.copy(errorCode = null, oneTimeConflict = null), result(command)).forEach {
+            rejected { sync().reject(request, it) }
+        }
+        rule.reopen()
+        assertEquals(before, queued())
+        assertNull(db.completionFollowUpDao().transmission(command.pending.operationId)!!.rejectionJson)
+        sync().reject(request, response)
+        val terminal = queued()
+        rejected { sync().reject(request, response.copy(errorCode = "TASK_ALREADY_COMPLETED")) }
+        rejected { sync().acknowledge(request, result(command)) }
+        rejected { sync().apply(sync().context(), listOf(change(command))) }
+        assertEquals(terminal, queued())
+    }
+
+    @Test fun acceptedFactCannotBeReclassifiedAsRejectedEvenBeforeOutboxAcknowledgement() = runBlocking {
+        val command = append()
+        val request = sync().prepare(habit.uuid)!!
+        sync().apply(sync().context(), listOf(change(command)))
+        val before = queued()
+        rejected { sync().reject(request, conflict(command)) }
+        assertEquals(before, queued())
+        sync().acknowledge(request, result(command))
+        rejected { sync().reject(request, conflict(command)) }
+        assertEquals(1, local().read(habit.uuid).confirmed.version)
+    }
+
+    @Test fun rejectionPreservesSavedMetricFactsAndLaterDraftsEvenAfterPermissionRevocation() = runBlocking {
+        val metric = MetricEntity(name = "Reading", unit = "kg", iconResId = 0, colorHex = "#000000")
+        val metricId = db.metricDao().insert(metric)
+        db.habitMetricLinkDao().insert(HabitMetricLinkEntity(habitId = habit.id, habitUuid = habit.uuid,
+            metricId = metricId, metricUuid = metric.uuid, promptOnComplete = true))
+        val first = append()
+        val prompts = CompletionMetricPromptStore(db, tokens, sessions)
+        val input = prompts.updateDraft(prompts.read(first.pending.intent.eventUuid), mapOf(metric.uuid to CompletionMetricInput("42", "saved")))
+        val saved = prompts.submit(input)
+        val log = db.metricLogDao().getLogByUuid(saved.observationUuids.single())
+        val metricQueue = db.syncOutboxDao().getByOperationId(input.entries.single().operationId)
+        append() // Undo remains a separate fact, not a deletion of the metric observation.
+        val third = append()
+        val draft = prompts.updateDraft(prompts.read(third.pending.intent.eventUuid), mapOf(metric.uuid to CompletionMetricInput("43", "pending")))
+        val request = sync().prepare(habit.uuid)!!
+        tokens.saveDeviceRegistration(device, setOf("sync.read"), false, 2)
+        sync().reject(request, conflict(first))
+        rule.reopen()
+        assertEquals(log, db.metricLogDao().getLogByUuid(saved.observationUuids.single()))
+        assertEquals(metricQueue, db.syncOutboxDao().getByOperationId(input.entries.single().operationId))
+        assertEquals("saved", db.completionFollowUpDao().prompt(first.pending.intent.eventUuid)!!.state)
+        assertEquals(draft.row, db.completionFollowUpDao().prompt(third.pending.intent.eventUuid))
+        assertEquals(3, local().read(habit.uuid).queue.blockedOperationIds.size)
     }
 }
