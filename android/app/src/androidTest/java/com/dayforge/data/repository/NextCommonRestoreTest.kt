@@ -237,7 +237,7 @@ class NextCommonRestoreTest {
     @Test fun aFrozenRequestWithoutAnExplicitSourceDeviceCannotBorrowTodaysRegistration() = runBlocking {
         val frozen = frozenLocal()
         val missing = JsonObject(Json.parseToJsonElement(frozen.payloadJson!!).jsonObject - "source_device_id").toString()
-        db.openHelper.writableDatabase.execSQL("UPDATE sync_outbox SET payloadJson=? WHERE id=?", arrayOf(missing, frozen.id))
+        db.openHelper.writableDatabase.execSQL("UPDATE sync_outbox SET payloadJson=? WHERE id=?", arrayOf<Any>(missing, frozen.id))
         val before = durable()
         assertTrue(runCatching { restore(snapshot(activity(), fact())) }.isFailure)
         assertEquals(before, durable())
