@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from src.time_utils import as_utc
@@ -26,4 +26,9 @@ def local_date_at(value: datetime, timezone_name: str) -> date:
     )
 
 
-__all__ = ["as_utc", "local_date_at", "require_iana_timezone"]
+def elapsed_milliseconds(start: datetime, end: datetime) -> int:
+    """Floor an absolute interval to milliseconds without floating-point loss."""
+    return (as_utc(end) - as_utc(start)) // timedelta(milliseconds=1)
+
+
+__all__ = ["as_utc", "elapsed_milliseconds", "local_date_at", "require_iana_timezone"]

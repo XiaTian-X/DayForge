@@ -157,16 +157,20 @@ async def test_invalid_iana_timezone_is_rejected_before_storage(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("microsecond", [0, 500, 999999])
 async def test_cross_midnight_stop_is_idempotent_and_allocates_both_days(
     test_client,
     async_session,
+    microsecond,
 ):
     account = await register_account(test_client, async_session, "timercrossday")
     token = account["access_token"]
     device = await register_device(test_client, token, "timer-cross-day")
     activity = await create_timer_activity(test_client, token, device)
     session_id = str(uuid4())
-    start_at = datetime(2026, 8, 3, 15, 59, 30, tzinfo=timezone.utc)
+    start_at = datetime(2026, 8, 3, 15, 59, 30, microsecond, tzinfo=timezone.utc)
+    first_day_ms = 30_000 - (microsecond + 999) // 1000
+    second_day_ms = 60_000 - first_day_ms
     commands = [
         timer_command("start", session_id, 1, start_at, activity_id=activity),
         timer_command(
@@ -206,8 +210,8 @@ async def test_cross_midnight_stop_is_idempotent_and_allocates_both_days(
         ).scalars()
     )
     assert [(str(item.local_date), item.duration_ms) for item in allocations] == [
-        ("2026-08-03", 30_000),
-        ("2026-08-04", 30_000),
+        ("2026-08-03", first_day_ms),
+        ("2026-08-04", second_day_ms),
     ]
     pulled = await test_client.get(
         "/api/v2/sync/changes",
@@ -217,33 +221,39 @@ async def test_cross_midnight_stop_is_idempotent_and_allocates_both_days(
     event_change = next(
         item for item in pulled.json()["changes"] if item["entity_uuid"] == session_id
     )
-    assert event_change["payload"]["started_at"] == "2026-08-03T15:59:30Z"
-    assert event_change["payload"]["ended_at"] == "2026-08-03T16:00:30Z"
+    assert event_change["payload"]["started_at"] == start_at.isoformat().replace(
+        "+00:00", "Z"
+    )
+    assert event_change["payload"]["ended_at"] == (
+        start_at + timedelta(seconds=60)
+    ).isoformat().replace("+00:00", "Z")
     assert event_change["payload"]["day_allocations"] == [
         {
             "local_date": "2026-08-03",
             "timezone": "Asia/Shanghai",
-            "duration_milliseconds": 30_000,
+            "duration_milliseconds": first_day_ms,
         },
         {
             "local_date": "2026-08-04",
             "timezone": "Asia/Shanghai",
-            "duration_milliseconds": 30_000,
+            "duration_milliseconds": second_day_ms,
         },
     ]
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("microsecond", [0, 500])
 async def test_pause_spanning_midnight_is_excluded_from_daily_allocations(
     test_client,
     async_session,
+    microsecond,
 ):
     account = await register_account(test_client, async_session, "timerpauseday")
     token = account["access_token"]
     device = await register_device(test_client, token, "timer-pause-day")
     activity = await create_timer_activity(test_client, token, device)
     session_id = str(uuid4())
-    start_at = datetime(2026, 8, 3, 15, 59, 30, tzinfo=timezone.utc)
+    start_at = datetime(2026, 8, 3, 15, 59, 30, microsecond, tzinfo=timezone.utc)
     response = await submit(
         test_client,
         token,
@@ -280,8 +290,61 @@ async def test_pause_spanning_midnight_is_excluded_from_daily_allocations(
         ).scalars()
     )
     assert [(str(item.local_date), item.duration_ms) for item in allocations] == [
-        ("2026-08-03", 30_000),
-        ("2026-08-04", 30_000),
+        ("2026-08-03", 30_000 - (microsecond + 999) // 1000),
+        ("2026-08-04", 30_000 + (microsecond + 999) // 1000),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_integer_millisecond_segments_reach_target_without_float_loss(
+    test_client, async_session
+):
+    account = await register_account(test_client, async_session, "timerexactmillis")
+    token = account["access_token"]
+    device = await register_device(test_client, token, "timer-exact-millis")
+    activity = await create_timer_activity(test_client, token, device)
+    session_id = str(uuid4())
+    start = datetime(2026, 8, 3, 0, 0, 0, 500, tzinfo=timezone.utc)
+    commands = [
+        timer_command("start", session_id, 1, start, activity_id=activity),
+        timer_command(
+            "pause", session_id, 2, start + timedelta(milliseconds=1001), revision=1
+        ),
+        timer_command(
+            "resume", session_id, 3, start + timedelta(seconds=2), revision=2
+        ),
+        timer_command(
+            "stop", session_id, 4, start + timedelta(milliseconds=60999), revision=3
+        ),
+    ]
+    response = await submit(test_client, token, device, commands)
+    assert response.status_code == 200, response.text
+    results = response.json()["results"]
+    assert [item["status"] for item in results] == ["applied"] * 4
+    assert results[1]["session"]["active_elapsed_ms"] == 1001
+    assert results[-1]["session"]["active_elapsed_ms"] == 60_000
+    assert results[-1]["session"]["state"] == "completed"
+    replay = await submit(test_client, token, device, commands)
+    assert replay.status_code == 200, replay.text
+    assert [item["status"] for item in replay.json()["results"]] == [
+        "already_applied"
+    ] * 4
+    timer = (
+        await async_session.execute(
+            select(TimerSession).where(TimerSession.public_id == session_id)
+        )
+    ).scalar_one()
+    allocations = list(
+        (
+            await async_session.execute(
+                select(DurationDayAllocation).where(
+                    DurationDayAllocation.activity_event_id == timer.completed_event_id
+                )
+            )
+        ).scalars()
+    )
+    assert [(str(item.local_date), item.duration_ms) for item in allocations] == [
+        ("2026-08-03", 60_000)
     ]
 
 

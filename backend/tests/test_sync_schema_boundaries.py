@@ -13,6 +13,7 @@ from src.v2.schemas import (
     TimerCommandRequest,
     require_aware_utc,
 )
+from src.v2.time_utils import elapsed_milliseconds
 
 
 ENTITY_ID = UUID("11111111-1111-4111-8111-111111111111")
@@ -98,6 +99,40 @@ def test_duration_interval_error_precedes_business_date_error():
         ActivityEventPayload.model_validate(
             {**duration_payload(), "duration_seconds": 61, "local_date": "2026-09-20"}
         )
+
+
+@pytest.mark.parametrize("milliseconds", [0, 1, 1001, 1003, 60001, 86_400_000])
+@pytest.mark.parametrize("extra_microseconds", [0, 1, 999])
+def test_duration_exact_millisecond_wall_limit(milliseconds, extra_microseconds):
+    start = datetime(2026, 9, 19, 15, 59, 30, 123456, tzinfo=timezone.utc)
+    end = start + timedelta(milliseconds=milliseconds, microseconds=extra_microseconds)
+    # Different explicit offsets must not change the absolute interval.
+    end = end.astimezone(timezone(timedelta(hours=8)))
+    assert elapsed_milliseconds(start, end) == milliseconds
+    payload = {
+        **duration_payload(),
+        "started_at": start,
+        "ended_at": end,
+        "occurred_at": end,
+        "duration_seconds": milliseconds // 1000,
+        "duration_milliseconds": milliseconds,
+    }
+    event = ActivityEventPayload.model_validate(payload)
+    assert event.started_at == start
+    assert event.ended_at == end
+    assert event.duration_milliseconds == milliseconds
+    if milliseconds < 86_400_000:
+        with pytest.raises(
+            ValidationError,
+            match="active duration must not exceed the wall-clock interval",
+        ):
+            ActivityEventPayload.model_validate(
+                {
+                    **payload,
+                    "duration_milliseconds": milliseconds + 1,
+                    "duration_seconds": (milliseconds + 1) // 1000,
+                }
+            )
 
 
 def test_non_duration_event_uses_occurrence_date_even_with_optional_start():
