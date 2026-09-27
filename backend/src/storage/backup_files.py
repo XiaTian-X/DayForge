@@ -27,7 +27,9 @@ def regular_file(path: Path) -> Iterator[BinaryIO]:
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise StorageValidationError("backup component must be a regular file")
-        with os.fdopen(descriptor, "rb", closefd=False) as source:
+        # Repeated archive payload reads must reach this opened file, not a
+        # BufferedReader's stale window after external in-place corruption.
+        with os.fdopen(descriptor, "rb", buffering=0, closefd=False) as source:
             yield source
     finally:
         os.close(descriptor)

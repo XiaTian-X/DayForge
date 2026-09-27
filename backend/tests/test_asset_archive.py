@@ -75,6 +75,27 @@ def test_empty_archive_has_no_implicit_pending_bytes(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "additional",
+    [
+        frozenset({"manifest.json"}),
+        frozenset(),
+        frozenset({"manifest.json", descriptor().name}),
+    ],
+)
+def test_logical_archive_additional_names_are_exact_disjoint_and_not_assets(additional):
+    entry = descriptor()
+    with BytesIO(zip_bytes([(entry.name, SVG), ("manifest.json", b"{}")])) as source:
+        if additional != frozenset({"manifest.json"}):
+            with pytest.raises(BackupZipError, match="ZIP_ASSET_ENTRIES"):
+                AssetArchive(source, [entry], additional_names=additional)
+        else:
+            reader = AssetArchive(source, [entry], additional_names=additional)
+            assert reader.read(entry.name) == SVG
+            with pytest.raises(BackupZipError, match="ZIP_ENTRY_MISSING"):
+                reader.read("manifest.json")
+
+
+@pytest.mark.parametrize(
     "extra", [[], [("unrelated", b"x")], [(descriptor(OTHER).name, SVG)]]
 )
 def test_archive_exact_set_requires_all_snapshot_owners(extra):
