@@ -15,7 +15,7 @@ from pydantic import (
     model_validator,
 )
 
-from src.v2.time_utils import local_date_at, require_iana_timezone
+from src.v2.time_utils import elapsed_milliseconds, local_date_at, require_iana_timezone
 
 
 ANDROID_ICON_NAMES = frozenset(
@@ -422,8 +422,8 @@ class ActivityEventPayload(ApiModel):
                 raise ValueError(
                     "duration milliseconds must agree with duration seconds"
                 )
-            if self.duration_milliseconds > int(
-                (self.ended_at - self.started_at).total_seconds() * 1000
+            if self.duration_milliseconds > elapsed_milliseconds(
+                self.started_at, self.ended_at
             ):
                 raise ValueError(
                     "active duration must not exceed the wall-clock interval"

@@ -40,7 +40,7 @@ from src.v2.schemas import (
     TimerSessionResponse,
 )
 from src.v2.device_service import require_device
-from src.v2.time_utils import as_utc, local_date_at
+from src.v2.time_utils import as_utc, elapsed_milliseconds, local_date_at
 
 
 ACTIVE_STATES = ("running", "paused")
@@ -169,7 +169,7 @@ async def _close_segment(
         raise DomainError(
             "COMMAND_TIME_REVERSED", "Timer command predates the running segment"
         )
-    duration_ms = int((ended_at - started_at).total_seconds() * 1000)
+    duration_ms = elapsed_milliseconds(started_at, ended_at)
     if expected_active_elapsed_ms is not None:
         duration_ms = expected_active_elapsed_ms - timer.active_elapsed_ms
         if duration_ms < 0:
@@ -322,7 +322,9 @@ async def _create_allocations(
     )
     totals: dict[date, int] = {}
     for segment in result.scalars().all():
-        cursor = as_utc(segment.started_at)
+        started_at = as_utc(segment.started_at)
+        cursor = started_at
+        allocated_ms = 0
         end = as_utc(require_internal(segment.ended_at, "closed TimerSegment.ended_at"))
         while cursor < end:
             local_day = cursor.astimezone(zone).date()
@@ -332,7 +334,11 @@ async def _create_allocations(
                 tzinfo=zone,
             ).astimezone(timezone.utc)
             chunk_end = min(end, next_midnight)
-            duration_ms = int((chunk_end - cursor).total_seconds() * 1000)
+            # Difference cumulative integer totals, rather than truncating each
+            # day independently and losing a fractional millisecond at midnight.
+            elapsed_ms = elapsed_milliseconds(started_at, chunk_end)
+            duration_ms = elapsed_ms - allocated_ms
+            allocated_ms = elapsed_ms
             if duration_ms > 0:
                 totals[local_day] = totals.get(local_day, 0) + duration_ms
             cursor = chunk_end
