@@ -337,6 +337,14 @@ Room v3 的事项预备列须从提交的 v1/v2 schema 经生产入口升级并�
 新增列重开/事务回滚、跨日意图保留和隔离账户清理；这些合成事实只证明存储，不代表 v5 操作链、
 服务端确认或 UI 已接入。完整真机测试继续覆盖当前 v4 行为。
 
+`OneTimeLocalIntentStoreTest` 使用生产 Room 文件库和 DataStore，覆盖首次同步前离线完成、
+跨日撤销/再次完成、原 operation/event 与冻结载荷重开、重复请求和身份复用拒绝、outbox 写失败
+整笔回滚、独立协调器并发 CAS、账户/登录 generation/epoch 变化及 token 刷新、事实设备权限、
+拒绝后继隔离和结果未知时原请求重放要求。孤立事实、非法持久状态、墓碑及载荷损坏不能被自动修复。
+`ProtocolNextActivationBarrierTest` 覆盖每个旧同步变更入口，分别注入策略/部分投影、部分意图
+和孤立拒绝队列，断言零网络请求、事实/队列/偏好不变且后置回调不运行。
+这些测试不代表 once 创建、指标提示、线上 v5 HTTP 或 UI 已启用；对应路径须另行接入并联合验证。
+
 Room 依赖升级还须执行 `RoomUpgradeCompatibilityTest`：从已提交的当前 schema 独立建库，
 通过生产入口打开及重开，检查全部业务 / 同步表、schema identity、触发器、事务回滚和 Flow 通知。
 库升级不应凭空变更 schema；无结构变化时保留原 schema 文件，并记录无差异证据。

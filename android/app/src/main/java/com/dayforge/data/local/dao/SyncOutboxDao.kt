@@ -16,6 +16,16 @@ interface SyncOutboxDao {
     @Query("SELECT * FROM sync_outbox WHERE deadLetteredAt IS NULL ORDER BY id")
     suspend fun getAll(): List<SyncOutboxEntity>
 
+    @Query("SELECT * FROM sync_outbox WHERE operationId = :operationId")
+    suspend fun getByOperationId(operationId: String): SyncOutboxEntity?
+
+    /** Include rejected predecessors: omitting them would turn a broken chain into new intent. */
+    @Query("SELECT * FROM sync_outbox WHERE referenceUuid = :activityUuid AND recordType IN ('completion', 'one_time_completion') ORDER BY id")
+    suspend fun getActivityIntents(activityUuid: String): List<SyncOutboxEntity>
+
+    @Query("SELECT EXISTS(SELECT 1 FROM sync_outbox WHERE recordType = 'one_time_completion')")
+    suspend fun hasOneTimeIntents(): Boolean
+
     @Query("SELECT COUNT(*) FROM sync_outbox WHERE deadLetteredAt IS NULL")
     suspend fun count(): Int
 

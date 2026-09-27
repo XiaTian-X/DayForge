@@ -3,7 +3,7 @@ package com.dayforge.domain.model
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-/** Protocol-next projection, not yet wired into Room or the active v4 sync path. */
+/** Protocol-next projection; staged Room persistence does not activate the v4 UI/sync path. */
 @Serializable
 data class OneTimeState(
     @Serializable(with = ContractIntegerSerializer::class)

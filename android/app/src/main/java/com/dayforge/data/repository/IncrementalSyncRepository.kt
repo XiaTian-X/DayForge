@@ -75,6 +75,7 @@ class IncrementalSyncRepository(
     }
 
     private suspend fun syncInternal(progressCallback: (SyncProgress) -> Unit) {
+        requireV4LocalState()
         tokenManager.migrateLegacyTokenStorage()
         val accountId = ensureAccountId()
         tokenManager.prepareSyncAccount(accountId)
@@ -147,10 +148,12 @@ class IncrementalSyncRepository(
     fun observeConflicts(): Flow<List<SyncConflictEntity>> = conflictDao.observeUnresolved()
 
     suspend fun resolveConflictUseServer(id: Long) = accountSessionCoordinator.exclusive {
+        requireV4LocalState()
         check(merger.resolveConflictUseServer(id)) { "同步冲突已被处理" }
     }
 
     suspend fun resolveConflictUseLocal(id: Long) = accountSessionCoordinator.exclusive {
+        requireV4LocalState()
         check(merger.resolveConflictUseLocal(id)) {
             "无法恢复已被服务器删除的数据，请保留服务器版本"
         }
@@ -160,10 +163,12 @@ class IncrementalSyncRepository(
         timerSyncRepository.observeRejectedCommands()
 
     suspend fun retryDeadLetter(id: Long) = accountSessionCoordinator.exclusive {
+        requireV4LocalState()
         outboxDao.retryDeadLetter(id, UUID.randomUUID().toString())
     }
 
     suspend fun discardDeadLetter(id: Long) = accountSessionCoordinator.exclusive {
+        requireV4LocalState()
         // Persist recovery intent first. A crash between these calls may cause
         // an unnecessary bootstrap, but can never leave silent divergence.
         tokenManager.requireSyncBootstrap()
@@ -171,6 +176,7 @@ class IncrementalSyncRepository(
     }
 
     suspend fun retryAllDeadLetters() = accountSessionCoordinator.exclusive {
+        requireV4LocalState()
         outboxDao.getDeadLetters().forEach {
             outboxDao.retryDeadLetter(it.id, UUID.randomUUID().toString())
         }
@@ -178,11 +184,13 @@ class IncrementalSyncRepository(
     }
 
     suspend fun retryRejectedTimerCommand(id: Long) = accountSessionCoordinator.exclusive {
+        requireV4LocalState()
         timerSyncRepository.retryRejectedCommand(id)
     }
 
     suspend fun cancelRejectedTimerCommandAndUseServer(id: Long) =
         accountSessionCoordinator.exclusive {
+            requireV4LocalState()
             timerSyncRepository.cancelRejectedCommandAndUseServer(id, ensureDevice())
         }
 
@@ -193,16 +201,25 @@ class IncrementalSyncRepository(
     fun isPrimaryEditor(): Flow<Boolean> = tokenManager.isPrimaryEditor
 
     suspend fun makeCurrentDevicePrimary(): DeviceResponse = accountSessionCoordinator.exclusive {
+        requireV4LocalState()
         val deviceId = ensureDevice()
         api.makePrimaryDevice(deviceId).also { saveDeviceRegistration(it) }
     }
 
     suspend fun setCurrentDeviceStructuralEditing(enabled: Boolean): DeviceResponse =
         accountSessionCoordinator.exclusive {
+            requireV4LocalState()
             val deviceId = ensureDevice()
             api.updateDeviceEditing(deviceId, DeviceEditingUpdate(enabled))
                 .also { saveDeviceRegistration(it) }
         }
+
+    /** Staged v5 data must never be coalesced, rebased or restored by the legacy engine. */
+    private suspend fun requireV4LocalState() {
+        if (habitDao.hasProtocolNextState() || completionDao.hasProtocolNextIntents() || outboxDao.hasOneTimeIntents()) {
+            throw ProtocolNextDataRequiresUpgradeException()
+        }
+    }
 
     /** Backfill the public account UUID for sessions created before Sync V2. */
     private suspend fun ensureAccountId(): String {

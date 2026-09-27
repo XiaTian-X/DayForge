@@ -40,6 +40,12 @@ interface CompletionDao {
     @Query("SELECT * FROM completions ORDER BY recordedLocalDate DESC, COALESCE(actualCompletedAt, date) DESC, id DESC")
     suspend fun getAllCompletionsOnce(): List<CompletionEntity>
 
+    @Query("SELECT * FROM completions WHERE habitId = :habitId ORDER BY id")
+    suspend fun getByHabitOnce(habitId: Long): List<CompletionEntity>
+
+    @Query("SELECT EXISTS(SELECT 1 FROM completions WHERE oneTimeAction IS NOT NULL OR oneTimeExpectedVersion IS NOT NULL OR oneTimeExpectedHeadEventUuid IS NOT NULL OR oneTimeRevertsEventUuid IS NOT NULL)")
+    suspend fun hasProtocolNextIntents(): Boolean
+
     @Query("SELECT * FROM completions WHERE uuid = :uuid LIMIT 1")
     suspend fun getCompletionByUuid(uuid: String): CompletionEntity?
 
