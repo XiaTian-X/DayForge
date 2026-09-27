@@ -127,7 +127,7 @@ class CompletionFollowUpMigrationTest {
         repeat(2) {
             val db = open()
             val sql = db.openHelper.writableDatabase
-            assertEquals(6, sql.version)
+            assertEquals(7, sql.version)
             assertEquals(before, snapshot(sql))
             assertEquals(ddl, oldStructure(sql))
             assertTrue(db.completionFollowUpDao().pendingPrompts().isEmpty())
@@ -154,7 +154,7 @@ class CompletionFollowUpMigrationTest {
             }
             raw.execSQL("DROP TABLE completion_metric_prompts") // Only this test's injected collision.
         }
-        assertEquals(6, open().openHelper.writableDatabase.version)
+        assertEquals(7, open().openHelper.writableDatabase.version)
     }
 
     @Test fun receiptUniquenessAndAccountClearIncludeNewTables() = runBlocking {

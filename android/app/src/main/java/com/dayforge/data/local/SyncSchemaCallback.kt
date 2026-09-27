@@ -19,13 +19,13 @@ internal object SyncSchemaCallback : RoomDatabase.Callback() {
 
     private fun installSyncObjects(database: SupportSQLiteDatabase) {
         // Migration fixtures also open earlier schemas through this callback.
-        val hasAppearance = database.query("PRAGMA table_info(habits)").use { cursor ->
-            var found = false
-            while (cursor.moveToNext()) if (cursor.getString(1) == "appearance") found = true
-            found
+        val columns = database.query("PRAGMA table_info(habits)").use { cursor ->
+            buildSet { while (cursor.moveToNext()) add(cursor.getString(1)) }
         }
+        val hasAppearance = "appearance" in columns
         val habitAppearanceChanges = if (hasAppearance)
             " OR OLD.appearance IS NOT NEW.appearance OR OLD.completionPolicy IS NOT NEW.completionPolicy" else ""
+        val planChanges = if ("planMetadata" in columns) " OR OLD.planMetadata IS NOT NEW.planMetadata" else ""
         val metricAppearanceChanges = if (hasAppearance) " OR OLD.appearance IS NOT NEW.appearance" else ""
         database.execSQL(
             "INSERT OR IGNORE INTO sync_control(id, suppressOutbox) VALUES(1, 0)"
@@ -43,7 +43,7 @@ internal object SyncSchemaCallback : RoomDatabase.Callback() {
                     "OLD.targetValue IS NOT NEW.targetValue OR OLD.isCountdown IS NOT NEW.isCountdown OR " +
                     "OLD.isActive IS NOT NEW.isActive OR OLD.parentHabitId IS NOT NEW.parentHabitId OR " +
                     "OLD.targetCycles IS NOT NEW.targetCycles OR OLD.failMode IS NOT NEW.failMode OR " +
-                    "OLD.goalSuccess IS NOT NEW.goalSuccess OR OLD.bestTime IS NOT NEW.bestTime" + habitAppearanceChanges
+                    "OLD.goalSuccess IS NOT NEW.goalSuccess OR OLD.bestTime IS NOT NEW.bestTime" + habitAppearanceChanges + planChanges
         )
         createSyncTrigger(
             database = database,

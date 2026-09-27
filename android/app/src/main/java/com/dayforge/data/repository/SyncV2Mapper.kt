@@ -29,7 +29,7 @@ object SyncV2Mapper {
         Instant.ofEpochMilli(epochMillis).atZone(zone).toLocalDate().format(DateTimeFormatter.ISO_DATE)
 
     fun planNode(habit: HabitEntity): JsonObject = buildJsonObject {
-        if (habit.appearance != null || habit.completionPolicy != null || habit.schedule is HabitSchedule.Once ||
+        if (habit.planMetadata != null || habit.appearance != null || habit.completionPolicy != null || habit.schedule is HabitSchedule.Once ||
             habit.oneTimeConfirmedVersion != null || habit.oneTimeConfirmedHeadEventUuid != null ||
             habit.oneTimeConfirmedCompletionEventUuid != null)
             throw ProtocolNextDataRequiresUpgradeException()

@@ -28,7 +28,7 @@ object ConfigMapper {
      * Uses IconMapper to convert iconResId to icon name string.
      */
     fun habitEntityToDto(entity: HabitEntity): HabitConfigDto {
-        require(entity.appearance == null && entity.completionPolicy == null &&
+        require(entity.planMetadata == null && entity.appearance == null && entity.completionPolicy == null &&
             entity.oneTimeConfirmedVersion == null && entity.oneTimeConfirmedHeadEventUuid == null &&
             entity.oneTimeConfirmedCompletionEventUuid == null &&
             entity.schedule !is com.dayforge.data.model.HabitSchedule.Once) { "Use the new configuration format" }
