@@ -11,6 +11,9 @@ import com.dayforge.data.local.entity.OneTimeTransmissionEntity
 
 @Dao
 interface CompletionFollowUpDao {
+    @Query("SELECT EXISTS(SELECT 1 FROM local_fact_submissions WHERE entityType = 'activity_event' AND referenceUuid = :activityUuid) OR EXISTS(SELECT 1 FROM completion_metric_prompts WHERE activityUuid = :activityUuid)")
+    suspend fun hasActivityHistory(activityUuid: String): Boolean
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertTransmission(row: OneTimeTransmissionEntity)
 

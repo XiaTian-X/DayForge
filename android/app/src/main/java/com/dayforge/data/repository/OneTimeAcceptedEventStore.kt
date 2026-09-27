@@ -162,6 +162,28 @@ internal class OneTimeAcceptedEventStore(
      */
     suspend fun restoreHistories(context: OneTimeSyncContext, response: NextSyncBootstrapResponse): List<OneTimeLocalSnapshot> = sessions.exclusive {
         access(context)
+        restoreHistoriesInTransaction(context, response)
+    }
+
+    /**
+     * Atomic structure + once-history stage. Ordinary facts/timers/links are NOT consumed here.
+     * No cache replacement, deletion, cursor advancement or acknowledgement is performed.
+     * A future all-entity coordinator must finish those stages before activating a bootstrap.
+     */
+    suspend fun restoreStructuresAndHistories(context: OneTimeSyncContext, response: NextSyncBootstrapResponse): List<OneTimeLocalSnapshot> = sessions.exclusive {
+        access(context)
+        val snapshot = response.copy(changes = response.changes.map {
+            it.copy(payload = Json.parseToJsonElement(it.payload.toString()).jsonObject)
+        }, oneTimeCheckpoints = response.oneTimeCheckpoints.toList())
+        database.withTransaction {
+            NextStructureStore(database).restoreInTransaction(snapshot.changes.filter {
+                it.entityType == "plan_node" || it.entityType == "metric"
+            })
+            restoreHistoriesInTransaction(context, snapshot)
+        }
+    }
+
+    private suspend fun restoreHistoriesInTransaction(context: OneTimeSyncContext, response: NextSyncBootstrapResponse): List<OneTimeLocalSnapshot> {
         // Re-run the complete-history envelope checks, including after caller-owned list mutation.
         val snapshot = response.copy(changes = response.changes.toList(), oneTimeCheckpoints = response.oneTimeCheckpoints.toList())
         require(snapshot.nextCursor >= 0 && Instant.parse(snapshot.serverTime).atZone(ZoneId.of("UTC")).year in 1..9999)
@@ -176,7 +198,7 @@ internal class OneTimeAcceptedEventStore(
         snapshot.changes.filter { it.entityType == "plan_node" && it.entityUuid in checkpoints }.forEach {
             require(it.payload["public_id"] == JsonPrimitive(it.entityUuid))
         }
-        database.withTransaction {
+        return database.withTransaction {
             val parents = checkpoints.mapValues { (activity, checkpoint) ->
                 val before = local.readInTransaction(activity, context.session)
                 if (before.confirmed.version > checkpoint.state.version) {

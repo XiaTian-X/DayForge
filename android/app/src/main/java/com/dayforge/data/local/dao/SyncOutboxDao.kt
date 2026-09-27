@@ -109,6 +109,9 @@ interface SyncOutboxDao {
     @Query("SELECT * FROM sync_entity_state WHERE entityType = :entityType AND entityUuid = :entityUuid")
     suspend fun getState(entityType: String, entityUuid: String): SyncEntityStateEntity?
 
+    @Query("SELECT * FROM sync_entity_state WHERE entityType = :entityType")
+    suspend fun getStatesForType(entityType: String): List<SyncEntityStateEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertState(state: SyncEntityStateEntity)
 

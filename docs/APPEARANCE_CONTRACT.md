@@ -141,6 +141,17 @@ public_id、activity_uuid、event_type、reverts_event_uuid、one_time、one_tim
 同版本分叉或错误因果 head 也必须拒绝。独立校验点用于发现整条链或末尾整段缺失，
 仅检查已收到事件之间连续并不能证明完整；不能把半份历史当成完整恢复。
 
+Android 内部 `restoreStructuresAndHistories` 将完整结构映射和事项历史校验放入同一账户会话锁与
+Room 外层事务，支持先收到子项/事实再收到顶层目标的快照顺序。结构创建或改名已写入后，
+任一事实/投影/shadow 保存失败也必须回滚全部结构和临时名称；恢复不能生成本地结构 outbox。
+已知相同 revision 的结构不覆盖未发布编辑，同 revision 不同正文拒绝，较低 revision 不回退；
+新 revision 遇到待处理/被拒绝的本地结构操作或未解决冲突时停止，不替用户选择服务器版本。
+目标只能顶层，子项引用的目标须同时在结构快照中；不以缓存中的父节点掩盖不完整恢复。
+已有 node_kind 与创建身份不变；旧未初始化行不猜测转换，已有事实、投影、提示、传输收据、
+计时或待处理计时命令时不得改变完成策略。已删除的事实 shadow 也算历史；无法识别的历史不等于没有历史。
+这仍是**结构与事项历史阶段**，不删除快照之外的本地对象，不消费普通事实/计时/关联，
+不推进游标、不确认 outbox，也不证明固定素材已授权；全实体协调器须完成其余阶段后才能激活恢复。
+
 新事项事实未成功创建时没有可返回的 activity_event 实体。拒绝响应增加独立
 `one_time_conflict={activity_uuid,state}`，只提供本账户事项权威状态，外层保留原 operation_id/
 entity_uuid/error_code。不能把这个状态伪装成成功事件 entity，也不使用事项 version 替代事件 revision。
