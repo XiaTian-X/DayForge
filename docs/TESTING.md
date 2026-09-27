@@ -70,6 +70,16 @@ teardown，最后恢复真实调度对象。测试仍检查真实业务数据/ou
 完整结果除 XML 计数外，还须检查 `SQLiteConnection ... was leaked`、`file unlinked while open`、
 关闭后访问及致命异常日志；GC 报告所在用例不等于资源创建者，须结合前序请求链定位。
 
+网络监测回归使用真实 Android `Network` 身份值和 `NetworkCapabilities`，以手写观察源控制
+`NetworkObservationSource` 的注册/注销、初始快照和失败，不在该类中模拟 Android framework 类型。
+生产默认构造/Hilt 经 `AndroidNetworkObservationSource` 调用原 `ConnectivityManager` API；
+回调、同步锁、路径选择和状态发布仍由同一 `NetworkMonitor` 执行，不在替身中复制。
+真实系统注册/关闭 smoke 与现有同步持久性测试继续经过生产构造。身份夹具按
+[Android 15 Network Parcelable 格式](https://android.googlesource.com/platform/packages/modules/Connectivity/+/refs/heads/android15-release/framework/src/android/net/Network.java)
+构造，并断言完整 Parcel 消费、往返、相同身份的 equals/hashCode 及回调中不同实例互认；
+这些合成身份不得用于真实 socket/网络查询。平台格式变化必须明确失败，不能回退为模拟身份
+掩盖差异。保留 12 路径并发与全部订阅/断开/冷启动/关闭断言，不以减少并发、跳过用例或放宽时限优化耗时。
+
 ### 后端改动
 
 最低要求为锁定环境中的格式、静态检查、类型检查和 pytest。数据库相关改动还必须从空 SQLite 执行完整 Alembic upgrade，并验证模型与迁移一致。
