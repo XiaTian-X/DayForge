@@ -223,6 +223,11 @@ SQLite 写锁竞争和文件阶段取消必须保留 pending 及重试证据；�
 
 ### 发布前容器 CI（#22）
 
+维护脚本的 argv/流程由 `test_maintenance_scripts.py` 使用隔离可执行替身记录，不调用 Docker daemon。
+验证绝对素材根与含空格参数、非法/重复参数零调用、停服务→恢复→独立验证→启动的次序，
+以及各阶段失败/TERM 后不自动启动或重试。该批在托管后端 CI 执行，本机按用户约定只做脚本静态检查；
+替身不证明 Compose、容器或 NAS 行为，真实容器恢复仍须同时通过下述双架构 CI。
+
 `Container verification` 对 backend/contracts/tools 相关 PR 和主分支变更，在 GitHub 托管的
 原生 amd64、arm64 runner 中分别执行真实 Docker 构建及 `tools/verify_container.py`。
 本设备不运行 Docker。仓库级 Python 测试只验证脚本的环境门槛、确认数量和恢复比较器，
