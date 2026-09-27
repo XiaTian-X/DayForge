@@ -171,7 +171,7 @@ class RoomUpgradeCompatibilityTest {
         repeat(2) {
             val db = open()
             val sql = db.openHelper.writableDatabase
-            assertEquals(6, sql.version)
+            assertEquals(7, sql.version)
             assertEquals(before, snapshot(sql))
             assertEquals(ddl, structure(sql))
             assertEquals(listOf(listOf(null, null, null, null), listOf(null, null, null, null)),
@@ -180,7 +180,7 @@ class RoomUpgradeCompatibilityTest {
             assertEquals(listOf(listOf(null, null, null, null)), rows(sql,
                 "SELECT oneTimeAction, oneTimeExpectedVersion, oneTimeExpectedHeadEventUuid, oneTimeRevertsEventUuid FROM completions"))
             val currentSchema = InstrumentationRegistry.getInstrumentation().context.assets
-                .open("com.dayforge.data.local.HabitDatabase/6.json").bufferedReader().use { it.readText() }
+                .open("com.dayforge.data.local.HabitDatabase/7.json").bufferedReader().use { it.readText() }
             assertEquals(listOf(listOf(Json.parseToJsonElement(currentSchema).jsonObject.getValue("database")
                 .jsonObject.getValue("identityHash").jsonPrimitive.content)),
                 rows(sql, "SELECT identity_hash FROM room_master_table WHERE id = 42"))

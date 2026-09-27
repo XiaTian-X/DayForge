@@ -21,6 +21,14 @@ class HabitTypeConverter {
         value?.let { Json.decodeFromString<com.dayforge.domain.model.ObjectAppearance>(it) }
 
     @TypeConverter
+    fun fromPlanMetadata(value: com.dayforge.data.model.PlanStructureMetadata?): String? =
+        value?.let { Json.encodeToString(it) }
+
+    @TypeConverter
+    fun toPlanMetadata(value: String?): com.dayforge.data.model.PlanStructureMetadata? =
+        value?.let { Json.decodeFromString<com.dayforge.data.model.PlanStructureMetadata>(it) }
+
+    @TypeConverter
     fun fromHabitType(type: HabitType): String = type.name
 
     @TypeConverter

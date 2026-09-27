@@ -128,17 +128,18 @@ class ObjectAppearanceMigrationTest {
         repeat(2) {
             val db = open()
             val sql = db.openHelper.writableDatabase
-            assertEquals(6, sql.version)
+            assertEquals(7, sql.version)
             assertEquals(before, snapshot(sql))
             tables.forEach { table ->
                 val current = rows(sql, "PRAGMA table_info(`$table`)")
-                assertEquals(columns.getValue(table), current.filter { it[1] != "appearance" })
+                assertEquals(columns.getValue(table), current.filter { it[1] !in setOf("appearance", "planMetadata") })
                 if (table in setOf("habits", "metrics")) assertEquals(
-                    listOf(columns.getValue(table).size.toString(), "appearance", "TEXT", "0", null, "0"), current.last())
+                    listOf(columns.getValue(table).size.toString(), "appearance", "TEXT", "0", null, "0"), current.single { it[1] == "appearance" })
             }
             val currentTriggers = rows(sql, "SELECT name,sql FROM sqlite_master WHERE type='trigger' ORDER BY name")
                 .map { listOf(it[0], it[1]?.replace(" OR OLD.appearance IS NOT NEW.appearance OR OLD.completionPolicy IS NOT NEW.completionPolicy", "")
-                    ?.replace(" OR OLD.appearance IS NOT NEW.appearance", "")) }
+                    ?.replace(" OR OLD.appearance IS NOT NEW.appearance", "")
+                    ?.replace(" OR OLD.planMetadata IS NOT NEW.planMetadata", "")) }
             assertEquals(triggers, currentTriggers)
             assertNull(db.habitDao().getHabitById(1)!!.appearance)
             assertNull(db.metricDao().getMetricById(1)!!.appearance)
@@ -167,7 +168,7 @@ class ObjectAppearanceMigrationTest {
             }
             raw.execSQL("ALTER TABLE unavailable_transmissions RENAME TO one_time_transmissions")
         }
-        assertEquals(6, open().openHelper.writableDatabase.version)
+        assertEquals(7, open().openHelper.writableDatabase.version)
     }
 
     @Test fun forgedVersionFiveIdentityFailsWithoutErasingRows() {

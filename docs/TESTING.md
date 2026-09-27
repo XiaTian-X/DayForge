@@ -397,7 +397,17 @@ DDL 和本地凭据/草稿，不生成推测的发送身份；验证建表后 sc
 核对触发器只有声明的新增字段条件。不得借新增列删除旧数据或冻结请求断言。
 `OnceScheduleStorageTest` 覆盖日期边界/非法日期、外观严格解码、Room 重开、无周期扣分及旧 mapper/
 配置导出拒绝；`ProtocolNextActivationBarrierTest` 覆盖仅含外观或裸 Once 的旧同步/恢复零写入保护。
-这些测试不代表素材授权、next mapper、配置包或页面消费者已接入。
+这些测试不代表素材授权、配置包或页面消费者已接入。
+
+`PlanMetadataMigrationTest` 从已提交的 v6 schema 独立建库，经生产入口升级及重开，比较 16 表
+原始列数据、非变更 DDL、外观/冻结请求/拒绝传输，验证只增加 nullable planMetadata 和对应触发条件；
+未知 identity 拒绝、DDL/触发器失败回滚后重试继续保留旧库。此前迁移测试继续验证原始字段与触发器，
+只追加本次声明的新列/触发条件差异，不以最新 schema 重新生成所谓旧库。
+`NextStructureMapperTest` 覆盖真实 next 夹具、一次性日期、四类周期计划/三类追踪模式及正倒数、
+目标日期窗口与状态、指标三种聚合/范围目标、角色及固定引用、时区切换、秒/小数/偏移精度、
+Room 重启后再编辑导出、元数据更新/outbox 的无操作与失败回滚、账户清空、严格类型及溢出拒绝。
+`ProtocolNextActivationBarrierTest` 另外覆盖仅有 planMetadata 时全部 11 个旧修改入口在联网前失败，
+保留队列、事实和账户设置。纯结构映射不替代素材授权、父子关系/历史锁和 HTTP 联合恢复验证。
 
 Room 依赖升级还须执行 `RoomUpgradeCompatibilityTest`：从已提交的当前 schema 独立建库，
 通过生产入口打开及重开，检查全部业务 / 同步表、schema identity、触发器、事务回滚和 Flow 通知。

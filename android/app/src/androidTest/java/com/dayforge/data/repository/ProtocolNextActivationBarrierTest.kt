@@ -118,4 +118,12 @@ class ProtocolNextActivationBarrierTest : SyncPersistenceFixture() {
             name = "appearance metric", unit = "kg", iconResId = 0, colorHex = "#000000", appearance = appearance))
         reopen(); assertAllLegacyWritesRefused()
     }
+
+    @Test fun planningMetadataAloneBlocksLegacySyncAndRecoveryAfterReopen() = runBlocking {
+        val goal = insertGoal("planning metadata")
+        database.habitDao().update(goal.copy(planMetadata = com.dayforge.data.model.PlanStructureMetadata(
+            "2026-09-27T00:00:00Z", 17, "2026-01-01", "2026-12-31", null, null, null, null)))
+        reopen()
+        assertAllLegacyWritesRefused()
+    }
 }

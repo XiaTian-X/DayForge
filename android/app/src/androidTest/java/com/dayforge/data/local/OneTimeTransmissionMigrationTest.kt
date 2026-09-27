@@ -100,7 +100,7 @@ class OneTimeTransmissionMigrationTest {
         repeat(2) {
             val db = open()
             val sql = db.openHelper.writableDatabase
-            assertEquals(6, sql.version)
+            assertEquals(7, sql.version)
             assertEquals(before, snapshot(sql))
             assertEquals(ddl, structure(sql))
             assertNull(db.completionFollowUpDao().transmission("op"))
@@ -125,7 +125,7 @@ class OneTimeTransmissionMigrationTest {
             }
             raw.execSQL("ALTER TABLE unavailable_metric_prompts RENAME TO completion_metric_prompts")
         }
-        assertEquals(6, open().openHelper.writableDatabase.version)
+        assertEquals(7, open().openHelper.writableDatabase.version)
     }
 
     @Test fun forgedVersionFourIdentityIsRejectedWithoutDeletingRows() {
