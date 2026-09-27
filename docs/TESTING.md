@@ -365,6 +365,14 @@ Room v4 的 `CompletionFollowUpMigrationTest` 从已提交 v3 schema 验证全�
 有限数和 Unicode 备注边界，以及账户/epoch/权限失效。提示与凭据的孤立行也必须阻断旧恢复入口。
 当前仍未切换 UI、普通习惯/计时提示和 v5 网络；不能把本地 saved 或提交凭据当作服务器成功响应。
 
+`OneTimeAcceptedEventStoreTest` 使用真实 Room/DataStore 校验完整完成→撤销→再完成的顺序确认、
+重开后原请求准备、先拉取后成功重放且队列不被提前消费、重复成功和独立协调器并发确认。
+成功证明错配时间/日期/时区/来源/正文/身份/revision 必须零写入；确认删队列失败要回滚权威投影、
+shadow 与触发器标志，下一次可按原请求重试。乱序增量、同版本分叉、快照篡改、整页中途失败、
+墓碑/缺失父记录、拒绝前驱、账户/epoch/设备/登录变化及权限撤回均覆盖。指标草稿和已保存观察值
+在完成与撤销确认后原样保留，UTC 等价表达按同一瞬时处理。夹具独立构造服务端事实，不使用
+被测 mapper/reducer 生成唯一预期；这不是 HTTP、后端操作重放或完整 bootstrap 的联合验收。
+
 Room 依赖升级还须执行 `RoomUpgradeCompatibilityTest`：从已提交的当前 schema 独立建库，
 通过生产入口打开及重开，检查全部业务 / 同步表、schema identity、触发器、事务回滚和 Flow 通知。
 库升级不应凭空变更 schema；无结构变化时保留原 schema 文件，并记录无差异证据。

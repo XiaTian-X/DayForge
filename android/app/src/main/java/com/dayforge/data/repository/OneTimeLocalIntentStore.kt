@@ -84,6 +84,12 @@ internal class OneTimeLocalIntentStore(
         database.withTransaction { load(activityUuid, access.session).snapshot }
     }
 
+    /** Shared validation for the authenticated sync transaction; do not reacquire the session lock. */
+    internal suspend fun readInTransaction(activityUuid: String, session: LocalDataSession): OneTimeLocalSnapshot {
+        check(database.inTransaction())
+        return load(activityUuid, session).snapshot
+    }
+
     suspend fun append(session: LocalDataSession, command: OneTimeLocalCommand): OneTimeLocalAppendResult =
         sessions.exclusive {
             val access = tokens.localFactAccess()
