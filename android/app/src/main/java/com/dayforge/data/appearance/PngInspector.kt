@@ -284,6 +284,21 @@ internal fun inspectPngStructure(data: ByteArray, expected: IconBlob): PngInspec
 
 /** Returns an owned, density-independent sRGB bitmap. Caller must release/cache it responsibly. */
 fun decodePng(source: ByteArray, expected: IconBlob): Bitmap {
+    return decodePngSampled(source, expected, 1)
+}
+
+internal fun decodePngForDisplay(source: ByteArray, expected: IconBlob, size: IconRasterSize): Bitmap {
+    val fit = size.fit(expected.width, expected.height)
+    val width = kotlin.math.ceil(fit.width()).toInt().coerceAtLeast(1)
+    val height = kotlin.math.ceil(fit.height()).toInt().coerceAtLeast(1)
+    var sample = 1
+    while (sample * 2 <= maxOf(expected.width, expected.height) &&
+        maxOf(1, expected.width / (sample * 2)) >= width &&
+        maxOf(1, expected.height / (sample * 2)) >= height) sample *= 2
+    return decodePngSampled(source, expected, sample)
+}
+
+private fun decodePngSampled(source: ByteArray, expected: IconBlob, sample: Int): Bitmap {
     pngRequire(source.size <= MAX_BYTES && source.size == expected.byteLength, "PNG_BYTE_LENGTH")
     val data = source.copyOf()
     val inspected = inspectPngStructure(data, expected)
@@ -292,14 +307,17 @@ fun decodePng(source: ByteArray, expected: IconBlob): Bitmap {
     pngRequire(bounds.outWidth == inspected.width && bounds.outHeight == inspected.height &&
         bounds.outMimeType == "image/png", "PNG_DECODE")
     val options = BitmapFactory.Options().apply {
+        inSampleSize = sample
         inScaled = false
         inPreferredConfig = Bitmap.Config.ARGB_8888
         inPreferredColorSpace = ColorSpace.get(ColorSpace.Named.SRGB)
     }
     val result = BitmapFactory.decodeByteArray(data, 0, data.size, options)
         ?: throw PngValidationException("PNG_DECODE")
-    if (result.width != inspected.width || result.height != inspected.height ||
-        result.config == Bitmap.Config.HARDWARE || result.byteCount > inspected.width * inspected.height * 8) {
+    fun validDimension(actual: Int, original: Int) = actual in
+        maxOf(1, original / sample)..maxOf(1, (original + sample - 1) / sample)
+    if (!validDimension(result.width, inspected.width) || !validDimension(result.height, inspected.height) ||
+        result.config == Bitmap.Config.HARDWARE || result.byteCount > result.width * result.height * 8) {
         result.recycle()
         throw PngValidationException("PNG_DECODE")
     }
@@ -311,7 +329,7 @@ fun decodePng(source: ByteArray, expected: IconBlob): Bitmap {
     // changing the original validated bytes/hash. Both allocations are bounded.
     var normalized: Bitmap? = null
     try {
-        val target = createBitmap(inspected.width, inspected.height, Bitmap.Config.ARGB_8888, true, srgb)
+        val target = createBitmap(result.width, result.height, Bitmap.Config.ARGB_8888, true, srgb)
         normalized = target
         target.density = Bitmap.DENSITY_NONE
         Canvas(target).drawBitmap(result, 0f, 0f, null)
