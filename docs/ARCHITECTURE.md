@@ -24,6 +24,11 @@ Android `HabitRepository.createHabit` / `updateHabit` 在同一个 Room 写事�
 
 Android 使用本地优先模型：UI 读取 Room 中的可观察状态，本地操作立即提交到 Room，并在同一事务中写入同步 outbox。网络同步不能成为正常录入的前置条件。
 
+登录在账户协调锁内完成旧缓存清理或无归属数据接管确认后，通过一次 DataStore 事务激活凭据与
+本地数据 owner。跳过首次同步不推迟归属绑定，也不要求先注册设备才能离线录入。同账户重登
+保留 device/cursor/epoch 和权限，仅更新认证会话；写入失败不能留下半绑定状态。此入口不能
+替代清理/确认流程，令牌刷新也不能用于更换本地 owner。
+
 依赖方向为：
 
 ```text
