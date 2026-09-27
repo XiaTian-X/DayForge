@@ -3,10 +3,12 @@ package com.dayforge.data.repository
 import androidx.room.withTransaction
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.LocalDataSession
+import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
 import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.SyncOutboxEntity
+import com.dayforge.data.local.entity.LocalFactSubmissionEntity
 import com.dayforge.data.model.FailMode
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.model.OneTimeIntent
@@ -23,6 +25,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.coroutines.flow.first
 
 internal class OneTimeLocalException(val reason: Reason) : IllegalStateException(reason.name) {
     enum class Reason {
@@ -61,16 +64,18 @@ internal data class OneTimeLocalAppendResult(
 
 /**
  * V5 local storage implementation. Not injected into the active v4 UI/sync path.
- * Activation also requires metric prompts, strict server confirmation and all view consumers.
+ * Activation also requires prompt UI wiring, strict server confirmation and all view consumers.
  */
 internal class OneTimeLocalIntentStore(
     private val database: HabitDatabase,
     private val tokens: TokenManager,
-    private val sessions: AccountSessionCoordinator
+    private val sessions: AccountSessionCoordinator,
+    private val preferences: PreferencesManager
 ) {
     private val habits = database.habitDao()
     private val facts = database.completionDao()
     private val outbox = database.syncOutboxDao()
+    private val followUps = database.completionFollowUpDao()
     private val json = Json { encodeDefaults = true }
 
     suspend fun read(activityUuid: String): OneTimeLocalSnapshot = sessions.exclusive {
@@ -88,6 +93,19 @@ internal class OneTimeLocalIntentStore(
                 val loaded = load(command.activityUuid, session)
                 val fact = fact(command, loaded.habit.id)
                 val payload = payload(fact)
+                val receipt = followUps.submission(command.pending.operationId)
+                if (receipt != null) {
+                    if (receipt != LocalFactSubmissionEntity(command.pending.operationId,
+                            "activity_event", fact.uuid, command.activityUuid, payload)) {
+                        reject(OneTimeLocalException.Reason.OPERATION_ID_REUSED)
+                    }
+                    val stored = facts.getCompletionByUuid(fact.uuid)
+                        ?: reject(OneTimeLocalException.Reason.INVALID_LOCAL_STATE)
+                    if (stored.habitId != fact.habitId || payload(stored) != payload) {
+                        reject(OneTimeLocalException.Reason.INVALID_LOCAL_STATE)
+                    }
+                    return@withTransaction OneTimeLocalAppendResult(stored.id, true, loaded.snapshot)
+                }
                 val previous = outbox.getByOperationId(command.pending.operationId)
                 if (previous != null) {
                     val stored = facts.getCompletionByUuid(fact.uuid)
@@ -96,7 +114,9 @@ internal class OneTimeLocalIntentStore(
                     ) reject(OneTimeLocalException.Reason.OPERATION_ID_REUSED)
                     return@withTransaction OneTimeLocalAppendResult(stored.id, true, loaded.snapshot)
                 }
-                if (facts.getCompletionByUuid(fact.uuid) != null || outbox.getState("activity_event", fact.uuid) != null) {
+                if (facts.getCompletionByUuid(fact.uuid) != null || outbox.getState("activity_event", fact.uuid) != null ||
+                    followUps.submissionForEntity("activity_event", fact.uuid) != null
+                ) {
                     reject(OneTimeLocalException.Reason.EVENT_ID_REUSED)
                 }
                 val queue = loaded.snapshot.queue
@@ -120,6 +140,11 @@ internal class OneTimeLocalIntentStore(
                     referenceUuid = command.activityUuid, payloadJson = payload,
                     createdAt = command.occurredAtMillis
                 ))
+                followUps.insertSubmission(LocalFactSubmissionEntity(command.pending.operationId,
+                    "activity_event", fact.uuid, command.activityUuid, payload))
+                if (fact.oneTimeAction == "complete" && !preferences.getNeverAskAgain(loaded.habit.id).first()) {
+                    CompletionMetricPromptStore.createInTransaction(database, loaded.habit, fact.uuid)
+                }
                 OneTimeLocalAppendResult(id, false, load(command.activityUuid, session).snapshot)
             }
         }
