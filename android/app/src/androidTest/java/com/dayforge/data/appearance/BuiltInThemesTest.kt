@@ -40,7 +40,7 @@ class BuiltInThemesTest {
     private val seeds = listOf("FF1976D2", "FF4CAF50", "FFE91E63", "FF1A237E", "FF1B5E20", "FF880E4F")
     @After fun cleanup() { assertTrue(parent.deleteRecursively()) }
 
-    @Test fun sevenPackagedThemesHaveStableIdentityCompletePalettesAndOriginalModeAvailability() = runBlocking {
+    @Test fun sevenPackagedThemesHaveStableIdentityCompletePalettesAndOriginalModeAvailability() = runBlocking<Unit> {
         val loaded = loader().readAll()
         assertEquals(listOf("Ocean", "Nature", "Vibrant", "Dusk", "Forest", "Coral", "OLED"), loaded.map { it.definition.name })
         assertEquals((1..7).map { "df000000-0000-4000-8000-" + it.toString().padStart(12, '0') }, loaded.map { it.definition.themeId })
@@ -58,7 +58,7 @@ class BuiltInThemesTest {
         assertThrows(UnsupportedOperationException::class.java) { (loaded[0].definition.light.material as MutableMap).clear() }
     }
 
-    @Test fun allMaterialColorsMatchIndependentOldSeedAndOledBaselinesIncludingNineFormerDefaults() = runBlocking {
+    @Test fun allMaterialColorsMatchIndependentOldSeedAndOledBaselinesIncludingNineFormerDefaults() = runBlocking<Unit> {
         val fixtures = SeedPaletteFixtures.load()
         for ((index, theme) in loader().readAll().withIndex()) for (dark in listOf(false, true)) {
             val resolved = ResolvedTheme.from(theme.definition, dark)
@@ -97,7 +97,7 @@ class BuiltInThemesTest {
             surfaceContainerHighest, surfaceContainerLow, surfaceContainerLowest).map { it.toArgb() }
     }
 
-    @Test fun statusAndChartRolesAreExplicitAndTextPairsHaveAdequateContrast() = runBlocking {
+    @Test fun statusAndChartRolesAreExplicitAndTextPairsHaveAdequateContrast() = runBlocking<Unit> {
         val light = listOf(0xff146c2e, 0xffffffff, 0xffa0f6ac, 0xff002109, 0xff795900, 0xffffffff, 0xffffdf9b, 0xff261900)
         val dark = listOf(0xff85d992, 0xff003914, 0xff005321, 0xffa0f6ac, 0xfff4bf48, 0xff402d00, 0xff5c4300, 0xffffdf9b)
         val names = listOf("success", "on_success", "success_container", "on_success_container", "warning", "on_warning", "warning_container", "on_warning_container")
@@ -117,7 +117,7 @@ class BuiltInThemesTest {
         }
     }
 
-    @Test fun packagedInputIsOpenedOnceOffMainAndFullyClosedBeforeAnyInstallation() = runBlocking {
+    @Test fun packagedInputIsOpenedOnceOffMainAndFullyClosedBeforeAnyInstallation() = runBlocking<Unit> {
         val opened = mutableListOf<String>(); var closed = 0
         val loaded = BuiltInThemes { path ->
             assertNotEquals(Looper.getMainLooper(), Looper.myLooper()); opened.add(path)
@@ -133,7 +133,7 @@ class BuiltInThemesTest {
         }
     }
 
-    @Test fun malformedMissingOrMismatchedPackagedInputDoesNotInstallAPartialSet() = runBlocking {
+    @Test fun malformedMissingOrMismatchedPackagedInputDoesNotInstallAPartialSet() = runBlocking<Unit> {
         val entry = BuiltInTheme.OLED
         val original = assets.open(entry.assetPath).bufferedReader().use { it.readText() }
         for (bad in listOf("{}", original.replace(entry.themeId, BuiltInTheme.OCEAN.themeId),
@@ -150,7 +150,7 @@ class BuiltInThemesTest {
         assertFalse(File(parent, "theme-definitions-v1").exists())
     }
 
-    @Test fun installedFilesSurviveReopenAndConcurrentRetriesWithoutChangingLegacyFiles() = runBlocking {
+    @Test fun installedFilesSurviveReopenAndConcurrentRetriesWithoutChangingLegacyFiles() = runBlocking<Unit> {
         val legacy = File(parent, "themes").also { check(it.mkdir()) }
         val old = File(legacy, "old.json").also { it.writeText("synthetic legacy") }
         val choices = File(parent, "synthetic-preferences").also { it.writeText("unchanged") }
@@ -162,7 +162,7 @@ class BuiltInThemesTest {
         assertEquals("synthetic legacy", old.readText()); assertEquals("unchanged", choices.readText())
     }
 
-    @Test fun fileWriteFailureKeepsAlreadyInstalledVersionsAndRetryCompletesTheSet() = runBlocking {
+    @Test fun fileWriteFailureKeepsAlreadyInstalledVersionsAndRetryCompletesTheSet() = runBlocking<Unit> {
         var writes = 0
         val failure = IOException("synthetic third theme write failure")
         val faulty = ThemeFileRepository(parent, object : ThemeFileIo() {
@@ -181,7 +181,7 @@ class BuiltInThemesTest {
         assertArrayEquals(first, repository().read(BuiltInTheme.OCEAN.themeId, 1).exportBytes())
     }
 
-    @Test fun conflictingExistingVersionCannotBeOverwrittenByBuiltinInitialization() = runBlocking {
+    @Test fun conflictingExistingVersionCannotBeOverwrittenByBuiltinInitialization() = runBlocking<Unit> {
         val entry = BuiltInTheme.OCEAN
         val modified = assets.open(entry.assetPath).bufferedReader().use { it.readText() }.replace("#005FAF", "#FF0000")
         repository().install(ValidatedTheme.parse(modified.toByteArray()))
@@ -191,7 +191,7 @@ class BuiltInThemesTest {
         assertEquals(1, File(parent, "theme-definitions-v1").list()!!.size)
     }
 
-    @Test fun cancellationDuringPreviewClosesSourceAndDoesNotInstallAnyFiles() = runBlocking {
+    @Test fun cancellationDuringPreviewClosesSourceAndDoesNotInstallAnyFiles() = runBlocking<Unit> {
         lateinit var caller: Job
         var opened = 0; var closed = 0
         val loader = BuiltInThemes { path ->
