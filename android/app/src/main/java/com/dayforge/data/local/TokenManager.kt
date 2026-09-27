@@ -16,6 +16,15 @@ import javax.inject.Singleton
 
 data class AuthenticationSession(val userId: String, val generation: String)
 
+/** No credentials; a captured UI intent must not survive login or replica replacement. */
+internal data class LocalDataSession(
+    val authentication: AuthenticationSession,
+    val serverInstanceId: String?,
+    val syncEpoch: String?
+)
+
+internal data class LocalFactAccess(val session: LocalDataSession, val canAppend: Boolean)
+
 /** No data-class toString: credentials must not appear in request-tag diagnostics. */
 class AuthenticationSnapshot(
     val session: AuthenticationSession,
@@ -145,6 +154,21 @@ class TokenManager @Inject constructor(
     /** Read request credentials and their account generation from one DataStore snapshot. */
     suspend fun authenticationSnapshot(): AuthenticationSnapshot? =
         snapshot(dataStore.data.first())
+
+    /** Read ownership, generation, replica and permissions from the same persisted snapshot. */
+    internal suspend fun localFactAccess(): LocalFactAccess? {
+        val preferences = dataStore.data.first()
+        val authentication = snapshot(preferences)?.session ?: return null
+        if (preferences[SYNC_ACCOUNT_ID_KEY] != authentication.userId) return null
+        val server = preferences[SERVER_INSTANCE_ID_KEY]
+        val epoch = preferences[SYNC_EPOCH_KEY]
+        if ((server == null) != (epoch == null)) return null
+        return LocalFactAccess(
+            LocalDataSession(authentication, server, epoch),
+            preferences[DEVICE_CAPABILITIES_KNOWN_KEY] != true ||
+                "facts.append" in (preferences[DEVICE_CAPABILITIES_KEY] ?: emptySet())
+        )
+    }
 
     private fun snapshot(preferences: Preferences): AuthenticationSnapshot? {
         val userId = preferences[USER_ID_KEY] ?: return null

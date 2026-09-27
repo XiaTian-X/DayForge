@@ -155,6 +155,20 @@ entity/revision/base_entity/local_entity；客户端还须绑定原 operation/en
 指标事实与输入草稿不因这些队列分类而删除；账户切换、epoch 更新、墓碑及数据库 CAS
 仍由接入层在事务中验证。纯函数没有账户授权能力，不取代真实存储/HTTP 竞争和恢复测试。
 
+Android 内部 `OneTimeLocalIntentStore` 已提供真实 Room 写入，但尚未注入业务入口。
+每次写入在共享账户锁内重新读取认证 generation、数据 owner、server/epoch 和 facts.append 权限；
+首次联网前权限未知允许离线保存，已知无事实权限则拒绝。重新登录或副本变化使旧界面意图失效，
+同会话 token 刷新不使意图失效。Room 事务内再次投影并验证 CAS，原子保存事实与
+`recordType=one_time_completion` 的独立 outbox：保留调用方 operation/event ID，载荷创建时冻结，
+不合并、不删除历史、不更新已确认基准。事务临时抑制旧 completion 触发器；失败时连同标志一起回滚。
+本地重复返回仅说明相同请求已持久化，不代表服务端成功；不会清除拒绝状态或代替原请求重放。
+无原队列的未确认事实、墓碑、损坏时间/状态或不匹配载荷明确拒绝，不猜测修复。
+
+启用前，旧 v4 同步与恢复/重试/冲突处理入口若发现任意新策略、投影、意图列或专用队列，
+须在联网和修改持久状态前抛出 `ProtocolNextDataRequiresUpgradeException`。全 null 的旧数据不受影响。
+这道屏障不等于 v5 已上线；once 计划创建、指标提示持久化、严格确认/远端合并以及全部页面消费者
+仍须完成后共同启用，不能从调试入口提前创建事项并交给旧 mapper 处理。
+
 ## 2. 图标引用与包
 
 两种引用，不持久化 Android resource ID/ImageVector/文件绝对路径：

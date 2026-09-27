@@ -16,6 +16,9 @@ interface HabitDao {
     @Query("SELECT * FROM habits ORDER BY createdAt DESC")
     suspend fun getAllHabitsOnce(): List<HabitEntity>
 
+    @Query("SELECT EXISTS(SELECT 1 FROM habits WHERE completionPolicy IS NOT NULL OR oneTimeConfirmedVersion IS NOT NULL OR oneTimeConfirmedHeadEventUuid IS NOT NULL OR oneTimeConfirmedCompletionEventUuid IS NOT NULL)")
+    suspend fun hasProtocolNextState(): Boolean
+
     @Query("SELECT * FROM habits WHERE id = :id")
     suspend fun getHabitById(id: Long): HabitEntity?
 
