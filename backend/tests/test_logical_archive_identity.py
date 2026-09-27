@@ -128,7 +128,7 @@ def test_same_public_ids_round_trip_without_crossing_accounts(tmp_path):
     duplicate_domain_for_second_owner(source_url)
     archive = export_archive(source_url, tmp_path / "source.zip")
     bundle = read_bundle(archive)
-    assert bundle["manifest"]["format_version"] == 2
+    assert bundle["manifest"]["format_version"] == 3
     for name in SCOPED_TABLES:
         records = [
             json.loads(line) for line in bundle["collections"][name].splitlines()
@@ -186,8 +186,10 @@ def test_same_public_ids_round_trip_without_crossing_accounts(tmp_path):
         ]
 
 
-def test_frozen_v1_archive_imports_then_exports_v2(tmp_path):
-    bundle = json.loads(FIXTURE.read_text())
+@pytest.mark.parametrize("version", [1, 2])
+def test_frozen_old_archive_imports_then_exports_v3(tmp_path, version):
+    fixture = FIXTURE.with_name(f"logical-archive-v{version}.json")
+    bundle = json.loads(fixture.read_text())
     # Archives require an exact schema match; restore the immutable old fixture
     # to its declared revision, not an implicitly changing current head.
     target_url = migrate(
@@ -196,7 +198,7 @@ def test_frozen_v1_archive_imports_then_exports_v2(tmp_path):
     epoch = import_archive(target_url, write_bundle(tmp_path / "v1.zip", bundle))
     assert epoch != bundle["manifest"]["source_sync_epoch"]
     exported = read_bundle(export_archive(target_url, tmp_path / "v2.zip"))
-    assert exported["manifest"]["format_version"] == 2
+    assert exported["manifest"]["format_version"] == 3
     assert (
         exported["manifest"]["server_instance_id"]
         == bundle["manifest"]["server_instance_id"]
@@ -211,7 +213,7 @@ def test_frozen_v1_archive_imports_then_exports_v2(tmp_path):
     assert exported["collections"]["api_tokens"] == bundle["collections"]["api_tokens"]
 
 
-@pytest.mark.parametrize("version", [None, True, 1.0, "1", 0, 3])
+@pytest.mark.parametrize("version", [None, True, 1.0, "1", 0, 4])
 def test_unsupported_or_noninteger_version_leaves_target_unchanged(tmp_path, version):
     bundle = json.loads(FIXTURE.read_text())
     bundle["manifest"]["format_version"] = version
@@ -225,7 +227,7 @@ def test_unsupported_or_noninteger_version_leaves_target_unchanged(tmp_path, ver
     assert database_dump(target) == before
 
 
-@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("version", [1, 2, 3])
 @pytest.mark.parametrize(
     "damage,message",
     [
@@ -238,8 +240,10 @@ def test_unsupported_or_noninteger_version_leaves_target_unchanged(tmp_path, ver
 def test_bad_archive_rolls_back_identity_and_every_table(
     tmp_path, version, damage, message
 ):
-    bundle = json.loads(FIXTURE.read_text())
-    if version == 2:
+    bundle = json.loads(
+        FIXTURE.with_name(f"logical-archive-v{min(version, 2)}.json").read_text()
+    )
+    if version == 3:
         source_url = migrate(tmp_path / "source.sqlite")
         seed_source(source_url)
         bundle = read_bundle(export_archive(source_url, tmp_path / "v2.zip"))

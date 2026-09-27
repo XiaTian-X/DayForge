@@ -7,6 +7,8 @@ import json
 import os
 import tempfile
 import zipfile
+from collections.abc import Callable
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from pathlib import Path
@@ -23,23 +25,30 @@ from sqlalchemy import (
     Numeric,
     Time,
     create_engine,
+    or_,
     select,
     text,
 )
 from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.exc import SQLAlchemyError
 
-from src.storage.sqlite_maintenance import StorageValidationError
+from src.storage.errors import StorageValidationError
+from src.storage.asset_archive import ArchiveBlob, AssetArchive
+from src.storage.asset_files import AssetFiles
+from src.storage.asset_root import AssetRootLease, AssetRootBusy, scan_installations
+from src.storage.backup_files import regular_file, publish_new
+from src.storage.backup_zip import BackupZip, ZipLimits
+from src.storage import logical_io
 from src.storage.database_adapter import configure_sqlite_transactions
 from src.v2.one_time_recovery import OneTimeRecoveryError, read_connection_history
-from src.v2.asset_recovery import AssetRecoveryError, read_asset_metadata
+from src.v2.asset_recovery import AssetRecoveryError, ReadyBlob, read_asset_metadata
 from src.v2.object_appearance_recovery import (
     ObjectAppearanceRecoveryError,
     read_object_appearances,
 )
 
 
-LOGICAL_FORMAT_VERSION = 2
-READABLE_FORMAT_VERSIONS = frozenset({1, LOGICAL_FORMAT_VERSION})
+LOGICAL_FORMAT_VERSION = 3
 TABLE_ORDER = (
     "users",
     "user_profiles",
@@ -72,6 +81,16 @@ TABLE_ORDER = (
 TRANSPORT_TABLES = ("sync_changes", "sync_cursors")
 
 
+@contextmanager
+def _archive_errors():
+    try:
+        yield
+    except (ValueError, OSError, SQLAlchemyError) as error:
+        raise StorageValidationError(
+            "logical archive validation or I/O failed"
+        ) from error
+
+
 def _canonical(value: Any) -> Any:
     if isinstance(value, datetime):
         normalized = value if value.tzinfo else value.replace(tzinfo=UTC)
@@ -89,7 +108,13 @@ def _canonical(value: Any) -> Any:
 
 def _json_line(value: dict[str, Any]) -> bytes:
     return (
-        json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        )
         + "\n"
     ).encode("utf-8")
 
@@ -113,14 +138,20 @@ def _source_rows(
     connection: Connection, metadata: MetaData
 ) -> dict[str, list[dict[str, Any]]]:
     names = ["server_instances", *TABLE_ORDER]
-    return {
-        name: [
-            dict(row._mapping)
-            for row in connection.execute(select(metadata.tables[name]))
-        ]
-        for name in names
-        if name in metadata.tables
-    }
+    result = {}
+    budget = logical_io.Budget()
+    for name in names:
+        if name not in metadata.tables:
+            continue
+        records = []
+        for row in connection.execute(select(metadata.tables[name])):
+            value = dict(row._mapping)
+            encoded = _json_line({key: _canonical(item) for key, item in value.items()})
+            logical_io.json_object(encoded, limit=logical_io.RECORD_LIMIT)
+            budget.consume(len(encoded), 1)
+            records.append(value)
+        result[name] = records
+    return result
 
 
 def _identity_key(
@@ -234,6 +265,7 @@ def _portable_collections(
     rows = _source_rows(connection, metadata)
     identities = _build_primary_keys(metadata, rows, format_version=format_version)
     collections: dict[str, bytes] = {}
+    budget = logical_io.Budget()
     identity_row = rows["server_instances"]
     if len(identity_row) != 1:
         raise StorageValidationError("logical archive requires one server identity")
@@ -270,7 +302,17 @@ def _portable_collections(
                     data[column.name] = _canonical(value)
             records.append({"key": key, "data": data})
         records.sort(key=lambda item: item["key"])
-        collections[table_name] = b"".join(_json_line(record) for record in records)
+        pieces = []
+        size = 0
+        for record in records:
+            line = _json_line(record)
+            logical_io.json_object(line, limit=logical_io.RECORD_LIMIT)
+            size += len(line)
+            if size > logical_io.COLLECTION_LIMIT:
+                raise StorageValidationError("logical collection exceeds byte budget")
+            budget.consume(len(line), 1)
+            pieces.append(line)
+        collections[table_name] = b"".join(pieces)
     return collections, identity_row[0]
 
 
@@ -291,14 +333,62 @@ def _validate_one_time_history(connection: Connection, metadata: MetaData) -> No
         raise StorageValidationError(f"invalid one-time history: {error}") from error
 
 
-def _validate_appearance(connection: Connection, metadata: MetaData) -> None:
+def _validate_hierarchy(connection: Connection, metadata: MetaData) -> None:
+    nodes = metadata.tables.get("plan_nodes")
+    if nodes is None:
+        return
+    parent = nodes.alias("parent")
+    invalid = connection.execute(
+        select(nodes.c.id)
+        .join(parent, nodes.c.parent_node_id == parent.c.id)
+        .where(
+            or_(
+                nodes.c.node_kind != "activity",
+                parent.c.node_kind != "goal",
+                parent.c.parent_node_id.is_not(None),
+                nodes.c.owner_user_id != parent.c.owner_user_id,
+            )
+        )
+        .limit(1)
+    ).first()
+    if invalid is not None:
+        raise StorageValidationError(
+            "logical archive violates the single-parent hierarchy"
+        )
+
+
+def _validate_appearance(
+    connection: Connection,
+    metadata: MetaData,
+    *,
+    verify_assets: Callable[[tuple[ArchiveBlob, ...]], None] | None = None,
+) -> None:
     if "appearance_accounts" not in metadata.tables:
         return
     try:
+
+        def verify(values: tuple[ReadyBlob, ...]) -> None:
+            users = metadata.tables["users"]
+            owners = dict(
+                connection.execute(select(users.c.id, users.c.public_id)).tuples().all()
+            )
+            try:
+                entries = tuple(
+                    ArchiveBlob(owners[item.owner_user_id], item.blob, item.profile)
+                    for item in values
+                )
+            except (KeyError, ValueError) as error:
+                raise AssetRecoveryError(
+                    "invalid appearance public ownership"
+                ) from error
+            if verify_assets is not None:
+                verify_assets(entries)
+
         read_asset_metadata(
             lambda statement: [
                 dict(row) for row in connection.execute(text(statement)).mappings()
-            ]
+            ],
+            verify_ready=verify if verify_assets is not None else None,
         )
     except AssetRecoveryError as error:
         raise StorageValidationError(f"invalid appearance metadata: {error}") from error
@@ -315,7 +405,10 @@ def _validate_appearance(connection: Connection, metadata: MetaData) -> None:
             ) from error
 
 
-def export_archive(database_url: str, archive_path: Path) -> Path:
+@_archive_errors()
+def export_archive(
+    database_url: str, archive_path: Path, *, asset_root: Path | None = None
+) -> Path:
     engine = _archive_engine(database_url)
     try:
         metadata = _reflect(engine)
@@ -328,15 +421,23 @@ def export_archive(database_url: str, archive_path: Path) -> Path:
                         select(timer.c.id).where(
                             timer.c.state.in_(("running", "paused"))
                         )
-                    ).fetchall()
+                    ).first()
                 )
             if has_active_timers:
                 raise StorageValidationError(
                     "logical export requires a maintenance window without active timers"
                 )
-            _validate_one_time_history(connection, metadata)
-            _validate_appearance(connection, metadata)
+            # Bound source collections before the complete graph validators
+            # materialize their own views of this same read snapshot.
             collections, identity = _portable_collections(connection, metadata)
+            _validate_hierarchy(connection, metadata)
+            _validate_one_time_history(connection, metadata)
+            entries: list[ArchiveBlob] = []
+            _validate_appearance(
+                connection,
+                metadata,
+                verify_assets=entries.extend if asset_root is not None else None,
+            )
             alembic_head = (
                 connection.execute(
                     select(metadata.tables["alembic_version"].c.version_num)
@@ -362,7 +463,16 @@ def export_archive(database_url: str, archive_path: Path) -> Path:
             for name, content in collections.items()
         },
     }
-    archive_path = archive_path.resolve()
+    manifest_data = (
+        json.dumps(
+            manifest, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False
+        )
+        + "\n"
+    ).encode("utf-8")
+    logical_io.json_object(manifest_data, limit=logical_io.MANIFEST_LIMIT)
+    if len(entries) + len(collections) + 1 > ZipLimits().entries:
+        raise StorageValidationError("logical archive exceeds entry budget")
+    archive_path = archive_path.absolute()
     archive_path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{archive_path.name}.", suffix=".incomplete", dir=archive_path.parent
@@ -373,50 +483,46 @@ def export_archive(database_url: str, archive_path: Path) -> Path:
         with zipfile.ZipFile(
             temporary, "w", compression=zipfile.ZIP_DEFLATED
         ) as archive:
-            archive.writestr(
-                "manifest.json",
-                json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True)
-                + "\n",
-            )
+            archive.writestr("manifest.json", manifest_data)
             for name, content in collections.items():
                 archive.writestr(f"collections/{name}.jsonl", content)
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, archive_path)
+            if entries:
+                assert asset_root is not None
+                files = AssetFiles(asset_root)
+                for entry in entries:
+                    archive.writestr(
+                        entry.name,
+                        files.read(entry.owner_public_id, entry.blob, entry.profile),
+                    )
+        with _open_archive(temporary) as (
+            _,
+            saved_manifest,
+            saved_collections,
+            saved_names,
+            source,
+        ):
+            if saved_manifest != manifest or set(saved_collections) != set(collections):
+                raise StorageValidationError("logical archive readback mismatch")
+            AssetArchive(source, entries, additional_names=saved_names).verify()
+        publish_new(temporary, archive_path)
     finally:
         temporary.unlink(missing_ok=True)
     return archive_path
 
 
-def _read_archive(
-    archive_path: Path,
-) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
-    with zipfile.ZipFile(archive_path) as archive:
-        names = set(archive.namelist())
-        if "manifest.json" not in names:
-            raise StorageValidationError("logical archive has no manifest")
-        manifest = json.loads(archive.read("manifest.json"))
-        version = manifest.get("format_version")
-        if type(version) is not int or version not in READABLE_FORMAT_VERSIONS:
-            raise StorageValidationError("unsupported logical archive version")
-        expected = {"manifest.json"}
-        collections: dict[str, list[dict[str, Any]]] = {}
-        for name, specification in manifest.get("collections", {}).items():
-            member = specification["file"]
-            if member != f"collections/{name}.jsonl" or member not in names:
-                raise StorageValidationError(f"invalid collection path for {name}")
-            expected.add(member)
-            content = archive.read(member)
-            if _digest(content) != specification["sha256"]:
-                raise StorageValidationError(f"collection checksum mismatch: {name}")
-            records = [json.loads(line) for line in content.splitlines() if line]
-            if len(records) != specification["rows"]:
-                raise StorageValidationError(f"collection row count mismatch: {name}")
-            if len({record["key"] for record in records}) != len(records):
-                raise StorageValidationError(f"duplicate logical key in {name}")
-            collections[name] = records
-        if names != expected:
-            raise StorageValidationError("logical archive contains undeclared files")
-    return manifest, collections
+@contextmanager
+def _open_archive(archive_path: Path):
+    try:
+        with regular_file(archive_path) as source:
+            archive = BackupZip(source)
+            manifest, collections, names = logical_io.read_collections(
+                archive, frozenset(("server_instances", *TABLE_ORDER))
+            )
+            yield archive, manifest, collections, names, source
+    except (ValueError, OSError) as error:
+        raise StorageValidationError(
+            "logical archive validation or I/O failed"
+        ) from error
 
 
 def _coerce(column, value: Any) -> Any:
@@ -449,7 +555,15 @@ def _insert_collection(
             values: dict[str, Any] = {}
             unresolved = False
             for name, value in record["data"].items():
+                if name not in table.c:
+                    raise StorageValidationError(
+                        f"unknown logical column in {table.name}"
+                    )
                 if isinstance(value, dict) and set(value) == {"$ref", "key"}:
+                    if type(value["$ref"]) is not str or type(value["key"]) is not str:
+                        raise StorageValidationError(
+                            "invalid logical identity reference"
+                        )
                     reference = (value["$ref"], value["key"])
                     if reference not in target_keys:
                         unresolved = True
@@ -484,86 +598,192 @@ def _insert_collection(
         pending = deferred
 
 
-def import_archive(database_url: str, archive_path: Path) -> str:
-    manifest, collections = _read_archive(archive_path.resolve())
-    engine = _archive_engine(database_url)
-    new_epoch = str(uuid4())
-    try:
-        metadata = _reflect(engine)
-        if (
-            manifest.get("alembic_head") is not None
-            and "alembic_version" in metadata.tables
-        ):
-            with engine.connect() as connection:
-                target_head = connection.execute(
-                    select(metadata.tables["alembic_version"].c.version_num)
-                ).scalar_one()
-            if target_head != manifest["alembic_head"]:
+def _check_head(
+    connection: Connection, metadata: MetaData, manifest: dict[str, Any]
+) -> None:
+    if manifest.get("alembic_head") is None or "alembic_version" not in metadata.tables:
+        raise StorageValidationError("logical archive requires a matching Alembic head")
+    target_head = connection.execute(
+        select(metadata.tables["alembic_version"].c.version_num)
+    ).scalar_one()
+    if target_head != manifest["alembic_head"]:
+        raise StorageValidationError("target Alembic head differs from the archive")
+
+
+def _import_records(
+    connection: Connection,
+    metadata: MetaData,
+    manifest: dict[str, Any],
+    collections: dict[str, list[dict[str, Any]]],
+    new_epoch: str,
+    *,
+    verify_assets: Callable[[tuple[ArchiveBlob, ...]], None] | None = None,
+) -> None:
+    _check_head(connection, metadata, manifest)
+    expected = {"server_instances"} | (set(TABLE_ORDER) & metadata.tables.keys())
+    if collections.keys() != expected:
+        raise StorageValidationError(
+            "logical collection set differs from target schema"
+        )
+    for name in (*TABLE_ORDER, *TRANSPORT_TABLES):
+        if name in metadata.tables:
+            count = connection.execute(select(metadata.tables[name])).first()
+            if count is not None:
+                raise StorageValidationError(f"target table is not empty: {name}")
+
+    server_records = collections.get("server_instances", [])
+    if len(server_records) != 1:
+        raise StorageValidationError("archive must contain one server identity")
+    server = metadata.tables["server_instances"]
+    if not server_records[0]["data"].keys() <= set(server.c.keys()):
+        raise StorageValidationError("unknown logical server column")
+    server_values = {
+        name: _coerce(server.c[name], value)
+        for name, value in server_records[0]["data"].items()
+    }
+    server_values["sync_epoch"] = new_epoch
+    existing = connection.execute(select(server.c.id).where(server.c.id == 1)).first()
+    if existing:
+        connection.execute(
+            server.update().where(server.c.id == 1).values(**server_values)
+        )
+    else:
+        connection.execute(server.insert().values(id=1, **server_values))
+
+    target_keys: dict[tuple[str, str], Any] = {("server_instances", "singleton"): 1}
+    for name in TABLE_ORDER:
+        if name in collections:
+            if name not in metadata.tables:
                 raise StorageValidationError(
-                    "target Alembic head differs from the archive"
+                    f"target schema has no collection table {name}"
                 )
-
-        with engine.begin() as connection:
-            for name in TABLE_ORDER:
-                if name in metadata.tables:
-                    count = connection.execute(select(metadata.tables[name])).first()
-                    if count is not None:
-                        raise StorageValidationError(
-                            f"target table is not empty: {name}"
-                        )
-
-            server_records = collections.get("server_instances", [])
-            if len(server_records) != 1:
-                raise StorageValidationError("archive must contain one server identity")
-            server = metadata.tables["server_instances"]
-            server_values = {
-                name: _coerce(server.c[name], value)
-                for name, value in server_records[0]["data"].items()
-            }
-            server_values["sync_epoch"] = new_epoch
-            existing = connection.execute(
-                select(server.c.id).where(server.c.id == 1)
-            ).first()
-            if existing:
-                connection.execute(
-                    server.update().where(server.c.id == 1).values(**server_values)
-                )
-            else:
-                connection.execute(server.insert().values(id=1, **server_values))
-
-            target_keys: dict[tuple[str, str], Any] = {
-                ("server_instances", "singleton"): 1
-            }
-            for name in TABLE_ORDER:
-                if name in collections:
-                    if name not in metadata.tables:
-                        raise StorageValidationError(
-                            f"target schema has no collection table {name}"
-                        )
-                    _insert_collection(
-                        connection,
-                        metadata.tables[name],
-                        collections[name],
-                        target_keys,
-                    )
-            _validate_one_time_history(connection, metadata)
-            _validate_appearance(connection, metadata)
-            for name in TRANSPORT_TABLES:
-                if name in metadata.tables:
-                    connection.execute(metadata.tables[name].delete())
-            if engine.dialect.name == "sqlite":
-                connection.exec_driver_sql(
-                    "DELETE FROM sqlite_sequence WHERE name IN ('sync_changes','sync_cursors')"
-                )
-            rebuilt, _ = _portable_collections(
-                connection, metadata, format_version=manifest["format_version"]
+            _insert_collection(
+                connection,
+                metadata.tables[name],
+                collections[name],
+                target_keys,
             )
-            for name, specification in manifest["collections"].items():
-                content = rebuilt.get(name)
-                if content is None or _digest(content) != specification["sha256"]:
-                    raise StorageValidationError(
-                        f"post-import logical verification failed: {name}"
-                    )
-    finally:
-        engine.dispose()
-    return new_epoch
+    _validate_one_time_history(connection, metadata)
+    _validate_hierarchy(connection, metadata)
+    _validate_appearance(connection, metadata, verify_assets=verify_assets)
+    for name in TRANSPORT_TABLES:
+        if name in metadata.tables:
+            connection.execute(metadata.tables[name].delete())
+    if connection.dialect.name == "sqlite":
+        connection.exec_driver_sql(
+            "DELETE FROM sqlite_sequence WHERE name IN ('sync_changes','sync_cursors')"
+        )
+    rebuilt, _ = _portable_collections(
+        connection, metadata, format_version=manifest["format_version"]
+    )
+    for name, specification in manifest["collections"].items():
+        content = rebuilt.get(name)
+        if content is None or _digest(content) != specification["sha256"]:
+            raise StorageValidationError(
+                f"post-import logical verification failed: {name}"
+            )
+
+    if collections["server_instances"][0]["data"].get("instance_uuid") != manifest.get(
+        "server_instance_id"
+    ):
+        raise StorageValidationError("logical server identity mismatch")
+    if "timer_sessions" in metadata.tables:
+        timer = metadata.tables["timer_sessions"]
+        if (
+            connection.execute(
+                select(timer.c.id).where(timer.c.state.in_(("running", "paused")))
+            ).first()
+            is not None
+        ):
+            raise StorageValidationError("logical import cannot resume active timers")
+
+
+def _install_archive(
+    assets: AssetArchive, entries: list[ArchiveBlob], files: AssetFiles
+) -> None:
+    from io import BytesIO
+
+    expected = {entry.name: entry for entry in entries}
+    receipts = scan_installations(files)
+    for receipt in receipts:
+        entry = ArchiveBlob(receipt.owner_public_id, receipt.blob, receipt.profile)
+        if expected.get(entry.name) != entry:
+            raise StorageValidationError(
+                "unrelated appearance installation requires recovery first"
+            )
+    for receipt in receipts:
+        files.finish(receipt)
+    for entry in entries:
+        with BytesIO(assets.read(entry.name)) as source:
+            receipt = files.publish(entry.owner_public_id, source, entry.blob)
+        files.finish(receipt)
+
+
+@_archive_errors()
+def import_archive(
+    database_url: str, archive_path: Path, *, asset_root: Path | None = None
+) -> str:
+    with (
+        _open_archive(archive_path.absolute()) as (
+            _,
+            manifest,
+            collections,
+            names,
+            source,
+        ),
+        ExitStack() as stack,
+    ):
+        engine = _archive_engine(database_url)
+        stack.callback(engine.dispose)
+        metadata = _reflect(engine)
+        new_epoch = str(uuid4())
+        entries: list[ArchiveBlob] = []
+        verifier = entries.extend if manifest["format_version"] == 3 else None
+        # Validate the full graph with the real target schema, always rollback.
+        # No file I/O or root cleanup is allowed while this transaction is open.
+        with engine.connect() as connection:
+            with connection.begin() as transaction:
+                _import_records(
+                    connection,
+                    metadata,
+                    manifest,
+                    collections,
+                    new_epoch,
+                    verify_assets=verifier,
+                )
+                transaction.rollback()
+        assets = AssetArchive(source, entries, additional_names=names)
+        assets.verify()
+        if entries and asset_root is None:
+            raise StorageValidationError("appearance restore requires an asset root")
+        if asset_root is not None:
+            lease = AssetRootLease(asset_root)
+            try:
+                lease.acquire()
+            except AssetRootBusy as error:
+                raise StorageValidationError(
+                    "appearance root is in use; stop the service before import"
+                ) from error
+            stack.callback(lease.release)
+            _install_archive(assets, entries, AssetFiles(asset_root))
+
+        def same_entries(values: tuple[ArchiveBlob, ...]) -> None:
+            if {item.name: item for item in values} != {
+                item.name: item for item in entries
+            }:
+                raise StorageValidationError(
+                    "appearance snapshot changed during import"
+                )
+
+        # The empty target/schema checks and all graph/hash validation run again.
+        # Already durable immutable files survive a failed DB commit for retry.
+        with engine.begin() as connection:
+            _import_records(
+                connection,
+                metadata,
+                manifest,
+                collections,
+                new_epoch,
+                verify_assets=same_entries if verifier is not None else None,
+            )
+        return new_epoch

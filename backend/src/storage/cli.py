@@ -52,6 +52,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     logical_export.add_argument("--database-url", required=True)
     logical_export.add_argument("--output", type=Path, required=True)
+    logical_export.add_argument("--asset-root", type=Path)
 
     logical_import = commands.add_parser(
         "logical-import",
@@ -59,6 +60,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     logical_import.add_argument("--database-url", required=True)
     logical_import.add_argument("--archive", type=Path, required=True)
+    logical_import.add_argument("--asset-root", type=Path)
     return parser
 
 
@@ -96,9 +98,13 @@ def main() -> int:
         elif args.command == "snapshot-backfill":
             print(f"inserted={backfill_revision_snapshots(args.database)}")
         elif args.command == "logical-export":
-            print(f"archive={export_archive(args.database_url, args.output)}")
+            print(
+                f"archive={export_archive(args.database_url, args.output, asset_root=args.asset_root)}"
+            )
         elif args.command == "logical-import":
-            print(f"sync_epoch={import_archive(args.database_url, args.archive)}")
+            print(
+                f"sync_epoch={import_archive(args.database_url, args.archive, asset_root=args.asset_root)}"
+            )
     except StorageValidationError as error:
         raise SystemExit(f"storage validation failed: {error}") from error
     return 0

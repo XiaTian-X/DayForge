@@ -159,3 +159,14 @@ def test_large_manifest_writer_refuses_before_creating_output(tmp_path):
     with pytest.raises(StorageValidationError, match="byte budget"):
         files.write_manifest(tmp_path / "output", {"large": "x" * 65536})
     assert not list(tmp_path.iterdir())
+
+
+def test_same_open_file_reread_observes_in_place_changes_not_a_stale_buffer(tmp_path):
+    path = tmp_path / "archive"
+    path.write_bytes(b"verified" * 100)
+    with files.regular_file(path) as source:
+        assert source.read(8) == b"verified"
+        with path.open("r+b") as other:
+            other.write(b"changed!")
+        source.seek(0)
+        assert source.read(8) == b"changed!"

@@ -59,10 +59,14 @@ class AssetArchive:
         source: BinaryIO,
         expected: Iterable[ArchiveBlob],
         limits: ZipLimits = ZipLimits(),
+        *,
+        additional_names: frozenset[str] = frozenset(),
     ) -> None:
         self._entries = _index(expected, limits)
         self._zip = BackupZip(source, limits)
-        if self._zip.names != self._entries.keys():
+        if additional_names.intersection(self._entries) or self._zip.names != (
+            self._entries.keys() | additional_names
+        ):
             raise BackupZipError("ZIP_ASSET_ENTRIES")
 
     def read(self, name: str) -> bytes:
