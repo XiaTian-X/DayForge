@@ -142,7 +142,27 @@ pending 元数据可以备份，但不虚构图片。缺失/损坏/未知 profil
 不能使用导入后的整数主键去猜旧文件位置。旧无素材归档继续按其版本验证；不能手工修改版本号假装兼容。
 实际 NAS、权限与断电持久性必须另行验收；本机临时文件故障注入及 CI 不等同于 NAS 断电实验。
 
-### 下一批备份实现边界（尚未实现）
+### 字节归档底层（内部实现，未接入备份命令）
+
+`backup_zip.py` 实现新备份格式的受限 ZIP 读取，不调用会预先分配完整条目列表的 `ZipFile` 读取器。
+先核对整体长度与目录边界，再限量冻结目录并逐条核验实际数量、唯一名称、本地头和连续文件区间。
+支持 STORE、DEFLATE 及 ZIP64 的大小/偏移/数量；拒绝分卷、加密、链接、目录条目、数据描述符、
+注释、未知 extra 和前后隐藏内容。仅允许规范 ASCII 相对名称；不会解压为磁盘路径。
+这是新格式的有意受限子集，不是通用 ZIP 导入器；尚未替换旧逻辑归档读取器，不能据此声称旧入口已受保护。
+
+默认目录预算为 100,000 条 / 32 MiB，整体归档最多 1 TiB；维护调用可下调，条目和目录的硬上限分别为
+1,000,000 / 64 MiB。原始读取每次最多 64 KiB。每次返回内容的硬上限为 16 MiB，素材调用再收紧至
+描述中的长度（PNG 最大 2 MiB、SVG 最大 512 KiB）。同时限制压缩输入工作量，核对真实 DEFLATE 结束、
+无残留压缩字节、精确长度和 CRC；不能把标准库按声明长度截断的结果当成实际 EOF。目录只解析冻结副本，
+负载每次从同一已打开来源重新校验；调用者负责来源生命周期、串行使用及放到阻塞工作线程。
+
+`asset_archive.py` 按调用者提供的同一数据库快照描述核对完整条目集合，再逐图校验 SHA-256 和已知
+PNG/SVG profile，不在内存保留整套图片。同账户相同描述去重；不同账户即使 hash 相同也分别保存。
+写入使用空的私有暂存流，逐个读取实际文件并验证，最后完整回读归档；中途失败不能发布成完整备份。
+这些函数不负责数据库验证、fsync/清单发布、保留策略、根租约、恢复文件或发布 ready，仍须由后续编排接线。
+先前的 `verify()` 不能授权后来绕过校验：恢复必须再次调用 `read()` 并安装其返回的冻结字节。
+
+### 下一批备份接线边界（尚未实现）
 
 - 物理格式升级为 v2，保留现有 `.db` 与 `.db.manifest.json` 路径习惯；有 ready 素材时增加同名
   `.db.assets.zip`，清单绑定数据库和字节包的大小、hash 与数量。最后持久发布清单才表示完整备份，
@@ -168,4 +188,6 @@ pending 元数据可以备份，但不虚构图片。缺失/损坏/未知 profil
 底层语义依据：[Python fsync](https://docs.python.org/3.12/library/os.html#os.fsync)、
 [硬链接与目录句柄](https://docs.python.org/3.12/library/os.html#os.link)、
 [同文件系统原子替换及目录句柄](https://docs.python.org/3.12/library/os.html#os.replace)、
-[POSIX 文件锁](https://docs.python.org/3.12/library/fcntl.html#fcntl.flock)。
+[POSIX 文件锁](https://docs.python.org/3.12/library/fcntl.html#fcntl.flock)、
+[ZIP 格式规范](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT)、
+[Python ZIP 接口](https://docs.python.org/3.12/library/zipfile.html)。
