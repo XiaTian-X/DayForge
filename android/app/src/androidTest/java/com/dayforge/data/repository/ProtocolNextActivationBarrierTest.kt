@@ -5,6 +5,7 @@ import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.SyncOutboxEntity
 import com.dayforge.data.local.entity.CompletionMetricPromptEntity
 import com.dayforge.data.local.entity.LocalFactSubmissionEntity
+import com.dayforge.data.local.entity.OneTimeTransmissionEntity
 import java.util.UUID
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -93,5 +94,14 @@ class ProtocolNextActivationBarrierTest : SyncPersistenceFixture() {
         database.completionFollowUpDao().insertPrompt(CompletionMetricPromptEntity(
             UUID.randomUUID().toString(), UUID.randomUUID().toString(), entriesJson = "[]"))
         assertAllLegacyWritesRefused()
+    }
+
+    @Test fun orphanedTransmissionStillBlocksEveryLegacyMutationAfterReopen() = runBlocking {
+        val row = OneTimeTransmissionEntity(UUID.randomUUID().toString(), "account", "server", "epoch",
+            UUID.randomUUID().toString(), "{\"frozen\":true}", "{\"rejected\":true}")
+        database.completionFollowUpDao().insertTransmission(row)
+        reopen()
+        assertAllLegacyWritesRefused()
+        assertEquals(row, database.completionFollowUpDao().transmission(row.operationId))
     }
 }

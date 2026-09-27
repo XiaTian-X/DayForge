@@ -30,7 +30,8 @@ import kotlinx.coroutines.flow.first
 internal class OneTimeLocalException(val reason: Reason) : IllegalStateException(reason.name) {
     enum class Reason {
         STALE_SESSION, FACTS_DENIED, ACTIVITY_NOT_FOUND, ENTITY_DELETED, UNINITIALIZED,
-        INVALID_LOCAL_STATE, OPERATION_ID_REUSED, EVENT_ID_REUSED, PENDING_REPLAY, PENDING_REJECTED
+        INVALID_LOCAL_STATE, OPERATION_ID_REUSED, EVENT_ID_REUSED, PENDING_REPLAY, PENDING_REJECTED,
+        TRANSMISSION_CONTEXT_CHANGED
     }
 }
 

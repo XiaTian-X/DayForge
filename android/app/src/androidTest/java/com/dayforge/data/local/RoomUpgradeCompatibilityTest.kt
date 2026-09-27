@@ -79,7 +79,7 @@ class RoomUpgradeCompatibilityTest {
 
     private fun structure(db: SupportSQLiteDatabase) = rows(db,
         "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' " +
-            "AND tbl_name NOT IN ('local_fact_submissions', 'completion_metric_prompts') " +
+            "AND tbl_name NOT IN ('local_fact_submissions', 'completion_metric_prompts', 'one_time_transmissions') " +
             "AND NOT (type = 'table' AND name IN ('habits', 'completions')) ORDER BY type, name")
 
     private fun insert(db: SupportSQLiteDatabase, table: String, overrides: Map<String, Any?>) {
@@ -170,7 +170,7 @@ class RoomUpgradeCompatibilityTest {
         repeat(2) {
             val db = open()
             val sql = db.openHelper.writableDatabase
-            assertEquals(4, sql.version)
+            assertEquals(5, sql.version)
             assertEquals(before, snapshot(sql))
             assertEquals(ddl, structure(sql))
             assertEquals(listOf(listOf(null, null, null, null), listOf(null, null, null, null)),
@@ -179,7 +179,7 @@ class RoomUpgradeCompatibilityTest {
             assertEquals(listOf(listOf(null, null, null, null)), rows(sql,
                 "SELECT oneTimeAction, oneTimeExpectedVersion, oneTimeExpectedHeadEventUuid, oneTimeRevertsEventUuid FROM completions"))
             val currentSchema = InstrumentationRegistry.getInstrumentation().context.assets
-                .open("com.dayforge.data.local.HabitDatabase/4.json").bufferedReader().use { it.readText() }
+                .open("com.dayforge.data.local.HabitDatabase/5.json").bufferedReader().use { it.readText() }
             assertEquals(listOf(listOf(Json.parseToJsonElement(currentSchema).jsonObject.getValue("database")
                 .jsonObject.getValue("identityHash").jsonPrimitive.content)),
                 rows(sql, "SELECT identity_hash FROM room_master_table WHERE id = 42"))

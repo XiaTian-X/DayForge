@@ -342,7 +342,7 @@ assets 读取同一份 `contracts/sync-v2` 样例，不复制或自动生成测�
 Room v3 的事项预备列须从提交的 v1/v2 schema 经生产入口升级并重开。`RoomUpgradeCompatibilityTest`
 继续逐表比较全部旧列、冻结 outbox、冲突、计时与时间元数据，另外检查新增列均未初始化，
 不因忽略新增列而放弃旧数据检查。DDL 对比只排除有意追加列的两张表，索引/触发器仍需原样保留，
-最终 schema 和 identity 由 Room 与提交的 v3 schema 双重检查。
+最终 schema 和 identity 由 Room 与提交的当前 schema 双重检查；v3 文件保持为历史夹具。
 `OneTimePreparationMigrationTest` 覆盖中途 DDL 失败回滚/修复重试、版本号碰撞但 identity 不符时拒绝、
 新增列重开/事务回滚、跨日意图保留和隔离账户清理；这些合成事实只证明存储，不代表 v5 操作链、
 服务端确认或 UI 已接入。完整真机测试继续覆盖当前 v4 行为。
@@ -358,7 +358,7 @@ Room v3 的事项预备列须从提交的 v1/v2 schema 经生产入口升级并�
 Room v4 的 `CompletionFollowUpMigrationTest` 从已提交 v3 schema 验证全部旧列/DDL 与冻结请求原样保留、
 不推测旧提示、第二张新表创建失败后的整笔 DDL 回滚与重试、唯一约束及账户清理。v1/v2 的迁移测试
 继续比较每一旧列与触发器；仅在 DDL 对比中排除本批明确新增的两张表及其索引，并通过 Room 与
-提交的 v4 schema 校验新结构。旧版本号碰撞而 identity 不符仍拒绝，未知降级不自动清库。
+提交的当前 schema 校验新结构。旧版本号碰撞而 identity 不符仍拒绝，未知降级不自动清库。
 `CompletionMetricPromptStoreTest` 覆盖提示创建失败连同完成/outbox/凭据回滚、草稿重开、整组指标
 第二条 outbox 失败后无部分写入、原时间/ID 重试、确认移除后不重复保存、明确删除后不复活、
 并发草稿 CAS/提交、跨日/撤销/再次完成、跳过与不再询问、关联重建/墓碑、单位变化显式确认、
@@ -372,6 +372,15 @@ shadow 与触发器标志，下一次可按原请求重试。乱序增量、同�
 墓碑/缺失父记录、拒绝前驱、账户/epoch/设备/登录变化及权限撤回均覆盖。指标草稿和已保存观察值
 在完成与撤销确认后原样保留，UTC 等价表达按同一瞬时处理。夹具独立构造服务端事实，不使用
 被测 mapper/reducer 生成唯一预期；这不是 HTTP、后端操作重放或完整 bootstrap 的联合验收。
+
+Room v5 的 `OneTimeTransmissionMigrationTest` 从提交的 v4 schema 经生产入口升级，逐表比较旧列、
+DDL 和本地凭据/草稿，不生成推测的发送身份；验证建表后 schema 校验失败的事务回滚、修复重试、
+版本 identity 拒绝、唯一绑定、拒绝结果 CAS 和账户清理。v1/v2/v3 迁移继续走生产完整链，旧表
+及冻结请求断言保留；仅排除有意新增的表，新增结构另由导出的 schema 与 Room 校验。
+发送测试还须覆盖首次绑定/尝试回滚、同账户重登、设备/服务器/epoch 改变后拒绝改绑、拉取时使用
+首次来源设备、缺失/篡改传输记录、明确拒绝持久化与重开后因果后继隔离、拒绝事务失败重试、
+错配/矛盾结果零写入、已接受事实不能改成拒绝，以及保存的指标事实和后续草稿不因拒绝而丢失。
+网络失败不等于逐操作拒绝；这些真实存储测试不代表 HTTP/冲突恢复 UI 已完成。
 
 Room 依赖升级还须执行 `RoomUpgradeCompatibilityTest`：从已提交的当前 schema 独立建库，
 通过生产入口打开及重开，检查全部业务 / 同步表、schema identity、触发器、事务回滚和 Flow 通知。
