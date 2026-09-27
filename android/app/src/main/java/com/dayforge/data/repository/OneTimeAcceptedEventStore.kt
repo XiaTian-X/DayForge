@@ -2,6 +2,7 @@ package com.dayforge.data.repository
 
 import androidx.room.withTransaction
 import com.dayforge.data.api.dto.NextSyncOperationResult
+import com.dayforge.data.api.dto.NextSyncBootstrapResponse
 import com.dayforge.data.api.dto.SyncV2Change
 import com.dayforge.data.api.dto.SyncV2Operation
 import com.dayforge.data.api.dto.validateTaskResultBinding
@@ -12,16 +13,20 @@ import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.SyncEntityStateEntity
 import com.dayforge.data.local.entity.SyncOutboxEntity
 import com.dayforge.data.local.entity.OneTimeTransmissionEntity
+import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.domain.model.OneTimeProjection
 import com.dayforge.domain.model.OneTimeTransitionException
 import com.dayforge.domain.model.isContractUuid
 import com.dayforge.domain.model.mergeOneTimeProjection
 import com.dayforge.domain.service.AccountSessionCoordinator
 import java.time.ZoneId
+import java.time.Instant
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.encodeToString
 
 internal data class OneTimeSyncContext(val session: LocalDataSession, val deviceId: String)
@@ -151,6 +156,63 @@ internal class OneTimeAcceptedEventStore(
         }
     }
 
+    /**
+     * Merge complete once histories for already validated/initialized parent structures.
+     * This is not account replacement: no structural deletion, cursor write or operation acknowledgement.
+     */
+    suspend fun restoreHistories(context: OneTimeSyncContext, response: NextSyncBootstrapResponse): List<OneTimeLocalSnapshot> = sessions.exclusive {
+        access(context)
+        // Re-run the complete-history envelope checks, including after caller-owned list mutation.
+        val snapshot = response.copy(changes = response.changes.toList(), oneTimeCheckpoints = response.oneTimeCheckpoints.toList())
+        require(snapshot.nextCursor >= 0 && Instant.parse(snapshot.serverTime).atZone(ZoneId.of("UTC")).year in 1..9999)
+        val checkpoints = snapshot.oneTimeCheckpoints.associateBy { it.activityUuid }
+        val groups = snapshot.changes.filter {
+            it.entityType == "activity_event" && it.payload["one_time"] != null && it.payload["one_time"] != JsonNull
+        }.map { change ->
+            OneTimeServerFact(change.payload, change.revision).also {
+                require(it.proof.publicId == change.entityUuid && it.proof.activityUuid in checkpoints)
+            }
+        }.groupBy { it.proof.activityUuid }
+        snapshot.changes.filter { it.entityType == "plan_node" && it.entityUuid in checkpoints }.forEach {
+            require(it.payload["public_id"] == JsonPrimitive(it.entityUuid))
+        }
+        database.withTransaction {
+            val parents = checkpoints.mapValues { (activity, checkpoint) ->
+                val before = local.readInTransaction(activity, context.session)
+                if (before.confirmed.version > checkpoint.state.version) {
+                    throw OneTimeLocalException(OneTimeLocalException.Reason.HISTORY_BEHIND_LOCAL)
+                }
+                val incoming = groups[activity].orEmpty()
+                if (before.confirmed.version > 0) {
+                    val atKnownVersion = incoming.single { it.proof.oneTimeStateAfter.version == before.confirmed.version }
+                    require(atKnownVersion.proof.oneTimeStateAfter == before.confirmed)
+                }
+                val parent = requireNotNull(habits.getHabitByUuid(activity))
+                val incomingIds = incoming.map { it.proof.publicId }.toSet()
+                // Previously accepted slots cannot disappear from a purported complete history.
+                facts.getByHabitOnce(parent.id).forEach { known ->
+                    outbox.getState("activity_event", known.uuid)?.let { shadow ->
+                        require(!shadow.deleted && known.uuid in incomingIds)
+                    }
+                }
+                parent to before
+            }
+            withoutLegacyOutbox {
+                checkpoints.forEach { (activity, checkpoint) ->
+                    val (parent, before) = parents.getValue(activity)
+                    groups[activity].orEmpty().forEach { persistFact(it, context, parent) }
+                    if (checkpoint.state != before.confirmed) check(habits.updateForSync(parent.copy(
+                        oneTimeConfirmedVersion = checkpoint.state.version,
+                        oneTimeConfirmedHeadEventUuid = checkpoint.state.headEventUuid,
+                        oneTimeConfirmedCompletionEventUuid = checkpoint.state.completionEventUuid)) == 1)
+                }
+            }
+            checkpoints.map { (activity, checkpoint) ->
+                local.readInTransaction(activity, context.session).also { require(it.confirmed == checkpoint.state) }
+            }
+        }
+    }
+
     private suspend fun access(expected: OneTimeSyncContext? = null, write: Boolean = false): OneTimeSyncContext {
         val access = tokens.localFactAccess() ?: throw OneTimeLocalException(OneTimeLocalException.Reason.STALE_SESSION)
         val device = tokens.syncDeviceId.first()
@@ -191,19 +253,6 @@ internal class OneTimeAcceptedEventStore(
         val before = local.readInTransaction(proof.activityUuid, context.session)
         val after = mergeOneTimeProjection(OneTimeProjection(proof.activityUuid, before.confirmed),
             OneTimeProjection(proof.activityUuid, proof.oneTimeStateAfter))
-        require(outbox.getState("activity_event", proof.publicId)?.deleted != true)
-        val shadow = outbox.getState("activity_event", proof.publicId)
-        if (shadow != null) require(shadow.revision == fact.revision &&
-            shadow.payloadJson?.let { Json.parseToJsonElement(it) } == fact.payload)
-        val receipt = receipts.submissionForEntity("activity_event", proof.publicId)
-        if (receipt != null) {
-            val original = SyncV2Operation(receipt.operationId, "activity_event", receipt.entityUuid,
-                "upsert", payload = Json.parseToJsonElement(receipt.payloadJson).jsonObject)
-            val binding = requireNotNull(receipts.transmission(receipt.operationId))
-            validateTransmission(binding, context, original, sending = false)
-            require(binding.rejectionJson == null)
-            fact.requireOriginal(original, binding.deviceId)
-        }
         val habit = requireNotNull(habits.getHabitByUuid(proof.activityUuid))
         // A late, lower-version snapshot may fill a history gap, but cannot fork an already
         // authoritative slot/edge. Unconfirmed local alternatives are deliberately excluded.
@@ -220,6 +269,30 @@ internal class OneTimeAcceptedEventStore(
                 ) throw OneTimeTransitionException("TASK_STATE_DIVERGED")
             }
         }
+        withoutLegacyOutbox {
+            persistFact(fact, context, habit)
+            if (after.state != before.confirmed) check(habits.updateForSync(habit.copy(
+                oneTimeConfirmedVersion = after.state.version, oneTimeConfirmedHeadEventUuid = after.state.headEventUuid,
+                oneTimeConfirmedCompletionEventUuid = after.state.completionEventUuid)) == 1)
+        }
+    }
+
+    /** Shared immutable body/source validation; callers validate either the full chain or incremental edges. */
+    private suspend fun persistFact(fact: OneTimeServerFact, context: OneTimeSyncContext, habit: HabitEntity) {
+        val proof = fact.proof
+        require(proof.activityUuid == habit.uuid)
+        val shadow = outbox.getState("activity_event", proof.publicId)
+        if (shadow != null) require(!shadow.deleted && shadow.revision == fact.revision &&
+            shadow.payloadJson?.let { Json.parseToJsonElement(it) } == fact.payload)
+        val receipt = receipts.submissionForEntity("activity_event", proof.publicId)
+        if (receipt != null) {
+            val original = SyncV2Operation(receipt.operationId, "activity_event", receipt.entityUuid,
+                "upsert", payload = Json.parseToJsonElement(receipt.payloadJson).jsonObject)
+            val binding = requireNotNull(receipts.transmission(receipt.operationId))
+            validateTransmission(binding, context, original, sending = false)
+            require(binding.rejectionJson == null)
+            fact.requireOriginal(original, binding.deviceId)
+        }
         val existing = facts.getCompletionByUuid(proof.publicId)
         val incoming = CompletionEntity(habitId = habit.id, habitUuid = habit.uuid, uuid = proof.publicId,
             date = fact.occurredAt.atZone(ZoneId.of(fact.timezone)).toLocalDate().atStartOfDay(ZoneId.of(fact.timezone)).toInstant().toEpochMilli(),
@@ -229,15 +302,17 @@ internal class OneTimeAcceptedEventStore(
             oneTimeExpectedHeadEventUuid = proof.oneTime.expectedHeadEventUuid, oneTimeRevertsEventUuid = proof.oneTime.revertsEventUuid)
         if (existing != null) require(existing.copy(id = 0, createdAt = incoming.createdAt,
                 timeMetadataSource = "server", date = incoming.date) == incoming)
+        if (existing == null) check(facts.insertForSync(incoming) > 0)
+        if (shadow == null) outbox.upsertState(SyncEntityStateEntity("activity_event", proof.publicId,
+            fact.revision, payloadJson = fact.payload.toString(), payloadHash = syncPayloadHash(fact.payload.toString()), updatedAt = now()))
+    }
+
+    private suspend fun withoutLegacyOutbox(block: suspend () -> Unit) {
+        check(database.inTransaction())
         val sql = database.openHelper.writableDatabase
         require(sql.query("SELECT suppressOutbox FROM sync_control WHERE id=1").use { it.moveToFirst() && it.getInt(0) == 0 })
         sql.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
-        if (existing == null) facts.insertForSync(incoming)
-        if (after.state != before.confirmed) check(habits.updateForSync(habit.copy(
-            oneTimeConfirmedVersion = after.state.version, oneTimeConfirmedHeadEventUuid = after.state.headEventUuid,
-            oneTimeConfirmedCompletionEventUuid = after.state.completionEventUuid)) == 1)
+        block()
         sql.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
-        if (shadow == null) outbox.upsertState(SyncEntityStateEntity("activity_event", proof.publicId,
-            fact.revision, payloadJson = fact.payload.toString(), payloadHash = syncPayloadHash(fact.payload.toString()), updatedAt = now()))
     }
 }
