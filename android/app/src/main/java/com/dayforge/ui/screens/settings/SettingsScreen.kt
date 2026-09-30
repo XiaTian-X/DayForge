@@ -120,6 +120,7 @@ fun SettingsScreen(
     val allDarkThemes = choices.filter { it.suitableForDark }
     val themePreview by viewModel.themePreview.collectAsState()
     val themeActionError by viewModel.themeActionError.collectAsState()
+    val themeEditor by viewModel.themeEditorState.collectAsState()
 
     // Theme delete confirmation state
     var themeToDelete by remember { mutableStateOf<ThemeChoiceSummary?>(null) }
@@ -665,6 +666,10 @@ fun SettingsScreen(
             onShowExportOptions = { theme ->
                 themeExportOptions = theme
             },
+            onEditTheme = { theme ->
+                showLightThemeDialog = false
+                viewModel.beginThemeEdit(theme)
+            },
             onImportTheme = launchThemeImport,
             onDismiss = { showLightThemeDialog = false }
         )
@@ -691,9 +696,25 @@ fun SettingsScreen(
             onShowExportOptions = { theme ->
                 themeExportOptions = theme
             },
+            onEditTheme = { theme ->
+                showDarkThemeDialog = false
+                viewModel.beginThemeEdit(theme)
+            },
             onImportTheme = launchThemeImport,
             onDismiss = { showDarkThemeDialog = false }
         )
+    }
+
+    if (themeEditor.open) {
+        ThemeEditorDialog(themeEditor, viewModel::renameEditedTheme, viewModel::changeEditedColor,
+            viewModel::resetEditedColor, viewModel::previewEditedTheme, viewModel::confirmEditedTheme,
+            viewModel::backToThemeEdit, viewModel::cancelThemeEdit)
+    }
+    themeEditor.saved?.let {
+        AlertDialog(onDismissRequest = viewModel::dismissThemeEditResult,
+            title = { Text(stringResource(R.string.theme_editor_saved)) },
+            text = { Text(stringResource(R.string.theme_editor_saved_hint, it.revision)) },
+            confirmButton = { TextButton(onClick = viewModel::dismissThemeEditResult) { Text(stringResource(R.string.common_ok)) } })
     }
 
     // Card Color Style Selection Dialog

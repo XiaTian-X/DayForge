@@ -1,5 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="theme_actions">主题操作</string>
+    <string name="theme_editor_source">来源：%1$s · v%2$d</string>
+    <string name="theme_editor_target">保存新版本 · v%1$d</string>
+    <string name="theme_editor_fork">另存为新的自定义主题 · v%1$d</string>
+    <string name="theme_editor_saved">主题版本已保存</string>
+    <string name="theme_editor_saved_hint">版本 %1$d 已加入主题库，当前使用的主题未改变。</string>
+    <string name="theme_editor_preview">检查完整色板</string>
+    <string name="theme_editor_save">保存此版本</string>
+    <string name="theme_editor_hint">编辑已保存的 RGB 角色，而不是种子。浅深两套完整色板都会保存。</string>
+    <string name="theme_editor_material">Material</string>
+    <string name="theme_editor_status">状态</string>
+    <string name="theme_editor_chart">图表</string>
+    <string name="theme_editor_rgb">请输入不含透明度的 #RRGGBB</string>
+    <string name="theme_editor_original">原值：%1$s</string>
+    <string name="theme_editor_reset">重置 %1$s</string>
+    <string name="theme_editor_name_error">名称需为 1–80 个字符，不能含控制字符</string>
+    <string name="theme_editor_discard">放弃此草稿？</string>
+    <string name="theme_editor_discard_hint">将放弃未保存的编辑，当前使用的主题不会改变。</string>
+    <string name="theme_editor_confirmed_hint">已确认的保存可能已写入此版本。关闭不会撤销已保存文件，也不会改变当前主题。再次编辑前请检查主题库。</string>
+    <string name="theme_editor_back">继续编辑</string>
     <string name="theme_error_timeout">文档提供者未及时响应，请重试或选择本机文件。未成功的导出可能留下不完整的目标文件。</string>
     <string name="theme_recovery_title">修复主题选择</string>
     <string name="theme_recovery_hint">选择可用的浅色和深色主题后确认。保留明暗模式、卡片风格和个人数据，不会自动重置损坏的元数据。</string>

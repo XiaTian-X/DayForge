@@ -69,7 +69,8 @@ internal class DeviceThemeRepository(
     /** Read once, bounded and frozen. Preparing/cancelling a preview cannot install or change selection. */
     suspend fun preview(openSource: () -> InputStream): ValidatedTheme = ValidatedTheme.read(openSource)
 
-    suspend fun install(preview: ValidatedTheme): ThemeCatalogState = catalog.install(preview)
+    suspend fun install(preview: ValidatedTheme, expectedRevision: Long? = null): ThemeCatalogState =
+        catalog.install(preview, expectedRevision)
     suspend fun export(ref: ThemeVersionRef): ValidatedTheme = catalog.export(ref)
     suspend fun delete(ref: ThemeVersionRef, expectedCatalogRevision: Long): ThemeCatalogState =
         catalog.delete(ref, expectedCatalogRevision)

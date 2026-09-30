@@ -585,6 +585,17 @@ PNG 采样的奇数/极细尺寸及像素存储上限、SVG 显示分辨率与�
 共享不可变位图必须到达真实 Compose ImageBitmap 像素和 Glance RemoteViews 绘制结果，
 不启动 MainActivity、不回收已发布像素；这不是厂商桌面、账户缓存或全页面接线验收。
 
+`ThemeEditDraftTest` 验证全部 104 个角色独立编辑、完整导出、不可变色板、Unicode 名称边界、
+有界非法输入、单项重置和恢复身份。`ThemeEditorWorkflowTest` 使用真实 testbed 私有文件与
+Preferences DataStore 验证内置分叉、自定义最高版本加一/耗尽、目录序号事务冲突、重复确认、
+发布后响应丢失、冻结候选重试、日志重开以及来源删除后的已提交结果识别。确认前保存状态快照
+和持久文件不一致时不得覆盖另一份内容；非法/未来/重复键输入须保留以供明确取消，不默认为空。
+`ThemeEditorDialogTest` 实际触摸与输入覆盖验证门禁、原生颜色像素、重置、浅深/分组保存状态、
+明确丢弃和只读完整预览。`SettingsThemeIntegrationTest` 经真实设置页、ViewModel、Hilt
+控制器及文件完成编辑/导出，检查保存不切换当前选择、不误刷新小组件、不修改内置来源。
+UI 保存状态注册表模拟与 SavedStateHandle 输入重建不代表真实 OS 杀进程、强制停止或旋转测试，
+亦不代表手机/平板完整视觉及无障碍人工验收，正式 App 与用户数据均不操作。
+
 `ResolvedThemeTest` 从共享原始主题 JSON 和独立不同角色值核对 36 个实际 Compose 颜色、
 Glance 26 个 Material 角色及明确的 widgetBackground、全部状态/图表值、明暗配置与显式模式。
 它不启动 MainActivity，覆盖输入 Map 后变、不可变快照、非法字段/颜色和不执行未知生成器。

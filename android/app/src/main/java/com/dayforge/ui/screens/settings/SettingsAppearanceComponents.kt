@@ -9,6 +9,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -445,6 +449,7 @@ internal fun GlobalColorThemeSelectionDialog(
     onThemeSelected: (String) -> Unit,
     onDeleteTheme: (String) -> Unit = {},
     onShowExportOptions: (ThemeChoiceSummary) -> Unit = {},
+    onEditTheme: ((ThemeChoiceSummary) -> Unit)? = null,
     onImportTheme: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
@@ -471,7 +476,8 @@ internal fun GlobalColorThemeSelectionDialog(
                         isSelected = theme.id == currentThemeId,
                         onClick = { onThemeSelected(theme.id) },
                         onDelete = if (theme.isCustom) { { onDeleteTheme(theme.id) } } else null,
-                        onExport = { onShowExportOptions(theme) }
+                        onExport = { onShowExportOptions(theme) },
+                        onEdit = onEditTheme?.let { callback -> { callback(theme) } }
                     )
                 }
                 // Import button at bottom
@@ -522,8 +528,10 @@ internal fun GlobalColorThemeOption(
     isSelected: Boolean,
     onClick: () -> Unit,
     onDelete: (() -> Unit)? = null,
-    onExport: () -> Unit = {}
+    onExport: () -> Unit = {},
+    onEdit: (() -> Unit)? = null
 ) {
+    var actionsOpen by remember(theme.id) { mutableStateOf(false) }
 
     Row(
         modifier = Modifier
@@ -566,35 +574,19 @@ internal fun GlobalColorThemeOption(
             )
         }
 
-        // Action buttons
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            // Export button
-            IconButton(
-                onClick = onExport,
-                enabled = theme.available,
-                modifier = Modifier.size(32.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.IosShare,
-                    contentDescription = stringResource(R.string.theme_export),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp)
-                )
+        // One full-size touch target rather than increasingly overlapping tiny action buttons.
+        Box {
+            IconButton(onClick = { actionsOpen = true }, modifier = Modifier.testTag("theme-actions-${theme.id}")) {
+                Icon(Icons.Rounded.MoreVert, contentDescription = stringResource(R.string.theme_actions))
             }
-
-            // Delete button (only for custom themes)
-            if (onDelete != null) {
-                IconButton(
-                    onClick = onDelete,
-                    modifier = Modifier.size(32.dp).testTag("theme-delete-${theme.id}")
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Delete,
-                        contentDescription = stringResource(R.string.theme_delete),
-                        tint = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
+            DropdownMenu(expanded = actionsOpen, onDismissRequest = { actionsOpen = false }) {
+                if (onEdit != null) DropdownMenuItem(
+                    text = { Text(stringResource(R.string.color_theme_edit)) }, enabled = theme.available,
+                    onClick = { actionsOpen = false; onEdit() }, modifier = Modifier.testTag("theme-edit-${theme.id}"))
+                DropdownMenuItem(text = { Text(stringResource(R.string.theme_export)) }, enabled = theme.available,
+                    onClick = { actionsOpen = false; onExport() })
+                if (onDelete != null) DropdownMenuItem(text = { Text(stringResource(R.string.theme_delete)) },
+                    onClick = { actionsOpen = false; onDelete() }, modifier = Modifier.testTag("theme-delete-${theme.id}"))
             }
         }
     }

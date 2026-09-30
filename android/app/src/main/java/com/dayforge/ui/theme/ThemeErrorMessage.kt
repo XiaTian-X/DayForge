@@ -13,7 +13,8 @@ internal fun themeErrorMessage(error: Throwable?): String {
         "THEME_VERSION", "THEME_SELECTION_VERSION" -> R.string.theme_error_version
         "THEME_IN_USE" -> R.string.theme_error_in_use
         "THEME_CATALOG_CONFLICT", "THEME_SELECTION_CONFLICT" -> R.string.theme_error_changed
-        "THEME_LIMIT", "THEME_CATALOG_LIMIT", "THEME_STORAGE_LIMIT" -> R.string.theme_error_limit
+        "THEME_LIMIT", "THEME_CATALOG_LIMIT", "THEME_STORAGE_LIMIT",
+        "THEME_EDIT_INPUT_LIMIT", "THEME_EDIT_REVISION_EXHAUSTED" -> R.string.theme_error_limit
         "THEME_DOCUMENT_TIMEOUT" -> R.string.theme_error_timeout
         else -> R.string.theme_error_operation
     }

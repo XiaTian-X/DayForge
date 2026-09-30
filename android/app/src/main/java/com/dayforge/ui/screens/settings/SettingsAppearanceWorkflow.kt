@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.os.LocaleListCompat
+import androidx.lifecycle.SavedStateHandle
 import com.dayforge.data.appearance.ThemeCatalogContent
 import com.dayforge.data.appearance.ThemeCatalogException
 import com.dayforge.data.appearance.ThemeCatalogItem
@@ -70,6 +71,8 @@ class SettingsAppearanceWorkflow @Inject constructor(
     private var exportDestinationPending = false
     private val _themeDeleteResult = MutableStateFlow<Result<Unit>?>(null)
     val themeDeleteResult = _themeDeleteResult.asStateFlow()
+
+    internal fun editor(savedState: SavedStateHandle) = ThemeEditorWorkflow(themes, savedState)
 
     internal suspend fun refreshLibrary(force: Boolean = true) {
         try {

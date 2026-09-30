@@ -188,14 +188,48 @@ class SettingsThemeIntegrationTest {
         // Find the custom row's actual action, avoiding similarly named preset/export controls.
         compose.onNodeWithTag("theme-selection-list").performScrollToNode(hasText(name))
         val deletion = "theme-delete-$id:1"
+        compose.onNodeWithTag("theme-actions-$id:1").performClick()
         compose.onNodeWithTag(deletion).performClick()
         click(R.string.action_cancel)
         assertTrue(target.exists())
+        compose.onNodeWithTag("theme-actions-$id:1").performClick()
         compose.onNodeWithTag(deletion).performClick()
         click(R.string.action_delete)
         compose.waitUntil(5000) { model.themeDeleteResult.value?.isSuccess == true }
         assertFalse(target.exists())
         runBlocking { assertFalse(controller.catalog()!!.slots.any { it.ref == imported }) }
         assertEquals(0, widgets.requestCount)
+    }
+
+    @Test fun actualEditorTouchesSaveCompleteColorsWithoutReplacingSelectionOrRefreshingWidgets() {
+        val selected = runBlocking { controller.current().saved }
+        val sourceRef = ThemeVersionRef(BuiltInTheme.OCEAN.themeId, 1)
+        val originalBytes = runBlocking { controller.export(sourceRef).exportBytes() }
+        settingsClick(R.string.settings_light_theme)
+        compose.onNodeWithTag("theme-actions-${sourceRef.choiceKey()}").performClick()
+        compose.onNodeWithTag("theme-edit-${sourceRef.choiceKey()}").performClick()
+        compose.waitUntil(5000) { model.themeEditorState.value.draft != null }
+        imported = model.themeEditorState.value.draft!!.target
+        fun input(tag: String): SemanticsNodeInteraction {
+            compose.onNodeWithTag("theme-edit-fields").performScrollToNode(hasTestTag(tag))
+            return compose.onNodeWithTag(tag)
+        }
+        input("theme-edit-name").performTextReplacement("Personal complete palette")
+        input("theme-edit-color-light.material.primary").performTextReplacement("#112233")
+        compose.onNodeWithTag("theme-edit-save").assertIsEnabled().performClick()
+        compose.waitUntil(5000) { model.themeEditorState.value.preview != null }
+        val candidate = model.themeEditorState.value.preview!!
+        assertEquals(selected, runBlocking { controller.current().saved })
+        compose.onNodeWithTag("theme-edit-save").performClick()
+        compose.waitUntil(5000) { model.themeEditorState.value.saved == imported }
+        val exported = runBlocking { controller.export(checkNotNull(imported)) }
+        assertEquals(candidate.definition, exported.definition)
+        assertEquals("#112233", exported.definition.light.material["primary"])
+        assertEquals(104, ThemeColorField.all.size)
+        assertEquals(selected, runBlocking { controller.current().saved })
+        assertArrayEquals(originalBytes, runBlocking { controller.export(sourceRef).exportBytes() })
+        assertEquals(0, widgets.requestCount)
+        click(R.string.common_ok)
+        compose.waitUntil(5000) { model.themeChoices.value.any { it.ref == imported && it.available } }
     }
 }

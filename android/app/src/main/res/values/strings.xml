@@ -1,5 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="theme_actions">Theme actions</string>
+    <string name="theme_editor_source">Source: %1$s · v%2$d</string>
+    <string name="theme_editor_target">Save a new version · v%1$d</string>
+    <string name="theme_editor_fork">Save as a new custom theme · v%1$d</string>
+    <string name="theme_editor_saved">Theme version saved</string>
+    <string name="theme_editor_saved_hint">Version %1$d is available in the library. Your active themes have not changed.</string>
+    <string name="theme_editor_preview">Review complete palettes</string>
+    <string name="theme_editor_save">Save this version</string>
+    <string name="theme_editor_hint">Edit the saved RGB roles, not a seed. Both complete palettes will be saved.</string>
+    <string name="theme_editor_material">Material</string>
+    <string name="theme_editor_status">Status</string>
+    <string name="theme_editor_chart">Charts</string>
+    <string name="theme_editor_rgb">Use #RRGGBB without transparency</string>
+    <string name="theme_editor_original">Original: %1$s</string>
+    <string name="theme_editor_reset">Reset %1$s</string>
+    <string name="theme_editor_name_error">Enter a name of 1–80 characters without control characters</string>
+    <string name="theme_editor_discard">Discard this draft?</string>
+    <string name="theme_editor_discard_hint">Unsaved edits will be discarded. Your current themes will not change.</string>
+    <string name="theme_editor_confirmed_hint">A confirmed save may already have written this version. Closing does not undo saved files or change your current themes. Check the library before editing again.</string>
+    <string name="theme_editor_back">Continue editing</string>
     <string name="theme_error_timeout">The document provider did not respond in time. Try again or choose a local file. An unsuccessful export may leave a partial destination file.</string>
     <string name="theme_recovery_title">Repair theme selection</string>
     <string name="theme_recovery_hint">Choose available light and dark themes, then confirm. Your display mode, card style and personal data are preserved. Damaged metadata is never reset automatically.</string>
