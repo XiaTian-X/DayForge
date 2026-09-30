@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="theme_custom_version">Custom · v%1$d · %2$s</string>
+    <string name="theme_unavailable_version">Unavailable · v%1$d · %2$s</string>
     <string name="theme_actions">Theme actions</string>
     <string name="theme_editor_source">Source: %1$s · v%2$d</string>
     <string name="theme_editor_target">Save a new version · v%1$d</string>
@@ -200,7 +202,6 @@
     <string name="theme_import">Import Theme</string>
     <string name="theme_export">Export Theme</string>
     <string name="theme_delete">Delete Theme</string>
-    <string name="theme_custom">Custom</string>
     <string name="theme_preset">Preset</string>
     <string name="theme_importing">Importing Theme…</string>
     <string name="theme_import_success">Theme Imported</string>
