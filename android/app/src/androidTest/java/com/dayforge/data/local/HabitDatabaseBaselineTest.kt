@@ -64,10 +64,11 @@ class HabitDatabaseBaselineTest {
             "timelog_day_allocations",
             "local_fact_submissions",
             "completion_metric_prompts",
-            "one_time_transmissions"
+            "one_time_transmissions",
+            "next_recovery_state"
         )
 
-        assertEquals(7, sqlite.version)
+        assertEquals(8, sqlite.version)
         assertTrue(tables.containsAll(expectedTables))
         sqlite.query("SELECT suppressOutbox FROM sync_control WHERE id = 1").use { cursor ->
             assertTrue(cursor.moveToFirst())

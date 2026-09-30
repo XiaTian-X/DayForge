@@ -11,8 +11,11 @@ import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
 import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.TimerCommandEntity
+import com.dayforge.data.local.entity.NextRecoveryStateEntity
 import com.dayforge.domain.model.OneTimeProjection
 import com.dayforge.domain.model.OneTimeState
+import com.dayforge.domain.model.OneTimeIntent
+import com.dayforge.domain.model.PendingOneTimeIntent
 import com.dayforge.domain.service.AccountSessionCoordinator
 import java.io.File
 import java.time.Instant
@@ -42,7 +45,11 @@ class NextCommonRestoreTest {
     private val device = "82000000-0000-4000-8000-000000000004"
     private val eventId = "82000000-0000-4000-8000-000000000005"
     private val stamp = "2026-09-27T16:00:01Z"
-    private fun sync() = OneTimeAcceptedEventStore(db, tokens, sessions, OneTimeLocalIntentStore(db, tokens, sessions, preferences))
+    private val account = "85000000-0000-4000-8000-000000000001"
+    private val server = "85000000-0000-4000-8000-000000000002"
+    private val epoch = "85000000-0000-4000-8000-000000000003"
+    private fun sync(now: () -> Long = System::currentTimeMillis) =
+        OneTimeAcceptedEventStore(db, tokens, sessions, OneTimeLocalIntentStore(db, tokens, sessions, preferences), now)
     private val template by lazy {
         Json.parseToJsonElement(InstrumentationRegistry.getInstrumentation().context.assets.open("next/api.json")
             .bufferedReader().use { it.readText() }).jsonObject.getValue("task").jsonObject
@@ -53,8 +60,8 @@ class NextCommonRestoreTest {
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val store = PreferenceDataStoreFactory.create(scope = scope, produceFile = { file })
         tokens = TokenManager(store); preferences = PreferencesManager(store)
-        tokens.saveLoginSession("synthetic-a", "synthetic-r", "member", "account-a", false)
-        tokens.saveServerIdentity("server", "epoch")
+        tokens.saveLoginSession("synthetic-a", "synthetic-r", "member", account, false)
+        tokens.saveServerIdentity(server, epoch)
         tokens.saveDeviceRegistration(device, setOf("sync.read", "facts.append"), false, 1)
     }
     @After fun cleanup() = runBlocking {
@@ -301,7 +308,7 @@ class NextCommonRestoreTest {
             sequence = 1, commandType = "stop", occurredAt = 1, expectedControlGeneration = 1))
         val before = durable(); assertTrue(runCatching { restore(snapshot(activity(), duration())) }.isFailure); assertEquals(before, durable())
         val context = sync().context()
-        tokens.saveServerIdentity("server", "new-epoch")
+        tokens.saveServerIdentity(server, "85000000-0000-4000-8000-000000000004")
         assertTrue(runCatching { sync().restoreAcceptedData(context, snapshot(activity())) }.isFailure); assertEquals(before, durable())
     }
 
@@ -347,5 +354,185 @@ class NextCommonRestoreTest {
         assertTrue(failure is NextFactMergeException)
         assertEquals(NextFactMergeException.Reason.INVALID_LOCAL_STATE, (failure as NextFactMergeException).reason)
         assertEquals(before, durable())
+    }
+
+    @Test fun recoveryCheckpointAndEveryAcceptedTypeCommitTogetherAndReplayAfterColdOpen() = runBlocking {
+        val context = sync().context()
+        assertNull(sync().recoveryState(context))
+        tokens.saveSyncCursor(777)
+        val stage = sync().beginRecovery(context, null)
+        assertEquals(1L, stage.generation); assertEquals(NextRecoveryStateEntity.AWAITING_SNAPSHOT, stage.phase)
+        assertNull(stage.candidateCursor); assertNull(stage.snapshotHash)
+        assertEquals(stage, sync().beginRecovery(context, stage))
+        val response = all()
+        val accepted = sync().acceptRecovery(context, stage, response)
+        assertEquals(NextRecoveryStateEntity.ACCEPTED_DATA, accepted.phase)
+        assertEquals(20L, accepted.candidateCursor); assertEquals(64, accepted.snapshotHash!!.length)
+        assertEquals(account, accepted.accountId); assertEquals(server, accepted.serverInstanceId)
+        assertEquals(epoch, accepted.syncEpoch); assertEquals(device, accepted.deviceId)
+        assertEquals(2, db.completionDao().countAll())
+        assertNotNull(db.habitMetricLinkDao().getLinkByUuid(linkId))
+        assertNotNull(db.metricLogDao().getLogByUuid(observationId))
+        assertEquals(listOf(29999L, 30001L), db.timeLogDao().getDayAllocations(durationId).map { it.durationMillis })
+        val before = durable(); storage.reopen()
+        assertEquals(accepted, sync().recoveryState(context))
+        assertEquals(accepted, sync().acceptRecovery(context, stage, response))
+        assertEquals(before, durable()); assertEquals(777L, tokens.syncCursor.first())
+        assertEquals(0, db.syncOutboxDao().count())
+    }
+
+    @Test fun checkpointAbortOrSilentIgnoreRollsBackAllBusinessDataAndRetriesTheSameStage() = runBlocking {
+        val context = sync().context()
+        var stage = sync().beginRecovery(context, null)
+        for (failure in listOf("ABORT,'synthetic'", "IGNORE")) {
+            db.openHelper.writableDatabase.execSQL("CREATE TRIGGER fail_checkpoint BEFORE UPDATE ON next_recovery_state BEGIN SELECT RAISE($failure); END")
+            val before = durable()
+            assertTrue(runCatching { sync().acceptRecovery(context, stage, all()) }.isFailure)
+            assertEquals(before, durable()); storage.reopen(); assertEquals(before, durable())
+            assertEquals(stage, sync().recoveryState(context))
+            db.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_checkpoint")
+            val accepted = sync().acceptRecovery(context, stage, all())
+            assertEquals(2, db.completionDao().countAll())
+            stage = sync().beginRecovery(context, accepted)
+        }
+    }
+
+    @Test fun lateEntityFailureCannotAdvanceTheRecoveryCandidateCursor() = runBlocking {
+        val context = sync().context()
+        val stage = sync().beginRecovery(context, null)
+        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER fail_recovery_link BEFORE INSERT ON sync_entity_state WHEN NEW.entityUuid='$linkId' BEGIN SELECT RAISE(ABORT,'synthetic'); END")
+        val before = durable()
+        assertTrue(runCatching { sync().acceptRecovery(context, stage, all()) }.isFailure)
+        assertEquals(before, durable()); assertEquals(stage, sync().recoveryState(context))
+        db.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_recovery_link")
+        assertEquals(20L, sync().acceptRecovery(context, stage, all()).candidateCursor)
+    }
+
+    @Test fun changedResponseOldGenerationAndRegressingCursorCannotOverwriteAcceptedRecovery() = runBlocking {
+        val context = sync().context()
+        val stage = sync().beginRecovery(context, null)
+        val accepted = sync().acceptRecovery(context, stage, all())
+        val changed = all().copy(changes = all().changes.map {
+            if (it.entityUuid == activityId) revise(it, fields = arrayOf("title" to JsonPrimitive("next name"))) else it
+        }, nextCursor = 21)
+        var before = durable()
+        assertTrue(runCatching { sync().acceptRecovery(context, stage, changed) }.isFailure)
+        assertTrue(runCatching { sync().beginRecovery(context, stage) }.isFailure)
+        assertEquals(before, durable())
+        val next = sync().beginRecovery(context, accepted)
+        assertEquals(2L, next.generation); assertEquals(20L, next.minimumCursor)
+        before = durable()
+        assertTrue(runCatching { sync().acceptRecovery(context, stage, all()) }.isFailure)
+        assertTrue(runCatching { sync().acceptRecovery(context, next, changed.copy(nextCursor = 19)) }.isFailure)
+        assertEquals(before, durable())
+        assertEquals(21L, sync().acceptRecovery(context, next, changed).candidateCursor)
+        assertEquals("next name", db.habitDao().getHabitByUuid(activityId)!!.name)
+    }
+
+    @Test fun staleAuthenticationAndEachReplicaIdentityFailWithoutRebindingStoredRecovery() = runBlocking {
+        val context = sync().context()
+        val stage = sync().beginRecovery(context, null)
+        val before = durable()
+        tokens.saveLoginSession("synthetic-a", "synthetic-r", "member", account, false)
+        assertTrue(runCatching { sync().acceptRecovery(context, stage, all()) }.isFailure)
+        assertEquals(before, durable())
+        val other = "85000000-0000-4000-8000-000000000005"
+        for (field in listOf("account", "server", "epoch", "device")) {
+            tokens.saveLoginSession("synthetic-a", "synthetic-r", "member", if (field == "account") other else account, false)
+            tokens.saveServerIdentity(if (field == "server") other else server, if (field == "epoch") other else epoch)
+            tokens.saveDeviceRegistration(if (field == "device") other else device, setOf("sync.read", "facts.append"), false, 1)
+            val fresh = sync().context()
+            assertTrue(field, runCatching { sync().recoveryState(fresh) }.isFailure)
+            assertTrue(field, runCatching { sync().beginRecovery(fresh, stage) }.isFailure)
+            assertTrue(field, runCatching { sync().acceptRecovery(fresh, stage, all()) }.isFailure)
+            assertEquals(before, durable())
+        }
+        tokens.saveLoginSession("synthetic-a", "synthetic-r", "member", account, false)
+        tokens.saveServerIdentity(server, epoch)
+        tokens.saveDeviceRegistration(device, setOf("sync.read", "facts.append"), false, 1)
+        // Same public replica may resume after reauthentication, but old callbacks stay invalid.
+        assertEquals(20L, sync().acceptRecovery(sync().context(), stage, all()).candidateCursor)
+    }
+
+    @Test fun concurrentBeginUsesExactCasAndDuplicateAcceptanceIsOneDurableReceipt() = runBlocking {
+        val context = sync().context()
+        val attempts = List(2) { async(Dispatchers.IO) { runCatching { sync().beginRecovery(context, null) } } }.awaitAll()
+        assertEquals(1, attempts.count { it.isSuccess }); assertEquals(1, attempts.count { it.isFailure })
+        val stage = attempts.single { it.isSuccess }.getOrThrow()
+        val receipts = List(2) { async(Dispatchers.IO) { sync().acceptRecovery(context, stage, all()) } }.awaitAll()
+        assertEquals(receipts[0], receipts[1]); assertEquals(1L, receipts[0].generation)
+        assertEquals(2, db.completionDao().countAll())
+        assertEquals(0, db.syncOutboxDao().count())
+        storage.reopen(); assertEquals(receipts[0], sync().recoveryState(context))
+    }
+
+    @Test fun cancellationDuringFactPersistenceRollsBackStructuresAndCheckpointThenCanRetry() = runBlocking {
+        val context = sync().context()
+        val stage = sync().beginRecovery(context, null)
+        val before = durable()
+        val failure = runCatching { sync { throw CancellationException("synthetic cancellation inside fact transaction") }
+            .acceptRecovery(context, stage, all()) }.exceptionOrNull()
+        assertTrue(failure is CancellationException)
+        assertEquals(before, durable()); storage.reopen(); assertEquals(before, durable())
+        assertEquals(20L, sync().acceptRecovery(context, stage, all()).candidateCursor)
+    }
+
+    @Test fun recoveryReceiptDoesNotConsumePendingFactsPromptsOrUnrelatedTimerCommands() = runBlocking {
+        val frozen = frozenLocal()
+        val taskLink = change("activity_metric_link", undoId, JsonObject(link().payload + ("activity_uuid" to JsonPrimitive(taskId))))
+        restore(snapshot(activity(), metric(), task(parent = goalId), goal(), taskLink))
+        val local = OneTimeLocalIntentStore(db, tokens, sessions, preferences)
+        val command = OneTimeLocalCommand(taskId, PendingOneTimeIntent(UUID.randomUUID().toString(),
+            OneTimeIntent(eventId, "complete", 0, null, null)), Instant.parse(stamp).toEpochMilli(), "Asia/Shanghai")
+        local.append(local.read(taskId).session, command)
+        assertNotNull(sync().prepare(taskId))
+        val prompt = db.completionFollowUpDao().pendingPrompts().single()
+        assertEquals(eventId, prompt.eventUuid)
+        val queued = db.syncOutboxDao().getAll()
+        assertTrue(queued.contains(frozen))
+        val timer = TimerCommandEntity(sessionUuid = undoId, activityUuid = taskId,
+            sequence = 1, commandType = "stop", occurredAt = 1, expectedControlGeneration = 1)
+        db.timeLogDao().insertTimerCommand(timer)
+        val context = sync().context()
+        val stage = sync().beginRecovery(context, null)
+        val response = all().copy(changes = all().changes + taskLink)
+        val accepted = sync().acceptRecovery(context, stage, response)
+        storage.reopen()
+        assertEquals(accepted, sync().recoveryState(context))
+        assertEquals(queued, db.syncOutboxDao().getAll())
+        assertEquals(listOf(prompt), db.completionFollowUpDao().pendingPrompts())
+        assertNotNull(db.completionFollowUpDao().submission(command.pending.operationId))
+        assertEquals(listOf(command.pending.operationId),
+            OneTimeLocalIntentStore(db, tokens, sessions, preferences).read(taskId).queue.awaitingReplayOperationIds)
+        assertEquals(1, db.timeLogDao().getPendingTimerCommands().size)
+        val before = durable(); sync().acceptRecovery(context, stage, response); assertEquals(before, durable())
+    }
+
+    @Test fun silentBeginFailureMalformedStateAndExhaustedGenerationCannotResetRecovery() = runBlocking {
+        val context = sync().context()
+        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER ignore_recovery_begin BEFORE INSERT ON next_recovery_state BEGIN SELECT RAISE(IGNORE); END")
+        val empty = durable()
+        assertTrue(runCatching { sync().beginRecovery(context, null) }.isFailure)
+        assertEquals(empty, durable())
+        db.openHelper.writableDatabase.execSQL("DROP TRIGGER ignore_recovery_begin")
+        val stage = sync().beginRecovery(context, null)
+        val accepted = sync().acceptRecovery(context, stage, all())
+        val exhausted = accepted.copy(generation = Long.MAX_VALUE)
+        assertEquals(1, db.nextRecoveryDao().update(exhausted))
+        val before = durable()
+        val failure = runCatching { sync().beginRecovery(context, exhausted) }.exceptionOrNull()
+        assertTrue(failure is OneTimeLocalException)
+        assertEquals(OneTimeLocalException.Reason.RECOVERY_EXHAUSTED, (failure as OneTimeLocalException).reason)
+        assertEquals(before, durable())
+        for (invalid in listOf<() -> NextRecoveryStateEntity>(
+            { stage.copy(id = 2) }, { stage.copy(generation = 0) }, { stage.copy(accountId = "not-uuid") },
+            { stage.copy(phase = "ready") }, { stage.copy(candidateCursor = 1) },
+            { accepted.copy(snapshotHash = "invalid") }, { accepted.copy(minimumCursor = 21) })) {
+            assertTrue(runCatching { invalid() }.isFailure)
+        }
+        db.openHelper.writableDatabase.execSQL("UPDATE next_recovery_state SET generation=0 WHERE id=1")
+        assertTrue(runCatching { sync().recoveryState(context) }.isFailure)
+        assertEquals(1, db.nextRecoveryDao().update(exhausted))
+        assertEquals(exhausted, sync().recoveryState(context))
     }
 }
