@@ -60,7 +60,7 @@ class NextRecoveryMigrationTest {
         val content = ContentValues()
         entities.first { it.getValue("tableName").jsonPrimitive.content == table }.getValue("fields").jsonArray.forEach {
             val field = it.jsonObject
-            if (field.getValue("notNull").jsonPrimitive.boolean) {
+            if (field["notNull"]?.jsonPrimitive?.boolean == true) {
                 val key = field.getValue("columnName").jsonPrimitive.content
                 if (field.getValue("affinity").jsonPrimitive.content == "TEXT") content.put(key, "") else content.put(key, 0)
             }

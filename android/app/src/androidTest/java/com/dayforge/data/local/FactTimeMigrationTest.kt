@@ -230,15 +230,15 @@ class FactTimeMigrationTest {
     }
 
     @Test fun unsupportedDowngradeFailsWithoutErasingRows() {
-        seed { it.version = 8 }
+        seed { it.version = 9 }
         val db = open()
         val failure = runCatching { db.openHelper.writableDatabase }.exceptionOrNull()
         assertTrue(failure is IllegalStateException)
-        assertTrue(failure!!.message.orEmpty().contains("8 to 7"))
+        assertTrue(failure!!.message.orEmpty().contains("9 to 8"))
         db.close()
         SQLiteDatabase.openDatabase(context.getDatabasePath(databaseName).path, null, SQLiteDatabase.OPEN_READONLY).use { raw ->
             raw.rawQuery("SELECT COUNT(*) FROM habits", null).use { assertTrue(it.moveToFirst()); assertEquals(1, it.getInt(0)) }
-            assertEquals(8, raw.version)
+            assertEquals(9, raw.version)
         }
     }
 
