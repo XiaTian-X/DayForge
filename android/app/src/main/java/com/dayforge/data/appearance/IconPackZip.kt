@@ -11,13 +11,16 @@ internal fun packRequire(condition: Boolean, code: String = "PACK_ZIP_INVALID") 
 }
 
 /** Read-only ZIP index over caller-owned frozen bytes; never interprets names as filesystem paths. */
-internal class IconPackZip(private val bytes: ByteArray, checkpoint: () -> Unit) {
+internal class IconPackZip(private val bytes: ByteArray, checkpoint: () -> Unit,
+    manifestLimit: Int = ICON_MANIFEST_LIMIT) {
     private data class Entry(val name: String, val flags: Int, val method: Int, val crc: Long,
         val size: Int, val compressed: Int, val local: Int, val needed: Int, var data: Int = 0)
     private val entries: Map<String, Entry>
     val names: Set<String> get() = entries.keys.toSet()
 
     init {
+        // Only the two frozen archive profiles; config's larger manifest never relaxes icon input.
+        packRequire(manifestLimit == ICON_MANIFEST_LIMIT || manifestLimit == CONFIG_MANIFEST_LIMIT)
         val end = (bytes.size - 22 downTo maxOf(0, bytes.size - 65_557)).firstOrNull {
             u32(it) == 0x06054b50L && it + 22 + u16(it + 20) == bytes.size
         } ?: throw IconPackInputException("PACK_ZIP_INVALID")
@@ -79,7 +82,7 @@ internal class IconPackZip(private val bytes: ByteArray, checkpoint: () -> Unit)
             val local = wideValue(u32(cursor + 42), 0xffffffffL)
             packRequire(wideValue(u16(cursor + 34).toLong(), 65535, 4) == 0L)
             packRequire(wide == wideEnd)
-            packRequire(expanded <= if (name == "manifest.json") 1_048_576 else 2_097_152, "PACK_ENTRY_LIMIT")
+            packRequire(expanded <= if (name == "manifest.json") manifestLimit else 2_097_152, "PACK_ENTRY_LIMIT")
             indexed[name] = Entry(name, flags, method, u32(cursor + 16), expanded.toInt(), bounded(compressed), bounded(local), u16(cursor + 6))
             cursor = endEntry
         }
