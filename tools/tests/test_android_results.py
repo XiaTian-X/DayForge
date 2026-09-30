@@ -5,8 +5,10 @@ from pathlib import Path
 from tools.check_android_results import validate
 
 
-def suite(cases="<testcase name='behavior' classname='PhysicalTest'/>", **counts):
-    attributes = dict(tests=1, failures=0, errors=0, skipped=0) | counts
+def suite(
+    cases="<testcase name='behavior' classname='PhysicalTest' time='0.1'/>", **counts
+):
+    attributes = {"tests": 1, "failures": 0, "errors": 0, "skipped": 0} | counts
     return (
         "<testsuite "
         + " ".join(f"{key}='{value}'" for key, value in attributes.items())
@@ -25,7 +27,8 @@ class AndroidResultsGateTest(unittest.TestCase):
             return validate(root)
 
     def test_nonempty_successful_device_suites_pass(self):
-        self.assertEqual([], self.check(suite(), suite()))
+        second = "<testcase name='second' classname='PhysicalTest' time='0'/>"
+        self.assertEqual([], self.check(suite(), suite(second)))
 
     def test_missing_empty_or_malformed_results_fail(self):
         self.assertTrue(self.check())
@@ -59,3 +62,27 @@ class AndroidResultsGateTest(unittest.TestCase):
         ):
             with self.subTest(counts=counts):
                 self.assertTrue(self.check(suite(**counts)))
+
+    def test_incomplete_nonfinite_missing_and_negative_durations_fail(self):
+        for duration in ("-1.790728331825E9", "nan", "inf", "-inf", "bad", ""):
+            with self.subTest(duration=duration):
+                self.assertTrue(
+                    self.check(
+                        suite(
+                            f"<testcase name='behavior' classname='PhysicalTest' time='{duration}'/>"
+                        )
+                    )
+                )
+        self.assertTrue(
+            self.check(suite("<testcase name='behavior' classname='PhysicalTest'/>"))
+        )
+
+    def test_missing_blank_and_duplicate_identities_fail(self):
+        for case in (
+            "<testcase time='0'/>",
+            "<testcase classname=' ' name='test' time='0'/>",
+        ):
+            self.assertTrue(self.check(suite(case)))
+        self.assertTrue(self.check(suite(), suite()))
+        case = "<testcase classname='Test' name='same' time='0'/>"
+        self.assertTrue(self.check(suite(case * 2, tests=2)))
