@@ -8,8 +8,15 @@ import com.dayforge.data.local.entity.NextRecoveryStateEntity
 
 @Dao
 interface NextRecoveryDao {
-    @Query("SELECT * FROM next_recovery_state WHERE id=1")
-    suspend fun state(): NextRecoveryStateEntity?
+    @Query("SELECT * FROM next_recovery_state ORDER BY id")
+    suspend fun rows(): List<NextRecoveryStateEntity>
+
+    /** Do not hide damaged extra rows as an empty or valid singleton checkpoint. */
+    suspend fun state(): NextRecoveryStateEntity? {
+        val stored = rows()
+        check(stored.size <= 1)
+        return stored.singleOrNull()
+    }
 
     @Insert
     suspend fun insert(state: NextRecoveryStateEntity): Long

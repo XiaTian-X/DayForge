@@ -508,6 +508,27 @@ class NextCommonRestoreTest {
         val before = durable(); sync().acceptRecovery(context, stage, response); assertEquals(before, durable())
     }
 
+    @Test fun nonSingletonRecoveryRowsCannotLookEmptyOrHideBehindAValidCheckpoint() = runBlocking {
+        val context = sync().context()
+        val stage = sync().beginRecovery(context, null)
+        db.openHelper.writableDatabase.execSQL("UPDATE next_recovery_state SET id=2")
+        repeat(2) { index ->
+            if (index == 1) db.nextRecoveryDao().insert(stage)
+            val before = durable()
+            assertTrue(runCatching { sync().recoveryState(context) }.isFailure)
+            assertTrue(runCatching { sync().beginRecovery(context, null) }.isFailure)
+            assertTrue(runCatching { sync().acceptRecovery(context, stage, all()) }.isFailure)
+            assertEquals(before, durable())
+            storage.reopen()
+            assertEquals(before, durable())
+            assertTrue(runCatching { sync().recoveryState(context) }.isFailure)
+        }
+        // Only remove the exact malformed row injected by this isolated test, never production data.
+        db.openHelper.writableDatabase.execSQL("DELETE FROM next_recovery_state WHERE id=2")
+        assertEquals(stage, sync().recoveryState(context))
+        assertEquals(20L, sync().acceptRecovery(context, stage, all()).candidateCursor)
+    }
+
     @Test fun silentBeginFailureMalformedStateAndExhaustedGenerationCannotResetRecovery() = runBlocking {
         val context = sync().context()
         db.openHelper.writableDatabase.execSQL("CREATE TRIGGER ignore_recovery_begin BEFORE INSERT ON next_recovery_state BEGIN SELECT RAISE(IGNORE); END")

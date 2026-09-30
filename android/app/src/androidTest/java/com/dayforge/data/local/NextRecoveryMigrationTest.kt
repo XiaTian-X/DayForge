@@ -90,7 +90,7 @@ class NextRecoveryMigrationTest {
             val db = it.writableDatabase
             insert(db, "habits", mapOf("id" to 1, "name" to "old habit", "uuid" to "habit", "habitType" to "CHECK_IN",
                 "schedule" to "{\"type\":\"daily\"}", "failMode" to "LOOSE", "targetValue" to 1, "planMetadata" to "uninterpreted planning bytes"))
-            insert(db, "sync_outbox", mapOf("operationId" to "frozen", "recordType" to "habit", "entityUuid" to "habit", "action" to "upsert",
+            insert(db, "sync_outbox", mapOf("id" to 1, "operationId" to "frozen", "recordType" to "habit", "entityUuid" to "habit", "action" to "upsert",
                 "payloadJson" to "{\"untouched\": true}", "attemptedAt" to 42, "attemptCount" to 2, "deadLetteredAt" to 43))
             insert(db, "one_time_transmissions", mapOf("operationId" to "event-op", "accountId" to "account", "serverInstanceId" to "server",
                 "syncEpoch" to "epoch", "deviceId" to "first-device", "operationJson" to "{\"intent\":true}", "rejectionJson" to "{\"rejected\":true}"))
