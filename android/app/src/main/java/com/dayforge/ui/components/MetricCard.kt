@@ -15,12 +15,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.core.graphics.toColorInt
 import androidx.compose.ui.unit.dp
 import com.dayforge.R
 import com.dayforge.data.local.entity.MetricEntity
@@ -73,31 +71,6 @@ private fun formatMetricValue(value: Double, decimalPlaces: Int): String {
 private fun formatDate(timestamp: Long): String {
     val sdf = SimpleDateFormat("MMM dd", Locale.getDefault())
     return sdf.format(Date(timestamp))
-}
-
-/**
- * Calculate a contrasting color for the chart line.
- * Returns white for dark backgrounds, dark gray for light backgrounds.
- */
-private fun getContrastingColor(colorHex: String): Color {
-    return try {
-        val color = colorHex.toColorInt()
-        // Calculate luminance
-        val r = android.graphics.Color.red(color) / 255.0
-        val g = android.graphics.Color.green(color) / 255.0
-        val b = android.graphics.Color.blue(color) / 255.0
-        val luminance = 0.299 * r + 0.587 * g + 0.114 * b
-
-        // Return surface color for contrast (adapts to theme)
-        // For light backgrounds, use onSurface; for dark, use surface
-        if (luminance > 0.5) {
-            Color(0xFF1A1A1A) // Dark for light backgrounds (user's card color)
-        } else {
-            Color.White // White for dark backgrounds
-        }
-    } catch (e: Exception) {
-        Color.White // Default to white
-    }
 }
 
 /**
@@ -256,12 +229,13 @@ fun MetricCard(
                 Column {
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    // Trend Chart (D-02) - use contrasting color for visibility on colored background
+                    // Trend Chart (D-02): resolve saved chart roles against the actual card color.
                     TrendChart(
                         metric = metric,
                         logs = logs,
                         modifier = Modifier.fillMaxWidth(),
-                        lineColor = getContrastingColor(metric.colorHex),
+                        background = resolvedColors.backgroundColor,
+                        opaqueBackdrop = colorScheme.background,
                         onAggregationTypeChange = onAggregationTypeChange?.let { callback ->
                             { type -> callback(type.value) }
                         }

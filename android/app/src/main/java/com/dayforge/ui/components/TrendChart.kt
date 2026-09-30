@@ -28,7 +28,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.size
-import androidx.core.graphics.toColorInt
+import androidx.compose.ui.platform.testTag
 import androidx.compose.material3.CircularProgressIndicator
 import com.patrykandpatrick.vico.compose.cartesian.CartesianChartHost
 import com.patrykandpatrick.vico.compose.cartesian.layer.rememberLineCartesianLayer
@@ -51,6 +51,11 @@ import java.util.Locale
 
 import com.patrykandpatrick.vico.compose.cartesian.axis.rememberBottom
 import com.patrykandpatrick.vico.compose.cartesian.axis.rememberStart
+import com.patrykandpatrick.vico.compose.cartesian.axis.rememberAxisLabelComponent
+import com.patrykandpatrick.vico.compose.cartesian.axis.rememberAxisLineComponent
+import com.patrykandpatrick.vico.compose.cartesian.axis.rememberAxisTickComponent
+import com.patrykandpatrick.vico.compose.cartesian.axis.rememberAxisGuidelineComponent
+import com.dayforge.ui.theme.rememberChartAppearance
 import com.patrykandpatrick.vico.core.cartesian.axis.HorizontalAxis
 import com.patrykandpatrick.vico.core.cartesian.axis.VerticalAxis
 import com.patrykandpatrick.vico.core.cartesian.data.CartesianValueFormatter
@@ -115,8 +120,10 @@ enum class AggregationType(val value: String) {
  * @param logs List of metric logs to display
  * @param modifier Modifier for sizing
  * @param defaultTimeRange Initial time range (default 7 days per D-04)
- * @param lineColor Override color for the chart line (useful for contrast on colored backgrounds)
+ * @param lineColor Optional preferred curve color; readability is checked against the actual backdrop
  * @param onAggregationTypeChange Callback when aggregation type changes (for persistence/sync)
+ * @param background Actual parent color underneath this transparent chart
+ * @param opaqueBackdrop Actual opaque base underneath a translucent parent
  */
 @Composable
 fun TrendChart(
@@ -125,8 +132,11 @@ fun TrendChart(
     modifier: Modifier = Modifier,
     defaultTimeRange: TimeRange = TimeRange.SEVEN_DAYS,
     lineColor: Color? = null,
-    onAggregationTypeChange: ((AggregationType) -> Unit)? = null
+    onAggregationTypeChange: ((AggregationType) -> Unit)? = null,
+    background: Color = MaterialTheme.colorScheme.background,
+    opaqueBackdrop: Color = MaterialTheme.colorScheme.background
 ) {
+    val appearance = rememberChartAppearance(metric.colorHex, lineColor, background, opaqueBackdrop)
     var selectedTimeRange by remember { mutableStateOf(defaultTimeRange) }
     var selectedAggregation by remember(metric.aggregationType) {
         mutableStateOf(AggregationType.fromValue(metric.aggregationType))
@@ -167,10 +177,11 @@ fun TrendChart(
                 ) {
                     Text(
                         text = selectedAggregation.getLabel(),
-                        style = MaterialTheme.typography.bodyMedium
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = appearance.label
                     )
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("▼", style = MaterialTheme.typography.bodySmall)
+                    Text("▼", style = MaterialTheme.typography.bodySmall, color = appearance.label)
                 }
 
                 DropdownMenu(
@@ -203,7 +214,7 @@ fun TrendChart(
             ) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(24.dp),
-                    color = lineColor ?: MaterialTheme.colorScheme.primary,
+                    color = appearance.line,
                     strokeWidth = 2.dp
                 )
             }
@@ -212,9 +223,7 @@ fun TrendChart(
 
         // Chart
         val modelProducer = remember { CartesianChartModelProducer() }
-        val metricColor = rememberColor(metric.colorHex)
-        // Use override color if provided, otherwise use metric color
-        val chartColor = lineColor ?: metricColor
+        val chartColor = appearance.line
 
         // Filter and aggregate logs
         val chartData by remember(logs, selectedTimeRange, selectedAggregation) {
@@ -264,10 +273,7 @@ fun TrendChart(
                 }
             }
 
-            // Build target line decorations if metric has target
-            // Use bright contrasting color for target lines (same as line color but brighter)
-            val targetLineColor = chartColor.copy(alpha = 1f)
-            val decorations = buildTargetLineDecorations(metric, targetLineColor)
+            val decorations = buildTargetLineDecorations(metric, appearance.target, appearance.targetLabel)
 
             // Calculate Y axis range that includes target values
             val dataMinY = chartData.minOf { it.y }
@@ -308,14 +314,27 @@ fun TrendChart(
                         lineProvider = LineCartesianLayer.LineProvider.series(line),
                         rangeProvider = rangeProvider
                     ),
-                    startAxis = VerticalAxis.rememberStart(valueFormatter = startAxisFormatter),
-                    bottomAxis = HorizontalAxis.rememberBottom(valueFormatter = bottomAxisFormatter),
+                    startAxis = VerticalAxis.rememberStart(
+                        valueFormatter = startAxisFormatter,
+                        label = rememberAxisLabelComponent(color = appearance.label),
+                        line = rememberAxisLineComponent(fill = fill(appearance.axis)),
+                        tick = rememberAxisTickComponent(fill = fill(appearance.axis)),
+                        guideline = rememberAxisGuidelineComponent(fill = fill(appearance.grid))
+                    ),
+                    bottomAxis = HorizontalAxis.rememberBottom(
+                        valueFormatter = bottomAxisFormatter,
+                        label = rememberAxisLabelComponent(color = appearance.label),
+                        line = rememberAxisLineComponent(fill = fill(appearance.axis)),
+                        tick = rememberAxisTickComponent(fill = fill(appearance.axis)),
+                        guideline = rememberAxisGuidelineComponent(fill = fill(appearance.grid))
+                    ),
                     decorations = decorations
                 ),
                 modelProducer = modelProducer,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(200.dp)
+                    .testTag("metric-trend-chart")
             )
         } else {
             // Empty state
@@ -328,23 +347,9 @@ fun TrendChart(
                 Text(
                     text = stringResource(R.string.chart_no_data),
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = appearance.label
                 )
             }
-        }
-    }
-}
-
-/**
- * Remember the metric color, with fallback to primary color.
- */
-@Composable
-private fun rememberColor(colorHex: String): Color {
-    return remember {
-        try {
-            Color(colorHex.toColorInt())
-        } catch (e: Exception) {
-            Color.Unspecified
         }
     }
 }
@@ -383,19 +388,17 @@ private fun aggregateLogs(
 
 /**
  * Build target line decorations based on metric configuration.
- * Per D-11: Target line color close to metric color
- * Per D-12: Dashed line style
- * Per D-13: Range shows two lines with different shades
- * Per D-14: Single target shows one line
+ * Keep existing target positions, line shapes/thickness and range/single-target behavior.
+ * Saved target color is resolved separately for essential strokes (3:1) and normal labels (4.5:1).
  */
 @Composable
 private fun buildTargetLineDecorations(
     metric: MetricEntity,
-    lineColor: Color
+    lineColor: Color,
+    labelColor: Color
 ): List<HorizontalLine> {
     val decorations = mutableListOf<HorizontalLine>()
 
-    // Use bright version of the line color for target lines
     val targetColor = lineColor
 
     // Get localized labels
@@ -415,7 +418,7 @@ private fun buildTargetLineDecorations(
                             thickness = 3.dp,
                             shape = Shape.Rectangle
                         ),
-                        labelComponent = rememberTextComponent(color = targetColor),
+                        labelComponent = rememberTextComponent(color = labelColor),
                         label = { targetLabel }
                     )
                 )
@@ -431,7 +434,7 @@ private fun buildTargetLineDecorations(
                             thickness = 3.dp,
                             shape = Shape.Rectangle
                         ),
-                        labelComponent = rememberTextComponent(color = targetColor),
+                        labelComponent = rememberTextComponent(color = labelColor),
                         label = { lowerLabel }
                     )
                 )
@@ -446,7 +449,7 @@ private fun buildTargetLineDecorations(
                                 thickness = 3.dp,
                                 shape = Shape.Rectangle
                             ),
-                            labelComponent = rememberTextComponent(color = targetColor),
+                            labelComponent = rememberTextComponent(color = labelColor),
                             label = { upperLabel }
                         )
                     )
