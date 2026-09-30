@@ -1,4 +1,7 @@
-package com.dayforge.domain.service
+package com.dayforge.testing.legacy
+
+// Frozen pre-#243 rendering fixture, not a runtime fallback or supported import format.
+// Keep the independent CSV/OLED assertions when changing production theme rendering.
 
 import me.tatarka.google.material.hct.Hct
 import me.tatarka.google.material.palettes.TonalPalette

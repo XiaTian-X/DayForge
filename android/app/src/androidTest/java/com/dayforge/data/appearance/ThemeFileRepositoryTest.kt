@@ -62,6 +62,41 @@ class ThemeFileRepositoryTest {
         assertEquals(theme.definition, ValidatedTheme.parse(bom).definition)
     }
 
+    @Test fun boundedParsedCacheStillReadsChangedMissingAndUnsafeFiles() = runBlocking<Unit> {
+        val repo = ThemeFileRepository(parent)
+        val original = raw()
+        repo.install(input())
+        val first = repo.read(id, 1)
+        assertSame(first, repo.read(id, 1))
+        first.exportBytes().fill(0)
+        assertArrayEquals(original, repo.read(id, 1).exportBytes())
+        target().writeText(original.toString(Charsets.UTF_8).replace("#245EAC", "#123456"))
+        val changed = repo.read(id, 1)
+        assertNotSame(first, changed)
+        assertEquals("#123456", changed.definition.light.material.getValue("primary"))
+        assertEquals("#245EAC", first.definition.light.material.getValue("primary"))
+        target().writeText("not JSON")
+        assertThrows(ThemeInputException::class.java) { runBlocking { repo.read(id, 1) } }
+        target().writeBytes(original)
+        assertSame(first, repo.read(id, 1))
+        assertTrue(target().delete())
+        assertThrows(Exception::class.java) { runBlocking { repo.read(id, 1) } }
+        val outside = File(parent, "outside.json").also { it.writeBytes(original) }
+        Os.symlink(outside.path, target().path)
+        assertThrows(Exception::class.java) { runBlocking { repo.read(id, 1) } }
+        assertArrayEquals(original, outside.readBytes())
+        assertTrue(target().delete())
+        target().writeBytes(original)
+        for (revision in 2..3) {
+            repo.install(input(original.toString(Charsets.UTF_8).replace("\"revision\": 1", "\"revision\": $revision")))
+            assertEquals(revision, repo.read(id, revision).definition.revision)
+        }
+        // Two newer versions evict the first parsed object; the bytes and meaning stay unchanged.
+        val evicted = repo.read(id, 1)
+        assertNotSame(first, evicted)
+        assertArrayEquals(original, evicted.exportBytes())
+    }
+
     @Test fun strictJsonRejectsDuplicateEscapedKeysUnicodeDepthVersionsAndWrongTypes() {
         val source = raw().toString(Charsets.UTF_8)
         code("THEME_DUPLICATE") { input(source.replaceFirst("{", "{\"format\":\"dayforge.theme\",")) }
@@ -242,6 +277,48 @@ class ThemeFileRepositoryTest {
         target().mkdir(); assertTrue(runCatching { repo.read(id, 1) }.isFailure); target().delete()
         target().writeText(raw().toString(Charsets.UTF_8).replace("\"revision\": 1", "\"revision\": 2"))
         assertEquals("THEME_FILE_IDENTITY", (runCatching { repo.read(id, 1) }.exceptionOrNull() as ThemeInputException).code)
+    }
+
+    @Test fun invalidIdentitiesCannotReadInstallFindDeleteOrDiscardOutsideFiles() = runBlocking {
+        val repo = ThemeFileRepository(parent)
+        repo.install(input())
+        val sentinel = File(parent, "sentinel.json").apply { writeBytes(raw()) }
+        val invalid = listOf("../sentinel", "nested/../../sentinel", "/sentinel", "a\\b",
+            ".", "..", "", " ", "bad\u0000id", "bad\nid", "界".repeat(81),
+            "ABCDEF00-0000-0000-0000-000000000001")
+        for (bad in invalid) {
+            assertTrue(bad, runCatching { repo.read(bad, 1) }.exceptionOrNull() is IllegalArgumentException)
+            assertTrue(bad, runCatching { repo.find(bad, 1) }.exceptionOrNull() is IllegalArgumentException)
+            assertTrue(bad, runCatching { repo.removeVersion(bad, 1) }.exceptionOrNull() is IllegalArgumentException)
+            assertTrue(bad, runCatching { repo.discardOperation(bad) }.exceptionOrNull() is IllegalArgumentException)
+            assertTrue(bad, runCatching { repo.install(input(), bad) }.exceptionOrNull() is IllegalArgumentException)
+            val malformed = raw().toString(Charsets.UTF_8)
+                .replace("\"$id\"", kotlinx.serialization.json.JsonPrimitive(bad).toString())
+            assertTrue(bad, runCatching { repo.install(input(malformed)) }.isFailure)
+            assertArrayEquals(raw(), sentinel.readBytes())
+            assertArrayEquals(raw(), target().readBytes())
+            assertEquals(listOf(target().name), root.list()!!.toList())
+        }
+        for (revision in listOf(0, -1, Int.MIN_VALUE)) {
+            assertTrue(runCatching { repo.read(id, revision) }.exceptionOrNull() is IllegalArgumentException)
+            assertTrue(runCatching { repo.find(id, revision) }.exceptionOrNull() is IllegalArgumentException)
+            assertTrue(runCatching { repo.removeVersion(id, revision) }.exceptionOrNull() is IllegalArgumentException)
+        }
+        assertArrayEquals(raw(), target().readBytes())
+    }
+
+    @Test fun danglingVersionLinkIsNotFollowedOrRemovedByAnyStorageEntry() = runBlocking {
+        val repo = ThemeFileRepository(parent)
+        root.mkdir()
+        val absent = File(parent, "never-create.json")
+        Os.symlink(absent.path, target().path)
+        assertTrue(runCatching { repo.read(id, 1) }.isFailure)
+        assertTrue(runCatching { repo.find(id, 1) }.isFailure)
+        assertTrue(runCatching { repo.install(input()) }.isFailure)
+        assertTrue(runCatching { repo.removeVersion(id, 1) }.isFailure)
+        assertTrue(Files.isSymbolicLink(target().toPath()))
+        assertFalse(absent.exists())
+        Os.remove(target().path)
     }
 
     @Test fun cleanupPreservesUnknownFilesAndPrimaryFailureWithSuppressedCleanupError() = runBlocking {

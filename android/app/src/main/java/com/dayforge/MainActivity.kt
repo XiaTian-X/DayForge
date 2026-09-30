@@ -8,7 +8,6 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
-import androidx.lifecycle.lifecycleScope
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
@@ -27,6 +26,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -42,7 +42,10 @@ import androidx.navigation.compose.rememberNavController
 import com.dayforge.R
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
-import com.dayforge.domain.service.ThemeManager
+import com.dayforge.domain.service.DeviceThemeController
+import com.dayforge.data.appearance.DeviceThemeLoadState
+import com.dayforge.ui.theme.ThemeLoadScreen
+import com.dayforge.ui.theme.ThemeRecoveryScreen
 import com.dayforge.ui.navigation.HabitNavGraph
 import com.dayforge.ui.navigation.Screen
 import com.dayforge.ui.theme.DayForgeTheme
@@ -65,35 +68,25 @@ class MainActivity : AppCompatActivity() {
     lateinit var preferencesManager: PreferencesManager
 
     @Inject
-    lateinit var themeManager: ThemeManager
+    lateinit var themeController: DeviceThemeController
 
     @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // Initialize ThemeManager (load themes from assets + files)
-        lifecycleScope.launch {
-            themeManager.initialize()
-        }
-
         setContent {
-            // Collect all theme preferences for reactive theme switching
-            val themeMode by preferencesManager.themeMode.collectAsState(initial = null)
-            val lightColorThemeId by preferencesManager.lightColorThemeId.collectAsState(initial = "ocean")
-            val darkColorThemeId by preferencesManager.darkColorThemeId.collectAsState(initial = "dusk")
+            val themeState by themeController.state.collectAsState()
 
             // Calculate WindowSizeClass - auto-updates on resize/rotation
             val windowSizeClass: WindowSizeClass = calculateWindowSizeClass(this)
 
-            // Pass all theme parameters to DayForgeTheme
-            // Theme will automatically update when any preference changes
-            DayForgeTheme(
-                themeMode = themeMode,
-                lightColorThemeId = lightColorThemeId,
-                darkColorThemeId = darkColorThemeId,
-                themeManager = themeManager
-            ) {
+            val loaded = (themeState as? DeviceThemeLoadState.Ready)?.theme
+            if (loaded == null) {
+                var recovering by remember { mutableStateOf(false) }
+                if (recovering) ThemeRecoveryScreen(onBack = { recovering = false })
+                else ThemeLoadScreen(themeState, themeController::retry, onManage = { recovering = true })
+            } else DayForgeTheme(theme = loaded) {
                 val navController = rememberNavController()
                 MainScreen(
                     activity = this@MainActivity,

@@ -74,7 +74,7 @@ fun NestedScreen(
     val postCheckInState by viewModel.postCheckInState.collectAsState()
     val expandedParentUuids by viewModel.expandedParentUuids.collectAsState()
     // Card color style for reactive card rendering (CARD-09)
-    val cardColorStyle by viewModel.cardColorStyle.collectAsState()
+    val cardColorStyle = com.dayforge.ui.theme.LocalDeviceCardStyle.current
     val showGoalDialog by viewModel.showGoalDialog.collectAsState()
     val goalHabitId by viewModel.goalHabitId.collectAsState()
     val goalProgress by viewModel.goalProgress.collectAsState()

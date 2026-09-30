@@ -1,5 +1,6 @@
 package com.dayforge.widget.progress
 
+import com.dayforge.widget.base.DeviceWidgetTheme
 import android.content.Context
 import android.util.Log
 import androidx.compose.runtime.Composable
@@ -83,16 +84,18 @@ class ProgressWidget : GlanceAppWidget() {
         }
 
         provideContent {
-            val prefs = currentState<Preferences>()
-            val completedCount = prefs[COMPLETED_COUNT_KEY] ?: 0
-            val totalCount = prefs[TOTAL_COUNT_KEY] ?: 0
-            val progress = prefs[PROGRESS_KEY] ?: 0f
+            DeviceWidgetTheme(context) {
+                val prefs = currentState<Preferences>()
+                val completedCount = prefs[COMPLETED_COUNT_KEY] ?: 0
+                val totalCount = prefs[TOTAL_COUNT_KEY] ?: 0
+                val progress = prefs[PROGRESS_KEY] ?: 0f
 
-            ProgressWidgetContent(
-                completedCount = completedCount,
-                totalCount = totalCount,
-                progress = progress
-            )
+                ProgressWidgetContent(
+                    completedCount = completedCount,
+                    totalCount = totalCount,
+                    progress = progress
+                )
+            }
         }
     }
 

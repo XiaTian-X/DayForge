@@ -27,23 +27,34 @@ internal class ThemeSelectionException(val code: String) : IllegalArgumentExcept
 
 /**
  * Use the app's one existing Preferences DataStore, never a second instance for its file.
- * Version files are immutable and have no delete API. Validate them before committing references;
- * this is not a transaction spanning files and DataStore. Later corruption is an explicit load error.
+ * Version files are immutable. Validate before committing references, then check catalog membership
+ * and content in the selection transaction, excluding versions reserved for deletion. This is not a
+ * transaction spanning files and DataStore. Later corruption is an explicit load error.
  * No fallback, migration, UI activation or writes to legacy preferences occur here.
  */
 internal class DeviceThemeStore(
     private val preferences: DataStore<Preferences>,
     private val themes: ThemeFileRepository
 ) {
-    fun selections(): Flow<SavedThemeSelection?> = preferences.data
-        .map { decode(it[KEY]) }.distinctUntilChanged()
+    private fun snapshots(): Flow<Pair<SavedThemeSelection?, ThemeCatalogState?>> = preferences.data
+        .map { values ->
+            val saved = readFrom(values)
+            val catalog = ThemeCatalogState.decode(values[THEME_CATALOG_KEY])
+            if (saved != null) catalog?.requireSelectable(saved.selection)
+            saved to catalog
+        }.distinctUntilChanged()
+
+    fun selections(): Flow<SavedThemeSelection?> = snapshots().map { it.first }.distinctUntilChanged()
+
+    /** Used inside the same DataStore transaction as a catalog mutation, never a separate read. */
+    internal suspend fun readFrom(values: Preferences): SavedThemeSelection? = decode(values[KEY])
 
     /** Observe at the owner lifecycle, not on every recomposition/timer tick. Errors propagate. */
-    fun resolvedThemes(): Flow<LoadedDeviceTheme?> = selections().map { it?.let { saved -> load(saved) } }
+    fun resolvedThemes(): Flow<LoadedDeviceTheme?> = snapshots().map { (saved, catalog) -> saved?.let { load(it, catalog) } }
 
     suspend fun read(): SavedThemeSelection? = selections().first()
 
-    suspend fun load(): LoadedDeviceTheme? = read()?.let { load(it) }
+    suspend fun load(): LoadedDeviceTheme? = snapshots().first().let { (saved, catalog) -> saved?.let { load(it, catalog) } }
 
     /** expectedRevision=0 means explicitly uninitialized. Even a no-op must validate both files. */
     suspend fun select(expectedRevision: Long, selection: DeviceThemeSelection): LoadedDeviceTheme {
@@ -55,6 +66,11 @@ internal class DeviceThemeStore(
         val committed = preferences.edit { values ->
             currentCoroutineContext().ensureActive()
             val previous = decode(values[KEY])
+            ThemeCatalogState.decode(values[THEME_CATALOG_KEY])?.let { catalog ->
+                catalog.requireSelectable(selection)
+                catalog.verify(light)
+                catalog.verify(dark)
+            }
             if ((previous?.revision ?: 0) != expectedRevision) throw ThemeSelectionException("THEME_SELECTION_CONFLICT")
             if (previous?.selection != selection) {
                 if (expectedRevision == Long.MAX_VALUE) throw ThemeSelectionException("THEME_SELECTION_EXHAUSTED")
@@ -66,10 +82,12 @@ internal class DeviceThemeStore(
         return LoadedDeviceTheme(saved, ResolvedTheme.from(light.definition, false), ResolvedTheme.from(dark.definition, true))
     }
 
-    private suspend fun load(saved: SavedThemeSelection): LoadedDeviceTheme {
+    private suspend fun load(saved: SavedThemeSelection, catalog: ThemeCatalogState?): LoadedDeviceTheme {
         val choice = saved.selection
         val light = themes.read(choice.light.themeId, choice.light.revision)
         val dark = if (choice.light == choice.dark) light else themes.read(choice.dark.themeId, choice.dark.revision)
+        catalog?.verify(light)
+        catalog?.verify(dark)
         return LoadedDeviceTheme(saved, ResolvedTheme.from(light.definition, false), ResolvedTheme.from(dark.definition, true))
     }
 

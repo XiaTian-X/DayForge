@@ -1,5 +1,6 @@
 package com.dayforge.widget.focus
 
+import com.dayforge.widget.base.DeviceWidgetTheme
 import android.content.Context
 import android.util.Log
 import androidx.compose.runtime.Composable
@@ -34,7 +35,7 @@ import com.dayforge.widget.base.StatusLabels
 import com.dayforge.widget.base.WidgetColorResolver
 import com.dayforge.widget.base.WidgetEmptyStates
 import com.dayforge.widget.FocusWidgetAlarmScheduler
-import com.dayforge.di.ThemeManagerEntryPoint
+import com.dayforge.di.DeviceThemeControllerEntryPoint
 import com.dayforge.widget.checkin.ReactivationActivity
 import com.dayforge.R
 import androidx.glance.action.clickable
@@ -197,8 +198,8 @@ class FocusWidget : GlanceAppWidget() {
             // Get stats for primary to avoid re-querying
             val primaryStats = primary?.let { habitsWithStats.find { it.habit.id == primary.habit.id } }
 
-            val themeManager = ThemeManagerEntryPoint.from(appContext).themeManager()
-            val widgetColorResolver = WidgetColorResolver(appContext, themeManager, preferencesManager)
+            val themes = DeviceThemeControllerEntryPoint.from(appContext).themeController()
+            val widgetColorResolver = WidgetColorResolver(appContext, themes)
 
             updateAppWidgetState(appContext, glanceId) { prefs ->
                 prefs[DATA_LOADED_KEY] = true
@@ -322,7 +323,7 @@ class FocusWidget : GlanceAppWidget() {
         }
 
         provideContent {
-            GlanceTheme {
+            DeviceWidgetTheme(context) {
                 val context = LocalContext.current
                 val state = currentState<Preferences>()
                 val dataLoaded = state[DATA_LOADED_KEY] ?: false

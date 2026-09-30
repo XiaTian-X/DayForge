@@ -6,7 +6,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.repository.MetricRepository
-import com.dayforge.domain.model.CardColorStyle
 import com.dayforge.domain.model.MetricWithLatestValue
 import com.dayforge.domain.service.MetricOverviewProvider
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -45,17 +44,7 @@ class MetricsViewModel @Inject constructor(
             initialValue = emptyList()
         )
 
-    /**
-     * Card color style preference for reactive card rendering.
-     * Per CARD-09: Triggers instant recomposition when style changes.
-     */
-    val cardColorStyle: StateFlow<CardColorStyle> = preferencesManager.cardColorStyle
-        .map { CardColorStyle.fromStringOrDefault(it) }
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Lazily,
-            initialValue = CardColorStyle.DEFAULT
-        )
+
 
     /**
      * Update the aggregation type for a metric.

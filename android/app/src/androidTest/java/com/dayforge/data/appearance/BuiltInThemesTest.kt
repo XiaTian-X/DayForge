@@ -9,8 +9,8 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.dayforge.domain.appearance.AppearanceContrast
 import com.dayforge.domain.appearance.ResolvedTheme
 import com.dayforge.domain.model.ThemeRoles
-import com.dayforge.domain.model.GlobalColorTheme
-import com.dayforge.ui.theme.ColorSchemeGenerator
+import com.dayforge.testing.legacy.GlobalColorTheme
+import com.dayforge.testing.legacy.ColorSchemeGenerator
 import com.dayforge.ui.theme.SeedPaletteFixtures
 import com.dayforge.ui.theme.toComposeColors
 import com.dayforge.widget.base.toGlanceColors

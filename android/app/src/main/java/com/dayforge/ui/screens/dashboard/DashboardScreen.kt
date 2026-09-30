@@ -63,7 +63,7 @@ fun DashboardScreen(
     val postCheckInState by viewModel.postCheckInState.collectAsState()
     val pendingMetricHabits by viewModel.pendingMetricHabits.collectAsState()
     // Card color style for reactive card rendering (CARD-09)
-    val cardColorStyle by viewModel.cardColorStyle.collectAsState()
+    val cardColorStyle = com.dayforge.ui.theme.LocalDeviceCardStyle.current
     // Filter mode state
     val currentFilterMode by viewModel.filterMode.collectAsState()
     // Goal completion dialog states (TARGET-08)

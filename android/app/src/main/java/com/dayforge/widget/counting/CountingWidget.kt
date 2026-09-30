@@ -1,5 +1,6 @@
 package com.dayforge.widget.counting
 
+import com.dayforge.widget.base.DeviceWidgetTheme
 import android.content.Context
 import android.util.Log
 import androidx.compose.runtime.Composable
@@ -22,9 +23,7 @@ import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import com.dayforge.R
-import com.dayforge.data.local.DataStoreProvider
 import com.dayforge.data.local.HabitDatabaseProvider
-import com.dayforge.data.local.PreferencesManager
 import com.dayforge.domain.service.ScheduleValidator
 import com.dayforge.util.DateTimeUtils
 import com.dayforge.widget.WidgetFailureChecker
@@ -33,7 +32,7 @@ import com.dayforge.widget.base.WidgetColorResolver
 import com.dayforge.widget.base.WidgetEmptyStates
 import com.dayforge.widget.checkin.CheckInActionCallback
 import com.dayforge.widget.checkin.ReactivationActivity
-import com.dayforge.di.ThemeManagerEntryPoint
+import com.dayforge.di.DeviceThemeControllerEntryPoint
 import kotlinx.coroutines.CancellationException
 
 import androidx.glance.appwidget.action.actionStartActivity
@@ -118,10 +117,8 @@ class CountingWidget : GlanceAppWidget() {
 
             // Pre-compute widget colors using WidgetColorResolver
             // Per WIDGET-COLOR-01, WIDGET-COLOR-06: Colors must be pre-calculated before rendering
-            val themeManager = ThemeManagerEntryPoint.from(appContext).themeManager()
-            val dataStore = DataStoreProvider.get(appContext)
-            val preferencesManager = PreferencesManager(dataStore)
-            val widgetColorResolver = WidgetColorResolver(appContext, themeManager, preferencesManager)
+            val themes = DeviceThemeControllerEntryPoint.from(appContext).themeController()
+            val widgetColorResolver = WidgetColorResolver(appContext, themes)
             val resolvedColors = widgetColorResolver.resolveWidgetColors(habit.colorHex)
 
             updateAppWidgetState(appContext, glanceId) { prefs ->
@@ -172,7 +169,7 @@ class CountingWidget : GlanceAppWidget() {
         }
 
         provideContent {
-            GlanceTheme {
+            DeviceWidgetTheme(context) {
                 val context = LocalContext.current
                 val state = currentState<Preferences>()
                 val habitId = state[HABIT_ID_KEY] ?: -1L

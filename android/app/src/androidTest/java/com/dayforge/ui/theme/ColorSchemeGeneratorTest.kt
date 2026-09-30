@@ -2,7 +2,8 @@ package com.dayforge.ui.theme
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.compose.ui.graphics.Color
-import com.dayforge.domain.model.GlobalColorTheme
+import com.dayforge.testing.legacy.GlobalColorTheme
+import com.dayforge.testing.legacy.ColorSchemeGenerator
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue

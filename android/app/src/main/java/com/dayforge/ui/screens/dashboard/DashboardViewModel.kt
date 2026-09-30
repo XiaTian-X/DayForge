@@ -18,7 +18,6 @@ import com.dayforge.data.model.HabitType
 import com.dayforge.data.model.HabitWithStats
 import com.dayforge.data.repository.HabitRepository
 import com.dayforge.data.repository.MetricRepository
-import com.dayforge.domain.model.CardColorStyle
 import com.dayforge.domain.model.FilterMode
 import com.dayforge.domain.model.MetricWithLatestValue
 import com.dayforge.domain.model.ActiveTimerState
@@ -196,17 +195,7 @@ class DashboardViewModel @Inject constructor(
         initialValue = emptyMap()
     )
 
-    /**
-     * Card color style preference for reactive card rendering.
-     * Per CARD-09: Triggers instant recomposition when style changes.
-     */
-    val cardColorStyle: StateFlow<CardColorStyle> = preferencesManager.cardColorStyle
-        .map { CardColorStyle.fromStringOrDefault(it) }
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Lazily,
-            initialValue = CardColorStyle.DEFAULT
-        )
+
 
     /**
      * Filter mode state for reactive UI updates.

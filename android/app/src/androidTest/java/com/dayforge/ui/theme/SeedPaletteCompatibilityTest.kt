@@ -1,7 +1,8 @@
 package com.dayforge.ui.theme
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.dayforge.domain.model.GlobalColorTheme
+import com.dayforge.testing.legacy.GlobalColorTheme
+import com.dayforge.testing.legacy.ColorSchemeGenerator
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import org.junit.Assert.*

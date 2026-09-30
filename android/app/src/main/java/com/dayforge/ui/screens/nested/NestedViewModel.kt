@@ -13,7 +13,6 @@ import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.HabitRepository
 import com.dayforge.domain.model.ActiveTimerState
-import com.dayforge.domain.model.CardColorStyle
 import com.dayforge.domain.service.HabitCompletionCoordinator
 import com.dayforge.domain.service.HabitDeletionCoordinator
 import com.dayforge.domain.service.HabitLifecycleCoordinator
@@ -168,17 +167,7 @@ class NestedViewModel @Inject constructor(
             initialValue = emptySet()
         )
 
-    /**
-     * Card color style preference for reactive card rendering.
-     * Per CARD-09: Triggers instant recomposition when style changes.
-     */
-    val cardColorStyle: StateFlow<CardColorStyle> = preferencesManager.cardColorStyle
-        .map { CardColorStyle.fromStringOrDefault(it) }
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Lazily,
-            initialValue = CardColorStyle.DEFAULT
-        )
+
 
     /**
      * Linked metrics by habit ID.

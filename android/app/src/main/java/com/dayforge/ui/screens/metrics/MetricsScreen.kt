@@ -49,7 +49,7 @@ fun MetricsScreen(
     val metricsWithLatest by viewModel.metricsWithLatest.collectAsState()
     val isInitialized by viewModel.isInitialized.collectAsState()
     // Card color style for reactive card rendering (CARD-09)
-    val cardColorStyle by viewModel.cardColorStyle.collectAsState()
+    val cardColorStyle = com.dayforge.ui.theme.LocalDeviceCardStyle.current
 
     Scaffold(
         floatingActionButton = {

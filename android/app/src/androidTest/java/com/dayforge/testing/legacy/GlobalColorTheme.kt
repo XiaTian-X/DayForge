@@ -1,4 +1,7 @@
-package com.dayforge.domain.model
+package com.dayforge.testing.legacy
+
+// Frozen pre-#243 rendering fixture, not a runtime fallback or supported import format.
+// Keep the independent CSV/OLED assertions when changing production theme rendering.
 
 import kotlinx.serialization.Serializable
 

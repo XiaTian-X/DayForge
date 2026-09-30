@@ -2,16 +2,13 @@ package com.dayforge.widget.base
 
 import android.content.Context
 import android.content.res.Configuration
-import android.util.Log
 import androidx.compose.ui.graphics.toArgb
-import com.dayforge.data.local.PreferencesManager
 import com.dayforge.domain.model.CardColorStyle
 import com.dayforge.domain.service.CardColorResolver
-import com.dayforge.domain.service.ThemeManager
-import com.dayforge.ui.theme.ColorSchemeGenerator
-import kotlinx.coroutines.flow.first
+import com.dayforge.domain.service.DeviceThemeController
+import com.dayforge.domain.appearance.DeviceCardStyle
+import com.dayforge.ui.theme.toComposeColors
 
-private const val TAG = "WidgetColorResolver"
 
 /**
  * Resolves widget colors based on CardColorStyle mode and current theme.
@@ -27,15 +24,14 @@ private const val TAG = "WidgetColorResolver"
  *
  * Usage:
  * ```kotlin
- * val resolver = WidgetColorResolver(context, themeManager, preferencesManager)
+ * val resolver = WidgetColorResolver(context, themes)
  * val colors = resolver.resolveWidgetColors(userColorHex)
  * // Store colors.backgroundColorArgb and colors.textColorArgb in Glance state
  * ```
  */
 class WidgetColorResolver(
     private val context: Context,
-    private val themeManager: ThemeManager,
-    private val preferencesManager: PreferencesManager
+    private val themes: DeviceThemeController
 ) {
     /**
      * Resolved widget colors for rendering.
@@ -56,48 +52,20 @@ class WidgetColorResolver(
      * Resolves widget colors based on current preferences and theme.
      *
      * This method:
-     * 1. Reads cardColorStyle preference (follow_theme or personalized)
-     * 2. Determines current theme mode (light/dark/system)
-     * 3. Gets the appropriate GlobalColorTheme
-     * 4. Generates ColorScheme for the current mode
-     * 5. Uses CardColorResolver logic to calculate final colors
-     * 6. Returns Int ARGB values for Glance state storage
+     * Reads the shared atomic selection and cached complete palettes. Only a changed selection
+     * reloads files; timer renders never regenerate colors. CardColorResolver retains object accents.
      *
      * @param userColorHex The user's custom color as hex string (e.g., "#FF4CAF50")
      * @return ResolvedWidgetColors with pre-computed ARGB values
      */
     suspend fun resolveWidgetColors(userColorHex: String): ResolvedWidgetColors {
-        // 1. Read cardColorStyle preference
-        val cardColorStyleStr = preferencesManager.cardColorStyle.first()
-        val cardColorStyle = CardColorStyle.fromStringOrDefault(cardColorStyleStr)
-
-        // 2. Determine current theme mode
-        val themeMode = preferencesManager.themeMode.first()
-        val isSystemInDarkTheme = isSystemInDarkTheme()
-        val useDarkTheme = when (themeMode) {
-            "light" -> false
-            "dark" -> true
-            else -> isSystemInDarkTheme  // System default (null or other)
+        val loaded = themes.current()
+        val cardColorStyle = when (loaded.saved.selection.cardStyle) {
+            DeviceCardStyle.FOLLOW_THEME -> CardColorStyle.FOLLOW_THEME
+            DeviceCardStyle.PERSONALIZED -> CardColorStyle.PERSONALIZED
         }
+        val colorScheme = loaded.resolve(isSystemInDarkTheme()).toComposeColors()
 
-        // 3. Get the appropriate theme ID
-        val themeId = if (useDarkTheme) {
-            preferencesManager.darkColorThemeId.first()
-        } else {
-            preferencesManager.lightColorThemeId.first()
-        }
-
-        // 4. Get GlobalColorTheme from ThemeManager
-        val globalColorTheme = themeManager.getById(themeId)
-
-        // 5. Generate ColorScheme for the current mode
-        val colorScheme = if (useDarkTheme) {
-            ColorSchemeGenerator.generateDarkColorScheme(globalColorTheme)
-        } else {
-            ColorSchemeGenerator.generateLightColorScheme(globalColorTheme)
-        }
-
-        // 6. Use CardColorResolver logic to calculate final colors
         val resolvedColors = CardColorResolver.resolveCardColors(
             style = cardColorStyle,
             userColorHex = userColorHex,
@@ -105,9 +73,6 @@ class WidgetColorResolver(
             onPrimaryContainer = colorScheme.onPrimaryContainer.toArgb(),
             onPrimary = colorScheme.onPrimary.toArgb()
         )
-
-        Log.d(TAG, "resolveWidgetColors: style=$cardColorStyle, themeId=$themeId, darkMode=$useDarkTheme, " +
-                "bg=${resolvedColors.backgroundColor}, text=${resolvedColors.textColor}")
 
         return ResolvedWidgetColors(
             backgroundColorArgb = resolvedColors.backgroundColor.toArgb(),

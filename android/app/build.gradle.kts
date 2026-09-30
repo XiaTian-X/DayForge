@@ -135,7 +135,8 @@ dependencies {
     implementation(libs.material.icons.extended)
     implementation(libs.material3)
     implementation(libs.material3WindowSizeClass)
-    implementation(libs.material.color.utilities)
+    // Only the independent pre-#243 palette regression fixture uses the generator.
+    androidTestImplementation(libs.material.color.utilities)
 
     // Vico chart library
     implementation(libs.vico.compose)

@@ -1,4 +1,7 @@
-package com.dayforge.ui.theme
+package com.dayforge.testing.legacy
+
+// Frozen pre-#243 rendering fixture, not a runtime fallback or supported import format.
+// Keep the independent CSV/OLED assertions when changing production theme rendering.
 
 import android.util.Log
 import androidx.compose.material3.ColorScheme
@@ -6,9 +9,6 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.core.graphics.toColorInt
 import androidx.compose.ui.graphics.Color
-import com.dayforge.domain.model.GlobalColorTheme
-import com.dayforge.domain.service.SeedColorPalette
-import com.dayforge.domain.service.SeedColorRole
 
 private const val TAG = "ColorSchemeGenerator"
 

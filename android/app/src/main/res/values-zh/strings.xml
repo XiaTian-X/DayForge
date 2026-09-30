@@ -1,5 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="theme_error_timeout">文档提供者未及时响应，请重试或选择本机文件。未成功的导出可能留下不完整的目标文件。</string>
+    <string name="theme_recovery_title">修复主题选择</string>
+    <string name="theme_recovery_hint">选择可用的浅色和深色主题后确认。保留明暗模式、卡片风格和个人数据，不会自动重置损坏的元数据。</string>
+    <string name="theme_recovery_light_selected">已选为浅色主题</string>
+    <string name="theme_recovery_dark_selected">已选为深色主题</string>
+    <string name="theme_recovery_apply">确认主题选择</string>
+    <string name="theme_recovery_delete_hint">仅删除损坏或未完成的主题 %1$s（版本 %2$d）？此操作取消其待完成安装并删除对应本机主题文件，不删除个人数据。</string>
     <!-- App -->
     <string name="app_name">习以成常</string>
 
@@ -30,6 +37,13 @@
     <string name="action_done">完成</string>
     <string name="action_close">关闭</string>
     <string name="action_retry">重试</string>
+    <string name="theme_load_failed">主题加载失败。已保留原选择与个人数据。</string>
+    <string name="theme_unavailable">不可用 / 需要恢复</string>
+    <string name="theme_loading">正在加载主题…</string>
+    <string name="theme_import_preview">预览主题</string>
+    <string name="theme_import_preview_hint">浅色和深色色板均已校验。安装此版本，不改变当前主题？</string>
+    <string name="theme_export_complete">导出完整主题</string>
+    <string name="theme_export_complete_hint">包含已保存的浅色与深色色板，不重新生成颜色。</string>
     <string name="action_continue">继续</string>
     <string name="action_pause">暂停</string>
     <string name="action_stop">停止</string>
@@ -172,22 +186,17 @@
     <string name="theme_import_success">主题导入成功</string>
     <string name="theme_import_success_message">主题"%s"已成功导入。</string>
     <string name="theme_import_error">导入失败</string>
-    <string name="theme_error_invalid_seed_color">无效的种子颜色格式：%s。应为 #RRGGBB</string>
-    <string name="theme_error_no_mode">主题必须至少适用于一种模式（浅色或深色）</string>
-    <string name="theme_error_invalid_colors">无效的颜色格式：%s</string>
-    <string name="theme_error_save_failed">保存主题失败</string>
-    <string name="theme_error_invalid_json">无效的JSON格式：%s</string>
-    <string name="theme_error_cannot_delete_preset">无法删除预设主题</string>
+    <string name="theme_error_cannot_delete_preset">不能覆盖或删除内置主题。</string>
+    <string name="theme_error_version">不支持此主题格式或版本，请导入完整的 dayforge.theme 文件。</string>
+    <string name="theme_error_in_use">浅色或深色模式仍在使用此版本，请先选择其他主题再删除。</string>
+    <string name="theme_error_changed">主题选择或目录已改变，请刷新后重试。</string>
+    <string name="theme_error_limit">主题文件或目录超过限制，请减小文件或移除不使用的自定义版本。</string>
+    <string name="theme_error_operation">未能确认操作完成，请检查主题目录后重试。</string>
     <string name="theme_exporting">正在导出主题…</string>
     <string name="theme_export_success">主题导出成功</string>
     <string name="theme_export_error">导出失败</string>
     <string name="theme_delete_success">主题已删除</string>
     <string name="theme_delete_error">删除失败</string>
-    <string name="theme_export_options_hint">选择导出格式：</string>
-    <string name="theme_export_original">导出原始配置</string>
-    <string name="theme_export_original_hint">最小字段，适合分享</string>
-    <string name="theme_export_template">导出完整模板</string>
-    <string name="theme_export_template_hint">包含全部25个颜色字段，用于完全自定义</string>
 
     <!-- Permission Section -->
     <string name="settings_permission_section">权限</string>
