@@ -185,7 +185,10 @@ class StatusAppearanceTest {
         } }
         compose.onNodeWithText(label(R.string.habit_card_status_success)).assertIsDisplayed()
         assertTrue(pixels("goal-result-status", green) > 10)
-        compose.onNodeWithText("Reading goal").performClick()
+        // The merged Card contains this text but its centre can land on a no-op result chip.
+        // Touch the actual name bounds, keeping the existing card and chip click behavior intact.
+        compose.onNodeWithText("Reading goal", useUnmergedTree = true).assertIsDisplayed()
+            .performTouchInput { click(center) }
         compose.runOnIdle { assertEquals(1, navigation); goal.value = goal.value.copy(goalSuccess = false) }
         compose.onNodeWithText(label(R.string.habit_card_status_failed)).assertIsDisplayed()
         assertTrue(pixels("goal-result-status", blue) > 10)
