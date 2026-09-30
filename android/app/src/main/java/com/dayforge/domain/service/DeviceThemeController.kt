@@ -60,7 +60,8 @@ class DeviceThemeController internal constructor(
     internal suspend fun library() = repository.library()
     internal suspend fun catalog() = repository.catalog()
     internal suspend fun preview(openSource: () -> InputStream) = repository.preview(openSource)
-    internal suspend fun install(preview: ValidatedTheme) = repository.install(preview)
+    internal suspend fun install(preview: ValidatedTheme, expectedRevision: Long? = null) =
+        repository.install(preview, expectedRevision)
     internal suspend fun export(ref: ThemeVersionRef) = repository.export(ref)
     internal suspend fun delete(ref: ThemeVersionRef, expectedRevision: Long) = repository.delete(ref, expectedRevision)
     internal suspend fun recover() = repository.recover()

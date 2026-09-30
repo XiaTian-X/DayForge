@@ -4,6 +4,7 @@ import android.content.Context
 import com.dayforge.data.api.NetworkMonitor
 import android.net.Uri
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import com.dayforge.data.local.TokenManager
 import com.dayforge.data.local.PreferencesManager
@@ -55,7 +56,8 @@ class SettingsViewModel @Inject constructor(
     private val timeLogDao: TimeLogDao,
     private val configWorkflow: SettingsConfigWorkflow,
     private val appearanceWorkflow: SettingsAppearanceWorkflow,
-    private val accountSessionCoordinator: AccountSessionCoordinator
+    private val accountSessionCoordinator: AccountSessionCoordinator,
+    savedStateHandle: SavedStateHandle = SavedStateHandle()
 ) : ViewModel() {
 
     // UI State
@@ -145,10 +147,13 @@ class SettingsViewModel @Inject constructor(
     val themeExportProgress = appearanceWorkflow.themeExportProgress
     val themeExportResult = appearanceWorkflow.themeExportResult
     val themeDeleteResult = appearanceWorkflow.themeDeleteResult
+    private val themeEditor = appearanceWorkflow.editor(savedStateHandle)
+    internal val themeEditorState = themeEditor.state
 
     private var manualSyncJob: Job? = null
 
     init {
+        viewModelScope.launch { themeEditor.restore() }
         viewModelScope.launch {
             themeState.collect { if (it is DeviceThemeLoadState.Ready) appearanceWorkflow.refreshLibrary(force = false) }
         }
@@ -463,6 +468,22 @@ class SettingsViewModel @Inject constructor(
     }
 
     // ==================== Theme Management ====================
+
+    internal fun beginThemeEdit(theme: ThemeChoiceSummary) { viewModelScope.launch { themeEditor.begin(theme) } }
+    internal fun renameEditedTheme(name: String) = themeEditor.rename(name)
+    internal fun changeEditedColor(field: com.dayforge.domain.appearance.ThemeColorField, value: String) = themeEditor.color(field, value)
+    internal fun resetEditedColor(field: com.dayforge.domain.appearance.ThemeColorField) = themeEditor.reset(field)
+    internal fun previewEditedTheme() { viewModelScope.launch { themeEditor.prepare() } }
+    internal fun confirmEditedTheme(preview: ValidatedTheme) { viewModelScope.launch {
+        themeEditor.confirm(preview)
+        appearanceWorkflow.refreshLibrary()
+    } }
+    internal fun backToThemeEdit() = themeEditor.backToEdit()
+    internal fun cancelThemeEdit() {
+        themeEditor.cancel()
+        viewModelScope.launch { appearanceWorkflow.refreshLibrary() }
+    }
+    internal fun dismissThemeEditResult() = themeEditor.dismissResult()
 
     /**
      * Changes the app theme and persists the preference.

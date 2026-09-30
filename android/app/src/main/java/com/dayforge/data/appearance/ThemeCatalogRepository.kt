@@ -104,7 +104,7 @@ internal class ThemeCatalogRepository(
     }
 
     /** Frozen validated preview only; no URI reopen and no selection change. */
-    suspend fun install(preview: ValidatedTheme): ThemeCatalogState = serialized {
+    suspend fun install(preview: ValidatedTheme, expectedRevision: Long? = null): ThemeCatalogState = serialized {
         val ref = preview.ref()
         if (BuiltInTheme.entries.any { it.themeId == ref.themeId }) throw ThemeCatalogException("THEME_BUILTIN_RESERVED")
         val digest = preview.definitionDigest()
@@ -118,6 +118,12 @@ internal class ThemeCatalogRepository(
         var reserved: ThemeCatalogSlot? = null
         mutate { catalog, _ ->
             val existing = catalog.slots.singleOrNull { it.ref == ref }
+            // Editing reserves a candidate from a visible catalog. Check inside its transaction,
+            // not in UI before a concurrent install/delete. Exact replay may already own a slot.
+            if (expectedRevision != null && (expectedRevision <= 0 ||
+                    catalog.revision != expectedRevision && existing == null)) {
+                throw ThemeCatalogException("THEME_CATALOG_CONFLICT")
+            }
             if (existing != null) {
                 if (existing.digest != digest) throw ThemeCatalogException("THEME_VERSION_REUSED")
                 if (existing.phase == ThemeInstallPhase.DELETING) throw ThemeCatalogException("THEME_DELETE_PENDING")
