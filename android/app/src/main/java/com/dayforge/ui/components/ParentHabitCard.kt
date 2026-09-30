@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -33,6 +34,8 @@ import com.dayforge.domain.model.CardColorStyle
 import com.dayforge.domain.service.CardColorResolver
 import com.dayforge.domain.model.ActiveTimerState
 import com.dayforge.ui.screens.nested.ChildHabitWithStats
+import com.dayforge.ui.theme.SemanticStatus
+import com.dayforge.ui.theme.rememberStatusAppearance
 import java.time.LocalDate
 
 /**
@@ -225,26 +228,30 @@ fun ParentHabitCard(
                             if (parentHabit.habitType == HabitType.GOAL) {
                                 when (parentHabit.goalSuccess) {
                                     true -> {
+                                        val status = rememberStatusAppearance(SemanticStatus.SUCCESS,
+                                            resolvedColors.backgroundColor, colorScheme.background)
                                         Spacer(modifier = Modifier.width(8.dp))
                                         AssistChip(
                                             onClick = { },
                                             label = { Text(stringResource(R.string.habit_card_status_success), fontSize = 10.sp) },
-                                            modifier = Modifier.height(20.dp),
+                                            modifier = Modifier.height(20.dp).testTag("goal-result-status"),
                                             colors = AssistChipDefaults.assistChipColors(
-                                                containerColor = MaterialTheme.colorScheme.primary,
-                                                labelColor = MaterialTheme.colorScheme.onPrimary
+                                                containerColor = status.main,
+                                                labelColor = status.onMain
                                             )
                                         )
                                     }
                                     false -> {
+                                        val status = rememberStatusAppearance(SemanticStatus.ERROR,
+                                            resolvedColors.backgroundColor, colorScheme.background)
                                         Spacer(modifier = Modifier.width(8.dp))
                                         AssistChip(
                                             onClick = { },
                                             label = { Text(stringResource(R.string.habit_card_status_failed), fontSize = 10.sp) },
-                                            modifier = Modifier.height(20.dp),
+                                            modifier = Modifier.height(20.dp).testTag("goal-result-status"),
                                             colors = AssistChipDefaults.assistChipColors(
-                                                containerColor = MaterialTheme.colorScheme.error,
-                                                labelColor = MaterialTheme.colorScheme.onError
+                                                containerColor = status.main,
+                                                labelColor = status.onMain
                                             )
                                         )
                                     }
