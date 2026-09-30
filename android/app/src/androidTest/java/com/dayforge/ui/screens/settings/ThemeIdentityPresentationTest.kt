@@ -118,9 +118,9 @@ class ThemeIdentityPresentationTest {
             LightThemeSelectorCard(one.id, options) { light++ }
             DarkThemeSelectorCard(two.id, options) { dark++ }
         } } }
-        compose.onNodeWithTag("theme-selected-light-identity")
+        compose.onNodeWithTag("theme-selected-light-identity", useUnmergedTree = true)
             .assertTextEquals(context.getString(R.string.theme_custom_version, 2, "00000001"))
-        compose.onNodeWithTag("theme-selected-dark-identity")
+        compose.onNodeWithTag("theme-selected-dark-identity", useUnmergedTree = true)
             .assertTextEquals(context.getString(R.string.theme_custom_version, 1, "00000002"))
         compose.onNodeWithText(context.getString(R.string.settings_light_theme)).performClick()
         compose.onNodeWithText(context.getString(R.string.settings_dark_theme)).performClick()

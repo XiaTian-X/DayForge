@@ -255,7 +255,7 @@ class SettingsThemeIntegrationTest {
             compose.onNodeWithTag("theme-label-${ref.choiceKey()}", useUnmergedTree = true)
                 .performTouchInput { click(center) }
             awaitChoice { it.light == ref }
-            compose.onNodeWithTag("theme-selected-light-identity")
+            compose.onNodeWithTag("theme-selected-light-identity", useUnmergedTree = true)
                 .assertTextEquals(context.getString(R.string.theme_custom_version, ref.revision, id.replace("-", "").takeLast(8)))
         }
         select(refs[1])

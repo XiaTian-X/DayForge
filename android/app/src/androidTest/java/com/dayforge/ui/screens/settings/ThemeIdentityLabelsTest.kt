@@ -38,7 +38,8 @@ class ThemeIdentityLabelsTest {
     @Test fun collisionsExpandThroughFullIdentityAtTheCustomCatalogLimit() {
         val source = source()
         val choices = (1..128).map { index ->
-            choice(source, "${index.toString(16).padStart(8, '0')}-0000-4000-8000-0123456789ab", 1)
+            // Keep the last 28 characters equal: only the first four vary.
+            choice(source, "${index.toString(16).padStart(4, '0')}0000-0000-4000-8000-0123456789ab", 1)
         }
         val labels = themeIdentitySuffixes(choices)
         assertEquals(128, labels.size)
