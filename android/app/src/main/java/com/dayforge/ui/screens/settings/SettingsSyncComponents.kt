@@ -12,12 +12,18 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import com.dayforge.R
 import com.dayforge.data.local.entity.SyncConflictEntity
 import com.dayforge.data.local.entity.SyncOutboxEntity
 import com.dayforge.data.local.entity.TimerCommandEntity
 import com.dayforge.data.model.SyncProgress
+import com.dayforge.ui.theme.SemanticStatus
+import com.dayforge.ui.theme.rememberStatusAppearance
+import com.dayforge.ui.theme.rememberReadableStatusIcon
 import java.util.Locale
 
 /**
@@ -37,10 +43,31 @@ internal fun SyncStatusCard(
     onSyncClick: () -> Unit,
     onMakePrimaryClick: () -> Unit
 ) {
+    val background = MaterialTheme.colorScheme.surfaceVariant
+    val backdrop = MaterialTheme.colorScheme.background
+    // Display classification only: existing progress, permissions and actions are untouched.
+    val state = when {
+        !isOnline -> SemanticStatus.WARNING
+        !isLoggedIn -> null
+        syncProgress is SyncProgress.Error -> SemanticStatus.ERROR
+        syncProgress.isRunning() -> SemanticStatus.PENDING
+        syncProgress is SyncProgress.Success -> SemanticStatus.SUCCESS
+        else -> null
+    }
+    val status = rememberStatusAppearance(state ?: SemanticStatus.PENDING, background, backdrop)
+    val neutral = rememberReadableStatusIcon(MaterialTheme.colorScheme.onSurfaceVariant, background, backdrop)
+    val warning = rememberStatusAppearance(SemanticStatus.WARNING, background, backdrop)
+    val description = when (state) {
+        SemanticStatus.WARNING -> stringResource(R.string.sync_need_network)
+        SemanticStatus.ERROR -> stringResource(R.string.sync_error)
+        SemanticStatus.PENDING -> stringResource(R.string.sync_in_progress)
+        SemanticStatus.SUCCESS -> stringResource(R.string.sync_success)
+        null -> stringResource(R.string.sync_last_time, lastSyncTime)
+    }
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
+            containerColor = background
         )
     ) {
         Column(
@@ -51,23 +78,24 @@ internal fun SyncStatusCard(
         ) {
             // Sync status row
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().testTag("sync-state-summary")
+                    .semantics(mergeDescendants = true) { stateDescription = description },
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // Status icon
-                val (icon, iconColor) = when {
-                    !isOnline -> Icons.Rounded.CloudOff to MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                    syncProgress is SyncProgress.Success -> Icons.Rounded.CloudDone to MaterialTheme.colorScheme.primary
-                    syncProgress.isRunning() ->
-                        Icons.Rounded.CloudSync to MaterialTheme.colorScheme.tertiary
-                    else -> Icons.Rounded.CloudDone to MaterialTheme.colorScheme.primary
+                val icon = when (state) {
+                    SemanticStatus.WARNING -> Icons.Rounded.CloudOff
+                    SemanticStatus.ERROR -> Icons.Rounded.ErrorOutline
+                    SemanticStatus.PENDING -> Icons.Rounded.CloudSync
+                    SemanticStatus.SUCCESS -> Icons.Rounded.CloudDone
+                    null -> Icons.Rounded.CloudQueue
                 }
 
                 Icon(
                     imageVector = icon,
                     contentDescription = null,
-                    tint = iconColor,
-                    modifier = Modifier.size(24.dp)
+                    tint = if (state == null) neutral else status.icon,
+                    modifier = Modifier.size(24.dp).testTag("sync-state-icon")
                 )
 
                 Spacer(modifier = Modifier.width(12.dp))
@@ -157,7 +185,7 @@ internal fun SyncStatusCard(
                 }
             }
             if (rejectedCount > 0) {
-                TextButton(onClick = onRejectedClick) {
+                TextButton(onClick = onRejectedClick, colors = ButtonDefaults.textButtonColors(contentColor = warning.text)) {
                     Icon(Icons.Rounded.Warning, contentDescription = null)
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(stringResource(R.string.sync_rejected_count, rejectedCount))

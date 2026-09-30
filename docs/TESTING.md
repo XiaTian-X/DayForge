@@ -596,6 +596,13 @@ Preferences DataStore 验证内置分叉、自定义最高版本加一/耗尽、
 UI 保存状态注册表模拟与 SavedStateHandle 输入重建不代表真实 OS 杀进程、强制停止或旋转测试，
 亦不代表手机/平板完整视觉及无障碍人工验收，正式 App 与用户数据均不操作。
 
+`StatusAppearanceTest` 检查实际同步图标像素及本地化状态语义：success/error、上传/下载/恢复、
+离线优先、Idle 和未登录，覆盖保存色板的明暗/版本变化。同步、拒绝处理、角色申请的按钮
+可用性与回调按原规则验证，包括离线显式同步；不将显示色变化当作同步状态机修改。
+真实 `ParentHabitCard` 验证成功/失败/进行中的标记、展开与导航；显示解析另检查 alpha 底板、
+文字与图形阈值及无完整主题上下文的 Material 回退。既有整卡淡化保留；测试不代表淡化卡片、
+手机/平板全页面或厂商桌面的人工可读性验收。
+
 `ResolvedThemeTest` 从共享原始主题 JSON 和独立不同角色值核对 36 个实际 Compose 颜色、
 Glance 26 个 Material 角色及明确的 widgetBackground、全部状态/图表值、明暗配置与显式模式。
 它不启动 MainActivity，覆盖输入 Map 后变、不可变快照、非法字段/颜色和不执行未知生成器。
