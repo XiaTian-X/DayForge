@@ -59,7 +59,7 @@
 - [主导航](../android/app/src/main/java/com/dayforge/ui/navigation/HabitNavGraph.kt)、[主 Activity](../android/app/src/main/java/com/dayforge/MainActivity.kt)。
 - [习惯页](../android/app/src/main/java/com/dayforge/ui/screens/dashboard/DashboardScreen.kt)、[平板看板](../android/app/src/main/java/com/dayforge/ui/screens/dashboard/KanbanLayout.kt)。
 - [目标页](../android/app/src/main/java/com/dayforge/ui/screens/nested/NestedScreen.kt)、[指标页](../android/app/src/main/java/com/dayforge/ui/screens/metrics/MetricsScreen.kt)。
-- [设置页](../android/app/src/main/java/com/dayforge/ui/screens/settings/SettingsScreen.kt)、[主题入口](../android/app/src/main/java/com/dayforge/ui/theme/Theme.kt)、[图标选择](../android/app/src/main/java/com/dayforge/ui/components/IconPicker.kt)、[图标映射](../android/app/src/main/java/com/dayforge/domain/util/IconMapper.kt)。
+- [设置页](../android/app/src/main/java/com/dayforge/ui/screens/settings/SettingsScreen.kt)、[主题入口](../android/app/src/main/java/com/dayforge/ui/theme/DeviceAppearanceTheme.kt)、[图标选择](../android/app/src/main/java/com/dayforge/ui/components/IconPicker.kt)、[图标映射](../android/app/src/main/java/com/dayforge/domain/util/IconMapper.kt)。
 
 以下保留详细功能基线与设计讨论。有关现状的描述需与接手时源码核对；方案章节均受上述“尚未确定”边界约束。
 
@@ -182,8 +182,9 @@
 不包含打卡历史、计时日志、指标记录及本地数据库编号。当前 `ConfigImportService` 在事务中替换
 配置，并通过删除关联实体影响原记录；界面已有清理数量确认。本轮按用户要求保留此行为，
 不可画成无风险的追加导入，也不能在 UI 重构中静默改变成另一种同步/恢复协议。
-主题导入导出又是独立能力；原始主题导出与按种子生成参考模板的含义见 `ARCHITECTURE.md`，
-不能把二者统称为“导出当前外观”。未来图标素材导入也不得占用或取代上述入口。
+主题导入导出是独立能力：#243 接入完整浅深色板的 `dayforge.theme` 原文导入/导出，
+取消旧种子参考模板且明确拒绝旧格式，边界见 `ARCHITECTURE.md` 和 `APPEARANCE_CONTRACT.md`。
+未来图标素材导入不得占用或取代上述配置与主题入口。
 
 ### 遗留行为与已讨论变更的边界
 

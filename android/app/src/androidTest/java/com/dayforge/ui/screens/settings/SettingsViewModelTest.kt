@@ -34,10 +34,11 @@ import com.dayforge.domain.service.ConfigExportService
 import com.dayforge.domain.service.ConfigImportService
 import com.dayforge.domain.service.SyncManager
 import com.dayforge.domain.service.AccountSessionCoordinator
-import com.dayforge.domain.service.ThemeManager
-import com.dayforge.domain.service.ThemeImportService
-import com.dayforge.domain.service.ThemeExportService
-import com.dayforge.domain.repository.CustomThemeRepository
+import com.dayforge.domain.service.DeviceThemeController
+import com.dayforge.data.appearance.BuiltInThemes
+import com.dayforge.data.appearance.DeviceThemeRepository
+import com.dayforge.data.appearance.ThemeFileRepository
+import com.dayforge.domain.appearance.DeviceCardStyle
 import com.dayforge.widget.WidgetRefreshScheduler
 import io.mockk.mockk
 import io.mockk.mockkObject
@@ -95,6 +96,9 @@ class SettingsViewModelTest {
     private val viewModelStore = ViewModelStore()
     private val dataStoreScope = CoroutineScope(SupervisorJob() + testDispatcher)
     private lateinit var dataStoreFile: File
+    private lateinit var themeDirectory: File
+    private lateinit var themeRepository: DeviceThemeRepository
+    private lateinit var themeController: DeviceThemeController
 
     @Before
     fun setup() {
@@ -130,11 +134,9 @@ class SettingsViewModelTest {
         val mockConfigExportService = ConfigExportService(habitDao, metricDao, habitMetricLinkDao)
         val mockConfigImportService = ConfigImportService(habitDao, metricDao, habitMetricLinkDao, database)
 
-        // Create mock theme services
-        val mockCustomThemeRepository = CustomThemeRepository(context)
-        val mockThemeManager = ThemeManager(context, mockCustomThemeRepository)
-        val mockThemeImportService = ThemeImportService(mockCustomThemeRepository, mockThemeManager, context)
-        val mockThemeExportService = ThemeExportService(mockThemeManager, mockCustomThemeRepository, context)
+        themeDirectory = java.nio.file.Files.createTempDirectory(context.filesDir.toPath(), "settings-themes-").toFile()
+        themeRepository = DeviceThemeRepository(testDataStore, ThemeFileRepository(themeDirectory), BuiltInThemes(context.assets))
+        themeController = DeviceThemeController(themeRepository, CoroutineScope(SupervisorJob() + Dispatchers.IO))
 
         preferencesManager = PreferencesManager(testDataStore)
         configWorkflow = SettingsConfigWorkflow(
@@ -150,10 +152,7 @@ class SettingsViewModelTest {
         appearanceWorkflow = SettingsAppearanceWorkflow(
             context = context,
             preferencesManager = preferencesManager,
-            themeManager = mockThemeManager,
-            themeImportService = mockThemeImportService,
-            themeExportService = mockThemeExportService,
-            customThemeRepository = mockCustomThemeRepository
+            themes = themeController
         )
         accountSessionCoordinator = AccountSessionCoordinator()
 
@@ -181,7 +180,11 @@ class SettingsViewModelTest {
     fun teardown() {
         viewModelStore.clear()
         testDispatcher.scheduler.runCurrent()
-        runTest(testDispatcher) { dataStoreScope.coroutineContext.job.cancelAndJoin() }
+        runTest(testDispatcher) {
+            themeController.close()
+            dataStoreScope.coroutineContext.job.cancelAndJoin()
+        }
+        assertTrue(themeDirectory.deleteRecursively())
         database.close()
         dataStoreFile.delete()
         Dispatchers.resetMain()
@@ -376,7 +379,11 @@ class SettingsViewModelTest {
             val enabled = index % 2 != 0
             viewModel.changeCardColorStyle(style)
             viewModel.setGlobalNotificationsEnabled(enabled)
-            assertEquals(style, preferencesManager.cardColorStyle.first { it == style })
+            val expectedStyle = if (index % 2 == 0) DeviceCardStyle.PERSONALIZED else DeviceCardStyle.FOLLOW_THEME
+            themeController.state.first { state ->
+                state is com.dayforge.data.appearance.DeviceThemeLoadState.Ready && state.theme.saved.selection.cardStyle == expectedStyle
+            }
+            assertEquals(expectedStyle, themeRepository.savedSelection()!!.selection.cardStyle)
             assertEquals(enabled, preferencesManager.globalNotificationsEnabled.first { it == enabled })
         }
         testDispatcher.scheduler.runCurrent()

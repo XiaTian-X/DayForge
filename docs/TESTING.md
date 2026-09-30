@@ -26,19 +26,38 @@
 ANDROID_SERIAL=<设备序列号> ./tools/verify android
 ```
 
-入口执行 `lintDebug`、`assembleDebug`、`assembleDeviceTest`、`assembleDeviceTestAndroidTest`、
-`connectedDeviceTestAndroidTest` 和 `createDeviceTestCoverageReport`。真机测试结果位于
-`android/app/build/outputs/androidTest-results/connected/deviceTest/`；覆盖率报告位于
+入口通过 `tools/run_android_tests.py` 执行一次 `lintDebug`、`assembleDebug`、`assembleDeviceTest`、
+`assembleDeviceTestAndroidTest`；安装隔离 testbed APK 后，以官方运行器 `log=true` 在真机发现完整
+用例身份（包括参数化展开），这一步不是行为测试通过。随后使用官方 `numShards=2` / `shardIndex=0,1`
+顺序执行两次 `connectedDeviceTestAndroidTest`，显式 `log=false`，不使用类、包或其他用例过滤。
+各批结束即保存 XML 和独立 `.ec`，核对两批身份并集与发现清单完全相等且无重复，才将两份新覆盖率
+输入送入原 `createDeviceTestCoverageReport`。此时排除该报告任务的 connected 依赖，避免再跑一批；
+不是跳过尚未执行的测试。真实测试和统计校准均须成功，且 testbed 清理完成后才写入 `complete.json`。
+
+每次运行证据保留在 `android/app/build/reports/dayforge-device/<本次随机身份>/`：发现日志、两批
+Gradle 日志/原始 XML/覆盖率文件和成功清单；成功清单记录 APK、报告与输入 SHA-256 和完整发现身份。
+旧生成报告与覆盖率目录会移入该次 `prior-*`，不作为当前证据，也不递归删除用户文件。
+原 `android/app/build/outputs/androidTest-results/connected/deviceTest/` 为单批暂存，结束后移走；覆盖率报告位于
 `android/app/build/reports/coverage/androidTest/deviceTest/connected/`。
-`tools/check_android_results.py` 拒绝缺失/空报告、失败、错误、跳过，以及与 testcase 不一致的统计；
-不能把被忽略的用例算成绿色验收。该检查不证明用例发现完整，仍须核对迁移清单和完整运行范围。
+`tools/check_android_results.py` 拒绝缺失/空报告、失败、错误、跳过、统计错配、缺失/重复用例身份，以及
+缺失/负数/非有限耗时（中断 XML 可能把未完成用例写成负数而没有 failure）。独立检查单批 XML 不证明
+完整发现或覆盖率新鲜；完整验收必须经统一入口检查全部批次。任何批失败立即停止，不自动重试部分用例。
 `tools/check_android_coverage.py` 要求输入校验、指标仓库和计时服务三个实际执行的应用类均有
 非零源代码行覆盖，防止“测试执行了，但插桩没有记录”的报告被当作可靠统计。
 这只是统计校准，不是百分比达标，也不能代替异常路径断言。
 
 后端作业上限 15 分钟，CI Android 构建步骤上限 20 分钟、作业上限 25 分钟。
-真机测试单项上限 150 秒（含完整一分钟计时），统一入口 Android 测试任务上限 15 分钟。
+真机测试单项上限 150 秒（含完整一分钟计时），每批 Android 测试任务/包装进程上限 15 分钟。
+完整测试固定为两个顺序批次，不支持任意扩批或用户过滤；不是把单批上限改为 30 分钟。
 超时属于失败，不能通过提高时限掩盖未结束的协程或挂起的测试。
+全局文件锁保证本机不同 worktree 的 Android 验证不并行；各 Gradle 调用使用独立 single-use daemon，
+取消/超时终止并等待本次包装进程，随后仅 force-stop/卸载两个精确 testbed 包，再释放锁。
+不得使用全局 Gradle stop、杀无关进程、清除正式 App 或从失败运行遗留文件拼出成功。
+外部 Gradle 属性/环境注入 instrumentation 参数会被拒绝，托管 `android-build` 不发现/安装/执行测试。
+工具回归使用临时生成物、伪命令边界和真实短命子进程验证顺序、缺批/漏项/重复、旧结果排除、
+覆盖率缺失/损坏、APK 改变、过滤注入、链接目录拒绝、超时 join 与锁重用；这些不是 Android 行为测试。
+运行器依据：[AndroidJUnitRunner 分批文档](https://developer.android.com/training/testing/instrumented-tests/androidx-test-libraries/runner)
+及 [log-only 定义](https://github.com/android/android-test/blob/main/runner/android_junit_runner/java/androidx/test/runner/AndroidJUnitRunner.java)。
 
 Android lint 使用官方 `android/app/lint-baseline.xml` 记录已有问题，并将所有未进入基线的
 warning 提升为 error。Kotlin、javac 与 Android 资源编译警告由
@@ -292,7 +311,8 @@ Issue #20 的本地广播替换按用户约定延后真机验收。自动化验�
 Issue #20 的配色 API 迁移使用迁移前固定输出验证 43 个种子、明暗两种模式的 27 个角色，
 另覆盖逐项自定义覆盖、无效输入、OLED 与主题导出。数值一致不代替设备上的渲染验收。
 按用户约定，真机外观检查留待集中进行：一次切换所有预设明暗主题和 OLED，再检查部分自定义颜色
-及小组件配色；普通导出应保留原始 JSON，生成式导出仍为浅色参考模板。确认文字可读、配色无意外变化。
+及小组件配色。新主题格式替代旧种子模板后，只导出完整浅深色板的原始 JSON，不再提供生成式浅色模板；
+旧 seed 文件明确提示版本不支持。确认文字可读、配色无意外变化。
 此批不修改状态栏/窗口布局，系统栏整改需独立验收。
 
 ## 主窗口系统栏整改的集中真机验收（待执行）
@@ -490,12 +510,59 @@ Flow 允许合并连续写入的中间通知，但取消订阅/关闭/重开后�
 
 ## 主题与资源真机回归（Issue #139）
 
+#243 将旧 ThemeManager、CustomThemeRepository、种子导入/参考模板导出及旧 APK seed 文件移除。
+对应旧服务测试随 API 退役，不用于维持已取消的兼容行为：文件读写/并发/链接/失败清理/取消由
+`ThemeFileRepositoryTest` 与 `ThemeCatalogRepositoryTest` 承接；另补全非法身份对读取、查找、
+安装、删除和暂存回收的零副作用，以及悬空链接保护。目录损坏项须显式显示，不沿用旧静默忽略语义。
+导出由 `SettingsThemeDocumentsTest` 验证完整双配色原文往返、失败重试和旧 seed 格式拒绝，
+不再验证“导出时生成浅色参考模板”或非法颜色回退。旧 43 seed 色值、OLED 与覆盖色断言仍保留，
+原生成器/模型仅移到 `androidTest/testing/legacy` 作为冻结比较夹具，CSV 字节不得改变；
+生产 APK 不包含该生成器依赖。窗口测试改走实际新主题入口，保留全部布局/系统栏断言。
+
+`ThemeCatalogRepositoryTest` 使用真实 DataStore 和文件验证安装/删除日志、同身份并发重放、
+浅深双引用保护、选择已读文件后与删除竞争、实际偏好磁盘失败（预留前和文件发布后）、
+写入/rename/unlink 前后失败及关闭重开恢复。未知暂存和未登记冲突文件不能被认领或清理；
+链接/FIFO/目录拒绝、删除后根身份替换停止提交。损坏摘要阻止导出/重放/选择/冷读取，目录仍保留
+故障与待完成项供显式处理。128 版本、64 MiB 物理存储和序号收尾预留分别验证，不能仅检查计数模型。
+完整目录重复解码须验证有界精确原文缓存的不可变性，原文/序号变化及损坏输入不得复用旧值；
+保留 128 次实际安装和原有重复设置断言，不通过减少边界规模、循环次数或延长门禁优化耗时。
+摘要使用独立规范 JSON 的固定 SHA-256 值验证，切换默认语言也不能改变内容身份。
+
+`DeviceThemeRepositoryTest` 覆盖独立实例并发冷启动只初始化一次、完整浅深/模式/卡片快照重开、
+过期选择拒绝、一次来源预览/确认/完整原文导出/删除闭环、文件发布后中断的启动恢复、
+损坏偏好和已选文件缺失的明确 failed 状态、观察者完整快照与取消关闭。旧偏好和无关账户设置保留，
+不启动 MainActivity，也不以这些内部仓库测试代替设置页及小组件验收。
+
+`SettingsThemeDocumentsTest` 从真实 ContentResolver 文件 URI 验证预览不安装、取消无写入、确认不重开
+来源、完整导出后再导入、失败与取消目标、单一目标选择器及选择器启动失败后的重试；保存选择保护
+与原设置回归不因新主题入口被删减。`ThemeDocumentsTest` 使用真实文件段和 ParcelFileDescriptor
+管道验证 EOF/偏移/长度、读停滞、写回压、提供者打开取消、调用者取消、句柄收尾及原始错误传播。
+提供者取消回调抛异常时仍须取消并等待读写子任务；保留原失败并附加清理错误，不能把已写出的部分或完整文件误报为成功。
+不能只给协程加超时却留下仍读写目标的后台任务；API 35 结果不代替 Android 8–10 的实机验证。
+
+`ThemeRecoveryViewModelTest` 使用真实 DataStore/文件验证损坏当前主题的显式替换、保留模式/卡片/
+无关偏好、损坏元数据不重置、过期选择拒绝、未完成安装取消和已选引用保护。
+`ThemeRecoveryPresentationTest` 验证恢复入口、错误脱敏、320dp/1.3 倍字体的滚动与显式确认、
+删除取消/再次确认及所见目录序号。`ThemePresentationTest` 验证实际 Compose 明暗/OLED/卡片
+快照、原选择器身份与内置名称、预览双配色和确认回调。组件测试不代表手机/平板整页或厂商桌面验收。
+
+`SettingsThemeIntegrationTest` 从实际设置页触摸进入模式/主题/卡片选择与预览确认、删除取消/确认，
+核对真实生产 DataStore、文件及冷读结果。使用生产 Hilt 注入的 workflow/controller 和小组件入口，
+两者须是同一 singleton；同步观察和刷新派发使用显式边界，仍验证提交后的排队次数。
+测试持有的控制器/页面 ViewModel 在收尾时关闭；不启动 MainActivity，也不把 Activity 组件测试当作
+正式 App 登录、系统文件选择器、六类桌面组件或手机/平板人工验收。
+
+`DeviceWidgetThemeTest` 须从真实私有存储冷启控制器，在不启动 MainActivity 的情况下构造、应用和
+绘制 Glance RemoteViews，核对显式浅/深模式与系统相反时仍固定、system 的双色板及 OLED 实际像素。
+同时验证生产卡片配色解析器的个性化颜色、缓存 tick，以及失败只显示错误入口、不渲染正常内容。
+这不代替生产 Hilt 冷启动、六类小组件完整业务输出和真实桌面生命周期验收。
+
 `BuiltInThemesTest` 验证七份实际 APK 主题的固定身份/版本、模式范围、完整角色、只读结果与
 一次 IO 输入关闭。36 个 Material 输出须与已有独立 CSV/OLED 基准及 9 角色字面量一致，
-并比较原渲染入口；实际 Compose/Glance 输出不可只检查非空。新增状态值、文字配对对比度和
+并比较测试专用的原渲染夹具；实际 Compose/Glance 输出不可只检查非空。新增状态值、文字配对对比度和
 图表映射另有断言。安装覆盖全套预检、缺失/错误身份/损坏零安装、真实文件重开/并发幂等、
 同版本冲突、第三份写入失败的实际保留集合与重试、取消关闭及旧文件不变。不得改变旧 CSV
-来迎合新颜色；此内部安装器未切换生产页面，不代表人工视觉验收。
+来迎合新颜色；这些安装器测试不代替生产入口集成或人工视觉验收。
 
 `DeviceThemeStoreTest` 使用真实文件 DataStore 与已安装主题验证整份选择的持久化、关闭重开、
 独立浅深主题及三种模式到实际 Compose/Glance 颜色、卡片风格、旧/无关偏好保留。
@@ -507,7 +574,9 @@ Flow 允许合并连续写入的中间通知，但取消订阅/关闭/重开后�
 `ThemeFileRepositoryTest` 使用真实私有文件验证完整主题的一次输入、关闭/取消/异常、1 MiB
 边界、严格 JSON、不可变预览、原文导出、重开与并发重试/同版本冲突、身份及路径拒绝。
 短写/零进展/部分写/损坏回读、fsync/rename/清理失败和发布前后取消须分别核对实际文件，
-保留旧版本、旧主题目录，存储入口不写当前选择，不能假定失败即回滚。根替换停止发布，未知暂存不被删除；
+保留旧版本、旧主题目录，存储入口不写当前选择，不能假定失败即回滚。
+两份精确原文解析缓存须验证输入副本不可变、淘汰，以及合法变更/损坏/缺失/链接仍被读取或拒绝。
+根替换停止发布，未知暂存不被删除；
 重复操作须归还 FD。共享严格 JSON 预检也须继续通过全部 IconPackArchiveTest 反例。
 这是内部主题版本存储验证，不代表主题页面/当前选择或文件系统断电实验已验收。
 
@@ -520,7 +589,7 @@ PNG 采样的奇数/极细尺寸及像素存储上限、SVG 显示分辨率与�
 Glance 26 个 Material 角色及明确的 widgetBackground、全部状态/图表值、明暗配置与显式模式。
 它不启动 MainActivity，覆盖输入 Map 后变、不可变快照、非法字段/颜色和不执行未知生成器。
 对比度检查黑白/原色的独立数值、4.5/3 临界灰色、前景/背景 alpha、实际底板及所有 256 个灰阶。
-这不是主题导入持久性、所有页面视觉或厂商桌面验收；新适配器尚未替换旧主题消费者。
+这不是主题导入持久性、所有页面视觉或厂商桌面验收，消费者接线须另有集成测试。
 
 `LocalIconFilesTest` 在隔离 testbed 私有临时目录执行真实 PNG/SVG 写入、重开与读取，验证
 短写/零进展/部分写失败、同句柄回读损坏、文件与目录 fsync/rename/清理失败、发布后失败重试、

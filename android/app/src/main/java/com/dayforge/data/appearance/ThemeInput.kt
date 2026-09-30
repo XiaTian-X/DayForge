@@ -20,6 +20,8 @@ internal class ThemeInputException(val code: String) : IllegalArgumentException(
 /** One validated, immutable preview; import confirmation never reopens the provider URI. */
 internal class ValidatedTheme private constructor(val definition: ThemeDefinition, private val source: ByteArray) {
     fun exportBytes(): ByteArray = source.copyOf()
+    /** Exact bytes only, not file identity/hash/mtime; never exposes the frozen backing array. */
+    internal fun matchesSource(bytes: ByteArray): Boolean = source.contentEquals(bytes)
 
     companion object {
         /** Opens once on IO and closes on every exit; provider owns blocking-read deadlines. */

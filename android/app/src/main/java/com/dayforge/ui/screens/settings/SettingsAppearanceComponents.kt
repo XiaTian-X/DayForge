@@ -11,6 +11,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.core.graphics.toColorInt
 import androidx.compose.ui.unit.dp
@@ -331,12 +332,11 @@ internal fun PermissionSectionCard(
 @Composable
 internal fun LightThemeSelectorCard(
     currentThemeId: String,
-    allThemes: List<com.dayforge.domain.model.GlobalColorTheme>,
+    allThemes: List<ThemeChoiceSummary>,
     onThemeClick: () -> Unit
 ) {
     // Find theme from actual list (includes custom themes)
     val theme = allThemes.find { it.id == currentThemeId }
-        ?: com.dayforge.domain.model.DefaultGlobalColorThemes.getById(currentThemeId)
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -356,7 +356,7 @@ internal fun LightThemeSelectorCard(
                 modifier = Modifier
                     .size(24.dp)
                     .background(
-                        color = androidx.compose.ui.graphics.Color(theme.seedColor.toColorInt()),
+                        color = theme?.primary(false)?.let { androidx.compose.ui.graphics.Color(it.toColorInt()) } ?: MaterialTheme.colorScheme.outline,
                         shape = MaterialTheme.shapes.extraSmall
                     )
             )
@@ -367,17 +367,7 @@ internal fun LightThemeSelectorCard(
                     style = MaterialTheme.typography.bodyMedium
                 )
                 // Use theme.name for custom themes, otherwise use localized resource
-                val displayName = if (theme.isCustom) {
-                    theme.name
-                } else {
-                    val themeNameRes = when (theme.id) {
-                        "ocean" -> R.string.theme_name_ocean
-                        "nature" -> R.string.theme_name_nature
-                        "vibrant" -> R.string.theme_name_vibrant
-                        else -> R.string.theme_name_ocean
-                    }
-                    stringResource(themeNameRes)
-                }
+                val displayName = themeDisplayName(theme)
                 Text(
                     text = displayName,
                     style = MaterialTheme.typography.bodySmall,
@@ -395,12 +385,11 @@ internal fun LightThemeSelectorCard(
 @Composable
 internal fun DarkThemeSelectorCard(
     currentThemeId: String,
-    allThemes: List<com.dayforge.domain.model.GlobalColorTheme>,
+    allThemes: List<ThemeChoiceSummary>,
     onThemeClick: () -> Unit
 ) {
     // Find theme from actual list (includes custom themes)
     val theme = allThemes.find { it.id == currentThemeId }
-        ?: com.dayforge.domain.model.DefaultGlobalColorThemes.getById(currentThemeId)
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -420,7 +409,7 @@ internal fun DarkThemeSelectorCard(
                 modifier = Modifier
                     .size(24.dp)
                     .background(
-                        color = androidx.compose.ui.graphics.Color(theme.seedColor.toColorInt()),
+                        color = theme?.primary(true)?.let { androidx.compose.ui.graphics.Color(it.toColorInt()) } ?: MaterialTheme.colorScheme.outline,
                         shape = MaterialTheme.shapes.extraSmall
                     )
             )
@@ -431,18 +420,7 @@ internal fun DarkThemeSelectorCard(
                     style = MaterialTheme.typography.bodyMedium
                 )
                 // Use theme.name for custom themes, otherwise use localized resource
-                val displayName = if (theme.isCustom) {
-                    theme.name
-                } else {
-                    val themeNameRes = when (theme.id) {
-                        "dusk" -> R.string.theme_name_dusk
-                        "forest" -> R.string.theme_name_forest
-                        "coral" -> R.string.theme_name_coral
-                        "oled" -> R.string.theme_name_oled
-                        else -> R.string.theme_name_dusk
-                    }
-                    stringResource(themeNameRes)
-                }
+                val displayName = themeDisplayName(theme)
                 Text(
                     text = displayName,
                     style = MaterialTheme.typography.bodySmall,
@@ -461,11 +439,12 @@ internal fun DarkThemeSelectorCard(
 @Composable
 internal fun GlobalColorThemeSelectionDialog(
     title: String,
-    themes: List<com.dayforge.domain.model.GlobalColorTheme>,
+    themes: List<ThemeChoiceSummary>,
+    darkPalette: Boolean = false,
     currentThemeId: String,
     onThemeSelected: (String) -> Unit,
     onDeleteTheme: (String) -> Unit = {},
-    onShowExportOptions: (com.dayforge.domain.model.GlobalColorTheme) -> Unit = {},
+    onShowExportOptions: (ThemeChoiceSummary) -> Unit = {},
     onImportTheme: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
@@ -481,12 +460,14 @@ internal fun GlobalColorThemeSelectionDialog(
         title = { Text(title) },
         text = {
             LazyColumn(
+                modifier = Modifier.testTag("theme-selection-list"),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(themes.size) { index ->
                     val theme = themes[index]
                     GlobalColorThemeOption(
                         theme = theme,
+                        darkPalette = darkPalette,
                         isSelected = theme.id == currentThemeId,
                         onClick = { onThemeSelected(theme.id) },
                         onDelete = if (theme.isCustom) { { onDeleteTheme(theme.id) } } else null,
@@ -536,27 +517,18 @@ internal fun GlobalColorThemeSelectionDialog(
  */
 @Composable
 internal fun GlobalColorThemeOption(
-    theme: com.dayforge.domain.model.GlobalColorTheme,
+    theme: ThemeChoiceSummary,
+    darkPalette: Boolean,
     isSelected: Boolean,
     onClick: () -> Unit,
     onDelete: (() -> Unit)? = null,
     onExport: () -> Unit = {}
 ) {
-    val themeNameRes = when (theme.id) {
-        "ocean" -> R.string.theme_name_ocean
-        "nature" -> R.string.theme_name_nature
-        "vibrant" -> R.string.theme_name_vibrant
-        "dusk" -> R.string.theme_name_dusk
-        "forest" -> R.string.theme_name_forest
-        "coral" -> R.string.theme_name_coral
-        "oled" -> R.string.theme_name_oled
-        else -> R.string.theme_name_ocean
-    }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onClick() }
+            .clickable(enabled = theme.available) { onClick() }
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -577,18 +549,18 @@ internal fun GlobalColorThemeOption(
             modifier = Modifier
                 .size(24.dp)
                 .background(
-                    color = androidx.compose.ui.graphics.Color(theme.seedColor.toColorInt()),
+                    color = theme.primary(darkPalette)?.let { androidx.compose.ui.graphics.Color(it.toColorInt()) } ?: MaterialTheme.colorScheme.outline,
                     shape = MaterialTheme.shapes.extraSmall
                 )
         )
         Spacer(modifier = Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = if (theme.isCustom) theme.name else stringResource(themeNameRes),
+                text = themeDisplayName(theme),
                 style = MaterialTheme.typography.bodyMedium
             )
             Text(
-                text = if (theme.isCustom) stringResource(R.string.theme_custom) else stringResource(R.string.theme_preset),
+                text = if (!theme.available) stringResource(R.string.theme_unavailable) else if (theme.isCustom) stringResource(R.string.theme_custom) else stringResource(R.string.theme_preset),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -599,6 +571,7 @@ internal fun GlobalColorThemeOption(
             // Export button
             IconButton(
                 onClick = onExport,
+                enabled = theme.available,
                 modifier = Modifier.size(32.dp)
             ) {
                 Icon(
@@ -613,7 +586,7 @@ internal fun GlobalColorThemeOption(
             if (onDelete != null) {
                 IconButton(
                     onClick = onDelete,
-                    modifier = Modifier.size(32.dp)
+                    modifier = Modifier.size(32.dp).testTag("theme-delete-${theme.id}")
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.Delete,
@@ -756,4 +729,20 @@ internal fun CardColorStyleOption(
             color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
         )
     }
+}
+
+@Composable
+internal fun themeDisplayName(theme: ThemeChoiceSummary?): String {
+    if (theme == null) return stringResource(R.string.theme_unavailable)
+    val resource = when (theme.builtInSlug) {
+        "ocean" -> R.string.theme_name_ocean
+        "nature" -> R.string.theme_name_nature
+        "vibrant" -> R.string.theme_name_vibrant
+        "dusk" -> R.string.theme_name_dusk
+        "forest" -> R.string.theme_name_forest
+        "coral" -> R.string.theme_name_coral
+        "oled" -> R.string.theme_name_oled
+        else -> null
+    }
+    return resource?.let { stringResource(it) } ?: theme.name
 }

@@ -7,7 +7,6 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -37,10 +36,6 @@ class PreferencesManager @Inject constructor(
         private fun neverAskAgainKey(habitId: Long) = booleanPreferencesKey("never_ask_metric_$habitId")
 
         private val LANGUAGE_CODE_KEY = stringPreferencesKey("language_code")
-        private val THEME_MODE_KEY = stringPreferencesKey("theme_mode")
-        private val LIGHT_COLOR_THEME_KEY = stringPreferencesKey("light_color_theme")
-        private val DARK_COLOR_THEME_KEY = stringPreferencesKey("dark_color_theme")
-        private val CARD_COLOR_STYLE_KEY = stringPreferencesKey("card_color_style")
         private val FOCUS_MODE_ENABLED_KEY = booleanPreferencesKey("focus_mode_enabled")
         private val FILTER_MODE_KEY = stringPreferencesKey("filter_mode")
 
@@ -102,118 +97,6 @@ class PreferencesManager @Inject constructor(
                 preferences[LANGUAGE_CODE_KEY] = code
             }
         }
-    }
-
-    // ========== Theme Mode Preference Management ==========
-
-    /**
-     * Flow of the user's preferred theme mode.
-     * Returns null if using system default theme.
-     * Valid values: "light" for Light mode, "dark" for Dark mode, null for System Default.
-     */
-    val themeMode: Flow<String?> = dataStore.data.map { preferences ->
-        preferences[THEME_MODE_KEY]
-    }
-
-    /**
-     * Saves the user's preferred theme mode to DataStore.
-     * Per THEME-02: Theme preference persists across app restarts.
-     *
-     * @param mode The theme mode ("light", "dark", or null for system default)
-     */
-    suspend fun setThemeMode(mode: String?) {
-        dataStore.edit { preferences ->
-            if (mode == null) {
-                preferences.remove(THEME_MODE_KEY)
-            } else {
-                preferences[THEME_MODE_KEY] = mode
-            }
-        }
-    }
-
-    // ========== Light/Dark Color Theme Management ==========
-
-    /**
-     * Flow of the user's light mode color theme preference.
-     * Per THEME-01: Light mode theme preference persists in DataStore.
-     * Returns "ocean" as the default light theme.
-     */
-    val lightColorThemeId: Flow<String> = dataStore.data.map { preferences ->
-        preferences[LIGHT_COLOR_THEME_KEY] ?: "ocean"
-    }
-
-    /**
-     * Flow of the user's dark mode color theme preference.
-     * Per THEME-02: Dark mode theme preference persists in DataStore.
-     * Returns "dusk" as the default dark theme.
-     */
-    val darkColorThemeId: Flow<String> = dataStore.data.map { preferences ->
-        preferences[DARK_COLOR_THEME_KEY] ?: "dusk"
-    }
-
-    // ========== Card Color Style Management ==========
-
-    /**
-     * Flow of the user's preferred card color style.
-     * Per CARD-02: Card color style preference persists in DataStore.
-     * Returns "follow_theme" as the default (blends with theme colors).
-     */
-    val cardColorStyle: Flow<String> = dataStore.data.map { preferences ->
-        preferences[CARD_COLOR_STYLE_KEY] ?: "follow_theme"
-    }
-
-    /**
-     * Saves the user's light mode color theme preference to DataStore.
-     * Per THEME-01: Preference persists across app restarts.
-     *
-     * @param themeId The theme ID (e.g., "ocean", "nature", "vibrant")
-     */
-    suspend fun setLightColorTheme(themeId: String) {
-        dataStore.edit { preferences ->
-            preferences[LIGHT_COLOR_THEME_KEY] = themeId
-        }
-    }
-
-    /**
-     * Saves the user's dark mode color theme preference to DataStore.
-     * Per THEME-02: Preference persists across app restarts.
-     *
-     * @param themeId The theme ID (e.g., "dusk", "forest", "coral", "oled")
-     */
-    suspend fun setDarkColorTheme(themeId: String) {
-        dataStore.edit { preferences ->
-            preferences[DARK_COLOR_THEME_KEY] = themeId
-        }
-    }
-
-    /**
-     * Saves the user's preferred card color style to DataStore.
-     * Per CARD-02: Preference persists across app restarts.
-     *
-     * @param style The card color style ("follow_theme" or "personalized")
-     */
-    suspend fun setCardColorStyle(style: String) {
-        dataStore.edit { preferences ->
-            preferences[CARD_COLOR_STYLE_KEY] = style
-        }
-    }
-
-    /**
-     * Get the appropriate theme ID based on current theme mode.
-     * Per THEME-03: Current mode determines which theme ID to apply.
-     *
-     * @param themeMode The current theme mode ("light", "dark", or null for system)
-     * @param isSystemInDarkTheme Whether system is currently in dark theme
-     * @return The appropriate theme ID (lightColorThemeId or darkColorThemeId)
-     */
-    suspend fun getColorThemeIdForMode(themeMode: String?, isSystemInDarkTheme: Boolean): String {
-        val useDarkTheme = when (themeMode) {
-            "light" -> false
-            "dark" -> true
-            null -> isSystemInDarkTheme  // System default
-            else -> isSystemInDarkTheme  // Fallback
-        }
-        return if (useDarkTheme) darkColorThemeId.first() else lightColorThemeId.first()
     }
 
     // ========== Filter Mode Management ==========

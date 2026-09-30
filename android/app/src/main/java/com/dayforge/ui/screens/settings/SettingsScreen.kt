@@ -19,6 +19,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import com.dayforge.R
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.dayforge.data.model.SyncProgress
@@ -84,17 +85,24 @@ fun SettingsScreen(
     var showLanguageDialog by remember { mutableStateOf(false) }
 
     // Theme selection state
-    val themeMode by viewModel.themeMode.collectAsState()
+    val themeState by viewModel.themeState.collectAsState()
+    val selectedTheme = (themeState as? com.dayforge.data.appearance.DeviceThemeLoadState.Ready)?.theme?.saved?.selection
+    val themeMode = when (selectedTheme?.mode) {
+        com.dayforge.domain.appearance.DeviceThemeMode.LIGHT -> "light"
+        com.dayforge.domain.appearance.DeviceThemeMode.DARK -> "dark"
+        else -> null
+    }
     var showThemeDialog by remember { mutableStateOf(false) }
 
     // Global color theme state
-    val lightColorThemeId by viewModel.lightColorThemeId.collectAsState()
-    val darkColorThemeId by viewModel.darkColorThemeId.collectAsState()
+    val lightColorThemeId = selectedTheme?.light?.choiceKey().orEmpty()
+    val darkColorThemeId = selectedTheme?.dark?.choiceKey().orEmpty()
     var showLightThemeDialog by remember { mutableStateOf(false) }
     var showDarkThemeDialog by remember { mutableStateOf(false) }
 
     // Card color style state
-    val cardColorStyle by viewModel.cardColorStyle.collectAsState()
+    val cardColorStyle = if (selectedTheme?.cardStyle == com.dayforge.domain.appearance.DeviceCardStyle.PERSONALIZED)
+        "personalized" else "follow_theme"
     var showCardColorStyleDialog by remember { mutableStateOf(false) }
 
     // Global notifications enabled state (NOTIFY-04)
@@ -107,15 +115,17 @@ fun SettingsScreen(
     val themeExportResult by viewModel.themeExportResult.collectAsState()
     val themeDeleteResult by viewModel.themeDeleteResult.collectAsState()
 
-    // Theme lists (observed from ThemeManager StateFlow)
-    val allLightThemes by viewModel.allLightThemes.collectAsState()
-    val allDarkThemes by viewModel.allDarkThemes.collectAsState()
+    val choices by viewModel.themeChoices.collectAsState()
+    val allLightThemes = choices.filter { it.suitableForLight }
+    val allDarkThemes = choices.filter { it.suitableForDark }
+    val themePreview by viewModel.themePreview.collectAsState()
+    val themeActionError by viewModel.themeActionError.collectAsState()
 
     // Theme delete confirmation state
-    var themeToDelete by remember { mutableStateOf<com.dayforge.domain.model.GlobalColorTheme?>(null) }
+    var themeToDelete by remember { mutableStateOf<ThemeChoiceSummary?>(null) }
 
     // Theme export option state
-    var themeExportOptions by remember { mutableStateOf<com.dayforge.domain.model.GlobalColorTheme?>(null) }
+    var themeExportOptions by remember { mutableStateOf<ThemeChoiceSummary?>(null) }
 
     // Determine current effective mode
     val isSystemInDarkTheme = isSystemInDarkTheme()
@@ -159,37 +169,16 @@ fun SettingsScreen(
             viewModel.importTheme(uri)
         }
     }
+    val launchThemeImport = {
+        try { themeImportLauncher.launch(arrayOf("application/json")) }
+        catch (error: Exception) { viewModel.themeImportPickerFailed(error) }
+    }
 
     // File saver for theme export
-    var themeToExport by remember { mutableStateOf<String?>(null) }
     val themeExportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
-        if (uri != null) {
-            // Capture themeId immediately to avoid race condition
-            val capturedThemeId = themeToExport
-            themeToExport = null  // Clear state immediately after capturing
-
-            if (capturedThemeId != null) {
-                // Check if this is template export (ends with "-template")
-                val isTemplateExport = capturedThemeId.endsWith("-template")
-                val actualThemeId = if (isTemplateExport) {
-                    capturedThemeId.removeSuffix("-template")
-                } else {
-                    capturedThemeId
-                }
-
-                coroutineScope.launch {
-                    val jsonContent = viewModel.exportTheme(actualThemeId, isTemplateExport)
-                    if (jsonContent != null) {
-                        context.contentResolver.openOutputStream(uri)?.use { outputStream ->
-                            outputStream.write(jsonContent.toByteArray())
-                        }
-                    }
-                    // Error handling is done via themeExportResult dialog
-                }
-            }
-        }
+        viewModel.writeThemeExport(uri)
     }
 
     // Sync progress dialog
@@ -231,7 +220,8 @@ fun SettingsScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
+                .padding(padding)
+                .testTag("settings-list"),
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -675,7 +665,7 @@ fun SettingsScreen(
             onShowExportOptions = { theme ->
                 themeExportOptions = theme
             },
-            onImportTheme = { themeImportLauncher.launch(arrayOf("application/json")) },
+            onImportTheme = launchThemeImport,
             onDismiss = { showLightThemeDialog = false }
         )
     }
@@ -683,6 +673,7 @@ fun SettingsScreen(
     // Dark Theme Selection Dialog
     if (showDarkThemeDialog) {
         GlobalColorThemeSelectionDialog(
+            darkPalette = true,
             title = stringResource(R.string.settings_dark_theme),
             themes = allDarkThemes,
             currentThemeId = darkColorThemeId,
@@ -700,7 +691,7 @@ fun SettingsScreen(
             onShowExportOptions = { theme ->
                 themeExportOptions = theme
             },
-            onImportTheme = { themeImportLauncher.launch(arrayOf("application/json")) },
+            onImportTheme = launchThemeImport,
             onDismiss = { showDarkThemeDialog = false }
         )
     }
@@ -779,7 +770,7 @@ fun SettingsScreen(
             },
             text = {
                 if (!result.isSuccess) {
-                    Text(result.exceptionOrNull()?.message ?: stringResource(R.string.theme_export_error))
+                    Text(com.dayforge.ui.theme.themeErrorMessage(result.exceptionOrNull()))
                 }
             },
             confirmButton = {
@@ -807,9 +798,9 @@ fun SettingsScreen(
             text = {
                 if (result.isSuccess) {
                     val theme = result.getOrNull()
-                    Text(stringResource(R.string.theme_import_success_message, theme?.name ?: ""))
+                    Text(stringResource(R.string.theme_import_success_message, theme ?: ""))
                 } else {
-                    Text(result.exceptionOrNull()?.message ?: stringResource(R.string.import_error))
+                    Text(com.dayforge.ui.theme.themeErrorMessage(result.exceptionOrNull()))
                 }
             },
             confirmButton = {
@@ -835,7 +826,7 @@ fun SettingsScreen(
             },
             text = {
                 if (!result.isSuccess) {
-                    Text(result.exceptionOrNull()?.message ?: stringResource(R.string.theme_delete_error))
+                    Text(com.dayforge.ui.theme.themeErrorMessage(result.exceptionOrNull()))
                 }
             },
             confirmButton = {
@@ -866,7 +857,7 @@ fun SettingsScreen(
             confirmButton = {
                 TextButton(
                     onClick = {
-                        viewModel.deleteCustomTheme(theme.id)
+                        viewModel.deleteCustomTheme(theme)
                         themeToDelete = null
                     }
                 ) {
@@ -884,75 +875,38 @@ fun SettingsScreen(
         )
     }
 
-    // Theme Export Options Dialog
     themeExportOptions?.let { theme ->
         AlertDialog(
             onDismissRequest = { themeExportOptions = null },
-            icon = {
-                Icon(
-                    imageVector = Icons.Rounded.IosShare,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
-                )
-            },
-            title = {
-                Text(stringResource(R.string.theme_export))
-            },
-            text = {
-                Column {
-                    Text(stringResource(R.string.theme_export_options_hint))
-                    Spacer(modifier = Modifier.height(12.dp))
-                    // Option 1: Export original (minimal)
-                    OutlinedButton(
-                        onClick = {
-                            themeToExport = theme.id
-                            themeExportOptions = null
-                            themeExportLauncher.launch("theme-${theme.id}.json")
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalAlignment = Alignment.Start
-                        ) {
-                            Text(stringResource(R.string.theme_export_original))
-                            Text(
-                                text = stringResource(R.string.theme_export_original_hint),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+            title = { Text(stringResource(R.string.theme_export_complete)) },
+            text = { Text(stringResource(R.string.theme_export_complete_hint)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    themeExportOptions = null
+                    coroutineScope.launch {
+                        viewModel.prepareThemeExport(theme)?.let {
+                            try { themeExportLauncher.launch(it) }
+                            catch (error: Exception) { viewModel.themeExportPickerFailed(error) }
                         }
                     }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    // Option 2: Export complete template (25 fields)
-                    Button(
-                        onClick = {
-                            themeToExport = "${theme.id}-template"
-                            themeExportOptions = null
-                            themeExportLauncher.launch("theme-${theme.id}-template.json")
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalAlignment = Alignment.Start
-                        ) {
-                            Text(stringResource(R.string.theme_export_template))
-                            Text(
-                                text = stringResource(R.string.theme_export_template_hint),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-                            )
-                        }
-                    }
-                }
+                }) { Text(stringResource(R.string.theme_export)) }
             },
             dismissButton = {
-                TextButton(onClick = { themeExportOptions = null }) {
-                    Text(stringResource(R.string.action_cancel))
-                }
-            },
-            confirmButton = { }
+                TextButton(onClick = { themeExportOptions = null }) { Text(stringResource(R.string.action_cancel)) }
+            }
+        )
+    }
+    if (!themeImportProgress && themeImportResult == null) themePreview?.let { preview ->
+        ThemeImportPreviewDialog(preview, { viewModel.confirmThemeImport(preview) }, viewModel::cancelThemeImport)
+    }
+    themeActionError?.let { error ->
+        AlertDialog(
+            onDismissRequest = viewModel::dismissThemeActionError,
+            title = { Text(stringResource(R.string.theme_unavailable)) },
+            text = { Text(com.dayforge.ui.theme.themeErrorMessage(error)) },
+            confirmButton = {
+                TextButton(onClick = viewModel::dismissThemeActionError) { Text(stringResource(R.string.common_ok)) }
+            }
         )
     }
 

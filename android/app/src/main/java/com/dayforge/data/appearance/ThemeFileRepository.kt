@@ -8,6 +8,8 @@ import java.io.File
 import java.io.FileDescriptor
 import java.io.IOException
 import java.io.InputStream
+import java.nio.file.Files
+import java.util.ArrayDeque
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -34,13 +36,24 @@ internal class ThemeFileRepository(filesDirectory: File, private val io: ThemeFi
         require(filesDirectory.isAbsolute && it.parentFile != null && it.isDirectory)
     }
     private val root = File(parent, "theme-definitions-v1")
+    // At most two 1 MiB frozen inputs plus their immutable parsed palettes (the light/dark pair).
+    // Guarded by access(), like all file operations. Every read still opens/reads/checks the file.
+    private val parsed = ArrayDeque<ValidatedTheme>(2)
 
     suspend fun read(themeId: String, revision: Int): ValidatedTheme = access {
         val name = name(themeId, revision)
         directory(create = false) { readFile(File(root, name), themeId, revision) }
     }
 
-    suspend fun install(theme: ValidatedTheme): ValidatedTheme = access {
+    suspend fun find(themeId: String, revision: Int): ValidatedTheme? = access {
+        val target = File(root, name(themeId, revision))
+        if (!exists(root)) return@access null
+        directory(create = false) { if (exists(target)) readFile(target, themeId, revision) else null }
+    }
+
+    /** Only a persisted catalog journal may supply an operation ID or authorize cleanup/deletion. */
+    suspend fun install(theme: ValidatedTheme, operationId: String? = null): ValidatedTheme = access {
+        require(operationId == null || isContractUuid(operationId))
         val id = theme.definition.themeId
         val revision = theme.definition.revision
         val target = File(root, name(id, revision))
@@ -52,8 +65,9 @@ internal class ThemeFileRepository(filesDirectory: File, private val io: ThemeFi
                 io.sync(directory)
                 return@directory stored
             }
-            val temporary = File(root, ".theme-${UUID.randomUUID()}.part")
+            val temporary = File(root, ".theme-${operationId ?: UUID.randomUUID()}.part")
             val bytes = theme.exportBytes()
+            checkCapacity(directory, bytes.size)
             var created = false
             var failure: Throwable? = null
             try {
@@ -98,6 +112,49 @@ internal class ThemeFileRepository(filesDirectory: File, private val io: ThemeFi
         }
     }
 
+    /** Reclaim only the exact operation recorded before its writer started; unknown parts stay. */
+    suspend fun discardOperation(operationId: String) = access {
+        require(isContractUuid(operationId))
+        removeRegular(File(root, ".theme-$operationId.part"))
+    }
+
+    /** Caller must first durably mark this unselected catalog version as deleting. */
+    suspend fun removeVersion(themeId: String, revision: Int) = access {
+        removeRegular(File(root, name(themeId, revision)))
+    }
+
+    private fun removeRegular(target: File) {
+        if (!exists(root)) return
+        directory(create = false) { directory ->
+            if (exists(target)) descriptor(target, OsConstants.O_RDONLY) { held ->
+                checkRoot(directory)
+                val actual = Os.lstat(target.path)
+                val opened = Os.fstat(held)
+                check(actual.st_dev == opened.st_dev && actual.st_ino == opened.st_ino && OsConstants.S_ISREG(actual.st_mode))
+                io.remove(target.path)
+            }
+            // Also sync after an already-absent retry: the previous unlink may not have been durable.
+            checkRoot(directory)
+            io.sync(directory)
+        }
+    }
+
+    private fun checkCapacity(directory: FileDescriptor, incoming: Int) {
+        var used = 0L
+        var count = 0
+        Files.newDirectoryStream(root.toPath()).use { entries ->
+            for (entry in entries) {
+                if (++count >= 512) throw ThemeInputException("THEME_STORAGE_LIMIT")
+                val stat = Os.lstat(entry.toString())
+                if (!OsConstants.S_ISREG(stat.st_mode)) throw ThemeInputException("THEME_STORAGE_ENTRY")
+                if (stat.st_size < 0 || stat.st_size > STORAGE_LIMIT - used) throw ThemeInputException("THEME_STORAGE_LIMIT")
+                used += stat.st_size
+            }
+        }
+        checkRoot(directory)
+        if (incoming > STORAGE_LIMIT - used) throw ThemeInputException("THEME_STORAGE_LIMIT")
+    }
+
     private fun name(id: String, revision: Int): String {
         require(isContractUuid(id) && revision > 0)
         return "$id-$revision.json"
@@ -106,8 +163,15 @@ internal class ThemeFileRepository(filesDirectory: File, private val io: ThemeFi
     private suspend fun readFile(file: File, id: String, revision: Int): ValidatedTheme {
         val context = currentCoroutineContext()
         return descriptor(file, OsConstants.O_RDONLY) { fd ->
-            ValidatedTheme.parse(readThemeBytes(stream(fd)) { context.ensureActive() }) { context.ensureActive() }
-                .also { if (it.definition.themeId != id || it.definition.revision != revision) throw ThemeInputException("THEME_FILE_IDENTITY") }
+            val bytes = readThemeBytes(stream(fd)) { context.ensureActive() }
+            context.ensureActive()
+            val theme = parsed.lastOrNull { it.matchesSource(bytes) }
+                ?: ValidatedTheme.parse(bytes) { context.ensureActive() }
+            if (theme.definition.themeId != id || theme.definition.revision != revision) throw ThemeInputException("THEME_FILE_IDENTITY")
+            parsed.remove(theme)
+            if (parsed.size == 2) parsed.removeFirst()
+            parsed.addLast(theme)
+            theme
         }
     }
 
@@ -168,5 +232,8 @@ internal class ThemeFileRepository(filesDirectory: File, private val io: ThemeFi
         mutex.withLock { currentCoroutineContext().ensureActive(); block() }
     }
 
-    private companion object { val mutex = Mutex() }
+    private companion object {
+        val mutex = Mutex()
+        const val STORAGE_LIMIT = 64L * 1024 * 1024
+    }
 }

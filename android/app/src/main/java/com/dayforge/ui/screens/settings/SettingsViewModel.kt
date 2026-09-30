@@ -18,7 +18,8 @@ import com.dayforge.domain.service.SyncManager
 import com.dayforge.domain.service.AccountSessionCoordinator
 import com.dayforge.domain.service.AccountLocalStateCleaner
 import com.dayforge.domain.service.TimerElapsedCalculator
-import com.dayforge.domain.model.GlobalColorTheme
+import com.dayforge.data.appearance.DeviceThemeLoadState
+import com.dayforge.data.appearance.ValidatedTheme
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -130,20 +131,10 @@ class SettingsViewModel @Inject constructor(
     val languageCode: StateFlow<String?> = preferencesManager.languageCode
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
-    // Theme preference state
-    val themeMode: StateFlow<String?> = preferencesManager.themeMode
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
-
-    // Global color theme state (THEME-01, THEME-02)
-    val lightColorThemeId: StateFlow<String> = preferencesManager.lightColorThemeId
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "ocean")
-
-    val darkColorThemeId: StateFlow<String> = preferencesManager.darkColorThemeId
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "dusk")
-
-    // Card color style preference state (CARD-01, CARD-09)
-    val cardColorStyle: StateFlow<String> = preferencesManager.cardColorStyle
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "follow_theme")
+    internal val themeState = appearanceWorkflow.themeState
+    internal val themeChoices = appearanceWorkflow.choices
+    internal val themePreview = appearanceWorkflow.themePreview
+    val themeActionError = appearanceWorkflow.themeActionError
 
     // Global notifications enabled state (NOTIFY-04)
     val globalNotificationsEnabled: StateFlow<Boolean> = preferencesManager.globalNotificationsEnabled
@@ -154,12 +145,13 @@ class SettingsViewModel @Inject constructor(
     val themeExportProgress = appearanceWorkflow.themeExportProgress
     val themeExportResult = appearanceWorkflow.themeExportResult
     val themeDeleteResult = appearanceWorkflow.themeDeleteResult
-    val allLightThemes: StateFlow<List<GlobalColorTheme>> = appearanceWorkflow.allLightThemes
-    val allDarkThemes: StateFlow<List<GlobalColorTheme>> = appearanceWorkflow.allDarkThemes
 
     private var manualSyncJob: Job? = null
 
     init {
+        viewModelScope.launch {
+            themeState.collect { if (it is DeviceThemeLoadState.Ready) appearanceWorkflow.refreshLibrary(force = false) }
+        }
         // Global progress is durable process state used for non-blocking status only.
         // Modal feedback is owned by the settings action that initiated a sync.
         viewModelScope.launch {
@@ -554,27 +546,24 @@ class SettingsViewModel @Inject constructor(
             appearanceWorkflow.importTheme(uri)
         }
     }
-
-    /**
-     * Exports a theme to JSON string.
-     *
-     * @param themeId The theme ID to export
-     * @param includeGeneratedColors If true, generate all 25 colors from seedColor (for template export)
-     * @return JSON string or null on failure
-     */
-    suspend fun exportTheme(themeId: String, includeGeneratedColors: Boolean = false): String? {
-        return appearanceWorkflow.exportTheme(themeId, includeGeneratedColors)
+    internal fun themeImportPickerFailed(error: Exception) {
+        viewModelScope.launch { appearanceWorkflow.themeImportPickerFailed(error) }
     }
 
-    /**
-     * Deletes a custom theme by ID.
-     * Only custom themes can be deleted.
-     *
-     * @param themeId The theme ID to delete
-     */
-    fun deleteCustomTheme(themeId: String) {
+    /** Freeze a complete validated theme before launching the destination picker. */
+    internal suspend fun prepareThemeExport(theme: ThemeChoiceSummary) = appearanceWorkflow.prepareThemeExport(theme)
+    internal suspend fun themeExportPickerFailed(error: Exception) = appearanceWorkflow.themeExportPickerFailed(error)
+    fun writeThemeExport(uri: Uri?) { viewModelScope.launch { appearanceWorkflow.writeThemeExport(uri) } }
+    internal fun confirmThemeImport(preview: ValidatedTheme) {
+        viewModelScope.launch { appearanceWorkflow.confirmThemeImport(preview) }
+    }
+    fun cancelThemeImport() = appearanceWorkflow.cancelThemeImport()
+    fun dismissThemeActionError() = appearanceWorkflow.dismissThemeActionError()
+
+    /** Delete the exact version and catalog revision shown in the confirmation. */
+    internal fun deleteCustomTheme(theme: ThemeChoiceSummary) {
         viewModelScope.launch {
-            appearanceWorkflow.deleteCustomTheme(themeId)
+            appearanceWorkflow.deleteCustomTheme(theme)
         }
     }
 
@@ -599,10 +588,4 @@ class SettingsViewModel @Inject constructor(
         appearanceWorkflow.dismissThemeDeleteResult()
     }
 
-    /**
-     * Checks if a theme is a preset (built-in) theme.
-     */
-    fun isPresetTheme(themeId: String): Boolean {
-        return appearanceWorkflow.isPresetTheme(themeId)
-    }
 }

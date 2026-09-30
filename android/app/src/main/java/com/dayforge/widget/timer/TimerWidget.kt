@@ -1,5 +1,6 @@
 package com.dayforge.widget.timer
 
+import com.dayforge.widget.base.DeviceWidgetTheme
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
@@ -36,7 +37,7 @@ import com.dayforge.widget.base.StatusLabels
 import com.dayforge.widget.base.WidgetColorResolver
 import com.dayforge.widget.base.WidgetEmptyStates
 import com.dayforge.widget.checkin.ReactivationActivity
-import com.dayforge.di.ThemeManagerEntryPoint
+import com.dayforge.di.DeviceThemeControllerEntryPoint
 import com.dayforge.R
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
@@ -213,9 +214,8 @@ class TimerWidget : GlanceAppWidget() {
 
             // Pre-compute widget colors using WidgetColorResolver
             // Per WIDGET-COLOR-01, WIDGET-COLOR-06: Colors must be pre-calculated before rendering
-            // Reuse existing dataStore and preferencesManager from line 191-192
-            val themeManager = ThemeManagerEntryPoint.from(appContext).themeManager()
-            val widgetColorResolver = WidgetColorResolver(appContext, themeManager, preferencesManager)
+            val themes = DeviceThemeControllerEntryPoint.from(appContext).themeController()
+            val widgetColorResolver = WidgetColorResolver(appContext, themes)
             val resolvedColors = widgetColorResolver.resolveWidgetColors(habit.colorHex)
 
             // Write all values to Glance state
@@ -277,7 +277,7 @@ class TimerWidget : GlanceAppWidget() {
         }
 
         provideContent {
-            GlanceTheme {
+            DeviceWidgetTheme(context) {
                 val context = androidx.glance.LocalContext.current
                 val state = currentState<Preferences>()
                 val habitId = state[HABIT_ID_KEY] ?: -1L

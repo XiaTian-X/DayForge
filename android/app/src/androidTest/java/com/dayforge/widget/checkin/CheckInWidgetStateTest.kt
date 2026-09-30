@@ -12,10 +12,13 @@ import com.dayforge.data.local.PhysicalDatabaseRule
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
+import com.dayforge.domain.service.DeviceThemeController
 import com.dayforge.widget.counting.CountingWidget
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.runBlocking
+import javax.inject.Inject
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -27,6 +30,7 @@ import org.junit.runner.RunWith
 @HiltAndroidTest
 @RunWith(AndroidJUnit4::class)
 class CheckInWidgetStateTest {
+    @Inject lateinit var themes: DeviceThemeController
     @get:Rule(order = 0) val hilt = HiltAndroidRule(this)
     @get:Rule(order = 1) val storage = PhysicalDatabaseRule()
     private val context: Context = ApplicationProvider.getApplicationContext()
@@ -34,7 +38,8 @@ class CheckInWidgetStateTest {
     private val glanceId get() = requireNotNull(GlanceAppWidgetManager(context).getGlanceIdBy(
         Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId)))
     @Before fun inject() { hilt.inject() }
-    @After fun clearBindings() {
+    @After fun clearBindings() = runBlocking<Unit> {
+        if (::themes.isInitialized) themes.close()
         listOf(CheckInWidget.PREFS_NAME, CountingWidget.PREFS_NAME).forEach { name ->
             assertTrue(context.getSharedPreferences(name, Context.MODE_PRIVATE).edit().remove("habit_id_$widgetId").commit())
         }

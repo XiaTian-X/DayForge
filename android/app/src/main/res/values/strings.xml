@@ -1,5 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="theme_error_timeout">The document provider did not respond in time. Try again or choose a local file. An unsuccessful export may leave a partial destination file.</string>
+    <string name="theme_recovery_title">Repair theme selection</string>
+    <string name="theme_recovery_hint">Choose available light and dark themes, then confirm. Your display mode, card style and personal data are preserved. Damaged metadata is never reset automatically.</string>
+    <string name="theme_recovery_light_selected">Selected for light mode</string>
+    <string name="theme_recovery_dark_selected">Selected for dark mode</string>
+    <string name="theme_recovery_apply">Confirm theme selection</string>
+    <string name="theme_recovery_delete_hint">Delete only the damaged or unfinished theme %1$s, version %2$d? This cancels its pending installation and removes its local theme file, not personal data.</string>
     <!-- App -->
     <string name="app_name">DayForge</string>
 
@@ -30,6 +37,13 @@
     <string name="action_done">Done</string>
     <string name="action_close">Close</string>
     <string name="action_retry">Retry</string>
+    <string name="theme_load_failed">Theme could not be loaded. Your saved selection and personal data have been preserved.</string>
+    <string name="theme_unavailable">Unavailable / recovery required</string>
+    <string name="theme_loading">Loading theme…</string>
+    <string name="theme_import_preview">Preview theme</string>
+    <string name="theme_import_preview_hint">Both palettes have been validated. Install this version without changing your current theme?</string>
+    <string name="theme_export_complete">Export complete theme</string>
+    <string name="theme_export_complete_hint">Includes the saved light and dark palettes. Colors are not regenerated.</string>
     <string name="action_continue">Continue</string>
     <string name="action_pause">Pause</string>
     <string name="action_stop">Stop</string>
@@ -172,22 +186,17 @@
     <string name="theme_import_success">Theme Imported</string>
     <string name="theme_import_success_message">Theme \"%s\" has been imported successfully.</string>
     <string name="theme_import_error">Import Failed</string>
-    <string name="theme_error_invalid_seed_color">Invalid seed color format: %s. Expected #RRGGBB</string>
-    <string name="theme_error_no_mode">Theme must be suitable for at least one mode (light or dark)</string>
-    <string name="theme_error_invalid_colors">Invalid color formats: %s</string>
-    <string name="theme_error_save_failed">Failed to save theme</string>
-    <string name="theme_error_invalid_json">Invalid JSON format: %s</string>
-    <string name="theme_error_cannot_delete_preset">Cannot delete preset theme</string>
+    <string name="theme_error_cannot_delete_preset">Built-in themes cannot be replaced or deleted.</string>
+    <string name="theme_error_version">This theme format or version is not supported. Import a complete dayforge.theme file.</string>
+    <string name="theme_error_in_use">This version is selected for light or dark mode. Choose another theme before deleting it.</string>
+    <string name="theme_error_changed">The theme selection or library has changed. Refresh and try again.</string>
+    <string name="theme_error_limit">The theme file or library exceeds its limit. Reduce its size or remove unused custom versions.</string>
+    <string name="theme_error_operation">The operation could not be confirmed. Check the theme library before retrying.</string>
     <string name="theme_exporting">Exporting Theme…</string>
     <string name="theme_export_success">Theme Exported</string>
     <string name="theme_export_error">Export Failed</string>
     <string name="theme_delete_success">Theme Deleted</string>
     <string name="theme_delete_error">Delete Failed</string>
-    <string name="theme_export_options_hint">Choose export format:</string>
-    <string name="theme_export_original">Export Original Config</string>
-    <string name="theme_export_original_hint">Minimal fields, suitable for sharing</string>
-    <string name="theme_export_template">Export Complete Template</string>
-    <string name="theme_export_template_hint">All 25 color fields, for full customization</string>
 
     <!-- Permission Section -->
     <string name="settings_permission_section">Permission</string>

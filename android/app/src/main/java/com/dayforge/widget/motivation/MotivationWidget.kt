@@ -1,5 +1,6 @@
 package com.dayforge.widget.motivation
 
+import com.dayforge.widget.base.DeviceWidgetTheme
 import android.content.Context
 import android.util.Log
 import androidx.compose.runtime.Composable
@@ -113,19 +114,21 @@ class MotivationWidget : GlanceAppWidget() {
         }
 
         provideContent {
-            val context = androidx.glance.LocalContext.current
-            val prefs = currentState<Preferences>()
-            val message = prefs[MESSAGE_KEY] ?: context.getString(R.string.motivation_default)
-            val bestStreak = prefs[BEST_STREAK_KEY] ?: 0
-            val completedToday = prefs[COMPLETED_TODAY_KEY] ?: 0
-            val totalHabits = prefs[TOTAL_HABITS_KEY] ?: 0
+            DeviceWidgetTheme(context) {
+                val context = androidx.glance.LocalContext.current
+                val prefs = currentState<Preferences>()
+                val message = prefs[MESSAGE_KEY] ?: context.getString(R.string.motivation_default)
+                val bestStreak = prefs[BEST_STREAK_KEY] ?: 0
+                val completedToday = prefs[COMPLETED_TODAY_KEY] ?: 0
+                val totalHabits = prefs[TOTAL_HABITS_KEY] ?: 0
 
-            MotivationWidgetContent(
-                message = message,
-                bestStreak = bestStreak,
-                completedToday = completedToday,
-                totalHabits = totalHabits
-            )
+                MotivationWidgetContent(
+                    message = message,
+                    bestStreak = bestStreak,
+                    completedToday = completedToday,
+                    totalHabits = totalHabits
+                )
+            }
         }
     }
 

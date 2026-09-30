@@ -35,6 +35,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.height
 import androidx.compose.ui.unit.width
 import androidx.core.view.WindowCompat
+import com.dayforge.data.appearance.BuiltInThemes
+import com.dayforge.domain.appearance.DeviceCardStyle
+import com.dayforge.domain.appearance.DeviceThemeMode
+import com.dayforge.domain.appearance.DeviceThemeSelection
+import com.dayforge.domain.appearance.LoadedDeviceTheme
+import com.dayforge.domain.appearance.ResolvedTheme
+import com.dayforge.domain.appearance.SavedThemeSelection
+import com.dayforge.domain.appearance.ThemeVersionRef
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -141,10 +150,17 @@ class DayForgeWindowTest {
     @Test
     fun theme_works_with_a_wrapped_non_activity_view_context() {
         val previewView = View(ContextWrapper(compose.activity.applicationContext))
+        val definitions = runBlocking { BuiltInThemes(compose.activity.assets).readAll() }
+        val ocean = definitions.first().definition
+        val oled = definitions.last().definition
+        val theme = LoadedDeviceTheme(SavedThemeSelection(1, DeviceThemeSelection(
+            ThemeVersionRef(ocean.themeId, 1), ThemeVersionRef(oled.themeId, 1),
+            DeviceThemeMode.DARK, DeviceCardStyle.FOLLOW_THEME)),
+            ResolvedTheme.from(ocean, false), ResolvedTheme.from(oled, true))
         compose.setContent {
             Box(Modifier.fillMaxSize().testTag("root")) {
                 CompositionLocalProvider(LocalView provides previewView) {
-                    DayForgeTheme(themeMode = "dark", darkColorThemeId = "oled") {
+                    DayForgeTheme(theme = theme) {
                         Box(Modifier.fillMaxSize().testTag("content"))
                     }
                 }
