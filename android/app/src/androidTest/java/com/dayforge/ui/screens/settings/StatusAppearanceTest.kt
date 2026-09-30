@@ -88,6 +88,12 @@ class StatusAppearanceTest {
     private fun state(description: String) = compose.onNodeWithTag("sync-state-summary")
         .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, description))
 
+    private fun goalChip(color: Color) {
+        // Native draw/ripple passes are not advanced by the Compose virtual clock.
+        compose.waitUntil(5000) { pixels("goal-result-status", color) > 10 }
+        assertTrue("expected actual goal status pixels $color", pixels("goal-result-status", color) > 10)
+    }
+
     @Test fun everySyncStateUsesSavedColorsAndErrorNeverFallsThroughToSuccess() {
         val theme = loaded(definition(), false)
         val progress = mutableStateOf<SyncProgress>(SyncProgress.Success)
@@ -184,14 +190,14 @@ class StatusAppearanceTest {
             }
         } }
         compose.onNodeWithText(label(R.string.habit_card_status_success)).assertIsDisplayed()
-        assertTrue(pixels("goal-result-status", green) > 10)
+        goalChip(green)
         // The merged Card contains this text but its centre can land on a no-op result chip.
         // Touch the actual name bounds, keeping the existing card and chip click behavior intact.
         compose.onNodeWithText("Reading goal", useUnmergedTree = true).assertIsDisplayed()
             .performTouchInput { click(center) }
         compose.runOnIdle { assertEquals(1, navigation); goal.value = goal.value.copy(goalSuccess = false) }
         compose.onNodeWithText(label(R.string.habit_card_status_failed)).assertIsDisplayed()
-        assertTrue(pixels("goal-result-status", blue) > 10)
+        goalChip(blue)
         compose.runOnIdle { goal.value = goal.value.copy(goalSuccess = null) }
         compose.onNodeWithTag("goal-result-status", useUnmergedTree = true).assertDoesNotExist()
         compose.onNodeWithContentDescription(label(R.string.content_description_expand)).performClick()
