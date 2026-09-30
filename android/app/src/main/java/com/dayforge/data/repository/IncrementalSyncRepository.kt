@@ -216,7 +216,8 @@ class IncrementalSyncRepository(
 
     /** Staged v5 data must never be coalesced, rebased or restored by the legacy engine. */
     private suspend fun requireV4LocalState() {
-        if (habitDao.hasProtocolNextState() || metricDao.hasProtocolNextState() || completionDao.hasProtocolNextIntents() || outboxDao.hasOneTimeIntents()) {
+        if (habitDao.hasProtocolNextState() || metricDao.hasProtocolNextState() || completionDao.hasProtocolNextIntents() ||
+            outboxDao.hasOneTimeIntents() || outboxDao.hasProtocolNextRecovery()) {
             throw ProtocolNextDataRequiresUpgradeException()
         }
     }

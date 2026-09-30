@@ -14,6 +14,7 @@ import com.dayforge.data.local.entity.SyncEntityStateEntity
 import com.dayforge.data.local.entity.SyncOutboxEntity
 import com.dayforge.data.local.entity.OneTimeTransmissionEntity
 import com.dayforge.data.local.entity.HabitEntity
+import com.dayforge.data.local.entity.NextRecoveryStateEntity
 import com.dayforge.domain.model.OneTimeProjection
 import com.dayforge.domain.model.OneTimeTransitionException
 import com.dayforge.domain.model.isContractUuid
@@ -186,18 +187,86 @@ internal class OneTimeAcceptedEventStore(
     /** All accepted bootstrap data, but not cache replacement, cursor activation or acknowledgement. */
     suspend fun restoreAcceptedData(context: OneTimeSyncContext, response: NextSyncBootstrapResponse): List<OneTimeLocalSnapshot> = sessions.exclusive {
         access(context)
-        val snapshot = response.copy(changes = response.changes.map {
-            it.copy(payload = Json.parseToJsonElement(it.payload.toString()).jsonObject)
-        }, oneTimeCheckpoints = response.oneTimeCheckpoints.toList())
-        require(snapshot.changes.all { it.entityType in setOf("plan_node", "metric", "activity_event", "metric_observation", "activity_metric_link") })
+        val snapshot = freeze(response)
+        database.withTransaction { restoreAcceptedDataInTransaction(context, snapshot) }
+    }
+
+    /** Only a caller holding the authenticated context can observe its bound recovery stage. */
+    suspend fun recoveryState(context: OneTimeSyncContext): NextRecoveryStateEntity? = sessions.exclusive {
+        access(context)
+        database.withTransaction { database.nextRecoveryDao().state()?.also { requireRecoveryBinding(it, context) } }
+    }
+
+    /** Resume an awaiting stage, or explicitly start the next generation with the exact observed state. */
+    suspend fun beginRecovery(context: OneTimeSyncContext, expected: NextRecoveryStateEntity?): NextRecoveryStateEntity = sessions.exclusive {
+        access(context)
         database.withTransaction {
-            NextStructureStore(database).restoreInTransaction(snapshot.changes.filter {
-                it.entityType == "plan_node" || it.entityType == "metric"
-            })
-            val once = restoreHistoriesInTransaction(context, snapshot)
-            NextCommonFactStore(database).restoreInTransaction(snapshot.changes, context.deviceId)
-            once
+            val dao = database.nextRecoveryDao()
+            val current = dao.state()
+            if (current != expected) throw OneTimeLocalException(OneTimeLocalException.Reason.RECOVERY_STATE_CHANGED)
+            current?.let { requireRecoveryBinding(it, context) }
+            if (current?.phase == NextRecoveryStateEntity.AWAITING_SNAPSHOT) return@withTransaction current
+            if (current?.generation == Long.MAX_VALUE) throw OneTimeLocalException(OneTimeLocalException.Reason.RECOVERY_EXHAUSTED)
+            val next = NextRecoveryStateEntity(context.session.authentication.userId,
+                requireNotNull(context.session.serverInstanceId), requireNotNull(context.session.syncEpoch),
+                context.deviceId, (current?.generation ?: 0L) + 1, NextRecoveryStateEntity.AWAITING_SNAPSHOT,
+                minimumCursor = current?.candidateCursor ?: current?.minimumCursor ?: 0L)
+            if (current == null) check(dao.insert(next) == 1L) else check(dao.update(next) == 1)
+            check(dao.state() == next)
+            next
         }
+    }
+
+    /**
+     * All accepted entities and the candidate cursor/hash commit together. This deliberately does
+     * NOT activate v5 or claim that cache replacement/pending-operation reconciliation is complete.
+     * The captured context guards late auth callbacks; the persisted generation guards old attempts.
+     */
+    suspend fun acceptRecovery(context: OneTimeSyncContext, expected: NextRecoveryStateEntity,
+        response: NextSyncBootstrapResponse): NextRecoveryStateEntity = sessions.exclusive {
+        access(context)
+        requireRecoveryBinding(expected, context)
+        require(expected.phase == NextRecoveryStateEntity.AWAITING_SNAPSHOT)
+        val snapshot = freeze(response)
+        require(snapshot.nextCursor >= expected.minimumCursor)
+        val accepted = expected.copy(phase = NextRecoveryStateEntity.ACCEPTED_DATA,
+            candidateCursor = snapshot.nextCursor, snapshotHash = syncPayloadHash(json.encodeToString(snapshot)))
+        database.withTransaction {
+            val dao = database.nextRecoveryDao()
+            val current = requireNotNull(dao.state())
+            requireRecoveryBinding(current, context)
+            // The persisted receipt proves the previous whole transaction committed. Replaying it
+            // must not reapply an old snapshot over later facts or consume a still-unknown request.
+            if (current == accepted) return@withTransaction current
+            if (current != expected) throw OneTimeLocalException(OneTimeLocalException.Reason.RECOVERY_STATE_CHANGED)
+            restoreAcceptedDataInTransaction(context, snapshot)
+            check(dao.update(accepted) == 1)
+            check(dao.state() == accepted)
+            accepted
+        }
+    }
+
+    private fun requireRecoveryBinding(state: NextRecoveryStateEntity, context: OneTimeSyncContext) {
+        if (state.accountId != context.session.authentication.userId || state.serverInstanceId != context.session.serverInstanceId ||
+            state.syncEpoch != context.session.syncEpoch || state.deviceId != context.deviceId) {
+            throw OneTimeLocalException(OneTimeLocalException.Reason.RECOVERY_CONTEXT_CHANGED)
+        }
+    }
+
+    private fun freeze(response: NextSyncBootstrapResponse) = response.copy(changes = response.changes.map {
+        it.copy(payload = Json.parseToJsonElement(it.payload.toString()).jsonObject)
+    }, oneTimeCheckpoints = response.oneTimeCheckpoints.toList())
+
+    private suspend fun restoreAcceptedDataInTransaction(context: OneTimeSyncContext,
+        snapshot: NextSyncBootstrapResponse): List<OneTimeLocalSnapshot> {
+        check(database.inTransaction())
+        require(snapshot.changes.all { it.entityType in setOf("plan_node", "metric", "activity_event", "metric_observation", "activity_metric_link") })
+        NextStructureStore(database).restoreInTransaction(snapshot.changes.filter {
+            it.entityType == "plan_node" || it.entityType == "metric"
+        })
+        val once = restoreHistoriesInTransaction(context, snapshot)
+        NextCommonFactStore(database).restoreInTransaction(snapshot.changes, context.deviceId)
+        return once
     }
 
     private suspend fun restoreHistoriesInTransaction(context: OneTimeSyncContext, response: NextSyncBootstrapResponse): List<OneTimeLocalSnapshot> {

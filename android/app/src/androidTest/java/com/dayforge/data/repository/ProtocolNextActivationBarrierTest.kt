@@ -6,6 +6,7 @@ import com.dayforge.data.local.entity.SyncOutboxEntity
 import com.dayforge.data.local.entity.CompletionMetricPromptEntity
 import com.dayforge.data.local.entity.LocalFactSubmissionEntity
 import com.dayforge.data.local.entity.OneTimeTransmissionEntity
+import com.dayforge.data.local.entity.NextRecoveryStateEntity
 import java.util.UUID
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -125,5 +126,34 @@ class ProtocolNextActivationBarrierTest : SyncPersistenceFixture() {
             "2026-09-27T00:00:00Z", 17, "2026-01-01", "2026-12-31", null, null, null, null)))
         reopen()
         assertAllLegacyWritesRefused()
+    }
+
+    @Test fun orphanedRecoveryPhasesAndDamagedRowsBlockV4AndAccountClearIncludesTheCheckpoint() = runBlocking {
+        val stage = NextRecoveryStateEntity(UUID.randomUUID().toString(), UUID.randomUUID().toString(),
+            UUID.randomUUID().toString(), UUID.randomUUID().toString(), 1, NextRecoveryStateEntity.AWAITING_SNAPSHOT)
+        for (row in listOf(stage, stage.copy(phase = NextRecoveryStateEntity.ACCEPTED_DATA,
+            candidateCursor = 20, snapshotHash = "a".repeat(64)))) {
+            assertFalse(database.syncOutboxDao().hasProtocolNextRecovery())
+            database.nextRecoveryDao().insert(row)
+            reopen()
+            assertTrue(database.syncOutboxDao().hasProtocolNextRecovery())
+            assertAllLegacyWritesRefused()
+            assertEquals(row, database.nextRecoveryDao().state())
+            database.clearAllData()
+            reopen()
+            assertFalse(database.syncOutboxDao().hasProtocolNextRecovery())
+            assertNull(database.nextRecoveryDao().state())
+        }
+        database.nextRecoveryDao().insert(stage)
+        database.openHelper.writableDatabase.execSQL("UPDATE next_recovery_state SET id=2,phase='invalid'")
+        reopen()
+        // SQL existence is intentional: malformed or non-singleton rows must not look uninitialized.
+        assertAllLegacyWritesRefused()
+        database.openHelper.readableDatabase.query("SELECT id,phase FROM next_recovery_state").use {
+            assertTrue(it.moveToFirst()); assertEquals(2, it.getInt(0)); assertEquals("invalid", it.getString(1))
+            assertFalse(it.moveToNext())
+        }
+        database.clearAllData()
+        assertFalse(database.syncOutboxDao().hasProtocolNextRecovery())
     }
 }
