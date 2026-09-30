@@ -31,8 +31,10 @@ class ThemeEditorWorkflowTest {
     private val preferences = PreferenceDataStoreFactory.create(scope = preferenceScope,
         produceFile = { File(parent, "editor.preferences_pb") })
     private val failAfterPublish = AtomicBoolean(false)
+    private val failBeforePublish = AtomicBoolean(false)
     private val files = ThemeFileRepository(parent, object : ThemeFileIo() {
         override fun rename(source: String, target: String) {
+            if (failBeforePublish.getAndSet(false)) throw IOException("synthetic publication failure")
             super.rename(source, target)
             if (failAfterPublish.getAndSet(false)) throw IOException("synthetic publication response lost")
         }
@@ -198,6 +200,61 @@ class ThemeEditorWorkflowTest {
         assertFalse(restoredHandle.contains(ThemeEditorWorkflow.KEY))
         assertEquals(selected, controller.current().saved)
         assertEquals("#112233", controller.export(target).definition.light.material["primary"])
+    }
+
+    @Test fun prePublicationFailureRestoresAndRetriesExactCandidateAfterEmptyJournalRecovery() = runBlocking<Unit> {
+        val first = custom(); controller.install(first)
+        val selected = controller.current().saved
+        val editor = editor(); val source = choice(first.ref())
+        main { editor.begin(source); editor.color(primary, "#112233"); editor.prepare() }
+        val preview = editor.state.value.preview!!
+        failBeforePublish.set(true)
+        main { editor.confirm(preview) }
+        assertTrue(editor.state.value.error is IOException)
+        val target = File(parent, "theme-definitions-v1/${preview.definition.themeId}-2.json")
+        assertFalse(target.exists())
+        assertEquals(ThemeInstallPhase.INSTALLING, controller.catalog()!!.slots.single { it.ref == preview.ref() }.phase)
+        val saved = main { handle.get<String>(ThemeEditorWorkflow.KEY)!! }
+        controller.close()
+        controllerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        controller = DeviceThemeController(repository, controllerScope)
+        withTimeout(5000) { controller.current() }
+        assertFalse(controller.catalog()!!.slots.any { it.ref == preview.ref() })
+        val recovered = controller.catalog()!!
+        val restored = editor(SavedStateHandle(mapOf(ThemeEditorWorkflow.KEY to saved)))
+        main { restored.restore() }
+        assertTrue(restored.state.value.locked)
+        assertEquals(preview.definition, restored.state.value.preview!!.definition)
+        assertEquals(recovered, controller.catalog()); assertFalse(target.exists())
+        main { restored.confirm(restored.state.value.preview!!) }
+        assertEquals(preview.ref(), restored.state.value.saved)
+        assertEquals(preview.definition, controller.export(preview.ref()).definition)
+        assertEquals(9, controller.catalog()!!.slots.size)
+        assertEquals(selected, controller.current().saved)
+    }
+
+    @Test fun recoveredRetryRejectsNewerRevisionAndDeletedSourceWithoutMintingReplacement() = runBlocking<Unit> {
+        val first = custom(); controller.install(first)
+        val editor = editor(); val source = choice(first.ref())
+        main { editor.begin(source); editor.color(primary, "#112233"); editor.prepare() }
+        val preview = editor.state.value.preview!!
+        failBeforePublish.set(true)
+        main { editor.confirm(preview) }
+        controller.recover()
+        val newer = custom(3); controller.install(newer)
+        var before = preferences.data.first()
+        main { editor.confirm(preview) }
+        assertEquals("THEME_CATALOG_CONFLICT", editor.state.value.error!!.message)
+        assertSame(preview, editor.state.value.preview)
+        assertEquals(before, preferences.data.first())
+        assertFalse(controller.catalog()!!.slots.any { it.ref == preview.ref() })
+        controller.delete(first.ref(), controller.catalog()!!.revision)
+        before = preferences.data.first()
+        main { editor.confirm(preview) }
+        assertEquals("THEME_NOT_AVAILABLE", editor.state.value.error!!.message)
+        assertEquals(before, preferences.data.first())
+        assertFalse(controller.catalog()!!.slots.any { it.ref == preview.ref() })
+        assertEquals(newer.definition, controller.export(newer.ref()).definition)
     }
 
     @Test fun restoredInvalidInputsStayVisibleWhileCorruptFutureAndDuplicateStateIsNotDefaulted() = runBlocking<Unit> {

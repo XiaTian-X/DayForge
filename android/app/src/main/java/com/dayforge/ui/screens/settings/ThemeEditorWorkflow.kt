@@ -153,10 +153,25 @@ internal class ThemeEditorWorkflow(private val themes: DeviceThemeController, pr
         if (_state.value.preview !== preview) return@action
         val saved = inputs ?: throw IllegalStateException("THEME_EDIT_STATE")
         if (preview.definitionDigest() != saved.candidateDigest) throw IllegalArgumentException("THEME_EDIT_STATE")
-        save(saved.copy(attempted = true))
+        val revision = confirmationRevision(saved)
+        save(saved.copy(attempted = true, catalogRevision = revision))
         _state.value = _state.value.copy(locked = true)
-        themes.install(preview, saved.catalogRevision)
+        themes.install(preview, revision)
         complete(saved.target)
+    }
+
+    /** A failed pre-publication journal may be removed by recovery. Explicit retry revalidates
+     * the source and unused version before a fresh transactional CAS; it never allocates an ID. */
+    private suspend fun confirmationRevision(saved: ThemeEditorInputs): Long {
+        if (!saved.attempted) return saved.catalogRevision
+        val catalog = themes.catalog() ?: throw ThemeCatalogException("THEME_CATALOG_UNINITIALIZED")
+        if (catalog.slots.any { it.ref == saved.target }) return saved.catalogRevision
+        val source = themes.export(saved.source)
+        if (source.definitionDigest() != saved.sourceDigest) throw ThemeCatalogException("THEME_CONTENT_CHANGED")
+        if (catalog.slots.any { it.ref.themeId == saved.target.themeId && it.ref.revision >= saved.target.revision }) {
+            throw ThemeCatalogException("THEME_CATALOG_CONFLICT")
+        }
+        return catalog.revision
     }
 
     fun backToEdit() {
