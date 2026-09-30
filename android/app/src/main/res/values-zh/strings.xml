@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="theme_custom_version">自定义 · v%1$d · %2$s</string>
+    <string name="theme_unavailable_version">不可用 · v%1$d · %2$s</string>
     <string name="theme_actions">主题操作</string>
     <string name="theme_editor_source">来源：%1$s · v%2$d</string>
     <string name="theme_editor_target">保存新版本 · v%1$d</string>
@@ -200,7 +202,6 @@
     <string name="theme_import">导入主题</string>
     <string name="theme_export">导出主题</string>
     <string name="theme_delete">删除主题</string>
-    <string name="theme_custom">自定义</string>
     <string name="theme_preset">预设</string>
     <string name="theme_importing">正在导入主题…</string>
     <string name="theme_import_success">主题导入成功</string>

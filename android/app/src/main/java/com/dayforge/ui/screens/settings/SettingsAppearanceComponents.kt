@@ -5,6 +5,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
@@ -17,6 +19,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.core.graphics.toColorInt
 import androidx.compose.ui.unit.dp
 import com.dayforge.R
@@ -341,6 +345,7 @@ internal fun LightThemeSelectorCard(
 ) {
     // Find theme from actual list (includes custom themes)
     val theme = allThemes.find { it.id == currentThemeId }
+    val identities = remember(allThemes) { themeIdentitySuffixes(allThemes) }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -377,6 +382,11 @@ internal fun LightThemeSelectorCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                if (theme?.isCustom == true) Text(
+                    themeIdentityCaption(theme, identities[theme.ref.themeId] ?: theme.ref.themeId),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.testTag("theme-selected-light-identity"))
             }
         }
     }
@@ -394,6 +404,7 @@ internal fun DarkThemeSelectorCard(
 ) {
     // Find theme from actual list (includes custom themes)
     val theme = allThemes.find { it.id == currentThemeId }
+    val identities = remember(allThemes) { themeIdentitySuffixes(allThemes) }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -430,6 +441,11 @@ internal fun DarkThemeSelectorCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                if (theme?.isCustom == true) Text(
+                    themeIdentityCaption(theme, identities[theme.ref.themeId] ?: theme.ref.themeId),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.testTag("theme-selected-dark-identity"))
             }
         }
     }
@@ -453,6 +469,7 @@ internal fun GlobalColorThemeSelectionDialog(
     onImportTheme: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
+    val identities = remember(themes) { themeIdentitySuffixes(themes) }
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = {
@@ -465,7 +482,7 @@ internal fun GlobalColorThemeSelectionDialog(
         title = { Text(title) },
         text = {
             LazyColumn(
-                modifier = Modifier.testTag("theme-selection-list"),
+                modifier = Modifier.selectableGroup().testTag("theme-selection-list"),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(themes.size) { index ->
@@ -477,7 +494,8 @@ internal fun GlobalColorThemeSelectionDialog(
                         onClick = { onThemeSelected(theme.id) },
                         onDelete = if (theme.isCustom) { { onDeleteTheme(theme.id) } } else null,
                         onExport = { onShowExportOptions(theme) },
-                        onEdit = onEditTheme?.let { callback -> { callback(theme) } }
+                        onEdit = onEditTheme?.let { callback -> { callback(theme) } },
+                        identitySuffix = identities[theme.ref.themeId] ?: theme.ref.themeId
                     )
                 }
                 // Import button at bottom
@@ -529,14 +547,16 @@ internal fun GlobalColorThemeOption(
     onClick: () -> Unit,
     onDelete: (() -> Unit)? = null,
     onExport: () -> Unit = {},
-    onEdit: (() -> Unit)? = null
+    onEdit: (() -> Unit)? = null,
+    identitySuffix: String = theme.ref.themeId
 ) {
     var actionsOpen by remember(theme.id) { mutableStateOf(false) }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = theme.available) { onClick() }
+            .selectable(selected = isSelected, enabled = theme.available, role = Role.RadioButton, onClick = onClick)
+            .testTag("theme-choice-${theme.id}")
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -565,10 +585,12 @@ internal fun GlobalColorThemeOption(
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = themeDisplayName(theme),
-                style = MaterialTheme.typography.bodyMedium
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.testTag("theme-label-${theme.id}")
             )
             Text(
-                text = if (!theme.available) stringResource(R.string.theme_unavailable) else if (theme.isCustom) stringResource(R.string.theme_custom) else stringResource(R.string.theme_preset),
+                text = themeIdentityCaption(theme, identitySuffix),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -590,6 +612,13 @@ internal fun GlobalColorThemeOption(
             }
         }
     }
+}
+
+@Composable
+private fun themeIdentityCaption(theme: ThemeChoiceSummary, suffix: String): String = when {
+    !theme.available -> stringResource(R.string.theme_unavailable_version, theme.ref.revision, suffix)
+    theme.isCustom -> stringResource(R.string.theme_custom_version, theme.ref.revision, suffix)
+    else -> stringResource(R.string.theme_preset)
 }
 
 // ========== Card Color Style UI Components ==========

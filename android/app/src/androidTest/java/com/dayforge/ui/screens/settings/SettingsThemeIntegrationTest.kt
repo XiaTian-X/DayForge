@@ -41,6 +41,8 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -69,6 +71,7 @@ class SettingsThemeIntegrationTest {
     private lateinit var model: SettingsViewModel
     private lateinit var original: DeviceThemeSelection
     private var imported: ThemeVersionRef? = null
+    private val ownedThemes = mutableListOf<ThemeVersionRef>()
     private var source: File? = null
     private var renderedBackground: Int? = null
 
@@ -134,7 +137,7 @@ class SettingsThemeIntegrationTest {
             val current = controller.current().saved
             controller.select(current.revision, original)
         }
-        imported?.let { ref ->
+        (listOfNotNull(imported) + ownedThemes).distinct().forEach { ref ->
             val catalog = controller.catalog()!!
             if (catalog.slots.any { it.ref == ref }) controller.delete(ref, catalog.revision)
         }
@@ -231,5 +234,40 @@ class SettingsThemeIntegrationTest {
         assertEquals(0, widgets.requestCount)
         click(R.string.common_ok)
         compose.waitUntil(5000) { model.themeChoices.value.any { it.ref == imported && it.available } }
+    }
+
+    @Test fun sameNameVersionsSelectAndPersistExactReferencesAndDisplayCurrentVersion() {
+        val id = UUID.randomUUID().toString()
+        val source = runBlocking { ValidatedTheme.read { app.context.assets.open("next/theme.json") } }.definition
+            .copy(themeId = id, name = "Same named palette")
+        val refs = listOf(ThemeVersionRef(id, 1), ThemeVersionRef(id, 2))
+        ownedThemes += refs
+        runBlocking {
+            controller.install(ValidatedTheme.read { Json.encodeToString(source).byteInputStream() })
+            val updated = source.copy(revision = 2, light = source.light.copy(status = source.light.status + ("success" to "#123456")))
+            controller.install(ValidatedTheme.read { Json.encodeToString(updated).byteInputStream() })
+            appearance.refreshLibrary()
+        }
+        compose.waitUntil(5000) { model.themeChoices.value.count { it.ref in refs } == 2 }
+        fun select(ref: ThemeVersionRef) {
+            settingsClick(R.string.settings_light_theme)
+            compose.onNodeWithTag("theme-selection-list").performScrollToNode(hasTestTag("theme-choice-${ref.choiceKey()}"))
+            compose.onNodeWithTag("theme-label-${ref.choiceKey()}", useUnmergedTree = true)
+                .performTouchInput { click(center) }
+            awaitChoice { it.light == ref }
+            compose.onNodeWithTag("theme-selected-light-identity", useUnmergedTree = true)
+                .assertTextEquals(context.getString(R.string.theme_custom_version, ref.revision, id.replace("-", "").takeLast(8)))
+        }
+        select(refs[1])
+        assertEquals(0xff123456.toInt(), runBlocking { controller.current().light.status["success"] })
+        select(refs[0])
+        runBlocking {
+            val cold = DeviceThemeRepository(preferences, ThemeFileRepository(context.filesDir), BuiltInThemes(context.assets)).load()
+            assertEquals(refs[0], cold.saved.selection.light)
+            assertEquals(controller.current().saved, cold.saved)
+        }
+        compose.waitUntil(5000) { widgets.requestCount == 2 }
+        assertEquals(2, widgets.requestCount)
+        assertEquals(source, runBlocking { controller.export(refs[0]).definition })
     }
 }
