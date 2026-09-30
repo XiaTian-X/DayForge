@@ -26,19 +26,38 @@
 ANDROID_SERIAL=<设备序列号> ./tools/verify android
 ```
 
-入口执行 `lintDebug`、`assembleDebug`、`assembleDeviceTest`、`assembleDeviceTestAndroidTest`、
-`connectedDeviceTestAndroidTest` 和 `createDeviceTestCoverageReport`。真机测试结果位于
-`android/app/build/outputs/androidTest-results/connected/deviceTest/`；覆盖率报告位于
+入口通过 `tools/run_android_tests.py` 执行一次 `lintDebug`、`assembleDebug`、`assembleDeviceTest`、
+`assembleDeviceTestAndroidTest`；安装隔离 testbed APK 后，以官方运行器 `log=true` 在真机发现完整
+用例身份（包括参数化展开），这一步不是行为测试通过。随后使用官方 `numShards=2` / `shardIndex=0,1`
+顺序执行两次 `connectedDeviceTestAndroidTest`，显式 `log=false`，不使用类、包或其他用例过滤。
+各批结束即保存 XML 和独立 `.ec`，核对两批身份并集与发现清单完全相等且无重复，才将两份新覆盖率
+输入送入原 `createDeviceTestCoverageReport`。此时排除该报告任务的 connected 依赖，避免再跑一批；
+不是跳过尚未执行的测试。真实测试和统计校准均须成功，且 testbed 清理完成后才写入 `complete.json`。
+
+每次运行证据保留在 `android/app/build/reports/dayforge-device/<本次随机身份>/`：发现日志、两批
+Gradle 日志/原始 XML/覆盖率文件和成功清单；成功清单记录 APK、报告与输入 SHA-256 和完整发现身份。
+旧生成报告与覆盖率目录会移入该次 `prior-*`，不作为当前证据，也不递归删除用户文件。
+原 `android/app/build/outputs/androidTest-results/connected/deviceTest/` 为单批暂存，结束后移走；覆盖率报告位于
 `android/app/build/reports/coverage/androidTest/deviceTest/connected/`。
-`tools/check_android_results.py` 拒绝缺失/空报告、失败、错误、跳过，以及与 testcase 不一致的统计；
-不能把被忽略的用例算成绿色验收。该检查不证明用例发现完整，仍须核对迁移清单和完整运行范围。
+`tools/check_android_results.py` 拒绝缺失/空报告、失败、错误、跳过、统计错配、缺失/重复用例身份，以及
+缺失/负数/非有限耗时（中断 XML 可能把未完成用例写成负数而没有 failure）。独立检查单批 XML 不证明
+完整发现或覆盖率新鲜；完整验收必须经统一入口检查全部批次。任何批失败立即停止，不自动重试部分用例。
 `tools/check_android_coverage.py` 要求输入校验、指标仓库和计时服务三个实际执行的应用类均有
 非零源代码行覆盖，防止“测试执行了，但插桩没有记录”的报告被当作可靠统计。
 这只是统计校准，不是百分比达标，也不能代替异常路径断言。
 
 后端作业上限 15 分钟，CI Android 构建步骤上限 20 分钟、作业上限 25 分钟。
-真机测试单项上限 150 秒（含完整一分钟计时），统一入口 Android 测试任务上限 15 分钟。
+真机测试单项上限 150 秒（含完整一分钟计时），每批 Android 测试任务/包装进程上限 15 分钟。
+完整测试固定为两个顺序批次，不支持任意扩批或用户过滤；不是把单批上限改为 30 分钟。
 超时属于失败，不能通过提高时限掩盖未结束的协程或挂起的测试。
+全局文件锁保证本机不同 worktree 的 Android 验证不并行；各 Gradle 调用使用独立 single-use daemon，
+取消/超时终止并等待本次包装进程，随后仅 force-stop/卸载两个精确 testbed 包，再释放锁。
+不得使用全局 Gradle stop、杀无关进程、清除正式 App 或从失败运行遗留文件拼出成功。
+外部 Gradle 属性/环境注入 instrumentation 参数会被拒绝，托管 `android-build` 不发现/安装/执行测试。
+工具回归使用临时生成物、伪命令边界和真实短命子进程验证顺序、缺批/漏项/重复、旧结果排除、
+覆盖率缺失/损坏、APK 改变、过滤注入、链接目录拒绝、超时 join 与锁重用；这些不是 Android 行为测试。
+运行器依据：[AndroidJUnitRunner 分批文档](https://developer.android.com/training/testing/instrumented-tests/androidx-test-libraries/runner)
+及 [log-only 定义](https://github.com/android/android-test/blob/main/runner/android_junit_runner/java/androidx/test/runner/AndroidJUnitRunner.java)。
 
 Android lint 使用官方 `android/app/lint-baseline.xml` 记录已有问题，并将所有未进入基线的
 warning 提升为 error。Kotlin、javac 与 Android 资源编译警告由

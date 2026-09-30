@@ -103,6 +103,7 @@ jobs:
           path: |
             android/app/build/outputs/androidTest-results/
             android/app/build/reports/androidTests/
+            android/app/build/reports/dayforge-device/
             android/app/build/reports/lint-results-debug.*
           retention-days: 14
           if-no-files-found: warn
