@@ -206,6 +206,20 @@ class ConfigBundleArchiveTest {
         rejected(zip(entries(empty + empty, emptyList())), "CONFIG_MANIFEST_JSON")
     }
 
+    @Test fun versionInspectionStreamsDenseUnknownValuesAndKeepsDecodedKeysAndRootOrder() = runBlocking {
+        // Deliberately dense rather than padded whitespace: no intermediate tree for these values.
+        val dense = empty.dropLast(1) + ",\"unknown\":[" + List(200_000) { "[]" }.joinToString(",") + "]}"
+        rejected(zip(entries(dense, emptyList())), "CONFIG_MANIFEST_JSON")
+        assertTrue(read(zip(entries(empty.replace("\"format\"", "\"forma\\u0074\""), emptyList()))).manifest.nodes.isEmpty())
+        val source = manifest()
+        val reordered = JsonObject((source - "format" - "format_version") + mapOf("format_version" to JsonPrimitive(2),
+            "format" to JsonPrimitive("dayforge.config")))
+        assertEquals(7, read(zip(entries(reordered.toString()))).manifest.nodes.size)
+        for (version in listOf("2.0", "2e0", "null", "[]", "{}")) {
+            rejected(zip(entries(empty.replace(":2,", ":$version,"), emptyList())), "CONFIG_VERSION")
+        }
+    }
+
     @Test fun missingExtraAndUnsafeEntriesNeverProducePartialPreview() = runBlocking {
         rejected(zip(entries().dropLast(1)), "CONFIG_ENTRIES_MISMATCH")
         rejected(zip(entries() + ("blobs/${"a".repeat(64)}" to svg)), "CONFIG_ENTRIES_MISMATCH")

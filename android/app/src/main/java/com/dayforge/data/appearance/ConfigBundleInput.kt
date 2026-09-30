@@ -1,10 +1,13 @@
 package com.dayforge.data.appearance
 
+import android.util.JsonReader
+import android.util.JsonToken
 import com.dayforge.domain.model.ConfigBundle
 import com.dayforge.domain.model.ConfigSchedule
 import com.dayforge.domain.model.IconBlob
 import com.dayforge.domain.model.ThemePalette
 import java.io.InputStream
+import java.io.StringReader
 import java.util.Collections
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -12,8 +15,6 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 
 internal const val CONFIG_MANIFEST_LIMIT = 8_388_608
 internal class ConfigBundleInputException(val code: String) : IllegalArgumentException(code)
@@ -74,9 +75,27 @@ private fun decodeConfigManifest(bytes: ByteArray, checkpoint: () -> Unit): Conf
         val text = strictAppearanceJson(bytes, CONFIG_MANIFEST_LIMIT, checkpoint) {
             throw ConfigBundleInputException("CONFIG_MANIFEST_$it")
         }
-        val value = Json.parseToJsonElement(text).jsonObject
-        if (value["format"]?.jsonPrimitive?.content != "dayforge.config" ||
-            value["format_version"]?.toString() != "2") throw ConfigBundleInputException("CONFIG_VERSION")
+        // Do not build an unbounded intermediate JsonElement tree just to inspect two root fields.
+        // The strict preflight already validated every token/key/depth; skip other values as a stream.
+        val supported = JsonReader(StringReader(text)).use { reader ->
+            if (reader.peek() != JsonToken.BEGIN_OBJECT) throw ConfigBundleInputException("CONFIG_MANIFEST_INVALID")
+            reader.beginObject()
+            var format = false
+            var version = false
+            while (reader.hasNext()) {
+                checkpoint()
+                when (reader.nextName()) {
+                    "format" -> if (reader.peek() == JsonToken.STRING) format = reader.nextString() == "dayforge.config"
+                        else reader.skipValue()
+                    "format_version" -> if (reader.peek() == JsonToken.NUMBER) version = reader.nextString() == "2"
+                        else reader.skipValue()
+                    else -> reader.skipValue()
+                }
+            }
+            reader.endObject()
+            format && version
+        }
+        if (!supported) throw ConfigBundleInputException("CONFIG_VERSION")
         val result = Json.decodeFromString<ConfigBundle>(text)
         checkpoint()
         return result
