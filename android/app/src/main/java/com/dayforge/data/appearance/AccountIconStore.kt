@@ -69,6 +69,24 @@ internal class AccountIconStore(private val metadata: AccountIconRepository, pri
         return result
     }
 
+    /** Retry only this proven installation intent, never another import's temporary or final bytes. */
+    suspend fun recoverInstallation(context: AccountIconContext, assetId: String, hash: String) {
+        metadata.installation(context, assetId, hash, writing = true)
+        files.exclusive(context.namespace, create = false, beforeAccess = { metadata.reauthorize(context, writing = true) }) { directory ->
+            val before = metadata.installation(context, assetId, hash, writing = true)
+            val names = directory?.inventory().orEmpty()
+            if (before.validationProfile != null || hash in names) {
+                (directory ?: throw IOException("ICON_FILES_MISSING")).files.read(before.reservation.blob,
+                    before.validationProfile ?: iconValidationProfile(before.reservation.blob))
+            }
+            check(metadata.installation(context, assetId, hash, writing = true) == before) { "ICON_INSTALL_CHANGED" }
+            // A failure never deletes the immutable final file or manufactures a ready receipt.
+            directory?.files?.cleanupTemporary(before.reservation.operationId)
+            check(metadata.installation(context, assetId, hash, writing = true) == before) { "ICON_INSTALL_CHANGED" }
+        }
+        metadata.reauthorize(context, writing = true)
+    }
+
     /** Does not infer ready from final bytes, remove final hashes, or adopt unjournalled files. */
     suspend fun recover(context: AccountIconContext): IconFileRecovery {
         metadata.installations(context)
