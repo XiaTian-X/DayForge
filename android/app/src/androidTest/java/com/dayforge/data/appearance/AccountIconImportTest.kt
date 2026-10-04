@@ -274,9 +274,10 @@ class AccountIconImportTest {
         assertEquals(128, repo.reservations(context).map { it.operationId }.toSet().size)
         assertEquals(AccountIconSelection(0, null), repo.selection(context))
         assertArrayEquals(images.last(), store.read(context, id(1127), hash(images.last())))
-        // All four parents once, plus each real file and final directory publication: no skipped
-        // durability, and no 128-fold redundant parent syncs on the same held directory handles.
-        assertEquals(4 + 128 * 2, syncs.get())
+        // All four parents once; each image retains cleanup-directory, real-file, and publication-
+        // directory fsync. Cleanup sync is required even on replay after an interrupted unlink.
+        // No skipped durability or 128-fold redundant parent syncs on the same held handles.
+        assertEquals(4 + 128 * 3, syncs.get())
     } }
 
     @Test fun packRetryPreflightsAllKnownFinalFilesBeforeCleaningAnyOwnTemporary() = runBlocking<Unit> {
