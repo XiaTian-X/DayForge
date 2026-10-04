@@ -182,14 +182,15 @@ internal class AccountIconRepository(
     }
 
     /** One real, transactionally audited snapshot for a whole immutable pack read. */
-    suspend fun packInstallations(context: AccountIconContext, pack: IconPack): Map<String, IconInstallation> = scoped(context) {
+    suspend fun packInstallations(context: AccountIconContext, pack: IconPack,
+        requireReady: Boolean = true): Map<String, IconInstallation> = scoped(context) {
         val state = catalog(context.namespace)
         val owned = state.packs[pack.packId to pack.revision]
         check(owned != null && owned == pack) { "ICON_PACK_NOT_OWNED" }
         val receipts = linkedMapOf<String, IconInstallation>()
         for (asset in owned.assets) for (blob in listOfNotNull(asset.light, asset.dark)) {
             val receipt = installation(state, asset.assetId, blob.sha256)
-            check(receipt.validationProfile != null) { "ICON_NOT_READY" }
+            check(!requireReady || receipt.validationProfile != null) { "ICON_NOT_READY" }
             val previous = receipts.put(blob.sha256, receipt)
             check(previous == null || previous == receipt) { "ICON_INSTALL_CHANGED" }
         }

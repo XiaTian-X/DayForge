@@ -3,8 +3,6 @@ package com.dayforge.data.appearance
 import com.dayforge.domain.model.IconPack
 import java.io.InputStream
 import java.util.Collections
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
 
 /** Frozen provider input bound to the authenticated preview lifetime; not an installation receipt. */
 internal class AccountIconPackPreview internal constructor(
@@ -47,15 +45,9 @@ internal class AccountIconImport(
         val variants = pack.assets.flatMap { asset ->
             listOfNotNull(asset.light, asset.dark).map { asset.assetId to it }
         }.distinctBy { it.second.sha256 }
-        for ((assetId, blob) in variants) {
-            currentCoroutineContext().ensureActive()
-            val bytes = preview.archive.readBlob(blob.sha256)
-            store.recoverInstallation(context, assetId, blob.sha256)
-            store.install(context, assetId, blob.sha256, bytes)
-        }
         // A successful earlier ready transaction is not a final integrity proof. Read all actual
-        // variants again, including unreferenced assets; never report a partially installed pack.
-        store.verifyPack(context, pack)
+        // variants again under the pack lease, including unused assets, before returning success.
+        store.installPack(context, pack, preview.archive::readBlob)
         check(metadata.pack(context, pack.packId, pack.revision) == pack) { "ICON_PACK_NOT_OWNED" }
         metadata.reauthorize(context, writing = true)
         return metadata.authorized(context) {

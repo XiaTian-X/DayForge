@@ -250,6 +250,10 @@ class AccountIconImportTest {
     @Test fun maximumAssetAndRolePackInstallsAllRealFilesWithinNormalGate() = runBlocking<Unit> { withTimeout(140_000) {
         // Cancel/join structured Room and file work before the unchanged 150s runner deadline;
         // never let the runner tear down the database while a timed-out worker still owns it.
+        val syncs = AtomicInteger()
+        configure(object : IconFileIo() {
+            override fun sync(fd: FileDescriptor) { super.sync(fd); syncs.incrementAndGet() }
+        })
         val images = (0 until 128).map { n ->
             """<svg width="1" height="1"><rect width="1" height="1" fill="#${(n + 1).toString(16).padStart(6, '0')}"/></svg>""".toByteArray()
         }
@@ -270,7 +274,32 @@ class AccountIconImportTest {
         assertEquals(128, repo.reservations(context).map { it.operationId }.toSet().size)
         assertEquals(AccountIconSelection(0, null), repo.selection(context))
         assertArrayEquals(images.last(), store.read(context, id(1127), hash(images.last())))
+        // All four parents once, plus each real file and final directory publication: no skipped
+        // durability, and no 128-fold redundant parent syncs on the same held directory handles.
+        assertEquals(4 + 128 * 2, syncs.get())
     } }
+
+    @Test fun packRetryPreflightsAllKnownFinalFilesBeforeCleaningAnyOwnTemporary() = runBlocking<Unit> {
+        val value = preview(); imports.confirm(value); val context = repo.capture()
+        val intents = repo.reservations(context)
+        val temporary = File(directory(context), ".install-${intents.single { it.blob.sha256 == hash(red) }.operationId}.part")
+            .apply { writeText("proven temporary") }
+        val damaged = File(directory(context), hash(green)).apply { writeText("bad") }
+        rejected { imports.confirm(value) }
+        assertEquals("proven temporary", temporary.readText()); assertEquals("bad", damaged.readText())
+        assertEquals(intents, repo.reservations(context)); assertEquals(3, ready())
+        // Repair only the deliberately corrupted test fixture, then verify the exact retry.
+        damaged.writeBytes(green); imports.confirm(value)
+        assertFalse(temporary.exists()); assertEquals(intents, repo.reservations(context)); assertEquals(3, ready())
+    }
+
+    @Test fun missingReadyNamespaceCannotBeRecreatedByAValidPackRetry() = runBlocking<Unit> {
+        val value = preview(); imports.confirm(value); val context = repo.capture()
+        val choice = store.select(context, 0, IconPackVersion(id(100), 1))
+        val path = directory(context); assertTrue(path.deleteRecursively())
+        assertEquals("ICON_FILES_MISSING", rejected { imports.confirm(value) }.message)
+        assertFalse(path.exists()); assertEquals(3, ready()); assertEquals(choice, repo.selection(context))
+    }
 
     @Test fun wholePackVerificationReauditsRealReadyRowsAfterAllFileReads() = runBlocking<Unit> {
         val value = preview(); imports.confirm(value); val context = repo.capture()
