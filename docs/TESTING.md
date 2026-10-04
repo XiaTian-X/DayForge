@@ -94,6 +94,9 @@ teardown，最后恢复真实调度对象。测试仍检查真实业务数据/ou
 重复文件数据库生命周期，专门的小组件调度/Worker/刷新器测试不能使用它。
 完整结果除 XML 计数外，还须检查 `SQLiteConnection ... was leaked`、`file unlinked while open`、
 关闭后访问及致命异常日志；GC 报告所在用例不等于资源创建者，须结合前序请求链定位。
+习惯详情与通知 ViewModel 测试在 clear 后须驱动受控 Main 并等待实际 owner Job 完成，
+再关闭真实 Room、重置 Main；仅执行一次 runCurrent 不证明已取消的 IO 查询完成。
+收尾等待有界且必须断言完成，不吞掉关闭后查询异常或将其归咎于下一条用例。
 
 网络监测回归使用真实 Android `Network` 身份值和 `NetworkCapabilities`，以手写观察源控制
 `NetworkObservationSource` 的注册/注销、初始快照和失败，不在该类中模拟 Android framework 类型。
