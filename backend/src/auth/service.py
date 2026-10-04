@@ -1,6 +1,7 @@
 """Authentication service layer with business logic."""
 
 import base64
+import binascii
 import hashlib
 import bcrypt
 from datetime import datetime, timedelta, timezone
@@ -9,6 +10,10 @@ import jwt
 from src.config import settings
 
 PASSWORD_HASH_PREFIX = "$dayforge-sha256-bcrypt$v1$"
+MAX_JWT_LENGTH = 16_384
+MAX_JWT_JSON_DEPTH = 32
+DATABASE_INTEGER_MIN = -(2**63)
+DATABASE_INTEGER_MAX = 2**63 - 1
 
 
 def _password_material(password: str) -> bytes:
@@ -69,12 +74,93 @@ def create_refresh_token(data: dict, expires_delta: timedelta | None = None) -> 
     )
 
 
+def _bounded_compact_json(token: str) -> bool:
+    """Resource preflight only: never use unverified JSON as authorization.
+
+    Bound header/payload nesting before a recursive decoder runs, independent
+    of the host's recursion limit. Preserve the original signing input.
+    """
+    segments = token.split(".")
+    if len(segments) != 3 or not segments[0] or not segments[1]:
+        return False
+    for segment in segments[:2]:
+        try:
+            text = base64.b64decode(
+                segment + "=" * (-len(segment) % 4), altchars=b"-_", validate=True
+            ).decode("utf-8")
+        except (binascii.Error, ValueError):
+            return False
+        # JSON's byte decoder also auto-detects UTF-16/32 without a BOM. Their
+        # NUL bytes can otherwise survive UTF-8 decoding and confuse the scan;
+        # raw NUL is never legal UTF-8 JSON (an escaped \u0000 remains valid).
+        if "\x00" in text:
+            return False
+        depth = 0
+        quoted = escaped = False
+        for character in text:
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == '"':
+                    quoted = False
+            elif character == '"':
+                quoted = True
+            elif character in "[{":
+                depth += 1
+                if depth > MAX_JWT_JSON_DEPTH:
+                    return False
+            elif character in "]}":
+                depth -= 1
+                if depth < 0:
+                    return False
+    return True
+
+
 def verify_token(token: str) -> dict | None:
     """Verify and decode JWT token."""
+    # Compact JWTs are ASCII. Bound work before decoding/allocating JSON or
+    # verifying a signature; do not log the supplied credential.
+    if (
+        not isinstance(token, str)
+        or not token
+        or len(token) > MAX_JWT_LENGTH
+        or not token.isascii()
+        or not _bounded_compact_json(token)
+    ):
+        return None
     try:
         payload = jwt.decode(
-            token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
+            token,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+            options={"require": ["exp"]},
         )
         return payload
-    except jwt.PyJWTError:
+    except (jwt.PyJWTError, OverflowError):
+        # PyJWT wraps malformed JSON/claim types, but int(infinite NumericDate)
+        # can still raise OverflowError. Unrelated programming errors propagate.
         return None
+
+
+def token_account_identity(payload: dict) -> tuple[int, int] | None:
+    """Validate database-bound claims only AFTER cryptographic verification.
+
+    Retain the existing string-to-integer subject semantics, but never pass
+    out-of-range integers or bool-as-int auth versions to the database driver.
+    """
+    subject = payload.get("sub")
+    version = payload.get("ver")
+    if not isinstance(subject, str) or type(version) is not int:
+        return None
+    try:
+        user_id = int(subject)
+    except ValueError:
+        return None
+    if not all(
+        DATABASE_INTEGER_MIN <= value <= DATABASE_INTEGER_MAX
+        for value in (user_id, version)
+    ):
+        return None
+    return user_id, version

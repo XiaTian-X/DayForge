@@ -17,6 +17,7 @@ from src.auth.service import (
     password_hash_needs_upgrade,
     verify_password,
     verify_token,
+    token_account_identity,
 )
 from src.database import get_session
 
@@ -93,15 +94,10 @@ async def refresh_token(
     if not payload or payload.get("type") != "refresh":
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
-    user_id = payload.get("sub")
-    token_version = payload.get("ver")
-    if user_id is None or not isinstance(token_version, int):
+    identity = token_account_identity(payload)
+    if identity is None:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
-
-    try:
-        internal_user_id = int(user_id)
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=401, detail="Invalid refresh token") from None
+    internal_user_id, token_version = identity
 
     result = await session.execute(select(User).where(User.id == internal_user_id))
     user = result.scalar()
