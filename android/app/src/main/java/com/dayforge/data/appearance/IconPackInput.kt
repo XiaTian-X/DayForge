@@ -34,6 +34,15 @@ internal class ValidatedIconPack private constructor(val manifest: IconPack, pri
             val context = currentCoroutineContext()
             val checkpoint = { context.ensureActive() }
             val frozen = openSource().use { freezeIconArchive(it, checkpoint) }
+            parse(frozen, checkpoint)
+        }
+
+        /** Internal frozen-input path shared by bounded documents; never bypasses image checks. */
+        internal fun parse(bytes: ByteArray, checkpoint: () -> Unit = {}): ValidatedIconPack {
+            checkpoint()
+            packRequire(bytes.size <= ICON_ARCHIVE_LIMIT, "PACK_ARCHIVE_LIMIT")
+            val frozen = bytes.copyOf()
+            checkpoint()
             val zip = IconPackZip(frozen, checkpoint)
             val decoded = decodeIconManifest(zip.read("manifest.json", ICON_MANIFEST_LIMIT, checkpoint), checkpoint)
             val manifest = decoded.copy(assets = Collections.unmodifiableList(decoded.assets.toList()),
@@ -47,7 +56,7 @@ internal class ValidatedIconPack private constructor(val manifest: IconPack, pri
                 val bitmap = if (expected.mediaType == "image/png") decodePng(content, expected) else renderSvg(content, expected)
                 try { checkpoint() } finally { bitmap.recycle() }
             }
-            ValidatedIconPack(manifest, zip, blobs)
+            return ValidatedIconPack(manifest, zip, blobs)
         }
     }
 }
