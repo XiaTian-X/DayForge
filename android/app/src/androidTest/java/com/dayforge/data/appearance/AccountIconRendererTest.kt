@@ -26,6 +26,8 @@ import com.dayforge.data.local.PlaintextTokenCipher
 import com.dayforge.domain.appearance.ThemeVersionRef
 import com.dayforge.domain.model.IconAsset
 import com.dayforge.domain.model.IconBlob
+import com.dayforge.domain.model.IconPack
+import com.dayforge.domain.model.IconReference
 import com.dayforge.domain.service.AccountSessionCoordinator
 import com.dayforge.ui.theme.toComposeImage
 import com.dayforge.widget.base.toGlanceImage
@@ -448,6 +450,75 @@ class AccountIconRendererTest {
             try { assertTrue(barrier.reached.await(5, TimeUnit.SECONDS)); renderer.invalidate() }
             finally { barrier.release() }
             assertNotNull(result.await()); draw(renderer, context); assertEquals(2, count.get())
+        }
+    }
+
+    @Test fun packSwitchAfterDrawBeforeCallerResumeRejectsAlreadyDrawnRole() = runBlocking<Unit> {
+        val context = installed()
+        val pack = IconPack("dayforge.icon-pack", 1, id(300), 1, "pack",
+            listOf(requireNotNull(repo.asset(context, id(10)))), mapOf("habit.exercise" to id(10)), null)
+        repo.reservePack(context, pack); store.select(context, 0, IconPackVersion(pack.packId, 1))
+        ReturnBarrier().use { barrier ->
+            val renderer = AccountIconRenderer(repo, store, draw = { source, asset, dark, size, tint ->
+                renderIcon(source, asset, dark, size, tint).also { barrier.armed.set(true) }
+            })
+            val result = async(barrier) { outcome {
+                renderer.renderReference(context, IconReference.Role("habit.exercise"), false, theme,
+                    false, IconRasterSize(8, 8), blue)
+            } }
+            try {
+                assertTrue(barrier.reached.await(5, TimeUnit.SECONDS))
+                withTimeout(2_000) { store.select(context, 1, null) }
+            } finally { barrier.release() }
+            assertNotNull(result.await()); assertEquals(0 to 0, renderer.memoryUsage())
+            assertEquals(AccountIconSelection(2, null), repo.selection(context))
+        }
+    }
+
+    @Test fun selectionCommitBeforeCallerDeliveryDoesNotReturnObsoleteChoiceOrPretendRollback() = runBlocking<Unit> {
+        val context = installed()
+        val pack = IconPack("dayforge.icon-pack", 1, id(300), 1, "pack",
+            listOf(requireNotNull(repo.asset(context, id(10)))), mapOf("habit.exercise" to id(10)), null)
+        repo.reservePack(context, pack)
+        ReturnBarrier().use { barrier ->
+            val once = AtomicBoolean(true)
+            val delayed = AccountIconStore(repo, AccountIconFiles(parent, object : IconFileIo() {
+                override fun read(fd: java.io.FileDescriptor, bytes: ByteArray, offset: Int, length: Int): Int =
+                    super.read(fd, bytes, offset, length).also { if (once.compareAndSet(true, false)) barrier.armed.set(true) }
+            }))
+            val result = async(barrier) { outcome { delayed.select(context, 0, IconPackVersion(pack.packId, 1)) } }
+            try {
+                assertTrue(barrier.reached.await(5, TimeUnit.SECONDS))
+                // Actual durable choice committed even though its response has not arrived.
+                assertEquals(AccountIconSelection(1, IconPackVersion(pack.packId, 1)), repo.selection(context))
+                withTimeout(2_000) { store.select(context, 1, null) }
+            } finally { barrier.release() }
+            assertNotNull(result.await()); assertEquals(AccountIconSelection(2, null), repo.selection(context))
+            assertNotNull(store.read(context, id(10), pack.assets.single().light.sha256))
+        }
+    }
+
+    @Test fun cancellationAfterSelectionCommitRetainsActualChoiceAndOwnedReadyBytes() = runBlocking<Unit> {
+        val context = installed()
+        val pack = IconPack("dayforge.icon-pack", 1, id(300), 1, "pack",
+            listOf(requireNotNull(repo.asset(context, id(10)))), mapOf("habit.exercise" to id(10)), null)
+        repo.reservePack(context, pack)
+        val renderer = AccountIconRenderer(repo, store); draw(renderer, context)
+        ReturnBarrier().use { barrier ->
+            val once = AtomicBoolean(true)
+            val delayed = AccountIconStore(repo, AccountIconFiles(parent, object : IconFileIo() {
+                override fun read(fd: java.io.FileDescriptor, bytes: ByteArray, offset: Int, length: Int): Int =
+                    super.read(fd, bytes, offset, length).also { if (once.compareAndSet(true, false)) barrier.armed.set(true) }
+            }))
+            val result = async(barrier) { delayed.select(context, 0, IconPackVersion(pack.packId, 1)) }
+            try {
+                assertTrue(barrier.reached.await(5, TimeUnit.SECONDS)); result.cancel()
+                assertEquals(AccountIconSelection(1, IconPackVersion(pack.packId, 1)), repo.selection(context))
+                assertEquals(0 to 0, renderer.memoryUsage())
+            } finally { barrier.release() }
+            result.join(); assertTrue(result.isCancelled)
+            assertEquals(AccountIconSelection(1, IconPackVersion(pack.packId, 1)), repo.selection(context))
+            assertNotNull(store.read(context, id(10), pack.assets.single().light.sha256))
         }
     }
 

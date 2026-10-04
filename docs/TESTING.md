@@ -120,11 +120,15 @@ teardown，最后恢复真实调度对象。测试仍检查真实业务数据/ou
 元数据和去重字节额度、降低限额、ABORT/IGNORE/日志身份改写的同事务回滚、损坏元数据和
 缺失日志拒绝、SQLite 超范围整数/非整数/异常列类型在 Room 强制转换前拒绝、取消/排队旧回调，
 以及业务库清理/退出后独立素材记录保留、真实设备主题选择不变与冷重开。
-新库测试比较导出的当前 v2 身份，拒绝未知版本和伪 schema，均限定 `com.dayforge.testbed`。
+新库测试比较导出的当前 v3 身份，拒绝未知版本和伪 schema，均限定 `com.dayforge.testbed`。
 `AccountIconMigrationTest` 从已提交 v1 schema 经过生产入口升级，比较原三表的全部行/DDL/
-operation ID、v2 identity、空 ready 和账户复合外键；DDL 阻塞和最终 schema 校验失败须回滚
+operation ID、最终 v3 identity、空 ready/selection 和账户复合外键；DDL 阻塞和最终 schema 校验失败须回滚
 至原 v1，精确移除测试障碍后能重试，不通过清库取得成功。
-升级前显式核对冻结 v1 identity；伪造、缺失、额外行及 BLOB 类型不得随迁移被覆盖成有效 v2。
+升级前显式核对冻结 v1 identity；伪造、缺失、额外行及 BLOB 类型不得随迁移被覆盖成有效身份。
+直接 v2→3 独立验证原四表全部行/DDL/ready 保留、空 selection、复合外键及冷重开；冻结 v2
+身份伪造/缺失/额外/BLOB、selection DDL 阻塞或最终 schema 失败必须保留 v2，精确修复后重试。
+同名完整 selection 表及其已有选择行、被其他表使用的同名索引（含大小写变体）必须拒绝并保留，不能按合法
+最终 DDL 静默接纳未证明的偏好；测试仅移除自己明确注入的对象后验证迁移可重试。
 `AccountIconStoreTest` 使用真实文件 Room、DataStore、PNG 解码/SVG 绘制和 syscall 故障验证
 三维 namespace 字节隔离、裸 hash/非归属/权限拒绝、安装回读及冷重开、不可变重试、并发实例、
 ready ABORT/IGNORE/改写回滚、发布后 fsync 失败、部分写入/精确恢复、未知文件保留、逐级链接/
@@ -147,6 +151,17 @@ ready、旧读取不返回字节；取消等待真实 I/O 收尾并保持第二�
 排队变换前取消不提交，以及变换后失败保留原 owner/ready。冷重开验证其他 namespace 无权读取，
 原 namespace 的 ready 字节及 pending operation ID 保留。登记回归覆盖交错提交与提交中新增实例。
 这不替代正式 UI 消费者、在线下载或整体 RemoteViews 内存预算验收。
+
+`AccountIconSelectionTest` 在真机真实 Room/DataStore/文件上覆盖选择/清除/重开/退出保留、
+三维副本隔离、只读设备仅能选择已就绪包、CAS/精确无变化/并发实例、代次耗尽、SQLite 原始
+类型/孤立版本拒绝，以及 ABORT/IGNORE/触发器改写导致整事务回滚。新声明不能暗改选择。
+完整包须验证包括未使用素材及 dark 的真实 ready 文件；缺失/损坏保持原选择，不自动修复。
+真实绘制验证角色随包变化、固定素材保持、用途拒绝、保留缺图原引用与显式显示占位、无包
+无隐藏内置图片、所有登记缓存同步失效且不 recycle 借用位图。阻塞读/绘制验证认证和选择
+变化不被图片 IO 持有账户锁/数据库事务阻挡，取消等待真实 IO 且不提交未验证选择。
+`AccountIconRendererTest` 另用独立调用方调度屏障验证绘制后选包拒绝旧图、选包已经提交而
+响应仍排队时拒绝过期选择，以及取消不虚构回滚且保留真实选择/ready 字节。
+这些是未启用的内部入口，不是正式页面/小组件人工选包验收或在线下载证明。
 
 ### 后端改动
 
