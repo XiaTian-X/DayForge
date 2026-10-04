@@ -1,5 +1,6 @@
 package com.dayforge.data.appearance
 
+import androidx.room.Room
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -13,6 +14,8 @@ import com.dayforge.domain.model.IconPack
 import com.dayforge.domain.service.AccountSessionCoordinator
 import java.io.File
 import java.nio.file.Files
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Executor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
@@ -109,6 +112,80 @@ class AccountIconRepositoryTest {
         }
     }
     private fun reopen() { database.close(); database = AccountIconDatabase.open(app) }
+
+    @Test fun eachCatalogReadUsesOneFreshScalarAuditAndFiveActualRowQueries() = runBlocking<Unit> {
+        database.close()
+        val queries = CopyOnWriteArrayList<Pair<String, List<Any?>>>()
+        database = Room.databaseBuilder(app, AccountIconDatabase::class.java, AccountIconDatabase.NAME)
+            .addMigrations(AccountIconDatabase.MIGRATION_1_2, AccountIconDatabase.MIGRATION_2_3)
+            .setQueryCallback({ sql, args ->
+                if (sql.trimStart().startsWith("SELECT", ignoreCase = true) && sql.contains("icon_"))
+                    queries.add(sql to args.toList())
+            }, Executor { it.run() }).build()
+        val repo = repository(); val context = repo.capture(); repo.reservePack(context, pack())
+        repeat(2) {
+            queries.clear()
+            assertEquals(asset(), repo.asset(context, id(10)))
+            assertEquals(6, queries.size)
+            assertEquals(1, queries.count { it.first.contains("AS invalidStoredValues") })
+            for (table in listOf("icon_assets", "icon_packs", "icon_blob_reservations", "icon_blob_ready", "icon_pack_selection"))
+                assertEquals(1, queries.count { it.first.startsWith("SELECT * FROM $table ") })
+            assertTrue(queries.all { it.second.containsAll(listOf(account, server, epoch)) })
+        }
+        login(owner = id(5)); queries.clear()
+        rejected { repo.asset(context, id(10)) }
+        assertTrue(queries.isEmpty()) // Actual credentials reject before touching the old replica.
+        assertNull(repo.asset(repo.capture(), id(10)))
+        assertEquals(6, queries.size)
+        assertTrue(queries.all { it.second.contains(id(5)) && !it.second.contains(account) })
+    }
+
+    @Test fun combinedSqlAuditKeepsUtf8CountsTypesAndNamespaceChecksFreshWithoutRepair() = runBlocking<Unit> {
+        val repo = repository(); val context = repo.capture()
+        val icon = asset(name = "é图标"); val style = pack(listOf(icon))
+        repo.reservePack(context, style)
+        val reservation = repo.reservations(context).single()
+        val dao = database.icons()
+        // Metadata audit fixture only: no claim that these SQL receipts prove real ready bytes.
+        dao.insertReady(AccountIconReadyRow(account, server, epoch, reservation.blob.sha256,
+            reservation.operationId, "png-v1"))
+        dao.insertSelection(AccountIconSelectionRow(account, server, epoch, 1, style.packId, 1))
+        val expected = AccountIconAudit(false, false, false, 1, 1,
+            json.encodeToString(icon).toByteArray(Charsets.UTF_8).size.toLong() +
+                json.encodeToString(style).toByteArray(Charsets.UTF_8).size)
+        assertEquals(expected, dao.audit(account, server, epoch))
+        data class Mutation(val table: String, val column: String, val value: String, val restore: String, val flag: Int)
+        val mutations = listOf(
+            Mutation("icon_assets", "metadataJson", "CAST(metadataJson AS BLOB)", "CAST(metadataJson AS TEXT)", 0),
+            Mutation("icon_packs", "metadataJson", "CAST(metadataJson AS BLOB)", "CAST(metadataJson AS TEXT)", 0),
+            Mutation("icon_blob_reservations", "byteLength", "4294967306", "10", 0),
+            Mutation("icon_blob_reservations", "width", "1.5", "1", 0),
+            Mutation("icon_blob_ready", "validationProfile", "CAST(validationProfile AS BLOB)", "CAST(validationProfile AS TEXT)", 1),
+            Mutation("icon_blob_ready", "operationId", "CAST(operationId AS BLOB)", "CAST(operationId AS TEXT)", 1),
+            Mutation("icon_pack_selection", "generation", "1.5", "1", 2),
+            Mutation("icon_pack_selection", "generation", "0", "1", 2),
+            Mutation("icon_pack_selection", "packId", "NULL", "'${style.packId}'", 2)
+        )
+        val sql = database.openHelper.writableDatabase
+        for (m in mutations) {
+            sql.execSQL("UPDATE ${m.table} SET ${m.column}=${m.value}")
+            fun raw() = sql.query("SELECT typeof(${m.column}), hex(CAST(${m.column} AS BLOB)) FROM ${m.table}").use {
+                assertTrue(it.moveToFirst()); it.getString(0) to it.getString(1)
+            }
+            val damaged = raw()
+            val audit = dao.audit(account, server, epoch)
+            assertEquals(listOf(0, 1, 2).map { it == m.flag },
+                listOf(audit.invalidStoredValues, audit.invalidReadyValues, audit.invalidSelectionValues))
+            assertEquals(expected.assetCount, audit.assetCount); assertEquals(expected.packCount, audit.packCount)
+            assertEquals(expected.metadataBytes, audit.metadataBytes)
+            rejected { repo.asset(context, icon.assetId) }
+            assertEquals(damaged, raw())
+            assertEquals(AccountIconAudit(false, false, false, 0, 0, 0), dao.audit(id(5), server, epoch))
+            sql.execSQL("UPDATE ${m.table} SET ${m.column}=${m.restore}")
+            assertEquals(expected, dao.audit(account, server, epoch))
+            assertEquals(icon, repo.asset(context, icon.assetId))
+        }
+    }
 
     @Test fun freshSchemaMatchesExportAndSurvivesColdReopenWithoutPreferencesOrBusinessChanges() = runBlocking<Unit> {
         val before = business.database.openHelper.readableDatabase.version

@@ -374,22 +374,19 @@ internal class AccountIconRepository(
     /** Audit the selected namespace only; missing/corrupt journals are never silently repaired. */
     private suspend fun catalog(ns: AccountIconNamespace): Catalog {
         val dao = database.icons()
-        check(!dao.invalidStoredValues(ns.accountId, ns.serverInstanceId, ns.syncEpoch) &&
-            dao.assetCount(ns.accountId, ns.serverInstanceId, ns.syncEpoch) <= 1000 &&
-            dao.packCount(ns.accountId, ns.serverInstanceId, ns.syncEpoch) <= 32768 &&
-            dao.metadataBytes(ns.accountId, ns.serverInstanceId, ns.syncEpoch) in 0..8_388_608L) {
+        val audit = dao.audit(ns.accountId, ns.serverInstanceId, ns.syncEpoch)
+        check(!audit.invalidStoredValues && !audit.invalidReadyValues && !audit.invalidSelectionValues &&
+            audit.assetCount <= 1000 && audit.packCount <= 32768 && audit.metadataBytes in 0..8_388_608L) {
             "ICON_STORE_CORRUPT"
         }
         val assetRows = dao.assets(ns.accountId, ns.serverInstanceId, ns.syncEpoch)
         val packRows = dao.packs(ns.accountId, ns.serverInstanceId, ns.syncEpoch)
         val blobRows = dao.blobs(ns.accountId, ns.serverInstanceId, ns.syncEpoch)
-        check(!dao.invalidReadyValues(ns.accountId, ns.serverInstanceId, ns.syncEpoch)) { "ICON_STORE_CORRUPT" }
         val readyRows = dao.ready(ns.accountId, ns.serverInstanceId, ns.syncEpoch)
         check(assetRows.size <= 1000 && packRows.size <= 32768 && blobRows.size <= 2000 && readyRows.size <= 2000) { "ICON_STORE_CORRUPT" }
         val parsed = parseMetadata(ns, assetRows, packRows)
         val assets = parsed.assets
         val packs = parsed.packs
-        check(!dao.invalidSelectionValues(ns.accountId, ns.serverInstanceId, ns.syncEpoch)) { "ICON_STORE_CORRUPT" }
         val selectionRow = dao.selection(ns.accountId, ns.serverInstanceId, ns.syncEpoch)
         val selection = selectionRow?.let {
             val version = it.packId?.let { id -> IconPackVersion(id, requireNotNull(it.revision)) }

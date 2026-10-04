@@ -64,10 +64,27 @@ internal data class AccountIconSelectionRow(
     val generation: Long, val packId: String?, val revision: Int?
 )
 
+/** Fresh SQL scalars, not a cached proof or a stored row; checked before Room coerces values. */
+internal data class AccountIconAudit(
+    val invalidStoredValues: Boolean, val invalidReadyValues: Boolean, val invalidSelectionValues: Boolean,
+    val assetCount: Long, val packCount: Long, val metadataBytes: Long
+)
+
 @Dao
 internal interface AccountIconDao {
-    @Query("SELECT EXISTS(SELECT 1 FROM icon_pack_selection WHERE accountId=:account AND serverInstanceId=:server AND syncEpoch=:epoch AND (typeof(generation)<>'integer' OR generation<1 OR (packId IS NULL)!=(revision IS NULL) OR (packId IS NOT NULL AND (typeof(packId)<>'text' OR typeof(revision)<>'integer' OR revision<1 OR revision>2147483647))))")
-    suspend fun invalidSelectionValues(account: String, server: String, epoch: String): Boolean
+    // The original predicates/counts share one Room dispatch. All real rows are still read and
+    // audited in the caller's same transaction; never reuse this result across calls.
+    @Query("""SELECT
+        (EXISTS(SELECT 1 FROM icon_assets WHERE accountId=:account AND serverInstanceId=:server AND syncEpoch=:epoch AND (typeof(assetId)<>'text' OR typeof(metadataJson)<>'text'))
+         OR EXISTS(SELECT 1 FROM icon_packs WHERE accountId=:account AND serverInstanceId=:server AND syncEpoch=:epoch AND (typeof(packId)<>'text' OR typeof(metadataJson)<>'text' OR typeof(revision)<>'integer' OR revision<1 OR revision>2147483647))
+         OR EXISTS(SELECT 1 FROM icon_blob_reservations WHERE accountId=:account AND serverInstanceId=:server AND syncEpoch=:epoch AND (typeof(sha256)<>'text' OR typeof(mediaType)<>'text' OR typeof(operationId)<>'text' OR typeof(byteLength)<>'integer' OR typeof(width)<>'integer' OR typeof(height)<>'integer' OR byteLength<1 OR byteLength>2097152 OR width<1 OR width>1024 OR height<1 OR height>1024))) AS invalidStoredValues,
+        EXISTS(SELECT 1 FROM icon_blob_ready WHERE accountId=:account AND serverInstanceId=:server AND syncEpoch=:epoch AND (typeof(sha256)<>'text' OR typeof(operationId)<>'text' OR typeof(validationProfile)<>'text')) AS invalidReadyValues,
+        EXISTS(SELECT 1 FROM icon_pack_selection WHERE accountId=:account AND serverInstanceId=:server AND syncEpoch=:epoch AND (typeof(generation)<>'integer' OR generation<1 OR (packId IS NULL)!=(revision IS NULL) OR (packId IS NOT NULL AND (typeof(packId)<>'text' OR typeof(revision)<>'integer' OR revision<1 OR revision>2147483647)))) AS invalidSelectionValues,
+        (SELECT COUNT(*) FROM icon_assets WHERE accountId=:account AND serverInstanceId=:server AND syncEpoch=:epoch) AS assetCount,
+        (SELECT COUNT(*) FROM icon_packs WHERE accountId=:account AND serverInstanceId=:server AND syncEpoch=:epoch) AS packCount,
+        (SELECT COALESCE(SUM(size), 0) FROM (SELECT LENGTH(CAST(metadataJson AS BLOB)) AS size FROM icon_assets WHERE accountId=:account AND serverInstanceId=:server AND syncEpoch=:epoch UNION ALL SELECT LENGTH(CAST(metadataJson AS BLOB)) AS size FROM icon_packs WHERE accountId=:account AND serverInstanceId=:server AND syncEpoch=:epoch)) AS metadataBytes
+    """)
+    suspend fun audit(account: String, server: String, epoch: String): AccountIconAudit
 
     @Query("SELECT * FROM icon_pack_selection WHERE accountId=:account AND serverInstanceId=:server AND syncEpoch=:epoch")
     suspend fun selection(account: String, server: String, epoch: String): AccountIconSelectionRow?
@@ -79,19 +96,6 @@ internal interface AccountIconDao {
     suspend fun updateSelection(account: String, server: String, epoch: String, expected: Long, next: Long,
         pack: String?, revision: Int?): Int
 
-    // Check SQLite's stored values before Room's generated (long -> int) coercion.
-    @Query("SELECT EXISTS(SELECT 1 FROM icon_assets WHERE accountId=:account AND serverInstanceId=:server AND syncEpoch=:epoch AND (typeof(assetId)<>'text' OR typeof(metadataJson)<>'text')) OR EXISTS(SELECT 1 FROM icon_packs WHERE accountId=:account AND serverInstanceId=:server AND syncEpoch=:epoch AND (typeof(packId)<>'text' OR typeof(metadataJson)<>'text' OR typeof(revision)<>'integer' OR revision<1 OR revision>2147483647)) OR EXISTS(SELECT 1 FROM icon_blob_reservations WHERE accountId=:account AND serverInstanceId=:server AND syncEpoch=:epoch AND (typeof(sha256)<>'text' OR typeof(mediaType)<>'text' OR typeof(operationId)<>'text' OR typeof(byteLength)<>'integer' OR typeof(width)<>'integer' OR typeof(height)<>'integer' OR byteLength<1 OR byteLength>2097152 OR width<1 OR width>1024 OR height<1 OR height>1024))")
-    suspend fun invalidStoredValues(account: String, server: String, epoch: String): Boolean
-
-    @Query("SELECT COUNT(*) FROM icon_assets WHERE accountId=:account AND serverInstanceId=:server AND syncEpoch=:epoch")
-    suspend fun assetCount(account: String, server: String, epoch: String): Long
-
-    @Query("SELECT COUNT(*) FROM icon_packs WHERE accountId=:account AND serverInstanceId=:server AND syncEpoch=:epoch")
-    suspend fun packCount(account: String, server: String, epoch: String): Long
-
-    @Query("SELECT COALESCE(SUM(size), 0) FROM (SELECT LENGTH(CAST(metadataJson AS BLOB)) AS size FROM icon_assets WHERE accountId=:account AND serverInstanceId=:server AND syncEpoch=:epoch UNION ALL SELECT LENGTH(CAST(metadataJson AS BLOB)) AS size FROM icon_packs WHERE accountId=:account AND serverInstanceId=:server AND syncEpoch=:epoch)")
-    suspend fun metadataBytes(account: String, server: String, epoch: String): Long
-
     @Query("SELECT * FROM icon_assets WHERE accountId=:account AND serverInstanceId=:server AND syncEpoch=:epoch LIMIT 1001")
     suspend fun assets(account: String, server: String, epoch: String): List<AccountIconAssetRow>
 
@@ -100,9 +104,6 @@ internal interface AccountIconDao {
 
     @Query("SELECT * FROM icon_blob_reservations WHERE accountId=:account AND serverInstanceId=:server AND syncEpoch=:epoch LIMIT 2001")
     suspend fun blobs(account: String, server: String, epoch: String): List<AccountIconBlobRow>
-
-    @Query("SELECT EXISTS(SELECT 1 FROM icon_blob_ready WHERE accountId=:account AND serverInstanceId=:server AND syncEpoch=:epoch AND (typeof(sha256)<>'text' OR typeof(operationId)<>'text' OR typeof(validationProfile)<>'text'))")
-    suspend fun invalidReadyValues(account: String, server: String, epoch: String): Boolean
 
     @Query("SELECT * FROM icon_blob_ready WHERE accountId=:account AND serverInstanceId=:server AND syncEpoch=:epoch LIMIT 2001")
     suspend fun ready(account: String, server: String, epoch: String): List<AccountIconReadyRow>
