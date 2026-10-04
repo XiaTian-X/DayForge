@@ -29,9 +29,13 @@ internal class AccountIconImport(
     private val store: AccountIconStore
 ) {
     /** The provider supplies a blocking-I/O deadline; the archive opens/closes it exactly once. */
-    suspend fun preview(openSource: () -> InputStream): AccountIconPackPreview {
+    suspend fun preview(openSource: () -> InputStream): AccountIconPackPreview =
+        previewArchive { ValidatedIconPack.read(openSource) }
+
+    /** Capture authorization before opening the provider, not after consuming its bytes. */
+    internal suspend fun previewArchive(readArchive: suspend () -> ValidatedIconPack): AccountIconPackPreview {
         val context = metadata.capture()
-        val archive = ValidatedIconPack.read(openSource)
+        val archive = readArchive()
         // Check after IO has resumed the caller too, not merely before queuing its return.
         return metadata.authorized(context) { AccountIconPackPreview(context, archive) }
     }
