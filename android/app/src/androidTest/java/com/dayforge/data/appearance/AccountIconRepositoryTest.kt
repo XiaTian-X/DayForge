@@ -114,12 +114,12 @@ class AccountIconRepositoryTest {
         val before = business.database.openHelper.readableDatabase.version
         val repo = repository(); val context = repo.capture(); repo.reservePack(context, pack())
         val saved = durable()
-        val schema = instrumentation.context.assets.open("com.dayforge.data.appearance.AccountIconDatabase/1.json")
+        val schema = instrumentation.context.assets.open("com.dayforge.data.appearance.AccountIconDatabase/2.json")
             .bufferedReader().use { Json.parseToJsonElement(it.readText()).jsonObject.getValue("database").jsonObject }
         database.openHelper.readableDatabase.query("SELECT identity_hash FROM room_master_table WHERE id=42").use {
             assertTrue(it.moveToFirst()); assertEquals(schema.getValue("identityHash").jsonPrimitive.content, it.getString(0))
         }
-        assertEquals(1, database.openHelper.readableDatabase.version)
+        assertEquals(2, database.openHelper.readableDatabase.version)
         reopen()
         assertEquals(saved, durable()); assertEquals(pack(), repository().pack(context, id(20), 1))
         assertEquals(before, business.database.openHelper.readableDatabase.version)
@@ -387,11 +387,11 @@ class AccountIconRepositoryTest {
 
     @Test fun unsupportedDatabaseVersionAndForgedSchemaIdentityNeverDestructivelyReset() = runBlocking<Unit> {
         val repo = repository(); val context = repo.capture(); repo.reserveAsset(context, asset())
-        val saved = durable(); database.openHelper.writableDatabase.version = 2; reopen()
+        val saved = durable(); database.openHelper.writableDatabase.version = 3; reopen()
         rejected { repository().asset(context, id(10)) }
         database.close()
         android.database.sqlite.SQLiteDatabase.openDatabase(app.getDatabasePath(AccountIconDatabase.NAME).path, null, 0).use {
-            assertEquals(2, it.version); it.version = 1
+            assertEquals(3, it.version); it.version = 2
         }
         database = AccountIconDatabase.open(app); assertEquals(saved, durable())
         database.openHelper.writableDatabase.execSQL("UPDATE room_master_table SET identity_hash='forged'")

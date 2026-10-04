@@ -1,0 +1,263 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 2,
+    "identityHash": "04c8718e516aed6eaacbdc5777ea61af",
+    "entities": [
+      {
+        "tableName": "icon_assets",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`accountId` TEXT NOT NULL, `serverInstanceId` TEXT NOT NULL, `syncEpoch` TEXT NOT NULL, `assetId` TEXT NOT NULL, `metadataJson` TEXT NOT NULL, PRIMARY KEY(`accountId`, `serverInstanceId`, `syncEpoch`, `assetId`))",
+        "fields": [
+          {
+            "fieldPath": "accountId",
+            "columnName": "accountId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverInstanceId",
+            "columnName": "serverInstanceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "syncEpoch",
+            "columnName": "syncEpoch",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "assetId",
+            "columnName": "assetId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "metadataJson",
+            "columnName": "metadataJson",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "accountId",
+            "serverInstanceId",
+            "syncEpoch",
+            "assetId"
+          ]
+        }
+      },
+      {
+        "tableName": "icon_packs",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`accountId` TEXT NOT NULL, `serverInstanceId` TEXT NOT NULL, `syncEpoch` TEXT NOT NULL, `packId` TEXT NOT NULL, `revision` INTEGER NOT NULL, `metadataJson` TEXT NOT NULL, PRIMARY KEY(`accountId`, `serverInstanceId`, `syncEpoch`, `packId`, `revision`))",
+        "fields": [
+          {
+            "fieldPath": "accountId",
+            "columnName": "accountId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverInstanceId",
+            "columnName": "serverInstanceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "syncEpoch",
+            "columnName": "syncEpoch",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "packId",
+            "columnName": "packId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "revision",
+            "columnName": "revision",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "metadataJson",
+            "columnName": "metadataJson",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "accountId",
+            "serverInstanceId",
+            "syncEpoch",
+            "packId",
+            "revision"
+          ]
+        }
+      },
+      {
+        "tableName": "icon_blob_reservations",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`accountId` TEXT NOT NULL, `serverInstanceId` TEXT NOT NULL, `syncEpoch` TEXT NOT NULL, `sha256` TEXT NOT NULL, `byteLength` INTEGER NOT NULL, `mediaType` TEXT NOT NULL, `width` INTEGER NOT NULL, `height` INTEGER NOT NULL, `operationId` TEXT NOT NULL, PRIMARY KEY(`accountId`, `serverInstanceId`, `syncEpoch`, `sha256`))",
+        "fields": [
+          {
+            "fieldPath": "accountId",
+            "columnName": "accountId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverInstanceId",
+            "columnName": "serverInstanceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "syncEpoch",
+            "columnName": "syncEpoch",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sha256",
+            "columnName": "sha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "byteLength",
+            "columnName": "byteLength",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mediaType",
+            "columnName": "mediaType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "width",
+            "columnName": "width",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "height",
+            "columnName": "height",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationId",
+            "columnName": "operationId",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "accountId",
+            "serverInstanceId",
+            "syncEpoch",
+            "sha256"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_icon_blob_reservations_accountId_serverInstanceId_syncEpoch_operationId",
+            "unique": true,
+            "columnNames": [
+              "accountId",
+              "serverInstanceId",
+              "syncEpoch",
+              "operationId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_icon_blob_reservations_accountId_serverInstanceId_syncEpoch_operationId` ON `${TABLE_NAME}` (`accountId`, `serverInstanceId`, `syncEpoch`, `operationId`)"
+          }
+        ]
+      },
+      {
+        "tableName": "icon_blob_ready",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`accountId` TEXT NOT NULL, `serverInstanceId` TEXT NOT NULL, `syncEpoch` TEXT NOT NULL, `sha256` TEXT NOT NULL, `operationId` TEXT NOT NULL, `validationProfile` TEXT NOT NULL, PRIMARY KEY(`accountId`, `serverInstanceId`, `syncEpoch`, `sha256`), FOREIGN KEY(`accountId`, `serverInstanceId`, `syncEpoch`, `sha256`) REFERENCES `icon_blob_reservations`(`accountId`, `serverInstanceId`, `syncEpoch`, `sha256`) ON UPDATE NO ACTION ON DELETE NO ACTION )",
+        "fields": [
+          {
+            "fieldPath": "accountId",
+            "columnName": "accountId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverInstanceId",
+            "columnName": "serverInstanceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "syncEpoch",
+            "columnName": "syncEpoch",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sha256",
+            "columnName": "sha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationId",
+            "columnName": "operationId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "validationProfile",
+            "columnName": "validationProfile",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "accountId",
+            "serverInstanceId",
+            "syncEpoch",
+            "sha256"
+          ]
+        },
+        "foreignKeys": [
+          {
+            "table": "icon_blob_reservations",
+            "onDelete": "NO ACTION",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "accountId",
+              "serverInstanceId",
+              "syncEpoch",
+              "sha256"
+            ],
+            "referencedColumns": [
+              "accountId",
+              "serverInstanceId",
+              "syncEpoch",
+              "sha256"
+            ]
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '04c8718e516aed6eaacbdc5777ea61af')"
+    ]
+  }
+}
