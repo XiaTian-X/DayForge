@@ -53,7 +53,7 @@ internal data class AccountIconLimits(
 
 /**
  * Inactive v5 foundation. Callers must share the account coordinator with login/sync/logout.
- * File installation is coordinated separately; no cache, UI activation, remote acknowledgement or purge API.
+ * File installation is coordinated separately; no image cache, UI activation, remote acknowledgement or purge API.
  */
 internal class AccountIconRepository(
     private val database: AccountIconDatabase,
@@ -62,6 +62,9 @@ internal class AccountIconRepository(
     private val limits: AccountIconLimits = AccountIconLimits()
 ) {
     private val json = Json { encodeDefaults = true }
+    // Parsing only: every use still reads/audits real rows, journals, ready, selection and access.
+    // One exact namespace/row snapshot, <= 1 MiB raw metadata; account lock serializes all access.
+    private var parsedMetadata: ParsedMetadata? = null
 
     internal fun registerCache(cache: com.dayforge.data.local.AccountIconMemory.Cache) =
         tokens.registerIconCache(cache)
@@ -299,6 +302,45 @@ internal class AccountIconRepository(
         val byteCount get() = blobs.values.sumOf { it.blob.byteLength.toLong() }
     }
 
+    private data class ParsedMetadata(
+        val namespace: AccountIconNamespace,
+        val assetRows: List<AccountIconAssetRow>, val packRows: List<AccountIconPackRow>,
+        val assets: Map<String, IconAsset>, val packs: Map<Pair<String, Int>, IconPack>,
+        val described: Map<String, IconBlob>, val metadataBytes: Long
+    )
+
+    private suspend fun parseMetadata(ns: AccountIconNamespace, assetRows: List<AccountIconAssetRow>,
+        packRows: List<AccountIconPackRow>): ParsedMetadata {
+        parsedMetadata?.let { old ->
+            if (old.namespace == ns && old.assetRows == assetRows && old.packRows == packRows) return old
+        }
+        // Drop old namespace/content even when parsing the new snapshot fails.
+        parsedMetadata = null
+        val assets = assetRows.associate { row ->
+            val asset = decodeAsset(row.metadataJson)
+            check(asset.assetId == row.assetId) { "ICON_STORE_CORRUPT" }
+            row.assetId to asset
+        }
+        val packs = packRows.associate { row ->
+            val pack = decodePack(row.metadataJson)
+            check(pack.packId == row.packId && pack.revision == row.revision &&
+                pack.assets.all { assets[it.assetId] == it }) { "ICON_STORE_CORRUPT" }
+            (row.packId to row.revision) to pack
+        }
+        val described = assets.values.flatMap { listOfNotNull(it.light, it.dark) }.groupBy { it.sha256 }
+            .mapValues { (_, variants) ->
+                check(variants.all { it == variants.first() }) { "ICON_STORE_CORRUPT" }
+                variants.first()
+            }
+        // Charge canonical JSON, not the incidental whitespace/key order of persisted metadata.
+        val metadataBytes = assets.values.sumOf { utf8Size(json.encodeToString(it)) } +
+            packs.values.sumOf { utf8Size(json.encodeToString(it)) }
+        val parsed = ParsedMetadata(ns, assetRows.toList(), packRows.toList(), assets, packs, described, metadataBytes)
+        val rawBytes = assetRows.sumOf { utf8Size(it.metadataJson) } + packRows.sumOf { utf8Size(it.metadataJson) }
+        if (rawBytes <= 1_048_576L) parsedMetadata = parsed
+        return parsed
+    }
+
     /** Audit the selected namespace only; missing/corrupt journals are never silently repaired. */
     private suspend fun catalog(ns: AccountIconNamespace): Catalog {
         val dao = database.icons()
@@ -314,17 +356,9 @@ internal class AccountIconRepository(
         check(!dao.invalidReadyValues(ns.accountId, ns.serverInstanceId, ns.syncEpoch)) { "ICON_STORE_CORRUPT" }
         val readyRows = dao.ready(ns.accountId, ns.serverInstanceId, ns.syncEpoch)
         check(assetRows.size <= 1000 && packRows.size <= 32768 && blobRows.size <= 2000 && readyRows.size <= 2000) { "ICON_STORE_CORRUPT" }
-        val assets = assetRows.associate { row ->
-            val asset = decodeAsset(row.metadataJson)
-            check(asset.assetId == row.assetId) { "ICON_STORE_CORRUPT" }
-            row.assetId to asset
-        }
-        val packs = packRows.associate { row ->
-            val pack = decodePack(row.metadataJson)
-            check(pack.packId == row.packId && pack.revision == row.revision &&
-                pack.assets.all { assets[it.assetId] == it }) { "ICON_STORE_CORRUPT" }
-            (row.packId to row.revision) to pack
-        }
+        val parsed = parseMetadata(ns, assetRows, packRows)
+        val assets = parsed.assets
+        val packs = parsed.packs
         check(!dao.invalidSelectionValues(ns.accountId, ns.serverInstanceId, ns.syncEpoch)) { "ICON_STORE_CORRUPT" }
         val selectionRow = dao.selection(ns.accountId, ns.serverInstanceId, ns.syncEpoch)
         val selection = selectionRow?.let {
@@ -343,13 +377,10 @@ internal class AccountIconRepository(
                 row.validationProfile == iconValidationProfile(reservation.blob)) { "ICON_STORE_CORRUPT" }
             row.sha256 to row
         }
-        val described = assets.values.flatMap { listOfNotNull(it.light, it.dark) }.groupBy { it.sha256 }
-        check(described.keys == blobs.keys && described.all { (hash, variants) ->
-            variants.all { it == blobs[hash]?.blob }
+        check(parsed.described.keys == blobs.keys && parsed.described.all { (hash, blob) ->
+            blob == blobs[hash]?.blob
         }) { "ICON_STORE_CORRUPT" }
-        // Re-encoding ignores incidental map-key order, not malformed/duplicate persisted keys.
-        val metadataBytes = assets.values.sumOf { utf8Size(json.encodeToString(it)) } +
-            packs.values.sumOf { utf8Size(json.encodeToString(it)) }
+        val metadataBytes = parsed.metadataBytes
         check(metadataBytes <= 8_388_608L && blobs.values.sumOf { it.blob.byteLength.toLong() } <= 268_435_456L) {
             "ICON_STORE_CORRUPT"
         }

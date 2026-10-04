@@ -120,6 +120,8 @@ teardown，最后恢复真实调度对象。测试仍检查真实业务数据/ou
 元数据和去重字节额度、降低限额、ABORT/IGNORE/日志身份改写的同事务回滚、损坏元数据和
 缺失日志拒绝、SQLite 超范围整数/非整数/异常列类型在 Room 强制转换前拒绝、取消/排队旧回调，
 以及业务库清理/退出后独立素材记录保留、真实设备主题选择不变与冷重开。
+暖解析须验证合法原文变更、重复 JSON 键、事务回滚；复用解析不能掩盖实际行变更，SQL 类型、
+安装意图、ready 与选择仍逐次审计。
 新库测试比较导出的当前 v3 身份，拒绝未知版本和伪 schema，均限定 `com.dayforge.testbed`。
 `AccountIconMigrationTest` 从已提交 v1 schema 经过生产入口升级，比较原三表的全部行/DDL/
 operation ID、最终 v3 identity、空 ready/selection 和账户复合外键；DDL 阻塞和最终 schema 校验失败须回滚

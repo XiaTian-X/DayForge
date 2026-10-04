@@ -412,6 +412,9 @@ DataStore 快照，并要求绑定本地账户、完整小写 UUID 副本、已�
 就绪行必须匹配不可变预留的 operation ID 与已知 png-v1/svg-v1 profile；SQLite 原始列类型、
 孤立行及忽略/改写提交均拒绝。
 这不是上传成功确认，不参与当前业务库迁移或 v4 同步。
+同一仓库可复用一份至多 1 MiB 原文的元数据解析结果，但每次须读取并审计实际 SQL 行，
+namespace 和全部 asset/pack 行精确相等才复用；合法变更、重复键、损坏、事务回滚仍重新处理。
+安装意图、ready、选择、权限与实际图片从不由该解析缓存推断，不能减少完整包边界测试。
 
 内部 `AccountIconStore` 从账户拥有的 asset 引用授权，不提供裸 hash 读取。文件路径为可信
 `filesDir/account-icons-v1/<account UUID>/<server UUID>/<epoch UUID>/<hash>`；逐级拒绝链接/
