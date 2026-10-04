@@ -88,10 +88,30 @@ class StatusAppearanceTest {
     private fun state(description: String) = compose.onNodeWithTag("sync-state-summary")
         .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, description))
 
-    private fun goalChip(color: Color) {
+    private fun goalChip(color: Color, sample: () -> Int = { pixels("goal-result-status", color) }) {
         // Native draw/ripple passes are not advanced by the Compose virtual clock.
-        compose.waitUntil(5000) { pixels("goal-result-status", color) > 10 }
-        assertTrue("expected actual goal status pixels $color", pixels("goal-result-status", color) > 10)
+        // Require consecutive matching captures and assert the same final snapshot,
+        // rather than opening another PixelCopy/draw race after waiting succeeds.
+        var matchingCaptures = 0
+        var matchingPixels = 0
+        compose.waitUntil(5000) {
+            matchingPixels = sample()
+            matchingCaptures = if (matchingPixels > 10) matchingCaptures + 1 else 0
+            matchingCaptures >= 2
+        }
+        assertTrue("expected actual goal status pixels $color", matchingPixels > 10)
+    }
+
+    @Test fun goalPixelPollingRequiresConsecutiveMatchesAndDoesNotRecaptureForAssertion() {
+        val captures = ArrayDeque(listOf(11, 10, 13, 0, 12, 14))
+        var samples = 0
+        goalChip(blue) { samples++; captures.removeFirst() }
+        assertEquals(6, samples)
+        assertTrue(captures.isEmpty())
+    }
+
+    @Test fun goalPixelPollingStillRejectsMissingExpectedColorAtOriginalThreshold() {
+        assertThrows(ComposeTimeoutException::class.java) { goalChip(blue) { 10 } }
     }
 
     @Test fun everySyncStateUsesSavedColorsAndErrorNeverFallsThroughToSuccess() {
