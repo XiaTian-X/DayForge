@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ApplicationProvider
 import app.cash.turbine.test
 import com.dayforge.data.local.HabitDatabase
@@ -88,8 +89,18 @@ class HabitDetailViewModelNotificationTest {
     @After
     fun teardown() {
         if (::viewModel.isInitialized) {
+            val owner = viewModel.viewModelScope.coroutineContext.job
             ViewModelStore().apply { put("detail", viewModel); clear() }
-            testDispatcher.scheduler.runCurrent()
+            runBlocking {
+                withTimeout(5000) {
+                    while (!owner.isCompleted) {
+                        testDispatcher.scheduler.runCurrent()
+                        kotlinx.coroutines.delay(10)
+                    }
+                    owner.join()
+                }
+            }
+            assertTrue("Detail queries must finish before closing Room", owner.isCompleted)
         }
         runBlocking { dataStoreScope.coroutineContext.job.cancelAndJoin() }
         database.close()

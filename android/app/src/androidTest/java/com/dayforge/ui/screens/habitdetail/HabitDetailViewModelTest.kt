@@ -2,6 +2,7 @@ package com.dayforge.ui.screens.habitdetail
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.viewModelScope
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.local.HabitDatabase
@@ -98,9 +99,21 @@ class HabitDetailViewModelTest {
 
     @After
     fun teardown() {
+        val owner = viewModel.viewModelScope.coroutineContext.job
         viewModelStore.clear()
-        testDispatcher.scheduler.runCurrent()
-        runBlocking { dataStoreScope.coroutineContext.job.cancelAndJoin() }
+        runBlocking {
+            // clear cancels, but a real Room query may still be returning on IO. Pump the
+            // controlled Main dispatcher until its cancelled owner has actually joined.
+            withTimeout(5000) {
+                while (!owner.isCompleted) {
+                    testDispatcher.scheduler.runCurrent()
+                    delay(10)
+                }
+                owner.join()
+            }
+            dataStoreScope.coroutineContext.job.cancelAndJoin()
+        }
+        assertTrue("Detail queries must finish before closing Room", owner.isCompleted)
         database.close()
         dataStoreFile.delete()
         Dispatchers.resetMain()

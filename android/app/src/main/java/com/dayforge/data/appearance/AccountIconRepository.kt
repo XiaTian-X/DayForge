@@ -44,6 +44,11 @@ internal data class AccountIconResolution(
     val asset: IconAsset?, val placeholder: Boolean
 )
 
+/** Readiness is an advisory local receipt, not a fresh file proof or server acknowledgement. */
+internal data class AccountIconCatalog(
+    val packs: List<IconPack>, val selection: AccountIconSelection, val readyVersions: Set<IconPackVersion>
+)
+
 /** Local safety ceilings; lower limits retain existing data and permit exact replay. */
 internal data class AccountIconLimits(
     val assets: Int = 1000, val bytes: Long = 268_435_456L, val metadataBytes: Long = 8_388_608L
@@ -97,6 +102,15 @@ internal class AccountIconRepository(
 
     suspend fun selection(context: AccountIconContext): AccountIconSelection = scoped(context) {
         catalog(context.namespace).selection
+    }
+
+    suspend fun library(context: AccountIconContext): AccountIconCatalog = scoped(context) {
+        val state = catalog(context.namespace)
+        val packs = state.packs.values.sortedWith(compareBy<IconPack> { it.name }.thenBy { it.packId }.thenBy { it.revision })
+        val ready = packs.filter { pack -> pack.assets.all { asset ->
+            listOfNotNull(asset.light, asset.dark).all { it.sha256 in state.ready }
+        } }.map { IconPackVersion(it.packId, it.revision) }.toSet()
+        AccountIconCatalog(Collections.unmodifiableList(packs), state.selection, Collections.unmodifiableSet(ready))
     }
 
     /** Only the file store may activate a pack, after proving all its real ready variants. */

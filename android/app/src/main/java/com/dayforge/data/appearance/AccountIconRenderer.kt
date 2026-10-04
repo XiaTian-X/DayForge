@@ -14,7 +14,7 @@ import kotlinx.coroutines.withContext
 
 internal data class AccountIconRendered(val resolution: AccountIconResolution, val raster: IconRaster?)
 
-/** Internal, inactive account renderer. Cache hits are never file-integrity or ownership proofs. */
+/** Account renderer shared by formal library consumers. Hits never prove file integrity or ownership. */
 internal class AccountIconRenderer(
     private val metadata: AccountIconRepository,
     private val store: AccountIconStore,
@@ -47,6 +47,33 @@ internal class AccountIconRenderer(
 
     /** Only drops memory references. In-flight work cannot refill the invalidated generation. */
     fun invalidate() = synchronized(monitor) { clear() }
+
+    /** Frozen import pixels are preview-only; they do not declare assets, mark ready or populate LRU. */
+    suspend fun renderPreview(preview: AccountIconPackPreview, assetId: String, dark: Boolean,
+        size: IconRasterSize, tint: Int): IconRaster {
+        val context = preview.context
+        metadata.reauthorize(context)
+        val result = renders.withLock {
+            withContext(Dispatchers.IO) {
+                val stamp = metadata.authorized(context) { synchronized(monitor) {
+                    check(!transitionBlocked) { "ICON_RENDER_INVALIDATED" }
+                    if (access != context.access) { clear(); access = context.access }
+                    generation
+                } }
+                val asset = requireNotNull(preview.manifest.assets.singleOrNull { it.assetId == assetId }) { "ICON_PREVIEW_ASSET_MISSING" }
+                val blob = selectedIconBlob(asset, dark)
+                val raster = draw(preview.archive.readBlob(blob.sha256), asset, dark, size, tint)
+                currentCoroutineContext().ensureActive()
+                check(raster.blob == blob && raster.width == size.width && raster.height == size.height &&
+                    !raster.bitmap.isMutable && !raster.bitmap.isRecycled) { "ICON_RASTER_INVALID" }
+                raster to stamp
+            }
+        }
+        return metadata.authorized(context) { synchronized(monitor) {
+            check(generation === result.second && !transitionBlocked) { "ICON_RENDER_INVALIDATED" }
+            result.first
+        } }
+    }
 
     private fun clear() {
         cache.clear(); bytes = 0; access = null; generation = Any()

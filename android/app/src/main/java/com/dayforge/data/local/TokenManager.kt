@@ -227,7 +227,12 @@ class TokenManager @Inject constructor(
 
     internal suspend fun localIconAccess(): LocalIconAccess? {
         val preferences = dataStore.data.first()
-        val authentication = snapshot(preferences)?.session ?: return null
+        val userId = preferences[USER_ID_KEY] ?: return null
+        // Local ownership still proves the CURRENT access ciphertext on every check. Refresh
+        // credentials are not part of this snapshot (a missing/invalid refresh never denied it).
+        // Do not repeat hardware Keystore decryption of that unused value for each image guard.
+        preferences[ACCESS_TOKEN_KEY]?.let(tokenCipher::decrypt) ?: return null
+        val authentication = AuthenticationSession(userId, preferences[AUTH_SESSION_KEY] ?: "legacy")
         if (preferences[SYNC_ACCOUNT_ID_KEY] != authentication.userId ||
             preferences[DEVICE_CAPABILITIES_KNOWN_KEY] != true) return null
         val capabilities = preferences[DEVICE_CAPABILITIES_KEY] ?: return null

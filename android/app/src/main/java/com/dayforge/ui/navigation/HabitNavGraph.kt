@@ -36,6 +36,7 @@ import com.dayforge.ui.screens.nested.NestedViewModel
 import com.dayforge.ui.screens.profile.ProfileScreen
 import com.dayforge.ui.screens.profile.ProfileViewModel
 import com.dayforge.ui.screens.settings.SettingsScreen
+import com.dayforge.ui.screens.settings.IconLibraryScreen
 import com.dayforge.ui.screens.admin.AdminScreen
 import com.dayforge.ui.screens.permission.PermissionScreen
 import com.dayforge.ui.screens.token.TokenScreen
@@ -83,6 +84,7 @@ sealed class Screen(val route: String) {
         fun createRoute(metricId: Long) = "metric_detail/$metricId"
     }
     object Settings : Screen("settings")
+    object IconLibrary : Screen("icon-library")
     object Token : Screen("token")
     object Permission : Screen("permission")
     object Admin : Screen("admin")
@@ -506,8 +508,15 @@ fun HabitNavGraph(
                 },
                 onNavigateToToken = {
                     navController.navigate(Screen.Token.route)
+                },
+                onNavigateToIcons = {
+                    navController.navigate(Screen.IconLibrary.route)
                 }
             )
+        }
+
+        composable(Screen.IconLibrary.route) {
+            IconLibraryScreen(onNavigateBack = { navController.popBackStack() })
         }
 
         composable(Screen.Token.route) {

@@ -94,6 +94,14 @@ teardown，最后恢复真实调度对象。测试仍检查真实业务数据/ou
 重复文件数据库生命周期，专门的小组件调度/Worker/刷新器测试不能使用它。
 完整结果除 XML 计数外，还须检查 `SQLiteConnection ... was leaked`、`file unlinked while open`、
 关闭后访问及致命异常日志；GC 报告所在用例不等于资源创建者，须结合前序请求链定位。
+习惯详情与通知 ViewModel 测试在 clear 后须驱动受控 Main 并等待实际 owner Job 完成，
+再关闭真实 Room、重置 Main；仅执行一次 runCurrent 不证明已取消的 IO 查询完成。
+收尾等待有界且必须断言完成，不吞掉关闭后查询异常或将其归咎于下一条用例。
+
+图标库页面及图片句柄从真实 IO 发布状态，Compose 状态收集显式调度到 Android Main，
+不允许测试环境的 eager continuation 在发布线程同步执行布局。图标库 Hilt/真实文件集成测试
+检查每次页面 composition 的主线程归属，保留安装、选择、像素和注销清除断言；账户授权
+与短状态发布仍在原账户锁内完成，不把 Keystore 或文件操作搬到主线程。
 
 网络监测回归使用真实 Android `Network` 身份值和 `NetworkCapabilities`，以手写观察源控制
 `NetworkObservationSource` 的注册/注销、初始快照和失败，不在该类中模拟 Android framework 类型。
@@ -654,6 +662,23 @@ Flow 允许合并连续写入的中间通知，但取消订阅/关闭/重开后�
 两者须是同一 singleton；同步观察和刷新派发使用显式边界，仍验证提交后的排队次数。
 测试持有的控制器/页面 ViewModel 在收尾时关闭；不启动 MainActivity，也不把 Activity 组件测试当作
 正式 App 登录、系统文件选择器、六类桌面组件或手机/平板人工验收。
+
+`IconLibraryViewModelTest` 使用真实素材 Room、独立 DataStore、文件段/管道与生产控制器验证懒构造、
+取消/过期/无请求回调、原冻结预览确认、账户及权限切换、只读选择、部分安装显式重试、关闭 join、
+选包实际回滚与错误发布、就绪文件损坏不修复、旧绘制拒绝及借出像素不回收。
+另以计数密钥边界从 Main 调用生产控制器，要求目录/授权检查和发布在非 Main 上执行，
+每次仍证明当前 access 密文；坏 access 拒绝、坏 refresh 不改变本机授权，真实认证快照仍解密两者。
+`IconLibraryIntegrationTest` 使用 Hilt 注入的真实 singleton/controller/凭据和实际页面 ViewModel，
+通过官方 ActivityResultRegistry 测试边界触摸选择并返回真实 URI，核对实际 PNG、SVG、浅深、
+模板/原色像素、预览不安装、安装不选择、选择/清除持久状态及注销后清除页面而保留文件。
+它不启动系统文件提供者或 MainActivity，不等同于生产 Hilt ViewModel factory 导航/进程死亡、
+手机/平板人工验收。收尾先移除 Compose 消费者，clear/join ViewModel，再等真实图片工作退出，
+最后关闭独立素材库；只删除精确 testbed 测试 namespace，不触及正式 App。
+真实 Room/文件/Keystore 不受 Compose 测试时钟驱动；图标库组件测试登记实际 loading/busy
+的 IdlingResource，在后台空闲后执行原有 5 秒界面条件/像素断言，而不把界面等待误作整包 IO SLA。
+不修改 Espresso 空闲策略、单例 150 秒或两分片各 15 分钟预算；错误/真实挂起仍失败，
+不能通过报告空闲、替换真实存储或删除业务断言取得通过。收尾先注销该资源再取消并 join 所有者。
+依据：[Compose 测试同步](https://developer.android.com/develop/ui/compose/testing/synchronization)。
 
 `DeviceWidgetThemeTest` 须从真实私有存储冷启控制器，在不启动 MainActivity 的情况下构造、应用和
 绘制 Glance RemoteViews，核对显式浅/深模式与系统相反时仍固定、system 的双色板及 OLED 实际像素。
