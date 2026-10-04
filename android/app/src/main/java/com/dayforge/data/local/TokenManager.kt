@@ -82,6 +82,8 @@ class TokenManager @Inject constructor(
     }
 
     internal fun registerIconCache(cache: AccountIconMemory.Cache) = iconMemory.register(cache)
+    internal fun beginIconSelectionTransition() = iconMemory.beginTransition()
+    internal fun endIconSelectionTransition() = iconMemory.endTransition()
 
     // Token bytes are deliberately excluded: same-generation refresh preserves the cache.
     private fun iconIdentity(preferences: Preferences): List<Any?> =

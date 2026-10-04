@@ -6,6 +6,8 @@ import com.dayforge.data.local.TokenManager
 import com.dayforge.domain.model.IconAsset
 import com.dayforge.domain.model.IconBlob
 import com.dayforge.domain.model.IconPack
+import com.dayforge.domain.model.IconReference
+import com.dayforge.domain.model.iconAllowed
 import com.dayforge.domain.model.isContractUuid
 import com.dayforge.domain.service.AccountSessionCoordinator
 import java.util.Collections
@@ -30,6 +32,17 @@ internal class AccountIconContext internal constructor(internal val access: Loca
 
 internal data class IconReservation(val blob: IconBlob, val operationId: String)
 internal data class IconInstallation(val reservation: IconReservation, val validationProfile: String?)
+
+internal data class IconPackVersion(val packId: String, val revision: Int) {
+    init { require(isContractUuid(packId) && revision > 0) }
+}
+internal data class AccountIconSelection(val generation: Long, val pack: IconPackVersion?) {
+    init { require(generation >= 0 && (generation > 0 || pack == null)) }
+}
+internal data class AccountIconResolution(
+    val reference: IconReference, val selection: AccountIconSelection,
+    val asset: IconAsset?, val placeholder: Boolean
+)
 
 /** Local safety ceilings; lower limits retain existing data and permit exact replay. */
 internal data class AccountIconLimits(
@@ -78,6 +91,77 @@ internal class AccountIconRepository(
         require(isContractUuid(packId) && revision > 0)
         return scoped(context) { catalog(context.namespace).packs[packId to revision] }
     }
+
+    suspend fun selection(context: AccountIconContext): AccountIconSelection = scoped(context) {
+        catalog(context.namespace).selection
+    }
+
+    /** Only the file store may activate a pack, after proving all its real ready variants. */
+    suspend fun selectValidated(context: AccountIconContext, expectedGeneration: Long,
+        pack: IconPack?, receipts: Map<String, IconInstallation>): AccountIconSelection {
+        require(expectedGeneration >= 0)
+        var transitioning = false
+        try {
+            return scoped(context) {
+                val ns = context.namespace
+                val before = catalog(ns)
+                check(before.selection.generation == expectedGeneration) { "ICON_SELECTION_CHANGED" }
+                val version = pack?.let { IconPackVersion(it.packId, it.revision) }
+                if (pack != null) {
+                    check(before.packs[pack.packId to pack.revision] == pack) { "ICON_PACK_NOT_OWNED" }
+                    val variants = pack.assets.flatMap { asset ->
+                        listOfNotNull(asset.light, asset.dark).map { installation(before, asset.assetId, it.sha256) }
+                    }.associateBy { it.reservation.blob.sha256 }
+                    check(variants == receipts && variants.values.all { it.validationProfile != null }) { "ICON_NOT_READY" }
+                } else require(receipts.isEmpty())
+                if (before.selection.pack == version) return@scoped before.selection
+                check(expectedGeneration < Long.MAX_VALUE) { "ICON_SELECTION_EXHAUSTED" }
+                val next = AccountIconSelection(expectedGeneration + 1, version)
+                tokens.beginIconSelectionTransition(); transitioning = true
+                val dao = database.icons()
+                if (expectedGeneration == 0L) {
+                    dao.insertSelection(AccountIconSelectionRow(ns.accountId, ns.serverInstanceId, ns.syncEpoch,
+                        next.generation, version?.packId, version?.revision))
+                } else check(dao.updateSelection(ns.accountId, ns.serverInstanceId, ns.syncEpoch,
+                    expectedGeneration, next.generation, version?.packId, version?.revision) == 1) { "ICON_SELECTION_CHANGED" }
+                check(catalog(ns) == before.copy(selection = next)) { "ICON_STORE_CORRUPT" }
+                check(context)
+                next
+            }
+        } finally {
+            // Keep cache publication closed until the actual Room commit/rollback has finished.
+            // Failed/cancelled delivery may have committed: never manufacture a preference rollback.
+            if (transitioning) tokens.endIconSelectionTransition()
+        }
+    }
+
+    /** Short publication check; never render or do file I/O in block. */
+    suspend fun <T> withSelection(context: AccountIconContext, expected: AccountIconSelection, block: () -> T): T =
+        scoped(context) {
+            check(catalog(context.namespace).selection == expected) { "ICON_SELECTION_CHANGED" }
+            block()
+        }
+
+    /** Missing metadata stays unresolved; a placeholder is only display, never a rewritten reference. */
+    suspend fun resolve(context: AccountIconContext, reference: IconReference, oneTime: Boolean): AccountIconResolution =
+        scoped(context) {
+            val state = catalog(context.namespace)
+            val pack = state.selection.pack?.let { state.packs.getValue(it.packId to it.revision) }
+            val asset = when (reference) {
+                is IconReference.Role -> {
+                    require(iconAllowed(reference, oneTime)) { "ICON_PURPOSE_MISMATCH" }
+                    pack?.roles?.get(reference.role)?.let(state.assets::getValue)
+                }
+                is IconReference.Asset -> state.assets[reference.assetId]?.also {
+                    require(iconAllowed(reference, oneTime, it)) { "ICON_PURPOSE_MISMATCH" }
+                }
+            }
+            val ready = asset?.takeIf { listOfNotNull(it.light, it.dark).all { blob -> blob.sha256 in state.ready } }
+            val fallback = if (ready == null) pack?.placeholderAssetId?.let(state.assets::getValue)?.takeIf {
+                listOfNotNull(it.light, it.dark).all { blob -> blob.sha256 in state.ready }
+            } else null
+            AccountIconResolution(reference, state.selection, ready ?: fallback, fallback != null)
+        }
 
     suspend fun reservations(context: AccountIconContext): List<IconReservation> = scoped(context) {
         Collections.unmodifiableList(catalog(context.namespace).blobs.values.sortedBy { it.blob.sha256 })
@@ -201,6 +285,7 @@ internal class AccountIconRepository(
                 }
                 check(after.blobs == expectedBlobs) { "ICON_STORE_CORRUPT" }
                 check(after.ready == before.ready) { "ICON_STORE_CORRUPT" }
+                check(after.selection == before.selection) { "ICON_STORE_CORRUPT" }
                 check(context, writing = true)
             }
             check(context, writing = true)
@@ -208,7 +293,8 @@ internal class AccountIconRepository(
 
     private data class Catalog(
         val assets: Map<String, IconAsset>, val packs: Map<Pair<String, Int>, IconPack>,
-        val blobs: Map<String, IconReservation>, val metadataBytes: Long, val ready: Map<String, AccountIconReadyRow>
+        val blobs: Map<String, IconReservation>, val metadataBytes: Long, val ready: Map<String, AccountIconReadyRow>,
+        val selection: AccountIconSelection
     ) {
         val byteCount get() = blobs.values.sumOf { it.blob.byteLength.toLong() }
     }
@@ -239,6 +325,13 @@ internal class AccountIconRepository(
                 pack.assets.all { assets[it.assetId] == it }) { "ICON_STORE_CORRUPT" }
             (row.packId to row.revision) to pack
         }
+        check(!dao.invalidSelectionValues(ns.accountId, ns.serverInstanceId, ns.syncEpoch)) { "ICON_STORE_CORRUPT" }
+        val selectionRow = dao.selection(ns.accountId, ns.serverInstanceId, ns.syncEpoch)
+        val selection = selectionRow?.let {
+            val version = it.packId?.let { id -> IconPackVersion(id, requireNotNull(it.revision)) }
+            check(version == null || (version.packId to version.revision) in packs) { "ICON_STORE_CORRUPT" }
+            AccountIconSelection(it.generation, version)
+        } ?: AccountIconSelection(0, null)
         val blobs = blobRows.associate { row ->
             check(isContractUuid(row.operationId)) { "ICON_STORE_CORRUPT" }
             row.sha256 to IconReservation(IconBlob(row.sha256, row.byteLength, row.mediaType, row.width, row.height), row.operationId)
@@ -260,7 +353,7 @@ internal class AccountIconRepository(
         check(metadataBytes <= 8_388_608L && blobs.values.sumOf { it.blob.byteLength.toLong() } <= 268_435_456L) {
             "ICON_STORE_CORRUPT"
         }
-        return Catalog(assets, packs, blobs, metadataBytes, ready)
+        return Catalog(assets, packs, blobs, metadataBytes, ready, selection)
     }
 
     private suspend fun strict(text: String): String {

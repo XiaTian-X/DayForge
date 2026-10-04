@@ -3,6 +3,7 @@ package com.dayforge.data.appearance
 import com.dayforge.data.local.LocalIconAccess
 import com.dayforge.domain.appearance.ThemeVersionRef
 import com.dayforge.domain.model.IconAsset
+import com.dayforge.domain.model.IconReference
 import java.util.LinkedHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -10,6 +11,8 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+
+internal data class AccountIconRendered(val resolution: AccountIconResolution, val raster: IconRaster?)
 
 /** Internal, inactive account renderer. Cache hits are never file-integrity or ownership proofs. */
 internal class AccountIconRenderer(
@@ -48,6 +51,14 @@ internal class AccountIconRenderer(
     private fun clear() {
         cache.clear(); bytes = 0; access = null; generation = Any()
         // Published immutable bitmaps may still be held by Compose/Glance; never recycle them.
+    }
+
+    /** Null pixels request the consumer's geometric/text fallback, never a hidden built-in icon. */
+    suspend fun renderReference(context: AccountIconContext, reference: IconReference, oneTime: Boolean,
+        theme: ThemeVersionRef, dark: Boolean, size: IconRasterSize, tint: Int): AccountIconRendered {
+        val resolution = metadata.resolve(context, reference, oneTime)
+        val raster = resolution.asset?.let { render(context, it.assetId, theme, dark, size, tint) }
+        return metadata.withSelection(context, resolution.selection) { AccountIconRendered(resolution, raster) }
     }
 
     suspend fun render(context: AccountIconContext, assetId: String, theme: ThemeVersionRef,

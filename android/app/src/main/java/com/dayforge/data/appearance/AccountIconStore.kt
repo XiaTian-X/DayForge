@@ -9,6 +9,32 @@ internal data class IconFileRecovery(val ready: Int, val pending: Int, val unkno
 
 /** Inactive local installation boundary. Never touches business Room, themes, UI or online queues. */
 internal class AccountIconStore(private val metadata: AccountIconRepository, private val files: AccountIconFiles) {
+    /** A local display choice, not a structural write. Validate the whole pack, not only visible icons. */
+    suspend fun select(context: AccountIconContext, expectedGeneration: Long,
+        version: IconPackVersion?): AccountIconSelection {
+        require(expectedGeneration >= 0)
+        metadata.reauthorize(context)
+        val result = if (version == null) {
+            metadata.selectValidated(context, expectedGeneration, null, emptyMap())
+        } else files.exclusive(context.namespace, create = false, beforeAccess = { metadata.reauthorize(context) }) { directory ->
+            val pack = requireNotNull(metadata.pack(context, version.packId, version.revision)) { "ICON_PACK_NOT_OWNED" }
+            check(metadata.selection(context).generation == expectedGeneration) { "ICON_SELECTION_CHANGED" }
+            val receipts = linkedMapOf<String, IconInstallation>()
+            for (asset in pack.assets) for (blob in listOfNotNull(asset.light, asset.dark)) {
+                currentCoroutineContext().ensureActive()
+                val receipt = metadata.installation(context, asset.assetId, blob.sha256)
+                val profile = requireNotNull(receipt.validationProfile) { "ICON_NOT_READY" }
+                if (blob.sha256 !in receipts) {
+                    (directory ?: throw IOException("ICON_FILES_MISSING")).files.read(blob, profile)
+                    receipts[blob.sha256] = receipt
+                } else check(receipts[blob.sha256] == receipt) { "ICON_INSTALL_CHANGED" }
+            }
+            metadata.selectValidated(context, expectedGeneration, pack, receipts)
+        }
+        // A concurrent choice can commit while withContext queues delivery back to the caller.
+        return metadata.withSelection(context, result) { result }
+    }
+
     suspend fun install(context: AccountIconContext, assetId: String, hash: String, content: ByteArray) {
         require(content.size in 1..2_097_152)
         val frozen = content.copyOf()
