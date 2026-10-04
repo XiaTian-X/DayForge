@@ -655,6 +655,16 @@ Flow 允许合并连续写入的中间通知，但取消订阅/关闭/重开后�
 测试持有的控制器/页面 ViewModel 在收尾时关闭；不启动 MainActivity，也不把 Activity 组件测试当作
 正式 App 登录、系统文件选择器、六类桌面组件或手机/平板人工验收。
 
+`IconLibraryViewModelTest` 使用真实素材 Room、独立 DataStore、文件段/管道与生产控制器验证懒构造、
+取消/过期/无请求回调、原冻结预览确认、账户及权限切换、只读选择、部分安装显式重试、关闭 join、
+选包实际回滚与错误发布、就绪文件损坏不修复、旧绘制拒绝及借出像素不回收。
+`IconLibraryIntegrationTest` 使用 Hilt 注入的真实 singleton/controller/凭据和实际页面 ViewModel，
+通过官方 ActivityResultRegistry 测试边界触摸选择并返回真实 URI，核对实际 PNG、SVG、浅深、
+模板/原色像素、预览不安装、安装不选择、选择/清除持久状态及注销后清除页面而保留文件。
+它不启动系统文件提供者或 MainActivity，不等同于生产 Hilt ViewModel factory 导航/进程死亡、
+手机/平板人工验收。收尾先移除 Compose 消费者，clear/join ViewModel，再等真实图片工作退出，
+最后关闭独立素材库；只删除精确 testbed 测试 namespace，不触及正式 App。
+
 `DeviceWidgetThemeTest` 须从真实私有存储冷启控制器，在不启动 MainActivity 的情况下构造、应用和
 绘制 Glance RemoteViews，核对显式浅/深模式与系统相反时仍固定、system 的双色板及 OLED 实际像素。
 同时验证生产卡片配色解析器的个性化颜色、缓存 tick，以及失败只显示错误入口、不渲染正常内容。

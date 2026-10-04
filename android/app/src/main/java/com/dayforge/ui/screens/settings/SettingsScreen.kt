@@ -41,7 +41,8 @@ fun SettingsScreen(
     onNavigateToPermission: () -> Unit = {},
     onNavigateToAdmin: () -> Unit = {},
     onNavigateToToken: () -> Unit = {},
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onNavigateToIcons: () -> Unit = {}
 ) {
     val syncProgress by viewModel.syncProgress.collectAsState()
     val isOnline by viewModel.isOnline.collectAsState()
@@ -360,6 +361,17 @@ fun SettingsScreen(
                     currentStyle = cardColorStyle,
                     onStyleClick = { showCardColorStyleDialog = true }
                 )
+            }
+
+            item {
+                Card(onClick = onNavigateToIcons, modifier = Modifier.fillMaxWidth().testTag("settings-icon-library"),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text(stringResource(R.string.icon_library_title), style = MaterialTheme.typography.bodyLarge)
+                        Text(stringResource(R.string.icon_library_entry_description), style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
             }
 
             // Divider
