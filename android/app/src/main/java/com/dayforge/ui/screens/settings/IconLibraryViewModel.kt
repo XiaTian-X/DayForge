@@ -39,6 +39,7 @@ class IconLibraryViewModel @Inject constructor(internal val icons: AccountIconCo
     private var stamp = Any()
     private var page = Any()
     private var failure: Pair<com.dayforge.data.local.LocalIconAccess, String>? = null
+    private var pickerNotice: String? = null
     private data class Picker(val context: AccountIconContext, val stamp: Any)
     // Keep an invalidated outstanding request until its result arrives; never rebind that URI.
     private var picker: Picker? = null
@@ -58,13 +59,13 @@ class IconLibraryViewModel @Inject constructor(internal val icons: AccountIconCo
         viewModelScope.launch {
             reload.collectLatest { request ->
                 if (!synchronized(monitor) { open && !blocked && stamp === request }) return@collectLatest
-                put(request) { IconLibraryState(loading = true, picking = picker != null) }
+                put(request) { IconLibraryState(loading = true, picking = picker != null, error = pickerNotice) }
                 try {
                     val context = icons.capture()
                     val catalog = icons.library(context)
                     icons.publish(context) { put(request) {
                         IconLibraryState(context, catalog, picking = picker != null,
-                            error = failure?.takeIf { it.first == context.access }?.second)
+                            error = failure?.takeIf { it.first == context.access }?.second ?: pickerNotice)
                     } }
                 } catch (error: Exception) {
                     if (error is CancellationException) throw error
@@ -74,13 +75,14 @@ class IconLibraryViewModel @Inject constructor(internal val icons: AccountIconCo
         }
     }
 
-    private fun invalidate() {
+    private fun invalidate(keepPickerNotice: Boolean = false) {
         stamp = Any()
         failure = null
+        if (!keepPickerNotice) pickerNotice = null
         mutable.value = IconLibraryState()
         reload.value = stamp
     }
-    internal fun openPage() = synchronized(monitor) { open = true; page = Any(); invalidate() }
+    internal fun openPage() = synchronized(monitor) { open = true; page = Any(); invalidate(keepPickerNotice = true) }
     internal fun closePage() {
         synchronized(monitor) { open = false; page = Any(); invalidate() }
         operation?.cancel()
@@ -99,6 +101,7 @@ class IconLibraryViewModel @Inject constructor(internal val icons: AccountIconCo
         if (!open || blocked || context == null || picker != null || operation?.isActive == true) false
         else {
             picker = Picker(context, stamp)
+            pickerNotice = null
             mutable.value = mutable.value.copy(picking = true, error = null, installed = false)
             true
         }
@@ -111,11 +114,11 @@ class IconLibraryViewModel @Inject constructor(internal val icons: AccountIconCo
             current
         }
         if (ticket == null) {
-            synchronized(monitor) { if (open && !blocked) mutable.value = mutable.value.copy(error = "ICON_PICKER_EXPIRED") }
+            pickerError("ICON_PICKER_EXPIRED")
             return
         }
         if (!synchronized(monitor) { open && !blocked && stamp === ticket.stamp }) {
-            synchronized(monitor) { if (open && !blocked) mutable.value = mutable.value.copy(error = "ICON_PICKER_EXPIRED") }
+            pickerError("ICON_PICKER_EXPIRED")
             return
         }
         if (uri == null) {
@@ -130,7 +133,13 @@ class IconLibraryViewModel @Inject constructor(internal val icons: AccountIconCo
     }
     internal fun pickerUnavailable() {
         pickerResult(null)
-        synchronized(monitor) { if (open && !blocked) mutable.value = mutable.value.copy(error = "ICON_PICKER_UNAVAILABLE") }
+        pickerError("ICON_PICKER_UNAVAILABLE")
+    }
+    private fun pickerError(code: String) = synchronized(monitor) {
+        if (!blocked) {
+            pickerNotice = code
+            if (open) mutable.value = mutable.value.copy(error = code)
+        }
     }
     internal fun inspect(pack: IconPack) = synchronized(monitor) {
         val current = mutable.value

@@ -135,6 +135,14 @@ class IconLibraryViewModelTest {
         login(); await { it.context?.namespace?.accountId == id(1) }
         assertTrue(model.state.value.catalog!!.packs.isEmpty()); assertNull(model.state.value.source)
     }
+    @Test fun restoredResultBeforeDirectoryLoadRetainsExpiredNoticeAndNeverOpensProvider() = runBlocking<Unit> {
+        main { model.pickerResult(uri) }
+        open()
+        assertEquals("ICON_PICKER_EXPIRED", model.state.value.error)
+        assertEquals(0, opens.get()); assertTrue(model.state.value.catalog!!.packs.isEmpty())
+        preview(); assertNull(model.state.value.error)
+        assertEquals(1, opens.get()); assertTrue(model.state.value.catalog!!.packs.isEmpty())
+    }
     @Test fun permissionLossClearsPreviewAndReadOnlyCannotDeclareButMayChooseExistingPack() = runBlocking<Unit> {
         open(); preview(); install()
         login(write = false); await { it.context?.access?.canDeclare == false && it.catalog != null }
