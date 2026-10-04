@@ -332,7 +332,31 @@ class AccountIconRepositoryTest {
         database.openHelper.writableDatabase.execSQL("CREATE TRIGGER rewrite_operation AFTER INSERT ON icon_blob_reservations BEGIN UPDATE icon_blob_reservations SET operationId='${id(99)}'; END")
         rejected { repo.reserveAsset(context, asset()) }; assertTrue(durable().values.all { it.isEmpty() })
         database.openHelper.writableDatabase.execSQL("DROP TRIGGER rewrite_operation")
+        // The failed transaction parsed the inserted asset before noticing the rewritten journal.
+        // A warmed parser must not turn that rolled-back snapshot into committed metadata.
+        assertNull(repo.asset(context, id(10)))
+        assertEquals(emptyList<IconReservation>(), repo.reservations(context))
         repo.reserveAsset(context, asset()); assertEquals(1, repo.reservations(context).size)
+    }
+
+    @Test fun warmedParserReadsExactCurrentRowsAndNeverMasksValidExternalMetadataChanges() = runBlocking<Unit> {
+        val repo = repository(); val context = repo.capture(); repo.reservePack(context, pack())
+        assertEquals(pack(), repo.pack(context, id(20), 1))
+        val changed = asset(name = "different")
+        val newPack = pack(listOf(changed)).copy(name = "updated pack")
+        database.openHelper.writableDatabase.execSQL("UPDATE icon_assets SET metadataJson=?", arrayOf(json.encodeToString(changed)))
+        // Same identities and journals, but changed asset text inconsistent with the persisted pack.
+        rejected { repo.asset(context, id(10)) }
+        database.openHelper.writableDatabase.execSQL("UPDATE icon_packs SET metadataJson=?", arrayOf(json.encodeToString(newPack)))
+        assertEquals(changed, repo.asset(context, id(10)))
+        assertEquals(newPack, repo.pack(context, id(20), 1))
+        // Whitespace/key-order equivalence is not a reason to bypass strict raw JSON validation.
+        val duplicate = json.encodeToString(newPack).replaceFirst("{", "{\"name\":\"duplicate\",")
+        database.openHelper.writableDatabase.execSQL("UPDATE icon_packs SET metadataJson=?", arrayOf(duplicate))
+        val damaged = durable(); rejected { repo.pack(context, id(20), 1) }
+        assertEquals(damaged, durable())
+        database.openHelper.writableDatabase.execSQL("UPDATE icon_packs SET metadataJson=?", arrayOf(json.encodeToString(newPack)))
+        assertEquals(newPack, repo.pack(context, id(20), 1))
     }
 
     @Test fun damagedJsonIdentityDescriptorsAndMissingJournalAreRejectedWithoutRepair() = runBlocking<Unit> {

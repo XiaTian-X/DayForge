@@ -1,5 +1,6 @@
 package com.dayforge.data.appearance
 
+import com.dayforge.domain.model.IconPack
 import java.io.IOException
 import java.util.Collections
 import kotlinx.coroutines.currentCoroutineContext
@@ -45,14 +46,19 @@ internal class AccountIconStore(private val metadata: AccountIconRepository, pri
             val target = requireNotNull(directory)
             // A ready receipt cannot authorize silently rebuilding a missing/corrupted final file.
             before.validationProfile?.let { target.files.read(before.reservation.blob, it) }
-            target.capacity(frozen.size, hash)
-            val profile = target.files.publish(before.reservation.operationId, frozen, before.reservation.blob)
-            // Read the final file, not just the temporary writer's handle, before the ready transaction.
-            target.files.read(before.reservation.blob, profile)
-            currentCoroutineContext().ensureActive()
-            metadata.markReady(context, assetId, before.reservation, profile)
+            publishReady(context, assetId, before, frozen, target)
         }
         metadata.reauthorize(context, writing = true)
+    }
+
+    /** Caller holds the namespace lease; both single and pack installs use the same publication proof. */
+    private suspend fun publishReady(context: AccountIconContext, assetId: String, before: IconInstallation,
+        frozen: ByteArray, target: AccountIconFiles.Directory) {
+        target.capacity(frozen.size, before.reservation.blob.sha256)
+        val profile = target.files.publish(before.reservation.operationId, frozen, before.reservation.blob)
+        target.files.read(before.reservation.blob, profile)
+        currentCoroutineContext().ensureActive()
+        metadata.markReady(context, assetId, before.reservation, profile)
     }
 
     suspend fun read(context: AccountIconContext, assetId: String, hash: String): ByteArray {
@@ -67,6 +73,72 @@ internal class AccountIconStore(private val metadata: AccountIconRepository, pri
         // withContext(IO) can wait for the caller dispatcher after its last in-file session check.
         metadata.reauthorize(context)
         return result
+    }
+
+    /** Full pack integrity, not per-image render cache readiness or a remote receipt. */
+    suspend fun verifyPack(context: AccountIconContext, pack: IconPack) {
+        metadata.reauthorize(context)
+        files.exclusive(context.namespace, create = false, beforeAccess = { metadata.reauthorize(context) }) { directory ->
+            verifyDirectory(context, pack, directory)
+        }
+        metadata.reauthorize(context)
+    }
+
+    private suspend fun verifyDirectory(context: AccountIconContext, pack: IconPack,
+        directory: AccountIconFiles.Directory?) {
+        val before = metadata.packInstallations(context, pack)
+        for (receipt in before.values) {
+            currentCoroutineContext().ensureActive()
+            metadata.reauthorize(context)
+            (directory ?: throw IOException("ICON_FILES_MISSING")).files.read(receipt.reservation.blob,
+                requireNotNull(receipt.validationProfile))
+        }
+        check(metadata.packInstallations(context, pack) == before) { "ICON_INSTALL_CHANGED" }
+    }
+
+    /** One namespace lease/durable directory creation for the pack, never one per image. */
+    suspend fun installPack(context: AccountIconContext, pack: IconPack, source: suspend (String) -> ByteArray) {
+        metadata.reauthorize(context, writing = true)
+        val reserved = metadata.packInstallations(context, pack, requireReady = false)
+        // Check existing ready/pending final files WITHOUT creating a missing namespace first.
+        // Corruption stops recovery before any temporary cleanup, including on exact replay.
+        files.exclusive(context.namespace, create = false, beforeAccess = { metadata.reauthorize(context, writing = true) }) { directory ->
+            val before = metadata.packInstallations(context, pack, requireReady = false)
+            check(before.mapValues { it.value.reservation } == reserved.mapValues { it.value.reservation }) { "ICON_INSTALL_CHANGED" }
+            val names = directory?.inventory().orEmpty()
+            for ((hash, receipt) in before) {
+                currentCoroutineContext().ensureActive()
+                metadata.reauthorize(context, writing = true)
+                if (receipt.validationProfile != null || hash in names) {
+                    (directory ?: throw IOException("ICON_FILES_MISSING")).files.read(receipt.reservation.blob,
+                        receipt.validationProfile ?: iconValidationProfile(receipt.reservation.blob))
+                }
+            }
+            check(metadata.packInstallations(context, pack, requireReady = false) == before) { "ICON_INSTALL_CHANGED" }
+        }
+        val variants = pack.assets.flatMap { asset -> listOfNotNull(asset.light, asset.dark).map { asset.assetId to it } }
+            .distinctBy { it.second.sha256 }
+        files.exclusive(context.namespace, create = true, beforeAccess = { metadata.reauthorize(context, writing = true) }) { directory ->
+            val target = requireNotNull(directory)
+            for ((assetId, blob) in variants) {
+                currentCoroutineContext().ensureActive()
+                val before = metadata.installation(context, assetId, blob.sha256, writing = true)
+                check(before.reservation == reserved[blob.sha256]?.reservation) { "ICON_INSTALL_CHANGED" }
+                val content = source(blob.sha256)
+                require(content.size == blob.byteLength)
+                val frozen = content.copyOf()
+                val names = target.inventory()
+                if (before.validationProfile != null || blob.sha256 in names) {
+                    target.files.read(blob, before.validationProfile ?: iconValidationProfile(blob))
+                }
+                check(metadata.installation(context, assetId, blob.sha256, writing = true) == before) { "ICON_INSTALL_CHANGED" }
+                target.files.cleanupTemporary(before.reservation.operationId)
+                check(metadata.installation(context, assetId, blob.sha256, writing = true) == before) { "ICON_INSTALL_CHANGED" }
+                publishReady(context, assetId, before, frozen, target)
+            }
+            verifyDirectory(context, pack, target)
+        }
+        metadata.reauthorize(context, writing = true)
     }
 
     /** Does not infer ready from final bytes, remove final hashes, or adopt unjournalled files. */
