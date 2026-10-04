@@ -55,10 +55,7 @@ internal class AccountIconImport(
         }
         // A successful earlier ready transaction is not a final integrity proof. Read all actual
         // variants again, including unreferenced assets; never report a partially installed pack.
-        for ((assetId, blob) in variants) {
-            currentCoroutineContext().ensureActive()
-            store.read(context, assetId, blob.sha256)
-        }
+        store.verifyPack(context, pack)
         check(metadata.pack(context, pack.packId, pack.revision) == pack) { "ICON_PACK_NOT_OWNED" }
         metadata.reauthorize(context, writing = true)
         return metadata.authorized(context) {

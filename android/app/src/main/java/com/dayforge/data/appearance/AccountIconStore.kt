@@ -1,5 +1,6 @@
 package com.dayforge.data.appearance
 
+import com.dayforge.domain.model.IconPack
 import java.io.IOException
 import java.util.Collections
 import kotlinx.coroutines.currentCoroutineContext
@@ -67,6 +68,22 @@ internal class AccountIconStore(private val metadata: AccountIconRepository, pri
         // withContext(IO) can wait for the caller dispatcher after its last in-file session check.
         metadata.reauthorize(context)
         return result
+    }
+
+    /** Full pack integrity, not per-image render cache readiness or a remote receipt. */
+    suspend fun verifyPack(context: AccountIconContext, pack: IconPack) {
+        metadata.reauthorize(context)
+        files.exclusive(context.namespace, create = false, beforeAccess = { metadata.reauthorize(context) }) { directory ->
+            val before = metadata.packInstallations(context, pack)
+            for (receipt in before.values) {
+                currentCoroutineContext().ensureActive()
+                metadata.reauthorize(context)
+                (directory ?: throw IOException("ICON_FILES_MISSING")).files.read(receipt.reservation.blob,
+                    requireNotNull(receipt.validationProfile))
+            }
+            check(metadata.packInstallations(context, pack) == before) { "ICON_INSTALL_CHANGED" }
+        }
+        metadata.reauthorize(context)
     }
 
     /** Retry only this proven installation intent, never another import's temporary or final bytes. */

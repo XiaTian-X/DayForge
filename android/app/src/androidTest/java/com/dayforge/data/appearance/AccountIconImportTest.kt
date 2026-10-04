@@ -247,7 +247,9 @@ class AccountIconImportTest {
         assertEquals(intents, repo.reservations(context)); assertEquals(oldChoice, repo.selection(context))
     }
 
-    @Test fun maximumAssetAndRolePackInstallsAllRealFilesWithinNormalGate() = runBlocking<Unit> {
+    @Test fun maximumAssetAndRolePackInstallsAllRealFilesWithinNormalGate() = runBlocking<Unit> { withTimeout(140_000) {
+        // Cancel/join structured Room and file work before the unchanged 150s runner deadline;
+        // never let the runner tear down the database while a timed-out worker still owns it.
         val images = (0 until 128).map { n ->
             """<svg width="1" height="1"><rect width="1" height="1" fill="#${(n + 1).toString(16).padStart(6, '0')}"/></svg>""".toByteArray()
         }
@@ -257,13 +259,58 @@ class AccountIconImportTest {
         val roles = (0 until 256).joinToString(",") { n -> "\"habit.role_$n\":\"${id(1000 + n % 128)}\"" }
         val raw = """{"format":"dayforge.icon-pack","format_version":1,"pack_id":"${id(400)}","revision":1,"name":"full pack",
             "assets":[$assets],"roles":{$roles},"placeholder_asset_id":null}"""
-        val value = preview(archive(raw, images)); val receipt = imports.confirm(value); val context = repo.capture()
+        val started = android.os.SystemClock.elapsedRealtime()
+        val value = preview(archive(raw, images))
+        android.util.Log.i("IconPackBoundary", "128 assets: preview ${android.os.SystemClock.elapsedRealtime() - started} ms")
+        val receipt = imports.confirm(value); val context = repo.capture()
+        android.util.Log.i("IconPackBoundary", "128 assets: installed/verified ${android.os.SystemClock.elapsedRealtime() - started} ms")
         assertEquals(128, ready()); assertEquals(128, receipt.verifiedHashes.size)
         assertEquals(images.map(::hash).toSet(), directory(context).list()!!.toSet())
         assertEquals(256, repo.pack(context, id(400), 1)!!.roles.size)
         assertEquals(128, repo.reservations(context).map { it.operationId }.toSet().size)
         assertEquals(AccountIconSelection(0, null), repo.selection(context))
         assertArrayEquals(images.last(), store.read(context, id(1127), hash(images.last())))
+    } }
+
+    @Test fun wholePackVerificationReauditsRealReadyRowsAfterAllFileReads() = runBlocking<Unit> {
+        val value = preview(); imports.confirm(value); val context = repo.capture()
+        val original = repo.reservations(context)
+        val changed = AtomicInteger()
+        configure(object : IconFileIo() {
+            override fun read(fd: FileDescriptor, bytes: ByteArray, offset: Int, length: Int): Int {
+                val count = super.read(fd, bytes, offset, length)
+                if (changed.incrementAndGet() == 1) db.openHelper.writableDatabase.execSQL(
+                    "UPDATE icon_blob_ready SET operationId='${id(999)}' WHERE sha256='${hash(red)}'")
+                return count
+            }
+        })
+        assertEquals("ICON_STORE_CORRUPT", rejected { store.verifyPack(context, value.manifest) }.message)
+        assertEquals(3, ready())
+        // Explicitly repair only the injected test row, not a production recovery bypass.
+        db.openHelper.writableDatabase.execSQL("UPDATE icon_blob_ready SET operationId=? WHERE sha256=?",
+            arrayOf(original.single { it.blob.sha256 == hash(red) }.operationId, hash(red)))
+        configure(); store.verifyPack(context, value.manifest)
+        assertEquals(original, repo.reservations(context))
+    }
+
+    @Test fun wholePackBlockedReadAllowsAccountSwitchButCannotReturnOldVerification() = runBlocking<Unit> {
+        val value = preview(); imports.confirm(value); val original = value.context
+        val reached = CountDownLatch(1); val release = CountDownLatch(1)
+        configure(object : IconFileIo() {
+            override fun read(fd: FileDescriptor, bytes: ByteArray, offset: Int, length: Int): Int {
+                reached.countDown(); check(release.await(5, TimeUnit.SECONDS))
+                return super.read(fd, bytes, offset, length)
+            }
+        })
+        val result = async(Dispatchers.IO) { rejected { store.verifyPack(original, value.manifest) } }
+        try { assertTrue(reached.await(5, TimeUnit.SECONDS)); withTimeout(2_000) { login(owner = id(5)) } }
+        finally { release.countDown() }
+        assertEquals("ICON_SESSION_CHANGED", result.await().message)
+        val current = repo.capture()
+        assertTrue(repo.reservations(current).isEmpty()); assertNull(repo.pack(current, id(100), 1))
+        assertEquals(AccountIconSelection(0, null), repo.selection(current)); assertFalse(directory(current).exists())
+        assertEquals(3, ready()) // Original namespace retained, not exposed to the replacement account.
+        login(); configure(); store.verifyPack(repo.capture(), value.manifest); assertEquals(3, ready())
     }
 
     @Test fun invalidArchiveAndProviderIoFailureCloseOnceWithoutAnyPartialPreviewWrite() = runBlocking<Unit> {

@@ -181,6 +181,21 @@ internal class AccountIconRepository(
         })
     }
 
+    /** One real, transactionally audited snapshot for a whole immutable pack read. */
+    suspend fun packInstallations(context: AccountIconContext, pack: IconPack): Map<String, IconInstallation> = scoped(context) {
+        val state = catalog(context.namespace)
+        val owned = state.packs[pack.packId to pack.revision]
+        check(owned != null && owned == pack) { "ICON_PACK_NOT_OWNED" }
+        val receipts = linkedMapOf<String, IconInstallation>()
+        for (asset in owned.assets) for (blob in listOfNotNull(asset.light, asset.dark)) {
+            val receipt = installation(state, asset.assetId, blob.sha256)
+            check(receipt.validationProfile != null) { "ICON_NOT_READY" }
+            val previous = receipts.put(blob.sha256, receipt)
+            check(previous == null || previous == receipt) { "ICON_INSTALL_CHANGED" }
+        }
+        Collections.unmodifiableMap(receipts)
+    }
+
     /** Only AccountIconStore calls this after publishing and reading back validated durable bytes. */
     suspend fun markReady(context: AccountIconContext, assetId: String, expected: IconReservation, profile: String) =
         scoped(context, writing = true) {
@@ -368,7 +383,12 @@ internal class AccountIconRepository(
         } ?: AccountIconSelection(0, null)
         val blobs = blobRows.associate { row ->
             check(isContractUuid(row.operationId)) { "ICON_STORE_CORRUPT" }
-            row.sha256 to IconReservation(IconBlob(row.sha256, row.byteLength, row.mediaType, row.width, row.height), row.operationId)
+            // The exact-current metadata descriptor is already fully validated. Compare every
+            // actual SQL field instead of constructing/revalidating the same IconBlob per audit.
+            val blob = parsed.described[row.sha256]
+            check(blob != null && blob.byteLength == row.byteLength && blob.mediaType == row.mediaType &&
+                blob.width == row.width && blob.height == row.height) { "ICON_STORE_CORRUPT" }
+            row.sha256 to IconReservation(blob, row.operationId)
         }
         check(blobs.values.map { it.operationId }.toSet().size == blobs.size) { "ICON_STORE_CORRUPT" }
         val ready = readyRows.associate { row ->
