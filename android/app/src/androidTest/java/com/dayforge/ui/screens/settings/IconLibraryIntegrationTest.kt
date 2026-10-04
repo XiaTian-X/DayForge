@@ -11,6 +11,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.test.*
@@ -54,6 +55,7 @@ class IconLibraryIntegrationTest {
     private lateinit var file: File
     private val launches = AtomicInteger()
     private var tint = 0
+    private val displayed = mutableStateOf(true)
     private fun id(n: Int) = IconLibraryFixture.id(n)
     private val picker = object : ActivityResultRegistryOwner {
         override val activityResultRegistry = object : ActivityResultRegistry() {
@@ -84,25 +86,36 @@ class IconLibraryIntegrationTest {
                 val primary = MaterialTheme.colorScheme.primary.toArgb()
                 SideEffect { tint = primary }
                 CompositionLocalProvider(LocalActivityResultRegistryOwner provides picker) {
-                    IconLibraryScreen(onNavigateBack = {}, viewModel = model)
+                    if (displayed.value) IconLibraryScreen(onNavigateBack = {}, viewModel = model)
                 }
             }
         }
         compose.waitUntil(5000) { model.state.value.catalog != null }
     }
     @After fun cleanup() = runBlocking<Unit> {
-        if (::model.isInitialized) {
-            compose.setContent { }
-            compose.waitForIdle()
-            withContext(Dispatchers.Main) { models.clear() }
-            model.viewModelScope.coroutineContext[Job]!!.cancelAndJoin()
+        try {
+            if (::model.isInitialized) {
+                try {
+                    compose.runOnIdle { displayed.value = false }
+                    compose.waitForIdle()
+                    compose.onNodeWithTag("icon-library-list").assertDoesNotExist()
+                } finally {
+                    withContext(Dispatchers.Main) { models.clear() }
+                    model.viewModelScope.coroutineContext[Job]!!.cancelAndJoin()
+                }
+            }
+        } finally {
+            // Never unlink a Room file while a failed UI cleanup still retains active callers.
+            if (::icons.isInitialized) { icons.awaitImages(); icons.close() }
+            try {
+                if (::tokens.isInitialized) tokens.clearTokens()
+            } finally {
+                if (::file.isInitialized) assertTrue(file.delete())
+                val namespace = File(app.filesDir, "account-icons-v1/${id(1)}/${id(2)}/${id(3)}")
+                if (namespace.exists()) assertTrue(namespace.deleteRecursively())
+                assertTrue(app.deleteDatabase(AccountIconDatabase.NAME) || !app.getDatabasePath(AccountIconDatabase.NAME).exists())
+            }
         }
-        if (::icons.isInitialized) { withTimeout(5000) { icons.awaitImages() }; icons.close() }
-        if (::tokens.isInitialized) tokens.clearTokens()
-        if (::file.isInitialized) assertTrue(file.delete())
-        val namespace = File(app.filesDir, "account-icons-v1/${id(1)}/${id(2)}/${id(3)}")
-        if (namespace.exists()) assertTrue(namespace.deleteRecursively())
-        assertTrue(app.deleteDatabase(AccountIconDatabase.NAME) || !app.getDatabasePath(AccountIconDatabase.NAME).exists())
     }
     private fun touch(tag: String) {
         compose.onNodeWithTag("icon-library-list").performScrollToNode(hasTestTag(tag))
