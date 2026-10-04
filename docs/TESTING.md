@@ -98,6 +98,11 @@ teardown，最后恢复真实调度对象。测试仍检查真实业务数据/ou
 再关闭真实 Room、重置 Main；仅执行一次 runCurrent 不证明已取消的 IO 查询完成。
 收尾等待有界且必须断言完成，不吞掉关闭后查询异常或将其归咎于下一条用例。
 
+图标库页面及图片句柄从真实 IO 发布状态，Compose 状态收集显式调度到 Android Main，
+不允许测试环境的 eager continuation 在发布线程同步执行布局。图标库 Hilt/真实文件集成测试
+检查每次页面 composition 的主线程归属，保留安装、选择、像素和注销清除断言；账户授权
+与短状态发布仍在原账户锁内完成，不把 Keystore 或文件操作搬到主线程。
+
 网络监测回归使用真实 Android `Network` 身份值和 `NetworkCapabilities`，以手写观察源控制
 `NetworkObservationSource` 的注册/注销、初始快照和失败，不在该类中模拟 Android framework 类型。
 生产默认构造/Hilt 经 `AndroidNetworkObservationSource` 调用原 `ConnectivityManager` API；

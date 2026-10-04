@@ -31,12 +31,15 @@ import com.dayforge.domain.service.IconImageState
 import com.dayforge.domain.service.IconPackSource
 import com.dayforge.ui.theme.LocalResolvedTheme
 import com.dayforge.ui.theme.toComposeImage
+import kotlinx.coroutines.Dispatchers
 
 /** Local library only: online v4 business references remain unchanged until coordinated v5. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun IconLibraryScreen(onNavigateBack: () -> Unit, viewModel: IconLibraryViewModel = hiltViewModel()) {
-    val state by viewModel.state.collectAsState()
+    // Guarded publication runs on IO. Dispatch collection instead of allowing an
+    // eager composition continuation to mutate snapshots on the publisher thread.
+    val state by viewModel.state.collectAsState(context = Dispatchers.Main)
     DisposableEffect(viewModel) {
         viewModel.openPage()
         onDispose { viewModel.closePage() }
@@ -162,7 +165,7 @@ internal fun IconLibraryImage(icons: AccountIconController, source: IconPackSour
     val handle = remember(icons, source, asset.assetId, theme, dark, size, tint) { icons.image() }
     DisposableEffect(handle) { onDispose { handle.close() } }
     LaunchedEffect(handle) { icons.load(handle, source, asset.assetId, theme, dark, size, tint) }
-    val image by handle.state.collectAsState()
+    val image by handle.state.collectAsState(context = Dispatchers.Main)
     Box(Modifier.size(48.dp).background(MaterialTheme.colorScheme.surfaceVariant)
         .testTag("icon-library-image:${asset.assetId}"), contentAlignment = Alignment.Center) {
         when (val current = image) {

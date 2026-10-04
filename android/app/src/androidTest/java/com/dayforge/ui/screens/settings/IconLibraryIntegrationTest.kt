@@ -2,6 +2,7 @@ package com.dayforge.ui.screens.settings
 
 import android.content.Context
 import android.net.Uri
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.LocalActivityResultRegistryOwner
 import androidx.activity.result.ActivityResultRegistry
@@ -101,7 +102,11 @@ class IconLibraryIntegrationTest {
         compose.setContent {
             MaterialTheme {
                 val primary = MaterialTheme.colorScheme.primary.toArgb()
-                SideEffect { tint = primary }
+                SideEffect {
+                    assertEquals("Library composition must stay on Android Main",
+                        Looper.getMainLooper(), Looper.myLooper())
+                    tint = primary
+                }
                 CompositionLocalProvider(LocalActivityResultRegistryOwner provides picker) {
                     if (displayed.value) IconLibraryScreen(onNavigateBack = {}, viewModel = model)
                 }
