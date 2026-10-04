@@ -680,6 +680,19 @@ alpha 合成后着色。字节损坏不得被解释为正常缺图回退。中�
 位图由消费者引用生命周期管理，不能在 Compose/RemoteViews 仍持有时调用 recycle。
 这不是已接线的账户图片仓库或缓存：调用方仍须控制并行绘制/缓存/整份 RemoteViews 的总量，
 进行账户授权和失效、缺图解析及刷新调度，不得在计时 tick 或重组中重复解码。
+内部 `AccountIconRenderer` 将已认证仓库及 ready 文件接至同一绘制原语，不接生产 Hilt/UI。
+内存 LRU 按完整无凭据会话（含 namespace、认证代次、设备/权限版本）、不可变 asset/选中 hash、
+主题 UUID/revision、浅深模式、tint、物理尺寸及固定渲染器版本区分。每次调用仍核对真实账户
+文件及实际图片，不用缓存命中掩盖损坏、缺失或未知 profile，也不支持裸 hash 授权。
+默认单实例最多 8 MiB/128 项，使用真实 allocationByteCount；超单图预算正常返回但不缓存。
+全进程串行实际绘制，取消等待阻塞工作完成，不跨绘制持有账户锁或数据库写事务。
+短内存读取/发布在账户协调锁内重新授权；切回调用方调度器后再次核对会话及内存失效代次。
+认证快照变化在下一次有效请求时释放旧引用，显式 `invalidate()` 只清内存且阻止在途旧绘制回填。
+淘汰或失效不 recycle 已发布位图，消费者仍可持有像素；不能据此声称生产页面已处理切换会话。
+缓存预算不包括消费者持有、在途绘制或整份 RemoteViews；尚无全设备内存预算、磁盘渲染缓存、
+自动生命周期通知或生产刷新接线。应用消费者后续须按快照/主题失效事件调用，而非每秒重新加载。
+内存 LRU 策略参考 [Android 位图缓存](https://developer.android.com/topic/performance/graphics/cache-bitmap)，
+不引入教程中的旧 AsyncTask、外部存储或弱引用缓存路径。
 参考官方 [Glance 主题](https://developer.android.com/develop/ui/compose/glance/theme) 和
 [Glance 构建边界](https://developer.android.com/develop/ui/compose/glance/build-ui)：
 Glance 不是 Compose UI，不能直接共用 composable 或假定无 RemoteViews 资源限制。

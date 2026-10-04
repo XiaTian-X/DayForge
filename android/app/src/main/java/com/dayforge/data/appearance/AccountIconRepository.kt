@@ -58,6 +58,14 @@ internal class AccountIconRepository(
         check(context, writing)
     }
 
+    /** Short in-memory publication only. Never perform image I/O/rendering or suspend in block. */
+    suspend fun <T> authorized(context: AccountIconContext, block: () -> T): T = sessions.exclusive {
+        check(context)
+        val result = block()
+        check(context)
+        result
+    }
+
     suspend fun asset(context: AccountIconContext, assetId: String): IconAsset? {
         require(isContractUuid(assetId))
         return scoped(context) { catalog(context.namespace).assets[assetId] }
