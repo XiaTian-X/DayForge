@@ -25,6 +25,14 @@ internal data class LocalDataSession(
 
 internal data class LocalFactAccess(val session: LocalDataSession, val canAppend: Boolean)
 
+/** A single snapshot; icon access never inherits legacy/unknown device permissions. */
+internal data class LocalIconAccess(
+    val session: LocalDataSession,
+    val deviceId: String,
+    val capabilityRevision: Int,
+    val canDeclare: Boolean
+)
+
 /** No data-class toString: credentials must not appear in request-tag diagnostics. */
 class AuthenticationSnapshot(
     val session: AuthenticationSession,
@@ -60,6 +68,7 @@ class TokenManager @Inject constructor(
         private val DEVICE_CAPABILITIES_KNOWN_KEY = booleanPreferencesKey("sync_device_capabilities_known")
         private val DEVICE_PRIMARY_EDITOR_KEY = booleanPreferencesKey("sync_device_primary_editor")
         private val DEVICE_CAPABILITY_REVISION_KEY = stringPreferencesKey("sync_device_capability_revision")
+        private val DEVICE_CAPABILITIES_DEVICE_KEY = stringPreferencesKey("sync_device_capabilities_device")
     }
 
     /**
@@ -167,6 +176,27 @@ class TokenManager @Inject constructor(
             LocalDataSession(authentication, server, epoch),
             preferences[DEVICE_CAPABILITIES_KNOWN_KEY] != true ||
                 "facts.append" in (preferences[DEVICE_CAPABILITIES_KEY] ?: emptySet())
+        )
+    }
+
+    internal suspend fun localIconAccess(): LocalIconAccess? {
+        val preferences = dataStore.data.first()
+        val authentication = snapshot(preferences)?.session ?: return null
+        if (preferences[SYNC_ACCOUNT_ID_KEY] != authentication.userId ||
+            preferences[DEVICE_CAPABILITIES_KNOWN_KEY] != true) return null
+        val capabilities = preferences[DEVICE_CAPABILITIES_KEY] ?: return null
+        if ("sync.read" !in capabilities) return null
+        val revision = preferences[DEVICE_CAPABILITY_REVISION_KEY]?.toIntOrNull() ?: return null
+        if (revision <= 0) return null
+        val server = preferences[SERVER_INSTANCE_ID_KEY] ?: return null
+        val epoch = preferences[SYNC_EPOCH_KEY] ?: return null
+        val device = preferences[SYNC_DEVICE_ID_KEY] ?: return null
+        if (preferences[DEVICE_CAPABILITIES_DEVICE_KEY] != device) return null
+        if (listOf(authentication.userId, authentication.generation, server, epoch, device)
+                .any { !com.dayforge.domain.model.isContractUuid(it) }) return null
+        return LocalIconAccess(
+            LocalDataSession(authentication, server, epoch), device, revision,
+            "structure.write" in capabilities
         )
     }
 
@@ -283,6 +313,10 @@ class TokenManager @Inject constructor(
                 preferences[DEVICE_CAPABILITIES_KNOWN_KEY] = true
                 preferences[DEVICE_PRIMARY_EDITOR_KEY] = isPrimaryEditor
                 preferences[DEVICE_CAPABILITY_REVISION_KEY] = capabilityRevision.toString()
+                preferences[DEVICE_CAPABILITIES_DEVICE_KEY] = deviceId
+            } else {
+                // Preserve v4's legacy semantics, but do not authorize new icon access from stale capabilities.
+                preferences.remove(DEVICE_CAPABILITIES_DEVICE_KEY)
             }
         }
     }
@@ -390,6 +424,7 @@ class TokenManager @Inject constructor(
         preferences.remove(DEVICE_CAPABILITIES_KNOWN_KEY)
         preferences.remove(DEVICE_PRIMARY_EDITOR_KEY)
         preferences.remove(DEVICE_CAPABILITY_REVISION_KEY)
+        preferences.remove(DEVICE_CAPABILITIES_DEVICE_KEY)
     }
 
 }

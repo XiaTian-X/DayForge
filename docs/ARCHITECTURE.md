@@ -24,6 +24,12 @@ Android `HabitRepository.createHabit` / `updateHabit` 在同一个 Room 写事�
 
 Android 使用本地优先模型：UI 读取 Room 中的可观察状态，本地操作立即提交到 Room，并在同一事务中写入同步 outbox。网络同步不能成为正常录入的前置条件。
 
+外观 v5 的账户素材基础使用独立 `AccountIconDatabase`，不随业务库缓存替换或退出自动清空。
+元数据与待安装预留按已认证账户/服务器/epoch 隔离，读取和声明都核对当前会话、注册设备及
+权限版本；同 hash 不证明跨 namespace 授权。设备全局主题仍独立于账户素材。
+第一批只提供事务化不可变声明和预留，尚不接入当前 UI、文件安装/恢复、ready、缓存或在线协议；
+生命周期和实际接入边界见 [外观契约](APPEARANCE_CONTRACT.md#21-文件与解码边界)。
+
 登录在账户协调锁内完成旧缓存清理或无归属数据接管确认后，通过一次 DataStore 事务激活凭据与
 本地数据 owner。跳过首次同步不推迟归属绑定，也不要求先注册设备才能离线录入。同账户重登
 保留 device/cursor/epoch 和权限，仅更新认证会话；写入失败不能留下半绑定状态。此入口不能
