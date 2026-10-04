@@ -685,6 +685,16 @@ Flow 允许合并连续写入的中间通知，但取消订阅/关闭/重开后�
 不能通过报告空闲、替换真实存储或删除业务断言取得通过。收尾先注销该资源再取消并 join 所有者。
 依据：[Compose 测试同步](https://developer.android.com/develop/ui/compose/testing/synchronization)。
 
+`ObjectIconControllerTest` 使用真实独立素材 Room、DataStore、私有文件和原生渲染，验证角色选包/
+清除与固定素材不变、用途拒绝/占位不改引用、在途绘制跨账户/server/epoch 失效、同副本重新认证、
+关闭不再读取及坏文件/显式刷新不静默修复。凭据 cipher 为计数边界，不声称该夹具执行 Keystore；
+真实 Hilt/Keystore 仍由图标库集成测试覆盖，不可移除。
+`ObjectIconPresentationTest` 从实际习惯、父目标、子项、普通/平板指标卡捕获真实像素并检查原尺寸/
+打卡与导航回调；20 次真实卡片参数更新后授权读取/绘制计数不增长。另检查实际选包、固定引用、
+主题浅深/模板着色及注销清图/字节保留。指标详情新增真实 Room 外观行与私有素材的 hero 像素，
+原 56dp 和业务行/outbox/历史不变。已有 v4 录入、计时、布局、汇总等断言继续保留。
+这些组件/夹具不代表生产新引用写入、v5 在线接入、系统提供者或整页手机/平板人工验收完成。
+
 `DeviceWidgetThemeTest` 须从真实私有存储冷启控制器，在不启动 MainActivity 的情况下构造、应用和
 绘制 Glance RemoteViews，核对显式浅/深模式与系统相反时仍固定、system 的双色板及 OLED 实际像素。
 同时验证生产卡片配色解析器的个性化颜色、缓存 tick，以及失败只显示错误入口、不渲染正常内容。

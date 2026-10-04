@@ -101,12 +101,7 @@ fun CompactMetricCard(
                 .padding(16.dp) // Per UI-SPEC: 16.dp internal card padding
         ) {
             // Icon row
-            Icon(
-                modifier = Modifier.size(40.dp),
-                tint = resolvedColors.iconColor,
-                contentDescription = null,
-                imageVector = getIconForResId(metric.iconResId)
-            )
+            ObjectIcon(metric, resolvedColors.iconColor, 40.dp, resolvedColors.backgroundColor)
 
             Spacer(modifier = Modifier.height(8.dp))
 
