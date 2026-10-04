@@ -50,6 +50,9 @@ internal class AccountIconRepository(
 ) {
     private val json = Json { encodeDefaults = true }
 
+    internal fun registerCache(cache: com.dayforge.data.local.AccountIconMemory.Cache) =
+        tokens.registerIconCache(cache)
+
     suspend fun capture(): AccountIconContext = sessions.exclusive {
         AccountIconContext(requireNotNull(tokens.localIconAccess()) { "ICON_ACCESS_DENIED" })
     }
