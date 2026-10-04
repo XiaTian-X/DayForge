@@ -125,6 +125,19 @@ class IconLibraryIntegrationTest {
         touch("icon-library-import")
         compose.waitUntil(5000) { model.state.value.source?.preview != null && !model.state.value.busy }
     }
+    private fun awaitInstalled() {
+        try {
+            compose.waitUntil(5000) {
+                val state = model.state.value
+                assertNull("Installation rejected: ${state.error}", state.error)
+                state.installed && !state.busy
+            }
+        } catch (failure: Throwable) {
+            val state = model.state.value
+            throw AssertionError("Install state: busy=${state.busy}, installed=${state.installed}, " +
+                "canDeclare=${state.context?.access?.canDeclare}, error=${state.error}", failure)
+        }
+    }
     private fun assertPixels(assetId: String, color: Int) {
         val tag = "icon-library-image:$assetId"
         compose.onNodeWithTag("icon-library-list").performScrollToNode(hasTestTag(tag))
@@ -148,7 +161,7 @@ class IconLibraryIntegrationTest {
     }
     @Test fun installAndChoiceUseActualTouchesAndClearingDoesNotDeletePackBytes() {
         preview(); touch("icon-library-install")
-        compose.waitUntil(5000) { model.state.value.installed && !model.state.value.busy }
+        awaitInstalled()
         val version = IconPackVersion(id(10), 1)
         assertEquals(setOf(version), model.state.value.catalog!!.readyVersions)
         assertNull(model.state.value.catalog!!.selection.pack)
@@ -163,7 +176,7 @@ class IconLibraryIntegrationTest {
     }
     @Test fun logoutDropsPageDirectoryAndFrozenPixelsWithoutRemovingDurableInstallation() {
         preview(); touch("icon-library-install")
-        compose.waitUntil(5000) { model.state.value.installed && !model.state.value.busy }
+        awaitInstalled()
         assertPixels(id(11), IconLibraryFixture.red)
         val namespace = File(app.filesDir, "account-icons-v1/${id(1)}/${id(2)}/${id(3)}")
         val files = namespace.listFiles()!!.map { it.name to it.length() }.sortedBy { it.first }

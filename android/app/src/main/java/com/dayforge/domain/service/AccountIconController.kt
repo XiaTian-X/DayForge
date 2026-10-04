@@ -71,22 +71,23 @@ class AccountIconController internal constructor(
     private val imageMonitor = Any()
     private var imageCalls = 0
     private var imagesIdle = CompletableDeferred<Unit>().apply { complete(Unit) }
-    private suspend fun storage() = withContext(Dispatchers.IO) { runtime.value }
+    private suspend fun <T> io(block: suspend (AccountIconRuntime) -> T): T =
+        withContext(Dispatchers.IO) { block(runtime.value) }
     internal fun registerConsumer(cache: AccountIconMemory.Cache) = tokens.registerIconCache(cache)
-    internal suspend fun capture() = storage().metadata.capture()
-    internal suspend fun library(context: AccountIconContext) = storage().metadata.library(context)
-    internal suspend fun <T> publish(context: AccountIconContext, block: () -> T) = storage().metadata.authorized(context, block)
-    internal suspend fun preview(context: AccountIconContext, uri: Uri): AccountIconPackPreview {
-        val storage = storage()
+    internal suspend fun capture() = io { it.metadata.capture() }
+    internal suspend fun library(context: AccountIconContext) = io { it.metadata.library(context) }
+    // Publication has no payload queued back to Main; guards + short state update share authority.
+    internal suspend fun publish(context: AccountIconContext, block: () -> Unit) = io { it.metadata.authorized(context, block) }
+    internal suspend fun preview(context: AccountIconContext, uri: Uri): AccountIconPackPreview = io { storage ->
         storage.metadata.reauthorize(context)
         val value = storage.documents.preview(uri)
         check(value.context.access == context.access) { "ICON_SESSION_CHANGED" }
         storage.metadata.reauthorize(context)
-        return value
+        value
     }
-    internal suspend fun install(preview: AccountIconPackPreview) = storage().imports.confirm(preview)
+    internal suspend fun install(preview: AccountIconPackPreview) = io { it.imports.confirm(preview) }
     internal suspend fun select(context: AccountIconContext, expected: Long, version: IconPackVersion?) =
-        storage().store.select(context, expected, version)
+        io { it.store.select(context, expected, version) }
     internal fun image(): IconImageHandle = IconImageHandle().also(::registerConsumer)
     internal suspend fun load(handle: IconImageHandle, source: IconPackSource, assetId: String,
         theme: ThemeVersionRef, dark: Boolean, size: IconRasterSize, tint: Int) {
@@ -95,16 +96,17 @@ class AccountIconController internal constructor(
             if (imageCalls++ == 0) imagesIdle = CompletableDeferred()
         }
         try {
-            val storage = storage()
-            val image = source.preview?.let {
-                check(it.context.access == source.context.access && it.manifest == source.pack) { "ICON_SESSION_CHANGED" }
-                storage.renderer.renderPreview(it, assetId, dark, size, tint)
-            } ?: run {
-                check(storage.metadata.pack(source.context, source.pack.packId, source.pack.revision) == source.pack) { "ICON_PACK_NOT_OWNED" }
-                check(source.pack.assets.any { it.assetId == assetId }) { "ICON_ASSET_NOT_OWNED" }
-                storage.renderer.render(source.context, assetId, theme, dark, size, tint)
+            io { storage ->
+                val image = source.preview?.let {
+                    check(it.context.access == source.context.access && it.manifest == source.pack) { "ICON_SESSION_CHANGED" }
+                    storage.renderer.renderPreview(it, assetId, dark, size, tint)
+                } ?: run {
+                    check(storage.metadata.pack(source.context, source.pack.packId, source.pack.revision) == source.pack) { "ICON_PACK_NOT_OWNED" }
+                    check(source.pack.assets.any { it.assetId == assetId }) { "ICON_ASSET_NOT_OWNED" }
+                    storage.renderer.render(source.context, assetId, theme, dark, size, tint)
+                }
+                storage.metadata.authorized(source.context) { handle.publish(stamp, IconImageState.Ready(image)) }
             }
-            storage.metadata.authorized(source.context) { handle.publish(stamp, IconImageState.Ready(image)) }
         } catch (error: Exception) {
             if (error is CancellationException) throw error
             // A stale handle is already empty; it cannot display a new owner's result/error.

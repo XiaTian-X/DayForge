@@ -5,12 +5,15 @@ import android.net.Uri
 import android.os.CancellationSignal
 import android.os.ParcelFileDescriptor
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.viewModelScope
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.dayforge.data.appearance.*
 import com.dayforge.data.local.TokenManager
+import com.dayforge.data.local.TokenCipher
 import com.dayforge.domain.appearance.ThemeVersionRef
 import com.dayforge.domain.service.*
 import java.io.File
@@ -236,5 +239,47 @@ class IconLibraryViewModelTest {
             await { it.context?.namespace?.accountId == id(5) }; assertNull(model.state.value.source)
             assertTrue(model.state.value.catalog!!.packs.isEmpty())
         } finally { release.countDown(); draw.cancelAndJoin(); handle.close() }
+    }
+    @Test fun productionControllerGuardsRunOffMainAndStillProveCurrentAccessWithoutUnusedRefreshDecryption() = runBlocking<Unit> {
+        val calls = java.util.Collections.synchronizedList(mutableListOf<String>())
+        var enforceBackground = false
+        val cipher = object : TokenCipher {
+            override fun encrypt(value: String) = "encrypted:$value"
+            override fun decrypt(value: String): String? {
+                if (enforceBackground) assertNotSame(android.os.Looper.getMainLooper().thread, Thread.currentThread())
+                calls.add(value)
+                return value.takeIf { it.startsWith("encrypted:") }?.removePrefix("encrypted:")
+            }
+        }
+        val preferences = PreferenceDataStoreFactory.create(scope = scope, produceFile = { File(directory, "counted.preferences_pb") })
+        val manager = TokenManager(preferences, cipher)
+        manager.saveLoginSession("access", "refresh", "member", id(1), false)
+        manager.saveServerIdentity(id(2), id(3))
+        manager.saveDeviceRegistration(id(4), setOf("sync.read", "structure.write"), true, 1)
+        val metadata = AccountIconRepository(db, manager, sessions)
+        val files = AccountIconStore(metadata, AccountIconFiles(directory))
+        val imports = AccountIconImport(metadata, files)
+        val actual = AccountIconController({ AccountIconRuntime(metadata, files, AccountIconRenderer(metadata, files), imports,
+            AccountIconDocuments(imports, app.contentResolver), {}) }, manager)
+        enforceBackground = true
+        val context = withContext(Dispatchers.Main) {
+            val captured = actual.capture()
+            assertTrue(actual.library(captured).packs.isEmpty())
+            actual.publish(captured) { assertNotSame(android.os.Looper.getMainLooper().thread, Thread.currentThread()) }
+            captured
+        }
+        assertTrue(calls.size >= 5); assertTrue(calls.all { it == "encrypted:access" })
+        calls.clear()
+        preferences.edit { it[stringPreferencesKey("access_token")] = "corrupt-access" }
+        assertNull(manager.localIconAccess()); assertEquals(listOf("corrupt-access"), calls.toList())
+        preferences.edit { it[stringPreferencesKey("access_token")] = "encrypted:access"
+            it[stringPreferencesKey("refresh_token")] = "corrupt-refresh" }
+        calls.clear()
+        assertEquals(context.access, manager.localIconAccess())
+        assertEquals(listOf("encrypted:access"), calls.toList())
+        calls.clear()
+        val snapshot = manager.authenticationSnapshot()!!
+        assertEquals(context.access.session.authentication, snapshot.session); assertNull(snapshot.refreshToken)
+        assertEquals(listOf("encrypted:access", "corrupt-refresh"), calls.toList())
     }
 }

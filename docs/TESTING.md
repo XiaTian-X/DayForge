@@ -658,6 +658,8 @@ Flow 允许合并连续写入的中间通知，但取消订阅/关闭/重开后�
 `IconLibraryViewModelTest` 使用真实素材 Room、独立 DataStore、文件段/管道与生产控制器验证懒构造、
 取消/过期/无请求回调、原冻结预览确认、账户及权限切换、只读选择、部分安装显式重试、关闭 join、
 选包实际回滚与错误发布、就绪文件损坏不修复、旧绘制拒绝及借出像素不回收。
+另以计数密钥边界从 Main 调用生产控制器，要求目录/授权检查和发布在非 Main 上执行，
+每次仍证明当前 access 密文；坏 access 拒绝、坏 refresh 不改变本机授权，真实认证快照仍解密两者。
 `IconLibraryIntegrationTest` 使用 Hilt 注入的真实 singleton/controller/凭据和实际页面 ViewModel，
 通过官方 ActivityResultRegistry 测试边界触摸选择并返回真实 URI，核对实际 PNG、SVG、浅深、
 模板/原色像素、预览不安装、安装不选择、选择/清除持久状态及注销后清除页面而保留文件。
