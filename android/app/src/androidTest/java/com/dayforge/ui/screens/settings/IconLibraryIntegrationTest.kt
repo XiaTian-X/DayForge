@@ -56,6 +56,19 @@ class IconLibraryIntegrationTest {
     private val launches = AtomicInteger()
     private var tint = 0
     private val displayed = mutableStateOf(true)
+    private var idlingRegistered = false
+    private val storageIdle = object : IdlingResource {
+        override val isIdleNow: Boolean get() {
+            if (!::model.isInitialized) return true
+            val state = model.state.value
+            return !state.loading && !state.busy
+        }
+        override fun getDiagnosticMessageIfBusy(): String? {
+            if (isIdleNow) return null
+            val state = model.state.value
+            return "Icon library background storage: loading=${state.loading}, busy=${state.busy}"
+        }
+    }
     private fun id(n: Int) = IconLibraryFixture.id(n)
     private val picker = object : ActivityResultRegistryOwner {
         override val activityResultRegistry = object : ActivityResultRegistry() {
@@ -81,6 +94,10 @@ class IconLibraryIntegrationTest {
             tokens.saveDeviceRegistration(id(4), setOf("sync.read", "structure.write"), true, 1)
         }
         withContext(Dispatchers.Main) { model = IconLibraryViewModel(icons); models.put("icons", model) }
+        // Real Room/files/Keystore are external work, not Compose-clock work. Account
+        // for their actual busy state instead of mistaking a UI wait for an IO SLA.
+        compose.registerIdlingResource(storageIdle)
+        idlingRegistered = true
         compose.setContent {
             MaterialTheme {
                 val primary = MaterialTheme.colorScheme.primary.toArgb()
@@ -90,9 +107,15 @@ class IconLibraryIntegrationTest {
                 }
             }
         }
+        compose.waitForIdle()
         compose.waitUntil(5000) { model.state.value.catalog != null }
     }
     @After fun cleanup() = runBlocking<Unit> {
+        try {
+            if (idlingRegistered) compose.unregisterIdlingResource(storageIdle)
+        } finally { dispose() }
+    }
+    private suspend fun dispose() {
         try {
             if (::model.isInitialized) {
                 try {
@@ -123,10 +146,12 @@ class IconLibraryIntegrationTest {
     }
     private fun preview() {
         touch("icon-library-import")
+        compose.waitForIdle()
         compose.waitUntil(5000) { model.state.value.source?.preview != null && !model.state.value.busy }
     }
     private fun awaitInstalled() {
         try {
+            compose.waitForIdle()
             compose.waitUntil(5000) {
                 val state = model.state.value
                 assertNull("Installation rejected: ${state.error}", state.error)

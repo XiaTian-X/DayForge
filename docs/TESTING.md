@@ -669,6 +669,11 @@ Flow 允许合并连续写入的中间通知，但取消订阅/关闭/重开后�
 它不启动系统文件提供者或 MainActivity，不等同于生产 Hilt ViewModel factory 导航/进程死亡、
 手机/平板人工验收。收尾先移除 Compose 消费者，clear/join ViewModel，再等真实图片工作退出，
 最后关闭独立素材库；只删除精确 testbed 测试 namespace，不触及正式 App。
+真实 Room/文件/Keystore 不受 Compose 测试时钟驱动；图标库组件测试登记实际 loading/busy
+的 IdlingResource，在后台空闲后执行原有 5 秒界面条件/像素断言，而不把界面等待误作整包 IO SLA。
+不修改 Espresso 空闲策略、单例 150 秒或两分片各 15 分钟预算；错误/真实挂起仍失败，
+不能通过报告空闲、替换真实存储或删除业务断言取得通过。收尾先注销该资源再取消并 join 所有者。
+依据：[Compose 测试同步](https://developer.android.com/develop/ui/compose/testing/synchronization)。
 
 `DeviceWidgetThemeTest` 须从真实私有存储冷启控制器，在不启动 MainActivity 的情况下构造、应用和
 绘制 Glance RemoteViews，核对显式浅/深模式与系统相反时仍固定、system 的双色板及 OLED 实际像素。
