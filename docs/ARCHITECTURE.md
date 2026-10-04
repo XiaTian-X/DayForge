@@ -130,6 +130,15 @@ FastAPI Router -> Service/Domain -> SQLModel/SQLAlchemy -> SQLite
 
 当前规模下不增加只有转发作用的 Repository 层。当前发布版只支持 SQLite 和单应用 worker；`DATABASE_TYPE` 的唯一合法值是 `sqlite`，显式 `DATABASE_URL` 必须使用 `sqlite+aiosqlite`。不能把仅能拼接 URL、但没有驱动与验证矩阵的配置称为受支持数据库。
 
+JWT 验证入口只接受最多 16 KiB 的非空 ASCII compact token，header/payload 必须为 UTF-8，
+在递归 JSON 解析前将嵌套深度限制为 32；引号/转义内的括号不计数。资源预检不授予认证，算法白名单
+始终来自服务器配置的单个值，不使用请求 header 选择算法。服务签发的 token 必须包含 `exp`，
+每次验证使用独立 options，保留签名、有效期和已存在的 claim 检查。非法 JSON/时间字段及非有限
+NumericDate 溢出按无效凭据拒绝；不记录 token，不用宽泛异常捕获掩盖程序错误。
+认证后的内部 subject 保留字符串转整数语义，数据库查询前将 ID 与真实整数 `ver` 限制在
+有符号 64 位范围内，拒绝布尔版本；它们不取代公开账户 UUID，也不取代账户状态/会话撤销检查。
+登录、续期、API Token 和业务事务边界保持不变；依赖安全修复与图标/协议启用分别交付。
+
 同步的确定性 JSON 编码集中在 `src/v2/encoding.py`，请求幂等哈希始终使用原始已解析请求，
 不能改为合并后的 payload。`src/v2/merge.py` 提供纯三方合并：仅目标/习惯、指标和指标关联
 参与结构字段合并，字段是否显式提交参与变更判断；无变化时复用服务端 revision，
