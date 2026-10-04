@@ -16,8 +16,12 @@ import java.io.InputStream
 // https://android.googlesource.com/platform/bionic/+/android-8.0.0_r1/libc/kernel/uapi/asm-generic/fcntl.h
 internal const val ICON_OPEN_CLOEXEC = 0x80000
 
+internal fun iconValidationProfile(blob: IconBlob) = if (blob.mediaType == "image/png") "png-v1" else "svg-v1"
+
 /** Fault-injectable syscall boundary; production always uses the actual Android filesystem. */
 internal open class IconFileIo {
+    open fun read(fd: FileDescriptor, bytes: ByteArray, offset: Int, length: Int): Int =
+        Os.read(fd, bytes, offset, length)
     open fun write(fd: FileDescriptor, bytes: ByteArray, offset: Int, length: Int): Int =
         Os.write(fd, bytes, offset, length)
     open fun sync(fd: FileDescriptor) = Os.fsync(fd)
@@ -154,7 +158,7 @@ internal class LocalIconFiles(root: File, private val io: IconFileIo = IconFileI
         }
         override fun read(bytes: ByteArray, offset: Int, length: Int): Int {
             if (length == 0) return 0
-            val count = Os.read(fd, bytes, offset, length)
+            val count = io.read(fd, bytes, offset, length)
             return if (count == 0) -1 else count
         }
         // The Descriptor, not this borrowed stream, owns fd.
@@ -165,5 +169,5 @@ internal class LocalIconFiles(root: File, private val io: IconFileIo = IconFileI
         bitmap.recycle()
     }
 
-    private fun profile(expected: IconBlob) = if (expected.mediaType == "image/png") "png-v1" else "svg-v1"
+    private fun profile(expected: IconBlob) = iconValidationProfile(expected)
 }
