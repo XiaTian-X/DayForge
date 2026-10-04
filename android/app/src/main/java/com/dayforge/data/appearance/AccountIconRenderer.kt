@@ -18,7 +18,7 @@ internal class AccountIconRenderer(
     private val byteLimit: Int = 8_388_608,
     private val entryLimit: Int = 128,
     private val draw: (ByteArray, IconAsset, Boolean, IconRasterSize, Int) -> IconRaster = ::renderIcon
-) {
+) : com.dayforge.data.local.AccountIconMemory.Cache {
     init { require(byteLimit in 0..8_388_608 && entryLimit in 0..128) }
 
     private data class Key(
@@ -30,6 +30,17 @@ internal class AccountIconRenderer(
     private var generation = Any()
     private var bytes = 0
     private val cache = LinkedHashMap<Key, IconRaster>(16, 0.75f, true)
+    private var transitionBlocked = false
+
+    init { metadata.registerCache(this) }
+
+    override fun authenticationTransition(blocked: Boolean) = synchronized(monitor) {
+        clear()
+        transitionBlocked = blocked
+    }
+
+    /** Credential-free diagnostic; does not expose cached pictures or account identities. */
+    internal fun memoryUsage(): Pair<Int, Int> = synchronized(monitor) { cache.size to bytes }
 
     /** Only drops memory references. In-flight work cannot refill the invalidated generation. */
     fun invalidate() = synchronized(monitor) { clear() }
@@ -46,6 +57,7 @@ internal class AccountIconRenderer(
             // Keep the process render lease until actual blocking drawing and cancellation finish.
             withContext(Dispatchers.IO) {
                 val stamp = metadata.authorized(context) { synchronized(monitor) {
+                    check(!transitionBlocked) { "ICON_RENDER_INVALIDATED" }
                     if (access != context.access) { clear(); access = context.access }
                     generation
                 } }

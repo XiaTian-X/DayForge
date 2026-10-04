@@ -10,6 +10,10 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -47,8 +51,11 @@ class AuthenticationSnapshot(
 @Singleton
 class TokenManager @Inject constructor(
     private val dataStore: DataStore<Preferences>,
-    private val tokenCipher: TokenCipher
+    private val tokenCipher: TokenCipher,
+    private val iconMemory: AccountIconMemory
 ) {
+    constructor(dataStore: DataStore<Preferences>, tokenCipher: TokenCipher) :
+        this(dataStore, tokenCipher, AccountIconMemory())
     constructor(dataStore: DataStore<Preferences>) : this(dataStore, PlaintextTokenCipher)
     companion object {
         private val ACCESS_TOKEN_KEY = stringPreferencesKey("access_token")
@@ -69,6 +76,43 @@ class TokenManager @Inject constructor(
         private val DEVICE_PRIMARY_EDITOR_KEY = booleanPreferencesKey("sync_device_primary_editor")
         private val DEVICE_CAPABILITY_REVISION_KEY = stringPreferencesKey("sync_device_capability_revision")
         private val DEVICE_CAPABILITIES_DEVICE_KEY = stringPreferencesKey("sync_device_capabilities_device")
+        private val ICON_IDENTITY_KEYS = listOf(USER_ID_KEY, AUTH_SESSION_KEY, SYNC_ACCOUNT_ID_KEY,
+            SYNC_DEVICE_ID_KEY, SERVER_INSTANCE_ID_KEY, SYNC_EPOCH_KEY, DEVICE_CAPABILITIES_KEY,
+            DEVICE_CAPABILITIES_KNOWN_KEY, DEVICE_CAPABILITY_REVISION_KEY, DEVICE_CAPABILITIES_DEVICE_KEY)
+    }
+
+    internal fun registerIconCache(cache: AccountIconMemory.Cache) = iconMemory.register(cache)
+
+    // Token bytes are deliberately excluded: same-generation refresh preserves the cache.
+    private fun iconIdentity(preferences: Preferences): List<Any?> =
+        listOf(preferences[ACCESS_TOKEN_KEY] != null) + ICON_IDENTITY_KEYS.map { preferences[it] }
+
+    /** No delayed Flow collector: block publication across the actual persisted transition. */
+    private suspend fun editPreferences(block: suspend (MutablePreferences) -> Unit): Preferences {
+        val caller = currentCoroutineContext()
+        var transitioning = false
+        try {
+            // DataStore owns the write actor: cancelling its caller need not stop a write
+            // after transform. Join actual persistence before reopening image publication.
+            val result = withContext(NonCancellable) {
+                dataStore.edit { preferences ->
+                    caller.ensureActive()
+                    val before = iconIdentity(preferences)
+                    block(preferences)
+                    caller.ensureActive()
+                    if (before != iconIdentity(preferences)) {
+                        iconMemory.beginTransition()
+                        transitioning = true
+                    }
+                }
+            }
+            caller.ensureActive()
+            return result
+        } finally {
+            // Also runs after failed/cancelled writes. Never pretend persistence succeeded;
+            // conservative memory eviction is safe and cannot delete installation intent.
+            if (transitioning) iconMemory.endTransition()
+        }
     }
 
     /**
@@ -147,7 +191,7 @@ class TokenManager @Inject constructor(
         isAdmin: Boolean,
         bindLocalOwner: Boolean
     ) {
-        dataStore.edit { preferences ->
+        editPreferences { preferences ->
             if (bindLocalOwner) prepareSyncAccount(preferences, userId)
             preferences[AUTH_SESSION_KEY] = UUID.randomUUID().toString()
             preferences[ACCESS_TOKEN_KEY] = tokenCipher.encrypt(accessToken)
@@ -227,7 +271,7 @@ class TokenManager @Inject constructor(
     ): Boolean {
         if (userId != expected.session.userId) return false
         var saved = false
-        dataStore.edit { preferences ->
+        editPreferences { preferences ->
             if (matches(preferences, expected)) {
                 preferences[ACCESS_TOKEN_KEY] = tokenCipher.encrypt(accessToken)
                 preferences[REFRESH_TOKEN_KEY] = tokenCipher.encrypt(refreshToken)
@@ -241,7 +285,7 @@ class TokenManager @Inject constructor(
 
     /** A rejected refresh cannot invalidate credentials created while it was in flight. */
     suspend fun clearRejectedRefresh(expected: AuthenticationSnapshot) {
-        dataStore.edit { preferences ->
+        editPreferences { preferences ->
             if (matches(preferences, expected)) {
                 preferences.remove(ACCESS_TOKEN_KEY)
                 preferences.remove(REFRESH_TOKEN_KEY)
@@ -259,7 +303,7 @@ class TokenManager @Inject constructor(
      * so this is safe to call at every authenticated sync.
      */
     suspend fun migrateLegacyTokenStorage() {
-        dataStore.edit { preferences ->
+        editPreferences { preferences ->
             preferences[ACCESS_TOKEN_KEY]?.let {
                 preferences[ACCESS_TOKEN_KEY] = tokenCipher.encrypt(it)
             }
@@ -273,13 +317,13 @@ class TokenManager @Inject constructor(
         val existing = dataStore.data.first()[INSTALLATION_ID_KEY]
         if (existing != null) return existing
         val created = UUID.randomUUID().toString()
-        dataStore.edit { it[INSTALLATION_ID_KEY] = created }
+        editPreferences { it[INSTALLATION_ID_KEY] = created }
         return created
     }
 
     /** Reset device/cursor state when the authenticated account changes. */
     suspend fun prepareSyncAccount(accountId: String) {
-        dataStore.edit { preferences ->
+        editPreferences { preferences ->
             prepareSyncAccount(preferences, accountId)
         }
     }
@@ -297,7 +341,7 @@ class TokenManager @Inject constructor(
     }
 
     suspend fun saveSyncDeviceId(deviceId: String) {
-        dataStore.edit { it[SYNC_DEVICE_ID_KEY] = deviceId }
+        editPreferences { it[SYNC_DEVICE_ID_KEY] = deviceId }
     }
 
     suspend fun saveDeviceRegistration(
@@ -306,7 +350,7 @@ class TokenManager @Inject constructor(
         isPrimaryEditor: Boolean,
         capabilityRevision: Int
     ) {
-        dataStore.edit { preferences ->
+        editPreferences { preferences ->
             preferences[SYNC_DEVICE_ID_KEY] = deviceId
             if (capabilities.isNotEmpty()) {
                 preferences[DEVICE_CAPABILITIES_KEY] = capabilities
@@ -323,7 +367,7 @@ class TokenManager @Inject constructor(
 
     /** Fail closed after the server rejects a structural operation for this device. */
     suspend fun markStructuralEditingDenied() {
-        dataStore.edit { preferences ->
+        editPreferences { preferences ->
             val capabilities = (preferences[DEVICE_CAPABILITIES_KEY] ?: emptySet()).toMutableSet()
             capabilities.remove("structure.write")
             preferences[DEVICE_CAPABILITIES_KEY] = capabilities
@@ -333,7 +377,7 @@ class TokenManager @Inject constructor(
     }
 
     suspend fun saveServerIdentity(serverInstanceId: String, syncEpoch: String) {
-        dataStore.edit {
+        editPreferences {
             it[SERVER_INSTANCE_ID_KEY] = serverInstanceId
             it[SYNC_EPOCH_KEY] = syncEpoch
         }
@@ -341,7 +385,7 @@ class TokenManager @Inject constructor(
 
     /** Start a clean replica after the same server reports a new database epoch. */
     suspend fun resetReplicaForEpoch(serverInstanceId: String, syncEpoch: String) {
-        dataStore.edit { preferences ->
+        editPreferences { preferences ->
             preferences[SERVER_INSTANCE_ID_KEY] = serverInstanceId
             preferences[SYNC_EPOCH_KEY] = syncEpoch
             preferences.remove(SYNC_DEVICE_ID_KEY)
@@ -352,7 +396,7 @@ class TokenManager @Inject constructor(
     }
 
     suspend fun saveSyncCursor(cursor: Long, bootstrapped: Boolean = true) {
-        dataStore.edit {
+        editPreferences {
             it[SYNC_CURSOR_KEY] = cursor.toString()
             if (bootstrapped) it[SYNC_BOOTSTRAPPED_KEY] = true
         }
@@ -360,12 +404,12 @@ class TokenManager @Inject constructor(
 
     /** Force the next safe sync to rebuild the local cache from server state. */
     suspend fun requireSyncBootstrap() {
-        dataStore.edit { it[SYNC_BOOTSTRAPPED_KEY] = false }
+        editPreferences { it[SYNC_BOOTSTRAPPED_KEY] = false }
     }
 
     /** Clear only credentials after refresh failure, retaining local-data ownership. */
     suspend fun clearAuthenticationTokens() {
-        dataStore.edit { preferences ->
+        editPreferences { preferences ->
             preferences.remove(AUTH_SESSION_KEY)
             preferences.remove(ACCESS_TOKEN_KEY)
             preferences.remove(REFRESH_TOKEN_KEY)
@@ -377,7 +421,7 @@ class TokenManager @Inject constructor(
 
     /** Reset synchronization metadata after the corresponding local database is cleared. */
     suspend fun clearSyncState() {
-        dataStore.edit { preferences ->
+        editPreferences { preferences ->
             preferences.remove(SYNC_ACCOUNT_ID_KEY)
             preferences.remove(SYNC_DEVICE_ID_KEY)
             preferences.remove(SYNC_CURSOR_KEY)
@@ -392,7 +436,7 @@ class TokenManager @Inject constructor(
      * Saves user email to DataStore.
      */
     suspend fun saveUserEmail(email: String) {
-        dataStore.edit { preferences ->
+        editPreferences { preferences ->
             preferences[USER_EMAIL_KEY] = email
         }
     }
@@ -402,7 +446,7 @@ class TokenManager @Inject constructor(
      * Called on logout or when token refresh fails.
      */
     suspend fun clearTokens() {
-        dataStore.edit { preferences ->
+        editPreferences { preferences ->
             preferences.remove(AUTH_SESSION_KEY)
             preferences.remove(ACCESS_TOKEN_KEY)
             preferences.remove(REFRESH_TOKEN_KEY)

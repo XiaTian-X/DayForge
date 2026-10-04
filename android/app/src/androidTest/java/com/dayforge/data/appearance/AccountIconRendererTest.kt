@@ -7,6 +7,10 @@ import android.widget.FrameLayout
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.glance.GlanceModifier
@@ -17,6 +21,8 @@ import androidx.glance.layout.size
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.dayforge.data.local.TokenManager
+import com.dayforge.data.local.AccountIconMemory
+import com.dayforge.data.local.PlaintextTokenCipher
 import com.dayforge.domain.appearance.ThemeVersionRef
 import com.dayforge.domain.model.IconAsset
 import com.dayforge.domain.model.IconBlob
@@ -25,6 +31,7 @@ import com.dayforge.ui.theme.toComposeImage
 import com.dayforge.widget.base.toGlanceImage
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
@@ -70,6 +77,8 @@ class AccountIconRendererTest {
     private lateinit var parent: File
     private lateinit var scope: CoroutineScope
     private lateinit var tokens: TokenManager
+    private lateinit var preferences: DataStore<Preferences>
+    private val memory = AccountIconMemory()
     private lateinit var db: AccountIconDatabase
     private lateinit var repo: AccountIconRepository
     private lateinit var store: AccountIconStore
@@ -122,7 +131,8 @@ class AccountIconRendererTest {
         assertFalse(app.getDatabasePath(AccountIconDatabase.NAME).exists())
         parent = Files.createTempDirectory(app.filesDir.toPath(), "icon-render-").toFile()
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        tokens = TokenManager(PreferenceDataStoreFactory.create(scope = scope, produceFile = { File(parent, "auth.preferences_pb") }))
+        preferences = PreferenceDataStoreFactory.create(scope = scope, produceFile = { File(parent, "auth.preferences_pb") })
+        tokens = TokenManager(preferences, PlaintextTokenCipher, memory)
         db = AccountIconDatabase.open(app); repo = AccountIconRepository(db, tokens, sessions)
         store = AccountIconStore(repo, AccountIconFiles(parent)); login()
     }
@@ -243,6 +253,127 @@ class AccountIconRendererTest {
         val after = draw(renderer, context); assertNotSame(before, after); assertFalse(before.bitmap.isRecycled)
         assertArrayEquals(svg(), store.read(context, id(10), blob(svg()).sha256))
         assertEquals(blue, draw(AccountIconRenderer(repo, store), context).bitmap.getPixel(4, 4))
+    }
+
+    @Test fun everyAuthenticationAndReplicaMutationImmediatelyEvictsAllRegisteredRenderers() = runBlocking<Unit> {
+        val first = AccountIconRenderer(repo, store); val second = AccountIconRenderer(repo, store)
+        val mutations: List<suspend () -> Unit> = listOf(
+            { tokens.clearTokens() }, { tokens.clearAuthenticationTokens() },
+            { tokens.clearRejectedRefresh(requireNotNull(tokens.authenticationSnapshot())) },
+            { tokens.saveLoginSession("new", "refresh", "member", id(1), false) },
+            { tokens.saveTokens("new", "refresh", "member", id(5), false) },
+            { tokens.prepareSyncAccount(id(5)) }, { tokens.saveSyncDeviceId(id(6)) },
+            { tokens.saveServerIdentity(id(6), id(3)) }, { tokens.saveServerIdentity(id(2), id(7)) },
+            { tokens.resetReplicaForEpoch(id(2), id(7)) }, { tokens.clearSyncState() },
+            { tokens.markStructuralEditingDenied() },
+            { tokens.saveDeviceRegistration(id(4), setOf("sync.read", "structure.write"), true, 2) },
+            { tokens.saveDeviceRegistration(id(4), emptySet(), false, 1) },
+            { tokens.saveDeviceRegistration(id(4), setOf("facts.append"), false, 1) }
+        )
+        for (change in mutations) {
+            login(); val context = installed()
+            val a = draw(first, context); val b = draw(second, context)
+            assertEquals(1 to 256, first.memoryUsage()); assertEquals(1 to 256, second.memoryUsage())
+            change() // No subsequent capture/render/Flow collection to trigger the eviction.
+            assertEquals(0 to 0, first.memoryUsage()); assertEquals(0 to 0, second.memoryUsage())
+            assertFalse(a.bitmap.isRecycled); assertFalse(b.bitmap.isRecycled)
+            assertEquals(blue, a.bitmap.getPixel(4, 4))
+        }
+    }
+
+    @Test fun refreshCursorAndUnrelatedPreferenceChangesDoNotEvictOrInvalidateContext() = runBlocking<Unit> {
+        val context = installed(); val renderer = AccountIconRenderer(repo, store); val first = draw(renderer, context)
+        val old = requireNotNull(tokens.authenticationSnapshot())
+        assertTrue(tokens.saveRefreshedTokens(old, "refreshed", "new-refresh", "renamed", id(1), true))
+        assertFalse(tokens.saveRefreshedTokens(old, "stale", "stale", "old", id(1), false))
+        tokens.clearRejectedRefresh(old); tokens.migrateLegacyTokenStorage()
+        tokens.getOrCreateInstallationId(); tokens.saveUserEmail("member-renamed")
+        tokens.saveSyncCursor(42); tokens.requireSyncBootstrap(); tokens.prepareSyncAccount(id(1))
+        tokens.saveServerIdentity(id(2), id(3)); tokens.saveSyncDeviceId(id(4))
+        tokens.saveDeviceRegistration(id(4), setOf("sync.read", "structure.write"), false, 1)
+        assertEquals(1 to 256, renderer.memoryUsage()); assertSame(first, draw(renderer, context))
+    }
+
+    @Test fun logoutAndOtherReplicasRetainReadyBytesAndPendingIntentAcrossColdReopen() = runBlocking<Unit> {
+        val context = installed(); val renderer = AccountIconRenderer(repo, store); draw(renderer, context)
+        repo.reserveAsset(context, IconAsset(id(12), "pending", "general", "template", blob(svg("#00ff00")), null))
+        val before = repo.installations(context)
+        tokens.clearTokens(); assertEquals(0 to 0, renderer.memoryUsage())
+        login(owner = id(5)); assertNull(repo.asset(repo.capture(), id(10)))
+        login(server = id(6)); assertNull(repo.asset(repo.capture(), id(10)))
+        login(epoch = id(7)); assertNull(repo.asset(repo.capture(), id(10)))
+        db.close(); db = AccountIconDatabase.open(app)
+        repo = AccountIconRepository(db, tokens, sessions); store = AccountIconStore(repo, AccountIconFiles(parent))
+        login(); val current = repo.capture()
+        assertEquals(before, repo.installations(current))
+        assertEquals("svg-v1", repo.installation(current, id(10), blob(svg()).sha256).validationProfile)
+        assertNull(repo.installation(current, id(12), blob(svg("#00ff00")).sha256).validationProfile)
+        assertArrayEquals(svg(), store.read(current, id(10), blob(svg()).sha256))
+        assertEquals(blue, draw(AccountIconRenderer(repo, store), current).bitmap.getPixel(4, 4))
+    }
+
+    @Test fun cancelledWriteJoinsRealPersistenceAndBlocksOldAndNewRendererUntilItFinishes() = runBlocking<Unit> {
+        val context = installed(); val renderer = AccountIconRenderer(repo, store); draw(renderer, context)
+        val reached = CountDownLatch(1); val release = CountDownLatch(1)
+        val delayed = object : DataStore<Preferences> {
+            override val data = preferences.data
+            override suspend fun updateData(transform: suspend (Preferences) -> Preferences): Preferences =
+                preferences.updateData { original -> transform(original).also {
+                    reached.countDown(); check(release.await(5, TimeUnit.SECONDS))
+                } }
+        }
+        val writer = TokenManager(delayed, PlaintextTokenCipher, memory)
+        val write = async(Dispatchers.IO) { writer.clearAuthenticationTokens() }
+        try {
+            assertTrue(reached.await(5, TimeUnit.SECONDS)); assertEquals(0 to 0, renderer.memoryUsage())
+            write.cancel(); assertFalse(write.isCompleted)
+            rejected { draw(renderer, context) }
+            rejected { draw(AccountIconRenderer(repo, store), context) }
+        } finally { release.countDown() }
+        write.join(); assertTrue(write.isCancelled); assertNull(tokens.authenticationSnapshot())
+        assertEquals(0 to 0, renderer.memoryUsage()); rejected { draw(renderer, context) }
+        login(); assertArrayEquals(svg(), store.read(repo.capture(), id(10), blob(svg()).sha256))
+        assertEquals(blue, draw(renderer, repo.capture()).bitmap.getPixel(4, 4))
+    }
+
+    @Test fun failedWriteAfterTransformEvictsMemoryButPreservesActualOwnerAndReadyJournal() = runBlocking<Unit> {
+        val context = installed(); val renderer = AccountIconRenderer(repo, store); val first = draw(renderer, context)
+        val before = repo.installations(context)
+        val broken = object : DataStore<Preferences> {
+            override val data = preferences.data
+            override suspend fun updateData(transform: suspend (Preferences) -> Preferences): Preferences =
+                preferences.updateData { original -> transform(original); throw IOException("synthetic write failure") }
+        }
+        val writer = TokenManager(broken, PlaintextTokenCipher, memory)
+        assertTrue(outcome { writer.clearTokens() } is IOException)
+        assertEquals(0 to 0, renderer.memoryUsage()); assertFalse(first.bitmap.isRecycled)
+        assertEquals(context.access, tokens.localIconAccess()); assertEquals(before, repo.installations(context))
+        assertNotSame(first, draw(renderer, context)); assertEquals(blue, draw(renderer, context).bitmap.getPixel(4, 4))
+    }
+
+    @Test fun cancellationBeforeQueuedTransformKeepsPersistedSessionAndExistingCache() = runBlocking<Unit> {
+        val context = installed(); val renderer = AccountIconRenderer(repo, store); val first = draw(renderer, context)
+        val reached = CountDownLatch(1); val release = CountDownLatch(1); val queued = CountDownLatch(1)
+        val occupied = async(Dispatchers.IO) { preferences.edit {
+            reached.countDown(); check(release.await(5, TimeUnit.SECONDS))
+            it[stringPreferencesKey("unrelated_test_key")] = "synthetic"
+        } }
+        val waiting = object : DataStore<Preferences> {
+            override val data = preferences.data
+            override suspend fun updateData(transform: suspend (Preferences) -> Preferences): Preferences {
+                queued.countDown(); return preferences.updateData(transform)
+            }
+        }
+        var write: kotlinx.coroutines.Deferred<Unit>? = null
+        try {
+            assertTrue(reached.await(5, TimeUnit.SECONDS))
+            write = async(Dispatchers.IO) { TokenManager(waiting, PlaintextTokenCipher, memory).clearTokens() }
+            assertTrue(queued.await(5, TimeUnit.SECONDS)); write.cancel(); assertFalse(write.isCompleted)
+            assertEquals(1 to 256, renderer.memoryUsage())
+        } finally { release.countDown() }
+        occupied.await(); write!!.join(); assertTrue(write.isCancelled)
+        assertEquals(context.access, tokens.localIconAccess()); assertEquals(1 to 256, renderer.memoryUsage())
+        assertSame(first, draw(renderer, context))
     }
 
     @Test fun logoutDuringBlockingRealDrawDoesNotWaitForAccountLockOrPublishOldRaster() = runBlocking<Unit> {
