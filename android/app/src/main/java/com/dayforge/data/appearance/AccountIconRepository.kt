@@ -253,17 +253,28 @@ internal class AccountIconRepository(
     }
 
     suspend fun reserveAsset(context: AccountIconContext, asset: IconAsset) {
-        // Freeze and revalidate even a caller-built value, before any persistence.
-        val frozen = decodeAsset(json.encodeToString(asset))
-        declare(context, listOf(frozen), null)
+        reserveAssetTransaction(context, asset) {}
     }
 
     suspend fun reservePack(context: AccountIconContext, pack: IconPack) {
+        reservePackTransaction(context, pack) {}
+    }
+
+    /** Queue-only callback in the same short declaration transaction; never files/network/preferences. */
+    internal suspend fun <T> reservePackTransaction(context: AccountIconContext, pack: IconPack,
+        block: suspend (AccountIconTransferMetadata) -> T): T {
         // Caller-owned collections can have changed since the DTO's constructor validation.
         require(pack.assets.size in 1..128 && pack.roles.size <= 256)
         val snapshot = pack.copy(assets = pack.assets.toList(), roles = pack.roles.toMap())
         val frozen = decodePack(json.encodeToString(snapshot))
-        declare(context, frozen.assets, frozen)
+        return declare(context, frozen.assets, frozen, block)
+    }
+
+    internal suspend fun <T> reserveAssetTransaction(context: AccountIconContext, asset: IconAsset,
+        block: suspend (AccountIconTransferMetadata) -> T): T {
+        // Freeze and revalidate even a caller-built value, before any persistence.
+        val frozen = decodeAsset(json.encodeToString(asset))
+        return declare(context, listOf(frozen), null, block)
     }
 
     private suspend fun check(context: AccountIconContext, writing: Boolean = false) {
@@ -279,10 +290,11 @@ internal class AccountIconRepository(
         result
     }
 
-    private suspend fun declare(context: AccountIconContext, assets: List<IconAsset>, pack: IconPack?) =
+    private suspend fun <T> declare(context: AccountIconContext, assets: List<IconAsset>, pack: IconPack?,
+        block: suspend (AccountIconTransferMetadata) -> T): T =
         sessions.exclusive {
             check(context, writing = true)
-            database.withTransaction {
+            val result = database.withTransaction {
                 val ns = context.namespace
                 val before = catalog(ns)
                 val newAssets = assets.filter { asset ->
@@ -336,9 +348,14 @@ internal class AccountIconRepository(
                 check(after.blobs == expectedBlobs) { "ICON_STORE_CORRUPT" }
                 check(after.ready == before.ready) { "ICON_STORE_CORRUPT" }
                 check(after.selection == before.selection) { "ICON_STORE_CORRUPT" }
+                val value = block(AccountIconTransferMetadata(
+                    Collections.unmodifiableMap(after.assets), Collections.unmodifiableMap(after.packs)))
+                check(catalog(ns) == after) { "ICON_TRANSFER_CHANGED_METADATA" }
                 check(context, writing = true)
+                value
             }
             check(context, writing = true)
+            result
         }
 
     private data class Catalog(

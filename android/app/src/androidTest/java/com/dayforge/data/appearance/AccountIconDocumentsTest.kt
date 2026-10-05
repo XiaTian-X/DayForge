@@ -45,6 +45,7 @@ class AccountIconDocumentsTest {
     private lateinit var repo: AccountIconRepository
     private lateinit var store: AccountIconStore
     private lateinit var imports: AccountIconImport
+    private lateinit var transfers: AccountIconTransfers
     private val sessions = AccountSessionCoordinator()
     private val uri = Uri.parse("content://synthetic.icon.provider/document")
     private fun id(n: Int) = "9b000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}"
@@ -76,6 +77,7 @@ class AccountIconDocumentsTest {
         it.moveToFirst(); it.getInt(0)
     }
     private suspend fun assertNoImport() {
+        assertTrue(transfers.jobs(repo.capture()).isEmpty())
         assertEquals(emptyList<IconReservation>(), repo.reservations(repo.capture()))
         assertEquals(0, readyCount())
         assertEquals(AccountIconSelection(0, null), repo.selection(repo.capture()))
@@ -90,7 +92,8 @@ class AccountIconDocumentsTest {
         db = AccountIconDatabase.open(app)
         repo = AccountIconRepository(db, tokens, sessions)
         store = AccountIconStore(repo, AccountIconFiles(directory))
-        imports = AccountIconImport(repo, store)
+        transfers = AccountIconTransfers(db, repo, store)
+        imports = AccountIconImport(repo, store, transfers)
         login()
     }
     @After fun cleanup() = runBlocking<Unit> {
@@ -118,6 +121,9 @@ class AccountIconDocumentsTest {
         assertArrayEquals(image, store.read(repo.capture(), id(11), hash(image)))
         assertEquals(1, opens.get()); assertEquals(1, readyCount())
         assertEquals(AccountIconSelection(0, null), repo.selection(repo.capture()))
+        val jobs = transfers.jobs(repo.capture())
+        assertEquals(3, jobs.size); assertTrue(jobs.all { it.state == IconTransferState.PENDING })
+        assertEquals(receipt, imports.confirm(value)); assertEquals(jobs, transfers.jobs(repo.capture()))
     }
 
     @Test fun productionResolverReadsFileUriWithoutInstallingOrTakingPersistentPermission() = runBlocking<Unit> {

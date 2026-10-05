@@ -21,13 +21,18 @@ internal data class LocalIconPackReceipt(
 
 /**
  * Authenticated import coordination. Import and applying a style are separate explicit actions:
- * nothing here changes selection, theme, business Room or online queues. Failed/cancelled work may
- * have durable metadata, ready receipts and bytes; immutable retries reuse the original journals.
+ * nothing here changes selection, theme, business Room or server confirmation. Metadata, installation
+ * reservations and transfer intents commit together before files. Failed/cancelled file work may
+ * leave those durable intents, ready receipts and bytes; retries reuse the original journals.
  */
 internal class AccountIconImport(
     private val metadata: AccountIconRepository,
-    private val store: AccountIconStore
+    private val store: AccountIconStore,
+    internal val transfers: AccountIconTransfers
 ) {
+    init {
+        require(store.usesMetadata(metadata) && transfers.usesStores(metadata, store)) { "ICON_IMPORT_STORE_MISMATCH" }
+    }
     /** The provider supplies a blocking-I/O deadline; the archive opens/closes it exactly once. */
     suspend fun preview(openSource: () -> InputStream): AccountIconPackPreview =
         previewArchive { ValidatedIconPack.read(openSource) }
@@ -45,7 +50,7 @@ internal class AccountIconImport(
         val pack = preview.manifest
         metadata.reauthorize(context, writing = true)
         // Whole metadata/quota/intent reservation is one transaction, before any file publication.
-        metadata.reservePack(context, pack)
+        transfers.reserveAndEnqueuePack(context, pack)
         val variants = pack.assets.flatMap { asset ->
             listOfNotNull(asset.light, asset.dark).map { asset.assetId to it }
         }.distinctBy { it.second.sha256 }

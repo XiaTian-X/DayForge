@@ -25,6 +25,8 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.dayforge.R
 import com.dayforge.data.appearance.AccountIconDatabase
 import com.dayforge.data.appearance.IconPackVersion
+import com.dayforge.data.appearance.IconTransferKind
+import com.dayforge.data.appearance.IconTransferState
 import com.dayforge.data.local.TokenManager
 import com.dayforge.domain.service.AccountIconController
 import com.dayforge.domain.service.AccountSessionCoordinator
@@ -71,6 +73,11 @@ class IconLibraryIntegrationTest {
         }
     }
     private fun id(n: Int) = IconLibraryFixture.id(n)
+    private suspend fun login() = sessions.exclusive {
+        tokens.saveLoginSession("synthetic-access", "synthetic-refresh", "member", id(1), false)
+        tokens.saveServerIdentity(id(2), id(3))
+        tokens.saveDeviceRegistration(id(4), setOf("sync.read", "structure.write"), true, 1)
+    }
     private val picker = object : ActivityResultRegistryOwner {
         override val activityResultRegistry = object : ActivityResultRegistry() {
             override fun <I, O> onLaunch(requestCode: Int, contract: ActivityResultContract<I, O>, input: I, options: ActivityOptionsCompat?) {
@@ -89,11 +96,7 @@ class IconLibraryIntegrationTest {
         hilt.inject()
         assertFalse(app.getDatabasePath(AccountIconDatabase.NAME).exists())
         file = File.createTempFile("library-ui-", ".zip", app.filesDir).also { it.writeBytes(IconLibraryFixture.archive()) }
-        sessions.exclusive {
-            tokens.saveLoginSession("synthetic-access", "synthetic-refresh", "member", id(1), false)
-            tokens.saveServerIdentity(id(2), id(3))
-            tokens.saveDeviceRegistration(id(4), setOf("sync.read", "structure.write"), true, 1)
-        }
+        login()
         withContext(Dispatchers.Main) { model = IconLibraryViewModel(icons); models.put("icons", model) }
         // Real Room/files/Keystore are external work, not Compose-clock work. Account
         // for their actual busy state instead of mistaking a UI wait for an IO SLA.
@@ -188,6 +191,7 @@ class IconLibraryIntegrationTest {
         assertPixels(id(12), tint)
         assertTrue(model.state.value.catalog!!.packs.isEmpty())
         assertNull(model.state.value.catalog!!.selection.pack)
+        runBlocking { assertTrue(icons.transferJobs(icons.capture()).isEmpty()) }
     }
     @Test fun installAndChoiceUseActualTouchesAndClearingDoesNotDeletePackBytes() {
         preview(); touch("icon-library-install")
@@ -195,6 +199,14 @@ class IconLibraryIntegrationTest {
         val version = IconPackVersion(id(10), 1)
         assertEquals(setOf(version), model.state.value.catalog!!.readyVersions)
         assertNull(model.state.value.catalog!!.selection.pack)
+        val context = runBlocking { icons.capture() }
+        val jobs = runBlocking { icons.transferJobs(context) }
+        assertEquals(7, jobs.size)
+        assertEquals(setOf(id(11), id(12)), jobs.filter { it.kind == IconTransferKind.DECLARE_ASSET }.map { it.targetId }.toSet())
+        assertEquals(setOf(id(11) to "light", id(11) to "dark", id(12) to "light", id(12) to "dark"),
+            jobs.filter { it.kind == IconTransferKind.UPLOAD }.map { it.targetId to it.variant }.toSet())
+        assertEquals(id(10), jobs.single { it.kind == IconTransferKind.DECLARE_PACK }.targetId)
+        assertTrue(jobs.all { it.state == IconTransferState.PENDING && it.generation == 0L })
         touch("icon-library-select:${id(10)}:1")
         compose.waitUntil(5000) { model.state.value.catalog?.selection?.pack == version }
         touch("icon-library-clear")
@@ -203,6 +215,7 @@ class IconLibraryIntegrationTest {
         touch("icon-library-inspect:${id(10)}:1")
         assertPixels(id(11), IconLibraryFixture.red)
         assertEquals(1, launches.get())
+        runBlocking { assertEquals(jobs, icons.transferJobs(context)) }
     }
     @Test fun logoutDropsPageDirectoryAndFrozenPixelsWithoutRemovingDurableInstallation() {
         preview(); touch("icon-library-install")
@@ -210,11 +223,17 @@ class IconLibraryIntegrationTest {
         assertPixels(id(11), IconLibraryFixture.red)
         val namespace = File(app.filesDir, "account-icons-v1/${id(1)}/${id(2)}/${id(3)}")
         val files = namespace.listFiles()!!.map { it.name to it.length() }.sortedBy { it.first }
+        val jobs = runBlocking { icons.transferJobs(icons.capture()) }
+        assertEquals(7, jobs.size)
         runBlocking { tokens.clearTokens() }
         compose.waitUntil(5000) { model.state.value.error == "ICON_ACCESS_DENIED" }
         assertNull(model.state.value.catalog); assertNull(model.state.value.source)
         compose.onNodeWithTag("icon-library-image:${id(11)}").assertDoesNotExist()
         compose.onNodeWithTag("icon-library-import").assertIsNotEnabled()
         assertEquals(files, namespace.listFiles()!!.map { it.name to it.length() }.sortedBy { it.first })
+        runBlocking {
+            login()
+            assertEquals(jobs, icons.transferJobs(icons.capture()))
+        }
     }
 }

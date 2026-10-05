@@ -117,6 +117,26 @@ class AccountIconTransfersTest {
         IconTransferKind.DOWNLOAD -> queue.confirmDownload(attempt)
     }
 
+    @Test fun atomicNewAssetReservationAndIntentBatchRollbackTogetherAndReplayWithoutInstallingBytes() = runBlocking<Unit> {
+        val context = metadata.capture()
+        val original = listOf("icon_assets", "icon_blob_reservations", "icon_packs", "icon_blob_ready", "icon_pack_selection", "icon_transfers")
+            .associateWith(::durable)
+        val fresh = asset(30).copy(light = blob(png(0xff00ff00.toInt())))
+        val constrained = AccountIconTransfers(database, metadata, store, maximumJobs = 1)
+        rejected { constrained.reserveAndEnqueueAsset(context, fresh) }
+        assertEquals(original, original.keys.associateWith(::durable)); assertNull(metadata.asset(context, fresh.assetId))
+        assertFalse(File(directory, "account-icons-v1").exists())
+        val jobs = queue.reserveAndEnqueueAsset(context, fresh)
+        assertEquals(2, jobs.size); assertTrue(jobs.all { it.state == IconTransferState.PENDING && it.generation == 0L })
+        val intents = metadata.reservations(context)
+        assertEquals(fresh, metadata.asset(context, fresh.assetId)); assertEquals(jobs, queue.reserveAndEnqueueAsset(context, fresh))
+        reopen(); assertEquals(jobs, queue.reserveAndEnqueueAsset(context, fresh))
+        assertEquals(intents, metadata.reservations(context)); assertTrue(durable("icon_blob_ready").isEmpty())
+        assertFalse(File(directory, "account-icons-v1").exists())
+        assertTrue(business.database.syncOutboxDao().getAll().isEmpty())
+        assertEquals("preserve-global-theme", preferences.data.first()[theme])
+    }
+
     @Test fun realLocalReadyDoesNotConfirmServerAndPackBatchDependenciesReopenAndReplayWithoutBusinessChanges() = runBlocking<Unit> {
         install(); val context = metadata.capture(); val choice = metadata.selection(context)
         val outbox = business.database.syncOutboxDao().getAll()

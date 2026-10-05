@@ -81,7 +81,7 @@ class IconLibraryViewModelTest {
             val result = renderIcon(bytes, asset, dark, size, tint)
             drawBarrier?.invoke(); result
         })
-        val imports = AccountIconImport(repo, store)
+        val imports = AccountIconImport(repo, store, AccountIconTransfers(db, repo, store))
         val documents = AccountIconDocuments(imports, { selected, signal ->
             opens.incrementAndGet()
             openDocument?.invoke(selected, signal) ?: AssetFileDescriptor(
@@ -258,7 +258,7 @@ class IconLibraryViewModelTest {
         manager.saveDeviceRegistration(id(4), setOf("sync.read", "structure.write"), true, 1)
         val metadata = AccountIconRepository(db, manager, sessions)
         val files = AccountIconStore(metadata, AccountIconFiles(directory))
-        val imports = AccountIconImport(metadata, files)
+        val imports = AccountIconImport(metadata, files, AccountIconTransfers(db, metadata, files))
         val actual = AccountIconController({ AccountIconRuntime(metadata, files, AccountIconRenderer(metadata, files), imports,
             AccountIconDocuments(imports, app.contentResolver), {}) }, manager)
         enforceBackground = true
