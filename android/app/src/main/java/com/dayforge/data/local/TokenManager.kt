@@ -10,6 +10,9 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -226,6 +229,10 @@ class TokenManager @Inject constructor(
     }
 
     internal suspend fun localIconAccess(): LocalIconAccess? = iconAccess(dataStore.data.first())
+
+    /** Canonical non-secret lifecycle signal; Keystore work never runs on Main. */
+    internal val iconAccessChanges: Flow<LocalIconAccess?> = dataStore.data.map(::iconAccess)
+        .distinctUntilChanged().flowOn(Dispatchers.IO)
 
     /** Bind credentials and all material permissions to ONE actual persisted snapshot. */
     internal suspend fun iconAuthenticationSnapshot(expected: LocalIconAccess): AuthenticationSnapshot? {

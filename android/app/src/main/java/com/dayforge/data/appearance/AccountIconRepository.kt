@@ -206,7 +206,7 @@ internal class AccountIconRepository(
     suspend fun installation(context: AccountIconContext, assetId: String, hash: String, writing: Boolean = false): IconInstallation =
         scoped(context, writing) { installation(catalog(context.namespace), assetId, hash) }
 
-    suspend fun installations(context: AccountIconContext): List<IconInstallation> = scoped(context, writing = true) {
+    suspend fun installations(context: AccountIconContext, writing: Boolean = true): List<IconInstallation> = scoped(context, writing) {
         val state = catalog(context.namespace)
         Collections.unmodifiableList(state.blobs.values.sortedBy { it.blob.sha256 }.map {
             IconInstallation(it, state.ready[it.blob.sha256]?.validationProfile)

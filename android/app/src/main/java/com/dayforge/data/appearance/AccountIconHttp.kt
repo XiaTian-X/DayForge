@@ -120,6 +120,11 @@ class AccountIconHttp private constructor(
         private val json = Json { encodeDefaults = true }
         internal suspend fun identity(): MaterialServerIdentity = value(request(MaterialHttpRoute.IDENTITY_PATH))
 
+        internal suspend fun authorize(expected: AccountIconContext) {
+            check(!closed && currentCoroutineContext()[Job] === owner && expected.access == context.access) { "MATERIAL_SCOPE_CHANGED" }
+            check(tokens.iconAuthenticationSnapshot(context.access) != null) { "ICON_SESSION_CHANGED" }
+        }
+
         suspend fun catalog(attempt: IconCatalogAttempt): AppearanceCatalogPage {
             require(attempt.context.access == context.access)
             val builder = request("/api/v2/appearance/catalog", query = true)

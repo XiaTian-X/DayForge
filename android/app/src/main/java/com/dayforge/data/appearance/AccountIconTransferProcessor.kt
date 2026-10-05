@@ -19,70 +19,75 @@ internal class AccountIconTransferProcessor(
 
     suspend fun run(context: AccountIconContext, http: AccountIconHttp): IconTransferBatch = owner.withLock {
         withTimeout(240_000) {
-            http.session(context) { session ->
-                // Acquiring the sole owner proves the previous request and real IO have joined.
-                val recovered = queue.recoverInterrupted(context)
-                var completed = 0
-                var downloaded = false
-                val deferred = mutableSetOf<String>()
-                fun result(stopped: Boolean = false, limited: Boolean = false) = IconTransferBatch(
-                    true, completed, recovered, stopped || deferred.isNotEmpty(), downloaded, limited, deferred.size)
-                repeat(32) {
-                    val attempt = queue.prepareNext(context, deferred)
-                        ?: return@session result()
-                    try {
-                        when (attempt.job.kind) {
-                            IconTransferKind.DECLARE_ASSET -> queue.confirmAsset(attempt, session.declareAsset(attempt))
-                            IconTransferKind.DECLARE_PACK -> queue.confirmPack(attempt, session.declarePack(attempt))
-                            IconTransferKind.UPLOAD -> {
-                                val bytes = local(attempt) { store.read(context, attempt.job.targetId, blob(attempt).sha256) }
-                                queue.confirmUpload(attempt, session.upload(attempt, bytes))
-                            }
-                            IconTransferKind.DOWNLOAD -> {
-                                val bytes = session.download(attempt)
-                                local(attempt) { store.installDownloaded(context, attempt.job.targetId, blob(attempt).sha256, bytes) }
-                                local(attempt) { queue.confirmDownload(attempt) }
-                                downloaded = true
-                            }
-                        }
-                        completed++
-                    } catch (error: CancellationException) {
-                        throw error // Sending remains durable; never release through a replacement account.
-                    } catch (_: LocalContentFailure) {
-                        return@session result(stopped = true)
-                    } catch (error: MaterialHttpFailure) {
-                        if (error.code in setOf("SERVER_IDENTITY_MISMATCH", "SYNC_EPOCH_MISMATCH"))
-                            throw IllegalStateException("ICON_SERVER_IDENTITY_CHANGED")
-                        if (attempt.job.kind == IconTransferKind.DOWNLOAD && error.status == 409 &&
-                            error.code == "ASSET_CONTENT_PENDING") {
-                            // Metadata may arrive before another device publishes bytes. Retry the
-                            // same intent later, once per batch, without starving eligible uploads.
-                            queue.release(attempt)
-                            deferred += attempt.job.operationId
-                            return@repeat
-                        }
-                        val failure = when {
-                            error.status == 401 || error.status >= 500 || error.status in setOf(408, 429) -> null
-                            error.code in setOf("ASSET_ID_REUSED", "PACK_VERSION_REUSED") -> IconTransferFailure.REMOTE_ID_REUSED
-                            error.status == 413 -> IconTransferFailure.REMOTE_QUOTA
-                            error.status == 403 -> IconTransferFailure.REMOTE_CAPABILITY
-                            error.status == 404 -> IconTransferFailure.REMOTE_NOT_FOUND
-                            else -> IconTransferFailure.REMOTE_METADATA
-                        }
-                        if (failure == null) queue.release(attempt) else queue.block(attempt, failure)
-                        return@session result(stopped = true)
-                    } catch (_: MaterialReplyInvalid) {
-                        queue.block(attempt, IconTransferFailure.REMOTE_METADATA)
-                        return@session result(stopped = true)
-                    } catch (_: IOException) {
-                        // Reauthorization/CAS inside release rejects any changed account/replica.
-                        queue.release(attempt)
-                        return@session result(stopped = true)
+            http.session(context) { session -> admitted(context, session) }
+                ?: IconTransferBatch(false, 0, 0, false, false)
+        }
+    }
+
+    /** Caller owns the same runtime mutex and already admitted this exact HTTP session. */
+    internal suspend fun admitted(context: AccountIconContext, session: AccountIconHttp.Session): IconTransferBatch {
+        session.authorize(context)
+        // Acquiring the sole owner proves the previous request and real IO have joined.
+        val recovered = queue.recoverInterrupted(context)
+        var completed = 0
+        var downloaded = false
+        val deferred = mutableSetOf<String>()
+        fun result(stopped: Boolean = false, limited: Boolean = false) = IconTransferBatch(
+            true, completed, recovered, stopped || deferred.isNotEmpty(), downloaded, limited, deferred.size)
+        repeat(32) {
+            val attempt = queue.prepareNext(context, deferred)
+                ?: return result()
+            try {
+                when (attempt.job.kind) {
+                    IconTransferKind.DECLARE_ASSET -> queue.confirmAsset(attempt, session.declareAsset(attempt))
+                    IconTransferKind.DECLARE_PACK -> queue.confirmPack(attempt, session.declarePack(attempt))
+                    IconTransferKind.UPLOAD -> {
+                        val bytes = local(attempt) { store.read(context, attempt.job.targetId, blob(attempt).sha256) }
+                        queue.confirmUpload(attempt, session.upload(attempt, bytes))
+                    }
+                    IconTransferKind.DOWNLOAD -> {
+                        val bytes = session.download(attempt)
+                        local(attempt) { store.installDownloaded(context, attempt.job.targetId, blob(attempt).sha256, bytes) }
+                        local(attempt) { queue.confirmDownload(attempt) }
+                        downloaded = true
                     }
                 }
-                result(limited = true)
-            } ?: IconTransferBatch(false, 0, 0, false, false)
+                completed++
+            } catch (error: CancellationException) {
+                throw error // Sending remains durable; never release through a replacement account.
+            } catch (_: LocalContentFailure) {
+                return result(stopped = true)
+            } catch (error: MaterialHttpFailure) {
+                if (error.code in setOf("SERVER_IDENTITY_MISMATCH", "SYNC_EPOCH_MISMATCH"))
+                    throw IllegalStateException("ICON_SERVER_IDENTITY_CHANGED")
+                if (attempt.job.kind == IconTransferKind.DOWNLOAD && error.status == 409 &&
+                    error.code == "ASSET_CONTENT_PENDING") {
+                    // Metadata may arrive before another device publishes bytes. Retry the
+                    // same intent later, once per batch, without starving eligible uploads.
+                    queue.release(attempt)
+                    deferred += attempt.job.operationId
+                    return@repeat
+                }
+                val failure = when {
+                    error.status == 401 || error.status >= 500 || error.status in setOf(408, 429) -> null
+                    error.code in setOf("ASSET_ID_REUSED", "PACK_VERSION_REUSED") -> IconTransferFailure.REMOTE_ID_REUSED
+                    error.status == 413 -> IconTransferFailure.REMOTE_QUOTA
+                    error.status == 403 -> IconTransferFailure.REMOTE_CAPABILITY
+                    error.status == 404 -> IconTransferFailure.REMOTE_NOT_FOUND
+                    else -> IconTransferFailure.REMOTE_METADATA
+                }
+                if (failure == null) queue.release(attempt) else queue.block(attempt, failure)
+                return result(stopped = true)
+            } catch (_: MaterialReplyInvalid) {
+                queue.block(attempt, IconTransferFailure.REMOTE_METADATA)
+                return result(stopped = true)
+            } catch (_: IOException) {
+                // Reauthorization/CAS inside release rejects any changed account/replica.
+                queue.release(attempt)
+                return result(stopped = true)
+            }
         }
+        return result(limited = true)
     }
 
     private fun blob(attempt: IconTransferAttempt) = if (attempt.job.variant == "light")
