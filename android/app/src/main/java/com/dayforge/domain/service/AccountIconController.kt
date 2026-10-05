@@ -72,7 +72,10 @@ internal class AccountIconRuntime(
     val imports: AccountIconImport, val documents: AccountIconDocuments, val close: () -> Unit
 ) {
     val transfers get() = imports.transfers
-    val processor by lazy { com.dayforge.data.appearance.AccountIconTransferProcessor(metadata, store, transfers) }
+    private val materialOwner = kotlinx.coroutines.sync.Mutex()
+    val catalog by lazy { metadata.remoteCatalog(transfers) }
+    val processor by lazy { com.dayforge.data.appearance.AccountIconTransferProcessor(metadata, store, transfers, materialOwner) }
+    val catalogProcessor by lazy { com.dayforge.data.appearance.AccountIconCatalogProcessor(metadata, catalog, materialOwner) }
 }
 
 /** Lazy process-singleton storage, using the same authoritative credentials/coordinator as login. */
@@ -100,6 +103,12 @@ class AccountIconController internal constructor(
     internal fun registerConsumer(cache: AccountIconMemory.Cache) = tokens.registerIconCache(cache)
     internal suspend fun capture() = io { it.metadata.capture() }
     internal suspend fun transferJobs(context: AccountIconContext) = io { it.transfers.jobs(context) }
+    internal suspend fun refreshCatalog(http: com.dayforge.data.appearance.AccountIconHttp) = io {
+        val context = it.metadata.capture()
+        val result = it.catalogProcessor.run(context, http)
+        if (result.entries > 0) it.metadata.authorized(context) { refreshReferences(context.namespace) }
+        result
+    }
     internal suspend fun transfer(http: com.dayforge.data.appearance.AccountIconHttp) = io {
         val context = it.metadata.capture()
         val result = it.processor.run(context, http)

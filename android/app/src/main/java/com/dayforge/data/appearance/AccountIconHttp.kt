@@ -120,6 +120,17 @@ class AccountIconHttp private constructor(
         private val json = Json { encodeDefaults = true }
         internal suspend fun identity(): MaterialServerIdentity = value(request(MaterialHttpRoute.IDENTITY_PATH))
 
+        suspend fun catalog(attempt: IconCatalogAttempt): AppearanceCatalogPage {
+            require(attempt.context.access == context.access)
+            val builder = request("/api/v2/appearance/catalog", query = true)
+            val url = builder.build().url.newBuilder().addQueryParameter("after", attempt.after.toString())
+                .addQueryParameter("limit", AccountIconRemoteCatalog.PAGE_LIMIT.toString())
+            attempt.through?.let { url.addQueryParameter("through", it.toString()) }
+            val page: AppearanceCatalogPage = value(builder.url(url.build()).get())
+            valid { AccountIconRemoteCatalog.validatePage(attempt, page) }
+            return page
+        }
+
         private fun request(path: String, query: Boolean = false): Request.Builder {
             val url = route.origin.newBuilder().encodedPath(path)
             if (query) url.addQueryParameter("server_instance_id", context.namespace.serverInstanceId)

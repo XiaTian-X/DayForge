@@ -30,7 +30,7 @@ class AccountIconTransferMigrationTest {
     }
     private fun snapshot(db: SupportSQLiteDatabase) = originalTables.associateWith { rows(db, "SELECT * FROM $it ORDER BY rowid") }
     private fun ddl(db: SupportSQLiteDatabase) = rows(db,
-        "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'room_%' AND tbl_name<>'icon_transfers' ORDER BY type,name")
+        "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('icon_transfers','icon_catalog_state','icon_catalog_entries') ORDER BY type,name")
     private fun seed(forged: Boolean = false): Pair<Map<String, List<List<String?>>>, List<List<String?>>> {
         val old = schema(3)
         return FrameworkSQLiteOpenHelperFactory().create(SupportSQLiteOpenHelper.Configuration.builder(app).name(name)
@@ -64,10 +64,10 @@ class AccountIconTransferMigrationTest {
     @Test fun directV3UpgradePreservesEveryOldColumnDdlReadyAndChoiceAndCreatesEmptyQueue() {
         val (before, structure) = seed()
         var db = open()
-        assertEquals(4, db.version); assertEquals(before, snapshot(db)); assertEquals(structure, ddl(db))
+        assertEquals(5, db.version); assertEquals(before, snapshot(db)); assertEquals(structure, ddl(db))
         assertTrue(rows(db, "SELECT * FROM icon_transfers").isEmpty())
         assertTrue(rows(db, "PRAGMA foreign_key_check").isEmpty())
-        assertEquals(schema(4).getValue("identityHash").jsonPrimitive.content,
+        assertEquals(schema(5).getValue("identityHash").jsonPrimitive.content,
             rows(db, "SELECT identity_hash FROM room_master_table WHERE id=42").single().single())
         room!!.close(); db = open()
         assertEquals(before, snapshot(db)); assertEquals(structure, ddl(db)); assertTrue(rows(db, "SELECT * FROM icon_transfers").isEmpty())
@@ -87,7 +87,7 @@ class AccountIconTransferMigrationTest {
                 it.execSQL("INSERT OR REPLACE INTO room_master_table VALUES(42,'4e6a7afa36b3ad419626fcdfbe1e7817')")
             }
         }
-        val db = open(); assertEquals(before, snapshot(db)); assertEquals(structure, ddl(db)); assertEquals(4, db.version)
+        val db = open(); assertEquals(before, snapshot(db)); assertEquals(structure, ddl(db)); assertEquals(5, db.version)
     }
 
     @Test fun validForeignTableRowsViewAndReservedIndexCannotBeAdoptedAndExactRemovalAllowsRetry() {
@@ -116,7 +116,7 @@ class AccountIconTransferMigrationTest {
                 it.execSQL(drop)
             }
         }
-        val db = open(); assertEquals(before, snapshot(db)); assertEquals(4, db.version)
+        val db = open(); assertEquals(before, snapshot(db)); assertEquals(5, db.version)
         assertTrue(rows(db, "SELECT * FROM icon_transfers").isEmpty())
     }
 

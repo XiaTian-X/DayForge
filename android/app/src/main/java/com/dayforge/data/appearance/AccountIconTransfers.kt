@@ -47,6 +47,7 @@ internal class AccountIconTransfers(
     private val json = Json { encodeDefaults = true }
     internal fun usesStores(valueMetadata: AccountIconRepository, valueStore: AccountIconStore) =
         metadata === valueMetadata && store === valueStore
+    internal fun usesMetadata(value: AccountIconRepository) = metadata === value
     private val dao get() = database.transfers()
     private data class Key(val kind: String, val targetId: String, val revision: Int = 0, val variant: String = "")
     private fun AccountIconTransferRow.key() = Key(kind, targetId, revision, variant)
@@ -96,6 +97,20 @@ internal class AccountIconTransfers(
     private fun assetKeys(asset: IconAsset) = listOf(Key(IconTransferKind.DECLARE_ASSET.wire, asset.assetId),
         Key(IconTransferKind.UPLOAD.wire, asset.assetId, variant = "light")) +
         if (asset.dark == null) emptyList() else listOf(Key(IconTransferKind.UPLOAD.wire, asset.assetId, variant = "dark"))
+
+    /** Called only inside the canonical metadata/catalog transaction; no nested account locking. */
+    internal suspend fun catalogRows(context: AccountIconContext, catalog: AccountIconTransferMetadata) = read(context, catalog)
+
+    internal suspend fun enqueueCatalogDownloads(context: AccountIconContext, catalog: AccountIconTransferMetadata,
+        assetIds: Set<String>): List<AccountIconTransferRow> {
+        val keys = assetIds.flatMap { id ->
+            val asset = requireNotNull(catalog.assets[id]) { "ICON_ASSET_NOT_OWNED" }
+            listOf(Key(IconTransferKind.DOWNLOAD.wire, id, variant = "light")) +
+                if (asset.dark == null) emptyList() else listOf(Key(IconTransferKind.DOWNLOAD.wire, id, variant = "dark"))
+        }
+        enqueueWithinTransaction(context, catalog, read(context, catalog), keys)
+        return read(context, catalog)
+    }
 
     private suspend fun enqueue(context: AccountIconContext, keys: (AccountIconTransferMetadata) -> List<Key>): List<IconTransferJob> =
         scoped(context) { catalog, before ->

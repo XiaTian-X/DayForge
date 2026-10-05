@@ -121,12 +121,14 @@ internal interface AccountIconDao {
 /** Separate lifetime from HabitDatabase.clearAllData; never destructively reset on mismatch. */
 @Database(
     entities = [AccountIconAssetRow::class, AccountIconPackRow::class, AccountIconBlobRow::class,
-        AccountIconReadyRow::class, AccountIconSelectionRow::class, AccountIconTransferRow::class],
-    version = 4, exportSchema = true
+        AccountIconReadyRow::class, AccountIconSelectionRow::class, AccountIconTransferRow::class,
+        AccountIconCatalogStateRow::class, AccountIconCatalogEntryRow::class],
+    version = 5, exportSchema = true
 )
 internal abstract class AccountIconDatabase : RoomDatabase() {
     abstract fun icons(): AccountIconDao
     abstract fun transfers(): AccountIconTransferDao
+    abstract fun remoteCatalog(): AccountIconCatalogDao
 
     companion object {
         const val NAME = "account_icon_database"
@@ -188,8 +190,31 @@ internal abstract class AccountIconDatabase : RoomDatabase() {
                 db.execSQL("CREATE UNIQUE INDEX `index_icon_transfers_accountId_serverInstanceId_syncEpoch_kind_targetId_revision_variant` ON `icon_transfers` (`accountId`, `serverInstanceId`, `syncEpoch`, `kind`, `targetId`, `revision`, `variant`)")
             }
         }
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                val identity = when (db.version) {
+                    1 -> "897ac35249ffe16fe3d16ea58dac5b54"
+                    2 -> "04c8718e516aed6eaacbdc5777ea61af"
+                    3 -> "4e6a7afa36b3ad419626fcdfbe1e7817"
+                    4 -> "05aff81105a9e40dca1abe3a8357bd64"
+                    else -> error("ICON_CATALOG_SCHEMA_VERSION")
+                }
+                db.query("SELECT id, identity_hash, typeof(identity_hash), typeof(id) FROM room_master_table").use {
+                    check(it.moveToFirst() && it.getString(2) == "text" && it.getString(3) == "integer" &&
+                        it.getLong(0) == 42L && it.getString(1) == identity && !it.moveToNext()) {
+                        "ICON_CATALOG_SCHEMA_IDENTITY"
+                    }
+                }
+                db.query("SELECT name FROM sqlite_master WHERE name COLLATE NOCASE IN ('icon_catalog_state', 'icon_catalog_entries', 'index_icon_catalog_entries_accountId_serverInstanceId_syncEpoch_kind_targetId_revision')").use {
+                    check(!it.moveToFirst()) { "ICON_CATALOG_SCHEMA_COLLISION" }
+                }
+                db.execSQL("CREATE TABLE `icon_catalog_state` (`accountId` TEXT NOT NULL, `serverInstanceId` TEXT NOT NULL, `syncEpoch` TEXT NOT NULL, `generation` INTEGER NOT NULL, `cursor` INTEGER NOT NULL, `through` INTEGER NOT NULL, PRIMARY KEY(`accountId`, `serverInstanceId`, `syncEpoch`))")
+                db.execSQL("CREATE TABLE `icon_catalog_entries` (`accountId` TEXT NOT NULL, `serverInstanceId` TEXT NOT NULL, `syncEpoch` TEXT NOT NULL, `sequence` INTEGER NOT NULL, `kind` TEXT NOT NULL, `targetId` TEXT NOT NULL, `revision` INTEGER NOT NULL, `metadataHash` TEXT NOT NULL, PRIMARY KEY(`accountId`, `serverInstanceId`, `syncEpoch`, `sequence`))")
+                db.execSQL("CREATE UNIQUE INDEX `index_icon_catalog_entries_accountId_serverInstanceId_syncEpoch_kind_targetId_revision` ON `icon_catalog_entries` (`accountId`, `serverInstanceId`, `syncEpoch`, `kind`, `targetId`, `revision`)")
+            }
+        }
         fun open(context: Context): AccountIconDatabase =
             Room.databaseBuilder(context.applicationContext, AccountIconDatabase::class.java, NAME)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build()
     }
 }
