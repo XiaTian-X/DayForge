@@ -1,10 +1,10 @@
-"""Inactive two-phase asset service; no v4 route or application lifecycle wiring."""
+"""Two-phase asset service; production callers always provide exact v5 headers."""
 
 from dataclasses import dataclass
 from io import BytesIO
 import logging
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
 from src.appearance.input import ImageInputError
@@ -13,7 +13,7 @@ from src.auth.dependencies import authenticate_header
 from src.auth.models import User
 from src.storage.asset_files import AssetFiles, InstallReceipt
 from src.storage.asset_io import AssetIoPool
-from src.storage.transactions import storage_transaction
+from src.storage.transactions import SessionFactory, storage_transaction
 from src.time_utils import utc_now
 from src.v2.appearance import IconBlob
 from src.v2.asset_access import require_asset_access
@@ -22,13 +22,14 @@ from src.v2.asset_models import AccountIconBlob
 from src.v2.asset_records import blob_ready, blob_value
 from src.v2.asset_service import read_asset
 from src.v2.errors import DomainError
+from src.v2.protocol_admission import require_next_protocol
 
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class _Binding:
+class TransferAuthorization:
     owner_public_id: str
     blob: IconBlob
 
@@ -52,7 +53,7 @@ class AssetTransfers:
 
     def __init__(
         self,
-        sessions: async_sessionmaker[AsyncSession],
+        sessions: SessionFactory,
         files: AssetFiles,
         pool: AssetIoPool,
     ):
@@ -70,8 +71,13 @@ class AssetTransfers:
         *,
         write: bool,
         record_use: bool,
-    ) -> tuple[_Binding, AccountIconBlob]:
+        protocol_headers: tuple[str, ...] | None = None,
+    ) -> tuple[TransferAuthorization, AccountIconBlob]:
         user = await authenticate_header(header, session, record_token_use=record_use)
+        if protocol_headers is not None:
+            await require_next_protocol(
+                session, user, context.device_id, protocol_headers
+            )
         owner = await require_asset_access(session, user, context, write=write)
         record = await read_asset(session, user, context, asset_id)
         if variant not in {"light", "dark"}:
@@ -92,10 +98,36 @@ class AssetTransfers:
                 "ASSET_METADATA_CORRUPT", "Stored asset metadata is inconsistent"
             )
         blob_ready(row)
-        return _Binding(user.public_id, expected), row
+        return TransferAuthorization(user.public_id, expected), row
+
+    async def authorize(
+        self,
+        header: str | None,
+        context: AssetSyncContext,
+        asset_id: str,
+        variant: Variant,
+        *,
+        write: bool,
+        protocol_headers: tuple[str, ...],
+    ) -> TransferAuthorization:
+        """Close the read snapshot BEFORE transport consumes any request bytes."""
+        async with self.sessions() as session:
+            binding, _ = await self._binding(
+                session,
+                header,
+                context,
+                asset_id,
+                variant,
+                write=write,
+                record_use=False,
+                protocol_headers=protocol_headers,
+            )
+            return binding
 
     @staticmethod
-    def _same_binding(before: _Binding, after: _Binding) -> None:
+    def _same_binding(
+        before: TransferAuthorization, after: TransferAuthorization
+    ) -> None:
         if before != after:
             raise DomainError(
                 "ASSET_METADATA_CHANGED",
@@ -109,6 +141,9 @@ class AssetTransfers:
         asset_id: str,
         variant: Variant,
         data: bytes,
+        *,
+        protocol_headers: tuple[str, ...] | None = None,
+        authorization: TransferAuthorization | None = None,
     ) -> InstalledTransfer:
         if type(data) is not bytes:
             raise TypeError("asset transfer requires immutable bytes")
@@ -123,7 +158,10 @@ class AssetTransfers:
                 variant,
                 write=True,
                 record_use=False,
+                protocol_headers=protocol_headers,
             )
+            if authorization is not None:
+                self._same_binding(authorization, before)
 
         # The first snapshot is closed. Even a pending source's slow image
         # validation and fsync do not hold a database transaction or writer lock.
@@ -143,7 +181,14 @@ class AssetTransfers:
             )
         async with storage_transaction(self.sessions) as final:
             after, row = await self._binding(
-                final, header, context, asset_id, variant, write=True, record_use=True
+                final,
+                header,
+                context,
+                asset_id,
+                variant,
+                write=True,
+                record_use=True,
+                protocol_headers=protocol_headers,
             )
             self._same_binding(before, after)
             if not blob_ready(row):
@@ -176,6 +221,9 @@ class AssetTransfers:
         context: AssetSyncContext,
         asset_id: str,
         variant: Variant,
+        *,
+        protocol_headers: tuple[str, ...] | None = None,
+        authorization: TransferAuthorization | None = None,
     ) -> bytes:
         async with self.sessions() as initial:
             before, row = await self._binding(
@@ -186,7 +234,10 @@ class AssetTransfers:
                 variant,
                 write=False,
                 record_use=False,
+                protocol_headers=protocol_headers,
             )
+            if authorization is not None:
+                self._same_binding(authorization, before)
             if not blob_ready(row):
                 raise DomainError(
                     "ASSET_NOT_READY", "Asset bytes have not been installed"
@@ -197,7 +248,14 @@ class AssetTransfers:
         )
         async with storage_transaction(self.sessions) as final:
             after, row = await self._binding(
-                final, header, context, asset_id, variant, write=False, record_use=True
+                final,
+                header,
+                context,
+                asset_id,
+                variant,
+                write=False,
+                record_use=True,
+                protocol_headers=protocol_headers,
             )
             self._same_binding(before, after)
             if not blob_ready(row):

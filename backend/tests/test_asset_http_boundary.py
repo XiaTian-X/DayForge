@@ -137,7 +137,13 @@ async def test_authentication_and_device_scope_precede_declaration(asset_http, c
     assert await snapshot(factory) == before
 
 
-def test_staged_services_are_not_production_routes():
-    assert all(
-        not path.startswith("/api/v2/appearance") for path in app.openapi()["paths"]
-    )
+def test_production_appearance_contract_requires_explicit_protocol():
+    routes = app.openapi()["paths"]
+    assert "/api/v2/appearance/catalog" in routes
+    for path, operations in routes.items():
+        if path.startswith("/api/v2/appearance"):
+            for operation in operations.values():
+                assert any(
+                    field["name"] == "X-DayForge-Protocol" and field["required"]
+                    for field in operation["parameters"]
+                )

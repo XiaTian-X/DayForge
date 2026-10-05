@@ -264,7 +264,18 @@ def test_planned_openapi_is_reproducible_has_no_dangling_refs_and_is_not_live():
     assert (
         document["openapi"] == "3.1.0" and document["x-activation-state"] == "planned"
     )
-    assert not any("/appearance/" in path for path in app.openapi()["paths"])
+    # Appearance now has guarded production routes, while online sync is v4.
+    live = app.openapi()["paths"]
+    assert live["/api/v2/sync/push"]["post"]["requestBody"]["content"][
+        "application/json"
+    ]["schema"] == {"$ref": "#/components/schemas/SyncPushRequest"}
+    for path, operations in live.items():
+        if "/appearance/" in path:
+            for operation in operations.values():
+                assert any(
+                    field["name"] == "X-DayForge-Protocol" and field["required"]
+                    for field in operation["parameters"]
+                )
     for path in document["paths"].values():
         for operation in path.values():
             protocol = [

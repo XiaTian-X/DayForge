@@ -29,6 +29,7 @@ async def read_catalog(
     after: int = 0,
     through: int | None = None,
     limit: int = 100,
+    max_response_bytes: int | None = None,
 ) -> AppearanceCatalogPage:
     owner = await require_asset_access(session, user, context)
     account = await session.get(AppearanceAccount, owner)
@@ -65,6 +66,10 @@ async def read_catalog(
         raise DomainError("ASSET_METADATA_CORRUPT", "Catalog history is incomplete")
     has_more = len(rows) > limit
     entries: list[AssetCatalogEntry | PackCatalogEntry] = []
+    # Envelope reserve exceeds UUID/context/cursor fields, punctuation and UTF-8.
+    remaining = None if max_response_bytes is None else max_response_bytes - 4096
+    if remaining is not None and remaining < 1:
+        raise ValueError("catalog response budget is too small")
     for row in rows[:limit]:
         if row.kind == "asset":
             asset = (
@@ -79,12 +84,10 @@ async def read_catalog(
                 raise DomainError(
                     "ASSET_METADATA_CORRUPT", "Catalog asset is unavailable"
                 )
-            entries.append(
-                AssetCatalogEntry(
-                    sequence=row.sequence,
-                    kind="asset",
-                    asset=asset_value(asset),
-                )
+            entry: AssetCatalogEntry | PackCatalogEntry = AssetCatalogEntry(
+                sequence=row.sequence,
+                kind="asset",
+                asset=asset_value(asset),
             )
         else:
             pack = (
@@ -99,13 +102,23 @@ async def read_catalog(
                 raise DomainError(
                     "ASSET_METADATA_CORRUPT", "Catalog pack is unavailable"
                 )
-            entries.append(
-                PackCatalogEntry(
-                    sequence=row.sequence,
-                    kind="pack",
-                    pack=pack_value(pack),
-                )
+            entry = PackCatalogEntry(
+                sequence=row.sequence,
+                kind="pack",
+                pack=pack_value(pack),
             )
+        if remaining is not None:
+            size = len(entry.model_dump_json().encode("utf-8")) + 1
+            if size > remaining:
+                if not entries:
+                    raise DomainError(
+                        "ASSET_RESPONSE_TOO_LARGE",
+                        "Catalog entry exceeds transport budget",
+                    )
+                has_more = True
+                break
+            remaining -= size
+        entries.append(entry)
     return AppearanceCatalogPage(
         context=context,
         entries=entries,

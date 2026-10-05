@@ -21,7 +21,7 @@ from tests.test_alembic_migration import alembic_config
 
 
 @contextmanager
-def isolated_server(tmp_path):
+def isolated_server(tmp_path, *, asset_root=None):
     database = tmp_path / "jwt-acceptance.sqlite"
     command.upgrade(alembic_config(str(database)), "head")
     key, password = secrets.token_urlsafe(48), secrets.token_urlsafe(24)
@@ -42,6 +42,8 @@ def isolated_server(tmp_path):
         ADMIN_PASSWORD=password,
         PYTHONPATH=str(Path(__file__).resolve().parents[1]),
     )
+    if asset_root is not None:
+        environment["ASSET_ROOT"] = str(asset_root)
     # Pass an already-bound loopback socket, avoiding a free-port race. The
     # child owns only this test's fresh DB; its cwd cannot load the project .env.
     with socket.socket() as listener, (tmp_path / "server.log").open("wb") as log:

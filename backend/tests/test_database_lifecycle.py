@@ -3,6 +3,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, Mock
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import event, text, update
@@ -26,6 +27,10 @@ def isolated_runtime(monkeypatch, tmp_path):
         build_database_adapter("sqlite", None, str(tmp_path / "lifecycle.db")),
     )
     monkeypatch.setattr(main, "_create_admin_if_missing", AsyncMock())
+    # This fixture isolates database lifecycle, not deployment configuration.
+    # Do not inherit an actual asset root or reload a default JWT configuration
+    # after the separately isolated Settings tests have cleared their cache.
+    monkeypatch.setattr(main, "get_settings", lambda: SimpleNamespace(ASSET_ROOT=None))
 
 
 async def test_unused_lifespan_does_not_create_engine(isolated_runtime, monkeypatch):
