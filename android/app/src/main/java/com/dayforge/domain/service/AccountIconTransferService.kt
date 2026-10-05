@@ -10,4 +10,5 @@ class AccountIconTransferService @Inject constructor(
     private val icons: AccountIconController, private val http: AccountIconHttp
 ) {
     internal suspend fun transfer() = icons.transfer(http)
+    internal suspend fun refreshCatalog() = icons.refreshCatalog(http)
 }

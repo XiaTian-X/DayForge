@@ -13,10 +13,9 @@ internal data class IconTransferBatch(val supported: Boolean, val completed: Int
 /** One owner per canonical runtime. No account lock or database transaction spans HTTP/file IO. */
 internal class AccountIconTransferProcessor(
     private val metadata: AccountIconRepository, private val store: AccountIconStore,
-    private val queue: AccountIconTransfers
+    private val queue: AccountIconTransfers, private val owner: Mutex = Mutex()
 ) {
     init { require(queue.usesStores(metadata, store)) }
-    private val owner = Mutex()
 
     suspend fun run(context: AccountIconContext, http: AccountIconHttp): IconTransferBatch = owner.withLock {
         withTimeout(240_000) {

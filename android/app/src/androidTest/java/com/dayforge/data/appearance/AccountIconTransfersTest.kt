@@ -419,7 +419,7 @@ class AccountIconTransfersTest {
         database.close()
         val entered = CountDownLatch(1); val release = CountDownLatch(1)
         database = Room.databaseBuilder(app, AccountIconDatabase::class.java, AccountIconDatabase.NAME)
-            .addMigrations(AccountIconDatabase.MIGRATION_1_2, AccountIconDatabase.MIGRATION_2_3, AccountIconDatabase.MIGRATION_3_4)
+            .addMigrations(AccountIconDatabase.MIGRATION_1_2, AccountIconDatabase.MIGRATION_2_3, AccountIconDatabase.MIGRATION_3_4, AccountIconDatabase.MIGRATION_4_5)
             .setQueryCallback({ sql, _ ->
                 if (sql.startsWith("INSERT", ignoreCase = true) && sql.contains("icon_transfers")) {
                     entered.countDown(); check(release.await(5, TimeUnit.SECONDS))

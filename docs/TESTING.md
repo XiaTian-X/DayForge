@@ -135,9 +135,9 @@ teardown，最后恢复真实调度对象。测试仍检查真实业务数据/ou
 数量、各表坏 SQL 类型/范围、ready/选择值和副本隔离；拒绝后原损坏值不变，恢复后重新读取。
 暖解析须验证合法原文变更、重复 JSON 键、事务回滚；复用解析不能掩盖实际行变更，SQL 类型、
 安装意图、ready 与选择仍逐次审计。
-新库测试比较导出的当前 v4 身份，拒绝未知版本和伪 schema，均限定 `com.dayforge.testbed`。
+新库测试比较导出的当前 v5 身份，拒绝未知版本和伪 schema，均限定 `com.dayforge.testbed`。
 `AccountIconMigrationTest` 从已提交 v1 schema 经过生产入口升级，比较原三表的全部行/DDL/
-operation ID、最终 v4 identity、空 ready/selection/transfer 和账户复合外键；DDL 阻塞和最终 schema 校验失败须回滚
+operation ID、最终 v5 identity、空 ready/selection/transfer 和账户复合外键；DDL 阻塞和最终 schema 校验失败须回滚
 至原 v1，精确移除测试障碍后能重试，不通过清库取得成功。
 升级前显式核对冻结 v1 identity；伪造、缺失、额外行及 BLOB 类型不得随迁移被覆盖成有效身份。
 直接 v2→3 独立验证原四表全部行/DDL/ready 保留、空 selection、复合外键及冷重开；冻结 v2
@@ -181,7 +181,21 @@ v4 零领取/零恢复、素材/包/双变体确认及冷重开、只读已归�
 另验证真实下载 `409 ASSET_CONTENT_PENDING` 每批仅尝试一次且保留身份/元数据/字节，冷重开后
 字节到达可完整确认；等待下载不能饿死声明/上传，固定 32 项预算不变且跨批采用 generation 公平性。
 错状态/错 kind/其他 409 仍阻塞，内容等待与后续网络/账户失效不虚报完成或跨会话释放。
-这些测试不是生产 v5 服务器/版本门禁、Worker 调度、远端目录 ingress、实际 LAN/WAN 或人工验收。
+这些测试不是生产 v5 服务器/版本门禁、Worker 调度、实际 LAN/WAN 或人工验收。
+
+`AccountIconCatalogMigrationTest` 从冻结 v4 经生产入口升级到 v5，逐列/原始类型/DDL 比较全部六张
+旧表、ready、选择和确认，验证新目录为空、当前身份、外键与冷重开；旧迁移继续证明 v1/v2/v3
+整链至当前版本且不放宽原断言。错误/缺失/额外/BLOB 身份、错误 master ID、同名合法外来表/视图/
+大小写索引以及最终 schema 失败都必须保留旧版及数据，精确移除测试障碍后能重试，不清库。
+`AccountIconCatalogTest` 使用真实文件 Room/DataStore、实际 HTTP 和 domain 入口验证只读目录接收、
+重复 hash/全变体意图、四页预算和冻结 through 冷续页、后来追加、精确重放及真实下载后的原生字节。
+稀疏序列、引用乱序、重复身份、不可变错配、错类型/重复 JSON 键/上下文、旧 CAS 均拒绝，
+v4/未来版本不请求目录；空末页不消耗代次。元数据/预留/包/意图/日志/检查点各阶段 ABORT/IGNORE，
+最终触发器改写/伪 ready/选包和额度拒绝须整页回滚；坏 SQL 类型/超范围、缺历史/意图拒绝且不修复。
+原 mixed pending/sending/blocked/complete、完整确认字段/UUID/ready 保留，两个真实 Room 连接
+并发精确投递可在新事务重试；最终真实 SQL 屏障中取消须 join 原工作并冷重开验证全部回滚。
+最大合法四包 HTTP 响应测试仍执行 128 素材/256 角色/最长 Unicode 名称与双变体，不安装字节或猜归属。
+这些不表示生产 v5/Worker、正式服务器/外网或系统提供者/手机平板人工验收已完成。
 
 `AccountIconRendererTest` 在真实文件/Room/DataStore 上覆盖 PNG/SVG 的不可变缓存命中、
 浅深/模板与原色、主题版本/UUID/tint/尺寸/素材身份、账户/server/epoch/重登及权限变化、只读设备，

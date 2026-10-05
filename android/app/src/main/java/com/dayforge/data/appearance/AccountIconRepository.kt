@@ -76,6 +76,7 @@ internal class AccountIconRepository(
     private var parsedMetadata: ParsedMetadata? = null
 
     internal fun usesDatabase(value: AccountIconDatabase): Boolean = database === value
+    internal fun remoteCatalog(transfers: AccountIconTransfers) = AccountIconRemoteCatalog(database, this, transfers)
 
     internal fun registerCache(cache: com.dayforge.data.local.AccountIconMemory.Cache) =
         tokens.registerIconCache(cache)
@@ -274,14 +275,26 @@ internal class AccountIconRepository(
         require(pack.assets.size in 1..128 && pack.roles.size <= 256)
         val snapshot = pack.copy(assets = pack.assets.toList(), roles = pack.roles.toMap())
         val frozen = decodePack(json.encodeToString(snapshot))
-        return declare(context, frozen.assets, frozen, block)
+        return declare(context, frozen.assets, listOf(frozen), writing = true, block)
     }
 
     internal suspend fun <T> reserveAssetTransaction(context: AccountIconContext, asset: IconAsset,
         block: suspend (AccountIconTransferMetadata) -> T): T {
         // Freeze and revalidate even a caller-built value, before any persistence.
         val frozen = decodeAsset(json.encodeToString(asset))
-        return declare(context, listOf(frozen), null, block)
+        return declare(context, listOf(frozen), emptyList(), writing = true, block)
+    }
+
+    /** Authenticated remote catalog only; received metadata is not a local declaration or acknowledgement. */
+    internal suspend fun <T> receiveCatalogTransaction(context: AccountIconContext, assets: List<IconAsset>,
+        packs: List<IconPack>, block: suspend (AccountIconTransferMetadata) -> T): T {
+        require(assets.size + packs.size <= 4)
+        val frozenAssets = assets.toList().map { decodeAsset(json.encodeToString(it)) }
+        val frozenPacks = packs.toList().map { pack ->
+            require(pack.assets.size in 1..128 && pack.roles.size <= 256)
+            decodePack(json.encodeToString(pack.copy(assets = pack.assets.toList(), roles = pack.roles.toMap())))
+        }
+        return declare(context, frozenAssets, frozenPacks, writing = false, block)
     }
 
     private suspend fun check(context: AccountIconContext, writing: Boolean = false) {
@@ -297,10 +310,10 @@ internal class AccountIconRepository(
         result
     }
 
-    private suspend fun <T> declare(context: AccountIconContext, assets: List<IconAsset>, pack: IconPack?,
+    private suspend fun <T> declare(context: AccountIconContext, assets: List<IconAsset>, packs: List<IconPack>, writing: Boolean,
         block: suspend (AccountIconTransferMetadata) -> T): T =
         sessions.exclusive {
-            check(context, writing = true)
+            check(context, writing)
             val result = database.withTransaction {
                 val ns = context.namespace
                 val before = catalog(ns)
@@ -309,9 +322,13 @@ internal class AccountIconRepository(
                     check(old == null || old == asset) { "ASSET_ID_REUSED" }
                     old == null
                 }
-                val oldPack = pack?.let { before.packs[it.packId to it.revision] }
-                check(oldPack == null || oldPack == pack) { "PACK_VERSION_REUSED" }
-                val newPack = pack?.takeIf { oldPack == null }
+                val owned = before.assets + assets.associateBy { it.assetId }
+                check(packs.all { pack -> pack.assets.all { owned[it.assetId] == it } }) { "ICON_ASSET_NOT_OWNED" }
+                val newPacks = packs.filter { pack ->
+                    val old = before.packs[pack.packId to pack.revision]
+                    check(old == null || old == pack) { "PACK_VERSION_REUSED" }
+                    old == null
+                }
                 val descriptors = assets.flatMap { listOfNotNull(it.light, it.dark) }.groupBy { it.sha256 }
                     .mapValues { (_, variants) ->
                         check(variants.all { it == variants.first() }) { "ICON_BLOB_CONFLICT" }
@@ -325,7 +342,7 @@ internal class AccountIconRepository(
                 val assetRows = newAssets.map {
                     AccountIconAssetRow(ns.accountId, ns.serverInstanceId, ns.syncEpoch, it.assetId, json.encodeToString(it))
                 }
-                val packRow = newPack?.let {
+                val packRows = newPacks.map {
                     AccountIconPackRow(ns.accountId, ns.serverInstanceId, ns.syncEpoch, it.packId, it.revision, json.encodeToString(it))
                 }
                 fun quota(used: Long, growth: Long, ceiling: Long) {
@@ -334,7 +351,7 @@ internal class AccountIconRepository(
                 quota(before.assets.size.toLong(), assetRows.size.toLong(), limits.assets.toLong())
                 quota(before.byteCount, newBlobs.sumOf { it.byteLength.toLong() }, limits.bytes)
                 quota(before.metadataBytes, assetRows.sumOf { utf8Size(it.metadataJson) } +
-                    (packRow?.let { utf8Size(it.metadataJson) } ?: 0L), limits.metadataBytes)
+                    packRows.sumOf { utf8Size(it.metadataJson) }, limits.metadataBytes)
                 val dao = database.icons()
                 val blobRows = newBlobs.map {
                     AccountIconBlobRow(ns.accountId, ns.serverInstanceId, ns.syncEpoch,
@@ -342,11 +359,11 @@ internal class AccountIconRepository(
                 }
                 blobRows.forEach { dao.insertBlob(it) }
                 assetRows.forEach { dao.insertAsset(it) }
-                packRow?.let { dao.insertPack(it) }
+                packRows.forEach { dao.insertPack(it) }
                 // Detect ignored writes and damaged descriptors before the transaction commits.
                 val after = catalog(ns)
                 check(after.assets == before.assets + assets.associateBy { it.assetId }) { "ICON_STORE_CORRUPT" }
-                check(after.packs == before.packs + (pack?.let { mapOf((it.packId to it.revision) to it) } ?: emptyMap())) {
+                check(after.packs == before.packs + packs.associateBy { it.packId to it.revision }) {
                     "ICON_STORE_CORRUPT"
                 }
                 val expectedBlobs = before.blobs + blobRows.associate {
@@ -358,10 +375,10 @@ internal class AccountIconRepository(
                 val value = block(AccountIconTransferMetadata(
                     Collections.unmodifiableMap(after.assets), Collections.unmodifiableMap(after.packs)))
                 check(catalog(ns) == after) { "ICON_TRANSFER_CHANGED_METADATA" }
-                check(context, writing = true)
+                check(context, writing)
                 value
             }
-            check(context, writing = true)
+            check(context, writing)
             result
         }
 
