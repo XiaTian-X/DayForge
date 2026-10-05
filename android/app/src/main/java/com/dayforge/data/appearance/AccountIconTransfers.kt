@@ -122,13 +122,18 @@ internal class AccountIconTransfers(
     }
 
     /** One CAS claim. Uploads/packs wait for the exact asset declarations, not local ready rows. */
-    suspend fun prepareNext(context: AccountIconContext): IconTransferAttempt? = scoped(context) { catalog, before ->
+    suspend fun prepareNext(context: AccountIconContext, deferred: Set<String> = emptySet()): IconTransferAttempt? = scoped(context) { catalog, before ->
+        require(deferred.size <= 32)
+        val excluded = deferred.toSet()
+        require(excluded.size <= 32 && excluded.all(::isContractUuid))
         val confirmed = before.filter { it.state == "complete" }.map { it.key() }.toSet()
-        val row = before.firstOrNull { it.state == "pending" &&
+        // UUID order is only a stable tie-breaker. Otherwise a temporarily pending download
+        // can win every bounded batch and prevent the very uploads it is waiting for.
+        val row = before.asSequence().filter { it.state == "pending" && it.operationId !in excluded &&
             (it.kind == IconTransferKind.DOWNLOAD.wire || context.access.canDeclare) && dependencies(catalog, it).all { key ->
                 key in confirmed
             }
-        } ?: return@scoped null
+        }.minWithOrNull(compareBy<AccountIconTransferRow> { it.generation }.thenBy { it.operationId }) ?: return@scoped null
         check(row.generation <= Long.MAX_VALUE - 2) { "ICON_TRANSFER_EXHAUSTED" } // Reserve the confirmation/release transition too.
         val changed = row.copy(state = "sending", generation = next(row.generation), deviceId = context.access.deviceId)
         change(context, catalog, before, row, changed)

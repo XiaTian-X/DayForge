@@ -507,6 +507,185 @@ class AccountIconHttpTest {
         assertTrue(queue.jobs(context).all { it.state == IconTransferState.COMPLETE })
     }
 
+    private fun reopenPendingContent() {
+        database.close(); database = AccountIconDatabase.open(app)
+        metadata = AccountIconRepository(database, tokens, AccountSessionCoordinator())
+        store = AccountIconStore(metadata, AccountIconFiles(directory)); queue = AccountIconTransfers(database, metadata, store)
+        processor = AccountIconTransferProcessor(metadata, store, queue)
+    }
+    private fun contentPending() = json("""{"detail":{"code":"ASSET_CONTENT_PENDING"}}""", 409)
+
+    @Test fun pendingContentKeepsReadonlyIdentityAndColdRetryValidatesRealBytes() = runBlocking<Unit> {
+        login(editing = false, revision = 2); val context = metadata.capture()
+        val reservations = metadata.reservations(context); val library = metadata.library(context)
+        val job = queue.enqueueDownload(context, id(10), "light")
+        var ready = false
+        val (http, server) = http { input, _ ->
+            val reply = normal(input)
+            if (!input.path.endsWith("/identity") && !ready) contentPending() else reply
+        }
+        assertEquals(IconTransferBatch(true, 0, 0, true, false, contentPending = 1), processor.run(context, http))
+        val pending = queue.jobs(context).single()
+        assertEquals(job.operationId, pending.operationId); assertEquals(2L, pending.generation)
+        assertEquals(IconTransferState.PENDING, pending.state); assertNull(pending.failure)
+        assertNull(metadata.installation(context, id(10), hash).validationProfile)
+        assertEquals(reservations, metadata.reservations(context)); assertEquals(library, metadata.library(context))
+        assertEquals(2, server.requests.size)
+        reopenPendingContent(); assertEquals(listOf(pending), queue.jobs(context))
+        ready = true
+        assertEquals(IconTransferBatch(true, 1, 0, false, true), processor.run(context, http))
+        val complete = queue.jobs(context).single()
+        assertEquals(job.operationId, complete.operationId); assertEquals(4L, complete.generation)
+        assertEquals(IconTransferState.COMPLETE, complete.state); assertNull(complete.failure)
+        assertArrayEquals(bytes, store.read(context, id(10), hash))
+        assertNotNull(metadata.installation(context, id(10), hash).validationProfile)
+        assertEquals(reservations, metadata.reservations(context)); assertEquals(library, metadata.library(context))
+        assertTrue(server.requests.all { it.method == "GET" }); assertEquals(4, server.requests.size)
+    }
+
+    @Test fun firstPendingDownloadCannotStarveTheDeclarationsAndUploadsItNeeds() = runBlocking<Unit> {
+        val context = metadata.capture(); store.install(context, id(10), hash, bytes)
+        var counter = 100
+        queue = AccountIconTransfers(database, metadata, store, operationId = { id(counter++) })
+        processor = AccountIconTransferProcessor(metadata, store, queue)
+        val waiting = queue.enqueueDownload(context, id(10), "light")
+        queue.enqueueAsset(context, id(10)); val before = queue.jobs(context)
+        assertEquals(waiting.operationId, before.first().operationId)
+        var published = false
+        val (http, server) = http { input, _ ->
+            val reply = normal(input)
+            when {
+                input.method == "GET" && input.path.contains("/content/") && !published -> contentPending()
+                input.method == "PUT" && input.path.contains("/content/") -> { published = true; reply }
+                else -> reply
+            }
+        }
+        assertEquals(IconTransferBatch(true, 3, 0, true, false, contentPending = 1), processor.run(context, http))
+        assertEquals("GET", server.requests[1].method); assertTrue(server.requests[1].path.endsWith("/content/light"))
+        assertEquals(3, server.requests.count { it.method == "PUT" }); assertEquals(5, server.requests.size)
+        assertTrue(published)
+        val after = queue.jobs(context)
+        assertEquals(before.map { it.operationId }, after.map { it.operationId })
+        assertEquals(IconTransferState.PENDING, after.single { it.operationId == waiting.operationId }.state)
+        assertTrue(after.filter { it.operationId != waiting.operationId }.all { it.state == IconTransferState.COMPLETE })
+        assertEquals(IconTransferBatch(true, 1, 0, false, true), processor.run(context, http))
+        assertTrue(queue.jobs(context).all { it.state == IconTransferState.COMPLETE })
+        assertEquals(before.map { it.operationId }, queue.jobs(context).map { it.operationId })
+        assertArrayEquals(bytes, store.read(context, id(10), hash)); assertEquals(7, server.requests.size)
+    }
+
+    @Test fun pendingContentUsesThirtyTwoAttemptBudgetAndColdBatchesDoNotStarveLaterIntents() = runBlocking<Unit> {
+        val writing = metadata.capture()
+        for (n in 11..43) metadata.reserveAsset(writing, asset.copy(assetId = id(n)))
+        login(editing = false, revision = 2); val context = metadata.capture()
+        var counter = 1000
+        queue = AccountIconTransfers(database, metadata, store, operationId = { id(counter++) })
+        processor = AccountIconTransferProcessor(metadata, store, queue)
+        for (n in 10..43) queue.enqueueDownload(context, id(n), "light")
+        val original = queue.jobs(context); val reservations = metadata.reservations(context)
+        var ready = false
+        val (http, server) = http { input, _ ->
+            val reply = normal(input)
+            if (!input.path.endsWith("/identity") && !ready) contentPending() else reply
+        }
+        val waiting = IconTransferBatch(true, 0, 0, true, false, limited = true, contentPending = 32)
+        assertEquals(waiting, processor.run(context, http))
+        assertEquals(33, server.requests.size)
+        val first = server.requests.filter { it.path.contains("/content/") }.map { it.path }
+        assertEquals(32, first.distinct().size)
+        assertEquals(32, queue.jobs(context).count { it.generation == 2L })
+        assertEquals(2, queue.jobs(context).count { it.generation == 0L })
+        reopenPendingContent()
+        assertEquals(waiting, processor.run(context, http))
+        val second = server.requests.drop(33).filter { it.path.contains("/content/") }.map { it.path }
+        assertEquals(32, second.distinct().size)
+        assertEquals(listOf("/api/v2/appearance/assets/${id(42)}/content/light",
+            "/api/v2/appearance/assets/${id(43)}/content/light"), second.take(2))
+        assertTrue(queue.jobs(context).all { it.state == IconTransferState.PENDING && it.generation >= 2 && it.failure == null })
+        assertEquals(30, queue.jobs(context).count { it.generation == 4L })
+        ready = true
+        assertEquals(IconTransferBatch(true, 32, 0, false, true, limited = true), processor.run(context, http))
+        assertEquals(IconTransferBatch(true, 2, 0, false, true), processor.run(context, http))
+        assertEquals(original.map { it.operationId }, queue.jobs(context).map { it.operationId })
+        assertTrue(queue.jobs(context).all { it.kind == IconTransferKind.DOWNLOAD && it.state == IconTransferState.COMPLETE })
+        assertEquals(reservations, metadata.reservations(context)); assertArrayEquals(bytes, store.read(context, id(43), hash))
+    }
+
+    @Test fun onlyExactPendingDownloadStatusIsDeferredAndOther409FailuresStayBlocked() = runBlocking<Unit> {
+        login(editing = false, revision = 2); val context = metadata.capture()
+        queue.enqueueDownload(context, id(10), "light")
+        var response = 409 to "ASSET_ID_REUSED"
+        val (http, _) = http { input, _ ->
+            if (input.path.endsWith("/identity")) normal(input)
+            else json("""{"detail":{"code":"${response.second}"}}""", response.first)
+        }
+        for ((value, expected) in listOf((409 to "ASSET_ID_REUSED") to IconTransferFailure.REMOTE_ID_REUSED,
+            (422 to "ASSET_CONTENT_PENDING") to IconTransferFailure.REMOTE_METADATA,
+            (409 to "ASSET_CONTENT_PENDING_EXTRA") to IconTransferFailure.REMOTE_METADATA)) {
+            response = value
+            assertEquals(IconTransferBatch(true, 0, 0, true, false), processor.run(context, http))
+            val blocked = queue.jobs(context).single()
+            assertEquals(IconTransferState.BLOCKED, blocked.state); assertEquals(expected, blocked.failure)
+            assertNull(metadata.installation(context, id(10), hash).validationProfile)
+            queue.retryBlocked(context, blocked.operationId, blocked.generation)
+        }
+        login(editing = true, revision = 3); val editing = metadata.capture()
+        queue.enqueueAsset(editing, id(10)); response = 409 to "ASSET_CONTENT_PENDING"
+        assertEquals(IconTransferBatch(true, 0, 0, true, false), processor.run(editing, http))
+        val declaration = queue.jobs(editing).single { it.kind == IconTransferKind.DECLARE_ASSET }
+        assertEquals(IconTransferState.BLOCKED, declaration.state)
+        assertEquals(IconTransferFailure.REMOTE_METADATA, declaration.failure)
+        assertNull(metadata.installation(editing, id(10), hash).validationProfile)
+    }
+
+    @Test fun pendingContentThenNetworkFailureRetainsBothIdentitiesAndWaitingSummary() = runBlocking<Unit> {
+        login(editing = false, revision = 2); val context = metadata.capture(); var counter = 100
+        queue = AccountIconTransfers(database, metadata, store, operationId = { id(counter++) })
+        processor = AccountIconTransferProcessor(metadata, store, queue)
+        queue.enqueueDownload(context, id(10), "light"); queue.enqueueDownload(context, id(10), "dark")
+        val original = queue.jobs(context)
+        val (http, server) = http { input, _ ->
+            when {
+                input.path.endsWith("/identity") -> normal(input)
+                input.path.endsWith("/content/light") -> { normal(input); contentPending() }
+                else -> { normal(input); null } // Actual peer closes before a response.
+            }
+        }
+        assertEquals(IconTransferBatch(true, 0, 0, true, false, contentPending = 1), processor.run(context, http))
+        assertEquals(original.map { it.operationId }, queue.jobs(context).map { it.operationId })
+        assertTrue(queue.jobs(context).all { it.state == IconTransferState.PENDING && it.generation == 2L && it.failure == null })
+        assertNull(metadata.installation(context, id(10), hash).validationProfile); assertEquals(3, server.requests.size)
+    }
+
+    @Test fun accountSwitchAfterContentWaitCannotReleaseAnotherOldClaimAndFreshOwnerRecovers() = runBlocking<Unit> {
+        login(editing = false, revision = 2); val context = metadata.capture(); var counter = 100
+        queue = AccountIconTransfers(database, metadata, store, operationId = { id(counter++) })
+        processor = AccountIconTransferProcessor(metadata, store, queue)
+        val light = queue.enqueueDownload(context, id(10), "light")
+        val dark = queue.enqueueDownload(context, id(10), "dark"); val original = queue.jobs(context)
+        var switching = true
+        val (http, server) = http { input, _ ->
+            val reply = normal(input)
+            when {
+                !switching || input.path.endsWith("/identity") -> reply
+                input.path.endsWith("/content/light") -> contentPending()
+                else -> { runBlocking { login(owner = id(50), editing = false, revision = 2) }; contentPending() }
+            }
+        }
+        assertEquals("ICON_SESSION_CHANGED", rejected { processor.run(context, http) }.message)
+        assertTrue(queue.jobs(metadata.capture()).isEmpty()); assertEquals(3, server.requests.size)
+        login(editing = false, revision = 2); val fresh = metadata.capture()
+        val rows = queue.jobs(fresh)
+        assertEquals(IconTransferState.PENDING, rows.single { it.operationId == light.operationId }.state)
+        assertEquals(IconTransferState.SENDING, rows.single { it.operationId == dark.operationId }.state)
+        assertEquals(original.map { it.operationId }, rows.map { it.operationId })
+        switching = false
+        assertEquals(IconTransferBatch(true, 2, 1, false, true), processor.run(fresh, http))
+        assertTrue(queue.jobs(fresh).all { it.state == IconTransferState.COMPLETE })
+        assertEquals(original.map { it.operationId }, queue.jobs(fresh).map { it.operationId })
+        assertArrayEquals(bytes, store.read(fresh, id(10), hash))
+    }
+
     @Test fun strictPublicIdentityRejectsQuotedVersionDuplicateKeysMalformedTimeAndUnknownFieldsBeforeClaim() = runBlocking<Unit> {
         val context = metadata.capture(); queue.enqueueAsset(context, id(10)); val before = queue.jobs(context)
         val values = listOf(identity().replace("\"protocol_version\":5", "\"protocol_version\":\"5\""),
