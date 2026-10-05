@@ -161,13 +161,14 @@ def test_clean_database_upgrades_to_complete_v2_schema():
             "device_class",
             "structural_edit_enabled",
             "capability_revision",
+            "registered_protocol_version",
         } <= device_columns
 
         with engine.connect() as connection:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert revision == "000000000005"
+            assert revision == "000000000006"
             identity = connection.execute(
                 text(
                     "SELECT instance_uuid, sync_epoch, protocol_version FROM server_instances"

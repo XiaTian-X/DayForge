@@ -385,8 +385,18 @@ def test_new_migration_failure_rolls_back_tables_indexes_and_all_previous_rows(
     tmp_path,
 ):
     path = tmp_path / "migration.sqlite"
-    url = migrate(path, revision="000000000003")
+    # Seed with the matching ORM, then restore the actual earlier schema. Never
+    # write today's model into a legacy table or patch it with create_all().
+    url = migrate(path)
     seed_source(url)
+    command.downgrade(alembic_config(str(path)), "000000000003")
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == ("000000000003",)
+        assert "registered_protocol_version" not in {
+            row[1] for row in connection.execute("PRAGMA table_info(client_devices)")
+        }
     before = database_dump(path)
 
     def fail(connection, cursor, statement, parameters, context, executemany):

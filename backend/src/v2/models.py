@@ -156,6 +156,11 @@ class ClientDevice(SQLModel, table=True):
             "capability_revision >= 1",
             name="ck_client_device_capability_revision",
         ),
+        CheckConstraint(
+            "registered_protocol_version IS NULL OR "
+            "(registered_protocol_version >= 1 AND registered_protocol_version <= 2147483647)",
+            name="ck_client_device_registered_protocol",
+        ),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -168,6 +173,10 @@ class ClientDevice(SQLModel, table=True):
     device_class: str = Field(default="interactive", max_length=20, index=True)
     structural_edit_enabled: bool = Field(default=False)
     capability_revision: int = Field(default=1, ge=1)
+    # NULL is unknown, including pre-migration devices. Never infer from app_version.
+    registered_protocol_version: Optional[int] = Field(
+        default=None, ge=1, le=2_147_483_647
+    )
     created_at: datetime = Field(default_factory=utc_now)
     last_seen_at: datetime = Field(default_factory=utc_now)
     revoked_at: Optional[datetime] = Field(default=None, index=True)
