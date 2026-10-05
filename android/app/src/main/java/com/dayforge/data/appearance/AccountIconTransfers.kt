@@ -45,6 +45,8 @@ internal class AccountIconTransfers(
         require(metadata.usesDatabase(database) && store.usesMetadata(metadata)) { "ICON_TRANSFER_STORE_MISMATCH" }
     }
     private val json = Json { encodeDefaults = true }
+    internal fun usesStores(valueMetadata: AccountIconRepository, valueStore: AccountIconStore) =
+        metadata === valueMetadata && store === valueStore
     private val dao get() = database.transfers()
     private data class Key(val kind: String, val targetId: String, val revision: Int = 0, val variant: String = "")
     private fun AccountIconTransferRow.key() = Key(kind, targetId, revision, variant)
@@ -62,10 +64,25 @@ internal class AccountIconTransfers(
         assetKeys(asset)
     }
 
+    /** Freeze declaration and reserve every intent before committing, with no nested account lock. */
+    suspend fun reserveAndEnqueueAsset(context: AccountIconContext, asset: IconAsset): List<IconTransferJob> =
+        metadata.reserveAssetTransaction(context, asset) { catalog ->
+            enqueueWithinTransaction(context, catalog, read(context, catalog), assetKeys(catalog.assets.getValue(asset.assetId)))
+        }
+
+    suspend fun reserveAndEnqueuePack(context: AccountIconContext, pack: IconPack): List<IconTransferJob> =
+        metadata.reservePackTransaction(context, pack) { catalog ->
+            enqueueWithinTransaction(context, catalog, read(context, catalog), packKeys(catalog, IconPackVersion(pack.packId, pack.revision)))
+        }
+
     /** All declarations and variants enter the same short transaction; no network/byte success inferred. */
     suspend fun enqueuePack(context: AccountIconContext, version: IconPackVersion): List<IconTransferJob> = enqueue(context) { catalog ->
+        packKeys(catalog, version)
+    }
+
+    private fun packKeys(catalog: AccountIconTransferMetadata, version: IconPackVersion): List<Key> {
         val pack = requireNotNull(catalog.packs[version.packId to version.revision]) { "ICON_PACK_NOT_OWNED" }
-        pack.assets.flatMap(::assetKeys) + Key(IconTransferKind.DECLARE_PACK.wire, pack.packId, pack.revision)
+        return pack.assets.flatMap(::assetKeys) + Key(IconTransferKind.DECLARE_PACK.wire, pack.packId, pack.revision)
     }
 
     suspend fun enqueueDownload(context: AccountIconContext, assetId: String, variant: String): IconTransferJob =
@@ -82,22 +99,27 @@ internal class AccountIconTransfers(
 
     private suspend fun enqueue(context: AccountIconContext, keys: (AccountIconTransferMetadata) -> List<Key>): List<IconTransferJob> =
         scoped(context) { catalog, before ->
-            val requests = keys(catalog).distinct()
-            requests.forEach { writing(context, it.kind) }
-            val existing = before.associateBy { it.key() }
-            val added = requests.filter { it !in existing }.map { key ->
-                val id = operationId(); require(isContractUuid(id))
-                AccountIconTransferRow(context.namespace.accountId, context.namespace.serverInstanceId, context.namespace.syncEpoch,
-                    id, key.kind, key.targetId, key.revision, key.variant, hash(catalog, key), "pending", 0, null, null, null, 0)
-            }
-            check(added.isEmpty() || before.size + added.size <= maximumJobs) { "ICON_TRANSFER_QUOTA" }
-            added.forEach { dao.insert(it) }
-            val after = read(context, catalog)
-            check(after == (before + added).sortedBy { it.operationId }) { "ICON_TRANSFER_CORRUPT" }
-            val byKey = after.associateBy { it.key() }
-            // Match durable enumeration, independent of the caller's pack/variant order.
-            Collections.unmodifiableList(requests.map { byKey.getValue(it).job() }.sortedBy { it.operationId })
+            enqueueWithinTransaction(context, catalog, before, keys(catalog))
         }
+
+    private suspend fun enqueueWithinTransaction(context: AccountIconContext, catalog: AccountIconTransferMetadata,
+        before: List<AccountIconTransferRow>, keys: List<Key>): List<IconTransferJob> {
+        val requests = keys.distinct()
+        requests.forEach { writing(context, it.kind) }
+        val existing = before.associateBy { it.key() }
+        val added = requests.filter { it !in existing }.map { key ->
+            val id = operationId(); require(isContractUuid(id))
+            AccountIconTransferRow(context.namespace.accountId, context.namespace.serverInstanceId, context.namespace.syncEpoch,
+                id, key.kind, key.targetId, key.revision, key.variant, hash(catalog, key), "pending", 0, null, null, null, 0)
+        }
+        check(added.isEmpty() || before.size + added.size <= maximumJobs) { "ICON_TRANSFER_QUOTA" }
+        added.forEach { dao.insert(it) }
+        val after = read(context, catalog)
+        check(after == (before + added).sortedBy { it.operationId }) { "ICON_TRANSFER_CORRUPT" }
+        val byKey = after.associateBy { it.key() }
+        // Match durable enumeration, independent of the caller's pack/variant order.
+        return Collections.unmodifiableList(requests.map { byKey.getValue(it).job() }.sortedBy { it.operationId })
+    }
 
     /** One CAS claim. Uploads/packs wait for the exact asset declarations, not local ready rows. */
     suspend fun prepareNext(context: AccountIconContext): IconTransferAttempt? = scoped(context) { catalog, before ->

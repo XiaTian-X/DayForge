@@ -49,7 +49,7 @@ internal class ObjectIconFixture {
             drawBarrier?.invoke()
             image
         })
-        val imports = AccountIconImport(metadata, store)
+        val imports = AccountIconImport(metadata, store, AccountIconTransfers(database, metadata, store))
         controller = AccountIconController({ AccountIconRuntime(metadata, store, renderer, imports,
             AccountIconDocuments(imports, app.contentResolver), database::close) }, tokens)
         login()

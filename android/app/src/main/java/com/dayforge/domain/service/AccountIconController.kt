@@ -70,7 +70,9 @@ internal data class IconPackSource(val context: AccountIconContext, val pack: co
 internal class AccountIconRuntime(
     val metadata: AccountIconRepository, val store: AccountIconStore, val renderer: AccountIconRenderer,
     val imports: AccountIconImport, val documents: AccountIconDocuments, val close: () -> Unit
-)
+) {
+    val transfers get() = imports.transfers
+}
 
 /** Lazy process-singleton storage, using the same authoritative credentials/coordinator as login. */
 @Singleton
@@ -82,7 +84,7 @@ class AccountIconController internal constructor(
         val db = AccountIconDatabase.open(context)
         val metadata = AccountIconRepository(db, tokens, sessions)
         val store = AccountIconStore(metadata, AccountIconFiles(context.filesDir))
-        val imports = AccountIconImport(metadata, store)
+        val imports = AccountIconImport(metadata, store, AccountIconTransfers(db, metadata, store))
         AccountIconRuntime(metadata, store, AccountIconRenderer(metadata, store), imports,
             AccountIconDocuments(imports, context.contentResolver), db::close)
     }, tokens)
@@ -96,6 +98,7 @@ class AccountIconController internal constructor(
         withContext(Dispatchers.IO) { block(runtime.value) }
     internal fun registerConsumer(cache: AccountIconMemory.Cache) = tokens.registerIconCache(cache)
     internal suspend fun capture() = io { it.metadata.capture() }
+    internal suspend fun transferJobs(context: AccountIconContext) = io { it.transfers.jobs(context) }
     internal suspend fun library(context: AccountIconContext) = io {
         val catalog = it.metadata.library(context)
         it.metadata.authorized(context) { refreshReferences(context.namespace) }

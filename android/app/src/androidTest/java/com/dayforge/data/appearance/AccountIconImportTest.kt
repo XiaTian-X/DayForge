@@ -1,6 +1,7 @@
 package com.dayforge.data.appearance
 
 import android.util.Base64
+import androidx.room.Room
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -14,6 +15,7 @@ import java.io.IOException
 import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.ZipEntry
@@ -44,6 +46,7 @@ class AccountIconImportTest {
     private lateinit var repo: AccountIconRepository
     private lateinit var store: AccountIconStore
     private lateinit var imports: AccountIconImport
+    private lateinit var transfers: AccountIconTransfers
     private val sessions = AccountSessionCoordinator()
     private fun id(n: Int) = "9a000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}"
     private val red = """<svg width="1" height="1"><rect width="1" height="1" fill="#ff0000"/></svg>""".toByteArray()
@@ -82,9 +85,12 @@ class AccountIconImportTest {
             tokens.saveServerIdentity(server, epoch)
             tokens.saveDeviceRegistration(id(4), if (readOnly) setOf("sync.read") else setOf("sync.read", "structure.write"), true, 1)
         }
-    private fun configure(io: IconFileIo = IconFileIo(), limits: AccountIconLimits = AccountIconLimits()) {
+    private fun configure(io: IconFileIo = IconFileIo(), limits: AccountIconLimits = AccountIconLimits(),
+        maximumJobs: Int = AccountIconTransfers.MAX_JOBS) {
         repo = AccountIconRepository(db, tokens, sessions, limits)
-        store = AccountIconStore(repo, AccountIconFiles(parent, io)); imports = AccountIconImport(repo, store)
+        store = AccountIconStore(repo, AccountIconFiles(parent, io))
+        transfers = AccountIconTransfers(db, repo, store, maximumJobs)
+        imports = AccountIconImport(repo, store, transfers)
     }
     private fun ready() = db.openHelper.writableDatabase.query("SELECT COUNT(*) FROM icon_blob_ready").use { it.moveToFirst(); it.getInt(0) }
     private fun directory(context: AccountIconContext) = File(parent,
@@ -95,6 +101,7 @@ class AccountIconImportTest {
     }
     private suspend fun assertEmpty() {
         val context = repo.capture()
+        assertTrue(transfers.jobs(context).isEmpty())
         assertEquals(emptyList<IconReservation>(), repo.reservations(context))
         assertNull(repo.pack(context, id(100), 1)); assertEquals(0, ready())
         assertEquals(AccountIconSelection(0, null), repo.selection(context))
@@ -145,15 +152,23 @@ class AccountIconImportTest {
         assertArrayEquals(red, store.read(context, id(21), hash(red)))
         assertArrayEquals(png, store.read(context, id(22), hash(png)))
         assertEquals(AccountIconSelection(0, null), repo.selection(context))
+        val jobs = transfers.jobs(context)
+        assertEquals(8, jobs.size)
+        assertEquals(3, jobs.count { it.kind == IconTransferKind.DECLARE_ASSET })
+        assertEquals(4, jobs.count { it.kind == IconTransferKind.UPLOAD })
+        assertEquals(1, jobs.count { it.kind == IconTransferKind.DECLARE_PACK })
+        assertTrue(jobs.all { it.state == IconTransferState.PENDING && it.generation == 0L })
         assertThrows(UnsupportedOperationException::class.java) { (receipt.verifiedHashes as MutableList).clear() }
     }
 
     @Test fun exactRetryAfterColdReopenPreservesEveryInstallationIntentAndFile() = runBlocking<Unit> {
         val value = preview(); val first = imports.confirm(value); val before = repo.reservations(repo.capture())
+        val jobs = transfers.jobs(repo.capture())
         db.close(); db = AccountIconDatabase.open(app); configure()
         assertEquals(first, imports.confirm(value)); assertEquals(before, repo.reservations(repo.capture()))
         assertEquals(first, imports.confirm(preview())); assertEquals(before, repo.reservations(repo.capture()))
         assertEquals(3, ready()); assertEquals(3, directory(repo.capture()).list()!!.size)
+        assertEquals(jobs, transfers.jobs(repo.capture()))
     }
 
     @Test fun reusedPackVersionWithDifferentContentCannotInstallAnotherVersion() = runBlocking<Unit> {
@@ -175,6 +190,95 @@ class AccountIconImportTest {
         assertEquals("ICON_QUOTA_EXCEEDED", rejected { imports.confirm(preview()) }.message); assertEmpty()
     }
 
+    @Test fun queueQuotaRollsBackNewMetadataAndInstallReservationsBeforeAnyFileIo() = runBlocking<Unit> {
+        configure(maximumJobs = 7)
+        val value = preview()
+        assertEquals("ICON_TRANSFER_QUOTA", rejected { imports.confirm(value) }.message)
+        assertEmpty()
+        configure(); imports.confirm(value)
+        assertEquals(8, transfers.jobs(repo.capture()).size); assertEquals(3, ready())
+    }
+
+    @Test fun queueAbortIgnoreRewrittenIdentityAndMetadataDamageRollBackWholeProductionImport() = runBlocking<Unit> {
+        val value = preview()
+        val triggers = listOf(
+            "BEFORE INSERT ON icon_transfers WHEN NEW.kind='upload' BEGIN SELECT RAISE(ABORT,'injected'); END",
+            "BEFORE INSERT ON icon_transfers WHEN NEW.kind='upload' BEGIN SELECT RAISE(IGNORE); END",
+            "AFTER INSERT ON icon_transfers BEGIN UPDATE icon_transfers SET operationId='${id(999)}' WHERE operationId=NEW.operationId; END",
+            "AFTER INSERT ON icon_transfers BEGIN UPDATE icon_assets SET metadataJson='{}'; END"
+        )
+        for (trigger in triggers) {
+            db.openHelper.writableDatabase.execSQL("CREATE TRIGGER import_fault $trigger")
+            try { rejected { imports.confirm(value) } }
+            finally { db.openHelper.writableDatabase.execSQL("DROP TRIGGER import_fault") }
+            assertEmpty()
+        }
+        // Reopen also proves rollback independently of warm parsed metadata caches.
+        db.close(); db = AccountIconDatabase.open(app); configure(); assertEmpty()
+        imports.confirm(value); assertEquals(8, transfers.jobs(repo.capture()).size); assertEquals(3, ready())
+    }
+
+    @Test fun transferFailureKeepsPreviouslyInstalledSelectedAndAcknowledgedPackUnchanged() = runBlocking<Unit> {
+        val choice = baseline(); val context = repo.capture()
+        val attempt = requireNotNull(transfers.prepareNext(context))
+        assertEquals(IconTransferKind.DECLARE_ASSET, attempt.job.kind)
+        transfers.confirmAsset(attempt, com.dayforge.domain.model.AssetRecord(attempt.binding, requireNotNull(attempt.asset), emptyList()))
+        val jobs = transfers.jobs(context); val reservations = repo.reservations(context)
+        val files = directory(context).list()!!.toSet()
+        configure(maximumJobs = 10) // Existing 3 + new 8 cannot commit.
+        assertEquals("ICON_TRANSFER_QUOTA", rejected { imports.confirm(preview()) }.message)
+        assertEquals(jobs, transfers.jobs(context)); assertEquals(reservations, repo.reservations(context))
+        assertEquals(files, directory(context).list()!!.toSet()); assertEquals(choice, repo.selection(context))
+        assertNull(repo.pack(context, id(100), 1)); assertNull(repo.asset(context, id(20))); assertEquals(1, ready())
+        configure(); imports.confirm(preview())
+        assertEquals(jobs, transfers.jobs(context).filter { it.operationId in jobs.map { job -> job.operationId } })
+        assertEquals(11, transfers.jobs(context).size); assertEquals(choice, repo.selection(context))
+    }
+
+    @Test fun repeatImportPreservesCompletedBlockedSendingAndPendingTransferStates() = runBlocking<Unit> {
+        val value = preview(); val receipt = imports.confirm(value); val context = repo.capture()
+        val completed = requireNotNull(transfers.prepareNext(context))
+        transfers.confirmAsset(completed, com.dayforge.domain.model.AssetRecord(completed.binding, requireNotNull(completed.asset), emptyList()))
+        transfers.block(requireNotNull(transfers.prepareNext(context)), IconTransferFailure.LOCAL_CONTENT)
+        val sending = requireNotNull(transfers.prepareNext(context))
+        val before = db.transfers().rows(context.namespace.accountId, context.namespace.serverInstanceId, context.namespace.syncEpoch)
+        assertEquals(setOf("pending", "sending", "blocked", "complete"), before.map { it.state }.toSet())
+        db.close(); db = AccountIconDatabase.open(app); configure()
+        assertEquals(receipt, imports.confirm(value))
+        assertEquals(before, db.transfers().rows(context.namespace.accountId, context.namespace.serverInstanceId, context.namespace.syncEpoch))
+        assertEquals(sending.job, transfers.jobs(context).single { it.operationId == sending.job.operationId })
+        assertEquals(3, ready())
+    }
+
+    @Test fun cancellationDuringQueueInsertRollsBackDeclarationReservationsAndQueueBeforeFiles() = runBlocking<Unit> {
+        val value = preview(); val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        db.close()
+        db = Room.databaseBuilder(app, AccountIconDatabase::class.java, AccountIconDatabase.NAME)
+            .addMigrations(AccountIconDatabase.MIGRATION_1_2, AccountIconDatabase.MIGRATION_2_3, AccountIconDatabase.MIGRATION_3_4)
+            .setQueryCallback({ statement, _ ->
+                if (statement.startsWith("INSERT", ignoreCase = true) && statement.contains("icon_transfers")) {
+                    entered.countDown(); check(release.await(5, TimeUnit.SECONDS))
+                }
+            }, Executor { it.run() }).build()
+        configure()
+        val pending = async(Dispatchers.IO) { imports.confirm(value) }
+        try { assertTrue(entered.await(5, TimeUnit.SECONDS)); pending.cancel() }
+        finally { release.countDown(); withTimeout(5_000) { pending.join() } }
+        assertTrue(pending.isCancelled); assertEmpty()
+        db.close(); db = AccountIconDatabase.open(app); configure(); assertEmpty()
+        imports.confirm(value); assertEquals(8, transfers.jobs(repo.capture()).size); assertEquals(3, ready())
+    }
+
+    @Test fun mismatchedImportMetadataFilesOrQueueCannotCreateProductionBoundary() = runBlocking<Unit> {
+        val otherRepo = AccountIconRepository(db, tokens, sessions)
+        val otherStore = AccountIconStore(otherRepo, AccountIconFiles(parent))
+        assertThrows(IllegalArgumentException::class.java) { AccountIconImport(repo, otherStore, transfers) }
+        assertThrows(IllegalArgumentException::class.java) {
+            AccountIconImport(repo, store, AccountIconTransfers(db, otherRepo, otherStore))
+        }
+        assertEmpty()
+    }
+
     @Test fun abortAndIgnorePackReservationRollbackAllAssetsAndJournalsBeforeIo() = runBlocking<Unit> {
         val value = preview()
         for (mode in listOf("ABORT", "IGNORE")) {
@@ -192,10 +296,13 @@ class AccountIconImportTest {
         db.openHelper.writableDatabase.execSQL("CREATE TRIGGER import_fault BEFORE INSERT ON icon_blob_ready WHEN NEW.sha256='${hash(green)}' BEGIN SELECT $raise; END")
         try { rejected { imports.confirm(value) } } finally { db.openHelper.writableDatabase.execSQL("DROP TRIGGER import_fault") }
         val context = repo.capture(); val intents = repo.reservations(context)
+        val jobs = transfers.jobs(context)
+        assertEquals(11, jobs.size); assertTrue(jobs.all { it.state == IconTransferState.PENDING })
         assertEquals(1, ready()); assertEquals(oldChoice, repo.selection(context))
         assertArrayEquals(green, File(directory(context), hash(green)).readBytes())
         assertFalse(File(directory(context), hash(png)).exists())
         imports.confirm(value); assertEquals(intents, repo.reservations(context)); assertEquals(3, ready())
+        assertEquals(jobs, transfers.jobs(context))
         assertEquals(oldChoice, repo.selection(context))
     }
     @Test fun lateReadyAbortRetainsPartialFilesAndOldStyleThenReplaysOriginalIntents() = runBlocking<Unit> { readyFailure("ABORT") }
@@ -272,6 +379,8 @@ class AccountIconImportTest {
         assertEquals(images.map(::hash).toSet(), directory(context).list()!!.toSet())
         assertEquals(256, repo.pack(context, id(400), 1)!!.roles.size)
         assertEquals(128, repo.reservations(context).map { it.operationId }.toSet().size)
+        assertEquals(257, transfers.jobs(context).size)
+        assertTrue(transfers.jobs(context).all { it.state == IconTransferState.PENDING })
         assertEquals(AccountIconSelection(0, null), repo.selection(context))
         assertArrayEquals(images.last(), store.read(context, id(1127), hash(images.last())))
         // All four parents once; each image retains cleanup-directory, real-file, and publication-
@@ -431,7 +540,9 @@ class AccountIconImportTest {
         } finally { release.countDown() }
         result.join(); assertTrue(result.isCancelled)
         val intents = repo.reservations(repo.capture()); assertEquals(3, intents.size)
+        val jobs = transfers.jobs(repo.capture()); assertEquals(8, jobs.size)
         configure(); imports.confirm(value); assertEquals(intents, repo.reservations(repo.capture())); assertEquals(3, ready())
+        assertEquals(jobs, transfers.jobs(repo.capture()))
     }
 
     @Test fun concurrentConfirmationsReturnSameLocalReceiptAndNeverChooseStyle() = runBlocking<Unit> {
@@ -439,11 +550,14 @@ class AccountIconImportTest {
         val secondDb = AccountIconDatabase.open(app)
         try {
             val secondRepo = AccountIconRepository(secondDb, tokens, sessions)
-            val second = AccountIconImport(secondRepo, AccountIconStore(secondRepo, AccountIconFiles(parent)))
+            val secondStore = AccountIconStore(secondRepo, AccountIconFiles(parent))
+            val second = AccountIconImport(secondRepo, secondStore, AccountIconTransfers(secondDb, secondRepo, secondStore))
             val first = async(Dispatchers.IO) { imports.confirm(value) }; val other = async(Dispatchers.IO) { second.confirm(value) }
             assertEquals(first.await(), other.await()); assertEquals(3, ready())
             assertEquals(3, repo.reservations(repo.capture()).size); assertEquals(3, directory(repo.capture()).list()!!.size)
             assertEquals(AccountIconSelection(0, null), repo.selection(repo.capture()))
+            assertEquals(8, transfers.jobs(repo.capture()).size)
+            assertEquals(transfers.jobs(repo.capture()), second.transfers.jobs(secondRepo.capture()))
         } finally { secondDb.close() }
     }
 }
