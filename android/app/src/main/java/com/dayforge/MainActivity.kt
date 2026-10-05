@@ -22,6 +22,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -43,6 +44,8 @@ import com.dayforge.R
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
 import com.dayforge.domain.service.DeviceThemeController
+import com.dayforge.domain.service.AccountIconController
+import com.dayforge.ui.components.LocalAccountIcons
 import com.dayforge.data.appearance.DeviceThemeLoadState
 import com.dayforge.ui.theme.ThemeLoadScreen
 import com.dayforge.ui.theme.ThemeRecoveryScreen
@@ -70,6 +73,9 @@ class MainActivity : AppCompatActivity() {
     @Inject
     lateinit var themeController: DeviceThemeController
 
+    @Inject
+    lateinit var iconController: AccountIconController
+
     @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -87,14 +93,16 @@ class MainActivity : AppCompatActivity() {
                 if (recovering) ThemeRecoveryScreen(onBack = { recovering = false })
                 else ThemeLoadScreen(themeState, themeController::retry, onManage = { recovering = true })
             } else DayForgeTheme(theme = loaded) {
-                val navController = rememberNavController()
-                MainScreen(
-                    activity = this@MainActivity,
-                    navController = navController,
-                    tokenManager = tokenManager,
-                    preferencesManager = preferencesManager,
-                    windowSizeClass = windowSizeClass
-                )
+                CompositionLocalProvider(LocalAccountIcons provides iconController) {
+                    val navController = rememberNavController()
+                    MainScreen(
+                        activity = this@MainActivity,
+                        navController = navController,
+                        tokenManager = tokenManager,
+                        preferencesManager = preferencesManager,
+                        windowSizeClass = windowSizeClass
+                    )
+                }
             }
         }
     }

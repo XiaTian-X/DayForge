@@ -3,6 +3,10 @@ package com.dayforge.ui.screens.metricdetail
 import android.content.Context
 import androidx.activity.ComponentActivity
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.lifecycle.SavedStateHandle
@@ -12,6 +16,11 @@ import com.dayforge.R
 import com.dayforge.data.local.PhysicalDatabaseRule
 import com.dayforge.data.local.entity.MetricEntity
 import com.dayforge.data.repository.MetricRepository
+import com.dayforge.domain.model.IconReference
+import com.dayforge.domain.model.ObjectAppearance
+import com.dayforge.ui.components.LocalAccountIcons
+import com.dayforge.ui.components.ObjectIconFixture
+import com.dayforge.ui.screens.settings.IconLibraryFixture
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
@@ -33,10 +42,50 @@ class MetricDetailScreenTest {
     private val context: Context = ApplicationProvider.getApplicationContext()
     private var viewModel: MetricDetailViewModel? = null
     private var deleted = 0
+    private var icons: ObjectIconFixture? = null
+    private val typedDisplayed = mutableStateOf(true)
     private fun label(id: Int) = context.getString(id)
 
     @After fun closeViewModel() {
         runBlocking { viewModel?.viewModelScope?.coroutineContext?.get(Job)?.cancelAndJoin() }
+        icons?.let { fixture ->
+            try { compose.runOnIdle { typedDisplayed.value = false }; compose.waitForIdle() }
+            finally { runBlocking { fixture.close() } }
+        }
+    }
+
+    @Test fun typedHeroRendersOwnedPixelsWithoutChangingMetricOrOutbox() {
+        val fixture = ObjectIconFixture().also { icons = it }
+        runBlocking { fixture.open(); fixture.install() }
+        val db = storage.database
+        val metric = MetricEntity(uuid = fixture.id(96), name = "Native hero", unit = "kg",
+            decimalPlaces = 1, iconResId = 1, colorHex = "#123456",
+            appearance = ObjectAppearance(IconReference.Asset(fixture.id(11)), "#123456", "theme"))
+        val id = runBlocking { db.metricDao().insert(metric) }
+        val outbox = runBlocking { db.syncOutboxDao().count() }
+        val repository = MetricRepository(db, db.metricDao(), db.metricLogDao(), db.habitDao(), db.habitMetricLinkDao())
+        compose.runOnUiThread {
+            viewModel = MetricDetailViewModel(context, db.metricDao(), db.metricLogDao(),
+                db.habitMetricLinkDao(), db.habitDao(), repository, SavedStateHandle(mapOf("metricId" to id)))
+        }
+        compose.setContent {
+            if (typedDisplayed.value) CompositionLocalProvider(LocalAccountIcons provides fixture.controller) {
+                MaterialTheme { MetricDetailScreen(id, {}, {}, viewModel = requireNotNull(viewModel)) }
+            }
+        }
+        compose.waitUntil(5000) { viewModel?.uiState?.value?.isLoading == false }
+        val image = compose.onNodeWithTag("object-icon:${metric.uuid}", useUnmergedTree = true)
+        compose.waitUntil(5000) {
+            val pixels = image.captureToImage().toPixelMap()
+            pixels[pixels.width / 2, pixels.height / 2].toArgb() == IconLibraryFixture.red
+        }
+        image.assertWidthIsEqualTo(androidx.compose.ui.unit.Dp(56f)).assertHeightIsEqualTo(androidx.compose.ui.unit.Dp(56f))
+        compose.onNodeWithText(metric.name).assertIsDisplayed()
+        runBlocking {
+            assertEquals(metric.copy(id = id), db.metricDao().getMetricById(id))
+            assertEquals(outbox, db.syncOutboxDao().count())
+            assertTrue(db.metricLogDao().getAllLogsForMetric(id).isEmpty())
+        }
     }
 
     private fun showMetric(targetDirection: String? = null, targetUpper: Double? = null): Long {

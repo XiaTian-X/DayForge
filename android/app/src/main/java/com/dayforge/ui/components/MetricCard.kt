@@ -30,15 +30,6 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Returns the icon for the given icon resource ID.
- * Uses shared getIconForResId function for consistent mapping.
- */
-@Composable
-private fun getIconForId(iconResId: Int): ImageVector {
-    return getIconForResId(iconResId)
-}
-
-/**
  * Returns the icon for the target direction.
  * Per D-03: Shows direction arrow in value row.
  */
@@ -132,12 +123,7 @@ fun MetricCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // Icon
-                Icon(
-                    modifier = Modifier.size(40.dp),
-                    tint = resolvedColors.iconColor,
-                    contentDescription = null,
-                    imageVector = getIconForId(metric.iconResId)
-                )
+                ObjectIcon(metric, resolvedColors.iconColor, 40.dp, resolvedColors.backgroundColor)
 
                 Spacer(modifier = Modifier.width(16.dp))
 

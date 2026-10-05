@@ -11,7 +11,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -27,15 +26,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.progressSemantics
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
-
-/**
- * Get icon for a given icon resource ID.
- * Uses shared getIconForResId function for consistent mapping.
- */
-@Composable
-private fun getIconForId(iconResId: Int): ImageVector {
-    return getIconForResId(iconResId)
-}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -116,12 +106,7 @@ fun HabitCard(
                         .fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        modifier = Modifier.size(40.dp),
-                        tint = resolvedColors.iconColor,
-                        contentDescription = null,
-                        imageVector = getIconForId(habit.iconResId)
-                    )
+                    ObjectIcon(habit, resolvedColors.iconColor, 40.dp, resolvedColors.backgroundColor)
                     Spacer(modifier = Modifier.width(16.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Row(

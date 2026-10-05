@@ -202,12 +202,7 @@ fun MetricDetailScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.Center
                         ) {
-                            Icon(
-                                imageVector = com.dayforge.ui.components.getIconForResId(metric.iconResId),
-                                contentDescription = null,
-                                tint = metricColor,
-                                modifier = Modifier.size(56.dp)
-                            )
+                            com.dayforge.ui.components.ObjectIcon(metric, metricColor, 56.dp, MaterialTheme.colorScheme.background)
 
                             Spacer(modifier = Modifier.width(16.dp))
 

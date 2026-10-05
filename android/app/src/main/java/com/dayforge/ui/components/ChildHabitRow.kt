@@ -10,7 +10,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -22,15 +21,6 @@ import com.dayforge.domain.service.CardColorResolver
 import com.dayforge.domain.model.ActiveTimerState
 import com.dayforge.ui.screens.nested.ChildHabitWithStats
 import java.time.LocalDate
-
-/**
- * Get icon for a given icon resource ID.
- * Uses shared getIconForResId function for consistent mapping.
- */
-@Composable
-private fun getIconForId(iconResId: Int): ImageVector {
-    return getIconForResId(iconResId)
-}
 
 /**
  * ChildHabitRow component for displaying child habits in nested view.
@@ -146,12 +136,7 @@ fun ChildHabitRow(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // Child habit icon (16dp)
-                Icon(
-                    modifier = Modifier.size(16.dp),
-                    tint = resolvedColors.iconColor,
-                    contentDescription = null,
-                    imageVector = getIconForId(habit.iconResId)
-                )
+                ObjectIcon(habit, resolvedColors.iconColor, 16.dp, resolvedColors.backgroundColor)
 
                 Spacer(modifier = Modifier.width(8.dp))
 
