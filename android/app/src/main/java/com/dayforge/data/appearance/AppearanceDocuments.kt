@@ -7,6 +7,7 @@ import android.os.ParcelFileDescriptor
 import java.io.IOException
 import java.io.InputStream
 import java.nio.ByteBuffer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
@@ -99,7 +100,21 @@ internal class AppearanceDocuments(
 
     private suspend fun <T> bounded(action: suspend (CancellationSignal) -> T): T = supervisorScope {
         val signal = CancellationSignal()
-        val task = async(Dispatchers.IO) { action(signal) }
+        val task = async(Dispatchers.IO) {
+            try {
+                action(signal)
+            } catch (failure: Throwable) {
+                // FileChannel reports interruption as IOException, not InterruptedException.
+                // A cancelled child must not replace its owner's cancellation with that error.
+                try {
+                    currentCoroutineContext().ensureActive()
+                } catch (cancelled: CancellationException) {
+                    if (cancelled !== failure) cancelled.addSuppressed(failure)
+                    throw cancelled
+                }
+                throw failure
+            }
+        }
         var primaryFailure: Throwable? = null
         try {
             withTimeoutOrNull(timeoutMillis) { Completed(task.await()) }?.value
