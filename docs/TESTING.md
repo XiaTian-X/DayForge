@@ -361,6 +361,14 @@ HTTP 提交边界测试必须使用生产 `get_session` 依赖和启用外键的
 测试 override 替代。至少覆盖提交阶段失败后的非成功响应、整批回滚、原 ID 安全重试，以及认证与
 业务共用会话、响应发送时独立连接已能读取提交结果；保存点或 flush 失败测试不能代替 COMMIT 失败测试。
 
+设备协议证明须通过 `test_device_protocol_migration.py` / `test_device_protocol_admission.py`：
+真实旧 schema 升级保留全部旧行、身份、外键和非目标 DDL，NULL 不猜测版本，失败后完整回滚并可重试；
+已记录证明阻止降级。JWT/API Token 生产注册事务覆盖重复注册、拒绝路径与真实延迟外键 COMMIT 失败，
+原 v4 响应/权限/身份不变。未来只读门禁覆盖重复或非规范请求头、服务器/设备版本不一致、未知证明、
+撤销/跨账户、新快照不复用 ORM 缓存及准入/拒绝均不 flush 待提交修改；测试桥不代表正式路由已启用。
+真实单 worker TCP 注册返回后
+独立 SQLite 连接读取提交证明；物理/逻辑恢复保留 4/5/未知及账户限定身份，旧冻结归档仍按其原 head 恢复。
+
 统一验证入口通过 pytest 插件和 `backend/warning-budget.json` 登记已有 warning 的完整类别、
 规范化消息和最大数量。
 未知 warning 或数量增长会令测试失败；减少不会阻断单个增量测试，但完整测试确认减少后，

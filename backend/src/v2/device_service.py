@@ -73,6 +73,11 @@ async def register_device(
         device.app_version = request.app_version
         device.display_name = request.display_name
         device.last_seen_at = now
+    # Current v4 accepts unbounded future version numbers. Keep that boundary,
+    # but never overflow the DB integer or clamp unknown evidence to 4/5.
+    device.registered_protocol_version = (
+        request.protocol_version if request.protocol_version <= 2_147_483_647 else None
+    )
     await session.flush()
     await assign_first_primary(session, device)
     await session.flush()
