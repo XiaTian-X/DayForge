@@ -21,12 +21,10 @@ def _upgrade_required() -> DomainError:
     )
 
 
-async def require_next_protocol(
-    session: AsyncSession,
-    user: User,
-    device_id: str,
-    protocol_headers: tuple[str, ...],
-) -> ClientDevice:
+async def require_next_server(
+    session: AsyncSession, protocol_headers: tuple[str, ...]
+) -> None:
+    """Pre-body gate; the device proof is checked once its context is known."""
     if type(protocol_headers) is not tuple or protocol_headers != ("5",):
         raise _upgrade_required()
     identity = (
@@ -42,6 +40,15 @@ async def require_next_protocol(
         or identity.protocol_version != 5
     ):
         raise _upgrade_required()
+
+
+async def require_next_protocol(
+    session: AsyncSession,
+    user: User,
+    device_id: str,
+    protocol_headers: tuple[str, ...],
+) -> ClientDevice:
+    await require_next_server(session, protocol_headers)
     device = (
         await session.execute(
             select(ClientDevice)

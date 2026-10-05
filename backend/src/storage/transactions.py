@@ -1,17 +1,20 @@
 """Short caller-created transactions with the same busy boundary as HTTP sync."""
 
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.storage.database_adapter import DatabaseBusyError, is_sqlite_busy
 
 
+SessionFactory = Callable[[], AsyncSession]
+
+
 @asynccontextmanager
 async def storage_transaction(
-    sessions: async_sessionmaker[AsyncSession],
+    sessions: SessionFactory,
 ) -> AsyncIterator[AsyncSession]:
     try:
         # Keep session lifetime outside transaction exit. A commit/after_commit

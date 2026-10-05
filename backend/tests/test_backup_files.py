@@ -86,15 +86,15 @@ def test_invalid_reads_are_not_eof(result):
 @pytest.mark.parametrize(
     "payload",
     [
-        b"[]",
-        b"null",
-        b'{"x":1,"x":2}',
-        b'{"x":{"a":1,"a":2}}',
-        b'{"x":NaN}',
-        b'{"x":Infinity}',
-        b"{",
-        b"[" * 2000 + b"]" * 2000,
-        b"x" * 65537,
+        pytest.param(b"[]", id="array"),
+        pytest.param(b"null", id="null"),
+        pytest.param(b'{"x":1,"x":2}', id="duplicate-top-level"),
+        pytest.param(b'{"x":{"a":1,"a":2}}', id="duplicate-nested"),
+        pytest.param(b'{"x":NaN}', id="nan"),
+        pytest.param(b'{"x":Infinity}', id="infinity"),
+        pytest.param(b"{", id="malformed"),
+        pytest.param(b"[" * 2000 + b"]" * 2000, id="excessive-depth"),
+        pytest.param(b"x" * 65537, id="oversize"),
     ],
 )
 def test_manifest_rejects_nonobjects_duplicate_keys_constants_recursion_and_size(

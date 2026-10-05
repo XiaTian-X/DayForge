@@ -358,8 +358,11 @@ async def test_gate_http_requires_unambiguous_header_and_real_auth_without_repla
             and duplicate.json()["detail"]["code"] == "CLIENT_UPGRADE_REQUIRED"
         )
         assert await database_state(engine) == before
-    assert not any(
-        path.startswith("/api/v2/appearance") for path in app.openapi()["paths"]
+    assert any(
+        field["name"] == "X-DayForge-Protocol" and field["required"]
+        for field in app.openapi()["paths"]["/api/v2/appearance/catalog"]["get"][
+            "parameters"
+        ]
     )
 
 

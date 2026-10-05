@@ -2350,6 +2350,18 @@
                 "format": "binary",
                 "type": "string"
               }
+            },
+            "image/png": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "image/svg+xml": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
             }
           },
           "required": true

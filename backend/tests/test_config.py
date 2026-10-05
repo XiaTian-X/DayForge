@@ -22,6 +22,24 @@ class TestSettings:
         assert settings.ACCESS_TOKEN_EXPIRE_MINUTES == 30
         assert settings.REFRESH_TOKEN_EXPIRE_DAYS == 30
         assert "http://localhost:3000" in settings.CORS_ORIGINS
+        assert settings.ASSET_ROOT is None
+
+    @pytest.mark.parametrize("root", ["/", "relative/assets", "/private/../assets"])
+    def test_asset_root_rejects_unsafe_lexical_paths(self, root):
+        from src.config import Settings
+
+        with pytest.raises(ValidationError, match="ASSET_ROOT"):
+            Settings(ASSET_ROOT=root)
+
+    def test_asset_root_environment_does_not_create_or_follow_a_directory(
+        self, tmp_path, monkeypatch
+    ):
+        from src.config import Settings
+
+        root = tmp_path / "not-created"
+        monkeypatch.setenv("ASSET_ROOT", str(root))
+        assert Settings().ASSET_ROOT == root
+        assert not root.exists()
 
     def test_settings_loads_from_environment(self, monkeypatch):
         """Test that Settings loads config from environment variables."""

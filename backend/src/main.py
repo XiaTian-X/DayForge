@@ -12,6 +12,8 @@ from src.admin.router import router as admin_router
 from src.tokens.router import router as tokens_router
 from src.tokens.admin_router import router as admin_tokens_router
 from src.v2.router import router as v2_router
+from src.v2.asset_router import router as appearance_router, AppearanceNoRedirect
+from src.v2.asset_lifecycle import AppearanceLifecycle
 from src.v2 import asset_models as asset_models  # Register the full database model.
 from src.v2 import object_appearance_models as object_appearance_models
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -48,11 +50,27 @@ async def _create_admin_if_missing():
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown events."""
     # The schema is migrated explicitly before the application starts.
+    appearance = None
     try:
         await _create_admin_if_missing()
+
+        def appearance_session() -> AsyncSession:
+            # Preserve lazy engine creation and retryable disposal. Resource
+            # ownership alone must not create a previously unused database.
+            return async_sessionmaker(get_engine(), expire_on_commit=False)()
+
+        appearance = AppearanceLifecycle(
+            appearance_session,
+            get_settings().ASSET_ROOT,
+        )
+        app.state.appearance = appearance
         yield
     finally:
-        await dispose_engine()
+        try:
+            if appearance is not None:
+                await appearance.aclose()
+        finally:
+            await dispose_engine()
 
 
 app = FastAPI(
@@ -93,6 +111,8 @@ app.include_router(admin_router, prefix="/api/v1")
 app.include_router(tokens_router, prefix="/api/v1")
 app.include_router(admin_tokens_router, prefix="/api/v1")
 app.include_router(v2_router)
+app.include_router(appearance_router)
+app.add_middleware(AppearanceNoRedirect)
 
 
 @app.get("/health")

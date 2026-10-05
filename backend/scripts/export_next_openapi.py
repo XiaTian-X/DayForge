@@ -1,4 +1,4 @@
-"""Generate the NOT-YET-ACTIVE v5 delta contract. No HTTP handlers are installed."""
+"""Generate the NOT-YET-ACTIVE v5 delta; appearance has dormant guarded handlers."""
 
 import argparse
 import json
@@ -98,9 +98,8 @@ def operation(summary, response, *, request=None, parameters=(), binary=False):
         result["requestBody"] = {
             "required": True,
             "content": {
-                "application/octet-stream": {
-                    "schema": {"type": "string", "format": "binary"}
-                }
+                media: {"schema": {"type": "string", "format": "binary"}}
+                for media in ("application/octet-stream", "image/png", "image/svg+xml")
             },
         }
     return result

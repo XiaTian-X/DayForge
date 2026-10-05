@@ -1,8 +1,7 @@
-"""Inactive account asset lifecycle, recovery and bounded request admission.
+"""Account asset lifecycle, recovery and bounded request admission.
 
-No HTTP route or global application hook uses this yet. The future transport
-must enter request() BEFORE reading an upload body, enforce a bounded read with
-a deadline there, and send the result within the same admitted request scope.
+The transport enters request() BEFORE reading an upload body, enforces a bounded
+read with a deadline, and sends the result within the same admitted request scope.
 Ordinary fact synchronization never depends on this runtime's availability.
 """
 
@@ -13,7 +12,7 @@ from typing import AsyncIterator
 from src.storage.asset_io import AssetIoBusy, AssetIoClosed
 from src.storage.asset_root import AssetRootLease, ScanLimits, scan_installations
 from src.v2.asset_api_contract import AssetSyncContext, AssetTransferReceipt, Variant
-from src.v2.asset_transfers import AssetTransfers
+from src.v2.asset_transfers import AssetTransfers, TransferAuthorization
 
 
 class AssetRecoveryRequired(RuntimeError):
@@ -47,6 +46,26 @@ class AssetRuntime:
     def _signal_idle(self) -> None:
         if not self._active and not self._recovering:
             self._idle.set()
+
+    async def authorize(
+        self,
+        header: str | None,
+        context: AssetSyncContext,
+        asset_id: str,
+        variant: Variant,
+        *,
+        write: bool,
+        protocol_headers: tuple[str, ...],
+    ) -> TransferAuthorization:
+        self._check_loop()
+        return await self._transfers.authorize(
+            header,
+            context,
+            asset_id,
+            variant,
+            write=write,
+            protocol_headers=protocol_headers,
+        )
 
     @asynccontextmanager
     async def request(self) -> AsyncIterator["_AssetRequest"]:
@@ -153,11 +172,20 @@ class _AssetRequest:
         asset_id: str,
         variant: Variant,
         data: bytes,
+        *,
+        protocol_headers: tuple[str, ...] | None = None,
+        authorization: TransferAuthorization | None = None,
     ) -> AssetTransferReceipt:
         self._consume()
         try:
             result = await self._runtime._transfers.install(
-                header, context, asset_id, variant, data
+                header,
+                context,
+                asset_id,
+                variant,
+                data,
+                protocol_headers=protocol_headers,
+                authorization=authorization,
             )
         except BaseException:
             # Includes cancellation even if the worker or DB committed later.
@@ -175,6 +203,16 @@ class _AssetRequest:
         context: AssetSyncContext,
         asset_id: str,
         variant: Variant,
+        *,
+        protocol_headers: tuple[str, ...] | None = None,
+        authorization: TransferAuthorization | None = None,
     ) -> bytes:
         self._consume()
-        return await self._runtime._transfers.read(header, context, asset_id, variant)
+        return await self._runtime._transfers.read(
+            header,
+            context,
+            asset_id,
+            variant,
+            protocol_headers=protocol_headers,
+            authorization=authorization,
+        )

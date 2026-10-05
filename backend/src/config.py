@@ -1,6 +1,7 @@
 """Configuration management for the backend application."""
 
 import warnings
+from pathlib import Path
 from typing import Optional
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -35,6 +36,8 @@ class Settings(BaseSettings):
     DATABASE_TYPE: str = "sqlite"
     DATABASE_URL: Optional[str] = None
     SQLITE_DB_PATH: str = "./dev.db"
+    # Optional private, pre-created root. Absence disables bytes, not ordinary sync.
+    ASSET_ROOT: Path | None = None
 
     # JWT settings
     JWT_SECRET_KEY: str = DEFAULT_JWT_SECRET
@@ -62,6 +65,12 @@ class Settings(BaseSettings):
             self.DATABASE_TYPE, self.DATABASE_URL, self.SQLITE_DB_PATH
         )
         is_production = self.ENVIRONMENT.lower() == "production"
+        if self.ASSET_ROOT is not None and (
+            not self.ASSET_ROOT.is_absolute()
+            or self.ASSET_ROOT == Path("/")
+            or ".." in self.ASSET_ROOT.parts
+        ):
+            raise ValueError("ASSET_ROOT must be a non-root absolute directory")
         if bool(self.ADMIN_USERNAME) != bool(self.ADMIN_PASSWORD):
             raise ValueError(
                 "ADMIN_USERNAME and ADMIN_PASSWORD must be configured together"

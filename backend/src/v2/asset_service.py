@@ -1,4 +1,4 @@
-"""Immutable account declarations in caller-owned transactions; no active routes.
+"""Immutable account declarations in caller-owned transactions.
 
 Reservation, blobs, declarations and directory entries commit together. SQLite
 snapshot/unique races must roll back the complete request before identity retry;
