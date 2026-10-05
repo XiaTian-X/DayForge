@@ -11,6 +11,7 @@ from sqlalchemy import Engine, event, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from src.auth.models import User
 from src.storage.database_adapter import build_database_adapter
 from src.storage.logical_archive import export_archive, import_archive
 from src.storage.sqlite_maintenance import (
@@ -21,7 +22,10 @@ from src.storage.sqlite_maintenance import (
 )
 from src.v2.errors import DomainError
 from src.v2.one_time_recovery import read_one_time_checkpoints
+from src.v2.replica_context import ReplicaIdentity
+from src.v2.service import process_push
 from tests.test_logical_archive import migrate
+from tests.test_http_commit_boundary import database_state
 from tests.test_logical_archive_identity import (
     database_dump,
     read_bundle,
@@ -29,7 +33,7 @@ from tests.test_logical_archive_identity import (
     write_bundle,
 )
 from tests.test_one_time_mutations import operation, setup_database
-from tests.test_one_time_push import submit
+from tests.test_one_time_push import request, submit
 from tests.test_one_time_storage import ACTIVITY, EVENTS
 
 
@@ -212,15 +216,25 @@ async def test_tampered_physical_backup_rejected_before_target_is_changed(
     assert database_dump(target) == before
 
 
-async def test_physical_restore_reopens_complete_history_and_replays_original_ids(
+async def test_physical_restore_reopens_history_preserves_receipts_and_refuses_retargeted_v5_work(
     runtime_engine, tmp_path
 ):
     factory = await setup_database(runtime_engine)
     operations = [operation(index) for index in range(3)]
     first = await submit(factory, operations)
+    # The original same-replica lost-response guarantee is unchanged.
+    assert await submit(factory, operations) == [
+        {**result, "status": "already_applied"} for result in first
+    ]
     await submit(factory, [operation()], owner=2)
     source = Path(runtime_engine.url.database)
     original = inspect_database(source)
+    assert original.server_instance_id is not None and original.sync_epoch is not None
+    captured = ReplicaIdentity(original.server_instance_id, original.sync_epoch)
+    async with factory() as session:
+        original_receipts = (
+            await session.execute(text("SELECT * FROM sync_operations ORDER BY id"))
+        ).all()
     backup, _ = create_backup(source, tmp_path / "backups", apply_retention=False)
     restored = tmp_path / "restored.sqlite"
     _, epoch = restore_backup(
@@ -240,9 +254,51 @@ async def test_physical_restore_reopens_complete_history_and_replays_original_id
         async with restored_factory() as session:
             assert (await read_one_time_checkpoints(session, 1))[0].state.version == 3
             assert (await read_one_time_checkpoints(session, 2))[0].state.version == 1
-        assert await submit(restored_factory, operations) == [
-            {**result, "status": "already_applied"} for result in first
-        ]
+        before = database_dump(restored)
+        domain_before = await database_state(engine)
+        with pytest.raises(DomainError) as rejected:
+            async with restored_factory.begin() as session:
+                user = await session.get(User, 1)
+                assert user is not None
+                await process_push(
+                    user,
+                    request(operations),
+                    session,
+                    next_protocol=True,
+                    replica=captured,
+                )
+        assert rejected.value.code == "SYNC_EPOCH_MISMATCH"
+        assert database_dump(restored) == before
+        # Even an erroneous caller supplying the new epoch cannot reinterpret
+        # the restored old ledger as new success or execute these facts twice.
+        retargeted = await submit(restored_factory, operations)
+        assert [result["error_code"] for result in retargeted] == [
+            "OPERATION_ID_REUSED"
+        ] * 3
+        assert all(
+            result["status"] == "rejected" and result["entity"] is None
+            for result in retargeted
+        )
+        async with restored_factory() as session:
+            assert (
+                await session.execute(text("SELECT * FROM sync_operations ORDER BY id"))
+            ).all() == original_receipts
+            assert (await read_one_time_checkpoints(session, 1))[0].state.version == 3
+            assert (await read_one_time_checkpoints(session, 2))[0].state.version == 1
+        after = inspect_database(restored)
+        assert after.valid and after.row_counts == original.row_counts
+        domain_after = await database_state(engine)
+        # A valid but rejected batch may touch device/cursor observation times;
+        # every other table (including every receipt and fact) is unchanged.
+        assert {
+            key: rows
+            for key, rows in domain_after.items()
+            if key not in {"client_devices", "sync_cursors"}
+        } == {
+            key: rows
+            for key, rows in domain_before.items()
+            if key not in {"client_devices", "sync_cursors"}
+        }
     finally:
         await engine.dispose()
 

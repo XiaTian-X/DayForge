@@ -37,6 +37,7 @@ from src.v2.router import _http_error
 from src.v2.schemas import SyncPushRequest
 from src.v2.service import process_push
 from tests.account_fixtures import TEST_ACCOUNT_PASSWORD
+from tests.replica_fixtures import replica_identity
 from tests.test_http_commit_boundary import database_state
 from tests.test_one_time_mutations import operation, setup_database
 from tests.test_one_time_storage import ACTIVITY, EVENTS
@@ -57,7 +58,11 @@ async def submit(factory, operations, owner=1):
         user = await session.get(User, owner)
         assert user is not None
         result = await process_push(
-            user, request(operations, owner), session, next_protocol=True
+            user,
+            request(operations, owner),
+            session,
+            next_protocol=True,
+            replica=await replica_identity(session),
         )
         return result.model_dump(mode="json")["results"]
 
@@ -176,7 +181,11 @@ async def test_replay_precedes_domain_validation_and_rejects_changed_body(
                 monkeypatch, session, str(original.operation_id)
             )
         replay = await process_push(
-            owner, request([original]), session, next_protocol=True
+            owner,
+            request([original]),
+            session,
+            next_protocol=True,
+            replica=await replica_identity(session),
         )
         assert replay.results[0].model_dump(mode="json") == {
             **first,
@@ -235,7 +244,11 @@ async def test_invalid_device_cannot_replay_or_see_task_state(runtime_engine, ki
             user = await session.get(User, 2 if kind == "foreign" else 1)
             assert user is not None
             await process_push(
-                user, request([operation()]), session, next_protocol=True
+                user,
+                request([operation()]),
+                session,
+                next_protocol=True,
+                replica=await replica_identity(session),
             )
     assert error.value.code == "DEVICE_NOT_FOUND" and error.value.entity is None
     assert (await state(factory, 1)).version == 1
@@ -297,7 +310,13 @@ async def one_time_http(runtime_engine, request):
         session: AsyncSession = Depends(get_session, scope="function"),
     ):
         try:
-            return await process_push(user, body, session, next_protocol=True)
+            return await process_push(
+                user,
+                body,
+                session,
+                next_protocol=True,
+                replica=await replica_identity(session),
+            )
         except DomainError as error:
             raise _http_error(error) from error
 

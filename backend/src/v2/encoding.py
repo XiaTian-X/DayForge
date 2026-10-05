@@ -7,7 +7,8 @@ from typing import Any
 
 from fastapi.encoders import jsonable_encoder
 
-from src.v2.schemas import SyncOperationRequest, utc_iso
+from src.v2.schemas import SyncOperationRequest, TimerCommandRequest, utc_iso
+from src.v2.replica_context import ReplicaIdentity
 
 
 def canonical_json(value: Any) -> str:
@@ -36,6 +37,30 @@ def jsonable_utc(value: Any) -> Any:
     return jsonable_encoder(value)
 
 
-def operation_hash(operation: SyncOperationRequest) -> str:
-    encoded = canonical_json(operation.model_dump(mode="json")).encode("utf-8")
+def _request_hash(
+    payload: dict[str, Any], kind: str, replica: ReplicaIdentity | None
+) -> str:
+    if replica is not None:
+        if type(replica) is not ReplicaIdentity:
+            raise ValueError("A captured replica identity is required")
+        payload = {
+            "protocol_version": 5,
+            "request_kind": kind,
+            "server_instance_id": replica.server_instance_id,
+            "sync_epoch": replica.sync_epoch,
+            "payload": payload,
+        }
+    encoded = canonical_json(payload).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def operation_hash(
+    operation: SyncOperationRequest, *, replica: ReplicaIdentity | None = None
+) -> str:
+    return _request_hash(operation.model_dump(mode="json"), "sync_operation", replica)
+
+
+def timer_command_hash(
+    command: TimerCommandRequest, *, replica: ReplicaIdentity | None = None
+) -> str:
+    return _request_hash(command.model_dump(mode="json"), "timer_command", replica)

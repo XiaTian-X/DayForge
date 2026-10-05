@@ -12,6 +12,25 @@
 一次性事项与素材的目标契约见 [APPEARANCE_CONTRACT](APPEARANCE_CONTRACT.md)。
 `contracts/next/` 是未启用的分阶段契约，不替代本文件或当前 v4 OpenAPI。
 
+### v5 的副本与回执边界（未启用）
+
+按 D-014，未来注册、sync 和 timer 每次请求携带单个 `X-DayForge-Protocol: 5`、
+`X-DayForge-Server-Instance`、`X-DayForge-Sync-Epoch`；后两项为捕获时的小写规范 UUID。
+素材继续沿用已有 body/query context。公开身份发现不能替代业务请求的副本前置条件；
+服务器恢复恰好发生在发现与提交之间时，旧声明以 HTTP 409 / `SERVER_IDENTITY_MISMATCH`
+或 `SYNC_EPOCH_MISMATCH` 拒绝，不读取/写入回执或变更 last_seen。缺失/重复/非规范副本头
+返回 HTTP 400 / `INVALID_SYNC_CONTEXT`；版本声明仍按既有升级错误拒绝。
+
+内部 next push/计时命令编排现已要求显式捕获副本并在回执查询之前重新核对，v5 指纹为规范 JSON 的
+SHA-256：`protocol_version` 固定整数 5，`request_kind` 为 `sync_operation` / `timer_command`，
+另有 `server_instance_id`、`sync_epoch`、`payload`（原请求模型的 JSON 序列化）。
+v4 原哈希保持逐字节不变。跨协议/副本相同 ID 返回 `OPERATION_ID_REUSED` /
+`COMMAND_ID_REUSED`；同副本响应丢失仍按原 ID、原内容重放，不创建第二份业务数据。
+副本改变必须进入受控恢复，不自动给冻结请求换身份、重算回执或清除待同步队列。
+
+共享门禁及内部指纹验证不表示正式 v5 register/sync/timer 已接线；当前生产入口仍是 v4。
+目标字段/头契约见 `contracts/next/openapi.json`，边界向量见 `contracts/next/replica.json`。
+
 ## 操作生命周期
 
 1. 客户端在本地事务中修改业务数据并写入具有稳定 operation ID 的 outbox。

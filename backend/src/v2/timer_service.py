@@ -15,7 +15,8 @@ from sqlmodel import col, select
 
 from src.auth.models import User
 from src.v2.change_log import append_change
-from src.v2.encoding import canonical_json, parse_json
+from src.v2.encoding import canonical_json, parse_json, timer_command_hash
+from src.v2.replica_context import ReplicaIdentity, replay_replica
 from src.v2.entity_snapshots import serialize_activity_event_with_allocations
 from src.v2.errors import DomainError
 from src.v2.invariants import require_internal
@@ -46,13 +47,6 @@ from src.v2.time_utils import as_utc, elapsed_milliseconds, local_date_at
 ACTIVE_STATES = ("running", "paused")
 MAX_TIMER_SECONDS = 24 * 60 * 60
 MAX_FUTURE_SKEW = timedelta(minutes=5)
-
-
-def _request_hash(command: TimerCommandRequest) -> str:
-    import hashlib
-
-    payload = canonical_json(command.model_dump(mode="json")).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
 
 
 async def _get_session(
@@ -519,14 +513,18 @@ async def process_timer_commands(
     user: User,
     request: TimerCommandBatchRequest,
     db: AsyncSession,
+    *,
+    next_protocol: bool = False,
+    replica: ReplicaIdentity | None = None,
 ) -> TimerCommandBatchResponse:
+    replay_scope = await replay_replica(db, next_protocol, replica)
     device = await require_device(
         require_internal(user.id, "User.id"), str(request.device_id), db
     )
     results: list[TimerCommandResult] = []
 
     for command in request.commands:
-        request_hash = _request_hash(command)
+        request_hash = timer_command_hash(command, replica=replay_scope)
         previous_result = await db.execute(
             select(TimerCommand).where(
                 col(TimerCommand.device_id) == device.id,

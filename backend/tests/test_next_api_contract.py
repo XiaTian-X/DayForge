@@ -287,6 +287,32 @@ def test_planned_openapi_is_reproducible_has_no_dangling_refs_and_is_not_live():
             assert protocol[0]["in"] == "header" and protocol[0]["required"]
             assert protocol[0]["schema"]["enum"] == [5]
 
+    for name, methods in document["paths"].items():
+        for operation in methods.values():
+            context = [
+                item
+                for item in operation["parameters"]
+                if item["name"]
+                in {"X-DayForge-Server-Instance", "X-DayForge-Sync-Epoch"}
+            ]
+            if "/appearance/" in name:
+                assert context == []  # Existing body/query context is not duplicated.
+            else:
+                assert {item["name"] for item in context} == {
+                    "X-DayForge-Server-Instance",
+                    "X-DayForge-Sync-Epoch",
+                }
+                assert len(context) == 2
+                for item in context:
+                    assert item["in"] == "header" and item["required"]
+                    assert (
+                        item["schema"]["minLength"] == item["schema"]["maxLength"] == 36
+                    )
+                    assert "a-f" in item["schema"]["pattern"]
+    registration = document["components"]["schemas"]["NextDeviceRegisterRequest"]
+    assert "protocol_version" in registration["required"]
+    assert registration["properties"]["protocol_version"]["const"] == 5
+
     def visit(value):
         if isinstance(value, dict):
             if "$ref" in value:

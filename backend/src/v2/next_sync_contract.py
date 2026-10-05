@@ -6,7 +6,7 @@ validation cannot establish those guarantees from self-declared response data.
 
 from typing import Literal
 
-from pydantic import StrictBool, model_validator
+from pydantic import StrictBool, field_validator, model_validator
 
 from src.v2.appearance import ObjectAppearance, RoleIcon, icon_allowed
 from src.v2.one_time import OneTimeIntent
@@ -19,6 +19,7 @@ from src.v2.one_time_sync import (
 )
 from src.v2.schemas import (
     ApiModel,
+    DeviceRegisterRequest,
     ActivityPayload,
     MetricCore,
     PlanNodeCore,
@@ -29,6 +30,17 @@ from src.v2.schemas import (
     SyncPullResponse,
     SyncPushRequest,
 )
+
+
+class NextDeviceRegisterRequest(DeviceRegisterRequest):
+    protocol_version: Literal[5]
+
+    @field_validator("protocol_version", mode="before")
+    @classmethod
+    def exact_protocol(cls, value):
+        if type(value) is not int or value != 5:
+            raise ValueError("registration requires explicit integer protocol 5")
+        return value
 
 
 class NextActivityPayload(ActivityPayload):

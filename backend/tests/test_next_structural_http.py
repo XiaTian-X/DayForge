@@ -24,6 +24,7 @@ from src.v2.read_service import bootstrap
 from src.v2.router import _http_error
 from src.v2.service import process_push
 from tests.account_fixtures import TEST_ACCOUNT_PASSWORD
+from tests.replica_fixtures import replica_identity
 from tests.test_asset_declarations import setup
 from tests.test_http_commit_boundary import database_state
 from tests.test_next_structural_sync import METRIC, metric, node, operation, request
@@ -45,7 +46,13 @@ async def structural_http(runtime_engine, request):
         session: AsyncSession = Depends(get_session, scope="function"),
     ):
         try:
-            response = await process_push(user, body, session, next_protocol=True)
+            response = await process_push(
+                user,
+                body,
+                session,
+                next_protocol=True,
+                replica=await replica_identity(session),
+            )
             value = response.model_dump(mode="json")
             if bridge.state.bad_response:
                 value["unknown_response_field"] = True
