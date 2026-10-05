@@ -9,10 +9,12 @@ import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import java.io.IOException
 import java.nio.file.Files
+import java.nio.channels.ClosedByInterruptException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
@@ -131,6 +133,42 @@ class ThemeDocumentsTest {
             assertTrue(read.isCancelled)
             assertTrue(signal.isCanceled)
             assertFalse(pipe[0].fileDescriptor.valid())
+        } finally { pipe.forEach { it.close() } }
+    }
+
+    @Test fun interruptedChannelFailureCannotReplaceCallerCancellation() = runBlocking<Unit> {
+        val pipe = ParcelFileDescriptor.createPipe()
+        val reading = CompletableDeferred<Unit>()
+        val completion = CompletableDeferred<Throwable?>()
+        var signal: CancellationSignal? = null
+        try {
+            val documents = AppearanceDocuments(
+                { _, cancellation ->
+                    signal = cancellation
+                    AssetFileDescriptor(pipe[0], 0, AssetFileDescriptor.UNKNOWN_LENGTH)
+                },
+                { _, _ -> error("Unexpected write") },
+                "THEME_DOCUMENT", 10_000
+            )
+            val read = async(Dispatchers.IO) {
+                documents.read(uri, { _, _ ->
+                    reading.complete(Unit)
+                    try {
+                        Thread.sleep(3000)
+                        error("Expected interruption")
+                    } catch (_: InterruptedException) {
+                        // Deterministically reproduce the exception emitted by FileChannel.
+                        throw ClosedByInterruptException()
+                    }
+                }, { _, _ -> error("Cancelled bytes must not be validated") })
+            }
+            read.invokeOnCompletion { completion.complete(it) }
+            withTimeout(3000) { reading.await() }
+            withTimeout(3000) { read.cancelAndJoin() }
+            assertTrue(completion.await() is CancellationException)
+            assertTrue(signal!!.isCanceled)
+            assertFalse(pipe[0].fileDescriptor.valid())
+            assertFalse(read.children.any())
         } finally { pipe.forEach { it.close() } }
     }
 
