@@ -16,6 +16,8 @@ internal enum class IconTransferKind(val wire: String) {
 internal enum class IconTransferState(val wire: String) { PENDING("pending"), SENDING("sending"), BLOCKED("blocked"), COMPLETE("complete") }
 internal enum class IconTransferFailure { REMOTE_ID_REUSED, REMOTE_QUOTA, REMOTE_CAPABILITY, REMOTE_METADATA, REMOTE_NOT_FOUND, LOCAL_CONTENT }
 
+internal data class IconTransferWork(val pending: Boolean, val blocked: Boolean)
+
 internal data class IconTransferJob(val operationId: String, val kind: IconTransferKind, val targetId: String,
     val revision: Int, val variant: String, val state: IconTransferState, val generation: Long,
     val failure: IconTransferFailure?)
@@ -58,6 +60,13 @@ internal class AccountIconTransfers(
 
     suspend fun jobs(context: AccountIconContext): List<IconTransferJob> = scoped(context) { _, rows ->
         Collections.unmodifiableList(rows.map { it.job() })
+    }
+
+    /** Fresh read using exactly the claim dependency/permission rules, never an implied claim. */
+    internal suspend fun work(context: AccountIconContext): IconTransferWork = scoped(context) { catalog, rows ->
+        val confirmed = rows.filter { it.state == "complete" }.map { it.key() }.toSet()
+        IconTransferWork(rows.any { eligible(context, catalog, it, confirmed) },
+            rows.any { it.state == "blocked" && (it.kind == "download" || context.access.canDeclare) })
     }
 
     suspend fun enqueueAsset(context: AccountIconContext, assetId: String): List<IconTransferJob> = enqueue(context) { catalog ->
@@ -144,10 +153,7 @@ internal class AccountIconTransfers(
         val confirmed = before.filter { it.state == "complete" }.map { it.key() }.toSet()
         // UUID order is only a stable tie-breaker. Otherwise a temporarily pending download
         // can win every bounded batch and prevent the very uploads it is waiting for.
-        val row = before.asSequence().filter { it.state == "pending" && it.operationId !in excluded &&
-            (it.kind == IconTransferKind.DOWNLOAD.wire || context.access.canDeclare) && dependencies(catalog, it).all { key ->
-                key in confirmed
-            }
+        val row = before.asSequence().filter { it.operationId !in excluded && eligible(context, catalog, it, confirmed)
         }.minWithOrNull(compareBy<AccountIconTransferRow> { it.generation }.thenBy { it.operationId }) ?: return@scoped null
         check(row.generation <= Long.MAX_VALUE - 2) { "ICON_TRANSFER_EXHAUSTED" } // Reserve the confirmation/release transition too.
         val changed = row.copy(state = "sending", generation = next(row.generation), deviceId = context.access.deviceId)
@@ -282,6 +288,11 @@ internal class AccountIconTransfers(
         "declare_pack" -> catalog.packs.getValue(row.targetId to row.revision).assets.map { Key("declare_asset", it.assetId) }
         else -> emptyList()
     }
+
+    private fun eligible(context: AccountIconContext, catalog: AccountIconTransferMetadata,
+        row: AccountIconTransferRow, confirmed: Set<Key>): Boolean = row.state == "pending" &&
+        (row.kind == IconTransferKind.DOWNLOAD.wire || context.access.canDeclare) &&
+        dependencies(catalog, row).all { it in confirmed }
 
     private suspend fun read(context: AccountIconContext, catalog: AccountIconTransferMetadata): List<AccountIconTransferRow> {
         val ns = context.namespace

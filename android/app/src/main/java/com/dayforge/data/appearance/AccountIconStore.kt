@@ -154,10 +154,15 @@ internal class AccountIconStore(private val metadata: AccountIconRepository, pri
     }
 
     /** Does not infer ready from final bytes, remove final hashes, or adopt unjournalled files. */
-    suspend fun recover(context: AccountIconContext): IconFileRecovery {
-        metadata.installations(context)
-        val result = files.exclusive(context.namespace, create = false, beforeAccess = { metadata.reauthorize(context, writing = true) }) { directory ->
-            val entries = metadata.installations(context)
+    suspend fun recover(context: AccountIconContext): IconFileRecovery = recover(context, writing = true)
+
+    /** Admitted readonly download recovery cannot declare metadata, adopt files or erase final bytes. */
+    internal suspend fun recoverDownloads(context: AccountIconContext): IconFileRecovery = recover(context, writing = false)
+
+    private suspend fun recover(context: AccountIconContext, writing: Boolean): IconFileRecovery {
+        metadata.installations(context, writing)
+        val result = files.exclusive(context.namespace, create = false, beforeAccess = { metadata.reauthorize(context, writing) }) { directory ->
+            val entries = metadata.installations(context, writing)
             val names = directory?.inventory().orEmpty()
             // Validate the entire known final-file set before any cleanup, including pending publications.
             for (entry in entries) {
@@ -168,19 +173,19 @@ internal class AccountIconStore(private val metadata: AccountIconRepository, pri
                         entry.validationProfile ?: iconValidationProfile(entry.reservation.blob))
                 }
             }
-            check(metadata.installations(context) == entries) { "ICON_INSTALL_CHANGED" }
+            check(metadata.installations(context, writing) == entries) { "ICON_INSTALL_CHANGED" }
             for (entry in entries) {
                 currentCoroutineContext().ensureActive()
                 // Reauthorize every exact cleanup; no account lock spans blocking image I/O.
-                metadata.reauthorize(context, writing = true)
+                metadata.reauthorize(context, writing)
                 directory?.files?.cleanupTemporary(entry.reservation.operationId)
             }
-            check(metadata.installations(context) == entries) { "ICON_INSTALL_CHANGED" }
+            check(metadata.installations(context, writing) == entries) { "ICON_INSTALL_CHANGED" }
             val known = entries.flatMap { listOf(it.reservation.blob.sha256, ".install-${it.reservation.operationId}.part") }.toSet()
             IconFileRecovery(entries.count { it.validationProfile != null }, entries.count { it.validationProfile == null },
                 Collections.unmodifiableList((names - known).sorted()))
         }
-        metadata.reauthorize(context, writing = true)
+        metadata.reauthorize(context, writing)
         return result
     }
 }

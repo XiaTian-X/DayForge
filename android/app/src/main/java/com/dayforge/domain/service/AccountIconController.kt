@@ -15,7 +15,12 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 
 internal sealed interface IconImageState {
@@ -67,15 +72,50 @@ internal class IconImageHandle : AccountIconMemory.Cache {
 internal data class IconPackSource(val context: AccountIconContext, val pack: com.dayforge.domain.model.IconPack,
     val preview: AccountIconPackPreview? = null)
 
+internal enum class IconMaterialOutcome { COMPLETE, RETRY, ATTENTION, UNSUPPORTED, INACTIVE }
+
 internal class AccountIconRuntime(
     val metadata: AccountIconRepository, val store: AccountIconStore, val renderer: AccountIconRenderer,
-    val imports: AccountIconImport, val documents: AccountIconDocuments, val close: () -> Unit
+    val imports: AccountIconImport, val documents: AccountIconDocuments, val close: () -> Unit,
+    private val maximumRoundMillis: Long = 240_000
 ) {
     val transfers get() = imports.transfers
+    init {
+        require(store.usesMetadata(metadata) && transfers.usesStores(metadata, store)) { "ICON_TRANSFER_STORE_MISMATCH" }
+        require(maximumRoundMillis in 1..240_000)
+    }
     private val materialOwner = kotlinx.coroutines.sync.Mutex()
     val catalog by lazy { metadata.remoteCatalog(transfers) }
     val processor by lazy { com.dayforge.data.appearance.AccountIconTransferProcessor(metadata, store, transfers, materialOwner) }
     val catalogProcessor by lazy { com.dayforge.data.appearance.AccountIconCatalogProcessor(metadata, catalog, materialOwner) }
+
+    suspend fun install(preview: AccountIconPackPreview) = materialOwner.withLock { imports.confirm(preview) }
+
+    /** One captured session/route and sole owner, including the real file recovery and all phases. */
+    suspend fun synchronize(context: AccountIconContext, http: AccountIconHttp): IconMaterialOutcome = materialOwner.withLock {
+        withTimeoutOrNull(maximumRoundMillis) {
+            http.session(context) { session ->
+                session.authorize(context)
+                // Audit both durable journals BEFORE deleting even an exact owned temporary file.
+                transfers.work(context)
+                catalog.next(context)
+                try { store.recoverDownloads(context) }
+                catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    // A local file failure is not a transient remote/network failure.
+                    throw IllegalStateException("ICON_RECOVERY_REQUIRED", error)
+                }
+                processor.admitted(context, session)
+                val directory = catalogProcessor.admitted(context, session)
+                val work = transfers.work(context)
+                when {
+                    directory.retryable || directory.batch.limited || work.pending -> IconMaterialOutcome.RETRY
+                    directory.batch.stopped || work.blocked -> IconMaterialOutcome.ATTENTION
+                    else -> IconMaterialOutcome.COMPLETE
+                }
+            } ?: IconMaterialOutcome.UNSUPPORTED
+        } ?: IconMaterialOutcome.RETRY // Only our deadline; parent cancellation still propagates after IO joins.
+    }
 }
 
 /** Lazy process-singleton storage, using the same authoritative credentials/coordinator as login. */
@@ -94,6 +134,9 @@ class AccountIconController internal constructor(
     }, tokens)
 
     private val runtime = lazy(factory)
+    private val materialWakeups = MutableSharedFlow<Unit>(extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    internal val workRequests = materialWakeups.asSharedFlow()
     private val references = mutableListOf<WeakReference<IconImageHandle>>()
     private val imageMonitor = Any()
     private var imageCalls = 0
@@ -103,6 +146,17 @@ class AccountIconController internal constructor(
     internal fun registerConsumer(cache: AccountIconMemory.Cache) = tokens.registerIconCache(cache)
     internal suspend fun capture() = io { it.metadata.capture() }
     internal suspend fun transferJobs(context: AccountIconContext) = io { it.transfers.jobs(context) }
+    internal suspend fun synchronize(http: AccountIconHttp): IconMaterialOutcome = withContext(Dispatchers.IO) {
+        // Incomplete/unknown authority never initializes the material DB/runtime or sends HTTP.
+        val access = tokens.localIconAccess() ?: return@withContext IconMaterialOutcome.INACTIVE
+        val storage = runtime.value
+        val context = storage.metadata.capture()
+        check(context.access == access) { "ICON_SESSION_CHANGED" }
+        val result = storage.synchronize(context, http)
+        if (result != IconMaterialOutcome.UNSUPPORTED)
+            storage.metadata.authorized(context) { refreshReferences(context.namespace) }
+        result
+    }
     internal suspend fun refreshCatalog(http: com.dayforge.data.appearance.AccountIconHttp) = io {
         val context = it.metadata.capture()
         val result = it.catalogProcessor.run(context, http)
@@ -129,10 +183,15 @@ class AccountIconController internal constructor(
         storage.metadata.reauthorize(context)
         value
     }
-    internal suspend fun install(preview: AccountIconPackPreview) = io {
-        val receipt = it.imports.confirm(preview)
-        it.metadata.authorized(preview.context) { refreshReferences(preview.context.namespace) }
-        receipt
+    internal suspend fun install(preview: AccountIconPackPreview) = try {
+        io {
+            val receipt = it.install(preview)
+            it.metadata.authorized(preview.context) { refreshReferences(preview.context.namespace) }
+            receipt
+        }
+    } finally {
+        // Includes file-phase failure/cancellation after durable queue commit; never emits per tick/page.
+        materialWakeups.tryEmit(Unit)
     }
     internal suspend fun select(context: AccountIconContext, expected: Long, version: IconPackVersion?) =
         io { it.store.select(context, expected, version) }

@@ -13,6 +13,7 @@ import com.dayforge.data.local.PreferencesManager
 import com.dayforge.reminder.HabitReminderReceiver
 import com.dayforge.reminder.HabitReminderScheduler
 import com.dayforge.sync.AutoSyncCoordinator
+import com.dayforge.sync.AccountIconWorkCoordinator
 import com.dayforge.widget.WidgetRefreshScheduler
 import com.dayforge.widget.WidgetUpdateWorker
 import dagger.hilt.android.HiltAndroidApp
@@ -31,6 +32,9 @@ class DayForgeApplication : Application() {
     @Inject
     lateinit var autoSyncCoordinator: AutoSyncCoordinator
 
+    @Inject
+    lateinit var accountIconWorkCoordinator: AccountIconWorkCoordinator
+
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
@@ -46,6 +50,9 @@ class DayForgeApplication : Application() {
         // Observe durable changes and all network paths (including local-only Wi-Fi)
         // and let WorkManager provide retries across process restarts.
         autoSyncCoordinator.start()
+
+        // Independent failures/retries: material work never blocks the business sync worker.
+        accountIconWorkCoordinator.start()
 
         // Recover presentation state after a process restart; work reads current Room data.
         WidgetRefreshScheduler.request(this)

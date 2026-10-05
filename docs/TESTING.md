@@ -197,6 +197,21 @@ v4/未来版本不请求目录；空末页不消耗代次。元数据/预留/包
 最大合法四包 HTTP 响应测试仍执行 128 素材/256 角色/最长 Unicode 名称与双变体，不安装字节或猜归属。
 这些不表示生产 v5/Worker、正式服务器/外网或系统提供者/手机平板人工验收已完成。
 
+`AccountIconBackgroundTest` 使用真实文件 Room/DataStore、原生 SVG、实际 loopback HTTP 与正式
+domain/CoroutineWorker 结果，验证无效授权零初始化/零 HTTP、只读冷目录→下载、v4/未来版本零
+恢复/领取/暂存清理、精确 v5 清理且保留未知文件、原 operation ID/CAS 冷续、真实 peer 中断和
+取消 socket 关闭/join、仅自身期限返回 retry、32 项及 4 页共同轮次预算、永久/临时/内容等待
+分类、损坏已知字节/坏队列先停止并保留现场、晚期账户替换不发布，以及 blocked 不饿死独立意图。
+真实导入 syscall 屏障证明文件安装结束前后台零 HTTP/领取，失败仍唤醒且显式重试保留全部
+意图；真实凭据刷新/无关设置不发布新素材身份，退出发布无效授权。
+`AccountIconWorkerTest` 保留有限结果及 retry/failure 区别，上游取消与依赖失败不得伪成功。
+`AccountIconWorkCoordinatorTest` 通过实际 WorkRequest 和受控 WorkManager 边界验证幂等启动、
+无身份 WorkData/无 INTERNET 约束、30 分钟兜底/30 秒指数退避、导入/网络 2 秒去抖、真实 Android
+Network 身份的本地路径/丢失/剩余路径/观察未知、授权/能力变化及退出仅取消自己的工作，
+调度/观察异常留下 FAILED、有限取消且显式重启恢复。它不冒充系统实际调度/重启测试。
+生产应用生命周期已接入独立素材 Worker，但在线 v5 服务、实际 LAN/WAN/VPN、厂商后台限制、
+系统文件提供者及手机/平板分组人工验收仍待执行，不能由这些合成网络或托管构建宣称通过。
+
 `AccountIconRendererTest` 在真实文件/Room/DataStore 上覆盖 PNG/SVG 的不可变缓存命中、
 浅深/模板与原色、主题版本/UUID/tint/尺寸/素材身份、账户/server/epoch/重登及权限变化、只读设备，
 以及命中时真实文件缺失/损坏/未知 profile 拒绝；验证 LRU 字节与项数、禁用/超单图预算、
