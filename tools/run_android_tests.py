@@ -1,4 +1,4 @@
-"""Build once, discover on a physical device, and run ALL tests in two sequential shards.
+"""Build once, discover on a physical device, and run ALL tests in three sequential shards.
 
 No filters, retries, parallel devices, raised test deadlines, or host Android tests.
 Reports from prior runs are moved aside, never accepted as current evidence.
@@ -21,7 +21,7 @@ from tools.check_android_coverage import validate as validate_coverage
 from tools.check_android_results import read_cases
 from tools.check_android_warnings import find_growth, load_budget, parse_warnings
 
-SHARDS = 2
+SHARDS = 3
 TARGET = "com.dayforge.testbed"
 TEST_PACKAGE = TARGET + ".test"
 COMPONENT = TEST_PACKAGE + "/com.dayforge.HiltTestRunner"
@@ -342,7 +342,7 @@ class Gate:
         destination = self.build / COVERAGE_INPUT
         destination.mkdir(parents=True, exist_ok=False)
         for index, source in enumerate(inputs):
-            # The locked AGP reads all files recursively from CODE_COVERAGE. Both
+            # The locked AGP reads all files recursively from CODE_COVERAGE. All
             # fresh shard files must reach the existing report task; no new plugin.
             (destination / f"shard-{index}.ec").write_bytes(source.read_bytes())
         self.execute(
