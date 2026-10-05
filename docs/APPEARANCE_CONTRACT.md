@@ -415,6 +415,9 @@ DataStore 快照，并要求绑定本地账户、完整小写 UUID 副本、已�
 同一仓库可复用一份至多 1 MiB 原文的元数据解析结果，但每次须读取并审计实际 SQL 行，
 namespace 和全部 asset/pack 行精确相等才复用；合法变更、重复键、损坏、事务回滚仍重新处理。
 安装意图、ready、选择、权限与实际图片从不由该解析缓存推断，不能减少完整包边界测试。
+SQL 类型/范围、asset/pack 数量及原文 UTF-8 字节额度的六个标量检查合并为一次真实 SQL 查询；
+原谓词和上限不变，在同一事务中先拒绝坏类型，再读取全部实际行。结果不跨调用复用，认证仍
+在事务前后重新读取；不缓存授权、跳过 ready/选择校验或减少文件回读/耐久性 fsync。
 
 内部 `AccountIconStore` 从账户拥有的 asset 引用授权，不提供裸 hash 读取。文件路径为可信
 `filesDir/account-icons-v1/<account UUID>/<server UUID>/<epoch UUID>/<hash>`；逐级拒绝链接/
