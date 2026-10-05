@@ -135,9 +135,9 @@ teardown，最后恢复真实调度对象。测试仍检查真实业务数据/ou
 数量、各表坏 SQL 类型/范围、ready/选择值和副本隔离；拒绝后原损坏值不变，恢复后重新读取。
 暖解析须验证合法原文变更、重复 JSON 键、事务回滚；复用解析不能掩盖实际行变更，SQL 类型、
 安装意图、ready 与选择仍逐次审计。
-新库测试比较导出的当前 v3 身份，拒绝未知版本和伪 schema，均限定 `com.dayforge.testbed`。
+新库测试比较导出的当前 v4 身份，拒绝未知版本和伪 schema，均限定 `com.dayforge.testbed`。
 `AccountIconMigrationTest` 从已提交 v1 schema 经过生产入口升级，比较原三表的全部行/DDL/
-operation ID、最终 v3 identity、空 ready/selection 和账户复合外键；DDL 阻塞和最终 schema 校验失败须回滚
+operation ID、最终 v4 identity、空 ready/selection/transfer 和账户复合外键；DDL 阻塞和最终 schema 校验失败须回滚
 至原 v1，精确移除测试障碍后能重试，不通过清库取得成功。
 升级前显式核对冻结 v1 identity；伪造、缺失、额外行及 BLOB 类型不得随迁移被覆盖成有效身份。
 直接 v2→3 独立验证原四表全部行/DDL/ready 保留、空 selection、复合外键及冷重开；冻结 v2
@@ -154,6 +154,18 @@ ready、旧读取不返回字节；取消等待真实 I/O 收尾并保持第二�
 已提交安装保留真实 ready 而返回会话失效，不能因调用失败虚构数据库回滚。独立 Room 连接
 须在文件阶段成功提交新元数据，证明没有跨图片 I/O 持有数据库写事务。
 这些不验证缓存、在线素材接口、生产启动调度、人工断电或清库，不能据此宣称 #259 已全部完成。
+
+`AccountIconTransferMigrationTest` 从冻结 v3 经生产入口升级至 v4，逐列/DDL 比较全部五张旧表，
+验证空传输队列、身份、外键和冷重开；伪/缺失/额外/BLOB 身份，同名外来表、视图及索引
+（含大小写变体）和最终 schema 失败均须保留原版本及数据，精确移除测试障碍后可重试。
+`AccountIconTransfersTest` 使用真实文件 Room/DataStore/原生 PNG，验证本机 ready 不冒充服务端确认、
+包的原子入队和声明依赖、稳定 operation ID、冷重开/中断代次、精确响应重放与身份/内容错配拒绝，
+四类错误捕获快照及跨设备重绑尝试不得确认或释放实际意图，同 UUID 的素材与包保持类型独立，
+以及账户/副本/设备/权限变更、只读下载的真实字节证明、完成下载的显式代次重查与旧回调拒绝、
+损坏文件保留、服务端确认不可借重查撤销、配额降低、原始 SQL 类型审计、
+ABORT/IGNORE/身份改写/跨表副作用整笔回滚、代次耗尽、并发实例与取消。插入阶段的真实查询屏障
+必须等待 Room 工作结束，再验证全部意图回滚和冷重开；错误依赖装配在写入前拒绝。
+这些是持久队列和严格响应值测试，不是 HTTP、只读远端文件安装或生产 Worker 已接入的证明。
 
 `AccountIconRendererTest` 在真实文件/Room/DataStore 上覆盖 PNG/SVG 的不可变缓存命中、
 浅深/模板与原色、主题版本/UUID/tint/尺寸/素材身份、账户/server/epoch/重登及权限变化、只读设备，

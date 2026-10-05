@@ -29,7 +29,7 @@ class AccountIconMigrationTest {
         rows(db, "SELECT * FROM $it ORDER BY rowid")
     }
     private fun ddl(db: SupportSQLiteDatabase) = rows(db,
-        "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('icon_blob_ready','icon_pack_selection') ORDER BY type,name")
+        "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('icon_blob_ready','icon_pack_selection','icon_transfers') ORDER BY type,name")
     private fun seed(forged: Boolean = false, version: Int = 1): Pair<Map<String, List<List<String?>>>, List<List<String?>>> {
         val old = schema(version)
         val helper = FrameworkSQLiteOpenHelperFactory().create(SupportSQLiteOpenHelper.Configuration.builder(app)
@@ -66,7 +66,7 @@ class AccountIconMigrationTest {
     private fun originalV2(db: SupportSQLiteDatabase) = snapshot(db) +
         mapOf("icon_blob_ready" to rows(db, "SELECT * FROM icon_blob_ready ORDER BY rowid"))
     private fun originalV2Ddl(db: SupportSQLiteDatabase) = rows(db,
-        "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'room_%' AND tbl_name<>'icon_pack_selection' ORDER BY type,name")
+        "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('icon_pack_selection','icon_transfers') ORDER BY type,name")
 
     @Test fun directV2UpgradePreservesAllFourTablesAndDdlWithEmptySelectionAndColdReopen() {
         seed(version = 2)
@@ -77,10 +77,10 @@ class AccountIconMigrationTest {
             }).build())
         val (before, structure) = raw.use { originalV2(it.writableDatabase) to originalV2Ddl(it.writableDatabase) }
         var db = open().openHelper.writableDatabase
-        assertEquals(3, db.version); assertEquals(before, originalV2(db)); assertEquals(structure, originalV2Ddl(db))
+        assertEquals(4, db.version); assertEquals(before, originalV2(db)); assertEquals(structure, originalV2Ddl(db))
         assertTrue(rows(db, "SELECT * FROM icon_pack_selection").isEmpty())
         assertTrue(rows(db, "PRAGMA foreign_key_check").isEmpty())
-        assertEquals(schema(3).getValue("identityHash").jsonPrimitive.content,
+        assertEquals(schema(4).getValue("identityHash").jsonPrimitive.content,
             rows(db, "SELECT identity_hash FROM room_master_table WHERE id=42").single().single())
         room!!.close(); db = open().openHelper.writableDatabase
         assertEquals(before, originalV2(db)); assertEquals(structure, originalV2Ddl(db))
@@ -108,7 +108,7 @@ class AccountIconMigrationTest {
         }
         val db = open().openHelper.writableDatabase
         assertEquals(before, snapshot(db)); assertEquals(1, rows(db, "SELECT * FROM icon_blob_ready").size)
-        assertEquals(3, db.version)
+        assertEquals(4, db.version)
     }
 
     @Test fun directV2SelectionObstructionRollsBackAndCanRetryWithoutClearingReady() {
@@ -122,7 +122,7 @@ class AccountIconMigrationTest {
             it.rawQuery("SELECT COUNT(*) FROM icon_blob_ready", null).use { c -> assertTrue(c.moveToFirst()); assertEquals(1, c.getInt(0)) }
         }
         val db = open().openHelper.writableDatabase
-        assertEquals(3, db.version); assertEquals(before, snapshot(db))
+        assertEquals(4, db.version); assertEquals(before, snapshot(db))
         assertEquals(1, rows(db, "SELECT * FROM icon_blob_ready").size)
         assertTrue(rows(db, "SELECT * FROM icon_pack_selection").isEmpty())
     }
@@ -166,7 +166,7 @@ class AccountIconMigrationTest {
             }
         }
         val db = open().openHelper.writableDatabase
-        assertEquals(3, db.version); assertEquals(before, snapshot(db))
+        assertEquals(4, db.version); assertEquals(before, snapshot(db))
         assertEquals(1, rows(db, "SELECT * FROM icon_blob_ready").size)
         assertTrue(rows(db, "SELECT * FROM icon_pack_selection").isEmpty())
     }
@@ -189,17 +189,17 @@ class AccountIconMigrationTest {
             }
         }
         val db = open().openHelper.writableDatabase
-        assertEquals(3, db.version); assertEquals(1, rows(db, "SELECT * FROM icon_blob_ready").size)
+        assertEquals(4, db.version); assertEquals(1, rows(db, "SELECT * FROM icon_blob_ready").size)
         assertTrue(rows(db, "SELECT * FROM icon_pack_selection").isEmpty())
     }
 
     @Test fun productionUpgradePreservesAllOldRowsDdlAndOperationIdentityAndCreatesNoReady() {
         val (before, structure) = seed()
         var db = open().openHelper.writableDatabase
-        assertEquals(3, db.version); assertEquals(before, snapshot(db)); assertEquals(structure, ddl(db))
+        assertEquals(4, db.version); assertEquals(before, snapshot(db)); assertEquals(structure, ddl(db))
         assertTrue(rows(db, "SELECT * FROM icon_blob_ready").isEmpty())
         assertTrue(rows(db, "SELECT * FROM icon_pack_selection").isEmpty())
-        assertEquals(schema(3).getValue("identityHash").jsonPrimitive.content,
+        assertEquals(schema(4).getValue("identityHash").jsonPrimitive.content,
             rows(db, "SELECT identity_hash FROM room_master_table WHERE id=42").single().single())
         room!!.close(); db = open().openHelper.writableDatabase
         assertEquals(before, snapshot(db)); assertEquals(structure, ddl(db))
@@ -233,7 +233,7 @@ class AccountIconMigrationTest {
             assertEquals(1, it.version); it.execSQL("DROP VIEW icon_blob_ready")
         }
         val db = open().openHelper.writableDatabase
-        assertEquals(3, db.version); assertEquals(before, snapshot(db)); assertTrue(rows(db, "SELECT * FROM icon_blob_ready").isEmpty())
+        assertEquals(4, db.version); assertEquals(before, snapshot(db)); assertTrue(rows(db, "SELECT * FROM icon_blob_ready").isEmpty())
     }
 
     @Test fun forgedMissingExtraOrWrongTypeOldIdentityCannotBeReplacedByMigration() {
@@ -263,6 +263,6 @@ class AccountIconMigrationTest {
             }
         }
         val db = open().openHelper.writableDatabase
-        assertEquals(3, db.version); assertEquals(before, snapshot(db)); assertTrue(rows(db, "SELECT * FROM icon_blob_ready").isEmpty())
+        assertEquals(4, db.version); assertEquals(before, snapshot(db)); assertTrue(rows(db, "SELECT * FROM icon_blob_ready").isEmpty())
     }
 }

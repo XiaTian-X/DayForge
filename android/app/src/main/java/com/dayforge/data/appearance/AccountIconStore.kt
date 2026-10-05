@@ -10,6 +10,7 @@ internal data class IconFileRecovery(val ready: Int, val pending: Int, val unkno
 
 /** Inactive local installation boundary. Never touches business Room, themes, UI or online queues. */
 internal class AccountIconStore(private val metadata: AccountIconRepository, private val files: AccountIconFiles) {
+    internal fun usesMetadata(value: AccountIconRepository): Boolean = metadata === value
     /** A local display choice, not a structural write. Validate the whole pack, not only visible icons. */
     suspend fun select(context: AccountIconContext, expectedGeneration: Long,
         version: IconPackVersion?): AccountIconSelection {

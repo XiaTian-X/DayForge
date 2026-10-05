@@ -44,6 +44,10 @@ internal data class AccountIconResolution(
     val asset: IconAsset?, val placeholder: Boolean
 )
 
+internal data class AccountIconTransferMetadata(
+    val assets: Map<String, IconAsset>, val packs: Map<Pair<String, Int>, IconPack>
+)
+
 /** Readiness is an advisory local receipt, not a fresh file proof or server acknowledgement. */
 internal data class AccountIconCatalog(
     val packs: List<IconPack>, val selection: AccountIconSelection, val readyVersions: Set<IconPackVersion>
@@ -70,6 +74,8 @@ internal class AccountIconRepository(
     // Parsing only: every use still reads/audits real rows, journals, ready, selection and access.
     // One exact namespace/row snapshot, <= 1 MiB raw metadata; account lock serializes all access.
     private var parsedMetadata: ParsedMetadata? = null
+
+    internal fun usesDatabase(value: AccountIconDatabase): Boolean = database === value
 
     internal fun registerCache(cache: com.dayforge.data.local.AccountIconMemory.Cache) =
         tokens.registerIconCache(cache)
@@ -111,6 +117,17 @@ internal class AccountIconRepository(
             listOfNotNull(asset.light, asset.dark).all { it.sha256 in state.ready }
         } }.map { IconPackVersion(it.packId, it.revision) }.toSet()
         AccountIconCatalog(Collections.unmodifiableList(packs), state.selection, Collections.unmodifiableSet(ready))
+    }
+
+    /** Short queue transaction only: no I/O/network, nested account locking or preference writes. */
+    internal suspend fun <T> transferTransaction(context: AccountIconContext,
+        block: suspend (AccountIconTransferMetadata) -> T): T = scoped(context) {
+        val before = catalog(context.namespace)
+        val result = block(AccountIconTransferMetadata(
+            Collections.unmodifiableMap(before.assets), Collections.unmodifiableMap(before.packs)))
+        check(catalog(context.namespace) == before) { "ICON_TRANSFER_CHANGED_METADATA" }
+        check(context)
+        result
     }
 
     /** Only the file store may activate a pack, after proving all its real ready variants. */

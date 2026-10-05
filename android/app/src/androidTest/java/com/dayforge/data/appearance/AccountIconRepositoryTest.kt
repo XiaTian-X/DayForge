@@ -117,7 +117,7 @@ class AccountIconRepositoryTest {
         database.close()
         val queries = CopyOnWriteArrayList<Pair<String, List<Any?>>>()
         database = Room.databaseBuilder(app, AccountIconDatabase::class.java, AccountIconDatabase.NAME)
-            .addMigrations(AccountIconDatabase.MIGRATION_1_2, AccountIconDatabase.MIGRATION_2_3)
+            .addMigrations(AccountIconDatabase.MIGRATION_1_2, AccountIconDatabase.MIGRATION_2_3, AccountIconDatabase.MIGRATION_3_4)
             .setQueryCallback({ sql, args ->
                 if (sql.trimStart().startsWith("SELECT", ignoreCase = true) && sql.contains("icon_"))
                     queries.add(sql to args.toList())
@@ -191,12 +191,12 @@ class AccountIconRepositoryTest {
         val before = business.database.openHelper.readableDatabase.version
         val repo = repository(); val context = repo.capture(); repo.reservePack(context, pack())
         val saved = durable()
-        val schema = instrumentation.context.assets.open("com.dayforge.data.appearance.AccountIconDatabase/3.json")
+        val schema = instrumentation.context.assets.open("com.dayforge.data.appearance.AccountIconDatabase/4.json")
             .bufferedReader().use { Json.parseToJsonElement(it.readText()).jsonObject.getValue("database").jsonObject }
         database.openHelper.readableDatabase.query("SELECT identity_hash FROM room_master_table WHERE id=42").use {
             assertTrue(it.moveToFirst()); assertEquals(schema.getValue("identityHash").jsonPrimitive.content, it.getString(0))
         }
-        assertEquals(3, database.openHelper.readableDatabase.version)
+        assertEquals(4, database.openHelper.readableDatabase.version)
         reopen()
         assertEquals(saved, durable()); assertEquals(pack(), repository().pack(context, id(20), 1))
         assertEquals(before, business.database.openHelper.readableDatabase.version)
@@ -488,11 +488,11 @@ class AccountIconRepositoryTest {
 
     @Test fun unsupportedDatabaseVersionAndForgedSchemaIdentityNeverDestructivelyReset() = runBlocking<Unit> {
         val repo = repository(); val context = repo.capture(); repo.reserveAsset(context, asset())
-        val saved = durable(); database.openHelper.writableDatabase.version = 4; reopen()
+        val saved = durable(); database.openHelper.writableDatabase.version = 5; reopen()
         rejected { repository().asset(context, id(10)) }
         database.close()
         android.database.sqlite.SQLiteDatabase.openDatabase(app.getDatabasePath(AccountIconDatabase.NAME).path, null, 0).use {
-            assertEquals(4, it.version); it.version = 3
+            assertEquals(5, it.version); it.version = 4
         }
         database = AccountIconDatabase.open(app); assertEquals(saved, durable())
         database.openHelper.writableDatabase.execSQL("UPDATE room_master_table SET identity_hash='forged'")
