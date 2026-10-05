@@ -225,8 +225,16 @@ class TokenManager @Inject constructor(
         )
     }
 
-    internal suspend fun localIconAccess(): LocalIconAccess? {
+    internal suspend fun localIconAccess(): LocalIconAccess? = iconAccess(dataStore.data.first())
+
+    /** Bind credentials and all material permissions to ONE actual persisted snapshot. */
+    internal suspend fun iconAuthenticationSnapshot(expected: LocalIconAccess): AuthenticationSnapshot? {
         val preferences = dataStore.data.first()
+        if (iconAccess(preferences) != expected) return null
+        return snapshot(preferences)?.takeIf { it.session == expected.session.authentication }
+    }
+
+    private fun iconAccess(preferences: Preferences): LocalIconAccess? {
         val userId = preferences[USER_ID_KEY] ?: return null
         // Local ownership still proves the CURRENT access ciphertext on every check. Refresh
         // credentials are not part of this snapshot (a missing/invalid refresh never denied it).

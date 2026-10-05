@@ -38,28 +38,39 @@ internal class AccountIconStore(private val metadata: AccountIconRepository, pri
     }
 
     suspend fun install(context: AccountIconContext, assetId: String, hash: String, content: ByteArray) {
+        installBytes(context, assetId, hash, content, writing = true)
+    }
+
+    /** Does not declare an asset: the read-authorized account must already own its exact reservation. */
+    internal suspend fun installDownloaded(context: AccountIconContext, assetId: String, hash: String, content: ByteArray) {
+        installBytes(context, assetId, hash, content, writing = false)
+    }
+
+    private suspend fun installBytes(context: AccountIconContext, assetId: String, hash: String,
+        content: ByteArray, writing: Boolean) {
         require(content.size in 1..2_097_152)
         val frozen = content.copyOf()
         // Authorize before creating paths; recheck after waiting for the process file lease.
-        metadata.installation(context, assetId, hash, writing = true)
-        files.exclusive(context.namespace, create = true, beforeAccess = { metadata.reauthorize(context, writing = true) }) { directory ->
-            val before = metadata.installation(context, assetId, hash, writing = true)
+        metadata.installation(context, assetId, hash, writing)
+        files.exclusive(context.namespace, create = true, beforeAccess = { metadata.reauthorize(context, writing) }) { directory ->
+            val before = metadata.installation(context, assetId, hash, writing)
             val target = requireNotNull(directory)
             // A ready receipt cannot authorize silently rebuilding a missing/corrupted final file.
             before.validationProfile?.let { target.files.read(before.reservation.blob, it) }
-            publishReady(context, assetId, before, frozen, target)
+            publishReady(context, assetId, before, frozen, target, writing)
         }
-        metadata.reauthorize(context, writing = true)
+        metadata.reauthorize(context, writing)
     }
 
     /** Caller holds the namespace lease; both single and pack installs use the same publication proof. */
     private suspend fun publishReady(context: AccountIconContext, assetId: String, before: IconInstallation,
-        frozen: ByteArray, target: AccountIconFiles.Directory) {
+        frozen: ByteArray, target: AccountIconFiles.Directory, writing: Boolean = true) {
         target.capacity(frozen.size, before.reservation.blob.sha256)
         val profile = target.files.publish(before.reservation.operationId, frozen, before.reservation.blob)
         target.files.read(before.reservation.blob, profile)
         currentCoroutineContext().ensureActive()
-        metadata.markReady(context, assetId, before.reservation, profile)
+        if (writing) metadata.markReady(context, assetId, before.reservation, profile)
+        else metadata.markDownloadedReady(context, assetId, before.reservation, profile)
     }
 
     suspend fun read(context: AccountIconContext, assetId: String, hash: String): ByteArray {

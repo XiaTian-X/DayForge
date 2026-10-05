@@ -72,6 +72,7 @@ internal class AccountIconRuntime(
     val imports: AccountIconImport, val documents: AccountIconDocuments, val close: () -> Unit
 ) {
     val transfers get() = imports.transfers
+    val processor by lazy { com.dayforge.data.appearance.AccountIconTransferProcessor(metadata, store, transfers) }
 }
 
 /** Lazy process-singleton storage, using the same authoritative credentials/coordinator as login. */
@@ -99,6 +100,12 @@ class AccountIconController internal constructor(
     internal fun registerConsumer(cache: AccountIconMemory.Cache) = tokens.registerIconCache(cache)
     internal suspend fun capture() = io { it.metadata.capture() }
     internal suspend fun transferJobs(context: AccountIconContext) = io { it.transfers.jobs(context) }
+    internal suspend fun transfer(http: com.dayforge.data.appearance.AccountIconHttp) = io {
+        val context = it.metadata.capture()
+        val result = it.processor.run(context, http)
+        if (result.downloaded) it.metadata.authorized(context) { refreshReferences(context.namespace) }
+        result
+    }
     internal suspend fun library(context: AccountIconContext) = io {
         val catalog = it.metadata.library(context)
         it.metadata.authorized(context) { refreshReferences(context.namespace) }
