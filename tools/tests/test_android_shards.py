@@ -98,10 +98,16 @@ class FakeGate(Gate):
             path = self.build / RESULTS
             path.mkdir(parents=True)
             (path / "TEST-phone.xml").write_text(result(cases))
+            if self.fault == "last-shard-report" and index == SHARDS - 1:
+                (path / "TEST-phone.xml").write_text("<testsuite/>")
             path = self.build / COVERAGE_INPUT / "phone"
             path.mkdir(parents=True)
-            if self.fault != "missing-ec":
+            if self.fault != "missing-ec" and not (
+                self.fault == "last-shard-missing-ec" and index == SHARDS - 1
+            ):
                 (path / "coverage.ec").write_bytes(f"coverage-{index}".encode())
+            if self.fault == "last-shard-empty-ec" and index == SHARDS - 1:
+                (path / "coverage.ec").write_bytes(b"")
             if self.fault == "changed-apk":
                 self.apks()[0].write_bytes(b"changed")
         elif name == "coverage":
@@ -167,25 +173,37 @@ class AndroidShardGateTest(unittest.TestCase):
         for path in directories:
             path.mkdir()
 
-        def write(first, second):
-            for path, cases in zip(directories, (first, second), strict=True):
+        def write(*partitions):
+            for path, cases in zip(directories, partitions, strict=True):
                 (path / "TEST-phone.xml").write_text(result(cases))
 
-        write(CASES[::2], CASES[1::2])
+        write(*[CASES[index::SHARDS] for index in range(SHARDS)])
         self.assertEqual(3, validate_shards(set(CASES), directories))
-        for first, second in (
-            (CASES[:1], CASES[1:2]),
-            (CASES, CASES[:1]),
-            (CASES[::2], [("Extra", "test")]),
+        for partitions in (
+            (CASES[:1], CASES[1:2], []),
+            (CASES[:1], CASES[1:2], CASES[:1]),
+            (CASES[:1], CASES[1:2], [("Extra", "test")]),
         ):
-            write(first, second)
+            write(*partitions)
             with self.assertRaises(ValueError):
                 validate_shards(set(CASES), directories)
+        for missing in range(SHARDS):
+            with self.subTest(missing=missing), self.assertRaises(ValueError):
+                validate_shards(
+                    set(CASES), directories[:missing] + directories[missing + 1:]
+                )
+        # Even a complete legacy two-shard union cannot satisfy the new policy.
+        (directories[0] / "TEST-phone.xml").write_text(result(CASES[::2]))
+        (directories[1] / "TEST-phone.xml").write_text(result(CASES[1::2]))
         with self.assertRaises(ValueError):
-            validate_shards(set(CASES), directories[:1])
-        write(CASES[::2], CASES[1::2])
-        (directories[1] / "TEST-phone.xml").write_text(
-            result(CASES[1::2]).replace("time='0.01'", "time='-1'")
+            validate_shards(set(CASES), directories[:2])
+        # A nonempty last shard must not conceal a missing discovered identity.
+        write(*[CASES[index::SHARDS] for index in range(SHARDS)])
+        with self.assertRaises(ValueError):
+            validate_shards(set(CASES) | {("AnotherTest", "missing")}, directories)
+        write(*[CASES[index::SHARDS] for index in range(SHARDS)])
+        (directories[-1] / "TEST-phone.xml").write_text(
+            result(CASES[-1:]).replace("time='0.01'", "time='-1'")
         )
         with self.assertRaises(ValueError):
             validate_shards(set(CASES), directories)
@@ -202,7 +220,14 @@ class AndroidShardGateTest(unittest.TestCase):
         names = [name for name, _, _ in gate.calls]
         self.assertLess(names.index("discovery"), names.index("shard-0"))
         self.assertLess(names.index("shard-0"), names.index("shard-1"))
-        self.assertLess(names.index("shard-1"), names.index("coverage"))
+        self.assertLess(names.index("shard-1"), names.index("shard-2"))
+        self.assertLess(names.index("shard-2"), names.index("coverage"))
+        self.assertEqual(3, SHARDS)
+        evidence = json.loads((gate.run / "complete.json").read_text())
+        self.assertEqual(3, evidence["shards"])
+        self.assertEqual(3, len(evidence["coverage_inputs_sha256"]))
+        self.assertEqual(3, len(evidence["test_reports_sha256"]))
+        self.assertEqual(sorted(map(list, CASES)), evidence["discovered_cases"])
         self.assertEqual(
             3, json.loads((gate.run / "complete.json").read_text())["cases"]
         )
@@ -215,6 +240,13 @@ class AndroidShardGateTest(unittest.TestCase):
         for name, argv, timeout in gate.calls:
             if name.startswith("shard-"):
                 self.assertEqual(900, timeout)
+                self.assertIn(
+                    "-Pandroid.testInstrumentationRunnerArguments.numShards=3", argv
+                )
+                self.assertIn(
+                    f"-Pandroid.testInstrumentationRunnerArguments.shardIndex={name[-1]}",
+                    argv,
+                )
                 self.assertIn(
                     "-Pandroid.testInstrumentationRunnerArguments.log=false", argv
                 )
@@ -238,6 +270,10 @@ class AndroidShardGateTest(unittest.TestCase):
             "discovery",
             "shard-0",
             "shard-1",
+            "shard-2",
+            "last-shard-report",
+            "last-shard-missing-ec",
+            "last-shard-empty-ec",
             "missing-ec",
             "missing-case",
             "changed-apk",
