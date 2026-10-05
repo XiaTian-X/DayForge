@@ -10,6 +10,8 @@ import com.dayforge.data.local.TokenManager
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
+import java.io.IOException
 import okhttp3.Interceptor
 import okhttp3.Protocol
 import okhttp3.Request
@@ -55,6 +57,33 @@ class AuthenticationSessionTest {
             val outgoing = firstArg<Request>()
             assertEquals(listOf("Bearer new"), outgoing.headers.values("Authorization"))
             assertEquals(session, outgoing.tag(AuthenticationSession::class.java))
+            unauthorized(outgoing)
+        }
+        AuthInterceptor(manager).intercept(chain)
+    }
+
+    @Test
+    fun interceptor_cannot_replace_explicit_request_account_or_login_and_never_sends_after_logout() {
+        for (current in listOf(AuthenticationSnapshot(AuthenticationSession("account-b", "login-2"), "private-new", "refresh"),
+                AuthenticationSnapshot(session.copy(generation = "login-2"), "private-new", "refresh"), null)) {
+            coEvery { manager.authenticationSnapshot() } returns current
+            val chain = mockk<Interceptor.Chain>()
+            every { chain.request() } returns request(session)
+            val error = assertThrows(IOException::class.java) { AuthInterceptor(manager).intercept(chain) }
+            assertEquals("AUTHENTICATION_SESSION_CHANGED", error.message)
+            verify(exactly = 0) { chain.proceed(any()) }
+        }
+    }
+
+    @Test
+    fun interceptor_preserves_explicit_session_and_uses_current_token_after_same_session_refresh() {
+        coEvery { manager.authenticationSnapshot() } returns AuthenticationSnapshot(session, "new", "refresh")
+        val chain = mockk<Interceptor.Chain>()
+        every { chain.request() } returns request(session)
+        every { chain.proceed(any()) } answers {
+            val outgoing = firstArg<Request>()
+            assertEquals(session, outgoing.tag(AuthenticationSession::class.java))
+            assertEquals(listOf("Bearer new"), outgoing.headers.values("Authorization"))
             unauthorized(outgoing)
         }
         AuthInterceptor(manager).intercept(chain)

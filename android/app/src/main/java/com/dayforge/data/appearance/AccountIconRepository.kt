@@ -230,7 +230,14 @@ internal class AccountIconRepository(
 
     /** Only AccountIconStore calls this after publishing and reading back validated durable bytes. */
     suspend fun markReady(context: AccountIconContext, assetId: String, expected: IconReservation, profile: String) =
-        scoped(context, writing = true) {
+        ready(context, assetId, expected, profile, writing = true)
+
+    /** Known owned download bytes change local availability only, never structural metadata. */
+    internal suspend fun markDownloadedReady(context: AccountIconContext, assetId: String,
+        expected: IconReservation, profile: String) = ready(context, assetId, expected, profile, writing = false)
+
+    private suspend fun ready(context: AccountIconContext, assetId: String, expected: IconReservation,
+        profile: String, writing: Boolean) = scoped(context, writing) {
             val ns = context.namespace
             val before = catalog(ns)
             val current = installation(before, assetId, expected.blob.sha256)
@@ -242,7 +249,7 @@ internal class AccountIconRepository(
             if (old == null) database.icons().insertReady(row)
             val after = catalog(ns)
             check(after == before.copy(ready = before.ready + (expected.blob.sha256 to row))) { "ICON_STORE_CORRUPT" }
-            check(context, writing = true)
+            check(context, writing)
         }
 
     private fun installation(state: Catalog, assetId: String, hash: String): IconInstallation {
