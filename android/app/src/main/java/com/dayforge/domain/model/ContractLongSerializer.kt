@@ -8,7 +8,6 @@ import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.longOrNull
 
 object ContractLongSerializer : KSerializer<Long> {
     override val descriptor = PrimitiveSerialDescriptor("ContractLong", PrimitiveKind.LONG)
@@ -16,7 +15,8 @@ object ContractLongSerializer : KSerializer<Long> {
     override fun deserialize(decoder: Decoder): Long {
         if (decoder !is JsonDecoder) return decoder.decodeLong()
         val value = decoder.decodeJsonElement() as? JsonPrimitive
-        if (value == null || value.isString) throw SerializationException("Expected JSON integer")
-        return value.longOrNull ?: throw SerializationException("Expected 64-bit JSON integer")
+        if (value == null || value.isString || !isContractIntegerToken(value.content))
+            throw SerializationException("Expected JSON integer")
+        return value.content.toLongOrNull() ?: throw SerializationException("Expected 64-bit JSON integer")
     }
 }

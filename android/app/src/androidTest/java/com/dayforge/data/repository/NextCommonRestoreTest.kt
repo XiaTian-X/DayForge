@@ -158,6 +158,48 @@ class NextCommonRestoreTest {
         return db.syncOutboxDao().getAll().single()
     }
 
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    @Test fun coercedRevisionsRollBackActualAllEntityAcceptanceAndKeepCursorAcrossReopen() = runBlocking {
+        val original = all()
+        val before = durable()
+        val cursor = tokens.syncCursor.first()
+        for (row in original.changes) {
+            val payload = Json.parseToJsonElement(JsonObject(row.payload +
+                ("revision" to JsonUnquotedLiteral("${row.revision}e0"))).toString()).jsonObject
+            val changed = original.copy(changes = original.changes.map { if (it.entityUuid == row.entityUuid) it.copy(payload = payload) else it })
+            assertTrue(row.entityUuid, runCatching { restore(changed) }.isFailure)
+            assertEquals(before, durable()); assertEquals(cursor, tokens.syncCursor.first())
+            storage.reopen(); assertEquals(before, durable())
+        }
+        restore(original)
+        assertEquals(3, db.habitDao().getAllHabitsOnce().size)
+        assertEquals(2, db.completionDao().countAll())
+        assertEquals(listOf(29_999L, 30_001L), db.timeLogDao().getDayAllocations(durationId).map { it.durationMillis })
+        assertEquals(cursor, tokens.syncCursor.first())
+    }
+
+    @Test fun cachedUndoRevisionCannotBeCoercedOrNormalizedDuringActualRestore() = runBlocking {
+        val undo = fact(undoId, "revert", target = checkId)
+        val response = snapshot(activity(), fact())
+        restore(snapshot(activity(), fact(), undo))
+        val before = durable()
+        restore(response); assertEquals(before, durable())
+        val shadow = db.syncOutboxDao().getState("activity_event", undoId)!!
+        val text = requireNotNull(shadow.payloadJson)
+        assertTrue(text.contains("\"revision\":1"))
+        for (token in listOf("1e0", "1.0", "\"1\"", "true", "null", "9223372036854775808")) {
+            db.syncOutboxDao().upsertState(shadow.copy(payloadJson = text.replace("\"revision\":1", "\"revision\":$token")))
+            val corrupt = durable()
+            assertTrue(token, runCatching { restore(response) }.isFailure)
+            assertEquals(corrupt, durable())
+            storage.reopen(); assertEquals(corrupt, durable())
+            assertNull(db.completionDao().getCompletionByUuid(checkId))
+        }
+        // Only restore the exact synthetic corruption owned by this test; production must not rewrite it.
+        db.syncOutboxDao().upsertState(shadow)
+        restore(response); assertEquals(before, durable())
+    }
+
     @Test fun allAcceptedTypesAndOnceHistoryRestoreAtomicallyAndReopenWithoutOutboxOrCursorChanges() = runBlocking {
         val snapshot = all()
         val cursor = tokens.syncCursor.first()

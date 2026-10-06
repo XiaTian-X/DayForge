@@ -12,6 +12,7 @@ import com.dayforge.domain.model.IconReference
 import com.dayforge.domain.model.ObjectAppearance
 import com.dayforge.domain.model.OneTimeState
 import com.dayforge.domain.model.iconAllowed
+import com.dayforge.domain.model.contractLongOrNull
 import com.dayforge.domain.model.isContractName
 import com.dayforge.domain.model.isContractUuid
 import java.math.BigDecimal
@@ -250,7 +251,7 @@ internal object NextStructureMapper {
     private fun nullable(value: String?): JsonElement = value?.let(::JsonPrimitive) ?: JsonNull
     private fun JsonObject.text(key: String): String = getValue(key).let { require(it is JsonPrimitive && it.isString); it.content }
     private fun JsonObject.optionalText(key: String): String? = if (getValue(key) == JsonNull) null else text(key)
-    private fun integer(value: JsonElement): Long { require(value is JsonPrimitive && !value.isString); return requireNotNull(value.longOrNull) }
+    private fun integer(value: JsonElement): Long = requireNotNull(contractLongOrNull(value))
     private fun JsonObject.long(key: String): Long = integer(getValue(key))
     private fun JsonObject.int(key: String): Int = long(key).also { require(it in Int.MIN_VALUE..Int.MAX_VALUE) }.toInt()
     private fun JsonObject.positiveIntOrNull(key: String): Int? = if (getValue(key) == JsonNull) null else int(key).also { require(it > 0) }

@@ -1,6 +1,7 @@
 package com.dayforge.data.model
 
 import com.dayforge.domain.model.isContractUuid
+import com.dayforge.domain.model.ContractLongSerializer
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
@@ -12,6 +13,7 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class PlanStructureMetadata(
     val creationTimestamp: String,
+    @Serializable(with = ContractLongSerializer::class)
     val sortOrder: Long,
     val startDate: String?,
     val goalDueDate: String?,

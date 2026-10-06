@@ -1,6 +1,7 @@
 package com.dayforge.data.api
 
 import com.dayforge.data.appearance.strictAppearanceJson
+import com.dayforge.domain.model.isContractIntegerToken
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
@@ -8,7 +9,6 @@ import kotlinx.serialization.descriptors.*
 import kotlinx.serialization.json.*
 import okhttp3.Response
 
-private val syncIntegerToken = Regex("-?(0|[1-9][0-9]*)")
 private val syncCharsetParameter = Regex("""\s*charset\s*=\s*(?:"[^"]+"|[a-zA-Z0-9_-]+)\s*""", RegexOption.IGNORE_CASE)
 
 /** Do not mistake the library's default for proof of an UNKNOWN explicit charset. */
@@ -46,9 +46,9 @@ internal fun <T> decodeSyncReply(bytes: ByteArray, limit: Int, serializer: KSeri
                 PrimitiveKind.STRING, SerialKind.ENUM -> require(raw is JsonPrimitive && raw.isString)
                 PrimitiveKind.BOOLEAN -> require(raw is JsonPrimitive && !raw.isString && raw.booleanOrNull != null)
                 PrimitiveKind.INT -> require(raw is JsonPrimitive && !raw.isString &&
-                    syncIntegerToken.matches(raw.content) && raw.content.toIntOrNull() != null)
+                    isContractIntegerToken(raw.content) && raw.content.toIntOrNull() != null)
                 PrimitiveKind.LONG -> require(raw is JsonPrimitive && !raw.isString &&
-                    syncIntegerToken.matches(raw.content) && raw.content.toLongOrNull() != null)
+                    isContractIntegerToken(raw.content) && raw.content.toLongOrNull() != null)
                 StructureKind.LIST -> {
                     require(raw is JsonArray)
                     raw.forEach { typed(it, descriptor.getElementDescriptor(0)) }

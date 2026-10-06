@@ -53,6 +53,56 @@ class NextCommonFactMapperTest {
             {"local_date":"2026-09-27","timezone":"Asia/Shanghai","duration_milliseconds":30000},
             {"local_date":"2026-09-28","timezone":"Asia/Shanghai","duration_milliseconds":30000}]"""))
 
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    @Test fun opaqueFactHeadersDurationAndAllocationIntegersCannotBeCoerced() {
+        val cases: List<Pair<SyncV2Change, (SyncV2Change) -> Any>> = listOf(
+            event() to { row -> NextCommonFactMapper.completion(row, habit()) },
+            event("revert", JsonNull) to { row -> NextCommonFactMapper.revert(row, habit()) },
+            duration() to { row -> NextCommonFactMapper.duration(row, habit(HabitType.TIMER)) },
+            observation() to { row -> NextCommonFactMapper.observation(row, metric()) },
+            link() to { row -> NextCommonFactMapper.link(row, habit(), metric()) })
+        for ((source, decode) in cases) {
+            assertNotNull(decode(source))
+            for (token in listOf(JsonUnquotedLiteral("1e0"), JsonUnquotedLiteral("1.0"), JsonPrimitive("1"), JsonPrimitive(true))) {
+                val raw = Json.parseToJsonElement(mutate(source, "revision" to token).payload.toString()).jsonObject
+                assertThrows(source.entityType, IllegalArgumentException::class.java) { decode(source.copy(payload = raw)) }
+            }
+            for (revision in listOf(9_007_199_254_740_993L, Long.MAX_VALUE)) {
+                assertEquals(decode(source), decode(mutate(source, "revision" to JsonUnquotedLiteral(revision.toString())).copy(revision = revision)))
+            }
+        }
+        val timer = duration()
+        val baseline = NextCommonFactMapper.duration(timer, habit(HabitType.TIMER))
+        for (key in listOf("duration_seconds", "duration_milliseconds")) {
+            val original = timer.payload.getValue(key).jsonPrimitive.content
+            val changed = mutate(timer, key to JsonUnquotedLiteral("${original}e0"))
+            assertThrows(key, IllegalArgumentException::class.java) { NextCommonFactMapper.duration(changed, habit(HabitType.TIMER)) }
+            val ancillary = mutate(event(), key to JsonUnquotedLiteral("${original}e0"))
+            assertThrows(key, IllegalArgumentException::class.java) { NextCommonFactMapper.completion(ancillary, habit()) }
+        }
+        val days = timer.payload.getValue("day_allocations").jsonArray
+        for (index in days.indices) {
+            val changed = JsonArray(days.mapIndexed { position, day -> if (position != index) day else
+                JsonObject(day.jsonObject + ("duration_milliseconds" to JsonUnquotedLiteral("30000e0"))) })
+            assertThrows(IllegalArgumentException::class.java) {
+                NextCommonFactMapper.duration(mutate(timer, "day_allocations" to changed), habit(HabitType.TIMER))
+            }
+        }
+        assertEquals(baseline, NextCommonFactMapper.duration(timer, habit(HabitType.TIMER)))
+    }
+
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    @Test fun legitimateFactDecimalExponentsRetainCountsObservationsAndLinkCoefficients() {
+        for (kind in listOf("count_delta", "count_snapshot")) {
+            assertEquals(NextCommonFactMapper.completion(event(kind, JsonPrimitive("3")), habit(HabitType.COUNTING)),
+                NextCommonFactMapper.completion(event(kind, JsonUnquotedLiteral("3e0")), habit(HabitType.COUNTING)))
+        }
+        assertEquals(NextCommonFactMapper.observation(observation(), metric()),
+            NextCommonFactMapper.observation(mutate(observation(), "value" to JsonUnquotedLiteral("1.2125e1")), metric()))
+        assertEquals(NextCommonFactMapper.link(link(), habit(), metric()),
+            NextCommonFactMapper.link(mutate(link(), "coefficient" to JsonUnquotedLiteral("1.25e0")), habit(), metric()))
+    }
+
     @Test fun ordinaryChecksAndBothCountEventKindsKeepValuesAndCapturedDay() {
         assertEquals(1, NextCommonFactMapper.completion(event(), habit()).value)
         assertEquals(1, NextCommonFactMapper.completion(event(value = JsonNull), habit()).value)

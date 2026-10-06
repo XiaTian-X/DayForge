@@ -220,6 +220,31 @@ class ConfigBundleArchiveTest {
         }
     }
 
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    @Test fun nestedIntegerCoercionFailsActualArchiveButFloatingPointDataStillLoads() = runBlocking {
+        val source = manifest()
+        val baseline = read(zip(entries(source.toString()))).manifest
+        for (path in listOf(listOf("nodes", "0", "goal", "target_cycles"),
+            listOf("nodes", "2", "activity", "schedule", "weekdays", "0"),
+            listOf("nodes", "4", "activity", "target_value"), listOf("metrics", "0", "decimal_places"),
+            listOf("icon_pack", "revision"), listOf("themes", "0", "revision"))) {
+            val original = path.fold(source as JsonElement) { value, key ->
+                if (value is JsonArray) value[key.toInt()] else value.jsonObject.getValue(key)
+            }.jsonPrimitive.content
+            val changed = replace(source, path.map(::JsonPrimitive), JsonUnquotedLiteral("${original}e0"))
+            rejected(zip(entries(changed.toString())), "CONFIG_MANIFEST_JSON")
+        }
+        val changed = replace(replace(replace(source, listOf("metrics", "0", "target_value").map(::JsonPrimitive), JsonUnquotedLiteral("7.05e1")),
+            listOf("metrics", "0", "target_value_upper").map(::JsonPrimitive), JsonUnquotedLiteral("9.025e1")),
+            listOf("links", "0", "coefficient").map(::JsonPrimitive), JsonUnquotedLiteral("1.25e0"))
+        val template = read(zip(entries(changed.toString())))
+        assertEquals(baseline, template.manifest)
+        assertArrayEquals(svg, template.readBlob(hash(svg)))
+        assertArrayEquals(dark, template.readBlob(hash(dark)))
+        assertArrayEquals(png, template.readBlob(hash(png)))
+        assertEquals(baseline, read(zip(entries(source.toString()))).manifest)
+    }
+
     @Test fun missingExtraAndUnsafeEntriesNeverProducePartialPreview() = runBlocking {
         rejected(zip(entries().dropLast(1)), "CONFIG_ENTRIES_MISMATCH")
         rejected(zip(entries() + ("blobs/${"a".repeat(64)}" to svg)), "CONFIG_ENTRIES_MISMATCH")
