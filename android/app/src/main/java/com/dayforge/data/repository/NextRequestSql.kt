@@ -13,7 +13,7 @@ internal const val NEXT_TIMER = "timer_command"
 
 internal class NextRequestException(val reason: Reason) : IllegalStateException(reason.name) {
     enum class Reason { STALE_ACCESS, PERMISSION_DENIED, INVALID_LOCAL_STATE, OLD_INTENT,
-        SOURCE_CHANGED, TRANSMISSION_CONTEXT_CHANGED, REQUEST_ID_REUSED }
+        SOURCE_CHANGED, TRANSMISSION_CONTEXT_CHANGED, REQUEST_ID_REUSED, UNSUPPORTED_ACCEPTANCE, RESULT_CHANGED }
 }
 
 internal fun rejectNextRequest(reason: NextRequestException.Reason): Nothing = throw NextRequestException(reason)
@@ -33,7 +33,7 @@ internal object NextRequestSql {
     private val ints = setOf("protocol", "attemptCount", "sequence", "expectedControlGeneration", "expectedRevision")
     private val longs = ints + setOf("id", "queueId", "baseRevision", "attemptedAt", "deadLetteredAt", "createdAt",
         "occurredAt", "activeElapsedMillis", "revision", "deleted", "updatedAt")
-    private val tables = setOf("sync_outbox", "timer_command_outbox", "next_request_origins", "next_transmissions", "sync_entity_state")
+    private val tables = setOf("sync_outbox", "timer_command_outbox", "next_request_origins", "next_transmissions", "next_acceptances", "sync_entity_state")
     fun table(kind: String): String = when (kind) {
         NEXT_OPERATION -> "sync_outbox"
         NEXT_TIMER -> "timer_command_outbox"

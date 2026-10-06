@@ -155,7 +155,7 @@ class FactTimeMigrationTest {
         }
         val db = open() // Production path chains every migration and validates the final schema.
         val rows = db.completionDao().getAllCompletionsOnce().associateBy { it.uuid }
-        assertEquals(9, db.openHelper.writableDatabase.version)
+        assertEquals(10, db.openHelper.writableDatabase.version)
         assertEquals("Asia/Shanghai", rows.getValue(uuids[0]).recordedTimezone)
         assertEquals("2026-09-12", rows.getValue(uuids[0]).recordedLocalDate)
         assertEquals("America/New_York", rows.getValue(uuids[1]).recordedTimezone)
@@ -230,15 +230,29 @@ class FactTimeMigrationTest {
     }
 
     @Test fun unsupportedDowngradeFailsWithoutErasingRows() {
-        seed { it.version = 10 }
+        seed()
+        val current = open().openHelper.writableDatabase
+        val supportedVersion = current.version
+        val tables = snapshot(current.query("SELECT name FROM sqlite_master WHERE type='table' " +
+            "AND name NOT LIKE 'sqlite_%' ORDER BY name")).map { requireNotNull(it.single()) }
+        val before = tables.associateWith { snapshot(current.query("SELECT * FROM `$it` ORDER BY rowid")) }
+        val ddl = snapshot(current.query("SELECT type,name,sql FROM sqlite_master ORDER BY type,name"))
+        room!!.close()
+        // Always exercise a real downgrade, even after the next additive Room upgrade.
+        val unsupportedVersion = supportedVersion + 1
+        SQLiteDatabase.openDatabase(context.getDatabasePath(databaseName).path, null, SQLiteDatabase.OPEN_READWRITE).use {
+            it.version = unsupportedVersion
+        }
         val db = open()
         val failure = runCatching { db.openHelper.writableDatabase }.exceptionOrNull()
         assertTrue(failure is IllegalStateException)
-        assertTrue(failure!!.message.orEmpty().contains("10 to 9"))
+        assertTrue(failure!!.message.orEmpty().contains("$unsupportedVersion to $supportedVersion"))
         db.close()
         SQLiteDatabase.openDatabase(context.getDatabasePath(databaseName).path, null, SQLiteDatabase.OPEN_READONLY).use { raw ->
             raw.rawQuery("SELECT COUNT(*) FROM habits", null).use { assertTrue(it.moveToFirst()); assertEquals(1, it.getInt(0)) }
-            assertEquals(10, raw.version)
+            assertEquals(unsupportedVersion, raw.version)
+            assertEquals(before, tables.associateWith { snapshot(raw.rawQuery("SELECT * FROM `$it` ORDER BY rowid", null)) })
+            assertEquals(ddl, snapshot(raw.rawQuery("SELECT type,name,sql FROM sqlite_master ORDER BY type,name", null)))
         }
     }
 
@@ -326,7 +340,7 @@ class FactTimeMigrationTest {
             raw.execSQL("DROP TRIGGER reject_metric_backfill")
         }
         val retried = open()
-        assertEquals(9, retried.openHelper.writableDatabase.version)
+        assertEquals(10, retried.openHelper.writableDatabase.version)
         assertEquals(originalQueue, queueSnapshot(retried.openHelper.readableDatabase))
         assertEquals("Asia/Shanghai", retried.completionDao().getCompletionByUuid("completion")!!.recordedTimezone)
         assertEquals("America/Los_Angeles", retried.metricLogDao().getById(1)!!.recordedTimezone)
@@ -425,7 +439,7 @@ class FactTimeMigrationTest {
             }
         }
         TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
-        assertEquals(9, open().openHelper.writableDatabase.version)
+        assertEquals(10, open().openHelper.writableDatabase.version)
         room!!.close()
         TimeZone.setDefault(TimeZone.getTimeZone("Asia/Tokyo"))
         val db = open()

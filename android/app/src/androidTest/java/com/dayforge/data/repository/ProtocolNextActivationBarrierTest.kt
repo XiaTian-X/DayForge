@@ -9,6 +9,7 @@ import com.dayforge.data.local.entity.OneTimeTransmissionEntity
 import com.dayforge.data.local.entity.NextRecoveryStateEntity
 import com.dayforge.data.local.entity.NextRequestOriginEntity
 import com.dayforge.data.local.entity.NextTransmissionEntity
+import com.dayforge.data.local.entity.NextAcceptanceEntity
 import java.util.UUID
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -18,6 +19,13 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class ProtocolNextActivationBarrierTest : SyncPersistenceFixture() {
+    @Test fun orphanedMalformedAcceptanceBlocksEveryLegacyMutationAfterReopen() = runBlocking {
+        val row = NextAcceptanceEntity("unknown-kind", "orphan", "bad", "bad", "bad", "bad-json")
+        database.nextRequestDao().insertAcceptance(row)
+        reopen(); assertAllLegacyWritesRefused()
+        assertEquals(row, database.nextRequestDao().acceptance(row.kind, row.requestId))
+    }
+
     @Test fun orphanedMalformedCoreOriginsBlockEveryLegacyMutationAfterReopen() = runBlocking {
         val row = NextRequestOriginEntity("unknown-kind", "orphan", 999, 99, "account", null, "partial-epoch", "bad", "bad-json")
         database.nextRequestDao().insertOrigin(row)

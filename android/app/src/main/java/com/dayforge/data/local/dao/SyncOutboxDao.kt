@@ -34,7 +34,7 @@ interface SyncOutboxDao {
     suspend fun hasProtocolNextRecovery(): Boolean
 
     /** Origins/journals block v4 even if their source was removed or malformed. */
-    @Query("SELECT EXISTS(SELECT 1 FROM next_request_origins) OR EXISTS(SELECT 1 FROM next_transmissions)")
+    @Query("SELECT EXISTS(SELECT 1 FROM next_request_origins) OR EXISTS(SELECT 1 FROM next_transmissions) OR EXISTS(SELECT 1 FROM next_acceptances)")
     suspend fun hasProtocolNextRequests(): Boolean
 
     @Query("SELECT COUNT(*) FROM sync_outbox WHERE deadLetteredAt IS NULL")

@@ -67,7 +67,7 @@ class CompletionFollowUpMigrationTest {
 
     private fun oldStructure(db: SupportSQLiteDatabase) = rows(db,
         "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' " +
-            "AND tbl_name NOT IN ('local_fact_submissions','completion_metric_prompts','one_time_transmissions','next_recovery_state','next_request_origins','next_transmissions') " +
+            "AND tbl_name NOT IN ('local_fact_submissions','completion_metric_prompts','one_time_transmissions','next_recovery_state','next_request_origins','next_transmissions', 'next_acceptances') " +
             "AND NOT (type='table' AND name IN ('habits','metrics')) " +
             "AND name NOT IN ('sync_habits_update','sync_metrics_update') ORDER BY type,name")
 
@@ -127,7 +127,7 @@ class CompletionFollowUpMigrationTest {
         repeat(2) {
             val db = open()
             val sql = db.openHelper.writableDatabase
-            assertEquals(9, sql.version)
+            assertEquals(10, sql.version)
             assertEquals(before, snapshot(sql))
             assertEquals(ddl, oldStructure(sql))
             assertTrue(db.completionFollowUpDao().pendingPrompts().isEmpty())
@@ -154,7 +154,7 @@ class CompletionFollowUpMigrationTest {
             }
             raw.execSQL("DROP TABLE completion_metric_prompts") // Only this test's injected collision.
         }
-        assertEquals(9, open().openHelper.writableDatabase.version)
+        assertEquals(10, open().openHelper.writableDatabase.version)
     }
 
     @Test fun receiptUniquenessAndAccountClearIncludeNewTables() = runBlocking {
