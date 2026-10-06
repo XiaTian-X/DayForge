@@ -19,6 +19,9 @@ interface SyncOutboxDao {
     @Query("SELECT * FROM sync_outbox WHERE operationId = :operationId")
     suspend fun getByOperationId(operationId: String): SyncOutboxEntity?
 
+    @Query("SELECT * FROM sync_outbox WHERE id=:id")
+    suspend fun getById(id: Long): SyncOutboxEntity?
+
     /** Include rejected predecessors: omitting them would turn a broken chain into new intent. */
     @Query("SELECT * FROM sync_outbox WHERE referenceUuid = :activityUuid AND recordType IN ('completion', 'one_time_completion') ORDER BY id")
     suspend fun getActivityIntents(activityUuid: String): List<SyncOutboxEntity>
@@ -29,6 +32,10 @@ interface SyncOutboxDao {
     /** Even an orphaned/damaged staged checkpoint must block legacy recovery and mutation. */
     @Query("SELECT EXISTS(SELECT 1 FROM next_recovery_state)")
     suspend fun hasProtocolNextRecovery(): Boolean
+
+    /** Origins/journals block v4 even if their source was removed or malformed. */
+    @Query("SELECT EXISTS(SELECT 1 FROM next_request_origins) OR EXISTS(SELECT 1 FROM next_transmissions)")
+    suspend fun hasProtocolNextRequests(): Boolean
 
     @Query("SELECT COUNT(*) FROM sync_outbox WHERE deadLetteredAt IS NULL")
     suspend fun count(): Int

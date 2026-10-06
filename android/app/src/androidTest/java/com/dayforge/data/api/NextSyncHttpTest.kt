@@ -127,6 +127,109 @@ class NextSyncHttpTest {
     }
     private fun parsed(input: MaterialSocketServer.Input) = Json.parseToJsonElement(input.body.toString(Charsets.UTF_8)).jsonObject
 
+    private fun originalPushBytes() = """
+        { "operations" : [{ "payload" : {"deliberately_bad_domain":true,"decimal":1.2300e-2},
+          "base_revision":9007199254740993,"action":"upsert","entity_uuid":"${id(21)}",
+          "entity_type":"metric","operation_id":"${id(20)}" }], "device_id" : "${id(4)}" }
+    """.trimIndent().toByteArray()
+
+    private fun originalCommandBytes() = """
+        { "commands" : [{"timezone":"Asia/Shanghai","activity_uuid":"${id(11)}",
+          "expected_control_generation":0,"occurred_at":"$time","command_type":"start",
+          "sequence":1,"session_id":"${id(10)}","command_id":"${id(12)}"}],"device_id":"${id(4)}" }
+    """.trimIndent().toByteArray()
+
+    @Test fun frozenRequestsRetainOriginalWhitespaceOrderDecimalsAndOmittedDefaultsOnActualWire() = runBlocking<Unit> {
+        val context = capture(); val (http, server) = http { input, _ -> normal(input) }
+        val push = originalPushBytes(); val commands = originalCommandBytes()
+        http.session(context) { session ->
+            assertEquals("INVALID_PAYLOAD", session.pushFrozen(push).results.single().errorCode)
+            assertEquals("applied", session.commandsFrozen(commands).results.single().status)
+        }
+        assertArrayEquals(push, server.requests.single { it.path.endsWith("/push") }.body)
+        assertArrayEquals(commands, server.requests.single { it.path.endsWith("/commands") }.body)
+        assertEquals(9_007_199_254_740_993L, parsed(server.requests.single { it.path.endsWith("/push") })
+            .getValue("operations").jsonArray.single().jsonObject.getValue("base_revision").jsonPrimitive.long)
+        val sent = parsed(server.requests.single { it.path.endsWith("/commands") }).getValue("commands").jsonArray.single().jsonObject
+        assertFalse("expected_revision" in sent); assertFalse("active_elapsed_ms" in sent)
+        assertEquals(context, capture()); assertEquals(0L, tokens.syncCursor.first())
+    }
+
+    @Test fun frozenLostResponseReplaysOriginalBytesWithoutGeneratingIdsOrAddingDefaultFields() = runBlocking<Unit> {
+        val context = capture(); var drop = true
+        val (http, server) = http { input, _ ->
+            headers(input)
+            if (!input.path.endsWith("/identity") && drop) null else normal(input)
+        }
+        val push = originalPushBytes(); val commands = originalCommandBytes()
+        for ((body, timer) in listOf(push to false, commands to true)) {
+            drop = true
+            assertTrue(rejected { http.session(context) { if (timer) it.commandsFrozen(body) else it.pushFrozen(body) } } is IOException)
+            drop = false
+            http.session(context) { if (timer) it.commandsFrozen(body) else it.pushFrozen(body) }
+            val sent = server.requests.filter { it.path.endsWith(if (timer) "/commands" else "/push") }
+            assertEquals(2, sent.size); sent.forEach { assertArrayEquals(body, it.body) }
+            assertEquals(context, capture()); assertEquals(0L, tokens.syncCursor.first())
+        }
+    }
+
+    @Test fun malformedFrozenEnvelopesFailBeforePrivateTrafficAndKeepCallerBytes() = runBlocking<Unit> {
+        val context = capture(); val (http, server) = http { input, _ ->
+            assertTrue(input.path.endsWith("/identity")); headers(input); json(identity())
+        }
+        val push = originalPushBytes().toString(Charsets.UTF_8)
+        val command = originalCommandBytes().toString(Charsets.UTF_8)
+        val badPush = listOf(ByteArray(0), ByteArray(SYNC_REQUEST_LIMIT + 1), byteArrayOf(0xc3.toByte()),
+            push.replace("9007199254740993", "9007199254740993e0").toByteArray(),
+            push.replace("9007199254740993", "9223372036854775808").toByteArray(),
+            push.replace("\"device_id\" :", "\"unknown\" :").toByteArray(),
+            push.replace(id(4), id(30)).toByteArray(), push.replace(id(20), "not-an-operation-id").toByteArray(),
+            push.replace("{ \"operations\"", "{\"device_id\":\"${id(4)}\", \"operations\"").toByteArray())
+        val badCommands = listOf(
+            command.replace("\"sequence\":1", "\"sequence\":1e0").toByteArray(),
+            command.replace("\"sequence\":1", "\"sequence\":\"1\"").toByteArray(),
+            command.replace("\"expected_control_generation\":0", "\"expected_control_generation\":true").toByteArray(),
+            command.replace(id(4), id(30)).toByteArray(), command.replace(id(12), "not-a-command-id").toByteArray(),
+            command.replace("{ \"commands\"", "{\"device_id\":\"${id(4)}\", \"commands\"").toByteArray())
+        for ((cases, timer) in listOf(badPush to false, badCommands to true)) for (body in cases) {
+            val original = body.copyOf()
+            assertTrue(rejected { http.session(context) { if (timer) it.commandsFrozen(body) else it.pushFrozen(body) } } is IllegalArgumentException)
+            assertArrayEquals(original, body); assertEquals(context, capture()); assertEquals(0L, tokens.syncCursor.first())
+        }
+        assertEquals(badPush.size + badCommands.size, server.requests.size)
+        assertTrue(server.requests.all { it.headers["authorization"] == null })
+    }
+
+    @Test fun frozenUploadOwnsCallerBufferWhileRealResponseIsBlocked() = runBlocking<Unit> {
+        val context = capture(); val reached = CountDownLatch(1); val release = CountDownLatch(1)
+        val bytes = originalPushBytes(); val original = bytes.copyOf()
+        val (http, server) = http { input, _ ->
+            if (input.path.endsWith("/push")) { reached.countDown(); check(release.await(5, TimeUnit.SECONDS)) }
+            normal(input)
+        }
+        supervisorScope {
+            val task = async(Dispatchers.IO) { http.session(context) { it.pushFrozen(bytes) } }
+            try {
+                assertTrue(reached.await(5, TimeUnit.SECONDS)); bytes.fill(0); release.countDown()
+                assertEquals("INVALID_PAYLOAD", task.await()!!.results.single().errorCode)
+            } finally { release.countDown(); withContext(NonCancellable) { task.cancelAndJoin() } }
+        }
+        assertArrayEquals(original, server.requests.single { it.path.endsWith("/push") }.body)
+        assertEquals(context, capture()); assertEquals(0L, tokens.syncCursor.first())
+    }
+
+    @Test fun typedPushKeepsOpaqueDomainValidationSeparateFromStoredWireValidation() = runBlocking<Unit> {
+        val context = capture(); val (http, server) = http { input, _ -> normal(input) }
+        var deep: JsonElement = JsonPrimitive(true)
+        repeat(20) { deep = buildJsonObject { put("nested", deep) } }
+        val original = push().operations.single()
+        val body = push().copy(operations = listOf(original.copy(payload = buildJsonObject { put("bad_domain", deep) })))
+        assertEquals("INVALID_PAYLOAD", http.session(context) { it.push(body) }!!.results.single().errorCode)
+        assertEquals(body.operations.single().payload, parsed(server.requests.single { it.path.endsWith("/push") })
+            .getValue("operations").jsonArray.single().jsonObject.getValue("payload"))
+        assertEquals(context, capture()); assertEquals(0L, tokens.syncCursor.first())
+    }
+
     @Test fun actualEightPathsCaptureHeadersKeepOriginalIdsAndDoNotPublishReplicaOrCursor() = runBlocking<Unit> {
         val context = capture(); val (http, server) = http { input, _ -> normal(input) }
         val registration = requireNotNull(tokens.registrationSyncAccess(id(2), id(3)))

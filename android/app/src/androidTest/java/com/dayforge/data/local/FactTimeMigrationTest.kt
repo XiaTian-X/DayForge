@@ -155,7 +155,7 @@ class FactTimeMigrationTest {
         }
         val db = open() // Production path chains every migration and validates the final schema.
         val rows = db.completionDao().getAllCompletionsOnce().associateBy { it.uuid }
-        assertEquals(8, db.openHelper.writableDatabase.version)
+        assertEquals(9, db.openHelper.writableDatabase.version)
         assertEquals("Asia/Shanghai", rows.getValue(uuids[0]).recordedTimezone)
         assertEquals("2026-09-12", rows.getValue(uuids[0]).recordedLocalDate)
         assertEquals("America/New_York", rows.getValue(uuids[1]).recordedTimezone)
@@ -230,15 +230,15 @@ class FactTimeMigrationTest {
     }
 
     @Test fun unsupportedDowngradeFailsWithoutErasingRows() {
-        seed { it.version = 9 }
+        seed { it.version = 10 }
         val db = open()
         val failure = runCatching { db.openHelper.writableDatabase }.exceptionOrNull()
         assertTrue(failure is IllegalStateException)
-        assertTrue(failure!!.message.orEmpty().contains("9 to 8"))
+        assertTrue(failure!!.message.orEmpty().contains("10 to 9"))
         db.close()
         SQLiteDatabase.openDatabase(context.getDatabasePath(databaseName).path, null, SQLiteDatabase.OPEN_READONLY).use { raw ->
             raw.rawQuery("SELECT COUNT(*) FROM habits", null).use { assertTrue(it.moveToFirst()); assertEquals(1, it.getInt(0)) }
-            assertEquals(9, raw.version)
+            assertEquals(10, raw.version)
         }
     }
 
@@ -326,7 +326,7 @@ class FactTimeMigrationTest {
             raw.execSQL("DROP TRIGGER reject_metric_backfill")
         }
         val retried = open()
-        assertEquals(8, retried.openHelper.writableDatabase.version)
+        assertEquals(9, retried.openHelper.writableDatabase.version)
         assertEquals(originalQueue, queueSnapshot(retried.openHelper.readableDatabase))
         assertEquals("Asia/Shanghai", retried.completionDao().getCompletionByUuid("completion")!!.recordedTimezone)
         assertEquals("America/Los_Angeles", retried.metricLogDao().getById(1)!!.recordedTimezone)
@@ -425,7 +425,7 @@ class FactTimeMigrationTest {
             }
         }
         TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
-        assertEquals(8, open().openHelper.writableDatabase.version)
+        assertEquals(9, open().openHelper.writableDatabase.version)
         room!!.close()
         TimeZone.setDefault(TimeZone.getTimeZone("Asia/Tokyo"))
         val db = open()

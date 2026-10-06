@@ -18,13 +18,13 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
-class NextRecoveryMigrationTest {
+class NextRequestMigrationTest {
     private lateinit var context: Context
     private var room: HabitDatabase? = null
     private val name = "habit_database"
     private val schema by lazy {
         Json.parseToJsonElement(InstrumentationRegistry.getInstrumentation().context.assets
-            .open("com.dayforge.data.local.HabitDatabase/7.json").bufferedReader().use { it.readText() })
+            .open("com.dayforge.data.local.HabitDatabase/8.json").bufferedReader().use { it.readText() })
             .jsonObject.getValue("database").jsonObject
     }
     private val entities get() = schema.getValue("entities").jsonArray.map { it.jsonObject }
@@ -33,7 +33,7 @@ class NextRecoveryMigrationTest {
         check(context.packageName == "com.dayforge.testbed")
         HabitDatabaseProvider.clearInstanceForTesting()
         context.deleteDatabase(name)
-        assertEquals("7d973ffb9326ec19373ebf4deefb7dd6", schema.getValue("identityHash").jsonPrimitive.content)
+        assertEquals("58e389f6a5e03849fe4f8ab17808d266", schema.getValue("identityHash").jsonPrimitive.content)
     }
     @After fun cleanup() {
         room?.close()
@@ -55,7 +55,7 @@ class NextRecoveryMigrationTest {
     }
     private fun structure(db: SupportSQLiteDatabase) = rows(db,
         "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' " +
-            "AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('next_recovery_state','next_request_origins','next_transmissions') ORDER BY type,name")
+            "AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('next_request_origins','next_transmissions') ORDER BY type,name")
     private fun insert(db: SupportSQLiteDatabase, table: String, values: Map<String, Any>) {
         val content = ContentValues()
         entities.first { it.getValue("tableName").jsonPrimitive.content == table }.getValue("fields").jsonArray.forEach {
@@ -74,7 +74,7 @@ class NextRecoveryMigrationTest {
     }
     private fun seed(block: (SupportSQLiteDatabase) -> Unit = {}) {
         val helper = FrameworkSQLiteOpenHelperFactory().create(SupportSQLiteOpenHelper.Configuration.builder(context)
-            .name(name).callback(object : SupportSQLiteOpenHelper.Callback(7) {
+            .name(name).callback(object : SupportSQLiteOpenHelper.Callback(8) {
                 override fun onCreate(db: SupportSQLiteDatabase) {
                     entities.forEach { entity ->
                         val table = entity.getValue("tableName").jsonPrimitive.content
@@ -97,19 +97,25 @@ class NextRecoveryMigrationTest {
             insert(db, "local_fact_submissions", mapOf("operationId" to "event-op", "entityType" to "activity_event", "entityUuid" to "event",
                 "referenceUuid" to "habit", "payloadJson" to "{\"intent\":true}"))
             insert(db, "completion_metric_prompts", mapOf("eventUuid" to "event", "activityUuid" to "habit", "state" to "pending", "entriesJson" to "[]"))
+            insert(db, "timer_command_outbox", mapOf("id" to 1, "commandId" to "old-lost-response",
+                "sessionUuid" to "old-session", "sequence" to 2, "commandType" to "stop", "occurredAt" to 70000,
+                "expectedControlGeneration" to 1, "activeElapsedMillis" to 60000, "attemptCount" to 0))
+            insert(db, "next_recovery_state", mapOf("id" to 1, "accountId" to "account", "serverInstanceId" to "server",
+                "syncEpoch" to "epoch", "deviceId" to "device", "generation" to 2, "phase" to "accepted_data",
+                "minimumCursor" to 12, "candidateCursor" to 13, "snapshotHash" to "unaltered-hash"))
             SyncSchemaCallback.onOpen(db)
             block(db)
         }
     }
-    @Test fun everyOldColumnAndDdlSurvivesAndNoRecoveryIdentityIsInferredOnUpgradeOrReopen() = runBlocking {
+    @Test fun everyOldColumnAndDdlSurvivesWithoutGuessingOriginsOrFirstDevices() = runBlocking {
         var before = emptyMap<String, List<List<String?>>>()
         var ddl = emptyList<List<String?>>()
         seed { before = snapshot(it); ddl = structure(it) }
-        assertEquals(16, entities.size)
+        assertEquals(17, entities.size)
         repeat(2) {
             val db = open(); val sql = db.openHelper.writableDatabase
             assertEquals(9, sql.version); assertEquals(before, snapshot(sql)); assertEquals(ddl, structure(sql))
-            assertNull(db.nextRecoveryDao().state())
+            assertFalse(db.nextRequestDao().hasAny())
             assertEquals(listOf(listOf("ok")), rows(sql, "PRAGMA integrity_check"))
             assertTrue(rows(sql, "PRAGMA foreign_key_check").isEmpty())
         }
@@ -119,8 +125,8 @@ class NextRecoveryMigrationTest {
         assertTrue(runCatching { open().openHelper.writableDatabase }.exceptionOrNull()?.message.orEmpty().contains("Migration didn't properly handle"))
         room!!.close()
         SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READWRITE).use { raw ->
-            assertEquals(7, raw.version)
-            raw.rawQuery("SELECT name FROM sqlite_master WHERE name='next_recovery_state'", null).use { assertFalse(it.moveToFirst()) }
+            assertEquals(8, raw.version)
+            raw.rawQuery("SELECT name FROM sqlite_master WHERE name IN ('next_request_origins','next_transmissions')", null).use { assertFalse(it.moveToFirst()) }
             raw.rawQuery("SELECT payloadJson FROM sync_outbox", null).use {
                 assertTrue(it.moveToFirst()); assertEquals("{\"untouched\": true}", it.getString(0))
             }
@@ -128,16 +134,34 @@ class NextRecoveryMigrationTest {
         }
         assertEquals(9, open().openHelper.writableDatabase.version)
     }
-    @Test fun forgedVersionSevenIdentityCannotInitializeRecoveryOrModifyFrozenRows() {
+    @Test fun forgedVersionEightIdentityCannotInitializeJournalsOrModifyFrozenRows() {
         seed { it.execSQL("UPDATE room_master_table SET identity_hash='unknown' WHERE id=42") }
         assertTrue(runCatching { open().openHelper.writableDatabase }.exceptionOrNull()?.message.orEmpty().contains("integrity"))
         room!!.close()
         SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READONLY).use { raw ->
-            assertEquals(7, raw.version)
+            assertEquals(8, raw.version)
             raw.rawQuery("SELECT payloadJson FROM sync_outbox", null).use {
                 assertTrue(it.moveToFirst()); assertEquals("{\"untouched\": true}", it.getString(0))
             }
-            raw.rawQuery("SELECT name FROM sqlite_master WHERE name='next_recovery_state'", null).use { assertFalse(it.moveToFirst()) }
+            raw.rawQuery("SELECT name FROM sqlite_master WHERE name IN ('next_request_origins','next_transmissions')", null).use { assertFalse(it.moveToFirst()) }
+        }
+    }
+
+    @Test fun missingExtraOrWrongStorageTypeIdentityCannotInitializeJournals() {
+        for (statement in listOf("DELETE FROM room_master_table WHERE id=42",
+            "INSERT INTO room_master_table VALUES(17,'unexpected')",
+            "UPDATE room_master_table SET identity_hash=CAST(identity_hash AS BLOB) WHERE id=42")) {
+            room?.close(); HabitDatabaseProvider.clearInstanceForTesting(); context.deleteDatabase(name)
+            seed { it.execSQL(statement) }
+            assertTrue(runCatching { open().openHelper.writableDatabase }.exceptionOrNull()?.message.orEmpty().contains("integrity"))
+            room!!.close()
+            SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READONLY).use { raw ->
+                assertEquals(8, raw.version)
+                raw.rawQuery("SELECT name FROM sqlite_master WHERE name IN ('next_request_origins','next_transmissions')", null).use { assertFalse(it.moveToFirst()) }
+                raw.rawQuery("SELECT payloadJson FROM sync_outbox", null).use {
+                    assertTrue(it.moveToFirst()); assertEquals("{\"untouched\": true}", it.getString(0))
+                }
+            }
         }
     }
 }

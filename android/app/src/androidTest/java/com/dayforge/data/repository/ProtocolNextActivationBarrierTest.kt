@@ -7,6 +7,8 @@ import com.dayforge.data.local.entity.CompletionMetricPromptEntity
 import com.dayforge.data.local.entity.LocalFactSubmissionEntity
 import com.dayforge.data.local.entity.OneTimeTransmissionEntity
 import com.dayforge.data.local.entity.NextRecoveryStateEntity
+import com.dayforge.data.local.entity.NextRequestOriginEntity
+import com.dayforge.data.local.entity.NextTransmissionEntity
 import java.util.UUID
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -16,6 +18,20 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class ProtocolNextActivationBarrierTest : SyncPersistenceFixture() {
+    @Test fun orphanedMalformedCoreOriginsBlockEveryLegacyMutationAfterReopen() = runBlocking {
+        val row = NextRequestOriginEntity("unknown-kind", "orphan", 999, 99, "account", null, "partial-epoch", "bad", "bad-json")
+        database.nextRequestDao().insertOrigin(row)
+        reopen(); assertAllLegacyWritesRefused()
+        assertEquals(row, database.nextRequestDao().origin(row.kind, row.requestId))
+    }
+
+    @Test fun orphanedMalformedCoreTransmissionBlocksEveryLegacyMutationAfterReopen() = runBlocking {
+        val row = NextTransmissionEntity("timer_command", "orphan", 999, 99, "account", "server", "epoch", "device", "bad", byteArrayOf(0))
+        database.nextRequestDao().insertTransmission(row)
+        reopen(); assertAllLegacyWritesRefused()
+        assertArrayEquals(row.wireBytes, database.nextRequestDao().transmission(row.kind, row.requestId)!!.wireBytes)
+    }
+
     private suspend fun assertAllLegacyWritesRefused() {
         val queue = database.syncOutboxDao().getAll()
         val rejected = database.syncOutboxDao().getDeadLetters()
