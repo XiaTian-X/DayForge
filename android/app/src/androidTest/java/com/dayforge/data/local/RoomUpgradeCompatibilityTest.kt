@@ -79,7 +79,7 @@ class RoomUpgradeCompatibilityTest {
 
     private fun structure(db: SupportSQLiteDatabase) = rows(db,
         "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' " +
-            "AND tbl_name NOT IN ('local_fact_submissions', 'completion_metric_prompts', 'one_time_transmissions', 'next_recovery_state', 'next_request_origins', 'next_transmissions') " +
+            "AND tbl_name NOT IN ('local_fact_submissions', 'completion_metric_prompts', 'one_time_transmissions', 'next_recovery_state', 'next_request_origins', 'next_transmissions', 'next_acceptances') " +
             "AND NOT (type = 'table' AND name IN ('habits', 'completions', 'metrics')) " +
             "AND name NOT IN ('sync_habits_update','sync_metrics_update') ORDER BY type, name")
 
@@ -171,7 +171,7 @@ class RoomUpgradeCompatibilityTest {
         repeat(2) {
             val db = open()
             val sql = db.openHelper.writableDatabase
-            assertEquals(9, sql.version)
+            assertEquals(10, sql.version)
             assertEquals(before, snapshot(sql))
             assertEquals(ddl, structure(sql))
             assertEquals(listOf(listOf(null, null, null, null), listOf(null, null, null, null)),
@@ -180,7 +180,7 @@ class RoomUpgradeCompatibilityTest {
             assertEquals(listOf(listOf(null, null, null, null)), rows(sql,
                 "SELECT oneTimeAction, oneTimeExpectedVersion, oneTimeExpectedHeadEventUuid, oneTimeRevertsEventUuid FROM completions"))
             val currentSchema = InstrumentationRegistry.getInstrumentation().context.assets
-                .open("com.dayforge.data.local.HabitDatabase/9.json").bufferedReader().use { it.readText() }
+                .open("com.dayforge.data.local.HabitDatabase/10.json").bufferedReader().use { it.readText() }
             assertEquals(listOf(listOf(Json.parseToJsonElement(currentSchema).jsonObject.getValue("database")
                 .jsonObject.getValue("identityHash").jsonPrimitive.content)),
                 rows(sql, "SELECT identity_hash FROM room_master_table WHERE id = 42"))

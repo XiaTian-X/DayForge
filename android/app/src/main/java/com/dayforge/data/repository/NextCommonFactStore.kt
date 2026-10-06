@@ -1,6 +1,7 @@
 package com.dayforge.data.repository
 
 import com.dayforge.data.api.dto.SyncV2Change
+import com.dayforge.data.api.dto.SyncV2Operation
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.entity.*
 import com.dayforge.domain.model.isContractUuid
@@ -20,7 +21,8 @@ internal class NextCommonFactStore(private val database: HabitDatabase) {
     private val observations = database.metricLogDao()
     private val links = database.habitMetricLinkDao()
 
-    suspend fun restoreInTransaction(changes: List<SyncV2Change>, deviceId: String) {
+    suspend fun restoreInTransaction(changes: List<SyncV2Change>, deviceId: String,
+        acceptedQueueId: Long? = null, acceptedOperation: SyncV2Operation? = null) {
         check(database.inTransaction())
         val sql = database.openHelper.writableDatabase
         for (table in listOf("completions", "metric_logs", "habit_metric_links")) {
@@ -31,8 +33,12 @@ internal class NextCommonFactStore(private val database: HabitDatabase) {
             fail(NextFactMergeException.Reason.INVALID_LOCAL_STATE)
         require(changes.all { it.operation == "upsert" && it.sequence == 0L })
         require(changes.map { it.entityType to it.entityUuid }.distinct().size == changes.size)
-        val planIds = changes.filter { it.entityType == "plan_node" }.map { it.entityUuid }.toSet()
-        val metricIds = changes.filter { it.entityType == "metric" }.map { it.entityUuid }.toSet()
+        require((acceptedQueueId == null) == (acceptedOperation == null))
+        require(acceptedQueueId == null || changes.size == 1)
+        val planIds = if (acceptedQueueId != null) database.habitDao().getAllHabitsOnce().map { it.uuid }.toSet()
+            else changes.filter { it.entityType == "plan_node" }.map { it.entityUuid }.toSet()
+        val metricIds = if (acceptedQueueId != null) database.metricDao().getAllMetricsOnce().map { it.uuid }.toSet()
+            else changes.filter { it.entityType == "metric" }.map { it.entityUuid }.toSet()
         val incoming = changes.filter { it.entityType in setOf("activity_event", "metric_observation", "activity_metric_link") &&
             (it.entityType != "activity_event" || it.payload["one_time"].let { value -> value == null || value == JsonNull }) }
         val pending = outbox.getAll() + outbox.getDeadLetters()
@@ -83,15 +89,22 @@ internal class NextCommonFactStore(private val database: HabitDatabase) {
             }
             val recordType = when (type) { "activity_event" -> "completion"; "metric_observation" -> "metric_log"; else -> "link" }
             val local = pending.filter { it.recordType == recordType && (it.entityUuid == id || it.wireEntityUuid == id) }
+            val own = acceptedOperation?.takeIf { it.entityType == type && it.entityUuid == id }
             if (conflicts.any { it.entityType == type && (it.wireEntityUuid == id || it.localEntityUuid == id) })
                 fail(NextFactMergeException.Reason.LOCAL_FACT_PENDING)
             val deletedLocally = local.any { it.entityUuid == id && (it.action == "delete" || it.wireEntityUuid != id) }
             if (!known && local.isNotEmpty()) {
-                if (mutable) fail(NextFactMergeException.Reason.LOCAL_FACT_PENDING)
-                val original = local.singleOrNull { it.wireEntityUuid == id && it.action == "upsert" }
-                    ?: fail(NextFactMergeException.Reason.LOCAL_FACT_PENDING)
-                requireOriginal(original, change, deviceId)
+                if (own != null) {
+                    if (!mutable) requireOriginalPayload(own.payload, change, deviceId)
+                } else {
+                    if (mutable) fail(NextFactMergeException.Reason.LOCAL_FACT_PENDING)
+                    val original = local.singleOrNull { it.wireEntityUuid == id && it.action == "upsert" }
+                        ?: fail(NextFactMergeException.Reason.LOCAL_FACT_PENDING)
+                    requireOriginal(original, change, deviceId)
+                }
             }
+            // Undo wire identity is different from its source queue's target identity.
+            if (own != null && !mutable) requireOriginalPayload(own.payload, change, deviceId)
             when (type) {
                 "activity_event" -> {
                     val activity = payload.text("activity_uuid")
@@ -108,7 +121,7 @@ internal class NextCommonFactStore(private val database: HabitDatabase) {
                             if (targetCompletion != null && (targetCompletion.habitId != habit.id || targetCompletion.oneTimeAction != null) ||
                                 targetTimer != null && targetTimer.habitId != habit.id) fail(NextFactMergeException.Reason.TARGET_MISMATCH)
                             oldEvents[target]?.let { require(body(it).text("activity_uuid") == activity) }
-                            val protected = pending.any { it.recordType == "completion" && it.entityUuid == target }
+                            val protected = pending.any { it.id != acceptedQueueId && it.recordType == "completion" && it.entityUuid == target }
                             if (protected && (targetCompletion != null || targetTimer != null)) fail(NextFactMergeException.Reason.LOCAL_FACT_PENDING)
                             if (timerCommands.any { it.sessionUuid == target }) fail(NextFactMergeException.Reason.LOCAL_TIMER_PENDING)
                             deletes += {
@@ -135,7 +148,7 @@ internal class NextCommonFactStore(private val database: HabitDatabase) {
                         else -> {
                             require(timer == null)
                             val mapped = NextCommonFactMapper.completion(change, habit, completion)
-                            if (completion != null && (completion.copy(createdAt = mapped.createdAt) != mapped || old == null && local.isEmpty()))
+                            if (completion != null && (completion.copy(createdAt = mapped.createdAt) != mapped || old == null && local.isEmpty() && own == null))
                                 fail(NextFactMergeException.Reason.INVALID_LOCAL_STATE)
                             if (id !in reverted && !deletedLocally) writes += {
                                 val saved = completions.upsert(mapped)
@@ -150,7 +163,7 @@ internal class NextCommonFactStore(private val database: HabitDatabase) {
                     val metric = requireNotNull(database.metricDao().getMetricByUuid(metricId))
                     val previous = observations.getLogByUuid(id)
                     val mapped = NextCommonFactMapper.observation(change, metric, previous)
-                    if (previous != null && (previous.copy(createdAt = mapped.createdAt, updatedAt = mapped.updatedAt) != mapped || old == null && local.isEmpty())) fail(NextFactMergeException.Reason.INVALID_LOCAL_STATE)
+                    if (previous != null && (previous.copy(createdAt = mapped.createdAt, updatedAt = mapped.updatedAt) != mapped || old == null && local.isEmpty() && own == null)) fail(NextFactMergeException.Reason.INVALID_LOCAL_STATE)
                     if (!deletedLocally) writes += {
                         val saved = observations.upsert(mapped)
                         check(saved > 0 && observations.getLogByUuid(id) == mapped.copy(id = saved))
@@ -168,8 +181,8 @@ internal class NextCommonFactStore(private val database: HabitDatabase) {
                         if (previous == null && !deletedLocally) fail(NextFactMergeException.Reason.INVALID_LOCAL_STATE)
                         continue // Do not overwrite newer unpublished flags or an old server revision.
                     }
-                    if (previous != null && old == null) fail(NextFactMergeException.Reason.INVALID_LOCAL_STATE)
-                    writes += {
+                    if (previous != null && old == null && own == null) fail(NextFactMergeException.Reason.INVALID_LOCAL_STATE)
+                    if (local.none { it.id != acceptedQueueId } && !deletedLocally) writes += {
                         val saved = links.upsert(mapped)
                         check(saved > 0 && links.getLinkByUuid(id) == mapped.copy(id = saved))
                     }
@@ -189,19 +202,26 @@ internal class NextCommonFactStore(private val database: HabitDatabase) {
     private fun requireOriginal(row: SyncOutboxEntity, change: SyncV2Change, device: String) {
         if (row.deadLetteredAt != null || row.attemptedAt == null || row.attemptCount <= 0) fail(NextFactMergeException.Reason.LOCAL_FACT_PENDING)
         val request = Json.parseToJsonElement(requireNotNull(row.payloadJson)).jsonObject
+        require(isContractUuid(row.operationId) && row.baseRevision in listOf(null, 0L) && row.basePayloadJson == null)
+        require(row.referenceUuid == change.payload.text(if (change.entityType == "metric_observation") "metric_uuid" else "activity_uuid"))
+        requireOriginalPayload(request, change, device, explicitDevice = true)
+    }
+
+    /** New provenance is verified by the coordinator, not inferred from attempt metadata. */
+    private fun requireOriginalPayload(request: JsonObject, change: SyncV2Change, device: String, explicitDevice: Boolean = false) {
         val actual = change.payload
         // No inference of a first sender from today's registration. Old unbound requests
         // must be replayed/handled by the coordinator, not claimed by a coincident UUID.
-        require(request["source_device_id"] == JsonPrimitive(device) && isContractUuid(row.operationId))
-        require(row.baseRevision in listOf(null, 0L) && row.basePayloadJson == null)
-        require(row.referenceUuid == actual.text(if (change.entityType == "metric_observation") "metric_uuid" else "activity_uuid"))
+        if (explicitDevice) require(request["source_device_id"] == JsonPrimitive(device))
         val fields = if (change.entityType == "metric_observation") setOf("metric_uuid", "value", "unit") else
             setOf("activity_uuid", "event_type", "value", "reverts_event_uuid", "duration_seconds", "duration_milliseconds", "started_at", "ended_at")
         val common = setOf("occurred_at", "local_date", "timezone", "note", "source_type", "source_device_id", "external_event_id", "metadata")
         require(request.keys.all { it in fields + common })
-        val defaults = mapOf("note" to JsonPrimitive(""), "source_type" to JsonPrimitive("app"), "metadata" to buildJsonObject {})
+        val defaults = mapOf("note" to JsonPrimitive(""), "source_type" to JsonPrimitive("app"), "metadata" to buildJsonObject {},
+            "source_device_id" to JsonPrimitive(device))
         for (key in fields + common) {
-            val expected = request[key]?.takeUnless { it == JsonNull && key == "value" && request["event_type"] == JsonPrimitive("check_in") }
+            val expected = request[key]?.takeUnless { it == JsonNull &&
+                (key == "source_device_id" || key == "value" && request["event_type"] == JsonPrimitive("check_in")) }
                 ?: defaults[key] ?: if (key == "value" && request["event_type"] == JsonPrimitive("check_in")) JsonPrimitive(1) else JsonNull
             val received = actual.getValue(key)
             val equal = when {

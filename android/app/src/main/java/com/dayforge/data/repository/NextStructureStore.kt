@@ -30,10 +30,11 @@ internal class NextStructureStore(private val database: HabitDatabase) {
     private val metrics = database.metricDao()
     private val outbox = database.syncOutboxDao()
 
-    internal suspend fun restoreInTransaction(changes: List<SyncV2Change>) {
+    internal suspend fun restoreInTransaction(changes: List<SyncV2Change>, acceptedQueueId: Long? = null) {
         check(database.inTransaction())
         require(changes.all { it.entityType in setOf("plan_node", "metric") && it.operation == "upsert" && it.sequence == 0L })
         require(changes.map { it.entityType to it.entityUuid }.distinct().size == changes.size)
+        require(acceptedQueueId == null || changes.size == 1)
         val oldPlans = habits.getAllHabitsOnce()
         val oldMetrics = metrics.getAllMetricsOnce()
         check(oldPlans.map { it.uuid }.distinct().size == oldPlans.size)
@@ -65,7 +66,9 @@ internal class NextStructureStore(private val database: HabitDatabase) {
             }
             if (metric != null && oldMetric != null) {
                 if (oldMetric.appearance == null) reject(NextStructureMergeException.Reason.UNINITIALIZED)
-                require(oldMetric.createdAt == metric.createdAt)
+                // A first metric creation timestamp is server-owned, unlike a plan's explicit timestamp.
+                if (acceptedQueueId == null || outbox.getState("metric", metric.uuid) != null)
+                    require(oldMetric.createdAt == metric.createdAt)
             }
             val shadow = outbox.getState(change.entityType, change.entityUuid)
             if (shadow != null) {
@@ -91,11 +94,17 @@ internal class NextStructureStore(private val database: HabitDatabase) {
                 }
             }
             val recordType = if (isPlan) "habit" else "metric"
-            if (pending.any { it.recordType == recordType && (it.entityUuid == change.entityUuid || it.wireEntityUuid == change.entityUuid) } ||
-                conflicts.any { it.recordType == recordType && (it.localEntityUuid == change.entityUuid || it.wireEntityUuid == change.entityUuid) }) {
+            val othersPending = pending.any { it.id != acceptedQueueId && it.recordType == recordType &&
+                (it.entityUuid == change.entityUuid || it.wireEntityUuid == change.entityUuid) }
+            if (conflicts.any { it.recordType == recordType && (it.localEntityUuid == change.entityUuid || it.wireEntityUuid == change.entityUuid) } ||
+                acceptedQueueId == null && othersPending) {
                 reject(NextStructureMergeException.Reason.LOCAL_STRUCTURE_PENDING)
             }
-            if (plan != null) {
+            if (acceptedQueueId != null && othersPending) {
+                // Advance only the authoritative base. Never replay an older edit over a local suffix.
+                if (metric != null && oldMetric != null && oldMetric.createdAt != metric.createdAt)
+                    metricUpdates[metric.uuid] = oldMetric.copy(createdAt = metric.createdAt)
+            } else if (plan != null) {
                 if (oldPlan != null) {
                     if (oldPlan.completionPolicy != plan.completionPolicy && hasHistory(oldPlan))
                         reject(NextStructureMergeException.Reason.COMPLETION_POLICY_LOCKED)
@@ -111,7 +120,7 @@ internal class NextStructureStore(private val database: HabitDatabase) {
 
         incomingPlans.values.forEach { child ->
             child.parentHabitId?.let { parent ->
-                if (incomingPlans[parent]?.habitType != HabitType.GOAL)
+                if ((incomingPlans[parent] ?: if (acceptedQueueId != null) plansById[parent] else null)?.habitType != HabitType.GOAL)
                     reject(NextStructureMergeException.Reason.INVALID_PARENT)
             }
         }

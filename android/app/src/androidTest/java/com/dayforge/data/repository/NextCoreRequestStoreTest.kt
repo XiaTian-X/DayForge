@@ -553,4 +553,371 @@ class NextCoreRequestStoreTest {
         sql.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
         observation(); assertEquals(1, count("next_request_origins"))
     }
+
+    /** Mirrors authoritative serializer fields, without calling the production acceptance mappers. */
+    private fun successReply(input: MaterialSocketServer.Input, revision: Long = 1,
+        edit: (JsonObject) -> JsonObject = { it }): MaterialSocketServer.Reply {
+        if (input.path.endsWith("/identity")) return reply(input)
+        val op = Json.parseToJsonElement(input.body.toString(Charsets.UTF_8)).jsonObject
+            .getValue("operations").jsonArray.single().jsonObject
+        val payload = op.getValue("payload").jsonObject
+        val type = op.getValue("entity_type").jsonPrimitive.content
+        val serverTime = "2026-10-06T00:00:01.000123Z"
+        val canonical = buildJsonObject {
+            payload.forEach { (key, value) -> put(key, value) }
+            put("public_id", op.getValue("entity_uuid")); put("revision", revision)
+            put("created_at", payload["created_at"] ?: JsonPrimitive(serverTime))
+            put("updated_at", serverTime); put("deleted_at", JsonNull)
+            if (type in setOf("activity_event", "metric_observation")) {
+                put("note", payload["note"] ?: JsonPrimitive(""))
+                put("source_type", payload["source_type"] ?: JsonPrimitive("app"))
+                put("source_device_id", payload["source_device_id"]?.takeUnless { it == JsonNull } ?: JsonPrimitive(id(4)))
+                put("external_event_id", payload["external_event_id"] ?: JsonNull)
+                put("metadata", payload["metadata"] ?: buildJsonObject {})
+                put("received_at", serverTime)
+                if (type == "activity_event") {
+                    put("value", payload["value"]?.takeUnless { it == JsonNull } ?:
+                        if (payload["event_type"] == JsonPrimitive("check_in")) JsonPrimitive(1) else JsonNull)
+                    for (key in listOf("duration_seconds", "duration_milliseconds", "started_at", "ended_at", "reverts_event_uuid"))
+                        put(key, payload[key] ?: JsonNull)
+                }
+            }
+        }
+        val result = buildJsonObject {
+            put("operation_id", op.getValue("operation_id")); put("entity_type", op.getValue("entity_type"))
+            put("entity_uuid", op.getValue("entity_uuid")); put("status", "applied"); put("revision", revision)
+            put("entity", edit(canonical))
+        }
+        return MaterialSocketServer.Reply(buildJsonObject { put("results", JsonArray(listOf(result))) }.toString().toByteArray())
+    }
+    private suspend fun success(row: SyncOutboxEntity, edit: (JsonObject) -> JsonObject = { it }):
+        Pair<NextCoreRequestStore, NextCoreDelivery<com.dayforge.data.api.dto.NextSyncPushResponse>> {
+        register()
+        val (http, _) = channel { successReply(it, edit = edit) }
+        val store = sender(http)
+        return store to requireNotNull(store.sendOperation(access(), row.operationId))
+    }
+    private suspend fun assertUnaccepted(row: SyncOutboxEntity) {
+        assertEquals(row, db.syncOutboxDao().getById(row.id))
+        assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, row.operationId))
+        assertEquals(0L, tokens.syncCursor.first())
+        db.openHelper.writableDatabase.query("SELECT suppressOutbox FROM sync_control WHERE id=1").use {
+            assertTrue(it.moveToFirst()); assertEquals(0, it.getInt(0))
+        }
+    }
+
+    @Test fun ordinaryObservationSuccessAtomicallyAcceptsCanonicalTimeShadowQueueAndReceipt() = runBlocking<Unit> {
+        val row = observation(); val oldLog = requireNotNull(db.metricLogDao().getLogByUuid(row.entityUuid))
+        val (store, delivery) = success(row)
+        val original = transmission(NEXT_OPERATION, row.operationId).wireBytes.copyOf()
+        assertUnaccepted(row)
+        assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
+        val shadow = requireNotNull(db.syncOutboxDao().getState("metric_observation", row.entityUuid))
+        assertEquals(delivery.result.results.single().entity, Json.parseToJsonElement(requireNotNull(shadow.payloadJson)))
+        assertEquals(syncPayloadHash(requireNotNull(shadow.payloadJson)), shadow.payloadHash)
+        assertNull(db.syncOutboxDao().getById(row.id))
+        assertEquals(oldLog.value, db.metricLogDao().getLogByUuid(row.entityUuid)!!.value, 0.0)
+        assertEquals(oldLog.date, db.metricLogDao().getLogByUuid(row.entityUuid)!!.date)
+        assertEquals(21.125, db.metricLogDao().getLogByUuid(row.entityUuid)!!.value, 0.0)
+        storage.reopen()
+        assertNotNull(db.nextRequestDao().acceptance(NEXT_OPERATION, row.operationId))
+        assertEquals("2026-10-06T00:00:01.000123Z", Json.parseToJsonElement(db.syncOutboxDao().getState("metric_observation", row.entityUuid)!!.payloadJson!!)
+            .jsonObject["received_at"]!!.jsonPrimitive.content)
+        assertArrayEquals(original, transmission(NEXT_OPERATION, row.operationId).wireBytes)
+        assertEquals(0L, tokens.syncCursor.first())
+    }
+
+    @Test fun actualSendAndAcceptCommitsAndColdReplayNeedsNoSecondHttpOrOverwrite() = runBlocking<Unit> {
+        producer().write(local()) { metrics().updateMetric(metric.copy(name = "First intent")) }
+        val row = db.syncOutboxDao().getAll().single(); register()
+        val (http, server) = channel { successReply(it) }
+        assertEquals(NextOperationAcceptance.COMMITTED, sender(http).sendAndAcceptOperation(access(), row.operationId))
+        val first = requireNotNull(db.metricDao().getMetricById(metric.id))
+        assertEquals("First intent", first.name); assertEquals(millis + 1000, first.createdAt)
+        producer().write(local()) { metrics().updateMetric(first.copy(name = "Later offline edit")) }
+        val suffix = db.syncOutboxDao().getAll().single()
+        val current = db.metricDao().getMetricById(metric.id)
+        storage.reopen()
+        assertEquals(NextOperationAcceptance.REPLAYED, sender(http).sendAndAcceptOperation(access(), row.operationId))
+        assertEquals(current, db.metricDao().getMetricById(metric.id)); assertEquals(suffix, db.syncOutboxDao().getById(suffix.id))
+        assertEquals(1, server.requests.count { it.path.endsWith("/push") })
+    }
+
+    @Test fun exactAppliedAndAlreadyAppliedCallbacksAreEquivalentButChangedResultIsNot() = runBlocking<Unit> {
+        val row = observation(); val (store, delivery) = success(row)
+        assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
+        val repeated = delivery.copy(result = delivery.result.copy(results = listOf(delivery.result.results.single().copy(status = "already_applied"))))
+        assertEquals(NextOperationAcceptance.REPLAYED, store.acceptOperation(repeated))
+        val result = repeated.result.results.single()
+        val changed = repeated.copy(result = repeated.result.copy(results = listOf(result.copy(entity =
+            JsonObject(result.entity!! + ("note" to JsonPrimitive("different")))))))
+        assertEquals(NextRequestException.Reason.RESULT_CHANGED, (rejected { store.acceptOperation(changed) } as NextRequestException).reason)
+        assertEquals(1, count("next_acceptances")); assertEquals(0, count("sync_outbox"))
+    }
+
+    @Test fun concurrentCallbacksConsumeExactlyOnce() = runBlocking<Unit> {
+        val row = observation(); val (store, delivery) = success(row)
+        val outcomes = coroutineScope { listOf(async(Dispatchers.IO) { store.acceptOperation(delivery) },
+            async(Dispatchers.IO) { store.acceptOperation(delivery) }).awaitAll() }
+        assertEquals(setOf(NextOperationAcceptance.COMMITTED, NextOperationAcceptance.REPLAYED), outcomes.toSet())
+        assertEquals(1, count("next_acceptances")); assertEquals(0, count("sync_outbox")); assertEquals(1, count("metric_logs"))
+    }
+
+    @Test fun acceptanceOfFirstMetricEditPreservesLaterEditableFieldsAndOriginalSuffix() = runBlocking<Unit> {
+        producer().write(local()) { metrics().updateMetric(metric.copy(name = "Sent name")) }
+        val row = db.syncOutboxDao().getAll().single(); val (store, delivery) = success(row)
+        producer().write(local()) { metrics().updateMetric(db.metricDao().getMetricById(metric.id)!!.copy(name = "Offline suffix", decimalPlaces = 6)) }
+        val suffix = db.syncOutboxDao().getAll().last()
+        val origin = db.nextRequestDao().origin(NEXT_OPERATION, suffix.operationId)
+        assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
+        val current = requireNotNull(db.metricDao().getMetricById(metric.id))
+        assertEquals("Offline suffix", current.name); assertEquals(6, current.decimalPlaces)
+        assertEquals(millis + 1000, current.createdAt)
+        assertEquals("Sent name", Json.parseToJsonElement(db.syncOutboxDao().getState("metric", metric.uuid)!!.payloadJson!!).jsonObject["name"]!!.jsonPrimitive.content)
+        assertEquals(suffix, db.syncOutboxDao().getById(suffix.id)); assertEquals(origin, db.nextRequestDao().origin(NEXT_OPERATION, suffix.operationId))
+    }
+
+    @Test fun outOfOrderMetricCallbackCannotJumpAnUnacceptedPredecessor() = runBlocking<Unit> {
+        producer().write(local()) { metrics().updateMetric(metric.copy(name = "Earlier")) }
+        producer().write(local()) { metrics().updateMetric(db.metricDao().getMetricById(metric.id)!!.copy(name = "Later")) }
+        val rows = db.syncOutboxDao().getAll()
+        val (store, delivery) = success(rows.last())
+        assertTrue(rejected { store.acceptOperation(delivery) } is IllegalArgumentException)
+        assertUnaccepted(rows.last()); assertUnaccepted(rows.first()); assertEquals(0, count("sync_entity_state"))
+    }
+
+    @Test fun recurringHabitAndGoalSuccessRetainUiFieldsAndCanonicalSingleParent() = runBlocking<Unit> {
+        val goal = habit.copy(uuid = id(200), id = 0, name = "Goal", habitType = HabitType.GOAL,
+            completionPolicy = null, targetValue = 1, planMetadata = PlanStructureMetadata(time, 0, null, null, null, null, null, null))
+        producer().write(local()) { db.habitDao().insert(goal) }
+        val goalRow = db.syncOutboxDao().getAll().single(); val (goalStore, goalDelivery) = success(goalRow)
+        assertEquals(NextOperationAcceptance.COMMITTED, goalStore.acceptOperation(goalDelivery))
+        producer().write(local()) { habits().updateHabit(habit.copy(name = "Nested", parentHabitId = goal.uuid)) }
+        val childRow = db.syncOutboxDao().getAll().single(); val (childStore, childDelivery) = success(childRow)
+        assertEquals(NextOperationAcceptance.COMMITTED, childStore.acceptOperation(childDelivery))
+        val current = requireNotNull(db.habitDao().getHabitById(habit.id))
+        assertEquals(goal.uuid, current.parentHabitId); assertEquals(HabitType.COUNTING, current.habitType)
+        assertEquals(habit.iconResId, current.iconResId); assertEquals(habit.appearance, current.appearance)
+        assertEquals(2, count("next_acceptances")); assertEquals(0, count("sync_outbox"))
+    }
+
+    @Test fun pendingHabitRenameIsNotOverwrittenByOlderAcceptedStructure() = runBlocking<Unit> {
+        producer().write(local()) { habits().updateHabit(habit.copy(name = "Sent habit")) }
+        val row = db.syncOutboxDao().getAll().single(); val (store, delivery) = success(row)
+        producer().write(local()) { habits().updateHabit(db.habitDao().getHabitById(habit.id)!!.copy(name = "Later habit")) }
+        val suffix = db.syncOutboxDao().getAll().last()
+        assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
+        assertEquals("Later habit", db.habitDao().getHabitById(habit.id)!!.name)
+        assertEquals(suffix, db.syncOutboxDao().getById(suffix.id))
+        assertEquals("Sent habit", Json.parseToJsonElement(db.syncOutboxDao().getState("plan_node", habit.uuid)!!.payloadJson!!).jsonObject["title"]!!.jsonPrimitive.content)
+    }
+
+    private suspend fun completion(type: HabitType = HabitType.COUNTING, countdown: Boolean = false): SyncOutboxEntity {
+        if (type != habit.habitType || countdown != habit.isCountdown) db.withTransaction {
+            db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
+            habit = habit.copy(habitType = type, isCountdown = countdown, targetValue = if (type == HabitType.CHECK_IN) 1 else 10)
+            db.habitDao().update(habit)
+            db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
+        }
+        producer().write(local()) {
+            db.completionDao().insert(CompletionEntity(habitId = habit.id, habitUuid = habit.uuid, uuid = id(210),
+                value = if (type == HabitType.CHECK_IN) 1 else 3, date = millis, actualCompletedAt = millis,
+                recordedTimezone = "Etc/UTC", recordedLocalDate = "2026-10-06"))
+        }
+        return db.syncOutboxDao().getAll().single()
+    }
+
+    @Test fun positiveCountingSnapshotSuccessIsConfirmedWithoutASecondLocalRecord() = runBlocking<Unit> {
+        val row = completion(); val (store, delivery) = success(row)
+        // Android records the cumulative value in both counting modes, never a fabricated delta.
+        assertEquals("count_snapshot", delivery.result.results.single().entity!!["event_type"]!!.jsonPrimitive.content)
+        assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
+        assertEquals(1, count("completions")); assertEquals(3, db.completionDao().getCompletionByUuid(row.entityUuid)!!.value)
+        assertEquals(0, count("sync_outbox"))
+    }
+
+    @Test fun countdownCountingSnapshotIsConfirmedWithoutChangingCompletionMeaning() = runBlocking<Unit> {
+        val row = completion(countdown = true); val (store, delivery) = success(row)
+        assertEquals("count_snapshot", delivery.result.results.single().entity!!["event_type"]!!.jsonPrimitive.content)
+        assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
+        assertEquals(3, db.completionDao().getCompletionByUuid(row.entityUuid)!!.value)
+        assertEquals(1, count("next_acceptances"))
+    }
+
+    @Test fun checkInSuccessAndUndoUseDistinctImmutableWireEvents() = runBlocking<Unit> {
+        val first = completion(HabitType.CHECK_IN); val (store, delivery) = success(first)
+        assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
+        producer().write(local()) { db.completionDao().delete(db.completionDao().getCompletionByUuid(first.entityUuid)!!) }
+        val undo = db.syncOutboxDao().getAll().single(); val (undoStore, undoDelivery) = success(undo)
+        val fact = undoDelivery.result.results.single().entity!!
+        assertNotEquals(first.entityUuid, fact["public_id"]!!.jsonPrimitive.content)
+        assertEquals(first.entityUuid, fact["reverts_event_uuid"]!!.jsonPrimitive.content)
+        assertEquals(NextOperationAcceptance.COMMITTED, undoStore.acceptOperation(undoDelivery))
+        assertEquals(0, count("completions")); assertEquals(2, count("next_acceptances"))
+        assertNotNull(db.syncOutboxDao().getState("activity_event", first.entityUuid))
+        assertNotNull(db.syncOutboxDao().getState("activity_event", fact["public_id"]!!.jsonPrimitive.content))
+    }
+
+    @Test fun eventAcceptedAfterOfflineUndoDoesNotResurrectDeletedLocalCompletion() = runBlocking<Unit> {
+        val row = completion(); val (store, delivery) = success(row)
+        producer().write(local()) { db.completionDao().delete(db.completionDao().getCompletionByUuid(row.entityUuid)!!) }
+        val undo = db.syncOutboxDao().getAll().last()
+        assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
+        assertEquals(0, count("completions")); assertEquals(undo, db.syncOutboxDao().getById(undo.id))
+        assertEquals(1, count("next_acceptances"))
+    }
+
+    @Test fun linkSuccessPreservesEndpointsAndLaterLocalFlags() = runBlocking<Unit> {
+        producer().write(local()) { metrics().linkHabits(metric, setOf(habit.id)) }
+        val row = db.syncOutboxDao().getAll().single(); val (store, delivery) = success(row)
+        val link = db.habitMetricLinkDao().getLinkByUuid(row.entityUuid)!!
+        producer().write(local()) { db.habitMetricLinkDao().upsert(link.copy(promptOnComplete = false)) }
+        val suffix = db.syncOutboxDao().getAll().last()
+        assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
+        val saved = db.habitMetricLinkDao().getLinkByUuid(row.entityUuid)!!
+        assertFalse(saved.promptOnComplete); assertEquals(habit.id, saved.habitId); assertEquals(metric.id, saved.metricId)
+        assertEquals(suffix, db.syncOutboxDao().getById(suffix.id)); assertEquals(1, count("next_acceptances"))
+    }
+
+    @Test fun missingOrMalformedCanonicalFactProofNeverAcknowledgesSuccess() = runBlocking<Unit> {
+        val row = observation(); val (store, delivery) = success(row)
+        val result = delivery.result.results.single()
+        val invalid = listOf(result.copy(entity = null), result.copy(revision = null), result.copy(revision = 0),
+            result.copy(entity = JsonObject(result.entity!! - "received_at")),
+            result.copy(entity = JsonObject(result.entity!! + ("value" to JsonPrimitive(999)))),
+            result.copy(entity = JsonObject(result.entity!! + ("source_device_id" to JsonPrimitive(id(99))))),
+            result.copy(entity = JsonObject(result.entity!! + ("deleted_at" to JsonPrimitive(time)))),
+            result.copy(errorCode = "INVALID_PAYLOAD"), result.copy(baseEntity = buildJsonObject {}))
+        for (bad in invalid) {
+            assertNotNull(rejected { store.acceptOperation(delivery.copy(result = delivery.result.copy(results = listOf(bad)))) })
+            assertUnaccepted(row); assertEquals(0, count("sync_entity_state")); assertEquals(1, count("metric_logs"))
+        }
+        assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
+    }
+
+    @Test fun changedSourceOrRemovedQueueWithoutReceiptCannotBecomeAnAcknowledgement() = runBlocking<Unit> {
+        val row = observation(); val (store, delivery) = success(row)
+        db.openHelper.writableDatabase.execSQL("UPDATE sync_outbox SET lastError='changed' WHERE id=?", arrayOf<Any>(row.id))
+        assertEquals(NextRequestException.Reason.SOURCE_CHANGED, (rejected { store.acceptOperation(delivery) } as NextRequestException).reason)
+        assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, row.operationId))
+        db.syncOutboxDao().deleteById(row.id)
+        assertEquals(NextRequestException.Reason.SOURCE_CHANGED, (rejected { store.acceptOperation(delivery) } as NextRequestException).reason)
+        assertEquals(0, count("sync_entity_state")); assertEquals(0, count("next_acceptances"))
+    }
+
+    @Test fun changedDevicePermissionRevisionAndAuthenticationRejectLateAcceptance() = runBlocking<Unit> {
+        val row = observation(); val (store, delivery) = success(row)
+        register(device = id(99))
+        assertEquals(NextRequestException.Reason.STALE_ACCESS, (rejected { store.acceptOperation(delivery) } as NextRequestException).reason)
+        register(permissions = setOf("sync.read"), revision = 2)
+        assertNotNull(rejected { store.acceptOperation(delivery) }); assertUnaccepted(row)
+        tokens.saveLoginSession("synthetic-new", "synthetic-refresh", "member", id(1), false)
+        assertNotNull(rejected { store.acceptOperation(delivery) }); assertUnaccepted(row)
+    }
+
+    @Test fun receiptAndQueueTriggerFailuresRollbackCanonicalProjectionAndCanRetry() = runBlocking<Unit> {
+        producer().write(local()) { metrics().updateMetric(metric.copy(name = "Sent")) }
+        val row = db.syncOutboxDao().getAll().single(); val (store, delivery) = success(row)
+        val before = db.metricDao().getMetricById(metric.id)
+        val faults = listOf(
+            "BEFORE INSERT ON next_acceptances BEGIN SELECT RAISE(ABORT,'accept failed'); END",
+            "BEFORE INSERT ON next_acceptances BEGIN SELECT RAISE(IGNORE); END",
+            "AFTER INSERT ON next_acceptances BEGIN UPDATE next_acceptances SET resultHash='changed'; END",
+            "AFTER INSERT ON next_acceptances BEGIN UPDATE sync_outbox SET lastError='changed'; END",
+            "BEFORE DELETE ON sync_outbox BEGIN SELECT RAISE(ABORT,'consume failed'); END",
+            "BEFORE DELETE ON sync_outbox BEGIN SELECT RAISE(IGNORE); END",
+            "AFTER DELETE ON sync_outbox BEGIN UPDATE next_transmissions SET wireHash='changed'; END",
+            "AFTER DELETE ON sync_outbox BEGIN DELETE FROM next_acceptances; END",
+            "AFTER DELETE ON sync_outbox BEGIN UPDATE next_acceptances SET resultHash='changed'; END",
+            "AFTER DELETE ON sync_outbox BEGIN UPDATE sync_entity_state SET payloadHash='changed'; END")
+        for (fault in faults) {
+            db.openHelper.writableDatabase.execSQL("CREATE TRIGGER acceptance_fault $fault")
+            assertNotNull(rejected { store.acceptOperation(delivery) })
+            assertUnaccepted(row); assertEquals(before, db.metricDao().getMetricById(metric.id)); assertEquals(0, count("sync_entity_state"))
+            db.openHelper.writableDatabase.execSQL("DROP TRIGGER acceptance_fault")
+        }
+        assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
+    }
+
+    @Test fun acceptanceFinalCommitFailureIsNotSuccessAndColdRetryPreservesOriginalRequest() = runBlocking<Unit> {
+        val row = observation(); val (store, delivery) = success(row)
+        val original = transmission(NEXT_OPERATION, row.operationId).wireBytes.copyOf()
+        val sql = db.openHelper.writableDatabase
+        sql.execSQL("CREATE TABLE acceptance_parent(id INTEGER PRIMARY KEY)")
+        sql.execSQL("CREATE TABLE acceptance_child(id INTEGER REFERENCES acceptance_parent(id) DEFERRABLE INITIALLY DEFERRED)")
+        sql.execSQL("CREATE TRIGGER acceptance_commit_fault AFTER INSERT ON next_acceptances BEGIN INSERT INTO acceptance_child VALUES(1); END")
+        assertTrue(rejected { store.acceptOperation(delivery) } is SQLiteConstraintException)
+        storage.reopen()
+        assertUnaccepted(row); assertEquals(0, count("acceptance_child")); assertEquals(0, count("sync_entity_state"))
+        assertArrayEquals(original, transmission(NEXT_OPERATION, row.operationId).wireBytes)
+        db.openHelper.writableDatabase.execSQL("DROP TRIGGER acceptance_commit_fault")
+        val (http, _) = channel { successReply(it) }
+        assertEquals(NextOperationAcceptance.COMMITTED, sender(http).sendAndAcceptOperation(access(), row.operationId))
+        storage.reopen()
+        assertEquals(1, count("next_acceptances")); assertNull(db.syncOutboxDao().getById(row.id))
+    }
+
+    @Test fun corruptReceiptCannotAuthorizeReplayOrReinsertConsumedWork() = runBlocking<Unit> {
+        val row = observation(); val (store, delivery) = success(row)
+        assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
+        val receipt = db.nextRequestDao().acceptance(NEXT_OPERATION, row.operationId)!!
+        for (statement in listOf("UPDATE next_acceptances SET resultJson='{}'",
+            "UPDATE next_acceptances SET resultHash=CAST(resultHash AS BLOB)",
+            "UPDATE next_acceptances SET originHash='different'")) {
+            db.openHelper.writableDatabase.execSQL(statement)
+            assertNotNull(rejected { store.acceptOperation(delivery) })
+            assertNull(db.syncOutboxDao().getById(row.id)); assertEquals(1, count("metric_logs"))
+            db.openHelper.writableDatabase.execSQL("UPDATE next_acceptances SET resultJson=?,resultHash=?,originHash=?",
+                arrayOf<Any>(receipt.resultJson, receipt.resultHash, receipt.originHash))
+        }
+        assertEquals(NextOperationAcceptance.REPLAYED, store.acceptOperation(delivery))
+    }
+
+    @Test fun unsupportedDeleteAndRejectedResultKeepPendingWorkAndNoCursor() = runBlocking<Unit> {
+        producer().write(local()) { metrics().deleteMetric(metric) }
+        val row = db.syncOutboxDao().getAll().single(); register(); val (http, _) = channel()
+        val store = sender(http); val delivery = requireNotNull(store.sendOperation(access(), row.operationId))
+        assertEquals(NextRequestException.Reason.UNSUPPORTED_ACCEPTANCE, (rejected { store.acceptOperation(delivery) } as NextRequestException).reason)
+        assertUnaccepted(row)
+    }
+
+    @Test fun acceptanceLeavesUnrelatedOfflineTimerCommandsAndOriginalOnceProofUntouched() = runBlocking<Unit> {
+        val timer = start()
+        val timerOrigin = db.nextRequestDao().origin(NEXT_TIMER, timer.commandId)
+        val once = OneTimeTransmissionEntity(id(230), id(1), id(2), id(3), id(4), "original-once-bytes")
+        db.completionFollowUpDao().insertTransmission(once)
+        val row = observation(); val (store, delivery) = success(row)
+        assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
+        storage.reopen()
+        assertEquals(timer, db.timeLogDao().getTimerCommand(timer.id))
+        assertEquals(timerOrigin, db.nextRequestDao().origin(NEXT_TIMER, timer.commandId))
+        assertEquals(once, db.completionFollowUpDao().transmission(once.operationId))
+        assertNull(db.nextRequestDao().acceptance(NEXT_TIMER, timer.commandId))
+    }
+
+    @Test fun cancelledQueuedAcceptanceNeverCommitsBusinessShadowOrReceipt() = runBlocking<Unit> {
+        val row = observation(); val (store, delivery) = success(row)
+        sessions.exclusive {
+            val task = launch(start = CoroutineStart.UNDISPATCHED) { store.acceptOperation(delivery) }
+            task.cancelAndJoin()
+        }
+        assertUnaccepted(row); assertEquals(0, count("sync_entity_state"))
+        assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
+    }
+
+    @Test fun ordinaryCheckCannotConsumeAResultCarryingAnUnrelatedOneTimeProof() = runBlocking<Unit> {
+        val row = completion(HabitType.CHECK_IN); val (store, delivery) = success(row)
+        val result = delivery.result.results.single()
+        val payload = JsonObject(result.entity!! + mapOf(
+            "one_time" to buildJsonObject {
+                put("event_uuid", row.entityUuid); put("action", "complete"); put("expected_version", 0)
+                put("expected_head_event_uuid", JsonNull); put("reverts_event_uuid", JsonNull)
+            },
+            "one_time_state_after" to buildJsonObject {
+                put("version", 1); put("head_event_uuid", row.entityUuid); put("completion_event_uuid", row.entityUuid)
+            }))
+        val changed = delivery.copy(result = delivery.result.copy(results = listOf(result.copy(entity = payload))))
+        assertTrue(rejected { store.acceptOperation(changed) } is IllegalArgumentException)
+        assertUnaccepted(row); assertEquals(0, count("sync_entity_state")); assertEquals(1, count("completions"))
+    }
 }

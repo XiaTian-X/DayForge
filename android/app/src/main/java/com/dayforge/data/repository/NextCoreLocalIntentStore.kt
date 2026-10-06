@@ -88,7 +88,7 @@ internal class NextCoreLocalIntentStore(
                     if (access.capabilities != null && permission !in access.capabilities)
                         rejectNextRequest(NextRequestException.Reason.PERMISSION_DENIED)
                     val dao = database.nextRequestDao()
-                    if (dao.origin(kind, requestId) != null || dao.transmission(kind, requestId) != null)
+                    if (dao.origin(kind, requestId) != null || dao.transmission(kind, requestId) != null || dao.acceptance(kind, requestId) != null)
                         rejectNextRequest(NextRequestException.Reason.REQUEST_ID_REUSED)
                     val origin = NextRequestOriginEntity(kind, requestId, id, 5, session.authentication.userId,
                         session.serverInstanceId, session.syncEpoch, hash, bytes.toString(Charsets.UTF_8))

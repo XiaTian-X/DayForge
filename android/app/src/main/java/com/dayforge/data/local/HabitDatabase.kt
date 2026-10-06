@@ -21,6 +21,7 @@ import com.dayforge.data.local.entity.OneTimeTransmissionEntity
 import com.dayforge.data.local.entity.NextRecoveryStateEntity
 import com.dayforge.data.local.entity.NextRequestOriginEntity
 import com.dayforge.data.local.entity.NextTransmissionEntity
+import com.dayforge.data.local.entity.NextAcceptanceEntity
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.HabitMetricLinkEntity
 import com.dayforge.data.local.entity.HabitTypeConverter
@@ -63,9 +64,10 @@ import kotlinx.coroutines.withContext
         OneTimeTransmissionEntity::class,
         NextRecoveryStateEntity::class,
         NextRequestOriginEntity::class,
-        NextTransmissionEntity::class
+        NextTransmissionEntity::class,
+        NextAcceptanceEntity::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = true
 )
 @TypeConverters(HabitTypeConverter::class)
