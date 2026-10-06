@@ -40,6 +40,22 @@ internal data class LocalIconAccess(
     val canDeclare: Boolean
 )
 
+/** Captured core request authority; registration deliberately has no device proof. */
+internal data class LocalSyncAccess(
+    val session: LocalDataSession,
+    val deviceId: String? = null,
+    val capabilityRevision: Int? = null,
+    val capabilities: Set<String> = emptySet()
+) {
+    init {
+        require(listOf(session.authentication.userId, session.authentication.generation,
+            session.serverInstanceId, session.syncEpoch).all { it != null && com.dayforge.domain.model.isContractUuid(it) })
+        if (deviceId == null) require(capabilityRevision == null && capabilities.isEmpty())
+        else require(com.dayforge.domain.model.isContractUuid(deviceId) &&
+            capabilityRevision != null && capabilityRevision > 0 && "sync.read" in capabilities)
+    }
+}
+
 /** No data-class toString: credentials must not appear in request-tag diagnostics. */
 class AuthenticationSnapshot(
     val session: AuthenticationSession,
@@ -230,6 +246,42 @@ class TokenManager @Inject constructor(
 
     internal suspend fun localIconAccess(): LocalIconAccess? = iconAccess(dataStore.data.first())
 
+    internal suspend fun localSyncAccess(): LocalSyncAccess? = withContext(Dispatchers.IO) { syncAccess(dataStore.data.first()) }
+
+    /** Discovery supplies the explicit replica, but never rewrites the persisted owner/replica. */
+    internal suspend fun registrationSyncAccess(server: String, epoch: String): LocalSyncAccess? = withContext(Dispatchers.IO) {
+        val preferences = dataStore.data.first()
+        val credentials = snapshot(preferences) ?: return@withContext null
+        val expected = LocalSyncAccess(LocalDataSession(credentials.session, server, epoch))
+        expected.takeIf { registrationMatches(preferences, it) }
+    }
+
+    /** The refresh and original request each recheck ONE persisted authority snapshot. */
+    internal suspend fun syncAuthenticationSnapshot(expected: LocalSyncAccess): AuthenticationSnapshot? = withContext(Dispatchers.IO) {
+        val preferences = dataStore.data.first()
+        if (!syncMatches(preferences, expected)) return@withContext null
+        snapshot(preferences)?.takeIf { it.session == expected.session.authentication }
+    }
+
+    private fun syncMatches(preferences: Preferences, expected: LocalSyncAccess): Boolean =
+        if (expected.deviceId == null) registrationMatches(preferences, expected) else syncAccess(preferences) == expected
+
+    private fun registrationMatches(preferences: Preferences, expected: LocalSyncAccess): Boolean {
+        if (preferences[SYNC_ACCOUNT_ID_KEY] != expected.session.authentication.userId ||
+            preferences[USER_ID_KEY] != expected.session.authentication.userId ||
+            preferences[AUTH_SESSION_KEY] != expected.session.authentication.generation) return false
+        val server = preferences[SERVER_INSTANCE_ID_KEY]
+        val epoch = preferences[SYNC_EPOCH_KEY]
+        return (server == null && epoch == null) ||
+            (server == expected.session.serverInstanceId && epoch == expected.session.syncEpoch)
+    }
+
+    private fun syncAccess(preferences: Preferences): LocalSyncAccess? {
+        val access = iconAccess(preferences) ?: return null
+        return LocalSyncAccess(access.session, access.deviceId, access.capabilityRevision,
+            requireNotNull(preferences[DEVICE_CAPABILITIES_KEY]).toSet())
+    }
+
     /** Canonical non-secret lifecycle signal; Keystore work never runs on Main. */
     internal val iconAccessChanges: Flow<LocalIconAccess?> = dataStore.data.map(::iconAccess)
         .distinctUntilChanged().flowOn(Dispatchers.IO)
@@ -290,11 +342,23 @@ class TokenManager @Inject constructor(
         username: String,
         userId: String,
         isAdmin: Boolean
+    ): Boolean = persistRefreshedTokens(expected, accessToken, refreshToken, username, userId, isAdmin)
+
+    /** Core v5 refresh cannot publish old-origin credentials after a replica/device change. */
+    internal suspend fun saveRefreshedSyncTokens(
+        expected: AuthenticationSnapshot, context: LocalSyncAccess, accessToken: String, refreshToken: String,
+        username: String, userId: String, isAdmin: Boolean
+    ): Boolean = persistRefreshedTokens(expected, accessToken, refreshToken, username, userId, isAdmin, context)
+
+    private suspend fun persistRefreshedTokens(
+        expected: AuthenticationSnapshot, accessToken: String, refreshToken: String, username: String,
+        userId: String, isAdmin: Boolean, syncContext: LocalSyncAccess? = null
     ): Boolean {
         if (userId != expected.session.userId) return false
         var saved = false
         editPreferences { preferences ->
-            if (matches(preferences, expected)) {
+            val authorityMatches = syncContext == null || syncMatches(preferences, syncContext)
+            if (authorityMatches && matches(preferences, expected)) {
                 preferences[ACCESS_TOKEN_KEY] = tokenCipher.encrypt(accessToken)
                 preferences[REFRESH_TOKEN_KEY] = tokenCipher.encrypt(refreshToken)
                 preferences[USER_EMAIL_KEY] = username
@@ -306,9 +370,14 @@ class TokenManager @Inject constructor(
     }
 
     /** A rejected refresh cannot invalidate credentials created while it was in flight. */
-    suspend fun clearRejectedRefresh(expected: AuthenticationSnapshot) {
+    suspend fun clearRejectedRefresh(expected: AuthenticationSnapshot) = clearRejectedRefresh(expected, null)
+
+    internal suspend fun clearRejectedSyncRefresh(expected: AuthenticationSnapshot, context: LocalSyncAccess) =
+        clearRejectedRefresh(expected, context)
+
+    private suspend fun clearRejectedRefresh(expected: AuthenticationSnapshot, context: LocalSyncAccess?) {
         editPreferences { preferences ->
-            if (matches(preferences, expected)) {
+            if ((context == null || syncMatches(preferences, context)) && matches(preferences, expected)) {
                 preferences.remove(ACCESS_TOKEN_KEY)
                 preferences.remove(REFRESH_TOKEN_KEY)
                 preferences.remove(USER_EMAIL_KEY)

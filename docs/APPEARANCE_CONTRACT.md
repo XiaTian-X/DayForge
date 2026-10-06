@@ -952,7 +952,8 @@ action 与撤销目标复用现有事件列。事实的 state_after 从其自身
 拒绝，实例或 epoch 变化在业务/回执处理前拒绝；公开身份 GET 不代表后续请求仍指向原副本。
 内部 next push/计时命令要求显式副本，指纹按协议/请求 kind/实例/epoch/原 payload 隔离，原 v4
 指纹与冻结内容不变。完整摘要算法和错误码见 [同步协议](SYNC_PROTOCOL.md#v5-的副本与回执边界未启用)。
-正式 sync/timer/注册八个 HTTP 入口已接入共享门禁和实际事务分派，Android 正式传输/恢复仍待后续批次。
+正式 sync/timer/注册八个 HTTP 入口已接入共享门禁和实际事务分派；Android 内部 `NextSyncHttp`
+已具备捕获副本的八个真实 HTTP 方法，完整正式编排/恢复与联合切换仍待后续批次，边界见同步协议。
 新 push/bootstrap/pull 响应在最终 COMMIT 前严格校验并显式序列化，不能用 v4 序列化器丢掉
 事项冲突/检查点或在新形状失败时回退旧成功。注册校验缓存的原始 JSON，不依赖已被旧模型
 转换的版本值。新 pull 与 bootstrap 均拒绝残缺结构快照；分页上限 v4=500、v5=1000。

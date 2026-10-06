@@ -9,6 +9,7 @@ import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
 import com.dayforge.data.local.AuthenticationSession
 import com.dayforge.data.local.LocalIconAccess
+import com.dayforge.data.local.LocalSyncAccess
 import com.dayforge.data.api.MaterialHttpRoute
 import com.dayforge.data.api.MaterialCallCancellation
 import com.dayforge.data.api.MaterialRefreshApi
@@ -72,8 +73,10 @@ class TokenAuthenticator @Inject constructor(
         // A concurrent request may have refreshed while this request waited.
         val originalSession = response.request.tag(AuthenticationSession::class.java) ?: return null
         val iconAccess = response.request.tag(LocalIconAccess::class.java)
+        val syncAccess = response.request.tag(LocalSyncAccess::class.java)
         val credentials = runBlocking {
-            if (iconAccess == null) tokenManager.authenticationSnapshot()
+            if (syncAccess != null) tokenManager.syncAuthenticationSnapshot(syncAccess)
+            else if (iconAccess == null) tokenManager.authenticationSnapshot()
             else tokenManager.iconAuthenticationSnapshot(iconAccess)
         } ?: return null
         if (originalSession != credentials.session) return null
@@ -110,7 +113,7 @@ class TokenAuthenticator @Inject constructor(
                     override fun callEnd(call: okhttp3.Call) { cancellation?.unregister(call) }
                     override fun callFailed(call: okhttp3.Call, ioe: java.io.IOException) { cancellation?.unregister(call) }
                 })
-                builder.addInterceptor(MaterialRefreshBoundary())
+                builder.addInterceptor(MaterialRefreshBoundary(strictSync = syncAccess != null))
             }
             val client = builder
                 .addInterceptor(HttpLoggingInterceptor().apply {
@@ -144,7 +147,10 @@ class TokenAuthenticator @Inject constructor(
             }
 
             val saved = runBlocking {
-                tokenManager.saveRefreshedTokens(
+                if (syncAccess != null) tokenManager.saveRefreshedSyncTokens(
+                    credentials, syncAccess, refreshResponse.accessToken, refreshResponse.refreshToken,
+                    refreshResponse.username, refreshResponse.userId, refreshResponse.isAdmin
+                ) else tokenManager.saveRefreshedTokens(
                     credentials,
                     refreshResponse.accessToken,
                     refreshResponse.refreshToken,
@@ -155,6 +161,7 @@ class TokenAuthenticator @Inject constructor(
             }
             if (!saved) return null
             if (iconAccess != null && runBlocking { tokenManager.iconAuthenticationSnapshot(iconAccess) } == null) return null
+            if (syncAccess != null && runBlocking { tokenManager.syncAuthenticationSnapshot(syncAccess) } == null) return null
 
             return response.request.newBuilder()
                 .header("Authorization", "Bearer ${refreshResponse.accessToken}")
@@ -168,7 +175,8 @@ class TokenAuthenticator @Inject constructor(
                 error.code() in DEFINITIVE_REFRESH_REJECTION_CODES
             if (definitivelyRejected) {
                 runBlocking {
-                    tokenManager.clearRejectedRefresh(credentials)
+                    if (syncAccess == null) tokenManager.clearRejectedRefresh(credentials)
+                    else tokenManager.clearRejectedSyncRefresh(credentials, syncAccess)
                 }
             }
             return null
