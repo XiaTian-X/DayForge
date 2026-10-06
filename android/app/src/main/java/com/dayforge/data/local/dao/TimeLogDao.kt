@@ -12,6 +12,9 @@ interface TimeLogDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertTimerCommand(command: TimerCommandEntity): Long
 
+    @Query("SELECT * FROM timer_command_outbox WHERE id=:id")
+    suspend fun getTimerCommand(id: Long): TimerCommandEntity?
+
     @Query("SELECT * FROM timer_command_outbox WHERE deadLetteredAt IS NULL ORDER BY id LIMIT :limit")
     suspend fun getPendingTimerCommands(limit: Int = 100): List<TimerCommandEntity>
 

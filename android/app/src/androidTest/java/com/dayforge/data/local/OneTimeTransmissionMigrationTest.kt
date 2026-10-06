@@ -63,7 +63,7 @@ class OneTimeTransmissionMigrationTest {
         rows(db, "SELECT $columns FROM `$table` ORDER BY rowid")
     }
     private fun structure(db: SupportSQLiteDatabase) = rows(db,
-        "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND tbl_name NOT IN ('one_time_transmissions','next_recovery_state') " +
+        "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND tbl_name NOT IN ('one_time_transmissions','next_recovery_state','next_request_origins','next_transmissions') " +
             "AND NOT (type='table' AND name IN ('habits','metrics')) " +
             "AND name NOT IN ('sync_habits_update','sync_metrics_update') ORDER BY type,name")
 
@@ -100,7 +100,7 @@ class OneTimeTransmissionMigrationTest {
         repeat(2) {
             val db = open()
             val sql = db.openHelper.writableDatabase
-            assertEquals(8, sql.version)
+            assertEquals(9, sql.version)
             assertEquals(before, snapshot(sql))
             assertEquals(ddl, structure(sql))
             assertNull(db.completionFollowUpDao().transmission("op"))
@@ -125,7 +125,7 @@ class OneTimeTransmissionMigrationTest {
             }
             raw.execSQL("ALTER TABLE unavailable_metric_prompts RENAME TO completion_metric_prompts")
         }
-        assertEquals(8, open().openHelper.writableDatabase.version)
+        assertEquals(9, open().openHelper.writableDatabase.version)
     }
 
     @Test fun forgedVersionFourIdentityIsRejectedWithoutDeletingRows() {

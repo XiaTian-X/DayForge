@@ -19,8 +19,6 @@ import javax.inject.Singleton
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.KSerializer
-import kotlinx.serialization.ExperimentalSerializationApi
-import kotlinx.serialization.json.encodeToStream
 import kotlinx.serialization.json.*
 import okhttp3.Call
 import okhttp3.ConnectionPool
@@ -93,7 +91,6 @@ internal class NextSyncHttp private constructor(
         private val route: MaterialHttpRoute, private val owner: Job
     ) {
         private var closed = false
-        private val json = Json { encodeDefaults = true }
         internal fun close() { closed = true }
 
         internal suspend fun identity(): ServerIdentityResponse = value(
@@ -124,8 +121,21 @@ internal class NextSyncHttp private constructor(
         suspend fun push(body: NextSyncPushRequest): NextSyncPushResponse {
             require(body.deviceId == device())
             val frozen = freeze(NextSyncPushRequest.serializer(), body)
+            return pushBytes(frozen, encodeSyncRequest(NextSyncPushRequest.serializer(), frozen))
+        }
+
+        /** Replay the journal's original envelope, not a DTO re-encoding after an upgrade. */
+        suspend fun pushFrozen(body: ByteArray): NextSyncPushResponse {
+            val bytes = snapshotSyncRequest(body)
+            val frozen = decodeFrozenSyncRequest(bytes, NextSyncPushRequest.serializer())
+            return pushBytes(frozen, bytes)
+        }
+
+        private suspend fun pushBytes(frozen: NextSyncPushRequest, bytes: ByteArray): NextSyncPushResponse {
+            require(frozen.deviceId == device())
             require(frozen.operations.map { it.operationId }.distinct().size == frozen.operations.size)
-            val response = value(post("/api/v2/sync/push", NextSyncPushRequest.serializer(), frozen), NextSyncPushResponse.serializer())
+            require(frozen.operations.all { isContractUuid(it.operationId) && isContractUuid(it.entityUuid) })
+            val response = value(request("/api/v2/sync/push").post(bytes.toRequestBody(JSON_TYPE)), NextSyncPushResponse.serializer())
             valid {
                 val operations = frozen.operations.associateBy { it.operationId }
                 require(response.results.size == operations.size && response.results.map { it.operationId }.distinct().size == operations.size)
@@ -160,9 +170,20 @@ internal class NextSyncHttp private constructor(
         suspend fun commands(body: TimerCommandBatchRequest): TimerCommandBatchResponse {
             require(body.deviceId == device() && body.commands.size in 1..100)
             val frozen = freeze(TimerCommandBatchRequest.serializer(), body)
+            return commandBytes(frozen, encodeSyncRequest(TimerCommandBatchRequest.serializer(), frozen))
+        }
+
+        suspend fun commandsFrozen(body: ByteArray): TimerCommandBatchResponse {
+            val bytes = snapshotSyncRequest(body)
+            val frozen = decodeFrozenSyncRequest(bytes, TimerCommandBatchRequest.serializer())
+            return commandBytes(frozen, bytes)
+        }
+
+        private suspend fun commandBytes(frozen: TimerCommandBatchRequest, bytes: ByteArray): TimerCommandBatchResponse {
+            require(frozen.deviceId == device() && frozen.commands.size in 1..100)
             val commands = frozen.commands.associateBy { it.commandId }
             require(commands.size == frozen.commands.size && commands.keys.all(::isContractUuid) && frozen.commands.all { isContractUuid(it.sessionId) })
-            val response = value(post("/api/v2/timers/commands", TimerCommandBatchRequest.serializer(), frozen), TimerCommandBatchResponse.serializer())
+            val response = value(request("/api/v2/timers/commands").post(bytes.toRequestBody(JSON_TYPE)), TimerCommandBatchResponse.serializer())
             valid {
                 require(response.results.size == commands.size && response.results.map { it.commandId }.distinct().size == commands.size)
                 response.results.forEach { result ->
@@ -208,29 +229,17 @@ internal class NextSyncHttp private constructor(
                 .header("X-DayForge-Sync-Epoch", requireNotNull(context.session.syncEpoch))
             return builder
         }
-        private suspend fun <T> freeze(serializer: KSerializer<T>, body: T): T = withContext(Dispatchers.Default) {
-            json.decodeFromString(serializer, encodeBounded(serializer, body).toString(Charsets.UTF_8))
+
+        // Keep typed callers' existing opaque-domain boundary; stored wire has its own strict proof.
+        private suspend fun <T> freeze(serializer: KSerializer<T>, body: T): T {
+            val bytes = encodeSyncRequest(serializer, body)
+            return withContext(Dispatchers.Default) {
+                Json.decodeFromString(serializer, bytes.toString(Charsets.UTF_8))
+            }
         }
         private suspend fun <T> post(path: String, serializer: KSerializer<T>, body: T): Request.Builder {
-            val bytes = withContext(Dispatchers.Default) { encodeBounded(serializer, body) }
+            val bytes = encodeSyncRequest(serializer, body)
             return request(path).post(bytes.toRequestBody(JSON_TYPE))
-        }
-
-        @OptIn(ExperimentalSerializationApi::class)
-        private suspend fun <T> encodeBounded(serializer: KSerializer<T>, body: T): ByteArray {
-            val caller = currentCoroutineContext()
-            val output = object : ByteArrayOutputStream(8192) {
-                override fun write(value: Int) {
-                    caller.ensureActive(); require(size() < 1_048_576); super.write(value)
-                }
-                override fun write(bytes: ByteArray, offset: Int, length: Int) {
-                    caller.ensureActive(); require(length <= 1_048_576 - size()); super.write(bytes, offset, length)
-                }
-            }
-            return output.use {
-                json.encodeToStream(serializer, body, output)
-                output.toByteArray()
-            }
         }
 
         private suspend fun <T> value(builder: Request.Builder, serializer: KSerializer<T>, limit: Int = NORMAL_REPLY,

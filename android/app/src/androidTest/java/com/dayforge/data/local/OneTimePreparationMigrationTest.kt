@@ -148,7 +148,7 @@ class OneTimePreparationMigrationTest {
         val db = open()
         assertNull(db.habitDao().getHabitById(1)!!.completionPolicy)
         assertNull(db.completionDao().getCompletionByUuid(eventUuid)!!.oneTimeAction)
-        assertEquals(8, db.openHelper.writableDatabase.version)
+        assertEquals(9, db.openHelper.writableDatabase.version)
         assertEquals(1, db.syncOutboxDao().count())
         assertEquals("{\"frozen\":true}", db.syncOutboxDao().getAll().single().payloadJson)
     }
