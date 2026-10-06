@@ -40,7 +40,7 @@ internal class MaterialRefreshResponse(
 }
 
 /** Retrofit buffers errors too: bound every status before its converter can allocate a full body. */
-internal class MaterialRefreshBoundary : Interceptor {
+internal class MaterialRefreshBoundary(private val strictSync: Boolean = false) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         chain.proceed(chain.request().newBuilder().header("Accept-Encoding", "identity").build()).use { response ->
             if (response.header("Content-Encoding")?.let { it != "identity" } == true) invalid()
@@ -59,7 +59,8 @@ internal class MaterialRefreshBoundary : Interceptor {
             val bytes = output.toByteArray()
             if (response.isSuccessful) {
                 val type = body.contentType() ?: invalid()
-                if (type.type != "application" || type.subtype != "json" || type.charset(Charsets.UTF_8) != Charsets.UTF_8) invalid()
+                if (strictSync) requireSyncJsonType(response)
+                else if (type.type != "application" || type.subtype != "json" || type.charset(Charsets.UTF_8) != Charsets.UTF_8) invalid()
                 strictAppearanceJson(bytes, 65_536, {}, { invalid() })
             }
             return response.newBuilder().body(bytes.toResponseBody(body.contentType())).build()

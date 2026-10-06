@@ -3,6 +3,7 @@ package com.dayforge.data.api.interceptor
 import com.dayforge.data.local.TokenManager
 import com.dayforge.data.local.AuthenticationSession
 import com.dayforge.data.local.LocalIconAccess
+import com.dayforge.data.local.LocalSyncAccess
 import com.dayforge.data.api.MaterialHttpRoute
 import com.dayforge.data.api.materialTokenSafe
 import java.io.IOException
@@ -33,14 +34,17 @@ class AuthInterceptor @Inject constructor(
 
         val expected = request.tag(AuthenticationSession::class.java)
         val iconAccess = request.tag(LocalIconAccess::class.java)
+        val syncAccess = request.tag(LocalSyncAccess::class.java)
         val route = request.tag(MaterialHttpRoute::class.java)
         if (route != null && !route.matches(request.url)) throw IOException("MATERIAL_ROUTE_CHANGED")
         val credentials = runBlocking {
-            if (iconAccess == null) tokenManager.authenticationSnapshot()
+            if (syncAccess != null) tokenManager.syncAuthenticationSnapshot(syncAccess)
+            else if (iconAccess == null) tokenManager.authenticationSnapshot()
             else tokenManager.iconAuthenticationSnapshot(iconAccess)
         }
         // Explicitly captured work may never inherit a new account/login/replica's credentials.
-        if ((expected != null && credentials?.session != expected) || (iconAccess != null && credentials == null)) {
+        if ((expected != null && credentials?.session != expected) ||
+            ((iconAccess != null || syncAccess != null) && credentials == null)) {
             throw IOException("AUTHENTICATION_SESSION_CHANGED")
         }
         // Material admission proves the public server identity BEFORE sending personal credentials.
