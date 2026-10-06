@@ -1,4 +1,4 @@
-"""Protocol-v5 envelopes and payloads; not mounted on the live v4 routes.
+"""Protocol-v5 models for guarded dispatch; the default server remains v4.
 
 Entity storage still owns authorization, references, CAS and atomicity. Envelope
 validation cannot establish those guarantees from self-declared response data.
@@ -205,10 +205,34 @@ def validate_change_proof(change: SyncChangeResponse) -> OneTimeEventProof | Non
     return None
 
 
+def structural_snapshot(
+    entity_type: str, payload: dict
+) -> NextPlanNodePayload | NextMetricPayload:
+    """Read-only snapshot fields are not client-write fields; require v5 content.
+
+    Pull must not return a legacy change as a successful v5 structural snapshot.
+    This checks its shape only, not ownership/references or complete task history.
+    """
+    read_only = {"public_id", "revision", "updated_at", "deleted_at"}
+    if entity_type == "metric":
+        read_only.add("created_at")
+    body = {key: value for key, value in payload.items() if key not in read_only}
+    if entity_type == "plan_node":
+        return NextPlanNodePayload.model_validate(body)
+    if entity_type == "metric":
+        return NextMetricPayload.model_validate(body)
+    raise ValueError("structural snapshot requires a node or metric")
+
+
 class NextSyncPullResponse(SyncPullResponse):
     @model_validator(mode="after")
     def immutable_proofs(self):
         for change in self.changes:
+            if change.operation == "upsert" and change.entity_type in {
+                "plan_node",
+                "metric",
+            }:
+                structural_snapshot(change.entity_type, change.payload)
             validate_change_proof(change)
         return self
 
@@ -232,22 +256,12 @@ class NextSyncBootstrapResponse(SyncBootstrapResponse):
                 raise ValueError("bootstrap requires unique live synthetic upserts")
             seen.add(identity)
             if change.entity_type in {"plan_node", "metric"}:
-                read_only = {"public_id", "revision", "updated_at", "deleted_at"}
-                if change.entity_type == "metric":
-                    read_only.add("created_at")
-                body = {
-                    key: value
-                    for key, value in change.payload.items()
-                    if key not in read_only
-                }
-                if change.entity_type == "plan_node":
-                    plan = NextPlanNodePayload.model_validate(body)
+                plan = structural_snapshot(change.entity_type, change.payload)
+                if isinstance(plan, NextPlanNodePayload):
                     if plan.activity is not None:
                         activities.add(identity[1])
                         if plan.activity.completion_policy == "one_and_done":
                             once.add(identity[1])
-                else:
-                    NextMetricPayload.model_validate(body)
         checkpoints = {item.activity_uuid: item for item in self.one_time_checkpoints}
         if (
             len(checkpoints) != len(self.one_time_checkpoints)

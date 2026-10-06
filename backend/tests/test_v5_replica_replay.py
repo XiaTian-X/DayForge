@@ -223,6 +223,30 @@ def metric_request(device):
     )
 
 
+async def legacy_post(probe, path, body):
+    """Exercise the unchanged v4 namespace ONLY with a v4 test server.
+
+    Production now refuses legacy sync/timer requests on a v5 server. This
+    isolated fixture switch is for receipt boundary proofs, not a supported
+    deployment/downgrade or permission to modify any real server metadata.
+    """
+    _, production, engine, _, headers, _, _ = probe
+    async with engine.begin() as connection:
+        await connection.execute(text("UPDATE server_instances SET protocol_version=4"))
+    legacy_headers = {
+        name: value
+        for name, value in headers.items()
+        if name not in {PROTOCOL_HEADER, INSTANCE_HEADER, EPOCH_HEADER}
+    }
+    try:
+        return await production.post(path, headers=legacy_headers, json=body)
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE server_instances SET protocol_version=5")
+            )
+
+
 @pytest.mark.parametrize("field", [INSTANCE_HEADER, EPOCH_HEADER])
 @pytest.mark.parametrize(
     "case", ["missing", "duplicate", "comma", "whitespace", "changed"]
@@ -297,7 +321,7 @@ async def test_v4_success_receipt_is_not_a_v5_metric_receipt_even_with_identical
 ):
     client, production, engine, factory, headers, device, replica = replica_http
     body = dict(device_id=device, operations=[VECTOR["operation"]])
-    old = await production.post("/api/v2/sync/push", headers=headers, json=body)
+    old = await legacy_post(replica_http, "/api/v2/sync/push", body)
     assert old.status_code == 200 and old.json()["results"][0]["status"] == "applied"
     if not race:
         response = await client.post("/__test/v5/push", headers=headers, json=body)
@@ -323,7 +347,7 @@ async def test_v4_success_receipt_is_not_a_v5_metric_receipt_even_with_identical
         result["status"] == "rejected" and result["error_code"] == "OPERATION_ID_REUSED"
     )
     assert result["entity"] is None
-    replay = await production.post("/api/v2/sync/push", headers=headers, json=body)
+    replay = await legacy_post(replica_http, "/api/v2/sync/push", body)
     assert replay.json()["results"][0] == {
         **old.json()["results"][0],
         "status": "already_applied",
@@ -345,7 +369,7 @@ async def test_timer_receipt_namespaces_reject_cross_protocol_and_cross_restore_
 ):
     client, production, engine, _, headers, device, _ = replica_http
     body = dict(device_id=device, commands=[VECTOR["timer_command"]])
-    old = await production.post("/api/v2/timers/commands", headers=headers, json=body)
+    old = await legacy_post(replica_http, "/api/v2/timers/commands", body)
     assert (
         old.status_code == 200
         and old.json()["results"][0]["error_code"] == "TIMER_NOT_FOUND"
@@ -461,9 +485,7 @@ async def test_full_timer_state_machine_lost_response_replay_uses_new_namespace(
     assert again.json()["results"] == [
         {**item, "status": "already_applied"} for item in first.json()["results"]
     ]
-    legacy = await production.post(
-        "/api/v2/timers/commands", headers=headers, json=body
-    )
+    legacy = await legacy_post(replica_http, "/api/v2/timers/commands", body)
     assert legacy.status_code == 200
     assert [item["error_code"] for item in legacy.json()["results"]] == [
         "COMMAND_ID_REUSED"
