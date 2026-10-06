@@ -2,7 +2,12 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from pydantic import Field, TypeAdapter, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
@@ -38,6 +43,20 @@ from src.v2.device_service import (
     to_device_response,
 )
 from src.v2.system_service import server_identity_response
+from src.v2.next_sync_contract import (
+    NextDeviceRegisterRequest,
+    NextSyncPushRequest,
+    NextSyncPushResponse,
+    NextSyncPullResponse,
+    NextSyncBootstrapResponse,
+)
+from src.v2.protocol_admission import require_sync_protocol
+from src.v2.replica_context import (
+    EPOCH_HEADER,
+    INSTANCE_HEADER,
+    PROTOCOL_HEADER,
+    ReplicaIdentity,
+)
 from src.v2.timer_service import (
     get_active_timer,
     get_timer_status,
@@ -47,6 +66,34 @@ from src.v2.timer_service import (
 
 
 router = APIRouter(prefix="/api/v2", tags=["v2-sync"])
+
+_LEGACY_PAGE_LIMIT: TypeAdapter[int] = TypeAdapter(Annotated[int, Field(ge=1, le=500)])
+
+
+def _next_contract(request_model: str | None, response_model: str) -> dict:
+    """Document guarded alternatives without a permissive response-model union."""
+    return {
+        "x-dayforge-protocol-5": {
+            "contract": "contracts/next/openapi.json",
+            "request_model": request_model,
+            "response_model": response_model,
+            "required_headers": [PROTOCOL_HEADER, INSTANCE_HEADER, EPOCH_HEADER],
+            "requires_actual_server_version": 5,
+        }
+    }
+
+
+async def _request_replica(
+    http: Request, user: User, session: AsyncSession, device_id: str | None
+) -> ReplicaIdentity | None:
+    return await require_sync_protocol(
+        session,
+        user,
+        device_id,
+        tuple(http.headers.getlist(PROTOCOL_HEADER)),
+        tuple(http.headers.getlist(INSTANCE_HEADER)),
+        tuple(http.headers.getlist(EPOCH_HEADER)),
+    )
 
 
 def _http_error(error: DomainError) -> HTTPException:
@@ -74,13 +121,28 @@ async def get_server_identity(
     return await server_identity_response(session)
 
 
-@router.post("/devices/register", response_model=DeviceResponse)
+@router.post(
+    "/devices/register",
+    response_model=DeviceResponse,
+    openapi_extra=_next_contract("NextDeviceRegisterRequest", "DeviceResponse"),
+)
 async def register_client_device(
     request: DeviceRegisterRequest,
+    http: Request,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session, scope="function"),
 ) -> DeviceResponse:
     try:
+        replica = await _request_replica(http, current_user, session, None)
+        if replica is not None:
+            # The legacy model coerces "5" / 5.0 to 5. Validate the cached ORIGINAL
+            # JSON, not its normalized DTO, before publishing a registration proof.
+            try:
+                request = NextDeviceRegisterRequest.model_validate(await http.json())
+            except ValidationError as error:
+                raise HTTPException(
+                    status_code=422, detail={"code": "INVALID_SYNC_INPUT"}
+                ) from error
         return await register_device(current_user, request, session)
     except DomainError as error:
         raise _http_error(error) from error
@@ -174,12 +236,17 @@ async def revoke_client_device(
     await revoke(session, device)
 
 
-@router.post("/sync/push", response_model=SyncPushResponse)
+@router.post(
+    "/sync/push",
+    response_model=SyncPushResponse,
+    openapi_extra=_next_contract("NextSyncPushRequest", "NextSyncPushResponse"),
+)
 async def push_sync_operations(
     request: SyncPushRequest,
+    http: Request,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session, scope="function"),
-) -> SyncPushResponse:
+) -> SyncPushResponse | JSONResponse:
     if (
         len(canonical_json(request.model_dump(mode="json")).encode("utf-8"))
         > 1024 * 1024
@@ -189,69 +256,159 @@ async def push_sync_operations(
             detail={"code": "BATCH_TOO_LARGE", "message": "Sync batch exceeds 1 MiB"},
         )
     try:
+        replica = await _request_replica(
+            http, current_user, session, str(request.device_id)
+        )
+        if replica is not None:
+            # Envelopes have the same fields; domain validation still follows
+            # exact replay inside the per-operation savepoint.
+            next_request = NextSyncPushRequest.model_validate(
+                request.model_dump(mode="json")
+            )
+            response = await process_push(
+                current_user,
+                next_request,
+                session,
+                next_protocol=True,
+                replica=replica,
+            )
+            validated = NextSyncPushResponse.model_validate(
+                response.model_dump(mode="json")
+            )
+            # Do not let the v4 serializer drop separate task-conflict fields.
+            # Validation/serialization still precede the shared final COMMIT.
+            return JSONResponse(validated.model_dump(mode="json"))
         return await process_push(current_user, request, session)
     except DomainError as error:
         raise _http_error(error) from error
 
 
-@router.get("/sync/changes", response_model=SyncPullResponse)
+@router.get(
+    "/sync/changes",
+    response_model=SyncPullResponse,
+    openapi_extra=_next_contract(None, "NextSyncPullResponse"),
+)
 async def get_sync_changes(
+    http: Request,
     device_id: UUID,
     cursor: int = Query(default=0, ge=0),
-    limit: int = Query(default=500, ge=1, le=500),
+    limit: int = Query(
+        default=500,
+        ge=1,
+        le=1000,
+        json_schema_extra={"x-dayforge-protocol-maximum": {"4": 500, "5": 1000}},
+    ),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session, scope="function"),
-) -> SyncPullResponse:
+) -> SyncPullResponse | JSONResponse:
     try:
+        replica = await _request_replica(http, current_user, session, str(device_id))
+        if replica is not None:
+            response = await pull_changes(
+                current_user, str(device_id), cursor, limit, session, next_protocol=True
+            )
+            validated = NextSyncPullResponse.model_validate(
+                response.model_dump(mode="json")
+            )
+            return JSONResponse(validated.model_dump(mode="json"))
+        try:
+            _LEGACY_PAGE_LIMIT.validate_python(http.query_params.get("limit", 500))
+        except ValidationError as error:
+            raise RequestValidationError(
+                [
+                    {**item, "loc": ("query", "limit", *item["loc"])}
+                    for item in error.errors(include_url=False)
+                ]
+            ) from error
         return await pull_changes(current_user, str(device_id), cursor, limit, session)
     except DomainError as error:
         raise _http_error(error) from error
 
 
-@router.get("/sync/bootstrap", response_model=SyncBootstrapResponse)
+@router.get(
+    "/sync/bootstrap",
+    response_model=SyncBootstrapResponse,
+    openapi_extra=_next_contract(None, "NextSyncBootstrapResponse"),
+)
 async def get_sync_bootstrap(
+    http: Request,
     device_id: UUID,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session, scope="function"),
-) -> SyncBootstrapResponse:
+) -> SyncBootstrapResponse | JSONResponse:
     try:
+        replica = await _request_replica(http, current_user, session, str(device_id))
+        if replica is not None:
+            response = await bootstrap(
+                current_user, str(device_id), session, next_protocol=True
+            )
+            validated = NextSyncBootstrapResponse.model_validate(
+                response.model_dump(mode="json")
+            )
+            return JSONResponse(validated.model_dump(mode="json"))
         return await bootstrap(current_user, str(device_id), session)
     except DomainError as error:
         raise _http_error(error) from error
 
 
-@router.post("/timers/commands", response_model=TimerCommandBatchResponse)
+@router.post(
+    "/timers/commands",
+    response_model=TimerCommandBatchResponse,
+    openapi_extra=_next_contract(
+        "TimerCommandBatchRequest", "TimerCommandBatchResponse"
+    ),
+)
 async def submit_timer_commands(
     request: TimerCommandBatchRequest,
+    http: Request,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session, scope="function"),
 ) -> TimerCommandBatchResponse:
     try:
+        replica = await _request_replica(
+            http, current_user, session, str(request.device_id)
+        )
+        if replica is not None:
+            return await process_timer_commands(
+                current_user, request, session, next_protocol=True, replica=replica
+            )
         return await process_timer_commands(current_user, request, session)
     except DomainError as error:
         raise _http_error(error) from error
 
 
-@router.get("/timers/active", response_model=ActiveTimerResponse)
+@router.get(
+    "/timers/active",
+    response_model=ActiveTimerResponse,
+    openapi_extra=_next_contract(None, "ActiveTimerResponse"),
+)
 async def read_active_timer(
+    http: Request,
     device_id: UUID,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session, scope="function"),
 ) -> ActiveTimerResponse:
     try:
+        await _request_replica(http, current_user, session, str(device_id))
         return await get_active_timer(current_user, str(device_id), session)
     except DomainError as error:
         raise _http_error(error) from error
 
 
-@router.get("/timers/{session_id}", response_model=ActiveTimerResponse)
+@router.get(
+    "/timers/{session_id}",
+    response_model=ActiveTimerResponse,
+    openapi_extra=_next_contract(None, "ActiveTimerResponse"),
+)
 async def read_timer_status(
+    http: Request,
     session_id: UUID,
     device_id: UUID,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session, scope="function"),
 ) -> ActiveTimerResponse:
     try:
+        await _request_replica(http, current_user, session, str(device_id))
         return await get_timer_status(
             current_user,
             str(device_id),
@@ -262,14 +419,20 @@ async def read_timer_status(
         raise _http_error(error) from error
 
 
-@router.post("/timers/{session_id}/heartbeat", response_model=TimerHeartbeatResponse)
+@router.post(
+    "/timers/{session_id}/heartbeat",
+    response_model=TimerHeartbeatResponse,
+    openapi_extra=_next_contract("TimerHeartbeatRequest", "TimerHeartbeatResponse"),
+)
 async def submit_timer_heartbeat(
     session_id: UUID,
     request: TimerHeartbeatRequest,
+    http: Request,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session, scope="function"),
 ) -> TimerHeartbeatResponse:
     try:
+        await _request_replica(http, current_user, session, str(request.device_id))
         return await heartbeat_timer(
             current_user,
             str(request.device_id),

@@ -3969,7 +3969,18 @@
         "summary": "Register Client Device",
         "tags": [
           "v2-sync"
-        ]
+        ],
+        "x-dayforge-protocol-5": {
+          "contract": "contracts/next/openapi.json",
+          "request_model": "NextDeviceRegisterRequest",
+          "required_headers": [
+            "X-DayForge-Protocol",
+            "X-DayForge-Server-Instance",
+            "X-DayForge-Sync-Epoch"
+          ],
+          "requires_actual_server_version": 5,
+          "response_model": "DeviceResponse"
+        }
       }
     },
     "/api/v2/devices/{device_id}": {
@@ -4164,7 +4175,17 @@
         "summary": "Get Sync Bootstrap",
         "tags": [
           "v2-sync"
-        ]
+        ],
+        "x-dayforge-protocol-5": {
+          "contract": "contracts/next/openapi.json",
+          "required_headers": [
+            "X-DayForge-Protocol",
+            "X-DayForge-Server-Instance",
+            "X-DayForge-Sync-Epoch"
+          ],
+          "requires_actual_server_version": 5,
+          "response_model": "NextSyncBootstrapResponse"
+        }
       }
     },
     "/api/v2/sync/changes": {
@@ -4198,10 +4219,14 @@
             "required": false,
             "schema": {
               "default": 500,
-              "maximum": 500,
+              "maximum": 1000,
               "minimum": 1,
               "title": "Limit",
-              "type": "integer"
+              "type": "integer",
+              "x-dayforge-protocol-maximum": {
+                "4": 500,
+                "5": 1000
+              }
             }
           }
         ],
@@ -4235,7 +4260,17 @@
         "summary": "Get Sync Changes",
         "tags": [
           "v2-sync"
-        ]
+        ],
+        "x-dayforge-protocol-5": {
+          "contract": "contracts/next/openapi.json",
+          "required_headers": [
+            "X-DayForge-Protocol",
+            "X-DayForge-Server-Instance",
+            "X-DayForge-Sync-Epoch"
+          ],
+          "requires_actual_server_version": 5,
+          "response_model": "NextSyncPullResponse"
+        }
       }
     },
     "/api/v2/sync/push": {
@@ -4281,7 +4316,18 @@
         "summary": "Push Sync Operations",
         "tags": [
           "v2-sync"
-        ]
+        ],
+        "x-dayforge-protocol-5": {
+          "contract": "contracts/next/openapi.json",
+          "request_model": "NextSyncPushRequest",
+          "required_headers": [
+            "X-DayForge-Protocol",
+            "X-DayForge-Server-Instance",
+            "X-DayForge-Sync-Epoch"
+          ],
+          "requires_actual_server_version": 5,
+          "response_model": "NextSyncPushResponse"
+        }
       }
     },
     "/api/v2/system/identity": {
@@ -4351,7 +4397,17 @@
         "summary": "Read Active Timer",
         "tags": [
           "v2-sync"
-        ]
+        ],
+        "x-dayforge-protocol-5": {
+          "contract": "contracts/next/openapi.json",
+          "required_headers": [
+            "X-DayForge-Protocol",
+            "X-DayForge-Server-Instance",
+            "X-DayForge-Sync-Epoch"
+          ],
+          "requires_actual_server_version": 5,
+          "response_model": "ActiveTimerResponse"
+        }
       }
     },
     "/api/v2/timers/commands": {
@@ -4397,7 +4453,18 @@
         "summary": "Submit Timer Commands",
         "tags": [
           "v2-sync"
-        ]
+        ],
+        "x-dayforge-protocol-5": {
+          "contract": "contracts/next/openapi.json",
+          "request_model": "TimerCommandBatchRequest",
+          "required_headers": [
+            "X-DayForge-Protocol",
+            "X-DayForge-Server-Instance",
+            "X-DayForge-Sync-Epoch"
+          ],
+          "requires_actual_server_version": 5,
+          "response_model": "TimerCommandBatchResponse"
+        }
       }
     },
     "/api/v2/timers/{session_id}": {
@@ -4455,7 +4522,17 @@
         "summary": "Read Timer Status",
         "tags": [
           "v2-sync"
-        ]
+        ],
+        "x-dayforge-protocol-5": {
+          "contract": "contracts/next/openapi.json",
+          "required_headers": [
+            "X-DayForge-Protocol",
+            "X-DayForge-Server-Instance",
+            "X-DayForge-Sync-Epoch"
+          ],
+          "requires_actual_server_version": 5,
+          "response_model": "ActiveTimerResponse"
+        }
       }
     },
     "/api/v2/timers/{session_id}/heartbeat": {
@@ -4513,7 +4590,18 @@
         "summary": "Submit Timer Heartbeat",
         "tags": [
           "v2-sync"
-        ]
+        ],
+        "x-dayforge-protocol-5": {
+          "contract": "contracts/next/openapi.json",
+          "request_model": "TimerHeartbeatRequest",
+          "required_headers": [
+            "X-DayForge-Protocol",
+            "X-DayForge-Server-Instance",
+            "X-DayForge-Sync-Epoch"
+          ],
+          "requires_actual_server_version": 5,
+          "response_model": "TimerHeartbeatResponse"
+        }
       }
     },
     "/health": {

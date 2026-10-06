@@ -1,4 +1,4 @@
-"""Generate the NOT-YET-ACTIVE v5 delta; appearance has dormant guarded handlers."""
+"""Generate the NOT-YET-ACTIVE v5 delta for guarded production handlers."""
 
 import argparse
 import json
@@ -332,7 +332,7 @@ def rendered_contract():
         "info": {
             "title": "DayForge v5 appearance and one-time delta (NOT ACTIVE)",
             "version": "5-planned",
-            "description": "Activation requires coordinated backend/Android release and an explicitly confirmed empty baseline. Authentication remains in ../openapi.json. V5 registration and every sync/timer request require a single exact protocol header plus captured canonical server-instance/epoch headers; timer bodies are unchanged. Appearance retains its existing body/query replica context. See D-014 and APPEARANCE_CONTRACT.md. This document is a contract, not a claim of enabled v5 routes.",
+            "description": "Guarded production registration/sync/timer/appearance handlers are mounted, but the default and advertised server protocol remain v4. Activation requires coordinated backend/Android release and an explicitly confirmed empty baseline. Authentication remains in ../openapi.json. V5 registration and every sync/timer request require a single exact protocol header plus captured canonical server-instance/epoch headers; timer bodies are unchanged. Appearance retains its existing body/query replica context. See D-014 and APPEARANCE_CONTRACT.md. Mounted handlers do not establish coordinated v5 activation or client readiness.",
         },
         "x-activation-state": "planned",
         "paths": paths,

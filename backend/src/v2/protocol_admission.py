@@ -1,8 +1,8 @@
-"""Read-only shared v5 gate; legacy online v4 routes do not invoke it yet.
+"""Read-only shared v5 gate and guarded production sync version selection.
 
 The caller authenticates User and passes every raw protocol header value. A
 registration marker is compatibility evidence, not a trusted client attestation.
-Every future sync/timer/material entry must use the same gate in its snapshot;
+Every v5 sync/timer/material entry uses the same gate in its snapshot;
 byte work must reauthenticate/recheck in a fresh snapshot after actual I/O.
 """
 
@@ -107,7 +107,7 @@ async def require_next_business(
     instance_headers: tuple[str, ...],
     epoch_headers: tuple[str, ...],
 ) -> tuple[ClientDevice, ReplicaIdentity]:
-    """Future sync/timer admission; every captured raw context value is mandatory.
+    """V5 sync/timer admission; every captured raw context value is mandatory.
 
     Appearance retains its existing body/query context, authenticated separately.
     This gate does not mutate last_seen or flush pending caller changes.
@@ -116,3 +116,48 @@ async def require_next_business(
         session, protocol_headers, instance_headers, epoch_headers
     )
     return await _require_next_device(session, user, device_id), expected
+
+
+async def require_sync_protocol(
+    session: AsyncSession,
+    user: User,
+    device_id: str | None,
+    protocol_headers: tuple[str, ...],
+    instance_headers: tuple[str, ...],
+    epoch_headers: tuple[str, ...],
+) -> ReplicaIdentity | None:
+    """Select an admitted version in the actual business transaction.
+
+    Only an exact v5 declaration can select next semantics. Legacy requests keep
+    their existing v4 header behavior, but cannot run against a v5/unknown server.
+    A not-yet-created legacy identity retains its historical default-v4 behavior;
+    it can never authorize v5. No discovery snapshot or caller flag grants entry.
+    """
+    if type(protocol_headers) is not tuple:
+        raise _upgrade_required()
+    if protocol_headers == ("5",):
+        if device_id is None:
+            return await require_next_replica(
+                session, protocol_headers, instance_headers, epoch_headers
+            )
+        _, replica = await require_next_business(
+            session,
+            user,
+            device_id,
+            protocol_headers,
+            instance_headers,
+            epoch_headers,
+        )
+        return replica
+    identity = (
+        await session.execute(
+            select(ServerInstance)
+            .where(col(ServerInstance.id) == 1)
+            .execution_options(populate_existing=True, autoflush=False)
+        )
+    ).scalar_one_or_none()
+    if identity is not None and (
+        type(identity.protocol_version) is not int or identity.protocol_version != 4
+    ):
+        raise _upgrade_required()
+    return None
