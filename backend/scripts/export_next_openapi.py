@@ -19,6 +19,7 @@ from src.v2.asset_api_contract import (  # noqa: E402
 )
 from src.v2.next_sync_contract import (  # noqa: E402
     NextSyncPushRequest,
+    NextDeviceRegisterRequest,
     NextSyncPushResponse,
     NextSyncPullResponse,
     NextSyncBootstrapResponse,
@@ -26,6 +27,15 @@ from src.v2.next_sync_contract import (  # noqa: E402
     NextMetricPayload,
     NextActivityEventPayload,
 )
+from src.v2.schemas import (  # noqa: E402
+    DeviceResponse,
+    ActiveTimerResponse,
+    TimerCommandBatchRequest,
+    TimerCommandBatchResponse,
+    TimerHeartbeatRequest,
+    TimerHeartbeatResponse,
+)
+from src.v2.replica_context import INSTANCE_HEADER, EPOCH_HEADER  # noqa: E402
 
 OUTPUT = ROOT / "contracts/next/openapi.json"
 MODELS = (
@@ -36,6 +46,13 @@ MODELS = (
     AppearanceQuota,
     AppearanceCatalogPage,
     NextSyncPushRequest,
+    NextDeviceRegisterRequest,
+    DeviceResponse,
+    ActiveTimerResponse,
+    TimerCommandBatchRequest,
+    TimerCommandBatchResponse,
+    TimerHeartbeatRequest,
+    TimerHeartbeatResponse,
     NextSyncPushResponse,
     NextSyncPullResponse,
     NextSyncBootstrapResponse,
@@ -58,7 +75,27 @@ def parameter(name, where="query", *, required=True, schema=None):
     }
 
 
-def operation(summary, response, *, request=None, parameters=(), binary=False):
+def operation(
+    summary, response, *, request=None, parameters=(), binary=False, replica=False
+):
+    replica_parameters = (
+        [
+            parameter(
+                name,
+                "header",
+                schema={
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "minLength": 36,
+                    "maxLength": 36,
+                },
+            )
+            for name in (INSTANCE_HEADER, EPOCH_HEADER)
+        ]
+        if replica
+        else []
+    )
     result = {
         "summary": summary,
         "security": [{"BearerAuth": []}, {"ApiTokenAuth": []}],
@@ -66,6 +103,7 @@ def operation(summary, response, *, request=None, parameters=(), binary=False):
             parameter(
                 "X-DayForge-Protocol", "header", schema={"type": "integer", "enum": [5]}
             ),
+            *replica_parameters,
             *parameters,
         ],
         "responses": {
@@ -129,11 +167,53 @@ def rendered_contract():
     ]
     integer = {"type": "integer", "minimum": 0, "maximum": 9223372036854775807}
     paths = {
+        "/api/v2/devices/register": {
+            "post": operation(
+                "Explicit v5 registration bound to the captured replica; no existing device proof is required",
+                DeviceResponse,
+                request=NextDeviceRegisterRequest,
+                replica=True,
+            )
+        },
+        "/api/v2/timers/commands": {
+            "post": operation(
+                "Full timer commands; replay namespace includes protocol and captured replica",
+                TimerCommandBatchResponse,
+                request=TimerCommandBatchRequest,
+                replica=True,
+            )
+        },
+        "/api/v2/timers/active": {
+            "get": operation(
+                "Read the active timer from the captured replica",
+                ActiveTimerResponse,
+                parameters=[parameter("device_id")],
+                replica=True,
+            )
+        },
+        "/api/v2/timers/{session_id}": {
+            "get": operation(
+                "Read owned timer status from the captured replica",
+                ActiveTimerResponse,
+                parameters=[parameter("session_id", "path"), parameter("device_id")],
+                replica=True,
+            )
+        },
+        "/api/v2/timers/{session_id}/heartbeat": {
+            "post": operation(
+                "Heartbeat with unchanged control-generation rules and captured replica",
+                TimerHeartbeatResponse,
+                request=TimerHeartbeatRequest,
+                parameters=[parameter("session_id", "path")],
+                replica=True,
+            )
+        },
         "/api/v2/sync/push": {
             "post": operation(
                 "v5 sync push; payload type is selected by entity_type, not client metadata",
                 NextSyncPushResponse,
                 request=NextSyncPushRequest,
+                replica=True,
             )
         },
         "/api/v2/sync/bootstrap": {
@@ -141,6 +221,7 @@ def rendered_contract():
                 "One snapshot of facts, task checkpoints and cursor",
                 NextSyncBootstrapResponse,
                 parameters=[parameter("device_id")],
+                replica=True,
             )
         },
         "/api/v2/sync/changes": {
@@ -156,6 +237,7 @@ def rendered_contract():
                         schema={"type": "integer", "minimum": 1, "maximum": 1000},
                     ),
                 ],
+                replica=True,
             )
         },
         "/api/v2/appearance/assets/{asset_id}": {
@@ -250,7 +332,7 @@ def rendered_contract():
         "info": {
             "title": "DayForge v5 appearance and one-time delta (NOT ACTIVE)",
             "version": "5-planned",
-            "description": "Activation requires coordinated backend/Android release and an explicitly confirmed empty baseline. Unchanged auth/device/timer payloads remain in ../openapi.json; v5 registration and every sync/timer/appearance request must satisfy the protocol gate described in APPEARANCE_CONTRACT.md. This document is a contract, not deployed routes.",
+            "description": "Activation requires coordinated backend/Android release and an explicitly confirmed empty baseline. Authentication remains in ../openapi.json. V5 registration and every sync/timer request require a single exact protocol header plus captured canonical server-instance/epoch headers; timer bodies are unchanged. Appearance retains its existing body/query replica context. See D-014 and APPEARANCE_CONTRACT.md. This document is a contract, not a claim of enabled v5 routes.",
         },
         "x-activation-state": "planned",
         "paths": paths,

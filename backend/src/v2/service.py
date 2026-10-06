@@ -12,6 +12,7 @@ from sqlmodel import col, select
 from src.auth.models import User
 from src.v2.entity_snapshots import current_entity_snapshot
 from src.v2.encoding import canonical_json, operation_hash, parse_json
+from src.v2.replica_context import ReplicaIdentity, replay_replica
 from src.v2.errors import DomainError
 from src.v2.invariants import require_internal
 from src.v2.merge import MERGE_PATHS, merge_structural_payload
@@ -218,6 +219,7 @@ async def process_push(
     session: AsyncSession,
     *,
     next_protocol: Literal[False] = False,
+    replica: None = None,
 ) -> SyncPushResponse: ...
 
 
@@ -228,6 +230,7 @@ async def process_push(
     session: AsyncSession,
     *,
     next_protocol: Literal[True],
+    replica: ReplicaIdentity,
 ) -> NextSyncPushResponse: ...
 
 
@@ -237,6 +240,7 @@ async def process_push(
     session: AsyncSession,
     *,
     next_protocol: bool = False,
+    replica: ReplicaIdentity | None = None,
 ) -> SyncPushResponse | NextSyncPushResponse:
     """Share transaction/replay orchestration without activating v5 HTTP.
 
@@ -245,13 +249,14 @@ async def process_push(
     step. No current route takes this switch from client input or enables it.
     """
     user_id = require_internal(user.id, "User.id")
+    replay_scope = await replay_replica(session, next_protocol, replica)
     device = await require_device(user_id, str(request.device_id), session)
     device_capabilities, _ = await capabilities_for_device(session, device)
     can_write_structure = STRUCTURE_CAPABILITY in device_capabilities
     results: list[SyncOperationResult] = []
 
     for operation in request.operations:
-        request_hash = operation_hash(operation)
+        request_hash = operation_hash(operation, replica=replay_scope)
         previous_result = await session.execute(
             select(SyncOperation).where(
                 col(SyncOperation.device_id) == device.id,

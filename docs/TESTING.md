@@ -372,6 +372,12 @@ HTTP 提交边界测试必须使用生产 `get_session` 依赖和启用外键的
 真实单 worker TCP 注册返回后
 独立 SQLite 连接读取提交证明；物理/逻辑恢复保留 4/5/未知及账户限定身份，旧冻结归档仍按其原 head 恢复。
 
+`test_v5_replica_replay.py` 使用共享 `next/replica.json`、真实迁移 SQLite、生产认证/事务与
+测试桥，核对副本头缺失/重复/非规范、发现后 epoch 改变、旧协议/恢复前回执拒绝、唯一插入
+冲突重查、同副本精确重放、最终 COMMIT 失败回滚及完整 start/pause/resume/stop 不重复事实。
+指纹独立按规范 JSON 构造对照，保留 v4 固定摘要；准入/拒绝不得 flush 调用方未提交数据。
+原事项重放先于载荷校验、全业务矩阵继续执行，不把这些桥测试当作正式 v5 分派或真机验收。
+
 统一验证入口通过 pytest 插件和 `backend/warning-budget.json` 登记已有 warning 的完整类别、
 规范化消息和最大数量。
 未知 warning 或数量增长会令测试失败；减少不会阻断单个增量测试，但完整测试确认减少后，

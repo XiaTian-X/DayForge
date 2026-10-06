@@ -1,6 +1,32 @@
 {
   "components": {
     "schemas": {
+      "ActiveTimerResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "server_time": {
+            "format": "date-time",
+            "title": "Server Time",
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimerSessionResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "server_time"
+        ],
+        "title": "ActiveTimerResponse",
+        "type": "object"
+      },
       "AppearanceCatalogPage": {
         "additionalProperties": false,
         "properties": {
@@ -296,6 +322,88 @@
           }
         },
         "title": "DailyRule",
+        "type": "object"
+      },
+      "DeviceResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "app_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "App Version"
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Capabilities",
+            "type": "array"
+          },
+          "capability_revision": {
+            "default": 1,
+            "title": "Capability Revision",
+            "type": "integer"
+          },
+          "device_class": {
+            "title": "Device Class",
+            "type": "string"
+          },
+          "device_id": {
+            "format": "uuid",
+            "title": "Device Id",
+            "type": "string"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Name"
+          },
+          "installation_id": {
+            "title": "Installation Id",
+            "type": "string"
+          },
+          "is_primary_editor": {
+            "default": false,
+            "title": "Is Primary Editor",
+            "type": "boolean"
+          },
+          "last_seen_at": {
+            "format": "date-time",
+            "title": "Last Seen At",
+            "type": "string"
+          },
+          "platform": {
+            "title": "Platform",
+            "type": "string"
+          },
+          "structural_edit_enabled": {
+            "default": false,
+            "title": "Structural Edit Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "device_id",
+          "installation_id",
+          "platform",
+          "device_class",
+          "last_seen_at"
+        ],
+        "title": "DeviceResponse",
         "type": "object"
       },
       "GoalPayload": {
@@ -1032,6 +1140,76 @@
           "completion_policy"
         ],
         "title": "NextActivityPayload",
+        "type": "object"
+      },
+      "NextDeviceRegisterRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "app_version": {
+            "anyOf": [
+              {
+                "maxLength": 50,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "App Version"
+          },
+          "device_class": {
+            "default": "interactive",
+            "enum": [
+              "interactive",
+              "hardware",
+              "automation"
+            ],
+            "title": "Device Class",
+            "type": "string"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Name"
+          },
+          "installation_id": {
+            "maxLength": 100,
+            "minLength": 8,
+            "title": "Installation Id",
+            "type": "string"
+          },
+          "platform": {
+            "enum": [
+              "android",
+              "ios",
+              "desktop",
+              "hardware",
+              "service"
+            ],
+            "title": "Platform",
+            "type": "string"
+          },
+          "protocol_version": {
+            "const": 5,
+            "title": "Protocol Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "installation_id",
+          "protocol_version",
+          "platform"
+        ],
+        "title": "NextDeviceRegisterRequest",
         "type": "object"
       },
       "NextMetricPayload": {
@@ -1903,6 +2081,401 @@
         "title": "SyncOperationRequest",
         "type": "object"
       },
+      "TimerCommandBatchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "commands": {
+            "items": {
+              "$ref": "#/components/schemas/TimerCommandRequest"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Commands",
+            "type": "array"
+          },
+          "device_id": {
+            "format": "uuid",
+            "title": "Device Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_id",
+          "commands"
+        ],
+        "title": "TimerCommandBatchRequest",
+        "type": "object"
+      },
+      "TimerCommandBatchResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/TimerCommandResult"
+            },
+            "title": "Results",
+            "type": "array"
+          },
+          "server_time": {
+            "format": "date-time",
+            "title": "Server Time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "results",
+          "server_time"
+        ],
+        "title": "TimerCommandBatchResponse",
+        "type": "object"
+      },
+      "TimerCommandRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "active_elapsed_ms": {
+            "anyOf": [
+              {
+                "maximum": 86400000,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Active Elapsed Ms"
+          },
+          "activity_uuid": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Activity Uuid"
+          },
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "command_type": {
+            "enum": [
+              "start",
+              "pause",
+              "resume",
+              "stop",
+              "cancel",
+              "takeover"
+            ],
+            "title": "Command Type",
+            "type": "string"
+          },
+          "expected_control_generation": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Expected Control Generation",
+            "type": "integer"
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Revision"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "sequence": {
+            "minimum": 1,
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Timezone"
+          }
+        },
+        "required": [
+          "command_id",
+          "session_id",
+          "sequence",
+          "command_type",
+          "occurred_at"
+        ],
+        "title": "TimerCommandRequest",
+        "type": "object"
+      },
+      "TimerCommandResult": {
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error Code"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Message"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimerSessionResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "applied",
+              "already_applied",
+              "conflict",
+              "rejected"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command_id",
+          "session_id",
+          "status"
+        ],
+        "title": "TimerCommandResult",
+        "type": "object"
+      },
+      "TimerHeartbeatRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "control_generation": {
+            "minimum": 1,
+            "title": "Control Generation",
+            "type": "integer"
+          },
+          "device_id": {
+            "format": "uuid",
+            "title": "Device Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_id",
+          "control_generation"
+        ],
+        "title": "TimerHeartbeatRequest",
+        "type": "object"
+      },
+      "TimerHeartbeatResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "server_time": {
+            "format": "date-time",
+            "title": "Server Time",
+            "type": "string"
+          },
+          "session": {
+            "$ref": "#/components/schemas/TimerSessionResponse"
+          }
+        },
+        "required": [
+          "accepted",
+          "session",
+          "server_time"
+        ],
+        "title": "TimerHeartbeatResponse",
+        "type": "object"
+      },
+      "TimerSessionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "active_elapsed_ms": {
+            "title": "Active Elapsed Ms",
+            "type": "integer"
+          },
+          "activity_uuid": {
+            "format": "uuid",
+            "title": "Activity Uuid",
+            "type": "string"
+          },
+          "completed_event_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Completed Event Id"
+          },
+          "control_generation": {
+            "title": "Control Generation",
+            "type": "integer"
+          },
+          "controller_device_id": {
+            "format": "uuid",
+            "title": "Controller Device Id",
+            "type": "string"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ended At"
+          },
+          "is_countdown": {
+            "title": "Is Countdown",
+            "type": "boolean"
+          },
+          "last_heartbeat_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Last Heartbeat At"
+          },
+          "max_duration_seconds": {
+            "title": "Max Duration Seconds",
+            "type": "integer"
+          },
+          "next_command_sequence": {
+            "title": "Next Command Sequence",
+            "type": "integer"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "running",
+              "paused",
+              "completed",
+              "cancelled"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "state_changed_at": {
+            "format": "date-time",
+            "title": "State Changed At",
+            "type": "string"
+          },
+          "target_seconds": {
+            "title": "Target Seconds",
+            "type": "integer"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "activity_uuid",
+          "state",
+          "controller_device_id",
+          "control_generation",
+          "revision",
+          "next_command_sequence",
+          "started_at",
+          "state_changed_at",
+          "timezone",
+          "is_countdown",
+          "target_seconds",
+          "max_duration_seconds",
+          "active_elapsed_ms"
+        ],
+        "title": "TimerSessionResponse",
+        "type": "object"
+      },
       "WeeklyRule": {
         "additionalProperties": false,
         "properties": {
@@ -1968,7 +2541,7 @@
     }
   },
   "info": {
-    "description": "Activation requires coordinated backend/Android release and an explicitly confirmed empty baseline. Unchanged auth/device/timer payloads remain in ../openapi.json; v5 registration and every sync/timer/appearance request must satisfy the protocol gate described in APPEARANCE_CONTRACT.md. This document is a contract, not deployed routes.",
+    "description": "Activation requires coordinated backend/Android release and an explicitly confirmed empty baseline. Authentication remains in ../openapi.json. V5 registration and every sync/timer request require a single exact protocol header plus captured canonical server-instance/epoch headers; timer bodies are unchanged. Appearance retains its existing body/query replica context. See D-014 and APPEARANCE_CONTRACT.md. This document is a contract, not a claim of enabled v5 routes.",
     "title": "DayForge v5 appearance and one-time delta (NOT ACTIVE)",
     "version": "5-planned"
   },
@@ -2820,6 +3393,102 @@
         "summary": "Account reservations include pending uploads; lowering limits does not erase existing metadata"
       }
     },
+    "/api/v2/devices/register": {
+      "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Server-Instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Sync-Epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NextDeviceRegisterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceResponse"
+                }
+              }
+            },
+            "description": "Success after durable acknowledgement; immutable retries return the same identity"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "Explicit v5 registration bound to the captured replica; no existing device proof is required"
+      }
+    },
     "/api/v2/sync/bootstrap": {
       "get": {
         "parameters": [
@@ -2832,6 +3501,30 @@
                 5
               ],
               "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Server-Instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Sync-Epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
             }
           },
           {
@@ -2903,6 +3596,30 @@
                 5
               ],
               "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Server-Instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Sync-Epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
             }
           },
           {
@@ -2995,6 +3712,30 @@
               ],
               "type": "integer"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Server-Instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Sync-Epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -3052,6 +3793,406 @@
           }
         ],
         "summary": "v5 sync push; payload type is selected by entity_type, not client metadata"
+      }
+    },
+    "/api/v2/timers/active": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Server-Instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Sync-Epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActiveTimerResponse"
+                }
+              }
+            },
+            "description": "Success after durable acknowledgement; immutable retries return the same identity"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "Read the active timer from the captured replica"
+      }
+    },
+    "/api/v2/timers/commands": {
+      "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Server-Instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Sync-Epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TimerCommandBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimerCommandBatchResponse"
+                }
+              }
+            },
+            "description": "Success after durable acknowledgement; immutable retries return the same identity"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "Full timer commands; replay namespace includes protocol and captured replica"
+      }
+    },
+    "/api/v2/timers/{session_id}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Server-Instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Sync-Epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActiveTimerResponse"
+                }
+              }
+            },
+            "description": "Success after durable acknowledgement; immutable retries return the same identity"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "Read owned timer status from the captured replica"
+      }
+    },
+    "/api/v2/timers/{session_id}/heartbeat": {
+      "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Server-Instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Sync-Epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TimerHeartbeatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimerHeartbeatResponse"
+                }
+              }
+            },
+            "description": "Success after durable acknowledgement; immutable retries return the same identity"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "Heartbeat with unchanged control-generation rules and captured replica"
       }
     }
   },

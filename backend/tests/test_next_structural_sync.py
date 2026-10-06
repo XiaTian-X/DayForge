@@ -21,6 +21,7 @@ from src.v2.next_sync_contract import NextSyncPushRequest
 from src.v2.one_time_storage import load_one_time_activity
 from src.v2.read_service import bootstrap, pull_changes
 from src.v2.service import process_push
+from src.v2.replica_context import ReplicaIdentity
 from tests.test_asset_declarations import ASSET, asset, setup, write_asset
 from tests.test_http_commit_boundary import database_state
 from tests.test_object_appearance import appearance
@@ -95,7 +96,11 @@ async def submit(factory, context, operations, owner=1):
         user = await session.get(User, owner)
         assert user is not None
         response = await process_push(
-            user, request(context, operations), session, next_protocol=True
+            user,
+            request(context, operations),
+            session,
+            next_protocol=True,
+            replica=ReplicaIdentity(context.server_instance_id, context.sync_epoch),
         )
         return response.model_dump(mode="json")["results"]
 
