@@ -5,6 +5,7 @@ import com.dayforge.data.local.entity.*
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.model.isContractUuid
+import com.dayforge.domain.model.contractLongOrNull
 import java.math.BigDecimal
 import java.time.Duration
 import java.time.Instant
@@ -176,7 +177,7 @@ internal object NextCommonFactMapper {
         for (key in listOf("started_at", "ended_at")) if (body.getValue(key) != JsonNull) body.instant(key)
     }
     private fun JsonObject.text(key: String): String = getValue(key).let { require(it is JsonPrimitive && it.isString); it.content }
-    private fun JsonObject.integer(key: String): Long = getValue(key).let { require(it is JsonPrimitive && !it.isString); requireNotNull(it.longOrNull) }
+    private fun JsonObject.integer(key: String): Long = requireNotNull(contractLongOrNull(getValue(key)))
     private fun JsonObject.boolean(key: String): Boolean = getValue(key).let { require(it is JsonPrimitive && !it.isString); requireNotNull(it.booleanOrNull) }
     private fun JsonObject.decimal(key: String): BigDecimal = getValue(key).let { require(it is JsonPrimitive); requireNotNull(it.content.toBigDecimalOrNull()) }
     private fun BigDecimal.exactDouble(): Double = toDouble().also { require(it.isFinite() && BigDecimal.valueOf(it).compareTo(this) == 0) }

@@ -310,6 +310,19 @@ class IconPackArchiveTest {
             manifest().replace("\"assets\":", "\"unknown\":null,\"assets\":"))) rejected(zip(entries(bad)))
     }
 
+    @Test fun nestedIntegerTokensCannotTurnCoercedMetadataIntoAValidNativePack() = runBlocking {
+        val source = manifest()
+        assertArrayEquals(svg, read(zip(entries(source))).readBlob(hash(svg)))
+        for ((original, coerced) in listOf(
+            "\"revision\":1" to "\"revision\":1e0",
+            "\"byte_length\":${svg.size}" to "\"byte_length\":${svg.size}e0",
+            "\"width\":1" to "\"width\":1e0", "\"height\":1" to "\"height\":1e0")) {
+            assertTrue(source.contains(original))
+            rejected(zip(entries(source.replace(original, coerced))), "PACK_MANIFEST_JSON")
+        }
+        assertArrayEquals(svg, read(zip(entries(source))).readBlob(hash(svg)))
+    }
+
     @Test fun manifestByteAndDepthLimitsAreInclusiveBeforeModelValidation() {
         val text = manifest()
         val exact = text.toByteArray() + ByteArray(ICON_MANIFEST_LIMIT - text.toByteArray().size) { 32 }

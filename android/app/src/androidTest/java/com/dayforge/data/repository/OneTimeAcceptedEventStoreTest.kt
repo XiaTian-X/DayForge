@@ -114,6 +114,31 @@ class OneTimeAcceptedEventStoreTest {
     private suspend fun rejected(block: suspend () -> Unit) { assertNotNull(runCatching { block() }.exceptionOrNull()) }
     private suspend fun queued() = db.syncOutboxDao().getActivityIntents(habit.uuid)
 
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    @Test fun coercedServerRevisionCannotAcknowledgeOnceFactsOrConsumeFrozenWork() = runBlocking {
+        val command = append()
+        val request = sync().prepare(habit.uuid)!!
+        val before = local().read(habit.uuid)
+        val original = queued()
+        val body = entity(command)
+        assertEquals(1L, OneTimeServerFact(body, 1).revision)
+        assertTrue(body.toString().contains("\"revision\":1"))
+        for (token in listOf("1e0", "1.0", "\"1\"", "true", "null", "9223372036854775808")) {
+            val changed = Json.parseToJsonElement(body.toString().replace("\"revision\":1", "\"revision\":$token")).jsonObject
+            assertThrows(IllegalArgumentException::class.java) { OneTimeServerFact(changed, 1) }
+            rejected { sync().acknowledge(request, result(command, changed)) }
+            assertEquals(original, queued()); assertEquals(before, local().read(habit.uuid))
+            assertNull(db.syncOutboxDao().getState("activity_event", command.pending.intent.eventUuid))
+        }
+        for (revision in listOf(9_007_199_254_740_993L, Long.MAX_VALUE)) {
+            assertEquals(revision, OneTimeServerFact(body.changed("revision", JsonUnquotedLiteral(revision.toString())), revision).revision)
+        }
+        rule.reopen()
+        assertEquals(original, queued()); assertEquals(before, local().read(habit.uuid))
+        assertEquals(1, sync().acknowledge(request, result(command)).confirmed.version)
+        assertTrue(queued().isEmpty())
+    }
+
     @Test fun completeUndoCompleteAcknowledgementConsumesOnlyCausalHeadAndSurvivesRestart() = runBlocking {
         val commands = List(3) { append() }
         val original = queued()

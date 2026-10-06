@@ -54,6 +54,93 @@ class NextStructureMapperTest {
     }
     private fun reject(body: JsonObject) = assertTrue(runCatching { NextStructureMapper.readPlan(body, uuid, 7) }.isFailure)
 
+    private fun replace(root: JsonElement, path: List<String>, value: JsonElement): JsonElement {
+        if (path.isEmpty()) return value
+        return when (root) {
+            is JsonObject -> JsonObject(root + (path.first() to replace(root.getValue(path.first()), path.drop(1), value)))
+            is JsonArray -> JsonArray(root.mapIndexed { index, child ->
+                if (index == path.first().toInt()) replace(child, path.drop(1), value) else child
+            })
+            else -> error("Invalid fixture path")
+        }
+    }
+
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    @Test fun originalIntegerTypesRemainRequiredInsideOpaqueStructurePayloads() {
+        val weekly = snapshot(recurring(rule = recurrence("weekly", ",\"interval\":1,\"start_date\":null,\"weekdays\":[1,3,7]")))
+        val monthly = snapshot(recurring(rule = recurrence("monthly", ",\"interval\":1,\"start_date\":null,\"day_of_month\":31")))
+        val interval = snapshot(recurring(rule = recurrence("interval", ",\"every_days\":8,\"start_date\":\"2026-01-15\"")))
+        val goal = snapshot(JsonObject(task() + mapOf("node_kind" to JsonPrimitive("goal"), "activity" to JsonNull,
+            "appearance" to Json.parseToJsonElement("""{"icon":{"kind":"role","role":"goal.custom"},"accent_color":"#123456","icon_tint":"theme"}"""),
+            "goal" to Json.parseToJsonElement("""{"start_date":null,"due_date":null,"target_cycles":9,
+                "failure_policy":{"schema_version":1,"type":"strict"},"evaluation_policy":{"schema_version":1,"type":"manual"},"manual_result":null}"""))))
+        val cases = listOf(
+            weekly to listOf(listOf("revision"), listOf("sort_order"), listOf("activity", "target_cycles"),
+                listOf("activity", "failure_policy", "schema_version"), listOf("activity", "recurrence_rule", "schema_version"),
+                listOf("activity", "recurrence_rule", "interval"), listOf("activity", "recurrence_rule", "weekdays", "0")),
+            monthly to listOf(listOf("activity", "recurrence_rule", "day_of_month")),
+            interval to listOf(listOf("activity", "recurrence_rule", "every_days")),
+            goal to listOf(listOf("goal", "target_cycles"), listOf("goal", "failure_policy", "schema_version"),
+                listOf("goal", "evaluation_policy", "schema_version")))
+        for ((source, paths) in cases) {
+            assertNotNull(NextStructureMapper.readPlan(source, uuid, 7))
+            for (path in paths) {
+                val original = path.fold(source as JsonElement) { value, key ->
+                    if (value is JsonArray) value[key.toInt()] else value.jsonObject.getValue(key)
+                }.jsonPrimitive.content
+                for (token in listOf(JsonUnquotedLiteral("${original}e0"), JsonUnquotedLiteral("$original.0"),
+                    JsonPrimitive(original), JsonPrimitive(true), JsonUnquotedLiteral("9223372036854775808"))) {
+                    val raw = Json.parseToJsonElement(replace(source, path, token).toString()).jsonObject
+                    assertThrows("$path:$token", IllegalArgumentException::class.java) { NextStructureMapper.readPlan(raw, uuid, 7) }
+                }
+                val without = Json.parseToJsonElement(replace(source, path, JsonNull).toString()).jsonObject
+                if (path.last() == "target_cycles") assertNull(NextStructureMapper.readPlan(without, uuid, 7).targetCycles)
+                else assertThrows("$path:null", IllegalArgumentException::class.java) { NextStructureMapper.readPlan(without, uuid, 7) }
+            }
+        }
+        val metric = snapshot(metric("sum"))
+        assertNotNull(NextStructureMapper.readMetric(metric, uuid, 7))
+        for (token in listOf(JsonUnquotedLiteral("3e0"), JsonUnquotedLiteral("3.0"), JsonPrimitive("3"), JsonPrimitive(true))) {
+            assertThrows(IllegalArgumentException::class.java) {
+                NextStructureMapper.readMetric(Json.parseToJsonElement(replace(metric, listOf("decimal_places"), token).toString()).jsonObject, uuid, 7)
+            }
+        }
+    }
+
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    @Test fun exactLongSortOrdersAndLegitimateDecimalExponentsKeepTheirExistingMeaning() {
+        for (order in listOf(Long.MIN_VALUE, -9_007_199_254_740_993L, 0L, 9_007_199_254_740_993L, Long.MAX_VALUE)) {
+            val body = JsonObject(recurring() + ("sort_order" to JsonUnquotedLiteral(order.toString())))
+            val record = NextStructureMapper.readPlan(snapshot(body), uuid, 7)
+            assertEquals(order, record.planMetadata!!.sortOrder)
+            assertEquals(JsonPrimitive(order), NextStructureMapper.writePlan(record)["sort_order"])
+        }
+        val count = NextStructureMapper.readPlan(snapshot(activity(recurring("count"), "target_value" to JsonUnquotedLiteral("3e0"))), uuid, 7)
+        assertEquals(3, count.targetValue)
+        val body = JsonObject(metric("average") + mapOf("target_value" to JsonUnquotedLiteral("1.0125e1"),
+            "target_value_upper" to JsonUnquotedLiteral("2.05e1")))
+        assertEquals(NextStructureMapper.readMetric(snapshot(metric("average")), uuid, 7), NextStructureMapper.readMetric(snapshot(body), uuid, 7))
+    }
+
+    @Test fun storedPlanningSortOrderCannotCoerceTypeOrLoseLongPrecision() {
+        val record = NextStructureMapper.readPlan(snapshot(recurring()), uuid, 7)
+        val codec = HabitTypeConverter()
+        for (order in listOf(Long.MIN_VALUE, 9_007_199_254_740_993L, Long.MAX_VALUE)) {
+            val metadata = record.planMetadata!!.copy(sortOrder = order)
+            val encoded = codec.fromPlanMetadata(metadata)!!
+            assertTrue(encoded.contains("\"sortOrder\":$order"))
+            assertEquals(metadata, codec.toPlanMetadata(encoded))
+        }
+        val encoded = codec.fromPlanMetadata(record.planMetadata)!!
+        assertTrue(encoded.contains("\"sortOrder\":37"))
+        for (token in listOf("37e0", "37.0", "\"37\"", "true", "null", "9223372036854775808")) {
+            assertThrows(kotlinx.serialization.SerializationException::class.java) {
+                codec.toPlanMetadata(encoded.replace("\"sortOrder\":37", "\"sortOrder\":$token"))
+            }
+        }
+        assertEquals(record.planMetadata, codec.toPlanMetadata(encoded))
+    }
+
     @Test fun onceDueDateRoleAndCapturedTimezoneRoundTripWithoutInferringLegacyTaskFields() {
         val body = activity(task(), "recurrence_rule" to recurrence("once", ",\"due_date\":\"2028-02-29\""))
         val record = NextStructureMapper.readPlan(snapshot(body), uuid, 7)

@@ -4,6 +4,7 @@ import com.dayforge.data.api.dto.SyncV2Change
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.entity.*
 import com.dayforge.domain.model.isContractUuid
+import com.dayforge.domain.model.contractLongOrNull
 import java.time.Instant
 import kotlinx.serialization.json.*
 
@@ -40,7 +41,7 @@ internal class NextCommonFactStore(private val database: HabitDatabase) {
         val oldEvents = outbox.getStatesForType("activity_event").associateBy { it.entityUuid }
         val events = oldEvents.filterValues { !it.deleted }.mapValues { (id, state) -> body(state).also {
             require(state.revision > 0 && it["public_id"] == JsonPrimitive(id) &&
-                it["revision"]?.jsonPrimitive?.longOrNull == state.revision && isContractUuid(it.text("activity_uuid")))
+                contractLongOrNull(it["revision"]) == state.revision && isContractUuid(it.text("activity_uuid")))
             require(it.text("event_type") in setOf("check_in", "count_delta", "count_snapshot", "duration_session", "revert"))
             if (it.text("event_type") == "revert") require(isContractUuid(it.text("reverts_event_uuid")))
         } }.toMutableMap()

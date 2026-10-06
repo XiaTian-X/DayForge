@@ -3,6 +3,7 @@ package com.dayforge.data.repository
 import com.dayforge.data.api.dto.SyncV2Operation
 import com.dayforge.domain.model.OneTimeEventProof
 import com.dayforge.domain.model.isContractUuid
+import com.dayforge.domain.model.contractLongOrNull
 import java.time.Instant
 import java.time.ZoneId
 import kotlinx.serialization.json.*
@@ -17,8 +18,7 @@ internal class OneTimeServerFact(val payload: JsonObject, val revision: Long) {
     val sourceDeviceId: String
 
     init {
-        require(revision > 0 && payload["revision"] is JsonPrimitive &&
-            !payload.getValue("revision").jsonPrimitive.isString && payload.getValue("revision").jsonPrimitive.longOrNull == revision)
+        require(revision > 0 && contractLongOrNull(payload["revision"]) == revision)
         require(payload.containsKey("deleted_at") && payload["deleted_at"] == JsonNull)
         val keys = listOf("public_id", "activity_uuid", "event_type", "reverts_event_uuid", "one_time", "one_time_state_after")
         proof = Json.decodeFromJsonElement<OneTimeEventProof>(JsonObject(keys.associateWith { payload.getValue(it) }))
