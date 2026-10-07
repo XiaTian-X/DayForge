@@ -23,6 +23,7 @@ internal class NextCommonFactStore(private val database: HabitDatabase) {
 
     suspend fun restoreInTransaction(changes: List<SyncV2Change>, deviceId: String,
         acceptedQueueId: Long? = null, acceptedOperation: SyncV2Operation? = null,
+        acceptedTimerCompletion: (suspend (SyncV2Change) -> String?)? = null,
         provenParentDeletion: (suspend (String, String) -> Boolean)? = null) {
         check(database.inTransaction())
         val sql = database.openHelper.writableDatabase
@@ -74,6 +75,7 @@ internal class NextCommonFactStore(private val database: HabitDatabase) {
         val writes = mutableListOf<suspend () -> Unit>()
         val shadows = mutableListOf<SyncEntityStateEntity>()
         val deletes = mutableListOf<suspend () -> Unit>()
+        val timerProofs = mutableListOf<Pair<SyncV2Change, String>>()
 
         for (change in incoming) {
             val payload = change.payload
@@ -156,8 +158,16 @@ internal class NextCommonFactStore(private val database: HabitDatabase) {
                             require(completion == null)
                             val mapped = NextCommonFactMapper.duration(change, habit, timer)
                             if (timerCommands.any { it.sessionUuid == id } && !known) fail(NextFactMergeException.Reason.LOCAL_TIMER_PENDING)
-                            if (timer != null && (timer.endTime == null || timer.copy(createdAt = mapped.session.createdAt, updatedAt = mapped.session.updatedAt) != mapped.session)) fail(NextFactMergeException.Reason.LOCAL_TIMER_PENDING)
-                            if (timer != null && old == null && local.isEmpty()) fail(NextFactMergeException.Reason.INVALID_LOCAL_STATE)
+                            if (timer?.endTime == null && timer != null) fail(NextFactMergeException.Reason.LOCAL_TIMER_PENDING)
+                            val mismatched = timer != null && timer.copy(createdAt = mapped.session.createdAt, updatedAt = mapped.session.updatedAt) != mapped.session
+                            if (timer != null && (mismatched ||
+                                old == null && local.isEmpty())) {
+                                val proof = acceptedTimerCompletion?.invoke(change)
+                                    ?: fail(if (mismatched) NextFactMergeException.Reason.LOCAL_TIMER_PENDING else NextFactMergeException.Reason.INVALID_LOCAL_STATE)
+                                require(timer.startTime == mapped.session.startTime && timer.endTime == mapped.session.endTime &&
+                                    timer.timerTimezone == mapped.session.timerTimezone)
+                                timerProofs += change to proof
+                            }
                             if (id !in reverted && !deletedLocally) writes += {
                                 val saved = timers.upsert(mapped.session)
                                 check(saved > 0 && timers.getTimeLogByUuid(id) == mapped.session.copy(id = saved))
@@ -216,6 +226,7 @@ internal class NextCommonFactStore(private val database: HabitDatabase) {
         writes.forEach { it() }; deletes.forEach { it() }
         shadows.forEach { outbox.upsertState(it); check(outbox.getState(it.entityType, it.entityUuid) == it) }
         sql.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
+        for ((change, proof) in timerProofs) check(acceptedTimerCompletion?.invoke(change) == proof)
     }
 
     /** A pulled fact is not an operation acknowledgement; match the first frozen request only. */

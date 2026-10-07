@@ -39,7 +39,8 @@ internal class OneTimeAcceptedEventStore(
     private val tokens: TokenManager,
     private val sessions: AccountSessionCoordinator,
     private val local: OneTimeLocalIntentStore,
-    private val now: () -> Long = System::currentTimeMillis
+    private val now: () -> Long = System::currentTimeMillis,
+    private val timerRequests: NextTimerRequestStore? = null
 ) {
     private val outbox = database.syncOutboxDao()
     private val facts = database.completionDao()
@@ -265,7 +266,14 @@ internal class OneTimeAcceptedEventStore(
             it.entityType == "plan_node" || it.entityType == "metric"
         })
         val once = restoreHistoriesInTransaction(context, snapshot)
-        NextCommonFactStore(database).restoreInTransaction(snapshot.changes, context.deviceId)
+        val timerProof: (suspend (SyncV2Change) -> String?)? = timerRequests?.let { timer ->
+            val captured = requireNotNull(tokens.localSyncAccess())
+            require(captured.session == context.session && captured.deviceId == context.deviceId)
+            val proof: suspend (SyncV2Change) -> String? = { change -> timer.completionProofInTransaction(captured, change) }
+            proof
+        }
+        NextCommonFactStore(database).restoreInTransaction(snapshot.changes, context.deviceId,
+            acceptedTimerCompletion = timerProof)
         return once
     }
 

@@ -48,15 +48,33 @@ internal class NextCoreRequestStore(
         }
     }
 
-    suspend fun sendCommand(captured: LocalSyncAccess, commandId: String): NextCoreDelivery<TimerCommandBatchResponse>? {
+    suspend fun sendCommand(captured: LocalSyncAccess, commandId: String,
+        firstSendOrder: (suspend (com.dayforge.data.local.entity.TimerCommandEntity) -> Unit)? = null): NextCoreDelivery<TimerCommandBatchResponse>? {
         require(isContractUuid(commandId) && captured.deviceId != null)
         val access = captured.copy(capabilities = captured.capabilities.toSet())
         return http.session(access) { channel ->
-            val prepared = prepare(access, NEXT_TIMER, commandId)
+            val prepared = prepare(access, NEXT_TIMER, commandId, timerOrder = firstSendOrder)
             val response = channel.commandsFrozen(prepared.row.wireBytes)
             requireStillCurrent(access, prepared)
             NextCoreDelivery(access, commandId, response, prepared.proof)
         }
+    }
+
+    /** Timer acceptance shares the exact journal/source proof; callers already own the local transaction. */
+    internal suspend fun requireTimerOriginInTransaction(access: LocalSyncAccess, id: String): NextRequestOriginEntity {
+        check(database.inTransaction())
+        return origin(access, NEXT_TIMER, id)
+    }
+
+    internal suspend fun validateTimerJournalInTransaction(origin: NextRequestOriginEntity,
+        transmission: NextTransmissionEntity, access: LocalSyncAccess) {
+        check(database.inTransaction())
+        require(origin.kind == NEXT_TIMER && origin.protocol == 5 && origin.queueId > 0 &&
+            origin.sourceHash.length == 64 && origin.sourceHash.all { it in "0123456789abcdef" } &&
+            (origin.serverInstanceId == null) == (origin.syncEpoch == null))
+        if (origin.serverInstanceId != null && (origin.serverInstanceId != access.session.serverInstanceId ||
+            origin.syncEpoch != access.session.syncEpoch)) rejectNextRequest(NextRequestException.Reason.TRANSMISSION_CONTEXT_CHANGED)
+        validate(origin, transmission, access)
     }
 
     private data class Prepared(val row: NextTransmissionEntity, val proof: String)
@@ -269,7 +287,8 @@ internal class NextCoreRequestStore(
     }
 
     private suspend fun prepare(access: LocalSyncAccess, kind: String, requestedId: String,
-        memo: NextStructuralCausalStore.PureMemo? = null): Prepared = sessions.exclusive {
+        memo: NextStructuralCausalStore.PureMemo? = null,
+        timerOrder: (suspend (com.dayforge.data.local.entity.TimerCommandEntity) -> Unit)? = null): Prepared = sessions.exclusive {
         authorize(access)
         database.withTransaction {
             val causal = if (kind == NEXT_OPERATION) NextStructuralCausalStore(database, requireNotNull(memo)) else null
@@ -290,6 +309,7 @@ internal class NextCoreRequestStore(
                 } else {
                     val command = decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), TimerCommandRequest.serializer())
                     require(command.commandId == id)
+                    timerOrder?.invoke(requireNotNull(database.timeLogDao().getTimerCommand(origin.queueId)))
                     encodeSyncRequest(TimerCommandBatchRequest.serializer(), TimerCommandBatchRequest(requireNotNull(access.deviceId), listOf(command)))
                 }
                 NextTransmissionEntity(kind, id, origin.queueId, 5, origin.accountId,
