@@ -9,6 +9,7 @@ import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.SyncOutboxEntity
 import com.dayforge.data.local.entity.LocalFactSubmissionEntity
+import com.dayforge.data.local.entity.NextRequestOriginEntity
 import com.dayforge.data.model.FailMode
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.model.OneTimeIntent
@@ -150,9 +151,27 @@ internal class OneTimeLocalIntentStore(
                 ))
                 followUps.insertSubmission(LocalFactSubmissionEntity(command.pending.operationId,
                     "activity_event", fact.uuid, command.activityUuid, payload))
+                // Prove birth with the business write, never adopt an old zero-attempt queue at send time.
+                val queueRow = requireNotNull(outbox.getByOperationId(command.pending.operationId))
+                val operation = com.dayforge.data.api.dto.SyncV2Operation(command.pending.operationId,
+                    "activity_event", fact.uuid, "upsert", payload = Json.parseToJsonElement(payload).let {
+                        require(it is kotlinx.serialization.json.JsonObject); it
+                    })
+                val sourceHash = requireNotNull(NextRequestSql.rowHash(sqlite, "sync_outbox", "id=?", arrayOf(queueRow.id)))
+                val origin = NextRequestOriginEntity(NEXT_OPERATION, command.pending.operationId, queueRow.id, 5,
+                    session.authentication.userId, session.serverInstanceId, session.syncEpoch, sourceHash,
+                    json.encodeToString(operation))
+                database.nextRequestDao().insertOrigin(origin)
                 if (fact.oneTimeAction == "complete" && !preferences.getNeverAskAgain(loaded.habit.id).first()) {
                     CompletionMetricPromptStore.createInTransaction(database, loaded.habit, fact.uuid)
                 }
+                check(NextRequestSql.rowHash(sqlite, "next_request_origins", "kind=? AND requestId=?",
+                    arrayOf(NEXT_OPERATION, origin.requestId)) != null &&
+                    database.nextRequestDao().origin(NEXT_OPERATION, origin.requestId) == origin &&
+                    NextRequestSql.rowHash(sqlite, "sync_outbox", "id=?", arrayOf(queueRow.id)) == sourceHash &&
+                    followUps.submission(command.pending.operationId) == LocalFactSubmissionEntity(command.pending.operationId,
+                        "activity_event", fact.uuid, command.activityUuid, payload))
+                if (tokens.localFactAccess() != access) reject(OneTimeLocalException.Reason.STALE_SESSION)
                 OneTimeLocalAppendResult(id, false, load(command.activityUuid, session).snapshot)
             }
         }
