@@ -45,6 +45,9 @@ internal class NextTimerRequestStore(
         return acceptResult(delivery.access, delivery.requestId, delivery.result.results.single(), delivery.transmissionProof)
     }
 
+    internal suspend fun send(access: LocalSyncAccess, id: String): NextCoreDelivery<TimerCommandBatchResponse>? =
+        requests.sendCommand(access, id, ::requireHead)
+
     /** Actual queue drain for the later unified scheduler; a rejection does not silently delete an intent. */
     suspend fun pushPending(access: LocalSyncAccess): Int {
         var accepted = 0

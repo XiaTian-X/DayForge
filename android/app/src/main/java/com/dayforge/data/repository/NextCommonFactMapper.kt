@@ -106,7 +106,36 @@ internal object NextCommonFactMapper {
     }
 
     fun duration(change: SyncV2Change, habit: HabitEntity, previous: TimeLogEntity? = null): NextDurationProjection {
-        val body = event(change, habit, duration = true)
+        event(change, habit, duration = true)
+        val data = durationData(change)
+        val body = data.body
+        if (previous != null) require(previous.uuid == change.entityUuid && previous.habitId == habit.id)
+        val session = TimeLogEntity(id = previous?.id ?: 0, habitId = habit.id, uuid = change.entityUuid,
+            startTime = data.start.toEpochMilli(), endTime = data.end.toEpochMilli(), durationSeconds = data.seconds.toInt(),
+            accumulatedPauseMillis = previous?.accumulatedPauseMillis ?: 0,
+            timerNextCommandSequence = previous?.timerNextCommandSequence ?: 1,
+            timerControlGeneration = previous?.timerControlGeneration ?: 0,
+            timerLastCommandAt = previous?.timerLastCommandAt, timerTimezone = data.zone.id,
+            timerActiveElapsedMillis = data.millis, date = data.day.atStartOfDay(data.zone).toInstant().toEpochMilli(),
+            createdAt = body.instant("created_at").toEpochMilli(), updatedAt = body.instant("updated_at").toEpochMilli())
+        return NextDurationProjection(session, data.allocations.map { (day, allocated) ->
+            TimeLogDayAllocationEntity(change.entityUuid, habit.id, day.toString(),
+                day.atStartOfDay(data.zone).toInstant().toEpochMilli(), data.zone.id, allocated)
+        })
+    }
+
+    /** Complete duration validation without manufacturing a parent/local FK for a deleted cache. */
+    fun validateDurationSnapshot(change: SyncV2Change) { durationData(change) }
+
+    private data class DurationData(val body: JsonObject, val start: Instant, val end: Instant,
+        val seconds: Long, val millis: Long, val zone: ZoneId, val day: LocalDate,
+        val allocations: List<Pair<LocalDate, Long>>)
+
+    private fun durationData(change: SyncV2Change): DurationData {
+        val optionalOnce = change.payload.keys.intersect(setOf("one_time", "one_time_state_after"))
+        require(optionalOnce.all { change.payload[it] == JsonNull })
+        val body = header(change, "activity_event", eventFields + optionalOnce + "day_allocations")
+        require(isContractUuid(body.text("activity_uuid")))
         require(body.text("event_type") == "duration_session" && body.getValue("value") == JsonNull &&
             body.getValue("reverts_event_uuid") == JsonNull)
         val start = body.instant("started_at")
@@ -116,16 +145,6 @@ internal object NextCommonFactMapper {
         val millis = body.integer("duration_milliseconds")
         require(seconds in 0..86_400 && millis in 0..86_400_000 && millis / 1000 == seconds)
         val (zone, day) = source(body, start)
-        if (previous != null) require(previous.uuid == change.entityUuid && previous.habitId == habit.id)
-        val session = TimeLogEntity(id = previous?.id ?: 0, habitId = habit.id, uuid = change.entityUuid,
-            startTime = start.toEpochMilli(), endTime = end.toEpochMilli(), durationSeconds = seconds.toInt(),
-            // This snapshot has no pause segments; do not infer pause time from stop latency.
-            accumulatedPauseMillis = previous?.accumulatedPauseMillis ?: 0,
-            timerNextCommandSequence = previous?.timerNextCommandSequence ?: 1,
-            timerControlGeneration = previous?.timerControlGeneration ?: 0,
-            timerLastCommandAt = previous?.timerLastCommandAt, timerTimezone = zone.id,
-            timerActiveElapsedMillis = millis, date = day.atStartOfDay(zone).toInstant().toEpochMilli(),
-            createdAt = body.instant("created_at").toEpochMilli(), updatedAt = body.instant("updated_at").toEpochMilli())
         val allocations = body.getValue("day_allocations").jsonArray.map { value ->
             val item = value.jsonObject
             require(item.keys == setOf("local_date", "timezone", "duration_milliseconds") && item.text("timezone") == zone.id)
@@ -147,10 +166,10 @@ internal object NextCommonFactMapper {
             val wallMillis = overlap.toMillis()
             val capacity = wallMillis + if (overlap.minusMillis(wallMillis).isZero) 0 else 1
             require(allocated <= capacity)
-            TimeLogDayAllocationEntity(change.entityUuid, habit.id, localDate.toString(), from.toEpochMilli(), zone.id, allocated)
+            localDate to allocated
         }
-        require(allocations.map { it.localDate }.distinct().size == allocations.size && allocations.sumOf { it.durationMillis } == millis)
-        return NextDurationProjection(session, allocations.sortedBy { it.localDate })
+        require(allocations.map { it.first }.distinct().size == allocations.size && allocations.sumOf { it.second } == millis)
+        return DurationData(body, start, end, seconds, millis, zone, day, allocations.sortedBy { it.first })
     }
 
     fun observation(change: SyncV2Change, metric: MetricEntity, previous: MetricLogEntity? = null): MetricLogEntity {

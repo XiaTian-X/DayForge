@@ -79,6 +79,47 @@ internal class NextCoreRequestStore(
 
     private data class Prepared(val row: NextTransmissionEntity, val proof: String)
 
+    /** Bound explicit failure persisted separately; an unknown transport failure is not a rejection. */
+    internal suspend fun recordRejection(access: LocalSyncAccess, kind: String, id: String,
+        deliveryProof: String, resultJson: String) = sessions.exclusive {
+        authorize(access)
+        database.withTransaction {
+            val sql = database.openHelper.writableDatabase
+            NextRequestSql.requireOutboxEnabled(sql)
+            val captured = origin(access, kind, id)
+            val sources = listOf("sync_outbox", "timer_command_outbox").associateWith { NextRequestSql.sources(sql, it) }
+            val journal = requireNotNull(database.nextRequestDao().transmission(kind, id))
+            validate(captured, journal, access)
+            val originHash = requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(kind, id)))
+            val transmissionHash = requireNotNull(NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", arrayOf(kind, id)))
+            require(transmissionHash == deliveryProof && database.nextRequestDao().acceptance(kind, id) == null)
+            if (kind == NEXT_OPERATION) {
+                val operation = decodeFrozenSyncRequest(journal.wireBytes, NextSyncPushRequest.serializer()).operations.single()
+                val result = decodeFrozenSyncRequest(resultJson.toByteArray(Charsets.UTF_8), NextSyncOperationResult.serializer())
+                validateTaskResultBinding(operation, result)
+                require(result.status in setOf("conflict", "rejected") && !result.errorCode.isNullOrBlank())
+            } else {
+                require(kind == NEXT_TIMER)
+                val command = decodeFrozenSyncRequest(journal.wireBytes, TimerCommandBatchRequest.serializer()).commands.single()
+                val result = decodeFrozenSyncRequest(resultJson.toByteArray(Charsets.UTF_8), TimerCommandResult.serializer())
+                require(result.commandId == command.commandId && result.sessionId == command.sessionId &&
+                    result.status in setOf("conflict", "rejected") && !result.errorCode.isNullOrBlank())
+            }
+            val row = com.dayforge.data.local.entity.NextRejectionEntity(kind, id, originHash, transmissionHash,
+                nextRequestHash(resultJson.toByteArray(Charsets.UTF_8)), resultJson)
+            val dao = database.nextSyncStateDao()
+            val existing = NextRequestSql.rowHash(sql, "next_rejections", "kind=? AND requestId=?", arrayOf(kind, id))
+            if (existing == null) dao.insertRejection(row)
+            check(NextRequestSql.rowHash(sql, "next_rejections", "kind=? AND requestId=?", arrayOf(kind, id)) != null &&
+                dao.rejections().single { it.kind == kind && it.requestId == id } == row)
+            check(origin(access, kind, id) == captured &&
+                NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", arrayOf(kind, id)) == transmissionHash &&
+                NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(kind, id)) == originHash)
+            check(sources == listOf("sync_outbox", "timer_command_outbox").associateWith { NextRequestSql.sources(sql, it) })
+            authorize(access)
+        }
+    }
+
     /** Actual send → acceptance entrypoint. A rejected/conflicting delivery never consumes work. */
     suspend fun sendAndAcceptOperation(access: LocalSyncAccess, operationId: String): NextOperationAcceptance? {
         val memo = NextStructuralCausalStore.PureMemo()

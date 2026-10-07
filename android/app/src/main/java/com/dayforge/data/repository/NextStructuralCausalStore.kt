@@ -538,6 +538,11 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         actual
     }
 
+    internal suspend fun logicalOrder(queue: SyncOutboxEntity): Long = readOnlyProof {
+        if (hash("next_structural_dependencies", "operationId", queue.operationId) != null || byReplacement(queue.operationId) != null)
+            logical(queue).logicalOrder else queue.id
+    }
+
     suspend fun requireHead(queue: SyncOutboxEntity) = readOnlyProof {
         val own = if (hash("next_structural_dependencies", "operationId", queue.operationId) != null || byReplacement(queue.operationId) != null)
             logical(queue).logicalOrder else queue.id

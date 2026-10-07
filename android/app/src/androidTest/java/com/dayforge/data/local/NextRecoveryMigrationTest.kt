@@ -55,7 +55,7 @@ class NextRecoveryMigrationTest {
     }
     private fun structure(db: SupportSQLiteDatabase) = rows(db,
         "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' " +
-            "AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('next_structural_dependencies','next_structural_supersessions','next_recovery_state','next_request_origins','next_transmissions','next_acceptances') ORDER BY type,name")
+            "AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('next_sync_state','next_rejections','next_structural_dependencies','next_structural_supersessions','next_recovery_state','next_request_origins','next_transmissions','next_acceptances') ORDER BY type,name")
     private fun insert(db: SupportSQLiteDatabase, table: String, values: Map<String, Any>) {
         val content = ContentValues()
         entities.first { it.getValue("tableName").jsonPrimitive.content == table }.getValue("fields").jsonArray.forEach {
@@ -108,7 +108,7 @@ class NextRecoveryMigrationTest {
         assertEquals(16, entities.size)
         repeat(2) {
             val db = open(); val sql = db.openHelper.writableDatabase
-            assertEquals(11, sql.version); assertEquals(before, snapshot(sql)); assertEquals(ddl, structure(sql))
+            assertEquals(12, sql.version); assertEquals(before, snapshot(sql)); assertEquals(ddl, structure(sql))
             assertNull(db.nextRecoveryDao().state())
             assertEquals(listOf(listOf("ok")), rows(sql, "PRAGMA integrity_check"))
             assertTrue(rows(sql, "PRAGMA foreign_key_check").isEmpty())
@@ -126,7 +126,7 @@ class NextRecoveryMigrationTest {
             }
             raw.execSQL("ALTER TABLE unavailable_transmissions RENAME TO one_time_transmissions")
         }
-        assertEquals(11, open().openHelper.writableDatabase.version)
+        assertEquals(12, open().openHelper.writableDatabase.version)
     }
     @Test fun forgedVersionSevenIdentityCannotInitializeRecoveryOrModifyFrozenRows() {
         seed { it.execSQL("UPDATE room_master_table SET identity_hash='unknown' WHERE id=42") }
