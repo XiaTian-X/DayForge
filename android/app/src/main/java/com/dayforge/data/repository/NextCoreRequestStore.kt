@@ -13,6 +13,8 @@ import com.dayforge.data.local.entity.NextTransmissionEntity
 import com.dayforge.data.local.entity.NextAcceptanceEntity
 import com.dayforge.domain.model.isContractUuid
 import com.dayforge.domain.service.AccountSessionCoordinator
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 
 /** A strictly bound HTTP result, NOT an acknowledgement/queue-consumption/cursor commit. */
 internal data class NextCoreDelivery<T>(val access: LocalSyncAccess, val requestId: String, val result: T,
@@ -108,29 +110,21 @@ internal class NextCoreRequestStore(
             val permission = if (operation.entityType in setOf("activity_event", "metric_observation")) "facts.append" else "structure.write"
             if (permission !in access.capabilities) rejectNextRequest(NextRequestException.Reason.PERMISSION_DENIED)
             val result = delivery.result.results.single()
-            validateTaskResultBinding(operation, result)
-            if (operation.action != "upsert" || operation.entityType !in setOf("plan_node", "metric", "activity_event", "metric_observation", "activity_metric_link") ||
-                operation.payload["one_time"].let { it != null && it != kotlinx.serialization.json.JsonNull } ||
-                operation.payload["event_type"] == kotlinx.serialization.json.JsonPrimitive("duration_session"))
-                rejectNextRequest(NextRequestException.Reason.UNSUPPORTED_ACCEPTANCE)
-            require(result.status in setOf("applied", "already_applied") && result.revision != null && result.revision > 0 &&
-                result.revision >= (operation.baseRevision ?: 0L) &&
-                result.entity != null && result.errorCode == null && result.message == null && result.baseEntity == null &&
-                result.localEntity == null && result.conflictingFields.isEmpty() && result.conflictKind == null && result.oneTimeConflict == null)
-            require(listOf("one_time", "one_time_state_after").all { result.entity[it].let { value -> value == null || value == kotlinx.serialization.json.JsonNull } })
             val normalized = result.copy(status = "applied")
             val bytes = encodeSyncRequest(NextSyncOperationResult.serializer(), normalized)
             decodeFrozenSyncRequest(bytes, NextSyncOperationResult.serializer())
             val resultJson = bytes.toString(Charsets.UTF_8)
-            if (operation.entityType in setOf("plan_node", "metric", "activity_metric_link"))
+            if (operation.action == "upsert" && operation.entityType in setOf("plan_node", "metric", "activity_metric_link"))
                 causal.validateStructuralResult(resultJson)
             val previousHash = NextRequestSql.rowHash(sql, "next_acceptances", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, id))
+            val parentDeletionProofs = mutableMapOf<Pair<String, String>, String>()
             val outcome = if (previousHash != null) {
                 val receipt = requireNotNull(dao.acceptance(NEXT_OPERATION, id))
                 require(receipt.kind == NEXT_OPERATION && receipt.requestId == id && receipt.originHash == originHash &&
                     receipt.transmissionHash == transmissionHash && receipt.resultHash == nextRequestHash(receipt.resultJson.toByteArray(Charsets.UTF_8)))
                 if (decodeFrozenSyncRequest(receipt.resultJson.toByteArray(Charsets.UTF_8), NextSyncOperationResult.serializer()) != normalized)
                     rejectNextRequest(NextRequestException.Reason.RESULT_CHANGED)
+                NextOrdinaryResultMapper.validate(operation, result, requireNotNull(access.deviceId))
                 // Absence alone proves nothing. Here it is justified by the exact atomic receipt.
                 if (NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(rawOrigin.queueId)) != null ||
                     database.syncOutboxDao().getByOperationId(id) != null)
@@ -139,14 +133,12 @@ internal class NextCoreRequestStore(
             } else {
                 val verifiedOrigin = origin(access, NEXT_OPERATION, id)
                 require(verifiedOrigin == rawOrigin)
+                val change = NextOrdinaryResultMapper.validate(operation, result, requireNotNull(access.deviceId))
                 val queue = requireNotNull(database.syncOutboxDao().getById(rawOrigin.queueId))
                 // A later callback cannot jump a predecessor and install an incorrect merge base.
                 causal.requireHead(queue)
-                val change = SyncV2Change(sequence = 0, entityType = operation.entityType, entityUuid = operation.entityUuid,
-                    operation = "upsert", revision = requireNotNull(result.revision), payload = requireNotNull(result.entity),
-                    changedAt = requireNotNull(result.entity["updated_at"] as? kotlinx.serialization.json.JsonPrimitive).also { require(it.isString) }.content)
                 auditShadow(change.entityType, change.entityUuid)
-                if (change.entityType in setOf("activity_event", "metric_observation", "activity_metric_link")) {
+                if (operation.action == "upsert" && change.entityType in setOf("activity_event", "metric_observation", "activity_metric_link")) {
                     // Common-fact revert validation reads historical shadows, including invisible events.
                     val ids = sql.query("SELECT entityUuid FROM sync_entity_state WHERE entityType='activity_event' LIMIT 10001").use { c ->
                         buildList { while (c.moveToNext()) {
@@ -157,16 +149,22 @@ internal class NextCoreRequestStore(
                     require(ids.size <= 10000)
                     ids.forEach { auditShadow("activity_event", it) }
                 }
-                when (operation.entityType) {
+                if (operation.action == "delete") NextOrdinaryDeletionStore(database).acceptInTransaction(change, queue.id)
+                else when (operation.entityType) {
                     "plan_node", "metric" -> {
-                        if (operation.entityType == "plan_node") {
-                            require(operation.payload["node_kind"] == result.entity["node_kind"])
-                        }
                         NextStructureStore(database).restoreInTransaction(listOf(change), queue.id)
                     }
                     else -> {
                         if (operation.entityType in setOf("activity_event", "metric_observation")) require(operation.baseRevision in listOf(null, 0L))
-                        NextCommonFactStore(database).restoreInTransaction(listOf(change), requireNotNull(access.deviceId), queue.id, operation)
+                        NextCommonFactStore(database).restoreInTransaction(listOf(change), requireNotNull(access.deviceId), queue.id, operation) {
+                            type, uuid ->
+                            val proof = provenParentDeletion(access, type, uuid)
+                            if (proof == null) false else {
+                                val key = type to uuid
+                                require(parentDeletionProofs.put(key, proof).let { it == null || it == proof })
+                                true
+                            }
+                        }
                     }
                 }
                 val acceptedShadow = requireNotNull(NextRequestSql.rowHash(sql, "sync_entity_state", "entityType=? AND entityUuid=?",
@@ -188,6 +186,8 @@ internal class NextCoreRequestStore(
                     arrayOf(change.entityType, change.entityUuid)) == acceptedShadow)
                 NextOperationAcceptance.COMMITTED
             }
+            // Receipt/outbox triggers may change another intent; re-audit exact parent evidence after all writes.
+            for ((key, proof) in parentDeletionProofs) require(provenParentDeletion(access, key.first, key.second) == proof)
             require(causal.resolve(id, access) == id)
             NextRequestSql.requireOutboxEnabled(sql)
             authorize(access)
@@ -204,6 +204,70 @@ internal class NextCoreRequestStore(
         require(state.payloadHash == syncPayloadHash(payload))
     }
 
+    /** Absence alone is never authorization to skip a parent FK projection. */
+    private suspend fun provenParentDeletion(access: LocalSyncAccess, type: String, uuid: String): String? {
+        require(type in setOf("plan_node", "metric") && isContractUuid(uuid))
+        val record = if (type == "plan_node") "habit" else "metric"
+        val outbox = database.syncOutboxDao()
+        val sql = database.openHelper.writableDatabase
+        val pending = (outbox.getAll() + outbox.getDeadLetters()).filter {
+            it.recordType == record && it.entityUuid == uuid && it.action == "delete"
+        }
+        for (queue in pending) {
+            val proof = origin(access, NEXT_OPERATION, queue.operationId)
+            val operation = decodeFrozenSyncRequest(proof.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
+            validateNextSyncOperation(operation)
+            require(operation.entityType == type && operation.entityUuid == uuid && operation.action == "delete")
+            val originHash = requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?",
+                arrayOf(NEXT_OPERATION, queue.operationId)))
+            return "pending:${queue.operationId}:$originHash:${proof.sourceHash}"
+        }
+        auditShadow(type, uuid)
+        val state = outbox.getState(type, uuid) ?: return null
+        if (!state.deleted) return null
+        // Narrow SQL candidates only; exact typed origin/envelope/receipt proof below decides identity.
+        val ids = sql.query("SELECT requestId FROM next_acceptances WHERE kind=? AND resultJson LIKE ? LIMIT 10001",
+            arrayOf(NEXT_OPERATION, "%$uuid%")).use { c -> buildList {
+            while (c.moveToNext()) {
+                require(c.getType(0) == android.database.Cursor.FIELD_TYPE_STRING)
+                add(c.getString(0))
+            }
+        } }
+        require(ids.size <= 10000)
+        val dao = database.nextRequestDao()
+        for (id in ids) {
+            require(isContractUuid(id))
+            val receiptHash = requireNotNull(NextRequestSql.rowHash(sql, "next_acceptances", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, id)))
+            val receipt = requireNotNull(dao.acceptance(NEXT_OPERATION, id))
+            require(receipt.resultHash == nextRequestHash(receipt.resultJson.toByteArray(Charsets.UTF_8)))
+            val result = decodeFrozenSyncRequest(receipt.resultJson.toByteArray(Charsets.UTF_8), NextSyncOperationResult.serializer())
+            if (result.entityType != type || result.entityUuid != uuid) continue
+            val originHash = requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, id)))
+            val transmissionHash = requireNotNull(NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, id)))
+            val original = requireNotNull(dao.origin(NEXT_OPERATION, id))
+            val transmission = requireNotNull(dao.transmission(NEXT_OPERATION, id))
+            require(original.kind == NEXT_OPERATION && original.requestId == id && original.protocol == 5 && original.queueId > 0 &&
+                original.sourceHash.length == 64 && original.sourceHash.all { it in "0123456789abcdef" } &&
+                (original.serverInstanceId == null) == (original.syncEpoch == null))
+            if (original.serverInstanceId != null && (original.serverInstanceId != access.session.serverInstanceId || original.syncEpoch != access.session.syncEpoch))
+                rejectNextRequest(NextRequestException.Reason.TRANSMISSION_CONTEXT_CHANGED)
+            validate(original, transmission, access)
+            require(receipt.kind == NEXT_OPERATION && receipt.requestId == id && receipt.originHash == originHash &&
+                receipt.transmissionHash == transmissionHash && result.status == "applied")
+            val operation = decodeFrozenSyncRequest(transmission.wireBytes, NextSyncPushRequest.serializer()).operations.single()
+            if (operation.action != "delete") continue
+            val change = NextOrdinaryResultMapper.validate(operation, result, requireNotNull(access.deviceId))
+            require(change.entityType == type && change.entityUuid == uuid && change.revision <= state.revision)
+            if (change.revision == state.revision) require(Json.parseToJsonElement(requireNotNull(state.payloadJson)).jsonObject == change.payload)
+            require(NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(original.queueId)) == null &&
+                outbox.getByOperationId(id) == null)
+            check(NextRequestSql.rowHash(sql, "next_acceptances", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, id)) == receiptHash)
+            val stateHash = requireNotNull(NextRequestSql.rowHash(sql, "sync_entity_state", "entityType=? AND entityUuid=?", arrayOf(type, uuid)))
+            return "accepted:$id:$receiptHash:$originHash:$transmissionHash:$stateHash"
+        }
+        return null
+    }
+
     private suspend fun prepare(access: LocalSyncAccess, kind: String, requestedId: String,
         memo: NextStructuralCausalStore.PureMemo? = null): Prepared = sessions.exclusive {
         authorize(access)
@@ -218,6 +282,10 @@ internal class NextCoreRequestStore(
                 val bytes = if (kind == NEXT_OPERATION) {
                     val operation = decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
                     require(operation.operationId == id)
+                    // Mutable deletes cannot jump their predecessor. Immutable undo has a new wire ID;
+                    // preserve its original send/replay behavior, with dependency checks at acceptance.
+                    if (operation.action == "delete") requireNotNull(causal).requireHead(
+                        requireNotNull(database.syncOutboxDao().getById(origin.queueId)))
                     encodeSyncRequest(NextSyncPushRequest.serializer(), NextSyncPushRequest(requireNotNull(access.deviceId), listOf(operation)))
                 } else {
                     val command = decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), TimerCommandRequest.serializer())

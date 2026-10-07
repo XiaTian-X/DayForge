@@ -22,7 +22,8 @@ internal class NextCommonFactStore(private val database: HabitDatabase) {
     private val links = database.habitMetricLinkDao()
 
     suspend fun restoreInTransaction(changes: List<SyncV2Change>, deviceId: String,
-        acceptedQueueId: Long? = null, acceptedOperation: SyncV2Operation? = null) {
+        acceptedQueueId: Long? = null, acceptedOperation: SyncV2Operation? = null,
+        provenParentDeletion: (suspend (String, String) -> Boolean)? = null) {
         check(database.inTransaction())
         val sql = database.openHelper.writableDatabase
         for (table in listOf("completions", "metric_logs", "habit_metric_links")) {
@@ -95,7 +96,7 @@ internal class NextCommonFactStore(private val database: HabitDatabase) {
             val deletedLocally = local.any { it.entityUuid == id && (it.action == "delete" || it.wireEntityUuid != id) }
             if (!known && local.isNotEmpty()) {
                 if (own != null) {
-                    if (!mutable) requireOriginalPayload(own.payload, change, deviceId)
+                    if (!mutable) NextCommonFactProof.requireOriginalPayload(own.payload, change, deviceId)
                 } else {
                     if (mutable) fail(NextFactMergeException.Reason.LOCAL_FACT_PENDING)
                     val original = local.singleOrNull { it.wireEntityUuid == id && it.action == "upsert" }
@@ -104,7 +105,26 @@ internal class NextCommonFactStore(private val database: HabitDatabase) {
                 }
             }
             // Undo wire identity is different from its source queue's target identity.
-            if (own != null && !mutable) requireOriginalPayload(own.payload, change, deviceId)
+            if (own != null && !mutable) NextCommonFactProof.requireOriginalPayload(own.payload, change, deviceId)
+            if (own != null) {
+                // A parent can have been hard-deleted after this immutable request was captured.
+                // Only bound local deletion evidence permits shadow-only acceptance; absence is not proof.
+                if (mutable) NextCommonFactMapper.validateLinkSnapshot(change)
+                else NextCommonFactMapper.validateOrdinaryFactSnapshot(change)
+                val parents = if (type == "metric_observation") listOf("metric" to payload.text("metric_uuid")) else
+                    listOf("plan_node" to payload.text("activity_uuid")) +
+                        if (mutable) listOf("metric" to payload.text("metric_uuid")) else emptyList()
+                val missing = parents.filter { (kind, uuid) -> uuid !in if (kind == "metric") metricIds else planIds }
+                if (missing.isNotEmpty()) {
+                    for ((kind, uuid) in missing) require(provenParentDeletion?.invoke(kind, uuid) == true)
+                    require(completions.getCompletionByUuid(id) == null && timers.getTimeLogByUuid(id) == null &&
+                        observations.getLogByUuid(id) == null && links.getLinkByUuid(id) == null)
+                    if (mutable && old != null && old.revision > change.revision) continue
+                    if (!known) shadows += SyncEntityStateEntity(type, id, change.revision, payloadJson = payload.toString(),
+                        payloadHash = syncPayloadHash(payload.toString()))
+                    continue
+                }
+            }
             when (type) {
                 "activity_event" -> {
                     val activity = payload.text("activity_uuid")
@@ -204,11 +224,18 @@ internal class NextCommonFactStore(private val database: HabitDatabase) {
         val request = Json.parseToJsonElement(requireNotNull(row.payloadJson)).jsonObject
         require(isContractUuid(row.operationId) && row.baseRevision in listOf(null, 0L) && row.basePayloadJson == null)
         require(row.referenceUuid == change.payload.text(if (change.entityType == "metric_observation") "metric_uuid" else "activity_uuid"))
-        requireOriginalPayload(request, change, device, explicitDevice = true)
+        NextCommonFactProof.requireOriginalPayload(request, change, device, explicitDevice = true)
     }
 
+    private fun body(state: SyncEntityStateEntity) = Json.parseToJsonElement(requireNotNull(state.payloadJson)).jsonObject
+    private fun JsonObject.text(key: String) = getValue(key).let { require(it is JsonPrimitive && it.isString); it.content }
+    private fun fail(reason: NextFactMergeException.Reason): Nothing = throw NextFactMergeException(reason)
+}
+
+/** Same frozen immutable proof for first ACK, bootstrap reconciliation and cold receipt replay. */
+internal object NextCommonFactProof {
     /** New provenance is verified by the coordinator, not inferred from attempt metadata. */
-    private fun requireOriginalPayload(request: JsonObject, change: SyncV2Change, device: String, explicitDevice: Boolean = false) {
+    internal fun requireOriginalPayload(request: JsonObject, change: SyncV2Change, device: String, explicitDevice: Boolean = false) {
         val actual = change.payload
         // No inference of a first sender from today's registration. Old unbound requests
         // must be replayed/handled by the coordinator, not claimed by a coincident UUID.
@@ -231,10 +258,7 @@ internal class NextCommonFactStore(private val database: HabitDatabase) {
                 key in setOf("value", "duration_seconds", "duration_milliseconds") -> expected.jsonPrimitive.content.toBigDecimal().compareTo(received.jsonPrimitive.content.toBigDecimal()) == 0
                 else -> false
             }
-            if (!equal) fail(NextFactMergeException.Reason.FACT_DIVERGED)
+            if (!equal) throw NextFactMergeException(NextFactMergeException.Reason.FACT_DIVERGED)
         }
     }
-    private fun body(state: SyncEntityStateEntity) = Json.parseToJsonElement(requireNotNull(state.payloadJson)).jsonObject
-    private fun JsonObject.text(key: String) = getValue(key).let { require(it is JsonPrimitive && it.isString); it.content }
-    private fun fail(reason: NextFactMergeException.Reason): Nothing = throw NextFactMergeException(reason)
 }
