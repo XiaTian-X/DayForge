@@ -1099,6 +1099,13 @@
     <string name="sync_device_role_facts_only">This device records check-ins, counts, metrics, and timers</string>
     <string name="sync_device_make_primary">Make primary</string>
     <string name="sync_device_role_failed">Could not update this device role</string>
+    <string name="object_icon_picker_title">Object icon</string>
+    <string name="object_icon_picker_hint">Roles follow the selected icon pack; fixed icons keep their asset identity. Missing images keep their reference and show a placeholder.</string>
+    <string name="object_icon_picker_expired">The icon picker is unavailable or its account context has changed. Close it and reopen the editor.</string>
+    <string name="object_icon_tint_theme">Theme color</string>
+    <string name="object_icon_tint_object">Object color</string>
+    <string name="object_icon_role">Follows icon pack</string>
+    <string name="object_icon_fixed">Fixed asset</string>
     <string name="icon_library_title">Icon library</string>
     <string name="icon_library_entry_description">Import, preview and select local icon packs</string>
     <string name="icon_library_local_only">Local installation and selection only; not a server sync receipt. Existing habit, goal and metric icons remain unchanged until the new protocol is connected.</string>

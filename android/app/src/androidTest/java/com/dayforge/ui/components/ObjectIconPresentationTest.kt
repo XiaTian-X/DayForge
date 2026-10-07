@@ -58,7 +58,7 @@ class ObjectIconPresentationTest {
         val habit = HabitEntity(id = 1, uuid = fixture.id(91), name = "Native habit", habitType = HabitType.CHECK_IN,
             iconResId = 1, colorHex = "#123456", schedule = HabitSchedule.Daily,
             completionPolicy = "recurring", appearance = appearance)
-        val goal = habit.copy(uuid = fixture.id(92), name = "Native goal", habitType = HabitType.GOAL)
+        val goal = habit.copy(uuid = fixture.id(92), name = "Native goal", habitType = HabitType.GOAL, completionPolicy = null)
         val child = habit.copy(uuid = fixture.id(93), name = "Native child")
         val metric = MetricEntity(uuid = fixture.id(94), name = "Native metric", unit = "kg",
             iconResId = 1, colorHex = "#123456", appearance = appearance)

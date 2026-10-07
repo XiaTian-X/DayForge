@@ -34,7 +34,8 @@ class HabitRepository @Inject constructor(
     private val completionDao: CompletionDao,
     private val timeLogDao: TimeLogDao,
     private val database: HabitDatabase,
-    private val structuralEditGuard: StructuralEditGuard? = null
+    private val structuralEditGuard: StructuralEditGuard? = null,
+    private val nextObjectEditor: NextObjectEditor? = null
 ) {
     val allHabits: Flow<List<HabitEntity>> = habitDao.getAllHabits()
 
@@ -44,6 +45,9 @@ class HabitRepository @Inject constructor(
     fun getHabit(id: Long): Flow<HabitEntity?> = habitDao.getHabitByIdFlow(id)
 
     suspend fun getHabitById(id: Long): HabitEntity? = habitDao.getHabitById(id)
+
+    suspend fun getHabitForEditing(id: Long): ObjectEditSnapshot<HabitEntity> =
+        nextObjectEditor?.habit(id) ?: ObjectEditSnapshot(habitDao.getHabitById(id), null)
 
     suspend fun createHabit(
         name: String,
@@ -154,19 +158,26 @@ class HabitRepository @Inject constructor(
     suspend fun updateHabit(
         habit: HabitEntity,
         context: Context? = null,
-        selectedMetricIds: Set<Long>? = null
+        selectedMetricIds: Set<Long>? = null,
+        editAuthority: ObjectEditAuthority? = null
     ) {
         structuralEditGuard?.requireAllowed()
-        val persistedHabit = habit.copy(updatedAt = System.currentTimeMillis())
-        val previousHabit = database.withTransaction {
+        var persistedHabit = habit.copy(updatedAt = System.currentTimeMillis())
+        suspend fun commit(saved: HabitEntity): HabitEntity {
             val previous = requireNotNull(habitDao.getHabitById(habit.id)) {
                 "Habit no longer exists: ${habit.id}"
             }
-            requireValidHierarchy(persistedHabit)
-            habitDao.update(persistedHabit)
-            selectedMetricIds?.let { reconcileMetricLinks(persistedHabit, it) }
-            previous
+            check((previous.appearance == null) == (saved.appearance == null)) { "OBJECT_EDIT_REQUIRES_COORDINATED_SWITCH" }
+            requireValidHierarchy(saved)
+            habitDao.update(saved)
+            selectedMetricIds?.let { reconcileMetricLinks(saved, it) }
+            persistedHabit = saved
+            return previous
         }
+        val previousHabit = if (habit.appearance != null && nextObjectEditor != null) {
+            nextObjectEditor.editHabit(habit,
+                requireNotNull(editAuthority) { "OBJECT_EDIT_TICKET_REQUIRED" }, ::commit)
+        } else database.withTransaction { commit(persistedHabit) }
         // Notify widgets to update
         context?.let { notifyWidgetUpdate(it) }
         // Handle reminder scheduling changes (NOTIFY-01)

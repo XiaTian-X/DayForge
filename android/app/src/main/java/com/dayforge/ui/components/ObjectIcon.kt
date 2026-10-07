@@ -44,7 +44,7 @@ internal val LocalAccountIcons = staticCompositionLocalOf<AccountIconController?
 @Composable
 internal fun ObjectIcon(habit: HabitEntity, legacyTint: Color, size: Dp,
     background: Color = MaterialTheme.colorScheme.surface) = ObjectIcon(
-    habit.uuid, habit.appearance, when (habit.completionPolicy) {
+    habit.uuid, habit.appearance, if (habit.habitType == com.dayforge.data.model.HabitType.GOAL) false else when (habit.completionPolicy) {
         "recurring" -> false
         "one_and_done" -> true
         else -> null

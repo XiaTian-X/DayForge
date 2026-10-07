@@ -26,6 +26,8 @@ import com.dayforge.data.model.FailMode
 import com.dayforge.data.model.HabitType
 import com.dayforge.ui.components.ColorPicker
 import com.dayforge.ui.components.IconPicker
+import com.dayforge.ui.components.ObjectAppearancePicker
+import com.dayforge.ui.components.ObjectIcon
 
 /**
  * Screen for editing a goal (parent habit) and managing its key results (child habits).
@@ -39,7 +41,7 @@ fun EditGoalScreen(
     onCreateChildHabit: (parentUuid: String) -> Unit,
     onEditChildHabit: (habitId: Long) -> Unit
 ) {
-    val uiState by viewModel.uiState.collectAsState()
+    val uiState by viewModel.uiState.collectAsState(context = kotlinx.coroutines.Dispatchers.Main)
 
     // Load goal on first composition
     LaunchedEffect(goalId) {
@@ -153,6 +155,8 @@ fun EditGoalScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(stringResource(R.string.edit_habit_icon_label), style = MaterialTheme.typography.bodyLarge)
+                            uiState.appearance?.let { ObjectIcon("edit-goal:${uiState.goalId}", it,
+                                false, 0, Color.Unspecified, 24.dp) }
                             Icon(Icons.AutoMirrored.Filled.ArrowForward, null)
                         }
                     }
@@ -340,7 +344,10 @@ fun EditGoalScreen(
 
     // Icon picker dialog
     if (uiState.showIconPicker) {
-        IconPicker(
+        val appearance = uiState.appearance
+        if (appearance != null) ObjectAppearancePicker(appearance, false, uiState.editAuthority,
+            onSelected = viewModel::updateAppearance, onDismiss = viewModel::toggleIconPicker)
+        else IconPicker(
             selectedIconId = uiState.iconResId,
             onIconSelected = viewModel::updateIcon,
             onDismiss = viewModel::toggleIconPicker

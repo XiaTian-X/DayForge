@@ -38,7 +38,8 @@ class MetricRepository @Inject constructor(
     private val metricLogDao: MetricLogDao,
     private val habitDao: HabitDao,
     private val linkDao: HabitMetricLinkDao,
-    private val structuralEditGuard: StructuralEditGuard? = null
+    private val structuralEditGuard: StructuralEditGuard? = null,
+    private val nextObjectEditor: NextObjectEditor? = null
 ) {
     fun observeActiveMetrics(): Flow<List<MetricEntity>> = metricDao.getAllActiveMetrics()
 
@@ -46,6 +47,9 @@ class MetricRepository @Inject constructor(
 
     suspend fun getLatestLog(metricId: Long): MetricLogEntity? =
         metricLogDao.getLatestLog(metricId)
+
+    suspend fun getMetricForEditing(id: Long): ObjectEditSnapshot<MetricEntity> =
+        nextObjectEditor?.metric(id) ?: ObjectEditSnapshot(metricDao.getMetricById(id), null)
 
     suspend fun getLogsInRange(
         metricId: Long,
@@ -89,19 +93,23 @@ class MetricRepository @Inject constructor(
         }
     }
 
-    suspend fun updateMetric(metric: MetricEntity) {
+    suspend fun updateMetric(metric: MetricEntity, editAuthority: ObjectEditAuthority? = null) {
         structuralEditGuard?.requireAllowed()
-        database.withTransaction {
-            validateTargets(metric)
-            requireNotNull(metricDao.getMetricById(metric.id)) {
+        suspend fun commit(saved: MetricEntity) {
+            validateTargets(saved)
+            val previous = requireNotNull(metricDao.getMetricById(metric.id)) {
                 "Metric no longer exists: ${metric.id}"
             }
-            val duplicate = metricDao.getMetricByName(metric.name)
+            check((previous.appearance == null) == (saved.appearance == null)) { "OBJECT_EDIT_REQUIRES_COORDINATED_SWITCH" }
+            val duplicate = metricDao.getMetricByName(saved.name)
             if (duplicate != null && duplicate.id != metric.id) {
-                throw DuplicateMetricNameException(metric.name)
+                throw DuplicateMetricNameException(saved.name)
             }
-            metricDao.update(metric.copy(updatedAt = System.currentTimeMillis()))
+            metricDao.update(saved)
         }
+        if (metric.appearance != null && nextObjectEditor != null) nextObjectEditor
+            .editMetric(metric, requireNotNull(editAuthority) { "OBJECT_EDIT_TICKET_REQUIRED" }, ::commit)
+        else database.withTransaction { commit(metric.copy(updatedAt = System.currentTimeMillis())) }
     }
 
     suspend fun updateAggregationType(metricId: Long, aggregationType: String) {

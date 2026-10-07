@@ -30,6 +30,8 @@ data class EditGoalUiState(
     val name: String = "",
     val description: String = "",
     val iconResId: Int = 0,
+    val appearance: com.dayforge.domain.model.ObjectAppearance? = null,
+    val editAuthority: com.dayforge.data.repository.ObjectEditAuthority? = null,
     val colorHex: String = "#2196F3",
     // GOAL type is always Daily schedule, no need to configure
     val targetCycles: Int? = null,
@@ -69,33 +71,42 @@ class EditGoalViewModel @Inject constructor(
     fun loadGoal(goalId: Long) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true)
+            try {
+                val snapshot = habitRepository.getHabitForEditing(goalId)
+                val goal = snapshot.value
+                if (goal == null) {
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        errorMessage = context.getString(R.string.goal_not_found)
+                    )
+                    return@launch
+                }
 
-            val goal = habitDao.getHabitById(goalId)
-            if (goal == null) {
+                val children = goal.uuid?.let { uuid ->
+                    habitDao.getChildrenByParentUuid(uuid).first()
+                } ?: emptyList()
+
                 _uiState.value = _uiState.value.copy(
-                    isLoading = false,
-                    errorMessage = context.getString(R.string.goal_not_found)
+                    goalId = goal.id,
+                    goalUuid = goal.uuid,
+                    name = goal.name,
+                    description = goal.description,
+                    iconResId = goal.iconResId,
+                    appearance = goal.appearance,
+                    editAuthority = snapshot.authority,
+                    colorHex = goal.appearance?.accentColor ?: goal.colorHex,
+                    targetCycles = goal.targetCycles,
+                    failMode = goal.failMode,
+                    isActive = goal.isActive,
+                    children = children,
+                    isLoading = false
                 )
-                return@launch
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                _uiState.value = _uiState.value.copy(isLoading = false,
+                    errorMessage = context.getString(R.string.toast_save_failed, error.message))
             }
-
-            val children = goal.uuid?.let { uuid ->
-                habitDao.getChildrenByParentUuid(uuid).first()
-            } ?: emptyList()
-
-            _uiState.value = _uiState.value.copy(
-                goalId = goal.id,
-                goalUuid = goal.uuid,
-                name = goal.name,
-                description = goal.description,
-                iconResId = goal.iconResId,
-                colorHex = goal.colorHex,
-                targetCycles = goal.targetCycles,
-                failMode = goal.failMode,
-                isActive = goal.isActive,
-                children = children,
-                isLoading = false
-            )
         }
     }
 
@@ -108,11 +119,19 @@ class EditGoalViewModel @Inject constructor(
     }
 
     fun updateIcon(iconResId: Int) {
+        if (_uiState.value.appearance != null) return
         _uiState.value = _uiState.value.copy(iconResId = iconResId)
     }
 
     fun updateColor(colorHex: String) {
-        _uiState.value = _uiState.value.copy(colorHex = colorHex)
+        _uiState.value = _uiState.value.copy(colorHex = colorHex,
+            appearance = _uiState.value.appearance?.copy(accentColor = colorHex))
+    }
+
+    fun updateAppearance(appearance: com.dayforge.domain.model.ObjectAppearance) {
+        if (_uiState.value.appearance == null) return
+        _uiState.value = _uiState.value.copy(appearance = appearance, colorHex = appearance.accentColor,
+            showIconPicker = false)
     }
 
     fun updateTargetCycles(value: Int?) {
@@ -152,22 +171,24 @@ class EditGoalViewModel @Inject constructor(
     fun saveGoal() {
         val currentState = _uiState.value
         val goalId = currentState.goalId ?: return
+        if (currentState.isSaving) return
 
         _uiState.value = currentState.copy(isSaving = true)
 
         viewModelScope.launch {
             try {
-                val existingGoal = habitDao.getHabitById(goalId) ?: return@launch
+                val existingGoal = requireNotNull(habitDao.getHabitById(goalId)) { "OBJECT_EDIT_NOT_FOUND" }
                 val updatedGoal = existingGoal.copy(
                     name = currentState.name,
                     description = currentState.description,
                     iconResId = currentState.iconResId,
+                    appearance = currentState.appearance,
                     colorHex = currentState.colorHex,
                     targetCycles = currentState.targetCycles,
                     failMode = currentState.failMode,
                     updatedAt = System.currentTimeMillis()
                 )
-                habitRepository.updateHabit(updatedGoal, context)
+                habitRepository.updateHabit(updatedGoal, context, editAuthority = currentState.editAuthority)
 
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,
@@ -175,6 +196,9 @@ class EditGoalViewModel @Inject constructor(
                     showIconPicker = false,
                     showColorPicker = false
                 )
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                _uiState.value = _uiState.value.copy(isSaving = false)
+                throw error
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,

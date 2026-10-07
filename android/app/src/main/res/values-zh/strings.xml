@@ -1099,6 +1099,13 @@
     <string name="sync_device_role_facts_only">此设备用于打卡、计数、指标和计时</string>
     <string name="sync_device_make_primary">设为主要设备</string>
     <string name="sync_device_role_failed">无法更新当前设备角色</string>
+    <string name="object_icon_picker_title">对象图标</string>
+    <string name="object_icon_picker_hint">角色随当前图标包变化，固定图标保留素材身份。图片缺失时保留原引用并显示占位。</string>
+    <string name="object_icon_picker_expired">图标选择不可用或账户上下文已变化，请关闭并重新打开编辑页。</string>
+    <string name="object_icon_tint_theme">主题色</string>
+    <string name="object_icon_tint_object">对象色</string>
+    <string name="object_icon_role">跟随图标包</string>
+    <string name="object_icon_fixed">固定素材</string>
     <string name="icon_library_title">图标库</string>
     <string name="icon_library_entry_description">导入、预览和选择本机图标包</string>
     <string name="icon_library_local_only">这里只管理本机安装与选择，不代表服务端同步成功。新协议联合接入前，现有习惯、目标和指标图标保持不变。</string>
