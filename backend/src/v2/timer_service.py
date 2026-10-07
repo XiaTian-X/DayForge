@@ -232,6 +232,16 @@ async def _start(
             "INVALID_ACTIVITY_MODE", "Only duration activities can start timers"
         )
     target_seconds, max_seconds = _max_duration_seconds(activity)
+    if command.start_policy is not None and (
+        command.start_policy.target_seconds != target_seconds
+        or command.start_policy.is_countdown != activity.is_countdown
+        or command.start_policy.max_duration_seconds != max_seconds
+    ):
+        raise DomainError(
+            "TIMER_START_CONFIG_CHANGED",
+            "The activity configuration no longer matches the original start",
+            conflict=True,
+        )
     timer = TimerSession(
         public_id=str(command.session_id),
         owner_user_id=user.id,
@@ -572,6 +582,15 @@ async def process_timer_commands(
 
         try:
             async with db.begin_nested():
+                if (
+                    next_protocol
+                    and command.command_type == "start"
+                    and command.start_policy is None
+                ):
+                    raise DomainError(
+                        "TIMER_START_POLICY_REQUIRED",
+                        "Protocol 5 start requires its original policy",
+                    )
                 timer = await _apply_command(db, user, device, command)
                 snapshot = await serialize_timer_session(db, timer)
             result = TimerCommandResult(

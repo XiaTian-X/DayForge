@@ -30,7 +30,8 @@ class NestedHabitTreeBuilder @Inject constructor(
     private val completionDao: CompletionDao,
     private val timeLogDao: TimeLogDao,
     private val failureChecker: FailureChecker,
-    private val oneTimeRepository: com.dayforge.data.repository.OneTimeRepository? = null
+    private val oneTimeRepository: com.dayforge.data.repository.OneTimeRepository? = null,
+    private val timerWriter: com.dayforge.data.repository.NextTimerWriter? = null
 ) {
 
     suspend fun build(
@@ -172,7 +173,9 @@ class NestedHabitTreeBuilder @Inject constructor(
                 ScheduleValidator.getNextCheckInDate(child.schedule, child.createdAt)
             },
             targetProgress = targetProgress,
-            hasFailed = hasFailed
+            hasFailed = hasFailed,
+            timerAuthority = if (child.habitType == HabitType.TIMER && child.appearance != null)
+                requireNotNull(timerWriter).capture(child.id, child) else null
         )
     }
 }

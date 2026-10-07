@@ -14,7 +14,7 @@ internal const val NEXT_TIMER = "timer_command"
 internal class NextRequestException(val reason: Reason) : IllegalStateException(reason.name) {
     enum class Reason { STALE_ACCESS, PERMISSION_DENIED, INVALID_LOCAL_STATE, OLD_INTENT,
         SOURCE_CHANGED, TRANSMISSION_CONTEXT_CHANGED, REQUEST_ID_REUSED, UNSUPPORTED_ACCEPTANCE, RESULT_CHANGED,
-        CAUSAL_PREDECESSOR_PENDING }
+        CAUSAL_PREDECESSOR_PENDING, TIMER_START_CONFIG_CHANGED }
 }
 
 internal fun rejectNextRequest(reason: NextRequestException.Reason): Nothing = throw NextRequestException(reason)

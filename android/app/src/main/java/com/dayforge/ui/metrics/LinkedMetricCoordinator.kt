@@ -12,6 +12,8 @@ import com.dayforge.data.repository.MetricRepository
 import com.dayforge.data.repository.MetricValueDraft
 import com.dayforge.data.repository.OneTimeRepository
 import com.dayforge.data.repository.OneTimeMetricPrompt
+import com.dayforge.data.repository.NextTimerWriter
+import com.dayforge.domain.model.TimerActionAuthority
 import com.dayforge.domain.service.TimerService
 import com.dayforge.ui.components.LinkedMetricInfo
 import com.dayforge.ui.components.MetricValueInput
@@ -43,7 +45,8 @@ class LinkedMetricCoordinator @Inject constructor(
     private val preferencesManager: PreferencesManager,
     private val metricRepository: MetricRepository,
     private val habitRepository: HabitRepository,
-    private val oneTimeRepository: OneTimeRepository? = null
+    private val oneTimeRepository: OneTimeRepository? = null,
+    private val timerWriter: NextTimerWriter? = null
 ) {
     val pendingMetricHabits: Flow<Set<Long>> = combine(preferencesManager.pendingMetricHabits,
         oneTimeRepository?.pendingHabitIds ?: kotlinx.coroutines.flow.flowOf(emptySet())) { old, once -> old + once }
@@ -128,8 +131,16 @@ class LinkedMetricCoordinator @Inject constructor(
     }
 
     /** Waits for TimerService persistence, then shows the existing linked-metric prompt if needed. */
-    suspend fun showPromptAfterTimerStop(stoppedHabitId: Long?) {
+    suspend fun showPromptAfterTimerStop(stoppedHabitId: Long?, authority: TimerActionAuthority? = null) {
         stoppedHabitId ?: return
+        if (authority != null) {
+            requireNotNull(timerWriter).afterCompletion(stoppedHabitId, authority) {
+                val habit = habitRepository.getHabitById(stoppedHabitId) ?: return@afterCompletion
+                showPromptForPolicy(stoppedHabitId, habit.name, false, habit.completionPolicy)
+            }
+            return
+        }
+        // The inactive legacy path retains its existing behavior until coordinated v5 activation.
         delay(POST_TIMER_STOP_PROMPT_DELAY_MS)
         val habit = habitRepository.getHabitById(stoppedHabitId) ?: return
         showPromptForPolicy(stoppedHabitId, habit.name, false, habit.completionPolicy)

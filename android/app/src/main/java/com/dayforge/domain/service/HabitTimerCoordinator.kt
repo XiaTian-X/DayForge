@@ -17,25 +17,26 @@ class HabitTimerCoordinator @Inject constructor(
         timerManager.recoverRunningTimer()
     }
 
-    suspend fun startTimer(habitId: Long, targetMinutes: Int) {
-        timerManager.startTimer(habitId, targetMinutes)
+    suspend fun startTimer(habitId: Long, targetMinutes: Int, authority: com.dayforge.domain.model.TimerActionAuthority? = null) {
+        timerManager.startTimer(habitId, targetMinutes, authority)
     }
 
     fun pauseTimer(activeTimer: ActiveTimerState?) {
         activeTimer ?: return
-        timerManager.pauseTimer(activeTimer.habitId, activeTimer.targetMinutes)
+        timerManager.pauseTimer(activeTimer.habitId, activeTimer.targetMinutes, activeTimer.authority)
     }
 
     fun resumeTimer(activeTimer: ActiveTimerState?) {
         activeTimer ?: return
-        timerManager.resumeTimer(activeTimer.habitId, activeTimer.targetMinutes)
+        timerManager.resumeTimer(activeTimer.habitId, activeTimer.targetMinutes, activeTimer.authority)
     }
 
     suspend fun stopTimer(activeTimer: ActiveTimerState?): Long? {
         activeTimer ?: return null
         return timerManager.stopTimer(
             habitId = activeTimer.habitId,
-            targetMinutes = activeTimer.targetMinutes
+            targetMinutes = activeTimer.targetMinutes,
+            authority = activeTimer.authority
         )
     }
 

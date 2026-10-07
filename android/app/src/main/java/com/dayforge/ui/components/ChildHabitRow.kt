@@ -151,7 +151,8 @@ fun ChildHabitRow(
                 )
 
                 // 倒计时标签（仅计时型习惯且为倒计时模式时显示）
-                if (habit.habitType == HabitType.TIMER && habit.isCountdown) {
+                if (habit.habitType == HabitType.TIMER &&
+                    (activeTimer?.takeIf { it.habitId == habit.id }?.isCountdown ?: habit.isCountdown)) {
                     Spacer(modifier = Modifier.width(6.dp))
                     AssistChip(
                         onClick = { },
@@ -273,10 +274,10 @@ fun ChildHabitRow(
                     actionsEnabled = childHabit.oneTimeStatus?.canChange ?: true,
                     undoAvailable = childHabit.completedForDisplay && childHabit.lastCompletionId != null,
                     habitType = habit.habitType,
-                    targetValue = habit.targetValue,
+                    targetValue = activeTimer?.takeIf { it.habitId == habit.id }?.targetMinutes ?: habit.targetValue,
                     currentCount = displayCount,
                     timerState = timerState,
-                    isCountdown = habit.isCountdown,
+                    isCountdown = activeTimer?.takeIf { it.habitId == habit.id }?.isCountdown ?: habit.isCountdown,
                     onCheckIn = onCheckIn,
                     onUndo = onUndo,
                     onIncrement = onIncrement,

@@ -25,7 +25,8 @@ data class HabitWithStats(
     val targetProgress: Int = 0,  // Distinct days completed for habits with targetCycles
     val hasFailed: Boolean = false,  // Failure status for target-based habits
     val slotProgress: String? = null,  // Slot progress for COUNTING habits in focus mode: "第 X 个/共 Y 个"
-    val oneTimeStatus: com.dayforge.domain.model.OneTimeStatus? = null
+    val oneTimeStatus: com.dayforge.domain.model.OneTimeStatus? = null,
+    val timerAuthority: com.dayforge.domain.model.TimerActionAuthority? = null
 ) {
     val completedForDisplay: Boolean get() = oneTimeStatus?.completed ?: completedToday
     /**

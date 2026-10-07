@@ -233,8 +233,13 @@ class DashboardViewModel @Inject constructor(
      * @param targetMinutes Target duration in minutes
      */
     fun startTimer(habitId: Long, targetMinutes: Int) {
+        val authority = habitsWithStats.value.find { it.habit.id == habitId }?.timerAuthority
         viewModelScope.launch {
-            timerCoordinator.startTimer(habitId, targetMinutes)
+            try { timerCoordinator.startTimer(habitId, targetMinutes, authority) }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                Toast.makeText(context, context.getString(R.string.metric_error_record_failed, error.message.orEmpty()), Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -262,9 +267,14 @@ class DashboardViewModel @Inject constructor(
     fun stopTimer() {
         val currentState = activeTimerState.value ?: return
         viewModelScope.launch {
-            linkedMetricCoordinator.showPromptAfterTimerStop(
-                timerCoordinator.stopTimer(currentState)
-            )
+            try {
+                linkedMetricCoordinator.showPromptAfterTimerStop(
+                    timerCoordinator.stopTimer(currentState), currentState.authority
+                )
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                Toast.makeText(context, context.getString(R.string.metric_error_record_failed, error.message.orEmpty()), Toast.LENGTH_LONG).show()
+            }
         }
     }
 

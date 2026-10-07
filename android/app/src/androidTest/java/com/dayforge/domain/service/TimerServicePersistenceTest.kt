@@ -25,10 +25,22 @@ import kotlinx.serialization.json.Json
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import java.util.UUID
+import javax.inject.Inject
+import com.dayforge.data.local.TokenManager
+import com.dayforge.data.repository.HabitRepository
+import com.dayforge.data.repository.NextObjectCreator
+import com.dayforge.data.repository.NextTimerWriter
+import com.dayforge.data.repository.decodeNextTimerIntent
+import com.dayforge.data.repository.NEXT_TIMER
+import com.dayforge.domain.model.IconReference
+import com.dayforge.domain.model.ObjectAppearance
+import com.dayforge.domain.model.TimerActionAuthority
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.async
+import kotlinx.coroutines.CoroutineStart
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -49,6 +61,11 @@ class TimerServicePersistenceTest {
     private val databaseName = "timer-test-${UUID.randomUUID()}.db"
     private val commandInsertAttempts = AtomicInteger()
     private var habitId = 0L
+    @Inject lateinit var tokens: TokenManager
+    @Inject lateinit var sessions: AccountSessionCoordinator
+    @Inject lateinit var habits: HabitRepository
+    @Inject lateinit var creator: NextObjectCreator
+    @Inject lateinit var timerWriter: NextTimerWriter
 
     @Before fun setup() = runBlocking {
         check(context.packageName == "com.dayforge.testbed")
@@ -61,6 +78,7 @@ class TimerServicePersistenceTest {
             }, { it.run() }).build()
         HabitDatabaseProvider.setInstanceForTesting(database)
         hilt.inject()
+        sessions.exclusive { tokens.clearTokens() }
         activity = ActivityScenario.launch(ComponentActivity::class.java)
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             instrumentation.uiAutomation.grantRuntimePermission(context.packageName, "android.permission.POST_NOTIFICATIONS")
@@ -71,6 +89,7 @@ class TimerServicePersistenceTest {
 
     @After fun cleanup() = runBlocking {
         stopService()
+        if (::tokens.isInitialized) sessions.exclusive { tokens.clearTokens() }
         if (::activity.isInitialized) activity.close()
         if (::database.isInitialized) database.close()
         HabitDatabaseProvider.clearInstanceForTesting()
@@ -78,10 +97,11 @@ class TimerServicePersistenceTest {
         Unit
     }
 
-    private fun send(action: String?, id: Long = habitId) {
+    private fun send(action: String?, id: Long = habitId, authority: TimerActionAuthority? = null) {
         val intent = Intent(context, TimerService::class.java).apply {
             this.action = action
             putExtra(TimerService.EXTRA_HABIT_ID, id)
+            authority?.attach(this)
         }
         if (action == TimerService.ACTION_START) context.startForegroundService(intent)
         else context.startService(intent)
@@ -270,5 +290,96 @@ class TimerServicePersistenceTest {
         send(TimerService.ACTION_START)
         awaitCommands(1)
         assertNotNull(database.timeLogDao().getActiveTimeLog())
+    }
+
+    private suspend fun typed(countdown: Boolean) {
+        sessions.exclusive {
+            tokens.saveLoginSession("synthetic-timer", "synthetic-refresh", "member",
+                "ac350000-0000-4000-8000-000000000001", false)
+        }
+        habitId = habits.createHabit("Typed focus", "", HabitType.TIMER, 0, "#123456", HabitSchedule.Daily,
+            targetValue = 1, isCountdown = countdown, completionPolicy = "recurring",
+            appearance = ObjectAppearance(IconReference.Role("habit.custom"), "#123456", "theme"),
+            creationAuthority = creator.capture())
+    }
+
+    @Test fun typedCountupKeepsBirthPolicyAfterConfigEditPauseServiceRecoveryAndOldNotification() = runBlocking {
+        typed(false)
+        send(TimerService.ACTION_START, authority = timerWriter.capture(habitId))
+        awaitCommands(1)
+        val started = requireNotNull(database.timeLogDao().getActiveTimeLog())
+        val startCommand = database.timeLogDao().getPendingTimerCommands().single()
+        val birth = requireNotNull(database.nextRequestDao().origin(NEXT_TIMER, startCommand.commandId))
+        val policy = requireNotNull(decodeNextTimerIntent(birth.intentJson).command.startPolicy)
+        assertEquals(60, policy.targetSeconds); assertFalse(policy.isCountdown); assertEquals(180, policy.maxDurationSeconds)
+        val oldAuthority = requireNotNull(timerWriter.capture(habitId))
+        val expectedPause = TimerNotificationFactory(context).createTimerNotification(0, false, 1, false, habitId, oldAuthority).actions[0].actionIntent
+        awaitState { context.getSystemService(NotificationManager::class.java).activeNotifications.any {
+            it.id == TimerService.NOTIFICATION_ID && it.notification.actions[0].actionIntent == expectedPause
+        } }
+        val oldPause = context.getSystemService(NotificationManager::class.java).activeNotifications.single {
+            it.id == TimerService.NOTIFICATION_ID
+        }.notification.actions[0].actionIntent
+        val edit = habits.getHabitForEditing(habitId)
+        habits.updateHabit(requireNotNull(edit.value).copy(targetValue = 5, isCountdown = true), editAuthority = edit.authority)
+        delay(61_000)
+        send(TimerService.ACTION_PAUSE, authority = oldAuthority)
+        awaitCommands(2)
+        val paused = requireNotNull(database.timeLogDao().getActiveTimeLog())
+        assertTrue(paused.isPaused)
+        stopService()
+        send(null)
+        awaitState { context.getSystemService(NotificationManager::class.java).activeNotifications.any {
+            it.id == TimerService.NOTIFICATION_ID && it.notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() == context.getString(R.string.timer_notification_title_paused)
+        } }
+        val restoredNotification = context.getSystemService(NotificationManager::class.java).activeNotifications.single { it.id == TimerService.NOTIFICATION_ID }.notification
+        assertEquals(TimerNotificationFactory(context).formatTimeText(TimerElapsedCalculator.elapsedSeconds(paused, context), 1, false),
+            restoredNotification.extras.getCharSequence(Notification.EXTRA_TEXT)?.toString())
+        send(TimerService.ACTION_RESUME, authority = timerWriter.capture(habitId))
+        awaitCommands(3)
+        assertTrue(oldPause != context.getSystemService(NotificationManager::class.java).activeNotifications.single { it.id == TimerService.NOTIFICATION_ID }.notification.actions[0].actionIntent)
+        oldPause.send()
+        // A fresh valid stop is serialized after the rejected old transition; the old pause cannot consume sequence 4.
+        val stopAuthority = requireNotNull(timerWriter.capture(habitId))
+        var followUpCount = 0
+        val followUp = async(start = CoroutineStart.UNDISPATCHED) {
+            timerWriter.afterCompletion(habitId, stopAuthority) {
+                val committed = requireNotNull(database.timeLogDao().getById(started.id))
+                assertNotNull(committed.endTime)
+                assertEquals(committed.timerActiveElapsedMillis,
+                    database.timeLogDao().getDayAllocations(started.uuid).sumOf { it.durationMillis })
+                followUpCount++
+            }
+        }
+        delay(50)
+        assertFalse(followUp.isCompleted)
+        send(TimerService.ACTION_STOP, authority = stopAuthority)
+        awaitCommands(4)
+        awaitServiceStopped()
+        val completed = requireNotNull(database.timeLogDao().getById(started.id))
+        assertNotNull(completed.endTime); assertTrue(completed.durationSeconds in 60..180)
+        assertEquals(listOf("start", "pause", "resume", "stop"), database.timeLogDao().getPendingTimerCommands().map { it.commandType })
+        assertEquals(birth, database.nextRequestDao().origin(NEXT_TIMER, startCommand.commandId))
+        assertEquals(completed.timerActiveElapsedMillis, database.timeLogDao().getDayAllocations(started.uuid).sumOf { it.durationMillis })
+        followUp.await()
+        assertEquals(1, followUpCount)
+    }
+
+    @Test fun typedCountdownAutoCompletesOriginalMinuteAfterTargetAndModeChange() = runBlocking {
+        typed(true)
+        val before = SystemClock.elapsedRealtime()
+        send(TimerService.ACTION_START, authority = timerWriter.capture(habitId))
+        awaitCommands(1)
+        val started = requireNotNull(database.timeLogDao().getActiveTimeLog())
+        val edit = habits.getHabitForEditing(habitId)
+        habits.updateHabit(requireNotNull(edit.value).copy(targetValue = 5, isCountdown = false), editAuthority = edit.authority)
+        withTimeout(75_000) { while (database.timeLogDao().getPendingTimerCommands().size < 2) delay(100) }
+        awaitServiceStopped()
+        assertTrue(SystemClock.elapsedRealtime() - before >= 60_000)
+        val completed = requireNotNull(database.timeLogDao().getById(started.id))
+        assertEquals(60, completed.durationSeconds); assertEquals(60_000L, completed.timerActiveElapsedMillis)
+        assertEquals(listOf("start", "stop"), database.timeLogDao().getPendingTimerCommands().map { it.commandType })
+        assertEquals(60_000L, database.timeLogDao().getDayAllocations(started.uuid).sumOf { it.durationMillis })
+        assertEquals(5, habits.getHabitById(habitId)!!.targetValue); assertFalse(habits.getHabitById(habitId)!!.isCountdown)
     }
 }

@@ -51,6 +51,7 @@ internal class NextSyncRuntime @Inject constructor(
             captured.copy(capabilities = captured.capabilities.toSet())
         }
         val blocked = linkedSetOf<String>()
+        val waiting = linkedSetOf<String>()
         var permanentBlock = false
         var uploaded = 0
         var total = queues(access).let { it.operations.size + it.commands.size }
@@ -108,11 +109,21 @@ internal class NextSyncRuntime @Inject constructor(
                     core.acceptOperation(delivery)
                 }
                 uploaded++
+                // A cross-queue start barrier can become ready after its predecessor's ACK in this pass.
+                // Saved permanent rejections are restored by queues(); immutable requests are never rewritten.
+                blocked.removeAll(waiting)
+                waiting.clear()
                 total = maxOf(total, uploaded + queues.operations.size + queues.commands.size - 1)
                 progress(SyncProgress.UploadingChanges(uploaded, total))
             } catch (error: NextRequestException) {
+                if (error.reason == NextRequestException.Reason.TIMER_START_CONFIG_CHANGED) {
+                    permanentBlock = true
+                    blocked += requestId
+                    continue
+                }
                 if (error.reason != NextRequestException.Reason.CAUSAL_PREDECESSOR_PENDING) throw error
                 blocked += requestId
+                waiting += requestId
             } catch (error: OneTimeLocalException) {
                 if (error.reason != OneTimeLocalException.Reason.PENDING_REJECTED) throw error
                 blocked += requestId

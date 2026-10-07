@@ -33,7 +33,8 @@ class HabitStatusCalculator @Inject constructor(
     private val failureChecker: FailureChecker,
     private val completionDao: CompletionDao,
     private val timeLogDao: TimeLogDao,
-    private val oneTimeRepository: com.dayforge.data.repository.OneTimeRepository? = null
+    private val oneTimeRepository: com.dayforge.data.repository.OneTimeRepository? = null,
+    private val timerWriter: com.dayforge.data.repository.NextTimerWriter? = null
 ) {
     /**
      * Calculate complete status for a habit.
@@ -62,7 +63,8 @@ class HabitStatusCalculator @Inject constructor(
 
         // Calculate based on habit type
         return when (habit.habitType) {
-            HabitType.TIMER -> calculateTimerHabit(habit, habitTimeLogs)
+            HabitType.TIMER -> calculateTimerHabit(habit, habitTimeLogs).copy(timerAuthority =
+                if (habit.appearance == null) null else requireNotNull(timerWriter).capture(habit.id, habit))
             HabitType.CHECK_IN,
             HabitType.COUNTING -> calculateCompletionHabit(habit, habitCompletions)
             HabitType.GOAL -> calculateGoalHabit(habit)

@@ -7,6 +7,8 @@ import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.repository.HabitRepository
 import com.dayforge.data.repository.MetricRepository
+import com.dayforge.data.repository.NextTimerWriter
+import com.dayforge.domain.model.TimerActionAuthority
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -15,6 +17,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
 import org.junit.Test
+import org.junit.Assert.assertNull
 
 @RunWith(AndroidJUnit4::class)
 class LinkedMetricCoordinatorTest {
@@ -59,5 +62,21 @@ class LinkedMetricCoordinatorTest {
 
         coVerify(exactly = 0) { habitRepository.getHabitById(any()) }
         coVerify(exactly = 0) { metricRepository.getLinkedMetricSnapshots(any()) }
+    }
+
+    @Test
+    fun typed_timer_prompt_does_not_read_metrics_before_confirmed_owned_completion() = runTest {
+        val writer = mockk<NextTimerWriter>()
+        val ticket = TimerActionAuthority("aa310000-0000-4000-8000-000000000001",
+            "aa310000-0000-4000-8000-000000000002", null, null, null,
+            "aa310000-0000-4000-8000-000000000003", "aa310000-0000-4000-8000-000000000004", 2, null)
+        coordinator = LinkedMetricCoordinator(mockk<Context>(relaxed = true), preferencesManager,
+            metricRepository, habitRepository, timerWriter = writer)
+        coEvery { writer.afterCompletion(7L, ticket, any()) } returns Unit
+        coordinator.showPromptAfterTimerStop(7L, ticket)
+        coVerify(exactly = 1) { writer.afterCompletion(7L, ticket, any()) }
+        coVerify(exactly = 0) { habitRepository.getHabitById(any()) }
+        coVerify(exactly = 0) { metricRepository.getLinkedMetricSnapshots(any()) }
+        assertNull(coordinator.postCheckInState.value)
     }
 }

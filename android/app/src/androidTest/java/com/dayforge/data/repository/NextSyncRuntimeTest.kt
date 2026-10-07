@@ -228,7 +228,7 @@ class NextSyncRuntimeTest : NextCoreRequestFixture() {
             habit = habit.copy(habitType = HabitType.CHECK_IN, schedule = HabitSchedule.Once(), targetValue = 1,
                 completionPolicy = "one_and_done", oneTimeConfirmedVersion = 0,
                 appearance = ObjectAppearance(IconReference.Role("task.custom"), "#123456", "object"))
-            timerHabit = timerHabit.copy(targetValue = 60)
+            timerHabit = timerHabit.copy(targetValue = 1)
             db.habitDao().update(habit); db.habitDao().update(timerHabit)
             db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
         }
@@ -339,7 +339,7 @@ class NextSyncRuntimeTest : NextCoreRequestFixture() {
                     TimerCommandResult(command.commandId, command.sessionUuid, "rejected", errorCode = "MISSING_PREDECESSOR")
                 } else TimerCommandResult(command.commandId, command.sessionUuid, "applied", session = TimerSessionResponse(
                     command.sessionUuid, timerHabit.uuid, "running", id(4), 1, 1, 2, time, time,
-                    timezone = "Asia/Shanghai", isCountdown = false, targetSeconds = 1,
+                    timezone = "Asia/Shanghai", isCountdown = false, targetSeconds = 60,
                     maxDurationSeconds = 180, activeElapsedMs = 0))
                 MaterialSocketServer.Reply(json.encodeToString(TimerCommandBatchResponse(listOf(result), time)).toByteArray())
             }

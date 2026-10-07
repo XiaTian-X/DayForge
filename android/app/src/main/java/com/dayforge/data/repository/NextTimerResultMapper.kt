@@ -41,6 +41,11 @@ internal object NextTimerResultMapper {
                 require(command.sequence == 1 && command.expectedControlGeneration == 0 && command.expectedRevision == null &&
                     command.activityUuid == timer.activityUuid && command.timezone == timer.timezone &&
                     command.activeElapsedMs == null && start == changed && timer.revision == 1 && timer.activeElapsedMs == 0L)
+                command.startPolicy?.let { policy ->
+                    policy.validate()
+                    require(timer.targetSeconds == policy.targetSeconds && timer.isCountdown == policy.isCountdown &&
+                        timer.maxDurationSeconds == policy.maxDurationSeconds)
+                }
                 1
             }
             "takeover" -> {
@@ -51,7 +56,7 @@ internal object NextTimerResultMapper {
         }
         require(timer.controlGeneration == generation)
         if (command.expectedRevision != null) require(timer.revision == command.expectedRevision + 1)
-        if (command.commandType != "start") require(command.activityUuid == null && command.timezone == null)
+        if (command.commandType != "start") require(command.activityUuid == null && command.timezone == null && command.startPolicy == null)
         command.activeElapsedMs?.let { require(it in 0..86_400_000 && command.commandType in setOf("pause", "stop", "cancel")) }
         if (command.commandType == "pause" && command.activeElapsedMs != null)
             require(timer.activeElapsedMs == minOf(command.activeElapsedMs, timer.maxDurationSeconds.toLong() * 1000))

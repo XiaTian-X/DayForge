@@ -1339,6 +1339,16 @@
             "title": "Session Id",
             "type": "string"
           },
+          "start_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimerStartPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "timezone": {
             "anyOf": [
               {
@@ -1503,6 +1513,34 @@
           "active_elapsed_ms"
         ],
         "title": "TimerSessionResponse",
+        "type": "object"
+      },
+      "TimerStartPolicy": {
+        "additionalProperties": false,
+        "properties": {
+          "is_countdown": {
+            "title": "Is Countdown",
+            "type": "boolean"
+          },
+          "max_duration_seconds": {
+            "maximum": 86400.0,
+            "minimum": 1.0,
+            "title": "Max Duration Seconds",
+            "type": "integer"
+          },
+          "target_seconds": {
+            "maximum": 86400.0,
+            "minimum": 0.0,
+            "title": "Target Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "target_seconds",
+          "is_countdown",
+          "max_duration_seconds"
+        ],
+        "title": "TimerStartPolicy",
         "type": "object"
       },
       "Token": {

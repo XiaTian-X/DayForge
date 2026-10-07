@@ -348,6 +348,8 @@ internal class NextCoreRequestStore(
             val sql = database.openHelper.writableDatabase
             val oldProof = NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", arrayOf(kind, id))
             if (kind == NEXT_OPERATION) {
+                if (oldProof == null) NextTimerOrderingStore(database, tokens, sessions, this@NextCoreRequestStore)
+                    .requireStructureReady(requireNotNull(database.syncOutboxDao().getById(origin.queueId)), access)
                 val operation = decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
                 if (operation.action == "delete")
                     NextPlanDeletionStore(database).requireReady(requireNotNull(database.syncOutboxDao().getById(origin.queueId)))
@@ -362,8 +364,10 @@ internal class NextCoreRequestStore(
                         requireNotNull(database.syncOutboxDao().getById(origin.queueId)))
                     encodeSyncRequest(NextSyncPushRequest.serializer(), NextSyncPushRequest(requireNotNull(access.deviceId), listOf(operation)))
                 } else {
-                    val command = decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), TimerCommandRequest.serializer())
+                    val command = decodeNextTimerIntent(origin.intentJson).command
                     require(command.commandId == id)
+                    if (command.commandType == "start") NextTimerOrderingStore(database, tokens, sessions, this@NextCoreRequestStore)
+                        .requireStartReady(requireNotNull(database.timeLogDao().getTimerCommand(origin.queueId)), access)
                     timerOrder?.invoke(requireNotNull(database.timeLogDao().getTimerCommand(origin.queueId)))
                     encodeSyncRequest(TimerCommandBatchRequest.serializer(), TimerCommandBatchRequest(requireNotNull(access.deviceId), listOf(command)))
                 }
@@ -431,8 +435,9 @@ internal class NextCoreRequestStore(
             if (queue.recordType in setOf("completion", "metric_log")) "facts.append" else "structure.write"
         } else {
             val queue = requireNotNull(database.timeLogDao().getTimerCommand(row.queueId))
-            val command = decodeFrozenSyncRequest(row.intentJson.toByteArray(Charsets.UTF_8), TimerCommandRequest.serializer())
-            require(queue.commandId == id && timerRequest(queue) == command)
+            val command = decodeNextTimerIntent(row.intentJson).command
+            require(queue.commandId == id && timerRequest(queue) == command.copy(startPolicy = null))
+            command.startPolicy?.let { require(command.commandType == "start"); it.validate() }
             "timer.control"
         }
         if (permission !in access.capabilities) rejectNextRequest(NextRequestException.Reason.PERMISSION_DENIED)
@@ -453,7 +458,7 @@ internal class NextCoreRequestStore(
         } else {
             val request = decodeFrozenSyncRequest(row.wireBytes, TimerCommandBatchRequest.serializer())
             require(request.deviceId == row.deviceId && request.commands.size == 1 &&
-                request.commands.single() == decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), TimerCommandRequest.serializer()))
+                request.commands.single() == decodeNextTimerIntent(origin.intentJson).command)
         }
     }
 

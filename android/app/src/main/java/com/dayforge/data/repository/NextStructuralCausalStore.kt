@@ -435,6 +435,15 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         }
     }
 
+    /** Start uses the exact accepted structural predecessor, including controlled replacements. */
+    internal suspend fun acceptedPlan(id: String, access: LocalSyncAccess): JsonObject {
+        check(database.inTransaction())
+        val actual = resolve(id, access)
+        val proof = accepted(actual, access)
+        require(proof.operation.entityType == "plan_node" && proof.operation.action == "upsert")
+        return requireNotNull(proof.result.entity)
+    }
+
     /** Full receipt proof, not a mutable shadow or inferred absence. */
     private suspend fun accepted(id: String, access: LocalSyncAccess): Accepted {
         val origin = original(id)

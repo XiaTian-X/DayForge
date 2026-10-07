@@ -91,13 +91,19 @@ internal class NextCoreLocalIntentStore(
                         if (row.attemptCount != 0 || row.deadLetteredAt != null || row.lastError != null || row.errorCode != null)
                             rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
                         requestId = row.commandId; permission = "timer.control"
-                        val command = timerRequest(row)
+                        val originalCommand = timerRequest(row)
+                        val intent = if (row.commandType == "start")
+                            NextTimerPolicyStore(database).capture(originalCommand, access)
+                            else NextTimerIntent(originalCommand)
+                        val command = intent.command
                         val activity = row.activityUuid ?: database.timeLogDao().getTimeLogByUuid(row.sessionUuid)?.let {
                             database.habitDao().getHabitById(it.habitId)?.uuid
                         }
                         activity?.let { NextPlanDeletionStore(database).requireWritable(it) }
-                        bytes = encodeSyncRequest(TimerCommandRequest.serializer(), command)
-                        decodeFrozenSyncRequest(bytes, TimerCommandRequest.serializer())
+                        bytes = if (command.startPolicy != null)
+                            encodeSyncRequest(NextTimerIntent.serializer(), intent)
+                            else encodeSyncRequest(TimerCommandRequest.serializer(), command)
+                        decodeNextTimerIntent(bytes.toString(Charsets.UTF_8))
                         val envelope = encodeSyncRequest(TimerCommandBatchRequest.serializer(),
                             TimerCommandBatchRequest(SIZE_DEVICE, listOf(command)))
                         decodeFrozenSyncRequest(envelope, TimerCommandBatchRequest.serializer())

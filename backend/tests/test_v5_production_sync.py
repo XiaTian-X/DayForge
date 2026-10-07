@@ -348,6 +348,11 @@ async def test_full_timer_commands_reads_heartbeat_and_exact_replay(
             active_elapsed_ms=60000,
         ),
     ]
+    commands[0]["start_policy"] = dict(
+        target_seconds=60,
+        is_countdown=countdown,
+        max_duration_seconds=60 if countdown else 180,
+    )
     first = await client.post(
         PATHS[4], headers=headers, json=dict(device_id=device, commands=commands[:1])
     )
@@ -432,16 +437,18 @@ async def test_real_final_commit_failure_never_acknowledges_and_original_request
                 [operation(node(mode="duration"), identity=activity)],
             )
         )[0]["status"] == "applied"
+        start_command = timer_command(
+            "start", timer, 1, datetime.now(UTC), activity_id=activity
+        )
+        start_command["start_policy"] = dict(
+            target_seconds=60, is_countdown=False, max_duration_seconds=180
+        )
         method, path, body, params, table, action = (
             "POST",
             PATHS[4],
             dict(
                 device_id=device,
-                commands=[
-                    timer_command(
-                        "start", timer, 1, datetime.now(UTC), activity_id=activity
-                    )
-                ],
+                commands=[start_command],
             ),
             {},
             "timer_commands",
@@ -486,6 +493,203 @@ async def test_real_final_commit_failure_never_acknowledges_and_original_request
             **retried.json()["results"][0],
             "status": "already_applied",
         }
+
+
+@pytest.mark.parametrize(
+    "policy,code",
+    [
+        (None, "TIMER_START_POLICY_REQUIRED"),
+        (
+            dict(target_seconds=120, is_countdown=False, max_duration_seconds=360),
+            "TIMER_START_CONFIG_CHANGED",
+        ),
+        (
+            dict(target_seconds=60, is_countdown=True, max_duration_seconds=60),
+            "TIMER_START_CONFIG_CHANGED",
+        ),
+    ],
+)
+async def test_start_policy_rejection_is_durable_without_timer_or_fact(
+    production_v5, policy, code
+):
+    client, engine, headers, device = production_v5
+    activity, timer = str(uuid4()), str(uuid4())
+    assert (
+        await push(
+            client,
+            headers,
+            device,
+            [operation(node(mode="duration"), identity=activity)],
+        )
+    )[0]["status"] == "applied"
+    command = timer_command("start", timer, 1, datetime.now(UTC), activity_id=activity)
+    if policy is not None:
+        command["start_policy"] = policy
+    body = dict(device_id=device, commands=[command])
+    first = await client.post(PATHS[4], headers=headers, json=body)
+    assert first.status_code == 200, first.text
+    result = first.json()["results"][0]
+    assert result["status"] in {"rejected", "conflict"} and result["error_code"] == code
+    assert result["session"] is None
+    state = await database_state(engine)
+    replay = await client.post(PATHS[4], headers=headers, json=body)
+    assert replay.status_code == 200 and replay.json()["results"][0] == result
+    replayed_state = await database_state(engine)
+    # Authenticated admission legitimately updates visit metadata, not command/business history.
+    for table in state:
+        visit_column = {
+            "client_devices": "last_seen_at",
+            "api_tokens": "last_used_at",
+        }.get(table)
+        if visit_column is None:
+            assert replayed_state[table] == state[table]
+        else:
+            assert len(replayed_state[table]) == len(state[table])
+            for before, after in zip(state[table], replayed_state[table], strict=True):
+                original, current = dict(before._mapping), dict(after._mapping)
+                assert current[visit_column] == original[visit_column] or (
+                    current[visit_column] is not None
+                    and original[visit_column] is not None
+                    and current[visit_column] >= original[visit_column]
+                )
+                del original[visit_column], current[visit_column]
+                assert current == original
+    async with engine.connect() as connection:
+        for table in (
+            "timer_sessions",
+            "timer_segments",
+            "duration_day_allocations",
+            "activity_events",
+        ):
+            assert (
+                await connection.execute(text(f"SELECT COUNT(*) FROM {table}"))
+            ).scalar_one() == 0
+
+
+@pytest.mark.parametrize("countdown", [False, True])
+@pytest.mark.parametrize("initial_target,next_target", [(60, 300), (120, 60)])
+async def test_config_edit_only_changes_next_timer_not_current_completion_or_replay(
+    production_v5, countdown, initial_target, next_target
+):
+    client, engine, headers, device = production_v5
+    activity, timer = str(uuid4()), str(uuid4())
+    plan = node(mode="duration", countdown=countdown)
+    plan["activity"]["target_value"] = initial_target
+    assert (await push(client, headers, device, [operation(plan, identity=activity)]))[
+        0
+    ]["status"] == "applied"
+    occurred = datetime.now(UTC) - timedelta(minutes=5)
+    command = timer_command("start", timer, 1, occurred, activity_id=activity)
+    command["start_policy"] = dict(
+        target_seconds=initial_target,
+        is_countdown=countdown,
+        max_duration_seconds=initial_target * (1 if countdown else 3),
+    )
+    original = dict(device_id=device, commands=[command])
+    started = await client.post(PATHS[4], headers=headers, json=original)
+    assert started.status_code == 200, started.text
+    result = started.json()["results"][0]
+    assert result["status"] == "applied"
+    changed = deepcopy(plan)
+    changed["activity"].update(target_value=next_target, is_countdown=not countdown)
+    assert (
+        await push(
+            client, headers, device, [operation(changed, identity=activity, revision=1)]
+        )
+    )[0]["status"] == "applied"
+    active = await client.get(PATHS[5], headers=headers, params=dict(device_id=device))
+    assert active.status_code == 200 and active.json()["session"] == result["session"]
+    stopped = await client.post(
+        PATHS[4],
+        headers=headers,
+        json=dict(
+            device_id=device,
+            commands=[
+                timer_command(
+                    "stop",
+                    timer,
+                    2,
+                    occurred + timedelta(seconds=initial_target),
+                    revision=1,
+                    active_elapsed_ms=initial_target * 1000,
+                )
+            ],
+        ),
+    )
+    assert stopped.status_code == 200, stopped.text
+    completed = stopped.json()["results"][0]
+    assert (
+        completed["status"] == "applied"
+        and completed["session"]["state"] == "completed"
+    )
+    assert completed["session"]["active_elapsed_ms"] == initial_target * 1000
+    replay = await client.post(PATHS[4], headers=headers, json=original)
+    assert replay.json()["results"][0] == {**result, "status": "already_applied"}
+    next_command = timer_command(
+        "start", str(uuid4()), 1, occurred + timedelta(minutes=3), activity_id=activity
+    )
+    next_command["start_policy"] = dict(
+        target_seconds=next_target,
+        is_countdown=not countdown,
+        max_duration_seconds=next_target * (3 if countdown else 1),
+    )
+    next_result = await client.post(
+        PATHS[4], headers=headers, json=dict(device_id=device, commands=[next_command])
+    )
+    assert next_result.status_code == 200, next_result.text
+    next_session = next_result.json()["results"][0]
+    assert (
+        next_session["status"] == "applied"
+        and next_session["session"]["target_seconds"] == next_target
+    )
+    assert next_session["session"]["is_countdown"] == (not countdown)
+    async with engine.connect() as connection:
+        assert (
+            await connection.execute(text("SELECT COUNT(*) FROM activity_events"))
+        ).scalar_one() == 1
+        assert (
+            await connection.execute(
+                text("SELECT SUM(duration_ms) FROM duration_day_allocations")
+            )
+        ).scalar_one() == initial_target * 1000
+
+
+async def test_malformed_start_policy_is_rejected_before_any_write(production_v5):
+    client, engine, headers, device = production_v5
+    activity = str(uuid4())
+    assert (
+        await push(
+            client,
+            headers,
+            device,
+            [operation(node(mode="duration"), identity=activity)],
+        )
+    )[0]["status"] == "applied"
+    for policy in (
+        dict(target_seconds=60, is_countdown=False, max_duration_seconds=181),
+        dict(target_seconds="60", is_countdown=False, max_duration_seconds=180),
+        dict(target_seconds=60, is_countdown="false", max_duration_seconds=180),
+        dict(target_seconds=0, is_countdown=True, max_duration_seconds=86400),
+    ):
+        command = timer_command(
+            "start", str(uuid4()), 1, datetime.now(UTC), activity_id=activity
+        )
+        command["start_policy"] = policy
+        before = await database_state(engine)
+        response = await client.post(
+            PATHS[4], headers=headers, json=dict(device_id=device, commands=[command])
+        )
+        assert response.status_code == 422, response.text
+        assert await database_state(engine) == before
+    command = timer_command("cancel", str(uuid4()), 2, datetime.now(UTC), revision=1)
+    command["start_policy"] = dict(
+        target_seconds=60, is_countdown=False, max_duration_seconds=180
+    )
+    before = await database_state(engine)
+    response = await client.post(
+        PATHS[4], headers=headers, json=dict(device_id=device, commands=[command])
+    )
+    assert response.status_code == 422 and await database_state(engine) == before
 
 
 async def test_v5_response_validation_cannot_fallback_to_v4_or_commit_cursor(

@@ -58,7 +58,8 @@ data class ChildHabitWithStats(
     val nextCheckInDate: LocalDate? = null,
     val targetProgress: Int = 0,  // Distinct days completed for habits with targetCycles
     val hasFailed: Boolean = false,  // Failure status for target-based habits
-    val oneTimeStatus: com.dayforge.domain.model.OneTimeStatus? = null
+    val oneTimeStatus: com.dayforge.domain.model.OneTimeStatus? = null,
+    val timerAuthority: com.dayforge.domain.model.TimerActionAuthority? = null
 ) {
     val completedForDisplay: Boolean get() = oneTimeStatus?.completed ?: completedToday
     /**
@@ -322,8 +323,14 @@ class NestedViewModel @Inject constructor(
      * Delegates to HabitTimerCoordinator for shared implementation.
      */
     fun startTimer(habitId: Long, targetMinutes: Int) {
+        val authority = topLevelHabitsWithChildren.value.flatMap { it.children }
+            .find { it.habit.id == habitId }?.timerAuthority
         viewModelScope.launch {
-            timerCoordinator.startTimer(habitId, targetMinutes)
+            try { timerCoordinator.startTimer(habitId, targetMinutes, authority) }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                Toast.makeText(context, context.getString(R.string.metric_error_record_failed, error.message.orEmpty()), Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -350,9 +357,14 @@ class NestedViewModel @Inject constructor(
     fun stopTimer() {
         val currentState = activeTimerState.value ?: return
         viewModelScope.launch {
-            metricCoordinator.showPromptAfterTimerStop(
-                timerCoordinator.stopTimer(currentState)
-            )
+            try {
+                metricCoordinator.showPromptAfterTimerStop(
+                    timerCoordinator.stopTimer(currentState), currentState.authority
+                )
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                Toast.makeText(context, context.getString(R.string.metric_error_record_failed, error.message.orEmpty()), Toast.LENGTH_LONG).show()
+            }
         }
     }
 
