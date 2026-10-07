@@ -213,7 +213,7 @@ class HabitRepository @Inject constructor(
         selectedMetricIds: Set<Long>? = null,
         editAuthority: ObjectEditAuthority? = null
     ) {
-        structuralEditGuard?.requireAllowed()
+        if (habit.appearance == null) structuralEditGuard?.requireAllowed()
         var persistedHabit = habit.copy(updatedAt = System.currentTimeMillis())
         suspend fun commit(saved: HabitEntity): HabitEntity {
             val previous = requireNotNull(habitDao.getHabitById(habit.id)) {
