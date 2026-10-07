@@ -38,8 +38,39 @@ internal object NextCommonFactMapper {
     }
 
     fun validateLinkSnapshot(change: SyncV2Change) {
-        val body = header(change, "activity_metric_link", linkFields)
+        val body = header(change, "activity_metric_link", linkFields, deleted = change.operation == "delete")
         validateLinkWrite(JsonObject(body.filterKeys { it in linkFields }))
+    }
+
+    /** Immutable body validation without today's mutable parent or fabricated local FK IDs. */
+    fun validateOrdinaryFactSnapshot(change: SyncV2Change) {
+        if (change.entityType == "metric_observation") {
+            val body = observationBody(change, deleted = change.operation == "delete")
+            require(isContractUuid(body.text("metric_uuid")))
+        } else {
+            require(change.operation == "upsert") // Undo is a new event; direct event deletion is forbidden.
+            val optionalOnce = change.payload.keys.intersect(setOf("one_time", "one_time_state_after"))
+            require(optionalOnce.all { change.payload[it] == JsonNull })
+            val body = header(change, "activity_event", eventFields + optionalOnce)
+            require(isContractUuid(body.text("activity_uuid")))
+            ancillaryDuration(body)
+            source(body, body.instant("occurred_at"))
+            when (body.text("event_type")) {
+                "check_in" -> {
+                    require(body.getValue("value") == JsonNull || body.decimal("value").compareTo(BigDecimal.ONE) == 0)
+                    require(body.getValue("reverts_event_uuid") == JsonNull)
+                }
+                "count_delta", "count_snapshot" -> {
+                    body.decimal("value").intValueExact()
+                    require(body.getValue("reverts_event_uuid") == JsonNull)
+                }
+                "revert" -> {
+                    if (body.getValue("value") != JsonNull) body.decimal("value")
+                    require(isContractUuid(body.text("reverts_event_uuid")) && body.text("reverts_event_uuid") != change.entityUuid)
+                }
+                else -> error("Not an ordinary immutable event")
+            }
+        }
     }
 
     fun completion(change: SyncV2Change, habit: HabitEntity, previous: CompletionEntity? = null): CompletionEntity {
@@ -123,7 +154,7 @@ internal object NextCommonFactMapper {
     }
 
     fun observation(change: SyncV2Change, metric: MetricEntity, previous: MetricLogEntity? = null): MetricLogEntity {
-        val body = header(change, "metric_observation", observationFields)
+        val body = observationBody(change)
         require(body.text("metric_uuid") == metric.uuid && isContractUuid(metric.uuid) && metric.id > 0)
         val occurred = body.instant("occurred_at")
         val (zone, day) = source(body, occurred)
@@ -159,12 +190,21 @@ internal object NextCommonFactMapper {
         return body
     }
 
-    private fun header(change: SyncV2Change, type: String, fields: Set<String>): JsonObject {
-        require(change.entityType == type && change.operation == "upsert" && change.sequence >= 0 && change.revision > 0 && isContractUuid(change.entityUuid))
+    private fun observationBody(change: SyncV2Change, deleted: Boolean = false): JsonObject {
+        val body = header(change, "metric_observation", observationFields, deleted)
+        source(body, body.instant("occurred_at"))
+        body.decimal("value").exactDouble()
+        require(body.text("unit").let { it.codePointCount(0, it.length) in 1..50 })
+        return body
+    }
+
+    private fun header(change: SyncV2Change, type: String, fields: Set<String>, deleted: Boolean = false): JsonObject {
+        require(change.entityType == type && change.operation == (if (deleted) "delete" else "upsert") && change.sequence >= 0 && change.revision > 0 && isContractUuid(change.entityUuid))
         val body = change.payload
         require(body.keys == header + fields && body.text("public_id") == change.entityUuid &&
-            body.integer("revision") == change.revision && body.getValue("deleted_at") == JsonNull)
+            body.integer("revision") == change.revision)
         body.instant("created_at"); body.instant("updated_at")
+        if (deleted) body.instant("deleted_at") else require(body.getValue("deleted_at") == JsonNull)
         return body
     }
     private fun source(body: JsonObject, basis: Instant): Pair<ZoneId, LocalDate> {

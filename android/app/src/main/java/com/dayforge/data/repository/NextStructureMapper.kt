@@ -42,6 +42,14 @@ internal object NextStructureMapper {
 
     fun validateMetricWrite(body: JsonObject) = validateMetric(body)
 
+    /** A delete ACK carries a complete server snapshot, not merely an ID or timestamp. */
+    fun validateTombstone(payload: JsonObject, type: String, uuid: String, revision: Long) {
+        val fields = when (type) { "plan_node" -> planFields; "metric" -> metricFields; else -> error("Not a structure") }
+        validateHeader(payload, uuid, revision, fields, deleted = true)
+        val body = JsonObject(payload.filterKeys { it in fields })
+        if (type == "plan_node") validatePlanWrite(body, uuid) else validateMetric(body)
+    }
+
     private fun decodePlan(body: JsonObject, uuid: String, updatedAt: Long, previous: HabitEntity?): HabitEntity {
         require(body.keys == planFields && isContractUuid(uuid))
         val kind = body.text("node_kind")
@@ -244,10 +252,11 @@ internal object NextStructureMapper {
         return result to date
     }
 
-    private fun validateHeader(payload: JsonObject, uuid: String, revision: Long, fields: Set<String>) {
+    private fun validateHeader(payload: JsonObject, uuid: String, revision: Long, fields: Set<String>, deleted: Boolean = false) {
         require(isContractUuid(uuid) && revision > 0 && payload.keys == fields + header)
-        require(payload.text("public_id") == uuid && payload.long("revision") == revision && payload["deleted_at"] == JsonNull)
+        require(payload.text("public_id") == uuid && payload.long("revision") == revision)
         instant(payload, "created_at"); instant(payload, "updated_at")
+        if (deleted) instant(payload, "deleted_at") else require(payload["deleted_at"] == JsonNull)
     }
     private fun failure(detail: JsonObject): FailMode {
         val policy = detail.getValue("failure_policy").jsonObject

@@ -785,11 +785,12 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
         assertEquals(NextOperationAcceptance.REPLAYED, store.acceptOperation(delivery))
     }
 
-    @Test fun unsupportedDeleteAndRejectedResultKeepPendingWorkAndNoCursor() = runBlocking<Unit> {
+    @Test fun rejectedDeleteResultKeepsPendingWorkAndNoCursor() = runBlocking<Unit> {
         producer().write(local()) { metrics().deleteMetric(metric) }
         val row = db.syncOutboxDao().getAll().single(); register(); val (http, _) = channel()
         val store = sender(http); val delivery = requireNotNull(store.sendOperation(access(), row.operationId))
-        assertEquals(NextRequestException.Reason.UNSUPPORTED_ACCEPTANCE, (rejected { store.acceptOperation(delivery) } as NextRequestException).reason)
+        assertEquals("INVALID_PAYLOAD", delivery.result.results.single().errorCode)
+        assertTrue(rejected { store.acceptOperation(delivery) } is IllegalArgumentException)
         assertUnaccepted(row)
     }
 
