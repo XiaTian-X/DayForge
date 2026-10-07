@@ -5,12 +5,16 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 scope="${1:-all}"
 
 case "$scope" in
-  all|root|android|android-build|backend) ;;
+  all|root|android|android-build|android-targeted|backend) ;;
   *)
-    echo "Usage: tools/verify [all|root|android|android-build|backend]" >&2
+    echo "Usage: tools/verify [all|root|android|android-build|backend|android-targeted CLASS ...]" >&2
     exit 2
     ;;
 esac
+if [[ "$scope" != "android-targeted" && $# -gt 1 ]]; then
+  echo "Only android-targeted accepts explicit class arguments." >&2
+  exit 2
+fi
 
 verify_root() {
   git -C "$repo_root" diff --check
@@ -87,10 +91,13 @@ find_java_home() {
 }
 
 verify_android() {
+  local selected_classes=("$@")
   local java_home
   local android_args=(-m tools.run_android_tests)
   if [[ "$scope" == "android-build" ]]; then
     android_args+=(--build-only)
+  elif [[ "$scope" == "android-targeted" ]]; then
+    android_args+=(--classes "${selected_classes[@]}")
   fi
   java_home="$(find_java_home)"
   (
@@ -123,5 +130,6 @@ case "$scope" in
     ;;
   backend) verify_backend ;;
   android|android-build) verify_android ;;
+  android-targeted) shift; verify_android "$@" ;;
   root) ;;
 esac

@@ -1,6 +1,7 @@
-"""Build once, discover on a physical device, and run ALL tests in three sequential shards.
+"""Physical verification: full three-shard gate or explicitly scoped test classes.
 
-No filters, retries, parallel devices, raised per-case deadlines, or host Android tests.
+Only scoped mode accepts a class selector. No external filters, retries, parallel
+devices, raised per-case deadlines, or host Android tests.
 Reports from prior runs are moved aside, never accepted as current evidence.
 """
 
@@ -9,6 +10,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import signal
 import stat
 import subprocess
@@ -29,6 +31,28 @@ COMPONENT = TEST_PACKAGE + "/com.dayforge.HiltTestRunner"
 RESULTS = "outputs/androidTest-results/connected/deviceTest"
 COVERAGE_INPUT = "outputs/code_coverage/deviceTestAndroidTest/connected"
 COVERAGE_REPORT = "reports/coverage/androidTest/deviceTest/connected"
+
+
+def selected_classes(names: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    if not 1 <= len(names) <= 64 or len(set(names)) != len(names):
+        raise ValueError("Select 1..64 distinct qualified test classes")
+    for name in names:
+        if len(name) > 256 or not re.fullmatch(
+            r"com\.dayforge\.(?:[A-Za-z_][A-Za-z_0-9]*\.)*[A-Za-z_][A-Za-z_0-9]*(?:\$[A-Za-z_][A-Za-z_0-9]*)*",
+            name,
+        ):
+            raise ValueError("Only explicit DayForge test classes are accepted")
+    return tuple(sorted(names))
+
+
+def parse_arguments(arguments: list[str]) -> tuple[bool, tuple[str, ...]]:
+    if not arguments:
+        return False, ()
+    if arguments == ["--build-only"]:
+        return True, ()
+    if arguments[0] == "--classes":
+        return False, selected_classes(arguments[1:])
+    raise ValueError("Use --build-only or --classes followed by qualified classes")
 
 
 def discover(output: str) -> set[tuple[str, str]]:
@@ -113,7 +137,7 @@ def check_global_arguments(repo: Path) -> None:
             )
     if "android.testInstrumentationRunnerArguments" in text:
         raise ValueError(
-            "External instrumentation arguments are not allowed by the full-suite gate"
+            "External instrumentation arguments are not allowed by the verification gate"
         )
 
 
@@ -257,7 +281,11 @@ class Gate:
             paths.append(path)
         return paths
 
-    def run_gate(self, build_only: bool = False) -> None:
+    def run_gate(self, build_only: bool = False, classes: tuple[str, ...] = ()) -> None:
+        if build_only and classes:
+            raise ValueError("Build-only and scoped device testing are separate modes")
+        if classes:
+            classes = selected_classes(classes)
         check_global_arguments(self.repo)
         self.execute(
             "build",
@@ -298,11 +326,19 @@ class Gate:
             "-e",
             "timeout_msec",
             "150000",
+            *(["-e", "class", ",".join(classes)] if classes else []),
             COMPONENT,
             timeout=150,
         )
         expected = discover(log.read_text())
         self.cleanup(prefix="discovery")
+        if classes:
+            if {name for name, _ in expected} != set(classes):
+                raise ValueError(
+                    "Scoped discovery must find every selected class and no others"
+                )
+            self.run_targeted(classes, expected, apks, hashes, log)
+            return
         print(
             f"Discovered {len(expected)} cases; running {SHARDS} fixed sequential shards.",
             flush=True,
@@ -384,11 +420,72 @@ class Gate:
             "discovered_cases": sorted(expected),
         }
 
+    def run_targeted(
+        self,
+        classes: tuple[str, ...],
+        expected: set[tuple[str, str]],
+        apks: list[Path],
+        hashes: list[str],
+        discovery_log: Path,
+    ) -> None:
+        print(
+            f"Scoped physical run: {len(expected)} cases in {len(classes)} explicit classes; NOT the full gate.",
+            flush=True,
+        )
+        self.execute(
+            "targeted",
+            [
+                "./gradlew",
+                "--no-daemon",
+                "connectedDeviceTestAndroidTest",
+                "-Pandroid.testInstrumentationRunnerArguments.log=false",
+                "-Pandroid.testInstrumentationRunnerArguments.timeout_msec=150000",
+                "-Pandroid.testInstrumentationRunnerArguments.class="
+                + ",".join(classes),
+            ],
+            SHARD_TIMEOUT_SECONDS,
+        )
+        if hashes != [digest(path) for path in apks]:
+            raise ValueError("APKs changed during scoped verification")
+        reports = self.rotate(RESULTS, "targeted-results")
+        actual, errors = read_cases(reports)
+        if errors or actual != expected:
+            raise ValueError(
+                "; ".join(errors) or "Scoped discovered/executed identity mismatch"
+            )
+        source = self.rotate(COVERAGE_INPUT, "targeted-coverage")
+        inputs = sorted(source.rglob("*.ec"))
+        if len(inputs) != 1:
+            raise ValueError("Exactly one fresh scoped coverage input is required")
+        self.check_warnings()
+        self.evidence = {
+            "format": 1,
+            "status": "targeted_complete",
+            "scope": "targeted",
+            "selected_classes": list(classes),
+            "cases": len(actual),
+            "apk_sha256": hashes,
+            "discovery_sha256": digest(discovery_log),
+            "coverage_inputs_sha256": [digest(inputs[0])],
+            "coverage_calibration": "not_run_targeted_scope",
+            "test_reports_sha256": {
+                str(path.relative_to(self.run)): digest(path)
+                for path in reports.glob("TEST-*.xml")
+            },
+            "discovered_cases": sorted(expected),
+        }
+
     def finish(self) -> None:
         if self.evidence is not None:
-            (self.run / "complete.json").write_text(
+            targeted = self.evidence.get("scope") == "targeted"
+            (self.run / ("targeted.json" if targeted else "complete.json")).write_text(
                 json.dumps(self.evidence, indent=2) + "\n"
             )
+            if targeted:
+                print(
+                    f"Scoped physical checks passed: {self.evidence['cases']} cases; full-suite gate NOT RUN. Evidence: {self.run}"
+                )
+                return
             print(
                 f"Full physical Android gate passed: {self.evidence['cases']} cases, all {SHARDS} shards and coverage. Evidence: {self.run}"
             )
@@ -447,9 +544,12 @@ class Gate:
 
 
 def main() -> int:
-    if sys.argv[1:] not in ([], ["--build-only"]):
+    try:
+        build_only, classes = parse_arguments(sys.argv[1:])
+    except ValueError as error:
         print(
-            "Usage: python -m tools.run_android_tests [--build-only]", file=sys.stderr
+            f"{error}\nUsage: python -m tools.run_android_tests [--build-only | --classes CLASS ...]",
+            file=sys.stderr,
         )
         return 2
     gate = None
@@ -460,7 +560,7 @@ def main() -> int:
     previous = signal.signal(signal.SIGTERM, interrupt)
     try:
         with verification_lock():
-            if not sys.argv[1:]:
+            if not build_only:
                 os.environ["ANDROID_SERIAL"] = subprocess.check_output(
                     [sys.executable, "-m", "tools.check_android_device"],
                     text=True,
@@ -468,7 +568,7 @@ def main() -> int:
                 ).strip()
             gate = Gate(Path(__file__).resolve().parents[1])
             try:
-                gate.run_gate(build_only=bool(sys.argv[1:]))
+                gate.run_gate(build_only=build_only, classes=classes)
             except BaseException as primary:
                 try:
                     gate.cleanup()
