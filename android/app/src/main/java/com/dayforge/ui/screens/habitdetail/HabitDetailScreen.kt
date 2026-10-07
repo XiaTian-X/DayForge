@@ -142,6 +142,7 @@ fun HabitDetailScreen(
             color = MaterialTheme.colorScheme.surface
         ) {
             Column {
+                state.errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 // Active Status Toggle
                 Row(
                     modifier = Modifier
@@ -205,6 +206,7 @@ fun HabitDetailScreen(
                     ) {
                         val streakStats: StreakStats? = state.streakStats
                         val habit = state.habit
+                        val once = state.oneTimeStatus
 
                         // Current streak and best streak
                         if (streakStats != null) {
@@ -222,7 +224,20 @@ fun HabitDetailScreen(
                             Spacer(modifier = Modifier.height(12.dp))
                         }
 
-                        if (habit?.targetCycles != null) {
+                        if (once != null) {
+                            Text(stringResource(if (once.completed)
+                                R.string.habit_card_status_completed else R.string.once_not_completed),
+                                style = MaterialTheme.typography.titleMedium)
+                            if (!once.canChange) {
+                                Text(stringResource(R.string.once_change_unavailable),
+                                    style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (once.completed) {
+                                TextButton(onClick = { viewModel.undoCompletion() }, enabled = once.canChange) {
+                                    Text(stringResource(R.string.once_undo))
+                                }
+                            }
+                        } else if (habit?.targetCycles != null) {
                             // Target-based habit: show TargetProgressIndicator
                             TargetProgressIndicator(
                                 progress = state.targetProgress,
@@ -247,7 +262,16 @@ fun HabitDetailScreen(
 
                 // Completion Calendar - only for non-GOAL habits
                 val habit = state.habit
-                if (habit?.habitType != HabitType.GOAL) {
+                if (habit?.completionPolicy == "one_and_done") {
+                    Text(stringResource(R.string.once_history), style = MaterialTheme.typography.titleMedium)
+                    state.completions.sortedByDescending { it.actualCompletedAt }.forEach { event ->
+                        val timestamp = java.time.Instant.ofEpochMilli(requireNotNull(event.actualCompletedAt))
+                            .atZone(java.time.ZoneId.of(event.recordedTimezone))
+                            .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss VV"))
+                        Text(stringResource(if (event.oneTimeAction == "complete") R.string.once_history_completed
+                            else R.string.once_history_undone, timestamp), style = MaterialTheme.typography.bodyMedium)
+                    }
+                } else if (habit?.habitType != HabitType.GOAL) {
                     val completions: List<CompletionEntity> = state.completions
                     CompletionCalendar(completions = completions)
                 }

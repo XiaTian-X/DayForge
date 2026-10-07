@@ -501,21 +501,38 @@ fun NestedScreen(
             PostCheckInDialog(
                 habitName = state.habitName,
                 linkedMetrics = state.linkedMetrics,
+                promptIdentity = state.oneTimePrompt?.eventUuid,
+                missingTargets = state.oneTimePrompt?.entries?.filterNot { it.available }?.map { it.name }.orEmpty(),
+                onRefreshMetadata = if (state.oneTimePrompt != null) viewModel::refreshPostCheckInMetadata else null,
+                initialInputs = state.oneTimePrompt?.entries?.associate { it.metricId to (it.input to it.note) }.orEmpty(),
+                onDraftChange = { inputs -> state.oneTimePrompt?.let { viewModel.savePostCheckInDraft(it.eventUuid, inputs) } },
                 onRecord = { values, neverAskAgain ->
                     scope.launch {
-                        if (!viewModel.recordMetricValues(state.habitId, values)) return@launch
-                        if (neverAskAgain) {
-                            viewModel.setNeverAskAgain(state.habitId, true)
+                        try {
+                            if (!viewModel.recordMetricValues(state.habitId, values, state.oneTimePrompt?.eventUuid)) return@launch
+                            if (neverAskAgain) {
+                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid)
+                            }
+                            viewModel.dismissPostCheckInDialog()
+                        } catch (error: Exception) {
+                            if (error is kotlinx.coroutines.CancellationException) throw error
+                            Toast.makeText(context, context.getString(R.string.metric_error_record_failed,
+                                error.message.orEmpty()), Toast.LENGTH_LONG).show()
                         }
-                        viewModel.dismissPostCheckInDialog()
                     }
                 },
                 onSkip = { neverAskAgain ->
                     scope.launch {
-                        if (neverAskAgain) {
-                            viewModel.setNeverAskAgain(state.habitId, true)
+                        try {
+                            if (neverAskAgain) {
+                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid)
+                            }
+                            viewModel.skipPostCheckInDialog(state.habitId, state.oneTimePrompt?.eventUuid)
+                        } catch (error: Exception) {
+                            if (error is kotlinx.coroutines.CancellationException) throw error
+                            Toast.makeText(context, context.getString(R.string.metric_error_record_failed,
+                                error.message.orEmpty()), Toast.LENGTH_LONG).show()
                         }
-                        viewModel.dismissPostCheckInDialog()
                     }
                 },
                 onDismiss = { viewModel.dismissPostCheckInDialog() }

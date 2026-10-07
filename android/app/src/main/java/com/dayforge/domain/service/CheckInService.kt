@@ -63,6 +63,7 @@ class CheckInService @Inject constructor(
      */
     suspend fun isCheckInAllowedToday(habitId: Long): Boolean {
         val habit = habitRepository.getHabitById(habitId) ?: return false
+        if (habit.completionPolicy == "one_and_done") return habitRepository.getOneTimeStatus(habitId).canChange
         return ScheduleValidator.isCheckInAllowedToday(habit.schedule, habit.createdAt)
     }
 
@@ -73,9 +74,16 @@ class CheckInService @Inject constructor(
      * @param habitId The ID of the habit
      * @return CheckInResult.Success with completed, progress, goalReached; or CheckInResult.Error
      */
-    suspend fun toggleCheckIn(context: Context, habitId: Long): CheckInResult {
+    suspend fun toggleCheckIn(context: Context, habitId: Long, expectedHabitUuid: String? = null,
+        oneTimeAuthority: com.dayforge.domain.model.OneTimeActionAuthority? = null): CheckInResult {
         val habit = habitRepository.getHabitById(habitId)
             ?: return CheckInResult.Error("Habit not found")
+        if (expectedHabitUuid != null && habit.uuid != expectedHabitUuid) return CheckInResult.Error("Habit changed")
+
+        if (habit.completionPolicy == "one_and_done") {
+            return CheckInResult.Success(habitRepository.toggleOneTime(context, habitId, habit.uuid, oneTimeAuthority), 0, false)
+        }
+        check(oneTimeAuthority == null) { "ONE_TIME_ACTION_EXPIRED" }
 
         val todayCount = habitRepository.getTodayCompletionCount(habitId)
         val completed: Boolean
@@ -174,6 +182,9 @@ class CheckInService @Inject constructor(
      * @return true if count >= target
      */
     suspend fun isCompleted(habitId: Long, targetValue: Int): Boolean {
+        if (habitRepository.getHabitById(habitId)?.completionPolicy == "one_and_done") {
+            return habitRepository.getOneTimeStatus(habitId).completed
+        }
         val todayCount = habitRepository.getTodayCompletionCount(habitId)
         return todayCount >= targetValue
     }

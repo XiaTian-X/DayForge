@@ -1133,4 +1133,12 @@
     <string name="icon_library_preview">Preview</string>
     <string name="icon_library_select">Select locally</string>
     <string name="icon_library_image_failed">Image unavailable</string>
+    <string name="once_not_completed">Not completed</string>
+    <string name="once_change_unavailable">Changes unavailable: sync recovery or account permission required</string>
+    <string name="once_undo">Undo completion</string>
+    <string name="once_history">Completion history</string>
+    <string name="once_history_completed">Completed · %1$s</string>
+    <string name="once_history_undone">Undone · %1$s</string>
+    <string name="once_refresh_metrics">Reload metric names, units and precision (keep input)</string>
+    <string name="once_metrics_missing">Unavailable metrics: %1$s. Clear their input to save other values, or skip this prompt.</string>
 </resources>

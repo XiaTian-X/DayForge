@@ -269,8 +269,9 @@ fun ChildHabitRow(
             ) {
                 // CompletionButton handles all states including failed/completed/non-checkin-day
                 CompletionButton(
-                    completed = childHabit.completedToday,
-                    undoAvailable = childHabit.completedToday && childHabit.lastCompletionId != null,
+                    completed = childHabit.completedForDisplay,
+                    actionsEnabled = childHabit.oneTimeStatus?.canChange ?: true,
+                    undoAvailable = childHabit.completedForDisplay && childHabit.lastCompletionId != null,
                     habitType = habit.habitType,
                     targetValue = habit.targetValue,
                     currentCount = displayCount,

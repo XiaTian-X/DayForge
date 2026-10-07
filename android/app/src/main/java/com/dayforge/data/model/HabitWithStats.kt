@@ -24,8 +24,10 @@ data class HabitWithStats(
     val nextCheckInDate: LocalDate? = null,  // Null if check-in allowed today, otherwise next valid check-in date
     val targetProgress: Int = 0,  // Distinct days completed for habits with targetCycles
     val hasFailed: Boolean = false,  // Failure status for target-based habits
-    val slotProgress: String? = null  // Slot progress for COUNTING habits in focus mode: "第 X 个/共 Y 个"
+    val slotProgress: String? = null,  // Slot progress for COUNTING habits in focus mode: "第 X 个/共 Y 个"
+    val oneTimeStatus: com.dayforge.domain.model.OneTimeStatus? = null
 ) {
+    val completedForDisplay: Boolean get() = oneTimeStatus?.completed ?: completedToday
     /**
      * Whether the goal has been reached (targetCycles achieved).
      * Used for displaying "完成" badge in HabitCard.
@@ -54,6 +56,7 @@ data class HabitWithStats(
         get() {
             // GOAL type doesn't count towards progress
             if (habit.habitType == HabitType.GOAL) return false
+            if (habit.completionPolicy == "one_and_done") return false
 
             // Not a check-in day
             if (!isCheckInAllowed) return false

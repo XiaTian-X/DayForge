@@ -235,7 +235,13 @@ class TokenManager @Inject constructor(
 
     /** Read ownership, generation, replica and permissions from the same persisted snapshot. */
     internal suspend fun localFactAccess(): LocalFactAccess? {
-        val preferences = dataStore.data.first()
+        return factAccess(dataStore.data.first())
+    }
+
+    internal val factAccessChanges: Flow<LocalFactAccess?> = dataStore.data.map(::factAccess)
+        .distinctUntilChanged().flowOn(Dispatchers.IO)
+
+    private fun factAccess(preferences: Preferences): LocalFactAccess? {
         val authentication = snapshot(preferences)?.session ?: return null
         if (preferences[SYNC_ACCOUNT_ID_KEY] != authentication.userId) return null
         val server = preferences[SERVER_INSTANCE_ID_KEY]

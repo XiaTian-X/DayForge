@@ -318,7 +318,8 @@ fun DashboardScreen(
                             currentStreak = habitWithStats.currentStreak,
                             bestStreak = habitWithStats.bestStreak,
                             activityRate = habitWithStats.activityRate,
-                            completed = habitWithStats.completedToday,
+                            completed = habitWithStats.completedForDisplay,
+                            actionsEnabled = habitWithStats.oneTimeStatus?.canChange ?: true,
                             undoAvailable = habitWithStats.lastCompletionId != null,
                             todayCount = habitWithStats.todayCount,
                             onCheckIn = { value ->
@@ -508,26 +509,43 @@ fun DashboardScreen(
             PostCheckInDialog(
                 habitName = state.habitName,
                 linkedMetrics = state.linkedMetrics,
+                promptIdentity = state.oneTimePrompt?.eventUuid,
+                missingTargets = state.oneTimePrompt?.entries?.filterNot { it.available }?.map { it.name }.orEmpty(),
+                onRefreshMetadata = if (state.oneTimePrompt != null) viewModel::refreshPostCheckInMetadata else null,
+                initialInputs = state.oneTimePrompt?.entries?.associate { it.metricId to (it.input to it.note) }.orEmpty(),
+                onDraftChange = { inputs -> state.oneTimePrompt?.let { viewModel.savePostCheckInDraft(it.eventUuid, inputs) } },
                 onRecord = { values, neverAskAgain ->
                     scope.launch {
-                        if (!viewModel.recordMetricValues(state.habitId, values)) return@launch
-                        if (neverAskAgain) {
-                            viewModel.setNeverAskAgain(state.habitId, true)
-                        }
-                        viewModel.dismissPostCheckInDialog()
-                        if (state.isTempTask) {
-                            viewModel.deleteTempTask(state.habitId)
+                        try {
+                            if (!viewModel.recordMetricValues(state.habitId, values, state.oneTimePrompt?.eventUuid)) return@launch
+                            if (neverAskAgain) {
+                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid)
+                            }
+                            viewModel.dismissPostCheckInDialog()
+                            if (state.isTempTask) {
+                                viewModel.deleteTempTask(state.habitId)
+                            }
+                        } catch (error: Exception) {
+                            if (error is kotlinx.coroutines.CancellationException) throw error
+                            Toast.makeText(context, context.getString(R.string.metric_error_record_failed,
+                                error.message.orEmpty()), Toast.LENGTH_LONG).show()
                         }
                     }
                 },
                 onSkip = { neverAskAgain ->
                     scope.launch {
-                        if (neverAskAgain) {
-                            viewModel.setNeverAskAgain(state.habitId, true)
-                        }
-                        viewModel.dismissPostCheckInDialog()
-                        if (state.isTempTask) {
-                            viewModel.deleteTempTask(state.habitId)
+                        try {
+                            if (neverAskAgain) {
+                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid)
+                            }
+                            viewModel.skipPostCheckInDialog(state.habitId, state.oneTimePrompt?.eventUuid)
+                            if (state.isTempTask) {
+                                viewModel.deleteTempTask(state.habitId)
+                            }
+                        } catch (error: Exception) {
+                            if (error is kotlinx.coroutines.CancellationException) throw error
+                            Toast.makeText(context, context.getString(R.string.metric_error_record_failed,
+                                error.message.orEmpty()), Toast.LENGTH_LONG).show()
                         }
                     }
                 },

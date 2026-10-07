@@ -59,6 +59,7 @@ data class HabitDetailUiState(
     val completions: List<CompletionEntity> = emptyList(),
     val timeLogs: List<TimeLogEntity> = emptyList(),
     val lastCompletionId: Long? = null,
+    val oneTimeStatus: com.dayforge.domain.model.OneTimeStatus? = null,
     val targetProgress: Int = 0,  // Distinct days completed for habits with targetCycles
     val isLoading: Boolean = true,
     val errorMessage: String? = null,
@@ -106,7 +107,7 @@ class HabitDetailViewModel @Inject constructor(
             // Per NOTIFY-04: Include notification preference to avoid nested collect leak
             combine(
                 habitRepository.getHabit(habitId),
-                habitRepository.getAllCompletions(),
+                combine(habitRepository.getAllCompletions(), habitRepository.oneTimeChanges) { rows, _ -> rows },
                 preferencesManager.getHabitNotificationEnabled(habitId)
             ) { habit, allCompletions, notificationEnabled ->
                 val habitCompletions = allCompletions.filter { it.habitId == habitId }
@@ -124,7 +125,10 @@ class HabitDetailViewModel @Inject constructor(
                 }
 
                 // For TIMER habits, use TimeLogEntity for streaks and history
-                if (habit?.habitType == HabitType.TIMER) {
+                if (habit?.completionPolicy == "one_and_done") {
+                    LoadResult(habit, null, habitCompletions, emptyList(), 0, emptyList(), notificationEnabled,
+                        habitRepository.getOneTimeStatus(habitId, habit.uuid))
+                } else if (habit?.habitType == HabitType.TIMER) {
                     val timeLogs = timeLogDao.getAllTimeLogsForHabit(habitId)
                     val targetSeconds = habit.targetValue * 60
 
@@ -170,6 +174,9 @@ class HabitDetailViewModel @Inject constructor(
                     targetProgress = result.targetProgress,
                     metrics = result.metrics,
                     notificationEnabled = result.notificationEnabled,  // Per NOTIFY-04: From combined flow
+                    oneTimeStatus = result.oneTimeStatus,
+                    lastCompletionId = if (result.oneTimeStatus != null) result.oneTimeStatus.completionId
+                        else _uiState.value.lastCompletionId,
                     isLoading = false
                 )
             }
@@ -330,12 +337,13 @@ class HabitDetailViewModel @Inject constructor(
         val timeLogs: List<TimeLogEntity>,
         val targetProgress: Int,
         val metrics: List<MetricDisplayInfo>,
-        val notificationEnabled: Boolean  // Per NOTIFY-04: Included to avoid nested collect
+        val notificationEnabled: Boolean,  // Per NOTIFY-04: Included to avoid nested collect
+        val oneTimeStatus: com.dayforge.domain.model.OneTimeStatus? = null
     )
 
     fun logCompletion(value: Int = 1) {
         val habitId = currentHabitId ?: return
-        viewModelScope.launch {
+        launchCompletion {
             val completionId = habitRepository.logCompletion(context, habitId, value)
             if (currentHabitId == habitId) {
                 _uiState.value = _uiState.value.copy(
@@ -348,12 +356,23 @@ class HabitDetailViewModel @Inject constructor(
     fun undoCompletion() {
         val habitId = currentHabitId ?: return
         val completionId = _uiState.value.lastCompletionId ?: return
-        viewModelScope.launch {
-            habitRepository.undoCompletion(context, completionId)
+        val authority = _uiState.value.oneTimeStatus?.authority
+        launchCompletion {
+            habitRepository.undoCompletion(context, completionId, authority)
             if (currentHabitId == habitId && _uiState.value.lastCompletionId == completionId) {
                 _uiState.value = _uiState.value.copy(
                     lastCompletionId = null
                 )
+            }
+        }
+    }
+
+    private fun launchCompletion(block: suspend () -> Unit) {
+        viewModelScope.launch {
+            try { block() }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                _uiState.value = _uiState.value.copy(errorMessage = error.message)
             }
         }
     }
@@ -391,7 +410,7 @@ class HabitDetailViewModel @Inject constructor(
      * Syncs to server if user is logged in.
      */
     fun toggleActiveStatus() {
-        viewModelScope.launch {
+        launchCompletion {
             currentHabitId?.let { habitId ->
                 val habit = _uiState.value.habit ?: return@let
                 val newIsActive = !habit.isActive
@@ -406,7 +425,7 @@ class HabitDetailViewModel @Inject constructor(
                             context.getString(R.string.toast_goal_habit_cannot_deactivate),
                             Toast.LENGTH_SHORT
                         ).show()
-                        return@launch
+                        return@let
                     }
                 }
 
@@ -416,7 +435,7 @@ class HabitDetailViewModel @Inject constructor(
                         showReactivationDialog = true,
                         reactivationHabitName = habit.name
                     )
-                    return@launch
+                    return@let
                 }
 
                 // Direct toggle for non-target habits or deactivation

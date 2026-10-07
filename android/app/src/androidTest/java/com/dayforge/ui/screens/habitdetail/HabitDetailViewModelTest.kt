@@ -260,6 +260,7 @@ class HabitDetailViewModelTest {
         every { observingRepository.getHabit(firstId) } returns first
         every { observingRepository.getHabit(secondId) } returns second
         every { observingRepository.getAllCompletions() } returns MutableStateFlow(emptyList())
+        every { observingRepository.oneTimeChanges } returns kotlinx.coroutines.flow.flowOf(Unit)
         viewModel = HabitDetailViewModel(context, observingRepository, preferencesManager, timeLogDao, completionDao,
             habitDao, habitMetricLinkDao, metricDao, metricLogDao)
         viewModelStore.put("detail", viewModel)

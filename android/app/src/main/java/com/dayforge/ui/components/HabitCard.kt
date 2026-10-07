@@ -70,7 +70,8 @@ fun HabitCard(
     // Reactivation callback for failed/completed habits
     onReactivation: () -> Unit = {},
     // Slot progress for focus mode (COUNTING habit in time window)
-    slotProgress: String? = null
+    slotProgress: String? = null,
+    actionsEnabled: Boolean = true
 ) {
     var showMenu by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
@@ -305,6 +306,7 @@ fun HabitCard(
                             }
                             CompletionButton(
                                 completed = completed,
+                                actionsEnabled = actionsEnabled,
                                 undoAvailable = undoAvailable,
                                 habitType = habit.habitType,
                                 targetValue = habit.targetValue,
@@ -332,7 +334,7 @@ fun HabitCard(
                         }
 
                         // Streak Indicator (Only if no targetCycles and timer not taking full width)
-                        if (!isTimerActive && habit.targetCycles == null) {
+                        if (!isTimerActive && habit.targetCycles == null && habit.completionPolicy != "one_and_done") {
                             Spacer(modifier = Modifier.width(16.dp))
                             Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
                                 StreakIndicator(

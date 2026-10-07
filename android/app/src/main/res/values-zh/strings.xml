@@ -1133,4 +1133,12 @@
     <string name="icon_library_preview">预览</string>
     <string name="icon_library_select">在本机选择</string>
     <string name="icon_library_image_failed">图像不可用</string>
+    <string name="once_not_completed">未完成</string>
+    <string name="once_change_unavailable">暂不可变更：需要同步恢复或账户权限</string>
+    <string name="once_undo">撤销完成</string>
+    <string name="once_history">完成历史</string>
+    <string name="once_history_completed">完成 · %1$s</string>
+    <string name="once_history_undone">撤销 · %1$s</string>
+    <string name="once_refresh_metrics">重新读取指标名称、单位和精度（保留输入）</string>
+    <string name="once_metrics_missing">指标已不可用：%1$s。清空对应输入后可保存其他指标，也可跳过本次提示。</string>
 </resources>

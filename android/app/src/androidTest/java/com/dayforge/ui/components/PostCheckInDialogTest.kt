@@ -46,4 +46,20 @@ class PostCheckInDialogTest {
         compose.onNodeWithText(compose.activity.getString(R.string.post_checkin_skip)).performClick()
         compose.runOnIdle { assertEquals(true, skipped); assertFalse(recorded) }
     }
+
+    @Test fun durable_prompt_restores_raw_input_publishes_edits_and_explicit_metadata_refresh() {
+        var drafts = emptyList<MetricInputState>()
+        var refreshes = 0
+        compose.setContent { MaterialTheme { PostCheckInDialog("Once", metrics, { _, _ -> }, {}, {},
+            initialInputs = mapOf(7L to ("12.5" to "retained")), promptIdentity = "stable-event",
+            onDraftChange = { drafts = it }, onRefreshMetadata = { refreshes++ }) } }
+        compose.onNodeWithText("Weight (kg)").assertTextContains("12.5")
+        compose.onNodeWithText("Weight (kg)").performTextReplacement("13.2")
+        compose.onNodeWithText(compose.activity.getString(R.string.once_refresh_metrics)).performClick()
+        compose.runOnIdle {
+            assertEquals("13.2", drafts.single { it.metricId == 7L }.inputValue)
+            assertEquals("retained", drafts.single { it.metricId == 7L }.note)
+            assertEquals(1, refreshes)
+        }
+    }
 }

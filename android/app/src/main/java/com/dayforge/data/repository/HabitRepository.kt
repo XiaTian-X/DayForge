@@ -16,6 +16,7 @@ import com.dayforge.data.model.HabitDraft
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.model.StreakStats
+import com.dayforge.domain.model.OneTimeStatus
 import com.dayforge.domain.service.ActivityRateCalculator
 import com.dayforge.domain.service.StreakCalculator
 import com.dayforge.domain.service.StructuralEditGuard
@@ -36,9 +37,23 @@ class HabitRepository @Inject constructor(
     private val database: HabitDatabase,
     private val structuralEditGuard: StructuralEditGuard? = null,
     private val nextObjectEditor: NextObjectEditor? = null,
-    private val nextObjectCreator: NextObjectCreator? = null
+    private val nextObjectCreator: NextObjectCreator? = null,
+    private val oneTimeRepository: OneTimeRepository? = null
 ) {
     val allHabits: Flow<List<HabitEntity>> = habitDao.getAllHabits()
+
+    val oneTimeChanges: Flow<Unit> = oneTimeRepository?.changes ?: kotlinx.coroutines.flow.flowOf(Unit)
+
+    suspend fun getOneTimeStatus(id: Long, expectedUuid: String? = null): OneTimeStatus = requireNotNull(oneTimeRepository) {
+        "ONE_TIME_REPOSITORY_REQUIRED"
+    }.read(id, expectedUuid)
+
+    suspend fun toggleOneTime(context: Context, id: Long, expectedUuid: String? = null,
+        authority: com.dayforge.domain.model.OneTimeActionAuthority? = null): Boolean {
+        val completed = requireNotNull(oneTimeRepository).toggle(id, expectedUuid, authority)
+        notifyWidgetUpdate(context)
+        return completed
+    }
 
     // Flow of all completions for reactive UI updates
     fun getAllCompletions(): Flow<List<CompletionEntity>> = completionDao.getAllCompletions()
@@ -416,9 +431,17 @@ class HabitRepository @Inject constructor(
         isActive: Boolean,
         context: Context
     ) {
-        structuralEditGuard?.requireAllowed()
         val habit = habitDao.getHabitById(habitId)
-        habitDao.updateIsActive(habitId, isActive)
+        if (habit?.appearance != null && nextObjectEditor != null) {
+            val captured = nextObjectEditor.habit(habitId)
+            val row = requireNotNull(captured.value) { "OBJECT_EDIT_NOT_FOUND" }
+            nextObjectEditor.editHabit(row.copy(isActive = isActive), requireNotNull(captured.authority)) {
+                habitDao.update(it)
+            }
+        } else {
+            structuralEditGuard?.requireAllowed()
+            habitDao.updateIsActive(habitId, isActive)
+        }
 
         // Handle reminder scheduling based on active status
         if (habit != null && habit.bestTime != null && habit.habitType != HabitType.GOAL) {
@@ -466,6 +489,13 @@ class HabitRepository @Inject constructor(
      * @return The ID of the inserted completion
      */
     suspend fun logCompletion(context: Context, habitId: Long, value: Int = 1): Long {
+        val capturedHabit = habitDao.getHabitById(habitId)
+        if (capturedHabit?.completionPolicy == "one_and_done") {
+            require(value == 1) { "ONE_TIME_VALUE_MUST_BE_ONE" }
+            val id = requireNotNull(oneTimeRepository).change(habitId, complete = true, expectedUuid = capturedHabit.uuid)
+            notifyWidgetUpdate(context)
+            return id
+        }
         val occurredAt = java.time.Instant.now()
         val capturedZone = java.time.ZoneId.systemDefault()
         if (habitDao.getHabitById(habitId)?.isActive == false) {
@@ -505,7 +535,17 @@ class HabitRepository @Inject constructor(
      * @param context Context for scheduling widget refresh
      * @param completionId The ID of the completion to delete
      */
-    suspend fun undoCompletion(context: Context, completionId: Long) {
+    suspend fun undoCompletion(context: Context, completionId: Long,
+        oneTimeAuthority: com.dayforge.domain.model.OneTimeActionAuthority? = null) {
+        val initial = completionDao.getCompletionById(completionId)
+        if (oneTimeAuthority != null) check(initial?.oneTimeAction == "complete") { "ONE_TIME_ACTION_EXPIRED" }
+        if (initial?.oneTimeAction != null) {
+            require(initial.oneTimeAction == "complete") { "ONE_TIME_ONLY_COMPLETION_CAN_BE_UNDONE" }
+            requireNotNull(oneTimeRepository).change(initial.habitId, complete = false,
+                expectedCompletionId = completionId, expectedUuid = initial.habitUuid, authority = oneTimeAuthority)
+            notifyWidgetUpdate(context)
+            return
+        }
         database.withTransaction {
             val completion = completionDao.getCompletionById(completionId)
                 ?: return@withTransaction null
@@ -528,6 +568,7 @@ class HabitRepository @Inject constructor(
      * @param context Context for widget notification
      */
     suspend fun clearHabitHistory(habit: HabitEntity, context: Context) {
+        require(habit.completionPolicy != "one_and_done") { "ONE_TIME_HISTORY_IS_IMMUTABLE" }
         structuralEditGuard?.requireAllowed()
         database.withTransaction {
             // Local deletes become fact tombstones/revert events through the outbox.
@@ -560,6 +601,9 @@ class HabitRepository @Inject constructor(
     fun getStreakStats(habitId: Long): Flow<StreakStats> {
         return completionDao.getCompletionsByHabit(habitId)
             .map { completions ->
+                if (habitDao.getHabitById(habitId)?.completionPolicy == "one_and_done") {
+                    return@map StreakStats(0, 0, null)
+                }
                 val currentStreak = StreakCalculator.calculateCurrentStreak(completions)
                 val bestStreak = StreakCalculator.calculateBestStreak(completions)
                 val lastCompletionDate = completions.maxOfOrNull { it.businessDate }?.toDisplayMillis()

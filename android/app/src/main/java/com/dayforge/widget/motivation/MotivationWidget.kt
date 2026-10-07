@@ -48,7 +48,7 @@ class MotivationWidget : GlanceAppWidget() {
             val failureChecker = FailureChecker(completionDao, timeLogDao)
             val habitStatusCalculator = HabitStatusCalculator(failureChecker, completionDao, timeLogDao)
 
-            val habits = habitDao.getAllHabits().first()
+            val habits = habitDao.getAllHabits().first().filter { it.completionPolicy != "one_and_done" }
 
             // Calculate best streak across all habits
             var bestStreak = 0

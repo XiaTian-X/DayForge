@@ -41,6 +41,7 @@ class LinkedMetricCoordinatorTest {
     fun timer_stop_prompt_reloads_habit_after_service_persistence_delay() = runTest {
         val habit = mockk<HabitEntity> {
             every { name } returns "Timer"
+            every { completionPolicy } returns null
         }
         coEvery { habitRepository.getHabitById(7L) } returns habit
         every { preferencesManager.getNeverAskAgain(7L) } returns flowOf(false)

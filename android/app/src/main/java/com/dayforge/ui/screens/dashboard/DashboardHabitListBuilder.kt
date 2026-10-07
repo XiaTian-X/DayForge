@@ -58,7 +58,7 @@ class DashboardHabitListBuilder @Inject constructor(
 
     private fun allHabits(habits: List<HabitWithStats>): List<HabitWithStats> =
         habits.sortedByDescending {
-            it.habit.isActive && it.isCheckInAllowed && !it.completedToday
+            it.habit.isActive && it.isCheckInAllowed && !it.completedForDisplay
         }
 
     private fun timeWindowHabits(
@@ -102,9 +102,10 @@ class DashboardHabitListBuilder @Inject constructor(
         val isGoal = habit.habitType == HabitType.GOAL
         val isTerminated = stats.hasFailed || stats.isGoalCompleted
         val isPositiveCounting = habit.habitType == HabitType.COUNTING && !habit.isCountdown
-        val hasPendingMetric = habit.habitType == HabitType.TIMER &&
+        val hasPendingMetric = (habit.habitType == HabitType.TIMER || habit.completionPolicy == "one_and_done") &&
             habit.id in pendingMetricHabitIds
-        val isNormallyCheckable = !stats.completedToday &&
+        val isNormallyCheckable = !stats.completedForDisplay &&
+            stats.oneTimeStatus?.canChange != false &&
             stats.isCheckInAllowed &&
             habit.isActive
 

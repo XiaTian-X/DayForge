@@ -29,7 +29,8 @@ class NestedHabitTreeBuilder @Inject constructor(
     private val habitDao: HabitDao,
     private val completionDao: CompletionDao,
     private val timeLogDao: TimeLogDao,
-    private val failureChecker: FailureChecker
+    private val failureChecker: FailureChecker,
+    private val oneTimeRepository: com.dayforge.data.repository.OneTimeRepository? = null
 ) {
 
     suspend fun build(
@@ -46,7 +47,7 @@ class NestedHabitTreeBuilder @Inject constructor(
             it.habit.isActive && it.isCheckInAllowed
         }
         val checkInAllowedChildren = sortedChildren.filter {
-            it.isCheckInAllowed && !it.isGoalCompleted && !it.hasFailed
+            it.habit.completionPolicy != "one_and_done" && it.isCheckInAllowed && !it.isGoalCompleted && !it.hasFailed
         }
         val parentIsCheckInAllowed = ScheduleValidator.isCheckInAllowedToday(
             parentHabit.schedule,
@@ -84,6 +85,12 @@ class NestedHabitTreeBuilder @Inject constructor(
         child: HabitEntity,
         completions: List<CompletionEntity>
     ): ChildHabitWithStats {
+        if (child.completionPolicy == "one_and_done") {
+            val status = requireNotNull(oneTimeRepository).read(child.id, child.uuid)
+            return ChildHabitWithStats(child, completedToday = false, todayCount = 0,
+                lastCompletionId = status.completionId, currentStreak = 0, bestStreak = 0,
+                isCheckInAllowed = true, oneTimeStatus = status)
+        }
         val habitCompletions = completions.filter { it.habitId == child.id }
         val today = DateTimeUtils.today().toString()
         val todayCompletions = habitCompletions.filter { it.recordedLocalDate == today }

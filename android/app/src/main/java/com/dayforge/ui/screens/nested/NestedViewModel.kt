@@ -57,8 +57,10 @@ data class ChildHabitWithStats(
     val isCheckInAllowed: Boolean = true,
     val nextCheckInDate: LocalDate? = null,
     val targetProgress: Int = 0,  // Distinct days completed for habits with targetCycles
-    val hasFailed: Boolean = false  // Failure status for target-based habits
+    val hasFailed: Boolean = false,  // Failure status for target-based habits
+    val oneTimeStatus: com.dayforge.domain.model.OneTimeStatus? = null
 ) {
+    val completedForDisplay: Boolean get() = oneTimeStatus?.completed ?: completedToday
     /**
      * Whether the goal has been completed (reached targetCycles and deactivated).
      * Used for CompletionButton to show "目标已完成" state.
@@ -126,7 +128,7 @@ class NestedViewModel @Inject constructor(
      */
     val topLevelHabitsWithChildren: StateFlow<List<ParentHabitWithChildren>> = combine(
         habitDao.getTopLevelHabits(),
-        allCompletions,
+        combine(allCompletions, habitRepository.oneTimeChanges) { rows, _ -> rows },
         timeLogDao.getActiveTimeLogFlow(),
         preferencesManager.dateChangeTrigger  // Triggers when date changes
     ) { topLevelHabits, completions, activeTimeLog, _ ->
@@ -216,11 +218,13 @@ class NestedViewModel @Inject constructor(
      * Triggers post-check-in dialog for linked metrics.
      */
     fun logCompletion(habitId: Long, value: Int = 1) {
-        viewModelScope.launch {
+        val displayed = topLevelHabitsWithChildren.value.flatMap { it.children }.find { it.habit.id == habitId }
+        launchCompletion {
             val outcome = completionCoordinator.checkIn(
                 habitId = habitId,
                 finalizeTemporaryTasks = false,
-                displayedHabit = { findHabitById(habitId) }
+                displayedHabit = { displayed?.habit ?: findHabitById(habitId) },
+                oneTimeAuthority = displayed?.oneTimeStatus?.authority
             )
             outcome.goalProgress?.let { progress -> onGoalReached(habitId, progress) }
             outcome.metricPromptHabit?.let { habit ->
@@ -233,8 +237,22 @@ class NestedViewModel @Inject constructor(
      * Undo a completion for a child habit.
      */
     fun undoCompletion(completionId: Long) {
+        val authority = topLevelHabitsWithChildren.value.flatMap { it.children }
+            .find { it.lastCompletionId == completionId }?.oneTimeStatus?.authority
+        launchCompletion {
+            completionCoordinator.undoCompletion(completionId, authority)
+        }
+    }
+
+    private fun launchCompletion(block: suspend () -> Unit) {
         viewModelScope.launch {
-            completionCoordinator.undoCompletion(completionId)
+            try { block() }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                Log.e(TAG, "Completion operation failed", error)
+                android.widget.Toast.makeText(context, context.getString(com.dayforge.R.string.metric_error_record_failed,
+                    error.message.orEmpty()), android.widget.Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -375,21 +393,46 @@ class NestedViewModel @Inject constructor(
      */
     suspend fun recordMetricValues(
         habitId: Long,
-        values: List<MetricValueInput>
-    ): Boolean = metricCoordinator.recordMetricValues(habitId, values)
+        values: List<MetricValueInput>,
+        expectedEventUuid: String? = null
+    ): Boolean = metricCoordinator.recordMetricValues(habitId, values, expectedEventUuid)
 
     /**
      * Set "never ask again" preference for a habit's metric prompt.
      */
-    suspend fun setNeverAskAgain(habitId: Long, value: Boolean) {
-        metricCoordinator.setNeverAskAgain(habitId, value)
+    suspend fun setNeverAskAgain(habitId: Long, value: Boolean, expectedEventUuid: String? = null) {
+        metricCoordinator.setNeverAskAgain(habitId, value, expectedEventUuid)
     }
 
     /**
      * Dismiss the post-check-in dialog.
      */
     fun dismissPostCheckInDialog() {
-        metricCoordinator.dismissPrompt()
+        viewModelScope.launch { metricCoordinator.closePrompt() }
+    }
+
+    suspend fun skipPostCheckInDialog(habitId: Long, expectedEventUuid: String? = null) = metricCoordinator.skipPrompt(habitId, expectedEventUuid)
+
+    fun refreshPostCheckInMetadata() {
+        viewModelScope.launch {
+            try { metricCoordinator.refreshPrompt() }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                android.widget.Toast.makeText(context, context.getString(com.dayforge.R.string.metric_error_record_failed,
+                    error.message.orEmpty()), android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    fun savePostCheckInDraft(eventUuid: String, inputs: List<com.dayforge.ui.components.MetricInputState>) {
+        viewModelScope.launch {
+            try { metricCoordinator.savePromptDraft(eventUuid, inputs) }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                android.widget.Toast.makeText(context, context.getString(com.dayforge.R.string.metric_error_record_failed,
+                    error.message.orEmpty()), android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     // ========== Goal Completion Dialog Methods ==========

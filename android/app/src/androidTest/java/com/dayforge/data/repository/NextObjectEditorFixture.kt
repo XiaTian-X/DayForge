@@ -44,6 +44,9 @@ abstract class NextObjectEditorFixture : NextCoreRequestFixture() {
         nextObjectEditor = editor, nextObjectCreator = creator)
     internal fun creatingMetrics() = MetricRepository(db, db.metricDao(), db.metricLogDao(), db.habitDao(),
         db.habitMetricLinkDao(), nextObjectEditor = editor, nextObjectCreator = creator)
+    internal fun onceRepository() = OneTimeRepository(db, tokens, sessions, preferences)
+    internal fun onceHabits(once: OneTimeRepository) = HabitRepository(db.habitDao(), db.completionDao(), db.timeLogDao(), db,
+        nextObjectEditor = editor, nextObjectCreator = creator, oneTimeRepository = once)
     internal fun <T : ViewModel> own(model: T): T {
         models.put("editor:${ownedModels.size}", model); ownedModels += model; return model
     }

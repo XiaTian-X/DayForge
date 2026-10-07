@@ -124,7 +124,8 @@ fun CompletionButton(
     isGoalCompleted: Boolean = false,
     onReactivation: () -> Unit = {},
     textColor: Color = Color.Unspecified,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    actionsEnabled: Boolean = true
 ) {
     // Resolve text color: use provided color or fallback to theme default
     val resolvedTextColor = if (textColor != Color.Unspecified) {
@@ -461,7 +462,7 @@ fun CompletionButton(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .height(48.dp)
-                        .clickable { onUndo() }
+                        .clickable(enabled = undoAvailable && actionsEnabled) { onUndo() }
                 ) {
                     Icon(
                         imageVector = Icons.Default.CheckCircle,
@@ -478,6 +479,11 @@ fun CompletionButton(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    if (showMetricPrompt) {
+                        TextButton(onClick = onRecordMetrics) {
+                            Text(stringResource(R.string.post_checkin_record), color = resolvedTextColor)
+                        }
+                    }
                 }
             }
             "disabled_checkin" -> {
@@ -578,6 +584,7 @@ fun CompletionButton(
             "checkin" -> {
                 Button(
                     onClick = { onCheckIn(1) },
+                    enabled = actionsEnabled,
                     modifier = Modifier.height(36.dp)
                 ) {
                     Text(

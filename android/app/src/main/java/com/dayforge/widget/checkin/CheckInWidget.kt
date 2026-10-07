@@ -105,10 +105,13 @@ class CheckInWidget : GlanceAppWidget() {
             val tomorrow = today.plusDays(1)
             val completions = database.completionDao().getCompletionsInRange(habitId, today, tomorrow)
             val completedToday = completions.sumOf { it.value }
-            val isCompleted = completedToday >= habit.targetValue
+            val oneTime = if (habit.completionPolicy == "one_and_done") dagger.hilt.android.EntryPointAccessors
+                .fromApplication(appContext, com.dayforge.di.WidgetEntryPoint::class.java).habitRepository()
+                .getOneTimeStatus(habitId) else null
+            val isCompleted = oneTime?.completed ?: (completedToday >= habit.targetValue)
 
             // 新增状态计算
-            val isCheckInAllowed = ScheduleValidator.isCheckInAllowedToday(habit.schedule, habit.createdAt)
+            val isCheckInAllowed = oneTime?.canChange ?: ScheduleValidator.isCheckInAllowedToday(habit.schedule, habit.createdAt)
             val nextCheckInDate = if (!isCheckInAllowed) {
                 ScheduleValidator.getNextCheckInDate(habit.schedule, habit.createdAt).toString()
             } else ""
