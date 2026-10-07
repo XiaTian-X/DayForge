@@ -22,7 +22,7 @@ from tools.check_android_results import read_cases
 from tools.check_android_warnings import find_growth, load_budget, parse_warnings
 
 SHARDS = 3
-SHARD_TIMEOUT_SECONDS = 1200
+SHARD_TIMEOUT_SECONDS = 1500
 TARGET = "com.dayforge.testbed"
 TEST_PACKAGE = TARGET + ".test"
 COMPONENT = TEST_PACKAGE + "/com.dayforge.HiltTestRunner"

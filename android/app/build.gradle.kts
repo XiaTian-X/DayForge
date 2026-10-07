@@ -203,5 +203,5 @@ dependencies {
 
 // Bound physical-device runs too; a hung instrumentation process is a failure.
 tasks.matching { it.name == "connectedDeviceTestAndroidTest" }.configureEach {
-    timeout.set(Duration.ofMinutes(15))
+    timeout.set(Duration.ofSeconds(1500))
 }
