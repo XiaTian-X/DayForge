@@ -69,7 +69,8 @@ internal object NextRequestSql {
     private val longs = ints + setOf("id", "queueId", "baseRevision", "attemptedAt", "deadLetteredAt", "createdAt",
         "occurredAt", "activeElapsedMillis", "revision", "deleted", "updatedAt", "logicalOrder", "originalQueueId", "replacementQueueId")
     private val tables = setOf("sync_outbox", "timer_command_outbox", "next_request_origins", "next_transmissions", "next_acceptances",
-        "sync_entity_state", "next_structural_dependencies", "next_structural_supersessions")
+        "sync_entity_state", "next_structural_dependencies", "next_structural_supersessions",
+        "local_fact_submissions", "one_time_transmissions")
     fun table(kind: String): String = when (kind) {
         NEXT_OPERATION -> "sync_outbox"
         NEXT_TIMER -> "timer_command_outbox"

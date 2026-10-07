@@ -222,6 +222,13 @@ internal class NextCoreRequestStore(
         require(state.payloadHash == syncPayloadHash(payload))
     }
 
+    /** The once sender uses the same authenticated original-delete proof, not parent absence. */
+    internal suspend fun parentDeletionProofInTransaction(access: LocalSyncAccess, uuid: String): String? {
+        check(database.inTransaction())
+        authorize(access)
+        return provenParentDeletion(access, "plan_node", uuid)
+    }
+
     /** Absence alone is never authorization to skip a parent FK projection. */
     private suspend fun provenParentDeletion(access: LocalSyncAccess, type: String, uuid: String): String? {
         require(type in setOf("plan_node", "metric") && isContractUuid(uuid))
