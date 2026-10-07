@@ -108,6 +108,40 @@ class NextObjectEditor @Inject constructor(
         }
     }
 
+    /** Existing-object business mutations preserve appearance; no file work or nested account lock. */
+    internal suspend fun <T> mutateHabit(expected: HabitEntity, authority: ObjectEditAuthority? = null,
+        commit: suspend (HabitEntity) -> T): T {
+        val ticket = authority ?: requireNotNull(habit(expected.id).authority) { "OBJECT_WRITE_TICKET_REQUIRED" }
+        check(ticket.type == "plan_node" && ticket.uuid == expected.uuid &&
+            ticket.original == NextStructureMapper.writePlan(expected)) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
+        return producer.write(ticket.session) {
+            val current = requireNotNull(database.habitDao().getHabitById(expected.id)) { "OBJECT_WRITE_NOT_FOUND" }
+            check(current.uuid == ticket.uuid && NextStructureMapper.writePlan(current) == ticket.original) {
+                "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED"
+            }
+            commit(current)
+        }
+    }
+
+    /** Batch observations/links share one owner and transaction, including all their original intents. */
+    internal suspend fun <T> mutateMetrics(expected: List<MetricEntity>, authority: ObjectEditAuthority? = null,
+        commit: suspend () -> T): T {
+        require(expected.isNotEmpty() && expected.all { it.appearance != null }) { "OBJECT_WRITE_MIXED_PROTOCOL" }
+        val first = expected.first()
+        val ticket = authority ?: requireNotNull(metric(first.id).authority) { "OBJECT_WRITE_TICKET_REQUIRED" }
+        check(ticket.type == "metric" && ticket.uuid == first.uuid &&
+            ticket.original == NextStructureMapper.writeMetric(first)) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
+        return producer.write(ticket.session) {
+            expected.forEach { row ->
+                val current = requireNotNull(database.metricDao().getMetricById(row.id)) { "OBJECT_WRITE_NOT_FOUND" }
+                check(current.uuid == row.uuid && NextStructureMapper.writeMetric(current) == NextStructureMapper.writeMetric(row)) {
+                    "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED"
+                }
+            }
+            commit()
+        }
+    }
+
     private suspend fun authorize(ticket: ObjectEditAuthority, appearance: ObjectAppearance,
         previous: ObjectAppearance, oneTime: Boolean) {
         // Immutable asset metadata is checked BEFORE entering the producer's non-reentrant account lock.

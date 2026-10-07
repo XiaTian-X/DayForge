@@ -121,29 +121,31 @@ class MetricRepository @Inject constructor(
     }
 
     suspend fun updateAggregationType(metricId: Long, aggregationType: String) {
-        structuralEditGuard?.requireAllowed()
-        metricDao.updateAggregationType(metricId, aggregationType)
+        val metric = requireNotNull(metricDao.getMetricById(metricId))
+        mutate(listOf(metric)) { metricDao.updateAggregationType(metricId, aggregationType) }
     }
 
-    suspend fun deleteMetric(metric: MetricEntity) {
-        structuralEditGuard?.requireAllowed()
-        metricDao.delete(metric)
+    suspend fun deleteMetric(metric: MetricEntity, authority: ObjectEditAuthority? = null) {
+        mutate(listOf(metric), authority) { metricDao.delete(metric) }
     }
 
-    suspend fun unlinkHabit(linkId: Long) {
-        structuralEditGuard?.requireAllowed()
-        database.withTransaction {
-            linkDao.getById(linkId)?.let { linkDao.delete(it) }
+    suspend fun unlinkHabit(linkId: Long, expectedLinkUuid: String? = null, authority: ObjectEditAuthority? = null) {
+        val link = linkDao.getById(linkId) ?: return
+        if (expectedLinkUuid != null) check(link.uuid == expectedLinkUuid) { "OBJECT_WRITE_LINK_CHANGED" }
+        val metric = requireNotNull(metricDao.getMetricById(link.metricId))
+        mutate(listOf(metric), authority) {
+            check(linkDao.getById(linkId) == link) { "OBJECT_WRITE_LINK_CHANGED" }
+            linkDao.delete(link)
         }
     }
 
-    suspend fun linkHabits(metric: MetricEntity, habitIds: Set<Long>) {
-        structuralEditGuard?.requireAllowed()
-        database.withTransaction {
+    suspend fun linkHabits(metric: MetricEntity, habitIds: Set<Long>, authority: ObjectEditAuthority? = null) {
+        mutate(listOf(metric), authority) {
             habitIds.forEach { habitId ->
                 val habit = requireNotNull(habitDao.getHabitById(habitId)) {
                     "Selected habit no longer exists: $habitId"
                 }
+                check((habit.appearance == null) == (metric.appearance == null)) { "OBJECT_WRITE_MIXED_PROTOCOL" }
                 linkDao.insertOrIgnore(
                     HabitMetricLinkEntity(
                         habitId = habitId,
@@ -162,18 +164,29 @@ class MetricRepository @Inject constructor(
         metricId: Long,
         value: Double,
         note: String,
-        recordedAt: Long = System.currentTimeMillis()
+        recordedAt: Long = System.currentTimeMillis(),
+        authority: ObjectEditAuthority? = null,
+        expectedMetricUuid: String? = null
     ): Long = recordValues(
         values = listOf(MetricValueDraft(metricId, value, note)),
-        recordedAt = recordedAt
+        recordedAt = recordedAt, authority = authority, expectedMetricUuid = expectedMetricUuid
     ).single()
 
     suspend fun recordValues(
         values: List<MetricValueDraft>,
-        recordedAt: Long = System.currentTimeMillis()
+        recordedAt: Long = System.currentTimeMillis(),
+        authority: ObjectEditAuthority? = null,
+        expectedMetricUuid: String? = null
     ): List<Long> {
         val capturedZone = java.time.ZoneId.systemDefault().id
-        return database.withTransaction {
+        if (values.isEmpty()) return emptyList()
+        val targets = values.map { requireNotNull(metricDao.getMetricById(it.metricId)) {
+            "Metric no longer exists: ${it.metricId}"
+        } }.distinctBy { it.id }
+        if (expectedMetricUuid != null) check(targets.size == 1 && targets.single().uuid == expectedMetricUuid) {
+            "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED"
+        }
+        return mutate(targets, authority, structural = false) {
             val logs = values.map { input ->
                 require(input.value.isFinite()) { "Metric value must be finite" }
                 val metric = requireNotNull(metricDao.getMetricById(input.metricId)) {
@@ -190,6 +203,16 @@ class MetricRepository @Inject constructor(
             }
             if (logs.isEmpty()) emptyList() else metricLogDao.insertAll(logs)
         }
+    }
+
+    private suspend fun <T> mutate(metrics: List<MetricEntity>, authority: ObjectEditAuthority? = null,
+        structural: Boolean = true, commit: suspend () -> T): T {
+        if (metrics.any { it.appearance != null } && nextObjectEditor != null) {
+            return nextObjectEditor.mutateMetrics(metrics, authority, commit)
+        }
+        check(authority == null) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
+        if (structural) structuralEditGuard?.requireAllowed()
+        return database.withTransaction { commit() }
     }
 
     private fun validateTargets(metric: MetricEntity) {

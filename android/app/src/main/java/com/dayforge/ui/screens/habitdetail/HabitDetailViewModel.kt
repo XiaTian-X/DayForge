@@ -60,6 +60,7 @@ data class HabitDetailUiState(
     val timeLogs: List<TimeLogEntity> = emptyList(),
     val lastCompletionId: Long? = null,
     val oneTimeStatus: com.dayforge.domain.model.OneTimeStatus? = null,
+    val writeAuthority: com.dayforge.data.repository.ObjectEditAuthority? = null,
     val targetProgress: Int = 0,  // Distinct days completed for habits with targetCycles
     val isLoading: Boolean = true,
     val errorMessage: String? = null,
@@ -166,8 +167,19 @@ class HabitDetailViewModel @Inject constructor(
                     LoadResult(habit, streakStats, habitCompletions, emptyList(), targetProgress, emptyList(), notificationEnabled)
                 }
             }.collect { result ->
+                val captured = try {
+                    result.habit?.takeIf { it.appearance != null && it.completionPolicy == "recurring" }
+                        ?.let { habitRepository.getHabitForEditing(it.id) }
+                } catch (error: Exception) {
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    _uiState.value = _uiState.value.copy(isLoading = false, writeAuthority = null,
+                        errorMessage = error.message)
+                    return@collect
+                }
+                if (captured != null && captured.value != result.habit) return@collect
                 _uiState.value = _uiState.value.copy(
                     habit = result.habit,
+                    writeAuthority = captured?.authority,
                     streakStats = result.streakStats,
                     completions = result.completions,
                     timeLogs = result.timeLogs,
@@ -343,8 +355,12 @@ class HabitDetailViewModel @Inject constructor(
 
     fun logCompletion(value: Int = 1) {
         val habitId = currentHabitId ?: return
+        val displayed = _uiState.value.habit
+        val authority = _uiState.value.writeAuthority
         launchCompletion {
-            val completionId = habitRepository.logCompletion(context, habitId, value)
+            val completionId = if (displayed?.appearance != null && displayed.completionPolicy == "recurring")
+                habitRepository.logCompletion(context, habitId, value, requireNotNull(authority), displayed.uuid)
+            else habitRepository.logCompletion(context, habitId, value)
             if (currentHabitId == habitId) {
                 _uiState.value = _uiState.value.copy(
                     lastCompletionId = completionId
@@ -357,8 +373,9 @@ class HabitDetailViewModel @Inject constructor(
         val habitId = currentHabitId ?: return
         val completionId = _uiState.value.lastCompletionId ?: return
         val authority = _uiState.value.oneTimeStatus?.authority
+        val recurringAuthority = _uiState.value.writeAuthority
         launchCompletion {
-            habitRepository.undoCompletion(context, completionId, authority)
+            habitRepository.undoCompletion(context, completionId, authority, recurringAuthority)
             if (currentHabitId == habitId && _uiState.value.lastCompletionId == completionId) {
                 _uiState.value = _uiState.value.copy(
                     lastCompletionId = null

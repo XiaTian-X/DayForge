@@ -473,8 +473,8 @@ class HabitRepository @Inject constructor(
         failMode: com.dayforge.data.model.FailMode,
         context: Context
     ) {
-        structuralEditGuard?.requireAllowed()
-        habitDao.updateFailMode(habitId, failMode)
+        val habit = requireNotNull(habitDao.getHabitById(habitId))
+        mutate(habit) { habitDao.updateFailMode(it.id, failMode) }
 
         // Notify widgets to update
         notifyWidgetUpdate(context)
@@ -488,8 +488,10 @@ class HabitRepository @Inject constructor(
      * @param value The completion value (default 1 for check-in habits)
      * @return The ID of the inserted completion
      */
-    suspend fun logCompletion(context: Context, habitId: Long, value: Int = 1): Long {
+    suspend fun logCompletion(context: Context, habitId: Long, value: Int = 1,
+        authority: ObjectEditAuthority? = null, expectedHabitUuid: String? = null): Long {
         val capturedHabit = habitDao.getHabitById(habitId)
+        if (expectedHabitUuid != null) check(capturedHabit?.uuid == expectedHabitUuid) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
         if (capturedHabit?.completionPolicy == "one_and_done") {
             require(value == 1) { "ONE_TIME_VALUE_MUST_BE_ONE" }
             val id = requireNotNull(oneTimeRepository).change(habitId, complete = true, expectedUuid = capturedHabit.uuid)
@@ -498,13 +500,9 @@ class HabitRepository @Inject constructor(
         }
         val occurredAt = java.time.Instant.now()
         val capturedZone = java.time.ZoneId.systemDefault()
-        if (habitDao.getHabitById(habitId)?.isActive == false) {
-            structuralEditGuard?.requireAllowed()
-        }
-        val id = database.withTransaction {
+        val id = mutate(requireNotNull(capturedHabit), authority, structural = !capturedHabit.isActive) { habit ->
             // Auto-reactivate if habit is currently inactive
-            val habit = habitDao.getHabitById(habitId)
-            if (habit != null && !habit.isActive) {
+            if (!habit.isActive) {
                 habitDao.updateIsActive(habitId, true)
             }
 
@@ -514,7 +512,7 @@ class HabitRepository @Inject constructor(
                     .toInstant().toEpochMilli(),
                 value = value,
                 actualCompletedAt = occurredAt.toEpochMilli(),
-                habitUuid = habit?.uuid,
+                habitUuid = habit.uuid,
                 recordedTimezone = capturedZone.id
             )
             val completionId = completionDao.insert(completion)
@@ -536,7 +534,8 @@ class HabitRepository @Inject constructor(
      * @param completionId The ID of the completion to delete
      */
     suspend fun undoCompletion(context: Context, completionId: Long,
-        oneTimeAuthority: com.dayforge.domain.model.OneTimeActionAuthority? = null) {
+        oneTimeAuthority: com.dayforge.domain.model.OneTimeActionAuthority? = null,
+        authority: ObjectEditAuthority? = null) {
         val initial = completionDao.getCompletionById(completionId)
         if (oneTimeAuthority != null) check(initial?.oneTimeAction == "complete") { "ONE_TIME_ACTION_EXPIRED" }
         if (initial?.oneTimeAction != null) {
@@ -546,16 +545,20 @@ class HabitRepository @Inject constructor(
             notifyWidgetUpdate(context)
             return
         }
-        database.withTransaction {
+        if (initial == null) return
+        val expected = requireNotNull(habitDao.getHabitById(initial.habitId))
+        if (expected.appearance != null) check(initial.habitUuid == expected.uuid) { "OBJECT_WRITE_FACT_CHANGED" }
+        mutate(expected, authority, structural = false) {
             val completion = completionDao.getCompletionById(completionId)
-                ?: return@withTransaction null
+            // Ordinary undo has always been a no-op when another click already removed it.
+            if (completion == null) return@mutate
+            check(completion == initial) { "OBJECT_WRITE_FACT_CHANGED" }
 
             // A fact cannot be mutated remotely; the outbox converts this delete to a
             // new immutable revert event when the original event was already synced.
-            completionDao.delete(completion)
-            updateActivityRate(completion.habitId)
-            completion.habitId
-        } ?: return
+            completionDao.delete(initial)
+            updateActivityRate(initial.habitId)
+        }
 
         // Notify widgets
         notifyWidgetUpdate(context)
@@ -571,14 +574,31 @@ class HabitRepository @Inject constructor(
         require(habit.completionPolicy != "one_and_done") { "ONE_TIME_HISTORY_IS_IMMUTABLE" }
         structuralEditGuard?.requireAllowed()
         database.withTransaction {
+            val current = requireNotNull(habitDao.getHabitById(habit.id))
+            check(current.uuid == habit.uuid) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
+            require(current.completionPolicy != "one_and_done") { "ONE_TIME_HISTORY_IS_IMMUTABLE" }
             // Local deletes become fact tombstones/revert events through the outbox.
-            completionDao.deleteByHabitId(habit.id)
-            timeLogDao.deleteByHabitId(habit.id)
-            habitDao.updateIsActive(habit.id, true)
+            completionDao.deleteByHabitId(current.id)
+            timeLogDao.deleteByHabitId(current.id)
+            habitDao.updateIsActive(current.id, true)
         }
 
         // Notify widgets
         notifyWidgetUpdate(context)
+    }
+
+    private suspend fun <T> mutate(expected: HabitEntity, authority: ObjectEditAuthority? = null,
+        structural: Boolean = true, commit: suspend (HabitEntity) -> T): T {
+        if (expected.appearance != null && nextObjectEditor != null) {
+            return nextObjectEditor.mutateHabit(expected, authority, commit)
+        }
+        check(authority == null) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
+        if (structural) structuralEditGuard?.requireAllowed()
+        return database.withTransaction {
+            val current = requireNotNull(habitDao.getHabitById(expected.id)) { "OBJECT_WRITE_NOT_FOUND" }
+            check(current.uuid == expected.uuid) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
+            commit(current)
+        }
     }
 
     /**
