@@ -18,23 +18,27 @@ class HabitDeletionCoordinator @Inject constructor(
     val pendingDeletion: StateFlow<PendingHabitDeletion?> = _pendingDeletion.asStateFlow()
 
     suspend fun requestDeletion(habit: HabitEntity) {
+        val snapshot = if (habit.appearance != null) habitRepository.getHabitForEditing(habit.id)
+            else com.dayforge.data.repository.ObjectEditSnapshot(habit, null)
+        val authority = snapshot.authority
+        check(snapshot.value == habit) { "对象已变更，请刷新后再删除" }
         val children = habitRepository.getHabitChildren(habit.uuid)
         if (children.isEmpty()) {
-            habitRepository.deleteHabit(habit, context)
+            habitRepository.deleteHabit(habit, context, authority = authority)
         } else {
-            _pendingDeletion.value = PendingHabitDeletion(habit, children.size)
+            _pendingDeletion.value = PendingHabitDeletion(habit, children.size, authority)
         }
     }
 
     suspend fun deleteWithChildren() {
         val pending = _pendingDeletion.value ?: return
-        habitRepository.deleteHabitWithChildren(pending.habit, context)
+        habitRepository.deleteHabitWithChildren(pending.habit, context, pending.authority)
         _pendingDeletion.value = null
     }
 
     suspend fun deleteKeepingChildren() {
         val pending = _pendingDeletion.value ?: return
-        habitRepository.deleteHabitOrphanChildren(pending.habit, context)
+        habitRepository.deleteHabitOrphanChildren(pending.habit, context, pending.authority)
         _pendingDeletion.value = null
     }
 
@@ -45,5 +49,6 @@ class HabitDeletionCoordinator @Inject constructor(
 
 data class PendingHabitDeletion(
     val habit: HabitEntity,
-    val childCount: Int
+    val childCount: Int,
+    val authority: com.dayforge.data.repository.ObjectEditAuthority? = null
 )

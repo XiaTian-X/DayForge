@@ -6,7 +6,7 @@ import com.dayforge.data.local.entity.SyncEntityStateEntity
 import java.time.Instant
 import kotlinx.serialization.json.*
 
-/** Local delete already happened atomically with its intent. ACK advances only the server shadow. */
+/** Legacy physical deletes advance the shadow; staged v5 plan deletes release retained rows only here. */
 internal class NextOrdinaryDeletionStore(private val database: HabitDatabase) {
     suspend fun acceptInTransaction(change: SyncV2Change, queueId: Long) {
         check(database.inTransaction())
@@ -40,7 +40,9 @@ internal class NextOrdinaryDeletionStore(private val database: HabitDatabase) {
             "metric_observation" -> database.metricLogDao().getLogByUuid(uuid) != null
             else -> database.habitMetricLinkDao().getLinkByUuid(uuid) != null
         }
-        if (present) require((outbox.getAll() + outbox.getDeadLetters()).any { it.id != queueId &&
+        val retained = type in setOf("plan_node", "activity_metric_link") &&
+            NextPlanDeletionStore(database).removeRetainedInTransaction(queue)
+        if (present && !retained) require((outbox.getAll() + outbox.getDeadLetters()).any { it.id != queueId &&
             it.recordType == recordType && it.entityUuid == uuid })
         // Do not erase newer unpublished work, cascade again, or recreate an already deleted parent.
         val shadow = SyncEntityStateEntity(type, uuid, change.revision, deleted = true,

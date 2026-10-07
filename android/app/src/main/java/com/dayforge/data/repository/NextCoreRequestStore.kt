@@ -196,6 +196,8 @@ internal class NextCoreRequestStore(
                 val queue = requireNotNull(database.syncOutboxDao().getById(rawOrigin.queueId))
                 // A later callback cannot jump a predecessor and install an incorrect merge base.
                 causal.requireHead(queue)
+                if (operation.action == "delete")
+                    NextPlanDeletionStore(database).requireReady(queue)
                 auditShadow(change.entityType, change.entityUuid)
                 if (operation.action == "upsert" && change.entityType in setOf("activity_event", "metric_observation", "activity_metric_link")) {
                     // Common-fact revert validation reads historical shadows, including invisible events.
@@ -345,6 +347,11 @@ internal class NextCoreRequestStore(
             val dao = database.nextRequestDao()
             val sql = database.openHelper.writableDatabase
             val oldProof = NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", arrayOf(kind, id))
+            if (kind == NEXT_OPERATION) {
+                val operation = decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
+                if (operation.action == "delete")
+                    NextPlanDeletionStore(database).requireReady(requireNotNull(database.syncOutboxDao().getById(origin.queueId)))
+            }
             val row = if (oldProof == null) {
                 val bytes = if (kind == NEXT_OPERATION) {
                     val operation = decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())

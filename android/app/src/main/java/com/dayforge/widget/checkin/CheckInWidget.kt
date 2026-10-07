@@ -89,7 +89,7 @@ class CheckInWidget : GlanceAppWidget() {
         suspend fun refreshWidgetData(context: Context, glanceId: GlanceId, habitId: Long) {
             val appContext = context.applicationContext
             val database = HabitDatabaseProvider.getInstance(appContext)
-            val habit = database.habitDao().getHabitById(habitId)
+            val habit = database.habitDao().getVisibleHabitById(habitId)
 
             if (habit == null) {
                 Log.w(TAG, "refreshWidgetData: habit $habitId not found")

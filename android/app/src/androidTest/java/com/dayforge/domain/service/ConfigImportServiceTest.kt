@@ -235,7 +235,7 @@ class ConfigImportServiceTest {
         coEvery { guard.requireAllowed() } throws CancellationException("cancelled")
         val importer = ConfigImportService(database.habitDao(), database.metricDao(), database.habitMetricLinkDao(), database, guard)
         val dao = mockk<com.dayforge.data.local.dao.HabitDao>()
-        coEvery { dao.getAllHabitsOnce() } throws CancellationException("cancelled")
+        coEvery { dao.getVisibleHabitsOnce() } throws CancellationException("cancelled")
         val exporter = ConfigExportService(dao, database.metricDao(), database.habitMetricLinkDao())
         var cancelled = 0
         try { importer.importConfig("{}") } catch (_: CancellationException) { cancelled++ }

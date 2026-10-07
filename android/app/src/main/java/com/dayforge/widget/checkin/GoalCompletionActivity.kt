@@ -79,7 +79,7 @@ class GoalCompletionActivity : ComponentActivity() {
                     onDismiss = {
                         lifecycleScope.launch(Dispatchers.IO) {
                             runCatching {
-                                val habit = habitDatabase.habitDao().getHabitById(habitId)
+                                val habit = habitDatabase.habitDao().getVisibleHabitById(habitId)
                                 if (habit != null && habit.failMode == com.dayforge.data.model.FailMode.STRICT) {
                                     habitRepository.updateFailMode(habitId, com.dayforge.data.model.FailMode.LOOSE, applicationContext)
                                 }

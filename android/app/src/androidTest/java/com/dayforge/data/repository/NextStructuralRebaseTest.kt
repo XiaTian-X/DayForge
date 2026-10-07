@@ -221,7 +221,7 @@ class NextStructuralRebaseTest {
         }
     }
 
-    @Test fun factsTimerOnceStatesDeletesAndUnknownFieldsAreNeverAdoptedByStructuralRebasing() {
+    @Test fun factsTimerOnceStatesMetricDeletesAndUnknownFieldsAreNeverAdoptedByStructuralRebasing() {
         val first = operation(metric())
         for (type in listOf("activity_event", "metric_observation", "timer_command", "unknown")) {
             val a = first.copy(entityType = type)
@@ -235,10 +235,40 @@ class NextStructuralRebaseTest {
         val once = change(change(plan(), "activity.completion_policy", JsonPrimitive("one_and_done")),
             "activity.recurrence_rule", Json.parseToJsonElement("""{"schema_version":1,"type":"once","due_date":null}"""))
         val onceOp = operation(once, type = "plan_node")
-        assertTrue(runCatching { NextStructuralRebase.merge(onceOp, onceOp.copy(operationId = secondId), accepted(onceOp), replacement) }.isFailure)
+        val successor = onceOp.copy(operationId = secondId)
+        assertEquals(successor.payload, NextStructuralRebase.merge(onceOp, successor, accepted(onceOp), replacement).payload)
+        // Stateless once structure may advance; a completion projection is never a writable field.
+        for (field in listOf("one_time_state_after", "one_time_completion", "completion_event_uuid")) {
+            val stateWrite = successor.copy(payload = change(once, field, buildJsonObject {}))
+            assertTrue(runCatching { NextStructuralRebase.merge(onceOp, stateWrite, accepted(onceOp), replacement) }.isFailure)
+        }
         assertThrows(IllegalArgumentException::class.java) {
             NextStructuralRebase.merge(first, first.copy(operationId = secondId),
                 accepted(first).copy(entity = change(accepted(first).entity!!, "one_time_state_after", buildJsonObject {})), replacement)
+        }
+    }
+
+    @Test fun explicitPlanAndLinkDeletesUseOnlyTheirOwnBoundLivePredecessorAndKeepExactPolicy() {
+        for (body in listOf(plan(), goal(), link())) {
+            val type = if (body.containsKey("node_kind")) "plan_node" else "activity_metric_link"
+            val first = operation(body, type = type)
+            val payload = if (body["node_kind"] == JsonPrimitive("goal"))
+                buildJsonObject { put("child_policy", "detach_children") } else buildJsonObject {}
+            val delete = first.copy(operationId = secondId, action = "delete", payload = payload)
+            val result = NextStructuralRebase.merge(first, delete, accepted(first, revision = 8), replacement)
+            assertEquals(replacement, result.operationId); assertEquals(8L, result.baseRevision)
+            assertEquals(payload, result.payload); assertEquals(null, delete.baseRevision)
+            assertTrue(runCatching { NextStructuralRebase.merge(first, delete,
+                accepted(first).copy(entity = change(accepted(first).entity!!, "deleted_at", JsonPrimitive(stamp))), replacement) }.isFailure)
+            assertTrue(runCatching { NextStructuralRebase.merge(first, delete.copy(payload = buildJsonObject {
+                put("unknown", true)
+            }), accepted(first), replacement) }.isFailure)
+            val key = if (type == "plan_node") "created_at" else "metric_uuid"
+            val changed = change(body, key, JsonPrimitive(if (type == "plan_node") stamp else thirdId))
+            val changedResult = accepted(first).copy(entity = change(accepted(first).entity!!, key, changed.getValue(key)))
+            assertTrue(runCatching { NextStructuralRebase.merge(first, delete, changedResult, replacement) }.isFailure)
+            assertTrue(runCatching { NextStructuralRebase.merge(first, delete, changedResult, replacement,
+                first.copy(payload = changed)) }.isFailure)
         }
     }
 }

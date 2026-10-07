@@ -86,7 +86,7 @@ class CheckInActionCallback : ActionCallback {
             "decrement" -> {
                 // For countdown mode: - button means "record one done" (increment completedToday)
                 // For countup mode: - button means "subtract one" (decrement completedToday)
-                val habit = database.habitDao().getHabitById(habitId)
+                val habit = database.habitDao().getVisibleHabitById(habitId)
                 if (habit?.isCountdown == true) {
                     // Countdown mode: check if remaining is already 0
                     val today = DateTimeUtils.today()
@@ -156,7 +156,7 @@ class CheckInActionCallback : ActionCallback {
         Log.d(TAG, "showGoalCompletionDialog: habitId=$habitId, progress=$progress")
 
         // Get habit info for dialog
-        val habit = database.habitDao().getHabitById(habitId)
+        val habit = database.habitDao().getVisibleHabitById(habitId)
         if (habit == null) {
             Log.d(TAG, "Habit not found for id=$habitId")
             return

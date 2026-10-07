@@ -386,70 +386,61 @@ class EditHabitViewModel @Inject constructor(
     }
 
     fun deleteHabit(onDeleted: () -> Unit) {
+        val captured = _uiState.value
+        val habit = originalHabit ?: return
         viewModelScope.launch {
-            val habitId = _uiState.value.habitId
             try {
-                val habit = habitRepository.getHabit(habitId).first()
-                if (habit != null) {
-                    val children = habitRepository.getHabitChildren(habit.uuid)
-                    if (children.isNotEmpty()) {
-                        _uiState.value = _uiState.value.copy(
-                            showDeleteDialog = false,
-                            showDeleteChildrenDialog = true,
-                            pendingDeleteChildrenCount = children.size
-                        )
-                    } else {
-                        habitRepository.deleteHabit(habit, context)
-                        _uiState.value = _uiState.value.copy(
-                            showDeleteDialog = false,
-                            habitId = 0L
-                        )
-                        onDeleted()
-                    }
+                val children = habitRepository.getHabitChildren(habit.uuid)
+                if (children.isNotEmpty()) {
+                    _uiState.value = _uiState.value.copy(
+                        showDeleteDialog = false,
+                        showDeleteChildrenDialog = true,
+                        pendingDeleteChildrenCount = children.size
+                    )
+                } else {
+                    habitRepository.deleteHabit(habit, context, authority = captured.editAuthority)
+                    _uiState.value = _uiState.value.copy(showDeleteDialog = false, habitId = 0L)
+                    onDeleted()
                 }
             } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(showDeleteDialog = false)
-                onDeleted()
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _uiState.value = _uiState.value.copy(errorMessage = context.getString(R.string.goal_delete_failed, e.message))
             }
         }
     }
 
     fun deleteHabitWithChildren(onDeleted: () -> Unit) {
+        val captured = _uiState.value
+        val habit = originalHabit ?: return
         viewModelScope.launch {
-            val habitId = _uiState.value.habitId
             try {
-                val habit = habitRepository.getHabit(habitId).first()
-                if (habit != null) {
-                    habitRepository.deleteHabitWithChildren(habit, context)
-                }
+                habitRepository.deleteHabitWithChildren(habit, context, captured.editAuthority)
                 _uiState.value = _uiState.value.copy(
                     showDeleteChildrenDialog = false,
                     habitId = 0L
                 )
                 onDeleted()
             } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(showDeleteChildrenDialog = false)
-                onDeleted()
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _uiState.value = _uiState.value.copy(errorMessage = context.getString(R.string.goal_delete_failed, e.message))
             }
         }
     }
 
     fun deleteHabitKeepChildren(onDeleted: () -> Unit) {
+        val captured = _uiState.value
+        val habit = originalHabit ?: return
         viewModelScope.launch {
-            val habitId = _uiState.value.habitId
             try {
-                val habit = habitRepository.getHabit(habitId).first()
-                if (habit != null) {
-                    habitRepository.deleteHabitOrphanChildren(habit, context)
-                }
+                habitRepository.deleteHabitOrphanChildren(habit, context, captured.editAuthority)
                 _uiState.value = _uiState.value.copy(
                     showDeleteChildrenDialog = false,
                     habitId = 0L
                 )
                 onDeleted()
             } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(showDeleteChildrenDialog = false)
-                onDeleted()
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _uiState.value = _uiState.value.copy(errorMessage = context.getString(R.string.goal_delete_failed, e.message))
             }
         }
     }

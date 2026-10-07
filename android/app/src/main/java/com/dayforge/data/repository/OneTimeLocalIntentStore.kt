@@ -129,6 +129,7 @@ internal class OneTimeLocalIntentStore(
                     reject(OneTimeLocalException.Reason.EVENT_ID_REUSED)
                 }
                 val queue = loaded.snapshot.queue
+                if (habits.hasPendingNextDeletion(command.activityUuid)) reject(OneTimeLocalException.Reason.ENTITY_DELETED)
                 if (queue.blockedOperationIds.isNotEmpty()) reject(OneTimeLocalException.Reason.PENDING_REJECTED)
                 if (queue.awaitingReplayOperationIds.isNotEmpty()) reject(OneTimeLocalException.Reason.PENDING_REPLAY)
                 advanceOneTime(queue.optimisticState, command.pending.intent)

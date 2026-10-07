@@ -68,6 +68,16 @@ internal class NextCoreLocalIntentStore(
                         requestId = row.operationId
                         permission = if (row.recordType in setOf("completion", "metric_log")) "facts.append" else "structure.write"
                         val operation = operation(row)
+                        if (operation.action == "upsert") {
+                            val deleted = NextPlanDeletionStore(database)
+                            if (operation.entityType == "plan_node") {
+                                deleted.requireWritable(operation.entityUuid)
+                                operation.payload["parent_uuid"]?.takeUnless { it == JsonNull }?.jsonPrimitive?.content
+                                    ?.let { deleted.requireWritable(it) }
+                            } else if (operation.entityType in setOf("activity_event", "activity_metric_link")) {
+                                deleted.requireWritable(operation.payload.getValue("activity_uuid").jsonPrimitive.content)
+                            }
+                        }
                         bytes = encodeSyncRequest(SyncV2Operation.serializer(), operation)
                         decodeFrozenSyncRequest(bytes, SyncV2Operation.serializer())
                         // Prove full-envelope limits while still able to roll back the local write.
@@ -82,6 +92,10 @@ internal class NextCoreLocalIntentStore(
                             rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
                         requestId = row.commandId; permission = "timer.control"
                         val command = timerRequest(row)
+                        val activity = row.activityUuid ?: database.timeLogDao().getTimeLogByUuid(row.sessionUuid)?.let {
+                            database.habitDao().getHabitById(it.habitId)?.uuid
+                        }
+                        activity?.let { NextPlanDeletionStore(database).requireWritable(it) }
                         bytes = encodeSyncRequest(TimerCommandRequest.serializer(), command)
                         decodeFrozenSyncRequest(bytes, TimerCommandRequest.serializer())
                         val envelope = encodeSyncRequest(TimerCommandBatchRequest.serializer(),
@@ -144,7 +158,7 @@ internal class NextCoreLocalIntentStore(
             }
         } else if (row.action == "delete") {
             require(row.recordType in setOf("habit", "metric", "metric_log", "link"))
-            SyncV2Mapper.deletePayload(row.recordType, row.referenceUuid)
+            NextPlanDeletionStore.payload(row) ?: SyncV2Mapper.deletePayload(row.recordType, row.referenceUuid)
         } else when (row.recordType) {
             "habit" -> NextStructureMapper.writePlan(requireNotNull(database.habitDao().getHabitByUuid(row.entityUuid)))
             "metric" -> NextStructureMapper.writeMetric(requireNotNull(database.metricDao().getMetricByUuid(row.entityUuid)))

@@ -516,25 +516,34 @@ class NestedViewModel @Inject constructor(
      * Delete a child habit.
      */
     fun deleteHabit(habit: HabitEntity) {
-        viewModelScope.launch {
+        runDeletion {
             deletionCoordinator.requestDeletion(habit)
         }
     }
 
     fun deleteHabitWithChildren() {
-        viewModelScope.launch {
+        runDeletion {
             deletionCoordinator.deleteWithChildren()
         }
     }
 
     fun deleteHabitKeepChildren() {
-        viewModelScope.launch {
+        runDeletion {
             deletionCoordinator.deleteKeepingChildren()
         }
     }
 
     fun dismissChildrenDialog() {
         deletionCoordinator.dismissDeletion()
+    }
+
+    private fun runDeletion(action: suspend () -> Unit) {
+        viewModelScope.launch {
+            try { action() } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                Toast.makeText(context, context.getString(R.string.goal_delete_failed, error.message), Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     // ========== Expand State Management ==========

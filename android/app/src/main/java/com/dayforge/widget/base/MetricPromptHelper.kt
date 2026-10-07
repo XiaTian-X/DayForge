@@ -56,7 +56,7 @@ object MetricPromptHelper {
         }
 
         // Get habit name for dialog
-        val habit = database.habitDao().getHabitById(habitId)
+        val habit = database.habitDao().getVisibleHabitById(habitId)
         if (habit == null) {
             Log.d(TAG, "Habit not found for id=$habitId")
             return

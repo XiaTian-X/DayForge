@@ -77,7 +77,7 @@ class OneTimeRepository @Inject constructor(
             }
             check(tokens.localFactAccess() == access) { "ONE_TIME_SESSION_CHANGED" }
             snapshot to OneTimeStatus(state.completionEventUuid != null, factId,
-                access.canAppend && snapshot.queue.blockedOperationIds.isEmpty() &&
+                access.canAppend && !database.habitDao().hasPendingNextDeletion(habit.uuid) && snapshot.queue.blockedOperationIds.isEmpty() &&
                     snapshot.queue.awaitingReplayOperationIds.isEmpty(),
                 snapshot.queue.awaitingReplayOperationIds.isNotEmpty(), snapshot.queue.blockedOperationIds.isNotEmpty(),
                 ActionAuthority(snapshot))
@@ -200,7 +200,7 @@ class OneTimeRepository @Inject constructor(
                 OneTimeMetricEntry(metric?.id ?: -(index + 1L), entry.metricName, entry.unit, entry.decimalPlaces,
                     entry.input, entry.note, metric != null)
             }
-            OneTimeMetricPrompt(snapshot, habit.id, habit.name, java.util.Collections.unmodifiableList(entries))
+            OneTimeMetricPrompt(snapshot, habit.id, NextPlanDeletionStore(database).displayName(habit), java.util.Collections.unmodifiableList(entries))
         }
     }
 }

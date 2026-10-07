@@ -144,7 +144,7 @@ class FocusWidget : GlanceAppWidget() {
             )
 
             // Get all active habits
-            val allActiveHabits = database.habitDao().getAllHabitsOnce().filter { it.isActive && it.completionPolicy != "one_and_done" }
+            val allActiveHabits = database.habitDao().getVisibleHabitsOnce().filter { it.isActive && it.completionPolicy != "one_and_done" }
 
             // Calculate status for each habit using app logic
             val habitsWithStats = allActiveHabits.map { habit ->

@@ -52,12 +52,12 @@ class TimerConfirmationActivity : ComponentActivity() {
                     // Get active timer info
                     val activeLog = habitDatabase.timeLogDao().getActiveTimeLog()
                     if (activeLog != null && activeLog.habitId != habitId) {
-                        val currentHabit = habitDatabase.habitDao().getHabitById(activeLog.habitId)
+                        val currentHabit = habitDatabase.habitDao().getVisibleHabitById(activeLog.habitId)
                         currentHabitName = currentHabit?.name
                     }
 
                     // Get new habit name
-                    val newHabit = habitDatabase.habitDao().getHabitById(habitId)
+                    val newHabit = habitDatabase.habitDao().getVisibleHabitById(habitId)
                     newHabitName = newHabit?.name
                 }
 

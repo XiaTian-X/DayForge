@@ -268,7 +268,8 @@ class NextOneTimeRequestStoreTest : NextCoreRequestFixture() {
     @Test fun boundParentDeleteAllowsShadowOnlyAcceptanceAndColdReplayNeverRecreatesParent() = runBlocking<Unit> {
         val row = appendOnce(200); val (http, server) = channel { onceReply(it) }
         val delivery = requireNotNull(store(http).send(access(), row.operationId))
-        producer().write(local()) { habits().deleteHabit(requireNotNull(db.habitDao().getHabitByUuid(habit.uuid))) }
+        // Exercise the foundation's already-physical parent deletion, not the formal retained-delete UI.
+        producer().write(local()) { db.habitDao().delete(requireNotNull(db.habitDao().getHabitByUuid(habit.uuid))) }
         val deleted = db.syncOutboxDao().getAll().single { it.recordType == "habit" && it.action == "delete" }
         val original = originalIntent(deleted)
         db.openHelper.writableDatabase.execSQL("CREATE TRIGGER once_parent AFTER INSERT ON next_acceptances BEGIN UPDATE next_request_origins SET intentJson='{}' WHERE requestId='${deleted.operationId}'; END")

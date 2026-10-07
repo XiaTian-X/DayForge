@@ -94,7 +94,7 @@ class TimerWidget : GlanceAppWidget() {
          * Refreshes widget data from the database.
          *
          * Steps:
-         * 1. Query habit by ID from HabitDatabase.habitDao().getHabitById(habitId)
+         * 1. Query habit by ID from HabitDatabase.habitDao().getVisibleHabitById(habitId)
          * 2. If habit is null, set IS_DELETED_KEY = true and return
          * 3. Query active timer: timeLogDao.getActiveTimeLogForHabit(habitId)
          * 4. Calculate timer state:
@@ -109,7 +109,7 @@ class TimerWidget : GlanceAppWidget() {
         suspend fun refreshWidgetData(context: Context, glanceId: GlanceId, habitId: Long) {
             val appContext = context.applicationContext
             val database = HabitDatabaseProvider.getInstance(appContext)
-            val habit = database.habitDao().getHabitById(habitId)
+            val habit = database.habitDao().getVisibleHabitById(habitId)
 
             if (habit == null) {
                 Log.w(TAG, "refreshWidgetData: habit $habitId not found")

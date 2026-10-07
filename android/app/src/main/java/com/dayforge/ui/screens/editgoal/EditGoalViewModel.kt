@@ -213,6 +213,7 @@ class EditGoalViewModel @Inject constructor(
      * Note: This will also affect child habits (they will become top-level habits).
      */
     fun deleteGoal() {
+        val authority = _uiState.value.editAuthority
         val goalId = _uiState.value.goalId ?: return
 
         _uiState.value = _uiState.value.copy(isDeleting = true)
@@ -228,7 +229,7 @@ class EditGoalViewModel @Inject constructor(
                         pendingDeleteChildrenCount = children.size
                     )
                 } else {
-                    habitRepository.deleteHabit(goal, context)
+                    habitRepository.deleteHabit(goal, context, authority = authority)
                     _uiState.value = _uiState.value.copy(
                         isDeleting = false,
                         showDeleteDialog = false,
@@ -236,6 +237,7 @@ class EditGoalViewModel @Inject constructor(
                     )
                 }
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 _uiState.value = _uiState.value.copy(
                     isDeleting = false,
                     errorMessage = context.getString(R.string.goal_delete_failed, e.message)
@@ -245,17 +247,19 @@ class EditGoalViewModel @Inject constructor(
     }
 
     fun deleteGoalWithChildren() {
+        val authority = _uiState.value.editAuthority
         val goalId = _uiState.value.goalId ?: return
 
         viewModelScope.launch {
             try {
                 val goal = habitDao.getHabitById(goalId) ?: return@launch
-                habitRepository.deleteHabitWithChildren(goal, context)
+                habitRepository.deleteHabitWithChildren(goal, context, authority)
                 _uiState.value = _uiState.value.copy(
                     showDeleteChildrenDialog = false,
                     saved = true
                 )
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 _uiState.value = _uiState.value.copy(
                     showDeleteChildrenDialog = false,
                     errorMessage = context.getString(R.string.goal_delete_failed, e.message)
@@ -265,17 +269,19 @@ class EditGoalViewModel @Inject constructor(
     }
 
     fun deleteGoalKeepChildren() {
+        val authority = _uiState.value.editAuthority
         val goalId = _uiState.value.goalId ?: return
 
         viewModelScope.launch {
             try {
                 val goal = habitDao.getHabitById(goalId) ?: return@launch
-                habitRepository.deleteHabitOrphanChildren(goal, context)
+                habitRepository.deleteHabitOrphanChildren(goal, context, authority)
                 _uiState.value = _uiState.value.copy(
                     showDeleteChildrenDialog = false,
                     saved = true
                 )
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 _uiState.value = _uiState.value.copy(
                     showDeleteChildrenDialog = false,
                     errorMessage = context.getString(R.string.goal_delete_failed, e.message)

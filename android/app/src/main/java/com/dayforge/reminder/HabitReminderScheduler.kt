@@ -291,7 +291,7 @@ object HabitReminderScheduler {
         val database = HabitDatabaseProvider.getInstance(appContext)
 
         // Query all habits with bestTime and filter
-        val allHabits = database.habitDao().getAllHabitsOnce()
+        val allHabits = database.habitDao().getVisibleHabitsOnce()
         val habitsWithReminders = allHabits.filter { habit ->
             habit.bestTime != null &&
             habit.isActive &&

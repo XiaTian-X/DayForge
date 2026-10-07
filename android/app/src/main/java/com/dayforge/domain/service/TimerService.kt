@@ -339,7 +339,7 @@ class TimerService : Service() {
             return
         }
 
-        val requestedHabit = habitDao.getHabitByIdSync(requestedHabitId)
+        val requestedHabit = habitDao.getVisibleHabitByIdSync(requestedHabitId)
         if (requestedHabit == null) {
             stopIfNoPersistedTimer()
             return

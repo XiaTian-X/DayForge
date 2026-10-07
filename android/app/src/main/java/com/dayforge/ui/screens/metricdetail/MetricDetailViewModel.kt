@@ -329,7 +329,7 @@ class MetricDetailViewModel @Inject constructor(
      */
     fun showLinkHabitDialog() {
         viewModelScope.launch {
-            val allHabits = habitDao.getAllHabitsOnce()
+            val allHabits = habitDao.getVisibleHabitsOnce()
             val linkedHabitIds = _uiState.value.links.map { it.link.habitId }.toSet()
 
             val habitsForLinking = allHabits.map { habit ->

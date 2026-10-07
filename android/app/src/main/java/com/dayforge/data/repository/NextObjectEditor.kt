@@ -42,7 +42,7 @@ class NextObjectEditor @Inject constructor(
     internal suspend fun habit(id: Long): ObjectEditSnapshot<HabitEntity> = sessions.exclusive {
         val access = tokens.localCoreWriteAccess()
         database.withTransaction {
-            val row = database.habitDao().getHabitById(id)
+            val row = database.habitDao().getVisibleHabitById(id)
             val ticket = row?.takeIf { it.appearance != null }?.let {
                 ObjectEditAuthority(requireNotNull(access) { "OBJECT_EDIT_ACCESS_DENIED" }.session,
                     it.uuid, "plan_node", NextStructureMapper.writePlan(it))
@@ -73,6 +73,7 @@ class NextObjectEditor @Inject constructor(
         authorize(ticket, requireNotNull(edited.appearance), requireNotNull(before.appearance),
             before.completionPolicy == "one_and_done")
         return producer.write(ticket.session) {
+            NextPlanDeletionStore(database).requireWritable(ticket.uuid)
             val current = requireNotNull(database.habitDao().getHabitById(edited.id)) { "OBJECT_EDIT_NOT_FOUND" }
             check(current.uuid == ticket.uuid && NextStructureMapper.writePlan(current) == ticket.original) {
                 "OBJECT_EDIT_CHANGED_RELOAD_REQUIRED"
@@ -115,11 +116,46 @@ class NextObjectEditor @Inject constructor(
         check(ticket.type == "plan_node" && ticket.uuid == expected.uuid &&
             ticket.original == NextStructureMapper.writePlan(expected)) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
         return producer.write(ticket.session) {
+            NextPlanDeletionStore(database).requireWritable(ticket.uuid)
             val current = requireNotNull(database.habitDao().getHabitById(expected.id)) { "OBJECT_WRITE_NOT_FOUND" }
             check(current.uuid == ticket.uuid && NextStructureMapper.writePlan(current) == ticket.original) {
                 "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED"
             }
             commit(current)
+        }
+    }
+
+    /** Retain pending facts, release names and freeze explicit child policy in one original transaction. */
+    internal suspend fun deleteHabit(expected: HabitEntity, childPolicy: String?, authority: ObjectEditAuthority? = null): List<HabitEntity> {
+        val ticket = authority ?: requireNotNull(habit(expected.id).authority) { "OBJECT_WRITE_TICKET_REQUIRED" }
+        check(ticket.type == "plan_node" && ticket.uuid == expected.uuid &&
+            ticket.original == NextStructureMapper.writePlan(expected)) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
+        return producer.write(ticket.session) {
+            val current = requireNotNull(database.habitDao().getHabitById(expected.id)) { "OBJECT_WRITE_NOT_FOUND" }
+            check(current.uuid == ticket.uuid) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
+            if (database.habitDao().hasPendingNextDeletion(current.uuid)) {
+                val existing = database.syncOutboxDao().getEntityIntents("habit", current.uuid).single { it.action == "delete" }
+                check(NextPlanDeletionStore.payload(existing)?.get("child_policy")?.let { it.toString().trim('"') } == childPolicy)
+                return@write emptyList() // Exact same deletion is already durable; do not append another.
+            }
+            check(current.uuid == ticket.uuid && NextStructureMapper.writePlan(current) == ticket.original) {
+                "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED"
+            }
+            val children = database.habitDao().getChildrenByParentUuidOnce(current.uuid)
+            require(current.habitType == com.dayforge.data.model.HabitType.GOAL || children.isEmpty())
+            require(children.all { it.appearance != null && it.habitType != com.dayforge.data.model.HabitType.GOAL }) {
+                "OBJECT_WRITE_MIXED_PROTOCOL_OR_INVALID_PARENT"
+            }
+            val deletion = NextPlanDeletionStore(database)
+            if (childPolicy == "cascade_children") children.forEach {
+                if (!database.habitDao().hasPendingNextDeletion(it.uuid)) deletion.stage(it, null)
+            }
+            else children.forEach {
+                if (!database.habitDao().hasPendingNextDeletion(it.uuid))
+                    database.habitDao().updateParentHabitId(it.id, null)
+            }
+            deletion.stage(current, childPolicy, children.map { it.uuid })
+            if (childPolicy == "cascade_children") listOf(current) + children else listOf(current)
         }
     }
 

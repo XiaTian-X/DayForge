@@ -61,7 +61,7 @@ class HabitReminderReceiver : BroadcastReceiver() {
                 try {
                     // Query habit from database
                     val database = HabitDatabaseProvider.getInstance(appContext)
-                    val habit = database.habitDao().getHabitByIdSync(habitId)
+                    val habit = database.habitDao().getVisibleHabitByIdSync(habitId)
 
                     if (habit == null) {
                         Log.w(TAG, "Habit not found: habitId=$habitId")

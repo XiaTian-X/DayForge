@@ -50,7 +50,7 @@ object FocusWidgetAlarmScheduler {
         val database = HabitDatabaseProvider.getInstance(appContext)
         val currentTime = ZonedDateTime.now()
         val currentMinutes = currentTime.hour * 60 + currentTime.minute
-        val activeHabits = database.habitDao().getAllHabitsOnce().filter {
+        val activeHabits = database.habitDao().getVisibleHabitsOnce().filter {
             it.isActive && it.bestTime != null && it.habitType != HabitType.GOAL
         }
 

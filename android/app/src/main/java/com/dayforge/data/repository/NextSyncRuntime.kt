@@ -68,7 +68,8 @@ internal class NextSyncRuntime @Inject constructor(
             val command = if (structural == null) commands.firstOrNull() else null
             val operation = structural ?: if (command == null) operations.firstOrNull {
                 it.recordType == "one_time_completion"
-            } ?: operations.firstOrNull() else null
+            } ?: operations.firstOrNull { it.recordType != "habit" || it.action != "delete" }
+                ?: operations.firstOrNull() else null
             if (operation == null && command == null) break
             require(uploaded < 10_000) { "SYNC_UPLOAD_LIMIT_REACHED" }
             val requestId = operation?.operationId ?: requireNotNull(command).commandId

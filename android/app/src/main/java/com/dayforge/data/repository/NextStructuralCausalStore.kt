@@ -271,9 +271,9 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         }
     }
 
-    private fun ordinary(operation: SyncV2Operation): Boolean = operation.action == "upsert" &&
-        operation.entityType in setOf("plan_node", "metric", "activity_metric_link") &&
-        (operation.payload["activity"] as? JsonObject)?.get("completion_policy") != JsonPrimitive("one_and_done")
+    private fun ordinary(operation: SyncV2Operation): Boolean =
+        operation.action == "upsert" && operation.entityType in setOf("plan_node", "metric", "activity_metric_link") ||
+            operation.action == "delete" && operation.entityType in setOf("plan_node", "activity_metric_link")
 
     private suspend fun original(id: String): NextRequestOriginEntity {
         require(isContractUuid(id))
@@ -346,12 +346,16 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
 
     private fun fresh(row: SyncOutboxEntity) {
         require(row.id > 0 && isContractUuid(row.operationId) && isContractUuid(row.entityUuid) &&
-            row.entityUuid == row.wireEntityUuid && row.action == "upsert" && row.recordType in setOf("habit", "metric", "link") &&
+            row.entityUuid == row.wireEntityUuid && (row.action == "upsert" ||
+                row.action == "delete" && (row.recordType == "link" ||
+                    row.recordType == "habit" && NextPlanDeletionStore.payload(row) != null)) &&
+            row.recordType in setOf("habit", "metric", "link") &&
             row.payloadJson == null && row.baseRevision == null && row.basePayloadJson == null && row.attemptedAt == null &&
             row.attemptCount == 0 && row.lastError == null && row.errorCode == null && row.deadLetteredAt == null)
         row.referenceUuid?.let {
             // Existing habit triggers store the type here, not a parent/record UUID.
-            require(if (row.recordType == "habit") it in HabitType.entries.map { type -> type.name } else isContractUuid(it))
+            require(if (row.recordType == "habit") row.action == "delete" && NextPlanDeletionStore.payload(row) != null ||
+                it in HabitType.entries.map { type -> type.name } else isContractUuid(it))
         }
     }
 
@@ -379,7 +383,8 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
     /** Only explicit NEW writes get ancestry. A migrated/unknown predecessor is never adopted. */
     suspend fun capture(origin: NextRequestOriginEntity, operation: SyncV2Operation, access: LocalCoreWriteAccess) {
         check(database.inTransaction())
-        if (!ordinary(operation)) return
+        if (!ordinary(operation) || operation.entityType == "plan_node" && operation.action == "delete" && NextPlanDeletionStore.payload(
+                requireNotNull(outbox.getById(origin.queueId))) == null) return
         require(rowHash("sync_outbox", "id=?", arrayOf(origin.queueId)) == origin.sourceHash)
         val source = requireNotNull(outbox.getById(origin.queueId))
         fresh(source)
@@ -449,7 +454,11 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         val receipt = proof?.acceptances?.get(id) ?: requireNotNull(requests.acceptance(NEXT_OPERATION, id))
         require(receipt.kind == NEXT_OPERATION && receipt.requestId == id && receipt.originHash == originHash &&
             receipt.transmissionHash == transmissionHash && receipt.resultHash == nextRequestHash(receipt.resultJson.toByteArray(Charsets.UTF_8)))
-        val result = validateStructuralResult(receipt.resultJson)
+        val result = if (operation.action == "delete") {
+            decode(receipt.resultJson.toByteArray(Charsets.UTF_8), NextSyncOperationResult.serializer()).also {
+                NextOrdinaryResultMapper.validate(operation, it, requireNotNull(access.deviceId))
+            }
+        } else validateStructuralResult(receipt.resultJson)
         validateTaskResultBinding(operation, result)
         require(result.status == "applied" && result.revision != null && result.revision > 0 &&
             result.revision >= (operation.baseRevision ?: 0) && result.entity != null && result.errorCode == null && result.message == null &&
@@ -562,7 +571,8 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         if (requestHash("next_transmissions", id) != null || requestHash("next_acceptances", id) != null) return id
         val origin = original(id)
         val operation = decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
-        if (!ordinary(operation)) return id
+        if (!ordinary(operation) || operation.action == "delete" &&
+            hash("next_structural_dependencies", "operationId", id) == null) return id
         require(rowHash("sync_outbox", "id=?", arrayOf(origin.queueId)) == origin.sourceHash)
         val source = requireNotNull(outbox.getById(origin.queueId))
         requireHead(source)

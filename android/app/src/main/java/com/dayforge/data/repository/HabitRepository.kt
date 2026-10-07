@@ -60,7 +60,7 @@ class HabitRepository @Inject constructor(
 
     fun getHabit(id: Long): Flow<HabitEntity?> = habitDao.getHabitByIdFlow(id)
 
-    suspend fun getHabitById(id: Long): HabitEntity? = habitDao.getHabitById(id)
+    suspend fun getHabitById(id: Long): HabitEntity? = habitDao.getVisibleHabitById(id)
 
     suspend fun getHabitForEditing(id: Long): ObjectEditSnapshot<HabitEntity> =
         nextObjectEditor?.habit(id) ?: ObjectEditSnapshot(habitDao.getHabitById(id), null)
@@ -315,20 +315,20 @@ class HabitRepository @Inject constructor(
     suspend fun deleteHabit(
         habit: HabitEntity,
         context: Context? = null,
-        factDerivedTaskFinalization: Boolean = false
+        factDerivedTaskFinalization: Boolean = false,
+        authority: ObjectEditAuthority? = null
     ) {
-        if (!factDerivedTaskFinalization) structuralEditGuard?.requireAllowed()
-        // Cancel any pending reminder for this habit
-        if (habit.bestTime != null) {
-            context?.let {
-                HabitReminderScheduler.cancelReminder(it, habit.id, habit.habitType, habit.targetValue)
-            }
+        if (habit.appearance != null) {
+            require(!factDerivedTaskFinalization) { "ONE_TIME_COMPLETION_MUST_BE_RETAINED" }
+            val deleted = requireNotNull(nextObjectEditor).deleteHabit(habit,
+                if (habit.habitType == HabitType.GOAL) "detach_children" else null, authority)
+            afterHabitDeletion(deleted, context)
+            return
         }
+        if (!factDerivedTaskFinalization) structuralEditGuard?.requireAllowed()
         // The local delete and its cascades are captured atomically by the v2 outbox.
         habitDao.delete(habit)
-
-        // Notify widgets to update progress and motivation, and mark checkin/counting widgets as deleted
-        context?.let { notifyWidgetUpdate(it) }
+        afterHabitDeletion(listOf(habit), context)
     }
 
     /**
@@ -337,7 +337,11 @@ class HabitRepository @Inject constructor(
      * @param habit The parent habit to delete with all children
      * @param context Context for widget notification
      */
-    suspend fun deleteHabitWithChildren(habit: HabitEntity, context: Context? = null) {
+    suspend fun deleteHabitWithChildren(habit: HabitEntity, context: Context? = null, authority: ObjectEditAuthority? = null) {
+        if (habit.appearance != null) {
+            afterHabitDeletion(requireNotNull(nextObjectEditor).deleteHabit(habit, "cascade_children", authority), context)
+            return
+        }
         structuralEditGuard?.requireAllowed()
         val deletedHabits = database.withTransaction {
             val descendants = collectDescendants(habit.uuid, mutableSetOf(habit.uuid))
@@ -368,7 +372,11 @@ class HabitRepository @Inject constructor(
      * @param habit The parent habit to delete
      * @param context Context for widget notification
      */
-    suspend fun deleteHabitOrphanChildren(habit: HabitEntity, context: Context? = null) {
+    suspend fun deleteHabitOrphanChildren(habit: HabitEntity, context: Context? = null, authority: ObjectEditAuthority? = null) {
+        if (habit.appearance != null) {
+            afterHabitDeletion(requireNotNull(nextObjectEditor).deleteHabit(habit, "detach_children", authority), context)
+            return
+        }
         structuralEditGuard?.requireAllowed()
         database.withTransaction {
             val children = habitDao.getChildrenByParentUuidOnce(habit.uuid)
@@ -397,7 +405,17 @@ class HabitRepository @Inject constructor(
      * @return List of child habits
      */
     suspend fun getHabitChildren(habitUuid: String): List<HabitEntity> {
-        return habitDao.getChildrenByParentUuidOnce(habitUuid)
+        return habitDao.getVisibleChildrenByParentUuidOnce(habitUuid)
+    }
+
+    private fun afterHabitDeletion(deleted: List<HabitEntity>, context: Context?) {
+        if (deleted.isEmpty()) return
+        context?.let { appContext ->
+            deleted.forEach { habit -> if (habit.bestTime != null) {
+                HabitReminderScheduler.cancelReminder(appContext, habit.id, habit.habitType, habit.targetValue)
+            } }
+            notifyWidgetUpdate(appContext)
+        }
     }
 
     /**
