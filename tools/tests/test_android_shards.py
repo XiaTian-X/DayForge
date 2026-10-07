@@ -17,6 +17,7 @@ from tools.run_android_tests import (
     COVERAGE_REPORT,
     RESULTS,
     SHARDS,
+    SHARD_TIMEOUT_SECONDS,
     TARGET,
     TEST_PACKAGE,
     Gate,
@@ -223,6 +224,7 @@ class AndroidShardGateTest(unittest.TestCase):
         self.assertLess(names.index("shard-1"), names.index("shard-2"))
         self.assertLess(names.index("shard-2"), names.index("coverage"))
         self.assertEqual(3, SHARDS)
+        self.assertEqual(1200, SHARD_TIMEOUT_SECONDS)
         evidence = json.loads((gate.run / "complete.json").read_text())
         self.assertEqual(3, evidence["shards"])
         self.assertEqual(3, len(evidence["coverage_inputs_sha256"]))
@@ -239,7 +241,7 @@ class AndroidShardGateTest(unittest.TestCase):
             )
         for name, argv, timeout in gate.calls:
             if name.startswith("shard-"):
-                self.assertEqual(900, timeout)
+                self.assertEqual(1200, timeout)
                 self.assertIn(
                     "-Pandroid.testInstrumentationRunnerArguments.numShards=3", argv
                 )

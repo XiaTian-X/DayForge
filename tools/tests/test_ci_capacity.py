@@ -1,8 +1,10 @@
-"""Whole hosted-job capacity must not weaken full-suite or native deadlines."""
+"""Approved whole-job/shard capacity must preserve full-suite and case guards."""
 
 from pathlib import Path
 import re
 import unittest
+
+from tools.run_android_tests import SHARDS, SHARD_TIMEOUT_SECONDS
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -36,7 +38,7 @@ class CiCapacityTest(unittest.TestCase):
         self.assertIn("uv sync --frozen", verify)
         self.assertIn("uv run --frozen python -m pytest -p tests.warning_budget", verify)
 
-    def test_android_job_and_case_deadlines_are_unchanged(self):
+    def test_android_hosted_job_and_case_deadlines_are_unchanged(self):
         android = self.job("android")
         self.assertIn("    timeout-minutes: 25\n", android)
         self.assertIn("        timeout-minutes: 20\n", android)
@@ -45,7 +47,15 @@ class CiCapacityTest(unittest.TestCase):
         self.assertIn(
             '"-Pandroid.testInstrumentationRunnerArguments.timeout_msec=150000"', runner
         )
-        self.assertRegex(runner, r"\n\s+900,\n")
+
+    def test_physical_shard_capacity_is_explicit_and_user_approved(self):
+        self.assertEqual(3, SHARDS)
+        self.assertEqual(1200, SHARD_TIMEOUT_SECONDS)
+        runner = (ROOT / "tools/run_android_tests.py").read_text()
+        self.assertRegex(runner, r"\n\s+SHARD_TIMEOUT_SECONDS,\n")
+        testing = (ROOT / "docs/TESTING.md").read_text()
+        self.assertIn("每批 Android 测试任务/包装进程上限 20 分钟", testing)
+        self.assertIn("真机测试单项上限 150 秒", testing)
 
 
 if __name__ == "__main__":
