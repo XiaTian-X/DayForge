@@ -1,158 +1,123 @@
 package com.dayforge.data.repository
 
 import android.database.sqlite.SQLiteConstraintException
-import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.room.withTransaction
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.test.platform.app.InstrumentationRegistry
-import com.dayforge.data.api.NextSyncHttp
-import com.dayforge.data.api.SelectedNetworkTransport
-import com.dayforge.data.api.authenticator.TokenAuthenticator
-import com.dayforge.data.api.interceptor.AuthInterceptor
-import com.dayforge.data.api.interceptor.BaseUrlInterceptor
 import com.dayforge.data.appearance.MaterialSocketServer
 import com.dayforge.data.local.*
 import com.dayforge.data.local.entity.*
 import com.dayforge.data.model.*
-import com.dayforge.domain.model.IconReference
-import com.dayforge.domain.model.ObjectAppearance
-import com.dayforge.domain.service.AccountSessionCoordinator
-import java.io.File
 import java.io.IOException
-import java.nio.file.Files
 import java.time.Instant
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.*
-import okhttp3.OkHttpClient
-import org.junit.After
 import org.junit.Assert.*
-import org.junit.Before
-import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** Production file Room/DataStore + real HTTP. Delivery is deliberately not called an ACK. */
+/** Original first-send, replay and acceptance regressions. */
 @RunWith(AndroidJUnit4::class)
-class NextCoreRequestStoreTest {
-    @get:Rule val storage = PhysicalDatabaseRule()
-    private val db get() = storage.database
-    private val app = InstrumentationRegistry.getInstrumentation().targetContext
-    private val sessions = AccountSessionCoordinator()
-    private lateinit var directory: File
-    private lateinit var scope: CoroutineScope
-    private lateinit var tokens: TokenManager
-    private lateinit var preferences: PreferencesManager
-    private lateinit var client: OkHttpClient
-    private lateinit var habit: HabitEntity
-    private lateinit var timerHabit: HabitEntity
-    private lateinit var metric: MetricEntity
-    private val servers = mutableListOf<MaterialSocketServer>()
-    private val caps = setOf("sync.read", "structure.write", "facts.append", "timer.control")
-    private val time = "2026-10-06T00:00:00Z"
-    private val millis get() = Instant.parse(time).toEpochMilli()
-    private fun id(n: Int) = "aa310000-0000-4000-8000-${n.toString(16).padStart(12, '0')}"
-    private fun producer() = NextCoreLocalIntentStore(db, tokens, sessions)
-    private suspend fun local() = requireNotNull(tokens.localCoreWriteAccess()).session
-    private suspend fun access() = requireNotNull(tokens.localSyncAccess())
-    private suspend fun register(device: String = id(4), permissions: Set<String> = caps, revision: Int = 1) {
-        tokens.saveServerIdentity(id(2), id(3))
-        tokens.saveDeviceRegistration(device, permissions, true, revision)
-    }
-    private fun habits() = HabitRepository(db.habitDao(), db.completionDao(), db.timeLogDao(), db)
-    private fun metrics() = MetricRepository(db, db.metricDao(), db.metricLogDao(), db.habitDao(), db.habitMetricLinkDao())
+class NextCoreRequestStoreTest : NextCoreRequestFixture() {
+    @Test fun rootStructuralAcceptanceRejectsRevisionBelowFrozenBaseWithoutConsumingIntent() = runBlocking<Unit> {
+        val revision = AtomicLong(5)
+        val seed = editMetric("Seed"); register()
+        val (http, server) = channel { successReply(it, revision.get()) }
+        assertEquals(NextOperationAcceptance.COMMITTED, sender(http).sendAndAcceptOperation(access(), seed.operationId))
+        val seedReceipt = requireNotNull(db.nextRequestDao().acceptance(NEXT_OPERATION, seed.operationId))
+        val shadow = requireNotNull(db.syncOutboxDao().getState("metric", metric.uuid))
+        assertEquals(5L, shadow.revision)
 
-    @Before fun setup() = runBlocking<Unit> {
-        check(app.packageName == "com.dayforge.testbed")
-        directory = Files.createTempDirectory(app.filesDir.toPath(), "next-journal-").toFile()
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        val data = PreferenceDataStoreFactory.create(scope = scope, produceFile = { File(directory, "auth.preferences_pb") })
-        tokens = TokenManager(data); preferences = PreferencesManager(data)
-        client = OkHttpClient.Builder().addInterceptor(BaseUrlInterceptor(preferences)).addInterceptor(AuthInterceptor(tokens))
-            .authenticator(TokenAuthenticator(tokens, preferences, SelectedNetworkTransport())).build()
-        tokens.saveLoginSession("synthetic-first", "synthetic-refresh", "member", id(1), false)
-        db.withTransaction {
-            val sql = db.openHelper.writableDatabase
-            sql.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
-            val row = HabitEntity(uuid = id(10), name = "Recurring count", habitType = HabitType.COUNTING,
-                iconResId = 0, colorHex = "#000000", schedule = HabitSchedule.Daily, targetValue = 10,
-                failMode = FailMode.LOOSE, createdAt = millis, updatedAt = millis, completionPolicy = "recurring",
-                appearance = ObjectAppearance(IconReference.Role("habit.custom"), "#123456", "object"),
-                planMetadata = PlanStructureMetadata(time, 0, null, null, "Asia/Shanghai", null, null, null))
-            habit = row.copy(id = db.habitDao().insert(row))
-            val timer = row.copy(uuid = id(12), name = "Complete timer", habitType = HabitType.TIMER, targetValue = 1,
-                planMetadata = requireNotNull(row.planMetadata).copy(targetUnit = "second"))
-            timerHabit = timer.copy(id = db.habitDao().insert(timer))
-            val m = MetricEntity(uuid = id(11), name = "Weight", unit = "kg", decimalPlaces = 3, iconResId = 0,
-                colorHex = "#000000", createdAt = millis, updatedAt = millis,
-                appearance = ObjectAppearance(IconReference.Role("metric.custom"), "#123456", "object"))
-            metric = m.copy(id = db.metricDao().insert(m))
-            sql.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
-        }
-    }
+        val row = editMetric("Desired")
+        val origin = originalIntent(row)
+        assertEquals(JsonPrimitive(5), Json.parseToJsonElement(origin.intentJson).jsonObject["base_revision"])
+        assertNull(requireNotNull(db.nextStructuralCausalDao().dependency(row.operationId)).predecessorId)
+        val current = requireNotNull(db.metricDao().getMetricById(metric.id))
+        assertEquals("Desired", current.name)
+        revision.set(4)
+        val store = sender(http)
+        val delivery = requireNotNull(store.sendOperation(access(), row.operationId))
+        val wire = transmission(NEXT_OPERATION, row.operationId).wireBytes.copyOf()
+        val transmissionProof = NextRequestSql.rowHash(db.openHelper.writableDatabase, "next_transmissions",
+            "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, row.operationId))
+        val operation = Json.parseToJsonElement(wire.toString(Charsets.UTF_8)).jsonObject["operations"]!!.jsonArray.single().jsonObject
+        assertEquals(JsonPrimitive(5), operation["base_revision"])
+        assertEquals(JsonPrimitive(row.operationId), operation["operation_id"])
+        assertEquals(4L, delivery.result.results.single().revision)
+        assertEquals(JsonPrimitive(4), delivery.result.results.single().entity!!["revision"])
+        val requests = server.requests.size
 
-    @After fun cleanup() = runBlocking<Unit> {
-        var failure: Throwable? = null
-        suspend fun finish(block: suspend () -> Unit) {
-            try { block() } catch (error: Throwable) {
-                if (failure == null) failure = error else failure!!.addSuppressed(error)
-            }
+        suspend fun unchanged() {
+            assertUnaccepted(row)
+            assertEquals(origin, originalIntent(row))
+            assertArrayEquals(wire, transmission(NEXT_OPERATION, row.operationId).wireBytes)
+            assertEquals(transmissionProof, NextRequestSql.rowHash(db.openHelper.writableDatabase, "next_transmissions",
+                "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, row.operationId)))
+            assertEquals(current, db.metricDao().getMetricById(metric.id))
+            assertEquals(shadow, db.syncOutboxDao().getState("metric", metric.uuid))
+            assertEquals(seedReceipt, db.nextRequestDao().acceptance(NEXT_OPERATION, seed.operationId))
+            assertEquals(1, count("next_acceptances"))
         }
-        servers.forEach { finish { it.close() } }
-        finish { if (::client.isInitialized) { client.connectionPool.evictAll(); client.dispatcher.executorService.shutdown() } }
-        finish { if (::scope.isInitialized) scope.coroutineContext[Job]!!.cancelAndJoin() }
-        finish { if (::directory.isInitialized) assertTrue(directory.deleteRecursively()) }
-        failure?.let { throw it }
-    }
+        for (status in listOf("applied", "already_applied")) {
+            val result = delivery.result.results.single().copy(status = status)
+            assertTrue(rejected { store.acceptOperation(delivery.copy(result = delivery.result.copy(results = listOf(result)))) }
+                is IllegalArgumentException)
+            unchanged()
+            assertEquals(requests, server.requests.size)
+        }
 
-    private fun reply(input: MaterialSocketServer.Input, version: Int = 5): MaterialSocketServer.Reply {
-        if (input.path.endsWith("/identity")) {
-            assertNull(input.headers["authorization"])
-            return MaterialSocketServer.Reply("""{"server_instance_id":"${id(2)}","sync_epoch":"${id(3)}","protocol_version":$version,"capabilities":["sync.read"],"server_time":"$time"}""".toByteArray())
-        }
-        assertEquals("5", input.headers["x-dayforge-protocol"])
-        assertEquals(id(2), input.headers["x-dayforge-server-instance"])
-        assertEquals(id(3), input.headers["x-dayforge-sync-epoch"])
-        val body = Json.parseToJsonElement(input.body.toString(Charsets.UTF_8)).jsonObject
-        val result = if (input.path.endsWith("/push")) {
-            val operation = body.getValue("operations").jsonArray.single().jsonObject
-            """{"results":[{"operation_id":${operation.getValue("operation_id")},"entity_type":${operation.getValue("entity_type")},"entity_uuid":${operation.getValue("entity_uuid")},"status":"rejected","error_code":"INVALID_PAYLOAD"}]}"""
-        } else {
-            assertEquals("/api/v2/timers/commands", input.path)
-            val command = body.getValue("commands").jsonArray.single().jsonObject
-            """{"results":[{"command_id":${command.getValue("command_id")},"session_id":${command.getValue("session_id")},"status":"already_applied","error_code":null,"message":null,"session":null}],"server_time":"$time"}"""
-        }
-        return MaterialSocketServer.Reply(result.toByteArray())
+        storage.reopen()
+        assertTrue(rejected { sender(http).sendAndAcceptOperation(access(), row.operationId) } is IllegalArgumentException)
+        unchanged()
+        server.requests.filter { wireOrIdentity(it) == row.operationId }.also { assertEquals(2, it.size) }
+            .forEach { assertArrayEquals(wire, it.body) }
+        revision.set(6)
+        assertEquals(NextOperationAcceptance.COMMITTED, sender(http).sendAndAcceptOperation(access(), row.operationId))
+        val accepted = requireNotNull(db.nextRequestDao().acceptance(NEXT_OPERATION, row.operationId))
+        val acceptedMetric = requireNotNull(db.metricDao().getMetricById(metric.id))
+        val acceptedShadow = requireNotNull(db.syncOutboxDao().getState("metric", metric.uuid))
+        assertEquals("Desired", acceptedMetric.name); assertEquals(6L, acceptedShadow.revision)
+        assertEquals(2, count("next_acceptances")); assertEquals(0, count("sync_outbox"))
+        assertEquals(1, count("metrics")); assertEquals(0L, tokens.syncCursor.first())
+        server.requests.filter { wireOrIdentity(it) == row.operationId }.also { assertEquals(3, it.size) }
+            .forEach { assertArrayEquals(wire, it.body) }
+
+        // A coherent hash is not proof that a root receipt respects its frozen merge base.
+        val goodResult = Json.parseToJsonElement(accepted.resultJson).jsonObject
+        val badResult = buildJsonObject {
+            goodResult.forEach { (key, value) -> put(key, value) }
+            put("revision", 4)
+            put("entity", buildJsonObject {
+                goodResult.getValue("entity").jsonObject.forEach { (key, value) -> put(key, value) }
+                put("revision", 4)
+            })
+        }.toString()
+        val badHash = nextRequestHash(badResult.toByteArray(Charsets.UTF_8))
+        db.openHelper.writableDatabase.execSQL("UPDATE next_acceptances SET resultJson=?,resultHash=? WHERE kind=? AND requestId=?",
+            arrayOf<Any>(badResult, badHash, NEXT_OPERATION, row.operationId))
+        storage.reopen()
+        val beforeReplay = server.requests.size
+        assertTrue(rejected { sender(http).sendAndAcceptOperation(access(), row.operationId) } is IllegalArgumentException)
+        assertEquals(beforeReplay, server.requests.size)
+        assertEquals(accepted.copy(resultJson = badResult, resultHash = badHash), db.nextRequestDao().acceptance(NEXT_OPERATION, row.operationId))
+        assertEquals(acceptedMetric, db.metricDao().getMetricById(metric.id))
+        assertEquals(acceptedShadow, db.syncOutboxDao().getState("metric", metric.uuid))
+        assertEquals(0, count("sync_outbox")); assertEquals(2, count("next_acceptances"))
+        assertEquals(0L, tokens.syncCursor.first())
+        db.openHelper.writableDatabase.execSQL("UPDATE next_acceptances SET resultJson=?,resultHash=? WHERE kind=? AND requestId=?",
+            arrayOf<Any>(accepted.resultJson, accepted.resultHash, NEXT_OPERATION, row.operationId))
+        storage.reopen()
+        assertEquals(NextOperationAcceptance.REPLAYED, sender(http).sendAndAcceptOperation(access(), row.operationId))
+        assertEquals(beforeReplay, server.requests.size)
+        assertEquals(accepted, db.nextRequestDao().acceptance(NEXT_OPERATION, row.operationId))
+        assertArrayEquals(wire, transmission(NEXT_OPERATION, row.operationId).wireBytes)
+        assertEquals(acceptedMetric, db.metricDao().getMetricById(metric.id))
+        assertEquals(acceptedShadow, db.syncOutboxDao().getState("metric", metric.uuid))
+        assertEquals(0, count("sync_outbox")); assertEquals(0L, tokens.syncCursor.first())
     }
-    private suspend fun channel(respond: (MaterialSocketServer.Input) -> MaterialSocketServer.Reply? = { reply(it) }): Pair<NextSyncHttp, MaterialSocketServer> {
-        val server = MaterialSocketServer { input, _ -> respond(input) }; servers.add(server)
-        preferences.setServerUrl(server.origin.toString())
-        return NextSyncHttp(client, tokens, server.origin) to server
-    }
-    private fun sender(http: NextSyncHttp) = NextCoreRequestStore(db, tokens, sessions, http)
-    private suspend fun rejected(block: suspend () -> Unit): Throwable {
-        try { block() } catch (error: Exception) { if (error is CancellationException) throw error; return error }
-        throw AssertionError("Must reject")
-    }
-    private suspend fun observation(): SyncOutboxEntity {
-        producer().write(local()) { metrics().recordValue(metric.id, 21.125, "captured\nvalue", millis) }
-        return db.syncOutboxDao().getAll().last()
-    }
-    private suspend fun start(session: Int = 20, command: Int = 21): TimerCommandEntity {
-        producer().write(local()) {
-            db.timeLogDao().insertSyncedTimer(TimeLogEntity(habitId = timerHabit.id, startTime = millis, endTime = null,
-                durationSeconds = 0, date = millis, uuid = id(session), timerNextCommandSequence = 2,
-                timerControlGeneration = 1, timerLastCommandAt = millis, timerTimezone = "Asia/Shanghai"),
-                TimerCommandEntity(commandId = id(command), sessionUuid = id(session), sequence = 1, commandType = "start",
-                    occurredAt = millis, expectedControlGeneration = 0, activityUuid = timerHabit.uuid, timezone = "Asia/Shanghai"),
-                TimerSegmentEntity(sessionUuid = id(session), sequence = 1, startedAt = millis))
-        }
-        return db.timeLogDao().getPendingTimerCommands(Int.MAX_VALUE).last()
-    }
-    private suspend fun transmission(kind: String, request: String) = requireNotNull(db.nextRequestDao().transmission(kind, request))
-    private fun count(table: String): Int = db.openHelper.writableDatabase.query("SELECT COUNT(*) FROM $table").use { it.moveToFirst(); it.getInt(0) }
 
     @Test fun offlineNewBusinessAndOriginsCommitTogetherWithoutAdoptingOldZeroAttemptQueues() = runBlocking<Unit> {
         val old = SyncOutboxEntity(operationId = id(40), recordType = "metric", entityUuid = metric.uuid,
@@ -176,8 +141,18 @@ class NextCoreRequestStoreTest {
         register(); val captured = access(); val (http, server) = channel()
         assertEquals(NextRequestException.Reason.OLD_INTENT, (rejected { sender(http).sendCommand(captured, lost.commandId) } as NextRequestException).reason)
         assertEquals(NextRequestException.Reason.OLD_INTENT, (rejected { sender(http).sendOperation(captured, old.operationId) } as NextRequestException).reason)
+        assertEquals(NextRequestException.Reason.OLD_INTENT,
+            (rejected { sender(http).sendAndAcceptOperation(captured, old.operationId) } as NextRequestException).reason)
+        storage.reopen()
+        assertEquals(NextRequestException.Reason.OLD_INTENT,
+            (rejected { sender(http).sendAndAcceptOperation(captured, old.operationId) } as NextRequestException).reason)
         assertTrue(server.requests.all { it.path.endsWith("/identity") })
         assertEquals(0, count("next_transmissions"))
+        assertEquals(0, count("next_acceptances"))
+        assertEquals(old.copy(id = oldId), db.syncOutboxDao().getById(oldId))
+        assertEquals(lost.copy(id = lostId), db.timeLogDao().getTimerCommand(lostId))
+        assertNull(db.nextRequestDao().origin(NEXT_OPERATION, old.operationId))
+        assertNull(db.nextRequestDao().origin(NEXT_TIMER, lost.commandId))
     }
 
     @Test fun lostResponseThenColdReopenReplaysWholeOriginalEnvelopeAndNeverConsumesTheQueue() = runBlocking<Unit> {
@@ -554,58 +529,6 @@ class NextCoreRequestStoreTest {
         observation(); assertEquals(1, count("next_request_origins"))
     }
 
-    /** Mirrors authoritative serializer fields, without calling the production acceptance mappers. */
-    private fun successReply(input: MaterialSocketServer.Input, revision: Long = 1,
-        edit: (JsonObject) -> JsonObject = { it }): MaterialSocketServer.Reply {
-        if (input.path.endsWith("/identity")) return reply(input)
-        val op = Json.parseToJsonElement(input.body.toString(Charsets.UTF_8)).jsonObject
-            .getValue("operations").jsonArray.single().jsonObject
-        val payload = op.getValue("payload").jsonObject
-        val type = op.getValue("entity_type").jsonPrimitive.content
-        val serverTime = "2026-10-06T00:00:01.000123Z"
-        val canonical = buildJsonObject {
-            payload.forEach { (key, value) -> put(key, value) }
-            put("public_id", op.getValue("entity_uuid")); put("revision", revision)
-            put("created_at", payload["created_at"] ?: JsonPrimitive(serverTime))
-            put("updated_at", serverTime); put("deleted_at", JsonNull)
-            if (type in setOf("activity_event", "metric_observation")) {
-                put("note", payload["note"] ?: JsonPrimitive(""))
-                put("source_type", payload["source_type"] ?: JsonPrimitive("app"))
-                put("source_device_id", payload["source_device_id"]?.takeUnless { it == JsonNull } ?: JsonPrimitive(id(4)))
-                put("external_event_id", payload["external_event_id"] ?: JsonNull)
-                put("metadata", payload["metadata"] ?: buildJsonObject {})
-                put("received_at", serverTime)
-                if (type == "activity_event") {
-                    put("value", payload["value"]?.takeUnless { it == JsonNull } ?:
-                        if (payload["event_type"] == JsonPrimitive("check_in")) JsonPrimitive(1) else JsonNull)
-                    for (key in listOf("duration_seconds", "duration_milliseconds", "started_at", "ended_at", "reverts_event_uuid"))
-                        put(key, payload[key] ?: JsonNull)
-                }
-            }
-        }
-        val result = buildJsonObject {
-            put("operation_id", op.getValue("operation_id")); put("entity_type", op.getValue("entity_type"))
-            put("entity_uuid", op.getValue("entity_uuid")); put("status", "applied"); put("revision", revision)
-            put("entity", edit(canonical))
-        }
-        return MaterialSocketServer.Reply(buildJsonObject { put("results", JsonArray(listOf(result))) }.toString().toByteArray())
-    }
-    private suspend fun success(row: SyncOutboxEntity, edit: (JsonObject) -> JsonObject = { it }):
-        Pair<NextCoreRequestStore, NextCoreDelivery<com.dayforge.data.api.dto.NextSyncPushResponse>> {
-        register()
-        val (http, _) = channel { successReply(it, edit = edit) }
-        val store = sender(http)
-        return store to requireNotNull(store.sendOperation(access(), row.operationId))
-    }
-    private suspend fun assertUnaccepted(row: SyncOutboxEntity) {
-        assertEquals(row, db.syncOutboxDao().getById(row.id))
-        assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, row.operationId))
-        assertEquals(0L, tokens.syncCursor.first())
-        db.openHelper.writableDatabase.query("SELECT suppressOutbox FROM sync_control WHERE id=1").use {
-            assertTrue(it.moveToFirst()); assertEquals(0, it.getInt(0))
-        }
-    }
-
     @Test fun ordinaryObservationSuccessAtomicallyAcceptsCanonicalTimeShadowQueueAndReceipt() = runBlocking<Unit> {
         val row = observation(); val oldLog = requireNotNull(db.metricLogDao().getLogByUuid(row.entityUuid))
         val (store, delivery) = success(row)
@@ -681,8 +604,12 @@ class NextCoreRequestStoreTest {
         producer().write(local()) { metrics().updateMetric(metric.copy(name = "Earlier")) }
         producer().write(local()) { metrics().updateMetric(db.metricDao().getMetricById(metric.id)!!.copy(name = "Later")) }
         val rows = db.syncOutboxDao().getAll()
-        val (store, delivery) = success(rows.last())
-        assertTrue(rejected { store.acceptOperation(delivery) } is IllegalArgumentException)
+        register()
+        val (http, server) = channel { successReply(it) }
+        assertEquals(NextRequestException.Reason.CAUSAL_PREDECESSOR_PENDING,
+            (rejected { sender(http).sendOperation(access(), rows.last().operationId) } as NextRequestException).reason)
+        assertTrue(server.requests.all { it.path.endsWith("/identity") })
+        assertEquals(0, count("next_transmissions"))
         assertUnaccepted(rows.last()); assertUnaccepted(rows.first()); assertEquals(0, count("sync_entity_state"))
     }
 
@@ -710,21 +637,6 @@ class NextCoreRequestStoreTest {
         assertEquals("Later habit", db.habitDao().getHabitById(habit.id)!!.name)
         assertEquals(suffix, db.syncOutboxDao().getById(suffix.id))
         assertEquals("Sent habit", Json.parseToJsonElement(db.syncOutboxDao().getState("plan_node", habit.uuid)!!.payloadJson!!).jsonObject["title"]!!.jsonPrimitive.content)
-    }
-
-    private suspend fun completion(type: HabitType = HabitType.COUNTING, countdown: Boolean = false): SyncOutboxEntity {
-        if (type != habit.habitType || countdown != habit.isCountdown) db.withTransaction {
-            db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
-            habit = habit.copy(habitType = type, isCountdown = countdown, targetValue = if (type == HabitType.CHECK_IN) 1 else 10)
-            db.habitDao().update(habit)
-            db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
-        }
-        producer().write(local()) {
-            db.completionDao().insert(CompletionEntity(habitId = habit.id, habitUuid = habit.uuid, uuid = id(210),
-                value = if (type == HabitType.CHECK_IN) 1 else 3, date = millis, actualCompletedAt = millis,
-                recordedTimezone = "Etc/UTC", recordedLocalDate = "2026-10-06"))
-        }
-        return db.syncOutboxDao().getAll().single()
     }
 
     @Test fun positiveCountingSnapshotSuccessIsConfirmedWithoutASecondLocalRecord() = runBlocking<Unit> {

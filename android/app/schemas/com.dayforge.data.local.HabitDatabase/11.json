@@ -1,0 +1,2315 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 11,
+    "identityHash": "f54898e086b51e1db05e90566c65aa33",
+    "entities": [
+      {
+        "tableName": "habits",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `description` TEXT NOT NULL, `habitType` TEXT NOT NULL, `iconResId` INTEGER NOT NULL, `colorHex` TEXT NOT NULL, `schedule` TEXT NOT NULL, `targetValue` INTEGER NOT NULL, `isCountdown` INTEGER NOT NULL, `isActive` INTEGER NOT NULL, `uuid` TEXT NOT NULL, `parentHabitId` TEXT, `targetCycles` INTEGER, `failMode` TEXT NOT NULL, `goalSuccess` INTEGER, `activityRate` INTEGER NOT NULL, `activityRateUpdatedAt` INTEGER NOT NULL, `bestTime` INTEGER, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `completionPolicy` TEXT, `oneTimeConfirmedVersion` INTEGER, `oneTimeConfirmedHeadEventUuid` TEXT, `oneTimeConfirmedCompletionEventUuid` TEXT, `appearance` TEXT, `planMetadata` TEXT)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "description",
+            "columnName": "description",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "habitType",
+            "columnName": "habitType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "iconResId",
+            "columnName": "iconResId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "colorHex",
+            "columnName": "colorHex",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "schedule",
+            "columnName": "schedule",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "targetValue",
+            "columnName": "targetValue",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isCountdown",
+            "columnName": "isCountdown",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isActive",
+            "columnName": "isActive",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "uuid",
+            "columnName": "uuid",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "parentHabitId",
+            "columnName": "parentHabitId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "targetCycles",
+            "columnName": "targetCycles",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "failMode",
+            "columnName": "failMode",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "goalSuccess",
+            "columnName": "goalSuccess",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "activityRate",
+            "columnName": "activityRate",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "activityRateUpdatedAt",
+            "columnName": "activityRateUpdatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "bestTime",
+            "columnName": "bestTime",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "completionPolicy",
+            "columnName": "completionPolicy",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "oneTimeConfirmedVersion",
+            "columnName": "oneTimeConfirmedVersion",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "oneTimeConfirmedHeadEventUuid",
+            "columnName": "oneTimeConfirmedHeadEventUuid",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "oneTimeConfirmedCompletionEventUuid",
+            "columnName": "oneTimeConfirmedCompletionEventUuid",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "appearance",
+            "columnName": "appearance",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "planMetadata",
+            "columnName": "planMetadata",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_habits_uuid",
+            "unique": false,
+            "columnNames": [
+              "uuid"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_habits_uuid` ON `${TABLE_NAME}` (`uuid`)"
+          },
+          {
+            "name": "index_habits_name",
+            "unique": true,
+            "columnNames": [
+              "name"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_habits_name` ON `${TABLE_NAME}` (`name`)"
+          }
+        ]
+      },
+      {
+        "tableName": "completions",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `habitId` INTEGER NOT NULL, `date` INTEGER NOT NULL, `value` INTEGER NOT NULL, `actualCompletedAt` INTEGER, `uuid` TEXT NOT NULL, `habitUuid` TEXT, `createdAt` INTEGER NOT NULL, `recordedTimezone` TEXT NOT NULL DEFAULT 'UTC', `recordedLocalDate` TEXT NOT NULL DEFAULT '', `timeMetadataSource` TEXT NOT NULL DEFAULT 'captured', `oneTimeAction` TEXT, `oneTimeExpectedVersion` INTEGER, `oneTimeExpectedHeadEventUuid` TEXT, `oneTimeRevertsEventUuid` TEXT, FOREIGN KEY(`habitId`) REFERENCES `habits`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "habitId",
+            "columnName": "habitId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "date",
+            "columnName": "date",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "value",
+            "columnName": "value",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "actualCompletedAt",
+            "columnName": "actualCompletedAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "uuid",
+            "columnName": "uuid",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "habitUuid",
+            "columnName": "habitUuid",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "recordedTimezone",
+            "columnName": "recordedTimezone",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'UTC'"
+          },
+          {
+            "fieldPath": "recordedLocalDate",
+            "columnName": "recordedLocalDate",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "''"
+          },
+          {
+            "fieldPath": "timeMetadataSource",
+            "columnName": "timeMetadataSource",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'captured'"
+          },
+          {
+            "fieldPath": "oneTimeAction",
+            "columnName": "oneTimeAction",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "oneTimeExpectedVersion",
+            "columnName": "oneTimeExpectedVersion",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "oneTimeExpectedHeadEventUuid",
+            "columnName": "oneTimeExpectedHeadEventUuid",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "oneTimeRevertsEventUuid",
+            "columnName": "oneTimeRevertsEventUuid",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_completions_habitId",
+            "unique": false,
+            "columnNames": [
+              "habitId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_completions_habitId` ON `${TABLE_NAME}` (`habitId`)"
+          },
+          {
+            "name": "index_completions_date",
+            "unique": false,
+            "columnNames": [
+              "date"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_completions_date` ON `${TABLE_NAME}` (`date`)"
+          },
+          {
+            "name": "index_completions_uuid",
+            "unique": false,
+            "columnNames": [
+              "uuid"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_completions_uuid` ON `${TABLE_NAME}` (`uuid`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "habits",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "habitId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "timelogs",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `habitId` INTEGER NOT NULL, `startTime` INTEGER NOT NULL, `endTime` INTEGER, `durationSeconds` INTEGER NOT NULL, `isPaused` INTEGER NOT NULL, `pausedAt` INTEGER, `accumulatedPauseMillis` INTEGER NOT NULL, `timerNextCommandSequence` INTEGER NOT NULL, `timerControlGeneration` INTEGER NOT NULL, `timerLastCommandAt` INTEGER, `timerTimezone` TEXT, `timerActiveElapsedMillis` INTEGER NOT NULL, `timerElapsedRealtimeAnchor` INTEGER, `timerBootCount` INTEGER, `date` INTEGER NOT NULL, `uuid` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, FOREIGN KEY(`habitId`) REFERENCES `habits`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "habitId",
+            "columnName": "habitId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startTime",
+            "columnName": "startTime",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endTime",
+            "columnName": "endTime",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "durationSeconds",
+            "columnName": "durationSeconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isPaused",
+            "columnName": "isPaused",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pausedAt",
+            "columnName": "pausedAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "accumulatedPauseMillis",
+            "columnName": "accumulatedPauseMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timerNextCommandSequence",
+            "columnName": "timerNextCommandSequence",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timerControlGeneration",
+            "columnName": "timerControlGeneration",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timerLastCommandAt",
+            "columnName": "timerLastCommandAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "timerTimezone",
+            "columnName": "timerTimezone",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "timerActiveElapsedMillis",
+            "columnName": "timerActiveElapsedMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timerElapsedRealtimeAnchor",
+            "columnName": "timerElapsedRealtimeAnchor",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "timerBootCount",
+            "columnName": "timerBootCount",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "date",
+            "columnName": "date",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "uuid",
+            "columnName": "uuid",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_timelogs_habitId",
+            "unique": false,
+            "columnNames": [
+              "habitId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_timelogs_habitId` ON `${TABLE_NAME}` (`habitId`)"
+          },
+          {
+            "name": "index_timelogs_date",
+            "unique": false,
+            "columnNames": [
+              "date"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_timelogs_date` ON `${TABLE_NAME}` (`date`)"
+          },
+          {
+            "name": "index_timelogs_uuid",
+            "unique": true,
+            "columnNames": [
+              "uuid"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_timelogs_uuid` ON `${TABLE_NAME}` (`uuid`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "habits",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "habitId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "metrics",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `description` TEXT NOT NULL, `unit` TEXT NOT NULL, `decimalPlaces` INTEGER NOT NULL, `aggregationType` TEXT NOT NULL, `targetDirection` TEXT, `targetValue` REAL, `targetValueUpper` REAL, `iconResId` INTEGER NOT NULL, `colorHex` TEXT NOT NULL, `isActive` INTEGER NOT NULL, `uuid` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `appearance` TEXT)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "description",
+            "columnName": "description",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "unit",
+            "columnName": "unit",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "decimalPlaces",
+            "columnName": "decimalPlaces",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "aggregationType",
+            "columnName": "aggregationType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "targetDirection",
+            "columnName": "targetDirection",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "targetValue",
+            "columnName": "targetValue",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "targetValueUpper",
+            "columnName": "targetValueUpper",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "iconResId",
+            "columnName": "iconResId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "colorHex",
+            "columnName": "colorHex",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isActive",
+            "columnName": "isActive",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "uuid",
+            "columnName": "uuid",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "appearance",
+            "columnName": "appearance",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_metrics_uuid",
+            "unique": false,
+            "columnNames": [
+              "uuid"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_metrics_uuid` ON `${TABLE_NAME}` (`uuid`)"
+          }
+        ]
+      },
+      {
+        "tableName": "metric_logs",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `metricId` INTEGER NOT NULL, `date` INTEGER NOT NULL, `value` REAL NOT NULL, `unit` TEXT NOT NULL, `note` TEXT NOT NULL, `uuid` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `recordedTimezone` TEXT NOT NULL DEFAULT 'UTC', `recordedLocalDate` TEXT NOT NULL DEFAULT '', `timeMetadataSource` TEXT NOT NULL DEFAULT 'captured', FOREIGN KEY(`metricId`) REFERENCES `metrics`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "metricId",
+            "columnName": "metricId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "date",
+            "columnName": "date",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "value",
+            "columnName": "value",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "unit",
+            "columnName": "unit",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "note",
+            "columnName": "note",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "uuid",
+            "columnName": "uuid",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "recordedTimezone",
+            "columnName": "recordedTimezone",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'UTC'"
+          },
+          {
+            "fieldPath": "recordedLocalDate",
+            "columnName": "recordedLocalDate",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "''"
+          },
+          {
+            "fieldPath": "timeMetadataSource",
+            "columnName": "timeMetadataSource",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'captured'"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_metric_logs_metricId",
+            "unique": false,
+            "columnNames": [
+              "metricId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_metric_logs_metricId` ON `${TABLE_NAME}` (`metricId`)"
+          },
+          {
+            "name": "index_metric_logs_date",
+            "unique": false,
+            "columnNames": [
+              "date"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_metric_logs_date` ON `${TABLE_NAME}` (`date`)"
+          },
+          {
+            "name": "index_metric_logs_uuid",
+            "unique": false,
+            "columnNames": [
+              "uuid"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_metric_logs_uuid` ON `${TABLE_NAME}` (`uuid`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "metrics",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "metricId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "habit_metric_links",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `habitId` INTEGER NOT NULL, `habitUuid` TEXT NOT NULL, `metricId` INTEGER NOT NULL, `metricUuid` TEXT NOT NULL, `coefficient` REAL NOT NULL, `showInHabitDetail` INTEGER NOT NULL, `promptOnComplete` INTEGER NOT NULL, `isActive` INTEGER NOT NULL, `uuid` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, FOREIGN KEY(`habitId`) REFERENCES `habits`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`metricId`) REFERENCES `metrics`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "habitId",
+            "columnName": "habitId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "habitUuid",
+            "columnName": "habitUuid",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "metricId",
+            "columnName": "metricId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "metricUuid",
+            "columnName": "metricUuid",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "coefficient",
+            "columnName": "coefficient",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "showInHabitDetail",
+            "columnName": "showInHabitDetail",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "promptOnComplete",
+            "columnName": "promptOnComplete",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isActive",
+            "columnName": "isActive",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "uuid",
+            "columnName": "uuid",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_habit_metric_links_habitId",
+            "unique": false,
+            "columnNames": [
+              "habitId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_habit_metric_links_habitId` ON `${TABLE_NAME}` (`habitId`)"
+          },
+          {
+            "name": "index_habit_metric_links_metricId",
+            "unique": false,
+            "columnNames": [
+              "metricId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_habit_metric_links_metricId` ON `${TABLE_NAME}` (`metricId`)"
+          },
+          {
+            "name": "index_habit_metric_links_uuid",
+            "unique": false,
+            "columnNames": [
+              "uuid"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_habit_metric_links_uuid` ON `${TABLE_NAME}` (`uuid`)"
+          },
+          {
+            "name": "index_habit_metric_links_habitId_metricId",
+            "unique": true,
+            "columnNames": [
+              "habitId",
+              "metricId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_habit_metric_links_habitId_metricId` ON `${TABLE_NAME}` (`habitId`, `metricId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "habits",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "habitId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          },
+          {
+            "table": "metrics",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "metricId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "sync_outbox",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `operationId` TEXT NOT NULL, `recordType` TEXT NOT NULL, `entityUuid` TEXT NOT NULL, `wireEntityUuid` TEXT NOT NULL, `action` TEXT NOT NULL, `referenceUuid` TEXT, `payloadJson` TEXT, `baseRevision` INTEGER, `basePayloadJson` TEXT, `attemptedAt` INTEGER, `attemptCount` INTEGER NOT NULL, `lastError` TEXT, `errorCode` TEXT, `deadLetteredAt` INTEGER, `createdAt` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationId",
+            "columnName": "operationId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "recordType",
+            "columnName": "recordType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "entityUuid",
+            "columnName": "entityUuid",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "wireEntityUuid",
+            "columnName": "wireEntityUuid",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "action",
+            "columnName": "action",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "referenceUuid",
+            "columnName": "referenceUuid",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "payloadJson",
+            "columnName": "payloadJson",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "baseRevision",
+            "columnName": "baseRevision",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "basePayloadJson",
+            "columnName": "basePayloadJson",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "attemptedAt",
+            "columnName": "attemptedAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "attemptCount",
+            "columnName": "attemptCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastError",
+            "columnName": "lastError",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "errorCode",
+            "columnName": "errorCode",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "deadLetteredAt",
+            "columnName": "deadLetteredAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sync_outbox_operationId",
+            "unique": true,
+            "columnNames": [
+              "operationId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_outbox_operationId` ON `${TABLE_NAME}` (`operationId`)"
+          },
+          {
+            "name": "index_sync_outbox_recordType_entityUuid",
+            "unique": false,
+            "columnNames": [
+              "recordType",
+              "entityUuid"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_outbox_recordType_entityUuid` ON `${TABLE_NAME}` (`recordType`, `entityUuid`)"
+          },
+          {
+            "name": "index_sync_outbox_attemptedAt",
+            "unique": false,
+            "columnNames": [
+              "attemptedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_outbox_attemptedAt` ON `${TABLE_NAME}` (`attemptedAt`)"
+          },
+          {
+            "name": "index_sync_outbox_deadLetteredAt",
+            "unique": false,
+            "columnNames": [
+              "deadLetteredAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_outbox_deadLetteredAt` ON `${TABLE_NAME}` (`deadLetteredAt`)"
+          }
+        ]
+      },
+      {
+        "tableName": "sync_entity_state",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`entityType` TEXT NOT NULL, `entityUuid` TEXT NOT NULL, `revision` INTEGER NOT NULL, `deleted` INTEGER NOT NULL, `payloadJson` TEXT, `payloadHash` TEXT, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`entityType`, `entityUuid`))",
+        "fields": [
+          {
+            "fieldPath": "entityType",
+            "columnName": "entityType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "entityUuid",
+            "columnName": "entityUuid",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "revision",
+            "columnName": "revision",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deleted",
+            "columnName": "deleted",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "payloadJson",
+            "columnName": "payloadJson",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "payloadHash",
+            "columnName": "payloadHash",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "entityType",
+            "entityUuid"
+          ]
+        }
+      },
+      {
+        "tableName": "sync_conflicts",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `operationId` TEXT NOT NULL, `recordType` TEXT NOT NULL, `localEntityUuid` TEXT NOT NULL, `wireEntityUuid` TEXT NOT NULL, `entityType` TEXT NOT NULL, `action` TEXT NOT NULL, `referenceUuid` TEXT, `baseRevision` INTEGER, `serverRevision` INTEGER NOT NULL, `basePayloadJson` TEXT, `localPayloadJson` TEXT NOT NULL, `serverPayloadJson` TEXT NOT NULL, `conflictingFieldsJson` TEXT NOT NULL, `conflictKind` TEXT, `errorCode` TEXT, `message` TEXT, `status` TEXT NOT NULL, `resolution` TEXT, `createdAt` INTEGER NOT NULL, `resolvedAt` INTEGER)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationId",
+            "columnName": "operationId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "recordType",
+            "columnName": "recordType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localEntityUuid",
+            "columnName": "localEntityUuid",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "wireEntityUuid",
+            "columnName": "wireEntityUuid",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "entityType",
+            "columnName": "entityType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "action",
+            "columnName": "action",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "referenceUuid",
+            "columnName": "referenceUuid",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "baseRevision",
+            "columnName": "baseRevision",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "serverRevision",
+            "columnName": "serverRevision",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "basePayloadJson",
+            "columnName": "basePayloadJson",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "localPayloadJson",
+            "columnName": "localPayloadJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverPayloadJson",
+            "columnName": "serverPayloadJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "conflictingFieldsJson",
+            "columnName": "conflictingFieldsJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "conflictKind",
+            "columnName": "conflictKind",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "errorCode",
+            "columnName": "errorCode",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "message",
+            "columnName": "message",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "resolution",
+            "columnName": "resolution",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "resolvedAt",
+            "columnName": "resolvedAt",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sync_conflicts_operationId",
+            "unique": true,
+            "columnNames": [
+              "operationId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_conflicts_operationId` ON `${TABLE_NAME}` (`operationId`)"
+          },
+          {
+            "name": "index_sync_conflicts_status",
+            "unique": false,
+            "columnNames": [
+              "status"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_conflicts_status` ON `${TABLE_NAME}` (`status`)"
+          },
+          {
+            "name": "index_sync_conflicts_recordType_localEntityUuid",
+            "unique": false,
+            "columnNames": [
+              "recordType",
+              "localEntityUuid"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_conflicts_recordType_localEntityUuid` ON `${TABLE_NAME}` (`recordType`, `localEntityUuid`)"
+          }
+        ]
+      },
+      {
+        "tableName": "sync_control",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER NOT NULL, `suppressOutbox` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "suppressOutbox",
+            "columnName": "suppressOutbox",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "timer_command_outbox",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `commandId` TEXT NOT NULL, `sessionUuid` TEXT NOT NULL, `sequence` INTEGER NOT NULL, `commandType` TEXT NOT NULL, `occurredAt` INTEGER NOT NULL, `expectedControlGeneration` INTEGER NOT NULL, `expectedRevision` INTEGER, `activityUuid` TEXT, `timezone` TEXT, `activeElapsedMillis` INTEGER, `attemptCount` INTEGER NOT NULL, `lastError` TEXT, `errorCode` TEXT, `deadLetteredAt` INTEGER, `createdAt` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "commandId",
+            "columnName": "commandId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sessionUuid",
+            "columnName": "sessionUuid",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sequence",
+            "columnName": "sequence",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "commandType",
+            "columnName": "commandType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "occurredAt",
+            "columnName": "occurredAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "expectedControlGeneration",
+            "columnName": "expectedControlGeneration",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "expectedRevision",
+            "columnName": "expectedRevision",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "activityUuid",
+            "columnName": "activityUuid",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "timezone",
+            "columnName": "timezone",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "activeElapsedMillis",
+            "columnName": "activeElapsedMillis",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "attemptCount",
+            "columnName": "attemptCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastError",
+            "columnName": "lastError",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "errorCode",
+            "columnName": "errorCode",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "deadLetteredAt",
+            "columnName": "deadLetteredAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_timer_command_outbox_commandId",
+            "unique": true,
+            "columnNames": [
+              "commandId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_timer_command_outbox_commandId` ON `${TABLE_NAME}` (`commandId`)"
+          },
+          {
+            "name": "index_timer_command_outbox_sessionUuid_sequence",
+            "unique": true,
+            "columnNames": [
+              "sessionUuid",
+              "sequence"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_timer_command_outbox_sessionUuid_sequence` ON `${TABLE_NAME}` (`sessionUuid`, `sequence`)"
+          },
+          {
+            "name": "index_timer_command_outbox_deadLetteredAt",
+            "unique": false,
+            "columnNames": [
+              "deadLetteredAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_timer_command_outbox_deadLetteredAt` ON `${TABLE_NAME}` (`deadLetteredAt`)"
+          }
+        ]
+      },
+      {
+        "tableName": "timer_segments",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `sessionUuid` TEXT NOT NULL, `sequence` INTEGER NOT NULL, `startedAt` INTEGER NOT NULL, `endedAt` INTEGER, FOREIGN KEY(`sessionUuid`) REFERENCES `timelogs`(`uuid`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sessionUuid",
+            "columnName": "sessionUuid",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sequence",
+            "columnName": "sequence",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startedAt",
+            "columnName": "startedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endedAt",
+            "columnName": "endedAt",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_timer_segments_sessionUuid_sequence",
+            "unique": true,
+            "columnNames": [
+              "sessionUuid",
+              "sequence"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_timer_segments_sessionUuid_sequence` ON `${TABLE_NAME}` (`sessionUuid`, `sequence`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "timelogs",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "sessionUuid"
+            ],
+            "referencedColumns": [
+              "uuid"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "timelog_day_allocations",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`sessionUuid` TEXT NOT NULL, `habitId` INTEGER NOT NULL, `localDate` TEXT NOT NULL, `localDateEpoch` INTEGER NOT NULL, `timezone` TEXT NOT NULL, `durationMillis` INTEGER NOT NULL, PRIMARY KEY(`sessionUuid`, `localDate`, `timezone`), FOREIGN KEY(`sessionUuid`) REFERENCES `timelogs`(`uuid`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "sessionUuid",
+            "columnName": "sessionUuid",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "habitId",
+            "columnName": "habitId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localDate",
+            "columnName": "localDate",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localDateEpoch",
+            "columnName": "localDateEpoch",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timezone",
+            "columnName": "timezone",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "durationMillis",
+            "columnName": "durationMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "sessionUuid",
+            "localDate",
+            "timezone"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_timelog_day_allocations_habitId",
+            "unique": false,
+            "columnNames": [
+              "habitId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_timelog_day_allocations_habitId` ON `${TABLE_NAME}` (`habitId`)"
+          },
+          {
+            "name": "index_timelog_day_allocations_localDateEpoch",
+            "unique": false,
+            "columnNames": [
+              "localDateEpoch"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_timelog_day_allocations_localDateEpoch` ON `${TABLE_NAME}` (`localDateEpoch`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "timelogs",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "sessionUuid"
+            ],
+            "referencedColumns": [
+              "uuid"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "local_fact_submissions",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`operationId` TEXT NOT NULL, `entityType` TEXT NOT NULL, `entityUuid` TEXT NOT NULL, `referenceUuid` TEXT NOT NULL, `payloadJson` TEXT NOT NULL, PRIMARY KEY(`operationId`))",
+        "fields": [
+          {
+            "fieldPath": "operationId",
+            "columnName": "operationId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "entityType",
+            "columnName": "entityType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "entityUuid",
+            "columnName": "entityUuid",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "referenceUuid",
+            "columnName": "referenceUuid",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "payloadJson",
+            "columnName": "payloadJson",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "operationId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_local_fact_submissions_entityType_entityUuid",
+            "unique": true,
+            "columnNames": [
+              "entityType",
+              "entityUuid"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_local_fact_submissions_entityType_entityUuid` ON `${TABLE_NAME}` (`entityType`, `entityUuid`)"
+          }
+        ]
+      },
+      {
+        "tableName": "completion_metric_prompts",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`eventUuid` TEXT NOT NULL, `activityUuid` TEXT NOT NULL, `state` TEXT NOT NULL, `revision` INTEGER NOT NULL, `entriesJson` TEXT NOT NULL, `recordedAtMillis` INTEGER, `timezone` TEXT, PRIMARY KEY(`eventUuid`))",
+        "fields": [
+          {
+            "fieldPath": "eventUuid",
+            "columnName": "eventUuid",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "activityUuid",
+            "columnName": "activityUuid",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "revision",
+            "columnName": "revision",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "entriesJson",
+            "columnName": "entriesJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "recordedAtMillis",
+            "columnName": "recordedAtMillis",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "timezone",
+            "columnName": "timezone",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "eventUuid"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_completion_metric_prompts_activityUuid",
+            "unique": false,
+            "columnNames": [
+              "activityUuid"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_completion_metric_prompts_activityUuid` ON `${TABLE_NAME}` (`activityUuid`)"
+          },
+          {
+            "name": "index_completion_metric_prompts_state",
+            "unique": false,
+            "columnNames": [
+              "state"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_completion_metric_prompts_state` ON `${TABLE_NAME}` (`state`)"
+          }
+        ]
+      },
+      {
+        "tableName": "one_time_transmissions",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`operationId` TEXT NOT NULL, `accountId` TEXT NOT NULL, `serverInstanceId` TEXT NOT NULL, `syncEpoch` TEXT NOT NULL, `deviceId` TEXT NOT NULL, `operationJson` TEXT NOT NULL, `rejectionJson` TEXT, PRIMARY KEY(`operationId`))",
+        "fields": [
+          {
+            "fieldPath": "operationId",
+            "columnName": "operationId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "accountId",
+            "columnName": "accountId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverInstanceId",
+            "columnName": "serverInstanceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "syncEpoch",
+            "columnName": "syncEpoch",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deviceId",
+            "columnName": "deviceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationJson",
+            "columnName": "operationJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rejectionJson",
+            "columnName": "rejectionJson",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "operationId"
+          ]
+        }
+      },
+      {
+        "tableName": "next_recovery_state",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`accountId` TEXT NOT NULL, `serverInstanceId` TEXT NOT NULL, `syncEpoch` TEXT NOT NULL, `deviceId` TEXT NOT NULL, `generation` INTEGER NOT NULL, `phase` TEXT NOT NULL, `minimumCursor` INTEGER NOT NULL, `candidateCursor` INTEGER, `snapshotHash` TEXT, `id` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "accountId",
+            "columnName": "accountId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverInstanceId",
+            "columnName": "serverInstanceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "syncEpoch",
+            "columnName": "syncEpoch",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deviceId",
+            "columnName": "deviceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "generation",
+            "columnName": "generation",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "phase",
+            "columnName": "phase",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "minimumCursor",
+            "columnName": "minimumCursor",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "candidateCursor",
+            "columnName": "candidateCursor",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "snapshotHash",
+            "columnName": "snapshotHash",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "next_request_origins",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`kind` TEXT NOT NULL, `requestId` TEXT NOT NULL, `queueId` INTEGER NOT NULL, `protocol` INTEGER NOT NULL, `accountId` TEXT NOT NULL, `serverInstanceId` TEXT, `syncEpoch` TEXT, `sourceHash` TEXT NOT NULL, `intentJson` TEXT NOT NULL, PRIMARY KEY(`kind`, `requestId`))",
+        "fields": [
+          {
+            "fieldPath": "kind",
+            "columnName": "kind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "requestId",
+            "columnName": "requestId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "queueId",
+            "columnName": "queueId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "protocol",
+            "columnName": "protocol",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "accountId",
+            "columnName": "accountId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverInstanceId",
+            "columnName": "serverInstanceId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "syncEpoch",
+            "columnName": "syncEpoch",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "sourceHash",
+            "columnName": "sourceHash",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "intentJson",
+            "columnName": "intentJson",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "kind",
+            "requestId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_next_request_origins_kind_queueId",
+            "unique": true,
+            "columnNames": [
+              "kind",
+              "queueId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_next_request_origins_kind_queueId` ON `${TABLE_NAME}` (`kind`, `queueId`)"
+          }
+        ]
+      },
+      {
+        "tableName": "next_transmissions",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`kind` TEXT NOT NULL, `requestId` TEXT NOT NULL, `queueId` INTEGER NOT NULL, `protocol` INTEGER NOT NULL, `accountId` TEXT NOT NULL, `serverInstanceId` TEXT NOT NULL, `syncEpoch` TEXT NOT NULL, `deviceId` TEXT NOT NULL, `wireHash` TEXT NOT NULL, `wireBytes` BLOB NOT NULL, PRIMARY KEY(`kind`, `requestId`))",
+        "fields": [
+          {
+            "fieldPath": "kind",
+            "columnName": "kind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "requestId",
+            "columnName": "requestId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "queueId",
+            "columnName": "queueId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "protocol",
+            "columnName": "protocol",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "accountId",
+            "columnName": "accountId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverInstanceId",
+            "columnName": "serverInstanceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "syncEpoch",
+            "columnName": "syncEpoch",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deviceId",
+            "columnName": "deviceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "wireHash",
+            "columnName": "wireHash",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "wireBytes",
+            "columnName": "wireBytes",
+            "affinity": "BLOB",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "kind",
+            "requestId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_next_transmissions_kind_queueId",
+            "unique": true,
+            "columnNames": [
+              "kind",
+              "queueId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_next_transmissions_kind_queueId` ON `${TABLE_NAME}` (`kind`, `queueId`)"
+          }
+        ]
+      },
+      {
+        "tableName": "next_acceptances",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`kind` TEXT NOT NULL, `requestId` TEXT NOT NULL, `originHash` TEXT NOT NULL, `transmissionHash` TEXT NOT NULL, `resultHash` TEXT NOT NULL, `resultJson` TEXT NOT NULL, PRIMARY KEY(`kind`, `requestId`))",
+        "fields": [
+          {
+            "fieldPath": "kind",
+            "columnName": "kind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "requestId",
+            "columnName": "requestId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "originHash",
+            "columnName": "originHash",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "transmissionHash",
+            "columnName": "transmissionHash",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "resultHash",
+            "columnName": "resultHash",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "resultJson",
+            "columnName": "resultJson",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "kind",
+            "requestId"
+          ]
+        }
+      },
+      {
+        "tableName": "next_structural_dependencies",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`operationId` TEXT NOT NULL, `logicalOrder` INTEGER NOT NULL, `originHash` TEXT NOT NULL, `predecessorId` TEXT, `predecessorOriginHash` TEXT, `predecessorDependencyHash` TEXT, `capturedDeviceId` TEXT, `kind` TEXT NOT NULL, PRIMARY KEY(`operationId`), FOREIGN KEY(`kind`, `operationId`) REFERENCES `next_request_origins`(`kind`, `requestId`) ON UPDATE NO ACTION ON DELETE NO ACTION , FOREIGN KEY(`predecessorId`) REFERENCES `next_structural_dependencies`(`operationId`) ON UPDATE NO ACTION ON DELETE NO ACTION )",
+        "fields": [
+          {
+            "fieldPath": "operationId",
+            "columnName": "operationId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "logicalOrder",
+            "columnName": "logicalOrder",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "originHash",
+            "columnName": "originHash",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "predecessorId",
+            "columnName": "predecessorId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "predecessorOriginHash",
+            "columnName": "predecessorOriginHash",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "predecessorDependencyHash",
+            "columnName": "predecessorDependencyHash",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "capturedDeviceId",
+            "columnName": "capturedDeviceId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "kind",
+            "columnName": "kind",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "operationId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_next_structural_dependencies_kind_operationId",
+            "unique": true,
+            "columnNames": [
+              "kind",
+              "operationId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_next_structural_dependencies_kind_operationId` ON `${TABLE_NAME}` (`kind`, `operationId`)"
+          },
+          {
+            "name": "index_next_structural_dependencies_predecessorId",
+            "unique": false,
+            "columnNames": [
+              "predecessorId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_next_structural_dependencies_predecessorId` ON `${TABLE_NAME}` (`predecessorId`)"
+          },
+          {
+            "name": "index_next_structural_dependencies_logicalOrder",
+            "unique": true,
+            "columnNames": [
+              "logicalOrder"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_next_structural_dependencies_logicalOrder` ON `${TABLE_NAME}` (`logicalOrder`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "next_request_origins",
+            "onDelete": "NO ACTION",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "kind",
+              "operationId"
+            ],
+            "referencedColumns": [
+              "kind",
+              "requestId"
+            ]
+          },
+          {
+            "table": "next_structural_dependencies",
+            "onDelete": "NO ACTION",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "predecessorId"
+            ],
+            "referencedColumns": [
+              "operationId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "next_structural_supersessions",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`originalId` TEXT NOT NULL, `replacementId` TEXT NOT NULL, `originalQueueId` INTEGER NOT NULL, `replacementQueueId` INTEGER NOT NULL, `originalOriginHash` TEXT NOT NULL, `originalDependencyHash` TEXT NOT NULL, `originalSourceHash` TEXT NOT NULL, `sourceSnapshotJson` TEXT NOT NULL, `sourceSnapshotHash` TEXT NOT NULL, `predecessorAcceptedRequestId` TEXT NOT NULL, `predecessorAcceptanceHash` TEXT NOT NULL, `replacementOriginHash` TEXT NOT NULL, `accountId` TEXT NOT NULL, `serverInstanceId` TEXT NOT NULL, `syncEpoch` TEXT NOT NULL, `deviceId` TEXT NOT NULL, `kind` TEXT NOT NULL, PRIMARY KEY(`originalId`), FOREIGN KEY(`originalId`) REFERENCES `next_structural_dependencies`(`operationId`) ON UPDATE NO ACTION ON DELETE NO ACTION , FOREIGN KEY(`kind`, `replacementId`) REFERENCES `next_request_origins`(`kind`, `requestId`) ON UPDATE NO ACTION ON DELETE NO ACTION , FOREIGN KEY(`kind`, `predecessorAcceptedRequestId`) REFERENCES `next_acceptances`(`kind`, `requestId`) ON UPDATE NO ACTION ON DELETE NO ACTION )",
+        "fields": [
+          {
+            "fieldPath": "originalId",
+            "columnName": "originalId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "replacementId",
+            "columnName": "replacementId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "originalQueueId",
+            "columnName": "originalQueueId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "replacementQueueId",
+            "columnName": "replacementQueueId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "originalOriginHash",
+            "columnName": "originalOriginHash",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "originalDependencyHash",
+            "columnName": "originalDependencyHash",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "originalSourceHash",
+            "columnName": "originalSourceHash",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceSnapshotJson",
+            "columnName": "sourceSnapshotJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceSnapshotHash",
+            "columnName": "sourceSnapshotHash",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "predecessorAcceptedRequestId",
+            "columnName": "predecessorAcceptedRequestId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "predecessorAcceptanceHash",
+            "columnName": "predecessorAcceptanceHash",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "replacementOriginHash",
+            "columnName": "replacementOriginHash",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "accountId",
+            "columnName": "accountId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverInstanceId",
+            "columnName": "serverInstanceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "syncEpoch",
+            "columnName": "syncEpoch",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deviceId",
+            "columnName": "deviceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "kind",
+            "columnName": "kind",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "originalId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_next_structural_supersessions_replacementId",
+            "unique": true,
+            "columnNames": [
+              "replacementId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_next_structural_supersessions_replacementId` ON `${TABLE_NAME}` (`replacementId`)"
+          },
+          {
+            "name": "index_next_structural_supersessions_kind_replacementId",
+            "unique": true,
+            "columnNames": [
+              "kind",
+              "replacementId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_next_structural_supersessions_kind_replacementId` ON `${TABLE_NAME}` (`kind`, `replacementId`)"
+          },
+          {
+            "name": "index_next_structural_supersessions_kind_predecessorAcceptedRequestId",
+            "unique": false,
+            "columnNames": [
+              "kind",
+              "predecessorAcceptedRequestId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_next_structural_supersessions_kind_predecessorAcceptedRequestId` ON `${TABLE_NAME}` (`kind`, `predecessorAcceptedRequestId`)"
+          },
+          {
+            "name": "index_next_structural_supersessions_originalQueueId",
+            "unique": true,
+            "columnNames": [
+              "originalQueueId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_next_structural_supersessions_originalQueueId` ON `${TABLE_NAME}` (`originalQueueId`)"
+          },
+          {
+            "name": "index_next_structural_supersessions_replacementQueueId",
+            "unique": true,
+            "columnNames": [
+              "replacementQueueId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_next_structural_supersessions_replacementQueueId` ON `${TABLE_NAME}` (`replacementQueueId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "next_structural_dependencies",
+            "onDelete": "NO ACTION",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "originalId"
+            ],
+            "referencedColumns": [
+              "operationId"
+            ]
+          },
+          {
+            "table": "next_request_origins",
+            "onDelete": "NO ACTION",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "kind",
+              "replacementId"
+            ],
+            "referencedColumns": [
+              "kind",
+              "requestId"
+            ]
+          },
+          {
+            "table": "next_acceptances",
+            "onDelete": "NO ACTION",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "kind",
+              "predecessorAcceptedRequestId"
+            ],
+            "referencedColumns": [
+              "kind",
+              "requestId"
+            ]
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'f54898e086b51e1db05e90566c65aa33')"
+    ]
+  }
+}

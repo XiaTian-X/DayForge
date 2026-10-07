@@ -1,8 +1,15 @@
+@file:kotlinx.serialization.UseSerializers(
+    com.dayforge.domain.model.ContractStringSerializer::class,
+    com.dayforge.domain.model.ContractLongSerializer::class,
+    com.dayforge.domain.model.ContractIntegerSerializer::class
+)
+
 package com.dayforge.data.local.entity
 
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import kotlinx.serialization.Serializable
 
 /** Durable local mutation waiting for an explicit v2 server acknowledgement. */
 @Entity(
@@ -14,6 +21,7 @@ import androidx.room.PrimaryKey
         Index("deadLetteredAt")
     ]
 )
+@Serializable
 data class SyncOutboxEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val operationId: String,

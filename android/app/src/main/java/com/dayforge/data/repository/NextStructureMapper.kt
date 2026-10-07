@@ -35,6 +35,13 @@ internal object NextStructureMapper {
             instant(payload, "updated_at").toEpochMilli(), previous)
     }
 
+    /** Pure write validation, with no fabricated remote revision or persisted projection. */
+    fun validatePlanWrite(body: JsonObject, uuid: String) {
+        decodePlan(body, uuid, instant(body, "created_at").toEpochMilli(), null)
+    }
+
+    fun validateMetricWrite(body: JsonObject) = validateMetric(body)
+
     private fun decodePlan(body: JsonObject, uuid: String, updatedAt: Long, previous: HabitEntity?): HabitEntity {
         require(body.keys == planFields && isContractUuid(uuid))
         val kind = body.text("node_kind")
