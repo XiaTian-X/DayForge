@@ -34,8 +34,11 @@ interface SyncOutboxDao {
     suspend fun hasProtocolNextRecovery(): Boolean
 
     /** Origins/journals block v4 even if their source was removed or malformed. */
-    @Query("SELECT EXISTS(SELECT 1 FROM next_request_origins) OR EXISTS(SELECT 1 FROM next_transmissions) OR EXISTS(SELECT 1 FROM next_acceptances)")
+    @Query("SELECT EXISTS(SELECT 1 FROM next_request_origins) OR EXISTS(SELECT 1 FROM next_transmissions) OR EXISTS(SELECT 1 FROM next_acceptances) OR EXISTS(SELECT 1 FROM next_structural_dependencies) OR EXISTS(SELECT 1 FROM next_structural_supersessions)")
     suspend fun hasProtocolNextRequests(): Boolean
+
+    @Query("SELECT * FROM sync_outbox WHERE recordType=:recordType AND entityUuid=:entityUuid ORDER BY id LIMIT 10001")
+    suspend fun getEntityIntents(recordType: String, entityUuid: String): List<SyncOutboxEntity>
 
     @Query("SELECT COUNT(*) FROM sync_outbox WHERE deadLetteredAt IS NULL")
     suspend fun count(): Int

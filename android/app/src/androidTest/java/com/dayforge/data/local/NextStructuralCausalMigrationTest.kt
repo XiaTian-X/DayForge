@@ -18,13 +18,13 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
-class NextAcceptanceMigrationTest {
+class NextStructuralCausalMigrationTest {
     private lateinit var context: Context
     private var room: HabitDatabase? = null
     private val name = "habit_database"
     private val schema by lazy {
         Json.parseToJsonElement(InstrumentationRegistry.getInstrumentation().context.assets
-            .open("com.dayforge.data.local.HabitDatabase/9.json").bufferedReader().use { it.readText() })
+            .open("com.dayforge.data.local.HabitDatabase/10.json").bufferedReader().use { it.readText() })
             .jsonObject.getValue("database").jsonObject
     }
     private val entities get() = schema.getValue("entities").jsonArray.map { it.jsonObject }
@@ -33,7 +33,7 @@ class NextAcceptanceMigrationTest {
         check(context.packageName == "com.dayforge.testbed")
         HabitDatabaseProvider.clearInstanceForTesting()
         context.deleteDatabase(name)
-        assertEquals("068446539bc550953ea657cbbea53f67", schema.getValue("identityHash").jsonPrimitive.content)
+        assertEquals("f47163958305f39520eb16c042502aba", schema.getValue("identityHash").jsonPrimitive.content)
     }
     @After fun cleanup() {
         room?.close()
@@ -59,7 +59,7 @@ class NextAcceptanceMigrationTest {
     }
     private fun structure(db: SupportSQLiteDatabase) = rows(db,
         "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' " +
-            "AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('next_structural_dependencies','next_structural_supersessions','next_acceptances') ORDER BY type,name")
+            "AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('next_structural_dependencies','next_structural_supersessions') ORDER BY type,name")
     private fun insert(db: SupportSQLiteDatabase, table: String, values: Map<String, Any>) {
         val content = ContentValues()
         entities.first { it.getValue("tableName").jsonPrimitive.content == table }.getValue("fields").jsonArray.forEach {
@@ -83,7 +83,7 @@ class NextAcceptanceMigrationTest {
     }
     private fun seed(block: (SupportSQLiteDatabase) -> Unit = {}) {
         val helper = FrameworkSQLiteOpenHelperFactory().create(SupportSQLiteOpenHelper.Configuration.builder(context)
-            .name(name).callback(object : SupportSQLiteOpenHelper.Callback(9) {
+            .name(name).callback(object : SupportSQLiteOpenHelper.Callback(10) {
                 override fun onCreate(db: SupportSQLiteDatabase) {
                     entities.forEach { entity ->
                         val table = entity.getValue("tableName").jsonPrimitive.content
@@ -117,6 +117,20 @@ class NextAcceptanceMigrationTest {
             insert(db, "next_transmissions", mapOf("kind" to "sync_operation", "requestId" to "new-origin", "queueId" to 1,
                 "protocol" to 5, "accountId" to "account", "serverInstanceId" to "server", "syncEpoch" to "epoch",
                 "deviceId" to "first-device", "wireHash" to "original-hash", "wireBytes" to byteArrayOf(0, 127, -1)))
+            insert(db, "next_acceptances", mapOf("kind" to "sync_operation", "requestId" to "new-origin",
+                "originHash" to "original-source", "transmissionHash" to "original-wire", "resultHash" to "original-result", "resultJson" to "{\"stored\":true}"))
+            insert(db, "completions", mapOf("id" to 1, "habitId" to 1, "uuid" to "completion", "value" to 1,
+                "actualCompletedAt" to 42, "recordedTimezone" to "Asia/Shanghai", "recordedLocalDate" to "2026-10-06"))
+            insert(db, "timelogs", mapOf("id" to 1, "habitId" to 1, "uuid" to "timer", "startTime" to 42, "endTime" to 60042))
+            insert(db, "timer_segments", mapOf("id" to 1, "sessionUuid" to "timer", "sequence" to 1, "startedAt" to 42, "endedAt" to 60042))
+            insert(db, "timelog_day_allocations", mapOf("sessionUuid" to "timer", "habitId" to 1,
+                "localDate" to "2026-10-06", "timezone" to "Asia/Shanghai", "durationMillis" to 60000))
+            insert(db, "metrics", mapOf("id" to 1, "uuid" to "metric", "name" to "old metric", "appearance" to "uninterpreted appearance"))
+            insert(db, "metric_logs", mapOf("id" to 1, "metricId" to 1, "uuid" to "observation", "note" to "retained"))
+            insert(db, "habit_metric_links", mapOf("id" to 1, "habitId" to 1, "habitUuid" to "habit",
+                "metricId" to 1, "metricUuid" to "metric", "uuid" to "link"))
+            insert(db, "sync_entity_state", mapOf("entityType" to "metric", "entityUuid" to "metric", "revision" to 7, "payloadJson" to "original shadow"))
+            insert(db, "sync_conflicts", mapOf("id" to 1, "operationId" to "frozen", "recordType" to "habit", "status" to "pending"))
             SyncSchemaCallback.onOpen(db)
             block(db)
         }
@@ -125,12 +139,15 @@ class NextAcceptanceMigrationTest {
         var before = emptyMap<String, List<List<String?>>>()
         var ddl = emptyList<List<String?>>()
         seed { before = snapshot(it); ddl = structure(it) }
-        assertEquals(19, entities.size)
+        assertEquals(20, entities.size)
+        before.forEach { (table, values) -> assertTrue("Missing fixture for $table", values.isNotEmpty()) }
         repeat(2) {
             val db = open(); val sql = db.openHelper.writableDatabase
             assertEquals(11, sql.version); assertEquals(before, snapshot(sql)); assertEquals(ddl, structure(sql))
             assertTrue(db.nextRequestDao().hasAny())
-            assertTrue(rows(sql, "SELECT * FROM next_acceptances").isEmpty())
+            assertTrue(rows(sql, "SELECT * FROM next_structural_dependencies").isEmpty())
+            assertTrue(rows(sql, "SELECT * FROM next_structural_supersessions").isEmpty())
+            assertEquals(listOf(listOf("f54898e086b51e1db05e90566c65aa33")), rows(sql, "SELECT identity_hash FROM room_master_table WHERE id=42"))
             assertEquals(listOf(listOf("ok")), rows(sql, "PRAGMA integrity_check"))
             assertTrue(rows(sql, "PRAGMA foreign_key_check").isEmpty())
         }
@@ -140,8 +157,8 @@ class NextAcceptanceMigrationTest {
         assertTrue(runCatching { open().openHelper.writableDatabase }.exceptionOrNull()?.message.orEmpty().contains("Migration didn't properly handle"))
         room!!.close()
         SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READWRITE).use { raw ->
-            assertEquals(9, raw.version)
-            raw.rawQuery("SELECT name FROM sqlite_master WHERE name='next_acceptances'", null).use { assertFalse(it.moveToFirst()) }
+            assertEquals(10, raw.version)
+            raw.rawQuery("SELECT name FROM sqlite_master WHERE name='next_structural_dependencies'", null).use { assertFalse(it.moveToFirst()) }
             raw.rawQuery("SELECT payloadJson FROM sync_outbox", null).use {
                 assertTrue(it.moveToFirst()); assertEquals("{\"untouched\": true}", it.getString(0))
             }
@@ -149,33 +166,33 @@ class NextAcceptanceMigrationTest {
         }
         assertEquals(11, open().openHelper.writableDatabase.version)
     }
-    @Test fun forgedVersionNineIdentityCannotInitializeReceiptsOrModifyFrozenRows() {
+    @Test fun forgedVersionTenIdentityCannotInitializeAncestryOrModifyFrozenRows() {
         seed { it.execSQL("UPDATE room_master_table SET identity_hash='unknown' WHERE id=42") }
         assertTrue(runCatching { open().openHelper.writableDatabase }.exceptionOrNull()?.message.orEmpty().contains("integrity"))
         room!!.close()
         SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READONLY).use { raw ->
-            assertEquals(9, raw.version)
+            assertEquals(10, raw.version)
             raw.rawQuery("SELECT payloadJson FROM sync_outbox", null).use {
                 assertTrue(it.moveToFirst()); assertEquals("{\"untouched\": true}", it.getString(0))
             }
-            raw.rawQuery("SELECT name FROM sqlite_master WHERE name='next_acceptances'", null).use { assertFalse(it.moveToFirst()) }
+            raw.rawQuery("SELECT name FROM sqlite_master WHERE name='next_structural_dependencies'", null).use { assertFalse(it.moveToFirst()) }
         }
     }
 
-    @Test fun occupiedReceiptTableCannotBeAdoptedOrDestroyOriginalData() {
-        seed { it.execSQL("CREATE TABLE next_acceptances(unproven TEXT)"); it.execSQL("INSERT INTO next_acceptances VALUES('keep')") }
+    @Test fun occupiedDependencyTableCannotBeAdoptedOrDestroyOriginalData() {
+        seed { it.execSQL("CREATE TABLE next_structural_dependencies(unproven TEXT)"); it.execSQL("INSERT INTO next_structural_dependencies VALUES('keep')") }
         assertNotNull(runCatching { open().openHelper.writableDatabase }.exceptionOrNull())
         room!!.close()
         SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READWRITE).use { raw ->
-            assertEquals(9, raw.version)
-            raw.rawQuery("SELECT unproven FROM next_acceptances", null).use { assertTrue(it.moveToFirst()); assertEquals("keep", it.getString(0)) }
+            assertEquals(10, raw.version)
+            raw.rawQuery("SELECT unproven FROM next_structural_dependencies", null).use { assertTrue(it.moveToFirst()); assertEquals("keep", it.getString(0)) }
             raw.rawQuery("SELECT hex(wireBytes) FROM next_transmissions", null).use { assertTrue(it.moveToFirst()); assertEquals("007FFF", it.getString(0)) }
-            raw.execSQL("DROP TABLE next_acceptances") // Only the exact obstacle injected by this test.
+            raw.execSQL("DROP TABLE next_structural_dependencies") // Only the exact obstacle injected by this test.
         }
         assertEquals(11, open().openHelper.writableDatabase.version)
     }
 
-    @Test fun missingExtraOrWrongStorageTypeIdentityCannotInitializeReceipts() {
+    @Test fun missingExtraOrWrongStorageTypeIdentityCannotInitializeAncestry() {
         for (statement in listOf("DELETE FROM room_master_table WHERE id=42",
             "INSERT INTO room_master_table VALUES(17,'unexpected')",
             "UPDATE room_master_table SET identity_hash=CAST(identity_hash AS BLOB) WHERE id=42")) {
@@ -184,12 +201,41 @@ class NextAcceptanceMigrationTest {
             assertTrue(runCatching { open().openHelper.writableDatabase }.exceptionOrNull()?.message.orEmpty().contains("integrity"))
             room!!.close()
             SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READONLY).use { raw ->
-                assertEquals(9, raw.version)
-                raw.rawQuery("SELECT name FROM sqlite_master WHERE name='next_acceptances'", null).use { assertFalse(it.moveToFirst()) }
+                assertEquals(10, raw.version)
+                raw.rawQuery("SELECT name FROM sqlite_master WHERE name='next_structural_dependencies'", null).use { assertFalse(it.moveToFirst()) }
                 raw.rawQuery("SELECT payloadJson FROM sync_outbox", null).use {
                     assertTrue(it.moveToFirst()); assertEquals("{\"untouched\": true}", it.getString(0))
                 }
             }
         }
+    }
+
+    @Test fun occupiedRetirementTableRollsBackFirstTableAndAllOriginalProofs() {
+        seed { it.execSQL("CREATE TABLE next_structural_supersessions(unproven TEXT)")
+            it.execSQL("INSERT INTO next_structural_supersessions VALUES('keep')") }
+        assertNotNull(runCatching { open().openHelper.writableDatabase }.exceptionOrNull())
+        room!!.close()
+        SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READWRITE).use { raw ->
+            assertEquals(10, raw.version)
+            raw.rawQuery("SELECT name FROM sqlite_master WHERE name='next_structural_dependencies'", null).use { assertFalse(it.moveToFirst()) }
+            raw.rawQuery("SELECT unproven FROM next_structural_supersessions", null).use { assertTrue(it.moveToFirst()); assertEquals("keep", it.getString(0)) }
+            raw.rawQuery("SELECT resultJson FROM next_acceptances", null).use { assertTrue(it.moveToFirst()); assertEquals("{\"stored\":true}", it.getString(0)) }
+            raw.execSQL("DROP TABLE next_structural_supersessions") // Only the exact obstacle injected by this test.
+        }
+        assertEquals(11, open().openHelper.writableDatabase.version)
+    }
+
+    @Test fun occupiedIndexRejectsWholeMigrationWithoutAdoptingOtherTable() {
+        seed { it.execSQL("CREATE INDEX index_next_structural_dependencies_logicalOrder ON next_acceptances(resultHash)") }
+        assertNotNull(runCatching { open().openHelper.writableDatabase }.exceptionOrNull())
+        room!!.close()
+        SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READWRITE).use { raw ->
+            assertEquals(10, raw.version)
+            raw.rawQuery("SELECT name FROM sqlite_master WHERE name IN ('next_structural_dependencies','next_structural_supersessions')", null).use { assertFalse(it.moveToFirst()) }
+            raw.rawQuery("SELECT tbl_name FROM sqlite_master WHERE name='index_next_structural_dependencies_logicalOrder'", null).use {
+                assertTrue(it.moveToFirst()); assertEquals("next_acceptances", it.getString(0)) }
+            raw.execSQL("DROP INDEX index_next_structural_dependencies_logicalOrder") // Exact test-owned index only.
+        }
+        assertEquals(11, open().openHelper.writableDatabase.version)
     }
 }

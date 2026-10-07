@@ -19,6 +19,35 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class ProtocolNextActivationBarrierTest : SyncPersistenceFixture() {
+    private suspend fun orphanedCausalMetadata(statement: String, table: String) {
+        assertEquals(11, database.openHelper.writableDatabase.version) // Materialize the lazy file before closing it.
+        database.close()
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        check(context.packageName == "com.dayforge.testbed")
+        android.database.sqlite.SQLiteDatabase.openDatabase(context.getDatabasePath("habit_database").path, null,
+            android.database.sqlite.SQLiteDatabase.OPEN_READWRITE).use { raw ->
+            raw.setForeignKeyConstraintsEnabled(false) // Test-only corruption; cannot be inserted through production DAO.
+            raw.execSQL(statement)
+        }
+        reopen()
+        assertTrue(database.nextRequestDao().hasAny())
+        assertTrue(database.syncOutboxDao().hasProtocolNextRequests())
+        assertAllLegacyWritesRefused()
+        database.openHelper.readableDatabase.query("SELECT COUNT(*) FROM $table").use { assertTrue(it.moveToFirst()); assertEquals(1, it.getInt(0)) }
+        database.clearAllData()
+        reopen()
+        assertFalse(database.nextRequestDao().hasAny()); assertFalse(database.syncOutboxDao().hasProtocolNextRequests())
+    }
+
+    @Test fun orphanedCausalDependencyBlocksAllElevenLegacyWritesAndAccountClearIncludesIt() = runBlocking {
+        orphanedCausalMetadata("INSERT INTO next_structural_dependencies(operationId,logicalOrder,originHash,kind) VALUES('orphan',1,'bad','sync_operation')",
+            "next_structural_dependencies")
+    }
+
+    @Test fun orphanedCausalRetirementIsNotAnAckAndBlocksAllElevenLegacyWrites() = runBlocking {
+        orphanedCausalMetadata("INSERT INTO next_structural_supersessions VALUES('orphan','replacement',1,2,'bad','bad','bad','bad-json','bad','parent','bad','bad','account','server','epoch','device','sync_operation')",
+            "next_structural_supersessions")
+    }
     @Test fun orphanedMalformedAcceptanceBlocksEveryLegacyMutationAfterReopen() = runBlocking {
         val row = NextAcceptanceEntity("unknown-kind", "orphan", "bad", "bad", "bad", "bad-json")
         database.nextRequestDao().insertAcceptance(row)

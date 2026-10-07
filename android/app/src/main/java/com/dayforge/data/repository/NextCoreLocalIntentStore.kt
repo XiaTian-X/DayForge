@@ -44,6 +44,10 @@ internal class NextCoreLocalIntentStore(
             val watermarks = tables.associateWith { NextRequestSql.watermark(sql, it) }
             val result = writeInTransaction()
             NextRequestSql.requireOutboxEnabled(sql)
+            val expectedSources = tables.associateWith { NextRequestSql.sources(sql, it) }
+            val createdOrigins = mutableMapOf<Pair<String, String>, String>()
+            val createdDependencies = mutableMapOf<String, String>()
+            val causal = NextStructuralCausalStore(database)
             for ((index, table) in tables.withIndex()) {
                 val after = NextRequestSql.sources(sql, table)
                 if (before.getValue(table).any { (id, hash) -> after[id] != hash })
@@ -95,8 +99,22 @@ internal class NextCoreLocalIntentStore(
                     dao.insertOrigin(origin)
                     check(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(kind, requestId)) != null)
                     check(dao.origin(kind, requestId) == origin)
+                    if (kind == NEXT_OPERATION) causal.capture(origin,
+                        decodeFrozenSyncRequest(bytes, SyncV2Operation.serializer()), access)
+                    createdOrigins[kind to requestId] = requireNotNull(NextRequestSql.rowHash(sql,
+                        "next_request_origins", "kind=? AND requestId=?", arrayOf(kind, requestId)))
+                    if (kind == NEXT_OPERATION) NextRequestSql.rowHash(sql, "next_structural_dependencies", "operationId=?", arrayOf(requestId))
+                        ?.let { createdDependencies[requestId] = it }
                 }
             }
+            check(tables.associateWith { NextRequestSql.sources(sql, it) } == expectedSources)
+            for ((key, hash) in createdOrigins) check(NextRequestSql.rowHash(sql, "next_request_origins",
+                "kind=? AND requestId=?", arrayOf(key.first, key.second)) == hash)
+            for ((id, hash) in createdDependencies) {
+                check(NextRequestSql.rowHash(sql, "next_structural_dependencies", "operationId=?", arrayOf(id)) == hash)
+                causal.auditCaptured(id, access)
+            }
+            NextRequestSql.requireOutboxEnabled(sql)
             if (tokens.localCoreWriteAccess() != access) rejectNextRequest(NextRequestException.Reason.STALE_ACCESS)
             result
         }

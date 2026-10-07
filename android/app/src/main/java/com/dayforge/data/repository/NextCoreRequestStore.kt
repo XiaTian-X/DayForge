@@ -31,14 +31,18 @@ internal class NextCoreRequestStore(
     private val sessions: AccountSessionCoordinator,
     private val http: NextSyncHttp
 ) {
-    suspend fun sendOperation(captured: LocalSyncAccess, operationId: String): NextCoreDelivery<NextSyncPushResponse>? {
+    suspend fun sendOperation(captured: LocalSyncAccess, operationId: String): NextCoreDelivery<NextSyncPushResponse>? =
+        sendOperation(captured, operationId, NextStructuralCausalStore.PureMemo())
+
+    private suspend fun sendOperation(captured: LocalSyncAccess, operationId: String,
+        memo: NextStructuralCausalStore.PureMemo): NextCoreDelivery<NextSyncPushResponse>? {
         require(isContractUuid(operationId) && captured.deviceId != null)
         val access = captured.copy(capabilities = captured.capabilities.toSet())
         return http.session(access) { channel ->
-            val prepared = prepare(access, NEXT_OPERATION, operationId)
+            val prepared = prepare(access, NEXT_OPERATION, operationId, memo)
             val response = channel.pushFrozen(prepared.row.wireBytes)
-            requireStillCurrent(access, prepared)
-            NextCoreDelivery(access, operationId, response, prepared.proof)
+            requireStillCurrent(access, prepared, memo)
+            NextCoreDelivery(access, prepared.row.requestId, response, prepared.proof)
         }
     }
 
@@ -57,25 +61,31 @@ internal class NextCoreRequestStore(
 
     /** Actual send → acceptance entrypoint. A rejected/conflicting delivery never consumes work. */
     suspend fun sendAndAcceptOperation(access: LocalSyncAccess, operationId: String): NextOperationAcceptance? {
+        val memo = NextStructuralCausalStore.PureMemo()
         val saved = sessions.exclusive {
             authorize(access)
             database.withTransaction {
                 val sql = database.openHelper.writableDatabase
-                if (NextRequestSql.rowHash(sql, "next_acceptances", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, operationId)) == null) null
+                val actualId = NextStructuralCausalStore(database, memo).resolve(operationId, access)
+                if (NextRequestSql.rowHash(sql, "next_acceptances", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, actualId)) == null) null
                 else {
-                    val receipt = requireNotNull(database.nextRequestDao().acceptance(NEXT_OPERATION, operationId))
+                    val receipt = requireNotNull(database.nextRequestDao().acceptance(NEXT_OPERATION, actualId))
                     val result = decodeFrozenSyncRequest(receipt.resultJson.toByteArray(Charsets.UTF_8), NextSyncOperationResult.serializer())
-                    val proof = requireNotNull(NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, operationId)))
-                    NextCoreDelivery(access, operationId, NextSyncPushResponse(listOf(result)), proof)
+                    val proof = requireNotNull(NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, actualId)))
+                    NextCoreDelivery(access, actualId, NextSyncPushResponse(listOf(result)), proof)
                 }
             }
         }
-        val delivery = saved ?: sendOperation(access, operationId) ?: return null
-        return acceptOperation(delivery)
+        val delivery = saved ?: sendOperation(access, operationId, memo) ?: return null
+        return acceptOperation(delivery, memo)
     }
 
     /** Returns only after Room's outer COMMIT. No cursor/once/timer acknowledgement is inferred. */
-    suspend fun acceptOperation(delivery: NextCoreDelivery<NextSyncPushResponse>): NextOperationAcceptance = sessions.exclusive {
+    suspend fun acceptOperation(delivery: NextCoreDelivery<NextSyncPushResponse>): NextOperationAcceptance =
+        acceptOperation(delivery, NextStructuralCausalStore.PureMemo())
+
+    private suspend fun acceptOperation(delivery: NextCoreDelivery<NextSyncPushResponse>,
+        memo: NextStructuralCausalStore.PureMemo): NextOperationAcceptance = sessions.exclusive {
         val access = delivery.access
         authorize(access)
         database.withTransaction {
@@ -83,6 +93,8 @@ internal class NextCoreRequestStore(
             NextRequestSql.requireOutboxEnabled(sql)
             val id = delivery.requestId
             require(isContractUuid(id) && delivery.result.results.size == 1)
+            val causal = NextStructuralCausalStore(database, memo)
+            require(causal.resolve(id, access) == id)
             val dao = database.nextRequestDao()
             val originHash = NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, id))
                 ?: rejectNextRequest(NextRequestException.Reason.OLD_INTENT)
@@ -102,6 +114,7 @@ internal class NextCoreRequestStore(
                 operation.payload["event_type"] == kotlinx.serialization.json.JsonPrimitive("duration_session"))
                 rejectNextRequest(NextRequestException.Reason.UNSUPPORTED_ACCEPTANCE)
             require(result.status in setOf("applied", "already_applied") && result.revision != null && result.revision > 0 &&
+                result.revision >= (operation.baseRevision ?: 0L) &&
                 result.entity != null && result.errorCode == null && result.message == null && result.baseEntity == null &&
                 result.localEntity == null && result.conflictingFields.isEmpty() && result.conflictKind == null && result.oneTimeConflict == null)
             require(listOf("one_time", "one_time_state_after").all { result.entity[it].let { value -> value == null || value == kotlinx.serialization.json.JsonNull } })
@@ -109,6 +122,8 @@ internal class NextCoreRequestStore(
             val bytes = encodeSyncRequest(NextSyncOperationResult.serializer(), normalized)
             decodeFrozenSyncRequest(bytes, NextSyncOperationResult.serializer())
             val resultJson = bytes.toString(Charsets.UTF_8)
+            if (operation.entityType in setOf("plan_node", "metric", "activity_metric_link"))
+                causal.validateStructuralResult(resultJson)
             val previousHash = NextRequestSql.rowHash(sql, "next_acceptances", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, id))
             val outcome = if (previousHash != null) {
                 val receipt = requireNotNull(dao.acceptance(NEXT_OPERATION, id))
@@ -126,8 +141,7 @@ internal class NextCoreRequestStore(
                 require(verifiedOrigin == rawOrigin)
                 val queue = requireNotNull(database.syncOutboxDao().getById(rawOrigin.queueId))
                 // A later callback cannot jump a predecessor and install an incorrect merge base.
-                val predecessors = database.syncOutboxDao().getAll() + database.syncOutboxDao().getDeadLetters()
-                require(predecessors.none { it.id < queue.id && it.recordType == queue.recordType && it.entityUuid == queue.entityUuid })
+                causal.requireHead(queue)
                 val change = SyncV2Change(sequence = 0, entityType = operation.entityType, entityUuid = operation.entityUuid,
                     operation = "upsert", revision = requireNotNull(result.revision), payload = requireNotNull(result.entity),
                     changedAt = requireNotNull(result.entity["updated_at"] as? kotlinx.serialization.json.JsonPrimitive).also { require(it.isString) }.content)
@@ -174,6 +188,7 @@ internal class NextCoreRequestStore(
                     arrayOf(change.entityType, change.entityUuid)) == acceptedShadow)
                 NextOperationAcceptance.COMMITTED
             }
+            require(causal.resolve(id, access) == id)
             NextRequestSql.requireOutboxEnabled(sql)
             authorize(access)
             outcome
@@ -189,9 +204,12 @@ internal class NextCoreRequestStore(
         require(state.payloadHash == syncPayloadHash(payload))
     }
 
-    private suspend fun prepare(access: LocalSyncAccess, kind: String, id: String): Prepared = sessions.exclusive {
+    private suspend fun prepare(access: LocalSyncAccess, kind: String, requestedId: String,
+        memo: NextStructuralCausalStore.PureMemo? = null): Prepared = sessions.exclusive {
         authorize(access)
         database.withTransaction {
+            val causal = if (kind == NEXT_OPERATION) NextStructuralCausalStore(database, requireNotNull(memo)) else null
+            val id = causal?.prepare(requestedId, access) ?: requestedId
             val origin = origin(access, kind, id)
             val dao = database.nextRequestDao()
             val sql = database.openHelper.writableDatabase
@@ -215,15 +233,20 @@ internal class NextCoreRequestStore(
             val stored = requireNotNull(dao.transmission(kind, id))
             validate(origin, stored, access)
             check(stored.wireBytes.contentEquals(row.wireBytes))
+            check(origin(access, kind, id) == origin)
+            if (causal != null) require(causal.resolve(requestedId, access) == id)
+            NextRequestSql.requireOutboxEnabled(sql)
             authorize(access)
             Prepared(stored, proof)
         }
     }
 
-    private suspend fun requireStillCurrent(access: LocalSyncAccess, prepared: Prepared) = sessions.exclusive {
+    private suspend fun requireStillCurrent(access: LocalSyncAccess, prepared: Prepared,
+        memo: NextStructuralCausalStore.PureMemo? = null) = sessions.exclusive {
         authorize(access)
         database.withTransaction {
             val row = prepared.row
+            if (row.kind == NEXT_OPERATION) require(NextStructuralCausalStore(database, requireNotNull(memo)).resolve(row.requestId, access) == row.requestId)
             val origin = origin(access, row.kind, row.requestId)
             val proof = NextRequestSql.rowHash(database.openHelper.writableDatabase, "next_transmissions",
                 "kind=? AND requestId=?", arrayOf(row.kind, row.requestId))

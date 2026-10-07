@@ -29,6 +29,19 @@ internal object NextCommonFactMapper {
     private val observationFields = setOf("metric_uuid", "value", "unit") + source
     private val linkFields = setOf("activity_uuid", "metric_uuid", "coefficient", "show_in_activity_detail", "prompt_on_complete", "is_active")
 
+    /** Structural link validation without inventing local endpoint IDs. */
+    fun validateLinkWrite(body: JsonObject) {
+        require(body.keys == linkFields)
+        require(isContractUuid(body.text("activity_uuid")) && isContractUuid(body.text("metric_uuid")))
+        body.decimal("coefficient").exactDouble()
+        body.boolean("show_in_activity_detail"); body.boolean("prompt_on_complete"); body.boolean("is_active")
+    }
+
+    fun validateLinkSnapshot(change: SyncV2Change) {
+        val body = header(change, "activity_metric_link", linkFields)
+        validateLinkWrite(JsonObject(body.filterKeys { it in linkFields }))
+    }
+
     fun completion(change: SyncV2Change, habit: HabitEntity, previous: CompletionEntity? = null): CompletionEntity {
         val body = event(change, habit)
         val kind = body.text("event_type")

@@ -33,7 +33,8 @@ internal data class LocalDataSession(
 internal data class LocalFactAccess(val session: LocalDataSession, val canAppend: Boolean)
 
 /** Offline core writes may precede registration; known permissions must still be respected. */
-internal data class LocalCoreWriteAccess(val session: LocalDataSession, val capabilities: Set<String>?)
+internal data class LocalCoreWriteAccess(val session: LocalDataSession, val capabilities: Set<String>?,
+    val capturedDeviceId: String? = null)
 
 /** A single snapshot; icon access never inherits legacy/unknown device permissions. */
 internal data class LocalIconAccess(
@@ -260,9 +261,11 @@ class TokenManager @Inject constructor(
         if ((server == null) != (epoch == null) ||
             (server != null && (!com.dayforge.domain.model.isContractUuid(server) ||
                 !com.dayforge.domain.model.isContractUuid(requireNotNull(epoch))))) return@withContext null
+        val device = preferences[SYNC_DEVICE_ID_KEY]
+        if (device != null && !com.dayforge.domain.model.isContractUuid(device)) return@withContext null
         LocalCoreWriteAccess(LocalDataSession(authentication, server, epoch),
             if (preferences[DEVICE_CAPABILITIES_KNOWN_KEY] == true)
-                (preferences[DEVICE_CAPABILITIES_KEY] ?: emptySet()).toSet() else null)
+                (preferences[DEVICE_CAPABILITIES_KEY] ?: emptySet()).toSet() else null, device)
     }
 
     internal suspend fun localSyncAccess(): LocalSyncAccess? = withContext(Dispatchers.IO) { syncAccess(dataStore.data.first()) }
