@@ -24,6 +24,7 @@ internal class NextCommonFactStore(private val database: HabitDatabase) {
     suspend fun restoreInTransaction(changes: List<SyncV2Change>, deviceId: String,
         acceptedQueueId: Long? = null, acceptedOperation: SyncV2Operation? = null,
         acceptedTimerCompletion: (suspend (SyncV2Change) -> String?)? = null,
+        incremental: Boolean = false,
         provenParentDeletion: (suspend (String, String) -> Boolean)? = null) {
         check(database.inTransaction())
         val sql = database.openHelper.writableDatabase
@@ -33,13 +34,14 @@ internal class NextCommonFactStore(private val database: HabitDatabase) {
         }
         if (sql.query("SELECT 1 FROM completions c JOIN timelogs t ON c.uuid=t.uuid LIMIT 1").use { it.moveToFirst() })
             fail(NextFactMergeException.Reason.INVALID_LOCAL_STATE)
-        require(changes.all { it.operation == "upsert" && it.sequence == 0L })
+        require(changes.all { it.operation == "upsert" && if (incremental) it.sequence > 0 else it.sequence == 0L })
+        require(!incremental || acceptedQueueId == null)
         require(changes.map { it.entityType to it.entityUuid }.distinct().size == changes.size)
         require((acceptedQueueId == null) == (acceptedOperation == null))
         require(acceptedQueueId == null || changes.size == 1)
-        val planIds = if (acceptedQueueId != null) database.habitDao().getAllHabitsOnce().map { it.uuid }.toSet()
+        val planIds = if (acceptedQueueId != null || incremental) database.habitDao().getAllHabitsOnce().map { it.uuid }.toSet()
             else changes.filter { it.entityType == "plan_node" }.map { it.entityUuid }.toSet()
-        val metricIds = if (acceptedQueueId != null) database.metricDao().getAllMetricsOnce().map { it.uuid }.toSet()
+        val metricIds = if (acceptedQueueId != null || incremental) database.metricDao().getAllMetricsOnce().map { it.uuid }.toSet()
             else changes.filter { it.entityType == "metric" }.map { it.entityUuid }.toSet()
         val incoming = changes.filter { it.entityType in setOf("activity_event", "metric_observation", "activity_metric_link") &&
             (it.entityType != "activity_event" || it.payload["one_time"].let { value -> value == null || value == JsonNull }) }

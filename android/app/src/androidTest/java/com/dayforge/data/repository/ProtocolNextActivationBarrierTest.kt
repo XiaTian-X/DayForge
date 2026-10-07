@@ -19,8 +19,22 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class ProtocolNextActivationBarrierTest : SyncPersistenceFixture() {
+    @Test fun activeCursorAndOrphanedRejectionBlockAllLegacyWritesAndAccountClearIncludesThem() = runBlocking {
+        database.nextSyncStateDao().insert(com.dayforge.data.local.entity.NextSyncStateEntity(
+            UUID.randomUUID().toString(), UUID.randomUUID().toString(), UUID.randomUUID().toString(),
+            UUID.randomUUID().toString(), 1, 20, "a".repeat(64), "b".repeat(64)))
+        reopen(); assertAllLegacyWritesRefused()
+        database.clearAllData(); assertFalse(database.syncOutboxDao().hasProtocolNextRecovery())
+        database.nextSyncStateDao().insertRejection(com.dayforge.data.local.entity.NextRejectionEntity(
+            "unknown-kind", "orphan", "bad", "bad", "bad", "bad-json"))
+        reopen(); assertAllLegacyWritesRefused()
+        assertEquals(1, database.nextSyncStateDao().rejections().size)
+        database.clearAllData(); reopen()
+        assertTrue(database.nextSyncStateDao().rows().isEmpty()); assertTrue(database.nextSyncStateDao().rejections().isEmpty())
+    }
+
     private suspend fun orphanedCausalMetadata(statement: String, table: String) {
-        assertEquals(11, database.openHelper.writableDatabase.version) // Materialize the lazy file before closing it.
+        assertEquals(12, database.openHelper.writableDatabase.version) // Materialize the lazy file before closing it.
         database.close()
         val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
         check(context.packageName == "com.dayforge.testbed")

@@ -174,16 +174,30 @@ internal class OneTimeAcceptedEventStore(
     suspend fun apply(context: OneTimeSyncContext, changes: List<SyncV2Change>) = sessions.exclusive {
         access(context)
         database.withTransaction {
-            val activities = linkedSetOf<String>()
-            changes.forEach { change ->
-                require(change.entityType == "activity_event" && change.operation == "upsert" && change.sequence >= 0)
-                val fact = OneTimeServerFact(change.payload, change.revision)
-                require(change.entityUuid == fact.proof.publicId)
-                if (activities.add(fact.proof.activityUuid)) local.readInTransaction(fact.proof.activityUuid, context.session)
-                merge(fact, context)
-            }
-            activities.forEach { local.readInTransaction(it, context.session) }
+            applyInTransaction(context, changes)
         }
+    }
+
+    internal suspend fun applyInTransaction(context: OneTimeSyncContext, changes: List<SyncV2Change>,
+        contiguous: Boolean = false) {
+        check(database.inTransaction())
+        access(context)
+        val activities = linkedSetOf<String>()
+        changes.forEach { change ->
+            require(change.entityType == "activity_event" && change.operation == "upsert" && change.sequence >= 0)
+            val fact = OneTimeServerFact(change.payload, change.revision)
+            require(change.entityUuid == fact.proof.publicId)
+            if (contiguous) {
+                val before = local.readInTransaction(fact.proof.activityUuid, context.session)
+                if (fact.proof.oneTimeStateAfter.version > before.confirmed.version) {
+                    require(fact.proof.oneTime.expectedVersion == before.confirmed.version &&
+                        fact.proof.oneTime.expectedHeadEventUuid == before.confirmed.headEventUuid) { "TASK_HISTORY_INCOMPLETE" }
+                }
+            }
+            if (activities.add(fact.proof.activityUuid)) local.readInTransaction(fact.proof.activityUuid, context.session)
+            merge(fact, context)
+        }
+        activities.forEach { local.readInTransaction(it, context.session) }
     }
 
     /**
@@ -286,7 +300,7 @@ internal class OneTimeAcceptedEventStore(
         it.copy(payload = Json.parseToJsonElement(it.payload.toString()).jsonObject)
     }, oneTimeCheckpoints = response.oneTimeCheckpoints.toList())
 
-    private suspend fun restoreAcceptedDataInTransaction(context: OneTimeSyncContext,
+    internal suspend fun restoreAcceptedDataInTransaction(context: OneTimeSyncContext,
         snapshot: NextSyncBootstrapResponse): List<OneTimeLocalSnapshot> {
         check(database.inTransaction())
         require(snapshot.changes.all { it.entityType in setOf("plan_node", "metric", "activity_event", "metric_observation", "activity_metric_link") })

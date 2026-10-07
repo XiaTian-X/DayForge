@@ -30,9 +30,12 @@ internal class NextStructureStore(private val database: HabitDatabase) {
     private val metrics = database.metricDao()
     private val outbox = database.syncOutboxDao()
 
-    internal suspend fun restoreInTransaction(changes: List<SyncV2Change>, acceptedQueueId: Long? = null) {
+    internal suspend fun restoreInTransaction(changes: List<SyncV2Change>, acceptedQueueId: Long? = null,
+        incremental: Boolean = false) {
         check(database.inTransaction())
-        require(changes.all { it.entityType in setOf("plan_node", "metric") && it.operation == "upsert" && it.sequence == 0L })
+        require(changes.all { it.entityType in setOf("plan_node", "metric") && it.operation == "upsert" &&
+            if (incremental) it.sequence > 0 else it.sequence == 0L })
+        require(!incremental || acceptedQueueId == null)
         require(changes.map { it.entityType to it.entityUuid }.distinct().size == changes.size)
         require(acceptedQueueId == null || changes.size == 1)
         val oldPlans = habits.getAllHabitsOnce()
@@ -97,10 +100,10 @@ internal class NextStructureStore(private val database: HabitDatabase) {
             val othersPending = pending.any { it.id != acceptedQueueId && it.recordType == recordType &&
                 (it.entityUuid == change.entityUuid || it.wireEntityUuid == change.entityUuid) }
             if (conflicts.any { it.recordType == recordType && (it.localEntityUuid == change.entityUuid || it.wireEntityUuid == change.entityUuid) } ||
-                acceptedQueueId == null && othersPending) {
+                acceptedQueueId == null && !incremental && othersPending) {
                 reject(NextStructureMergeException.Reason.LOCAL_STRUCTURE_PENDING)
             }
-            if (acceptedQueueId != null && othersPending) {
+            if ((acceptedQueueId != null || incremental) && othersPending) {
                 // Advance only the authoritative base. Never replay an older edit over a local suffix.
                 if (metric != null && oldMetric != null && oldMetric.createdAt != metric.createdAt)
                     metricUpdates[metric.uuid] = oldMetric.copy(createdAt = metric.createdAt)
@@ -120,7 +123,7 @@ internal class NextStructureStore(private val database: HabitDatabase) {
 
         incomingPlans.values.forEach { child ->
             child.parentHabitId?.let { parent ->
-                if ((incomingPlans[parent] ?: if (acceptedQueueId != null) plansById[parent] else null)?.habitType != HabitType.GOAL)
+                if ((incomingPlans[parent] ?: if (acceptedQueueId != null || incremental) plansById[parent] else null)?.habitType != HabitType.GOAL)
                     reject(NextStructureMergeException.Reason.INVALID_PARENT)
             }
         }

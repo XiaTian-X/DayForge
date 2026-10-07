@@ -10,6 +10,7 @@ import com.dayforge.data.local.dao.HabitMetricLinkDao
 import com.dayforge.data.local.dao.MetricDao
 import com.dayforge.data.local.dao.MetricLogDao
 import com.dayforge.data.local.dao.NextRecoveryDao
+import com.dayforge.data.local.dao.NextSyncStateDao
 import com.dayforge.data.local.dao.NextRequestDao
 import com.dayforge.data.local.dao.NextStructuralCausalDao
 import com.dayforge.data.local.dao.SyncConflictDao
@@ -20,6 +21,8 @@ import com.dayforge.data.local.entity.CompletionMetricPromptEntity
 import com.dayforge.data.local.entity.LocalFactSubmissionEntity
 import com.dayforge.data.local.entity.OneTimeTransmissionEntity
 import com.dayforge.data.local.entity.NextRecoveryStateEntity
+import com.dayforge.data.local.entity.NextSyncStateEntity
+import com.dayforge.data.local.entity.NextRejectionEntity
 import com.dayforge.data.local.entity.NextRequestOriginEntity
 import com.dayforge.data.local.entity.NextTransmissionEntity
 import com.dayforge.data.local.entity.NextAcceptanceEntity
@@ -70,9 +73,11 @@ import kotlinx.coroutines.withContext
         NextTransmissionEntity::class,
         NextAcceptanceEntity::class,
         NextStructuralDependencyEntity::class,
-        NextStructuralSupersessionEntity::class
+        NextStructuralSupersessionEntity::class,
+        NextSyncStateEntity::class,
+        NextRejectionEntity::class
     ],
-    version = 11,
+    version = 12,
     exportSchema = true
 )
 @TypeConverters(HabitTypeConverter::class)
@@ -85,6 +90,8 @@ abstract class HabitDatabase : RoomDatabase() {
     abstract fun completionFollowUpDao(): CompletionFollowUpDao
 
     abstract fun nextRecoveryDao(): NextRecoveryDao
+
+    abstract fun nextSyncStateDao(): NextSyncStateDao
 
     abstract fun nextRequestDao(): NextRequestDao
 
