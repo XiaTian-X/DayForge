@@ -19,6 +19,7 @@ abstract class NextObjectEditorFixture : NextCoreRequestFixture() {
     internal lateinit var iconMetadata: AccountIconRepository
     internal lateinit var icons: AccountIconController
     internal lateinit var editor: NextObjectEditor
+    internal lateinit var creator: NextObjectCreator
     private val models = ViewModelStore()
     private val ownedModels = mutableListOf<ViewModel>()
 
@@ -32,12 +33,17 @@ abstract class NextObjectEditorFixture : NextCoreRequestFixture() {
             AccountIconRenderer(iconMetadata, store), imports,
             AccountIconDocuments(imports, app.contentResolver), iconDatabase::close) }, tokens)
         editor = NextObjectEditor(db, tokens, sessions, icons)
+        creator = NextObjectCreator(db, tokens, sessions, icons)
     }
 
     internal fun editingHabits() = HabitRepository(db.habitDao(), db.completionDao(), db.timeLogDao(), db,
         nextObjectEditor = editor)
     internal fun editingMetrics() = MetricRepository(db, db.metricDao(), db.metricLogDao(), db.habitDao(),
         db.habitMetricLinkDao(), nextObjectEditor = editor)
+    internal fun creatingHabits() = HabitRepository(db.habitDao(), db.completionDao(), db.timeLogDao(), db,
+        nextObjectEditor = editor, nextObjectCreator = creator)
+    internal fun creatingMetrics() = MetricRepository(db, db.metricDao(), db.metricLogDao(), db.habitDao(),
+        db.habitMetricLinkDao(), nextObjectEditor = editor, nextObjectCreator = creator)
     internal fun <T : ViewModel> own(model: T): T {
         models.put("editor:${ownedModels.size}", model); ownedModels += model; return model
     }

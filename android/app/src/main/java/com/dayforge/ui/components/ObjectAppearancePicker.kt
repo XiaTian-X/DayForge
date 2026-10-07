@@ -13,7 +13,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.dayforge.R
-import com.dayforge.data.repository.ObjectEditAuthority
+import com.dayforge.data.repository.ObjectAppearanceAuthority
 import com.dayforge.domain.model.IconReference
 import com.dayforge.domain.model.ObjectAppearance
 import kotlinx.coroutines.Dispatchers
@@ -21,7 +21,7 @@ import kotlinx.coroutines.Dispatchers
 /** Replaces only the existing icon dialog, not the approved phone/tablet page layout. */
 @Composable
 internal fun ObjectAppearancePicker(
-    appearance: ObjectAppearance, oneTime: Boolean, authority: ObjectEditAuthority?,
+    appearance: ObjectAppearance, oneTime: Boolean, authority: ObjectAppearanceAuthority?,
     onSelected: (ObjectAppearance) -> Unit, onDismiss: () -> Unit,
     viewModel: ObjectAppearancePickerViewModel = hiltViewModel()
 ) {

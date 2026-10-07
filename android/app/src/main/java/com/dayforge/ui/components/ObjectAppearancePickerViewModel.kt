@@ -4,7 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.dayforge.data.appearance.AccountIconContext
 import com.dayforge.data.local.AccountIconMemory
-import com.dayforge.data.repository.ObjectEditAuthority
+import com.dayforge.data.repository.ObjectAppearanceAuthority
 import com.dayforge.domain.model.IconReference
 import com.dayforge.domain.model.ObjectAppearance
 import com.dayforge.domain.model.iconAllowed
@@ -46,7 +46,7 @@ class ObjectAppearancePickerViewModel @Inject constructor(private val icons: Acc
 
     init { icons.registerConsumer(invalidator) }
 
-    internal fun open(appearance: ObjectAppearance, oneTime: Boolean, authority: ObjectEditAuthority?) {
+    internal fun open(appearance: ObjectAppearance, oneTime: Boolean, authority: ObjectAppearanceAuthority?) {
         request?.cancel()
         val expected = synchronized(monitor) {
             open = true; stamp = Any(); context = null

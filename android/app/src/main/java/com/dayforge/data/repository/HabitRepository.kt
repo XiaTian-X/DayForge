@@ -35,7 +35,8 @@ class HabitRepository @Inject constructor(
     private val timeLogDao: TimeLogDao,
     private val database: HabitDatabase,
     private val structuralEditGuard: StructuralEditGuard? = null,
-    private val nextObjectEditor: NextObjectEditor? = null
+    private val nextObjectEditor: NextObjectEditor? = null,
+    private val nextObjectCreator: NextObjectCreator? = null
 ) {
     val allHabits: Flow<List<HabitEntity>> = habitDao.getAllHabits()
 
@@ -64,11 +65,20 @@ class HabitRepository @Inject constructor(
         bestTime: Long? = null,  // Best execution time (minutes since midnight)
         predefinedUuid: String? = null,  // Pre-allocated UUID for goal creation flow
         context: Context? = null,
-        selectedMetricIds: Set<Long> = emptySet()
+        selectedMetricIds: Set<Long> = emptySet(),
+        appearance: com.dayforge.domain.model.ObjectAppearance? = null,
+        completionPolicy: String? = null,
+        creationAuthority: ObjectCreationAuthority? = null
     ): Long {
-        structuralEditGuard?.requireAllowed()
-        val habit = HabitEntity(
-            uuid = predefinedUuid ?: java.util.UUID.randomUUID().toString(),  // Use predefined or generate new
+        if (creationAuthority == null) structuralEditGuard?.requireAllowed()
+        val draft = HabitDraft(id = predefinedUuid ?: java.util.UUID.randomUUID().toString(),
+            name = name, description = description, habitType = habitType, iconResId = iconResId,
+            colorHex = colorHex, schedule = schedule, targetValue = targetValue, isCountdown = isCountdown,
+            targetCycles = targetCycles, failMode = failMode, bestTime = bestTime,
+            selectedMetricIds = selectedMetricIds, appearance = appearance, completionPolicy = completionPolicy)
+        val habit = if (creationAuthority != null) requireNotNull(nextObjectCreator)
+            .habit(draft, parentHabitId, creationAuthority) else HabitEntity(
+            uuid = draft.id,
             name = name,
             description = description,
             habitType = habitType,
@@ -82,10 +92,25 @@ class HabitRepository @Inject constructor(
             failMode = failMode,
             bestTime = bestTime
         )
-        val id = database.withTransaction {
-            requireValidHierarchy(habit)
-            val habitId = habitDao.insert(habit)
-            selectedMetricIds.forEach { metricId ->
+        if (creationAuthority == null) require(appearance == null && completionPolicy == null && schedule !is HabitSchedule.Once) {
+            "OBJECT_CREATE_REQUIRES_COORDINATED_SWITCH"
+        }
+        val id = if (creationAuthority != null) requireNotNull(nextObjectCreator).habits(listOf(habit), creationAuthority) {
+            insertHabit(habit, selectedMetricIds)
+        } else database.withTransaction { insertHabit(habit, selectedMetricIds) }
+        // Side effects only after the complete business/original intent transaction commits.
+        context?.let { notifyWidgetUpdate(it) }
+        if (habit.bestTime != null && habit.habitType != HabitType.GOAL) {
+            context?.let { HabitReminderScheduler.scheduleReminder(it, id, habit.bestTime, habit.habitType, habit.targetValue) }
+        }
+        return id
+    }
+
+    private suspend fun insertHabit(habit: HabitEntity, selectedMetricIds: Set<Long>): Long {
+        requireValidHierarchy(habit)
+        require(habitDao.getHabitByUuid(habit.uuid) == null) { "OBJECT_CREATE_ID_REUSED" }
+        val habitId = habitDao.insert(habit)
+        selectedMetricIds.forEach { metricId ->
                 val metric = requireNotNull(database.metricDao().getMetricById(metricId)) {
                     "Selected metric no longer exists: $metricId"
                 }
@@ -100,48 +125,60 @@ class HabitRepository @Inject constructor(
                         promptOnComplete = true
                     )
                 )
-            }
-            habitId
         }
-        // Notify widgets to update (Progress/Motivation show total habits count)
-        context?.let { notifyWidgetUpdate(it) }
-        // Schedule reminder if bestTime is set (NOTIFY-01)
-        if (habit.bestTime != null && habit.habitType != HabitType.GOAL) {
-            context?.let {
-                HabitReminderScheduler.scheduleReminder(it, id, habit.bestTime, habit.habitType, habit.targetValue)
-            }
-        }
-        return id
+        return habitId
     }
 
     /** Parent, children, metric links and their outbox entries commit together. */
-    suspend fun createGoal(goal: HabitDraft, children: List<HabitDraft>, context: Context? = null): Long {
-        structuralEditGuard?.requireAllowed()
+    suspend fun createGoal(goal: HabitDraft, children: List<HabitDraft>, context: Context? = null,
+        creationAuthority: ObjectCreationAuthority? = null): Long {
+        if (creationAuthority == null) structuralEditGuard?.requireAllowed()
         require(goal.habitType == HabitType.GOAL && goal.selectedMetricIds.isEmpty())
         require(children.all { it.habitType != HabitType.GOAL })
         require((listOf(goal.id) + children.map { it.id }).distinct().size == children.size + 1)
-        val saved = database.withTransaction {
+        fun row(draft: HabitDraft, parent: String?): HabitEntity = if (creationAuthority != null)
+            requireNotNull(nextObjectCreator).habit(draft, parent, creationAuthority) else {
+                require(draft.appearance == null && draft.completionPolicy == null && draft.schedule !is HabitSchedule.Once)
+                HabitEntity(uuid = draft.id, name = draft.name, description = draft.description, habitType = draft.habitType,
+                    iconResId = draft.iconResId, colorHex = draft.colorHex, schedule = draft.schedule,
+                    targetValue = draft.targetValue, isCountdown = draft.isCountdown, parentHabitId = parent,
+                    targetCycles = draft.targetCycles, failMode = draft.failMode, bestTime = draft.bestTime)
+            }
+        val rows = listOf(row(goal, null)) + children.map { row(it, goal.id) }
+        suspend fun commit(): List<HabitEntity> {
             // A restored draft may have committed immediately before process death.
             // Stable UUIDs make retrying the complete save safe without replacing rows.
             val existing = habitDao.getHabitByUuid(goal.id)
             if (existing != null) {
                 require(existing.habitType == HabitType.GOAL && existing.parentHabitId == null)
                 require(children.all { habitDao.getHabitByUuid(it.id)?.parentHabitId == goal.id })
-                return@withTransaction listOf(existing) + habitDao.getChildrenByParentUuidOnce(goal.id)
+                if (creationAuthority != null) {
+                    val actual = listOf(existing) + habitDao.getChildrenByParentUuidOnce(goal.id)
+                    require(actual.map { it.uuid }.toSet() == rows.map { it.uuid }.toSet()) { "OBJECT_CREATE_ID_REUSED" }
+                    for (expected in rows) {
+                        val old = actual.single { it.uuid == expected.uuid }
+                        require(old.copy(id = 0, createdAt = expected.createdAt, updatedAt = expected.updatedAt,
+                            activityRateUpdatedAt = expected.activityRateUpdatedAt,
+                            planMetadata = old.planMetadata?.copy(creationTimestamp = expected.planMetadata!!.creationTimestamp)) == expected) {
+                            "OBJECT_CREATE_ID_REUSED"
+                        }
+                        val links = database.habitMetricLinkDao().getAllLinksForHabit(old.id).map { it.metricId }
+                        require(links.toSet() == (listOf(goal) + children).single { it.id == old.uuid }.selectedMetricIds) {
+                            "OBJECT_CREATE_ID_REUSED"
+                        }
+                    }
+                    return actual
+                }
+                return listOf(existing) + habitDao.getChildrenByParentUuidOnce(goal.id)
             }
             suspend fun insert(draft: HabitDraft, parent: String?): HabitEntity {
-                val id = createHabit(
-                    name = draft.name, description = draft.description, habitType = draft.habitType,
-                    iconResId = draft.iconResId, colorHex = draft.colorHex, schedule = draft.schedule,
-                    targetValue = draft.targetValue, isCountdown = draft.isCountdown,
-                    parentHabitId = parent, targetCycles = draft.targetCycles, failMode = draft.failMode,
-                    bestTime = draft.bestTime, predefinedUuid = draft.id,
-                    selectedMetricIds = draft.selectedMetricIds
-                )
+                val id = insertHabit(rows.single { it.uuid == draft.id && it.parentHabitId == parent }, draft.selectedMetricIds)
                 return requireNotNull(habitDao.getHabitById(id))
             }
-            listOf(insert(goal, null)) + children.map { insert(it, goal.id) }
+            return listOf(insert(goal, null)) + children.map { insert(it, goal.id) }
         }
+        val saved = if (creationAuthority != null) requireNotNull(nextObjectCreator).habits(rows, creationAuthority, ::commit)
+            else database.withTransaction { commit() }
         // No externally visible side effects until the outer transaction commits.
         context?.let { appContext ->
             notifyWidgetUpdate(appContext)

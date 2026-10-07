@@ -39,7 +39,8 @@ class MetricRepository @Inject constructor(
     private val habitDao: HabitDao,
     private val linkDao: HabitMetricLinkDao,
     private val structuralEditGuard: StructuralEditGuard? = null,
-    private val nextObjectEditor: NextObjectEditor? = null
+    private val nextObjectEditor: NextObjectEditor? = null,
+    private val nextObjectCreator: NextObjectCreator? = null
 ) {
     fun observeActiveMetrics(): Flow<List<MetricEntity>> = metricDao.getAllActiveMetrics()
 
@@ -66,13 +67,15 @@ class MetricRepository @Inject constructor(
 
     suspend fun createMetric(
         metric: MetricEntity,
-        selectedHabitIds: Set<Long> = emptySet()
+        selectedHabitIds: Set<Long> = emptySet(),
+        creationAuthority: ObjectCreationAuthority? = null
     ): Long {
-        structuralEditGuard?.requireAllowed()
-        return database.withTransaction {
-            validateTargets(metric)
-            ensureNameAvailable(metric.name)
-            val metricId = metricDao.insert(metric)
+        if (creationAuthority == null) structuralEditGuard?.requireAllowed()
+        suspend fun commit(saved: MetricEntity): Long {
+            validateTargets(saved)
+            ensureNameAvailable(saved.name)
+            require(metricDao.getMetricByUuid(saved.uuid) == null) { "OBJECT_CREATE_ID_REUSED" }
+            val metricId = metricDao.insert(saved)
             selectedHabitIds.forEach { habitId ->
                 val habit = requireNotNull(habitDao.getHabitById(habitId)) {
                     "Selected habit no longer exists: $habitId"
@@ -82,15 +85,20 @@ class MetricRepository @Inject constructor(
                         habitId = habitId,
                         habitUuid = habit.uuid,
                         metricId = metricId,
-                        metricUuid = metric.uuid,
+                        metricUuid = saved.uuid,
                         coefficient = 1.0,
                         showInHabitDetail = true,
                         promptOnComplete = true
                     )
                 )
             }
-            metricId
+            return metricId
         }
+        return if (creationAuthority != null) requireNotNull(nextObjectCreator).metric(metric, creationAuthority, ::commit)
+            else {
+                require(metric.appearance == null || nextObjectCreator == null) { "OBJECT_CREATE_TICKET_REQUIRED" }
+                database.withTransaction { commit(metric) }
+            }
     }
 
     suspend fun updateMetric(metric: MetricEntity, editAuthority: ObjectEditAuthority? = null) {

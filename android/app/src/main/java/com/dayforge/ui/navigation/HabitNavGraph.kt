@@ -364,6 +364,7 @@ fun HabitNavGraph(
             val goalState by goalViewModel.uiState.collectAsStateWithLifecycle()
             CreateHabitScreen(
                 parentUuid = goalState.parentUuid,
+                creationAuthority = goalState.creationAuthority,
                 onSaveDraft = goalViewModel::addChildHabit,
                 onNavigateBack = { navController.popBackStack() }
             )

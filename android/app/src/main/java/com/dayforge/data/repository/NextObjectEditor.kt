@@ -15,12 +15,14 @@ import javax.inject.Singleton
 import kotlinx.serialization.json.JsonObject
 
 /** An in-memory edit ticket, never a saved-state credential or a caller-selected owner. */
+abstract class ObjectAppearanceAuthority internal constructor(internal val session: LocalDataSession)
+
 class ObjectEditAuthority internal constructor(
-    internal val session: LocalDataSession,
+    session: LocalDataSession,
     internal val uuid: String,
     internal val type: String,
     internal val original: JsonObject
-)
+) : ObjectAppearanceAuthority(session)
 
 data class ObjectEditSnapshot<T>(val value: T?, val authority: ObjectEditAuthority?)
 
