@@ -7,8 +7,9 @@ from typing import Any
 
 from fastapi.encoders import jsonable_encoder
 
-from src.v2.schemas import SyncOperationRequest, TimerCommandRequest, utc_iso
+from src.v2.schemas import TimerCommandRequest, utc_iso
 from src.v2.replica_context import ReplicaIdentity
+from pydantic import BaseModel
 
 
 def canonical_json(value: Any) -> str:
@@ -55,7 +56,7 @@ def _request_hash(
 
 
 def operation_hash(
-    operation: SyncOperationRequest, *, replica: ReplicaIdentity | None = None
+    operation: BaseModel, *, replica: ReplicaIdentity | None = None
 ) -> str:
     return _request_hash(operation.model_dump(mode="json"), "sync_operation", replica)
 

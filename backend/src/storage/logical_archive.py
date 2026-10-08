@@ -44,6 +44,8 @@ from src.v2.one_time_recovery import OneTimeRecoveryError, read_connection_histo
 from src.v2.count_recovery import CountRecoveryError, read_connection_count_history
 from src.v2.count_policy import CountDayPolicy
 from src.v2.challenge_recovery import ChallengeRecoveryError, read_connection_challenges
+from src.v2.challenge_receipt_recovery import read_connection_challenge_receipts
+from src.v2.errors import DomainError
 from src.v2.challenge_round import Generation
 from pydantic import TypeAdapter
 from src.v2.asset_recovery import AssetRecoveryError, ReadyBlob, read_asset_metadata
@@ -365,8 +367,13 @@ def _validate_challenges(connection: Connection, metadata: MetaData) -> None:
         return  # Older matching schema cannot contain a non-baseline round.
     try:
         read_connection_challenges(connection)
+        read_connection_challenge_receipts(connection)
     except ChallengeRecoveryError as error:
         raise StorageValidationError(f"invalid challenge history: {error}") from error
+    except DomainError as error:
+        raise StorageValidationError(
+            f"invalid challenge receipt: {error.code}"
+        ) from error
 
 
 def _validate_hierarchy(connection: Connection, metadata: MetaData) -> None:

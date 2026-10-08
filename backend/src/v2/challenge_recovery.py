@@ -19,7 +19,11 @@ from src.v2.challenge_round import (
 )
 from src.v2.encoding import canonical_json, parse_json
 from src.v2.one_time_recovery import ReadRows
-from src.v2.challenge_models import ActivityChallengeRound
+from src.v2.challenge_models import (
+    ActivityChallengeRound,
+    ActivityChallengeTimerBinding,
+)
+from src.v2.models import TimerSession
 from src.v2.errors import DomainError
 
 
@@ -270,8 +274,8 @@ def read_connection_challenges(
 async def require_roundless_view(session: AsyncSession, owner_user_id: int) -> None:
     """Current v4/v5 readers cannot silently fall back to all-history progress.
 
-    No API mounts restart yet. A positive round restored/created by an internal
-    staged workflow requires the coordinated round-aware client contract. This
+    A positive round requires the explicit challenge-aware profile rather than
+    the legacy v4/v5 reader. This
     read-only check never flushes caller work and does not replace admission.
     """
     with session.no_autoflush:
@@ -302,3 +306,33 @@ async def require_challenge_history(session: AsyncSession, owner_user_id: int) -
             "CHALLENGE_HISTORY_INVALID",
             "Challenge birth evidence cannot be recovered safely",
         ) from error
+
+
+async def require_roundless_timer(
+    session: AsyncSession, owner_user_id: int, session_uuid: str
+) -> None:
+    """Allow legacy baseline terminals, not new commands on a positive birth."""
+    with session.no_autoflush:
+        source = await session.execute(
+            select(col(TimerSession.id))
+            .join(
+                ActivityChallengeTimerBinding,
+                col(ActivityChallengeTimerBinding.session_id) == col(TimerSession.id),
+            )
+            .join(
+                ActivityChallengeRound,
+                col(ActivityChallengeRound.id)
+                == col(ActivityChallengeTimerBinding.round_id),
+            )
+            .where(
+                col(TimerSession.owner_user_id) == owner_user_id,
+                col(TimerSession.public_id) == session_uuid,
+                col(ActivityChallengeRound.generation) > 0,
+            )
+            .limit(1)
+        )
+    if source.first() is not None:
+        raise DomainError(
+            "CLIENT_UPGRADE_REQUIRED",
+            "This timer requires its original challenge context",
+        )

@@ -509,6 +509,13 @@ def test_v2_cannot_publish_ready_metadata_even_when_no_byte_entries_remain(tmp_p
 
     def old_shape(bundle):
         bundle["manifest"].update(format_version=2, alembic_head="000000000007")
+        for name in ("sync_operations", "timer_commands"):
+            rows = [
+                json.loads(line) for line in bundle["collections"][name].splitlines()
+            ]
+            for row in rows:
+                assert row["data"].pop("challenge_context_json") is None
+            replace_records(bundle, name, rows)
         for name in (
             "activity_challenge_rounds",
             "activity_challenge_heads",

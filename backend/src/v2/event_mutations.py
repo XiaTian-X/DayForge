@@ -37,6 +37,7 @@ async def mutate_activity_event(
     operation: SyncOperationRequest,
     *,
     one_time_contract: bool = False,
+    challenge_round_uuid: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
     result = await session.execute(
         select(ActivityEvent).where(
@@ -225,7 +226,7 @@ async def mutate_activity_event(
         await session.flush()
         await persist_count_day(session, event, count_day)
         if one_time_contract:
-            await bind_created_event(session, event)
+            await bind_created_event(session, event, round_uuid=challenge_round_uuid)
     except IntegrityError as exc:
         if payload.event_type == "revert":
             raise DomainError(

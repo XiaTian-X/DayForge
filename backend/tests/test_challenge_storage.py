@@ -477,7 +477,7 @@ async def test_rounds_original_facts_and_heads_survive_actual_backup_and_restore
     target = tmp_path / "restored.db"
     if kind == "physical":
         backup, _ = create_backup(source, tmp_path / "backups", kind="manual")
-        restore_backup(backup, target, expected_alembic_head="000000000008")
+        restore_backup(backup, target, expected_alembic_head="000000000009")
     else:
         archive = export_archive(f"sqlite:///{source}", tmp_path / "rounds.zip")
         bundle = read_bundle(archive)

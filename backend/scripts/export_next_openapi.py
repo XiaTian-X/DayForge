@@ -36,6 +36,15 @@ from src.v2.schemas import (  # noqa: E402
     TimerHeartbeatResponse,
 )
 from src.v2.replica_context import INSTANCE_HEADER, EPOCH_HEADER  # noqa: E402
+from src.v2.challenge_sync_contract import (  # noqa: E402
+    RoundSyncPushRequest,
+    RoundSyncPushResponse,
+    RoundSyncPullResponse,
+    RoundSyncBootstrapResponse,
+    RoundTimerCommandBatchRequest,
+    RoundTimerCommandBatchResponse,
+    RoundActiveTimerResponse,
+)
 
 OUTPUT = ROOT / "contracts/next/openapi.json"
 MODELS = (
@@ -59,6 +68,13 @@ MODELS = (
     NextPlanNodePayload,
     NextMetricPayload,
     NextActivityEventPayload,
+    RoundSyncPushRequest,
+    RoundSyncPushResponse,
+    RoundSyncPullResponse,
+    RoundSyncBootstrapResponse,
+    RoundTimerCommandBatchRequest,
+    RoundTimerCommandBatchResponse,
+    RoundActiveTimerResponse,
 )
 
 
@@ -327,6 +343,71 @@ def rendered_contract():
         "put": upload,
         "get": download,
     }
+    profile_scope = [
+        parameter("device_id"),
+        parameter("challenge_contract", schema={"type": "string", "const": "1"}),
+    ]
+    for path, method, response, request, parameters in (
+        (
+            "/api/v2/sync/rounds/push",
+            "post",
+            RoundSyncPushResponse,
+            RoundSyncPushRequest,
+            [],
+        ),
+        (
+            "/api/v2/sync/rounds/bootstrap",
+            "get",
+            RoundSyncBootstrapResponse,
+            None,
+            profile_scope,
+        ),
+        (
+            "/api/v2/sync/rounds/changes",
+            "get",
+            RoundSyncPullResponse,
+            None,
+            [
+                *profile_scope,
+                parameter("cursor", required=False, schema=integer),
+                parameter(
+                    "limit",
+                    required=False,
+                    schema={"type": "integer", "minimum": 1, "maximum": 1000},
+                ),
+            ],
+        ),
+        (
+            "/api/v2/timers/rounds/commands",
+            "post",
+            RoundTimerCommandBatchResponse,
+            RoundTimerCommandBatchRequest,
+            [],
+        ),
+        (
+            "/api/v2/timers/rounds/active",
+            "get",
+            RoundActiveTimerResponse,
+            None,
+            profile_scope,
+        ),
+        (
+            "/api/v2/timers/rounds/session/{session_id}",
+            "get",
+            RoundActiveTimerResponse,
+            None,
+            [*profile_scope, parameter("session_id", "path")],
+        ),
+    ):
+        value = operation(
+            "Explicit challenge contract 1; shared original receipts and durable birth evidence; not default activation",
+            response,
+            request=request,
+            parameters=parameters,
+            replica=True,
+        )
+        value["x-dayforge-challenge-contract"] = 1
+        paths[path] = {method: value}
     document = {
         "openapi": "3.1.0",
         "info": {

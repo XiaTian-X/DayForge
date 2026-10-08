@@ -66,6 +66,7 @@ async def pull_changes(
     session: AsyncSession,
     *,
     next_protocol: Literal[False] = False,
+    round_profile: bool = False,
 ) -> SyncPullResponse: ...
 
 
@@ -78,6 +79,7 @@ async def pull_changes(
     session: AsyncSession,
     *,
     next_protocol: Literal[True],
+    round_profile: bool = False,
 ) -> NextSyncPullResponse: ...
 
 
@@ -89,11 +91,17 @@ async def pull_changes(
     session: AsyncSession,
     *,
     next_protocol: bool = False,
+    round_profile: bool = False,
 ) -> SyncPullResponse:
     device = await require_device(
         require_internal(user.id, "User.id"), device_public_id, session
     )
-    await require_roundless_view(session, require_internal(user.id, "User.id"))
+    if round_profile and not next_protocol:
+        raise DomainError(
+            "CLIENT_UPGRADE_REQUIRED", "Challenge profile requires protocol 5"
+        )
+    if not round_profile:
+        await require_roundless_view(session, require_internal(user.id, "User.id"))
     if next_protocol:
         await require_challenge_history(session, require_internal(user.id, "User.id"))
     max_result: Result[tuple[int]] = await session.execute(
@@ -152,6 +160,7 @@ async def bootstrap(
     session: AsyncSession,
     *,
     next_protocol: Literal[False] = False,
+    round_profile: bool = False,
 ) -> SyncBootstrapResponse: ...
 
 
@@ -162,6 +171,7 @@ async def bootstrap(
     session: AsyncSession,
     *,
     next_protocol: Literal[True],
+    round_profile: bool = False,
 ) -> NextSyncBootstrapResponse: ...
 
 
@@ -171,6 +181,7 @@ async def bootstrap(
     session: AsyncSession,
     *,
     next_protocol: bool = False,
+    round_profile: bool = False,
 ) -> SyncBootstrapResponse:
     device = await require_device(
         require_internal(user.id, "User.id"), device_public_id, session
@@ -178,7 +189,12 @@ async def bootstrap(
     if next_protocol:
         await require_count_history(session, require_internal(user.id, "User.id"))
         await require_challenge_history(session, require_internal(user.id, "User.id"))
-    await require_roundless_view(session, require_internal(user.id, "User.id"))
+    if round_profile and not next_protocol:
+        raise DomainError(
+            "CLIENT_UPGRADE_REQUIRED", "Challenge profile requires protocol 5"
+        )
+    if not round_profile:
+        await require_roundless_view(session, require_internal(user.id, "User.id"))
     max_result: Result[tuple[int]] = await session.execute(
         select(func.coalesce(func.max(col(SyncChange.sequence)), 0)).where(
             col(SyncChange.recipient_user_id) == user.id

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from typing import Any, Literal, Optional, overload
+from collections.abc import Awaitable, Callable
 
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlmodel import col, select
@@ -49,6 +51,23 @@ from src.v2.next_sync_contract import (
 )
 from src.v2.one_time_storage import OneTimeStateConflict
 from src.v2.challenge_recovery import require_roundless_view
+from src.v2.challenge_sync_contract import (
+    ChallengeRestartOperation,
+    RoundOperation,
+    RoundSyncPushRequest,
+)
+from src.v2.challenge_profile_service import (
+    validate_operation_context,
+    validate_legacy_replay,
+)
+from src.v2.challenge_receipts import (
+    receipt_context,
+    replay_context_error,
+    require_receipt_owner,
+)
+from src.v2.challenge_storage import restart_stored_challenge
+from src.v2.challenge_round import ChallengeRoundRecord
+from src.v2.challenge_models import ActivityChallengeRound
 
 
 async def _prepare_three_way_merge(
@@ -104,6 +123,7 @@ async def _dispatch_operation(
     operation: SyncOperationRequest,
     *,
     next_protocol: bool = False,
+    challenge_round_uuid: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
     if next_protocol and operation.entity_type == "plan_node":
         return await mutate_plan_node(
@@ -115,9 +135,20 @@ async def _dispatch_operation(
         )
     if next_protocol and operation.entity_type == "activity_event":
         return await mutate_activity_event(
-            session, user_id, device, operation, one_time_contract=True
+            session,
+            user_id,
+            device,
+            operation,
+            one_time_contract=True,
+            challenge_round_uuid=challenge_round_uuid,
         )
-    handlers = {
+    handlers: dict[
+        str,
+        Callable[
+            [AsyncSession, int, ClientDevice, SyncOperationRequest],
+            Awaitable[tuple[int, dict[str, Any]]],
+        ],
+    ] = {
         "plan_node": mutate_plan_node,
         "activity_event": mutate_activity_event,
         "metric": mutate_metric,
@@ -180,11 +211,12 @@ async def _is_fact_derived_one_time_delete(
 
 
 def _replay_result(
-    operation: SyncOperationRequest,
+    operation: RoundOperation,
     previous: SyncOperation,
     request_hash: str,
     *,
     next_protocol: bool = False,
+    challenge_context_json: str | None = None,
 ) -> SyncOperationResult:
     """Apply identical replay rules to normal lookups and unique-insert races."""
     if previous.request_hash != request_hash:
@@ -195,6 +227,18 @@ def _replay_result(
             status="rejected",
             error_code="OPERATION_ID_REUSED",
             message="operation_id was already used with a different request",
+        )
+    context_error = replay_context_error(
+        previous.challenge_context_json, challenge_context_json, previous.request_hash
+    )
+    if context_error is not None:
+        return SyncOperationResult(
+            operation_id=operation.operation_id,
+            entity_type=operation.entity_type,
+            entity_uuid=operation.entity_uuid,
+            status="rejected",
+            error_code=context_error,
+            message="The original source context must be preserved",
         )
     stored = parse_json(previous.result_json)
     if not stored or previous.status == "processing":
@@ -208,15 +252,37 @@ def _replay_result(
         stored["status"] = "already_applied"
     if next_protocol:
         result = NextSyncOperationResult.model_validate(stored)
-        validate_task_result_binding(operation, result)
+        _validate_result_binding(operation, result)
         return result
     return SyncOperationResult.model_validate(stored)
+
+
+def _validate_result_binding(
+    operation: RoundOperation, result: NextSyncOperationResult
+) -> None:
+    if isinstance(operation, ChallengeRestartOperation):
+        if (operation.operation_id, operation.entity_type, operation.entity_uuid) != (
+            result.operation_id,
+            result.entity_type,
+            result.entity_uuid,
+        ):
+            raise ValueError("response does not acknowledge this restart")
+        if result.status in {"applied", "already_applied"}:
+            record = ChallengeRoundRecord.model_validate(result.entity)
+            if (
+                record.restart_intent != operation.payload
+                or record.restart_operation_uuid != str(operation.operation_id)
+                or result.revision != 1
+            ):
+                raise ValueError("result does not prove the original restart")
+    else:
+        validate_task_result_binding(operation, result)
 
 
 @overload
 async def process_push(
     user: User,
-    request: SyncPushRequest,
+    request: SyncPushRequest | RoundSyncPushRequest,
     session: AsyncSession,
     *,
     next_protocol: Literal[False] = False,
@@ -227,7 +293,7 @@ async def process_push(
 @overload
 async def process_push(
     user: User,
-    request: SyncPushRequest,
+    request: SyncPushRequest | RoundSyncPushRequest,
     session: AsyncSession,
     *,
     next_protocol: Literal[True],
@@ -237,18 +303,18 @@ async def process_push(
 
 async def process_push(
     user: User,
-    request: SyncPushRequest,
+    request: SyncPushRequest | RoundSyncPushRequest,
     session: AsyncSession,
     *,
     next_protocol: bool = False,
     replica: ReplicaIdentity | None = None,
 ) -> SyncPushResponse | NextSyncPushResponse:
-    """Share transaction/replay orchestration without activating v5 HTTP.
-
-    The internal switch enables explicit appearance and item policy, new fact
-    semantics and result context. Protocol negotiation remains a separate rollout
-    step. No current route takes this switch from client input or enables it.
-    """
+    """Shared receipt namespace; HTTP admission remains separate from domain writes."""
+    round_profile = isinstance(request, RoundSyncPushRequest)
+    if round_profile and not next_protocol:
+        raise DomainError(
+            "CLIENT_UPGRADE_REQUIRED", "Challenge profile requires protocol 5"
+        )
     user_id = require_internal(user.id, "User.id")
     replay_scope = await replay_replica(session, next_protocol, replica)
     device = await require_device(user_id, str(request.device_id), session)
@@ -258,6 +324,16 @@ async def process_push(
 
     for operation in request.operations:
         request_hash = operation_hash(operation, replica=replay_scope)
+        context = (
+            request.context_for(str(operation.operation_id))
+            if isinstance(request, RoundSyncPushRequest)
+            else None
+        )
+        context_json = (
+            receipt_context(operation, context, replay_scope)
+            if context is not None
+            else None
+        )
         previous_result = await session.execute(
             select(SyncOperation).where(
                 col(SyncOperation.device_id) == device.id,
@@ -266,9 +342,23 @@ async def process_push(
         )
         previous = previous_result.scalar_one_or_none()
         if previous is not None:
+            require_receipt_owner(previous.user_id, user_id)
+            if (
+                context is not None
+                and previous.challenge_context_json is None
+                and previous.request_hash == request_hash
+                and context.legacy_initial
+            ):
+                await validate_legacy_replay(
+                    session, user_id, operation, context, previous.status
+                )
             results.append(
                 _replay_result(
-                    operation, previous, request_hash, next_protocol=next_protocol
+                    operation,
+                    previous,
+                    request_hash,
+                    next_protocol=next_protocol,
+                    challenge_context_json=context_json,
                 )
             )
             continue
@@ -289,6 +379,7 @@ async def process_push(
                     entity_uuid=str(operation.entity_uuid),
                     action=operation.action,
                     base_revision=operation.base_revision,
+                    challenge_context_json=context_json,
                 )
                 session.add(operation_record)
                 await session.flush()
@@ -312,21 +403,37 @@ async def process_push(
                     )
                 )
             else:
+                require_receipt_owner(raced.user_id, user_id)
+                if (
+                    context is not None
+                    and raced.challenge_context_json is None
+                    and raced.request_hash == request_hash
+                    and context.legacy_initial
+                ):
+                    await validate_legacy_replay(
+                        session, user_id, operation, context, raced.status
+                    )
                 results.append(
                     _replay_result(
-                        operation, raced, request_hash, next_protocol=next_protocol
+                        operation,
+                        raced,
+                        request_hash,
+                        next_protocol=next_protocol,
+                        challenge_context_json=context_json,
                     )
                 )
             continue
 
         try:
             async with session.begin_nested():
-                await require_roundless_view(session, user_id)
+                if not round_profile:
+                    await require_roundless_view(session, user_id)
                 if (
                     operation.entity_type in STRUCTURAL_ENTITY_TYPES
                     and not can_write_structure
                     and (
                         next_protocol
+                        or not isinstance(operation, SyncOperationRequest)
                         or not await _is_fact_derived_one_time_delete(
                             session, user_id, operation
                         )
@@ -336,22 +443,55 @@ async def process_push(
                         "DEVICE_CAPABILITY_DENIED",
                         "This device is not allowed to edit goals, habits or metric configuration",
                     )
-                prepared_operation, no_op = await _prepare_three_way_merge(
-                    session,
-                    user_id,
-                    operation,
-                    next_protocol=next_protocol,
-                )
-                if no_op is not None:
-                    revision, entity = no_op
-                else:
-                    revision, entity = await _dispatch_operation(
+                if isinstance(operation, ChallengeRestartOperation):
+                    existing_source = (
+                        await session.execute(
+                            select(col(ActivityChallengeRound.id)).where(
+                                col(ActivityChallengeRound.source_device_id)
+                                == device.id,
+                                col(ActivityChallengeRound.restart_operation_uuid)
+                                == str(operation.operation_id),
+                            )
+                        )
+                    ).first()
+                    if existing_source is not None:
+                        raise DomainError(
+                            "CHALLENGE_RECEIPT_INVALID",
+                            "Existing restart has no original shared receipt; do not recreate its authority",
+                        )
+                    record = await restart_stored_challenge(
                         session,
                         user_id,
-                        device,
-                        prepared_operation,
+                        device.public_id,
+                        str(operation.operation_id),
+                        operation.payload,
+                    )
+                    revision, entity = 1, record.model_dump(mode="json")
+                else:
+                    round_uuid = (
+                        await validate_operation_context(
+                            session, user_id, operation, context
+                        )
+                        if context is not None
+                        else None
+                    )
+                    prepared_operation, no_op = await _prepare_three_way_merge(
+                        session,
+                        user_id,
+                        operation,
                         next_protocol=next_protocol,
                     )
+                    if no_op is not None:
+                        revision, entity = no_op
+                    else:
+                        revision, entity = await _dispatch_operation(
+                            session,
+                            user_id,
+                            device,
+                            prepared_operation,
+                            next_protocol=next_protocol,
+                            challenge_round_uuid=round_uuid,
+                        )
             result = SyncOperationResult(
                 operation_id=operation.operation_id,
                 entity_type=operation.entity_type,
@@ -376,7 +516,11 @@ async def process_push(
             operation_record.status = result.status
             operation_record.error_code = exc.code
         except DomainError as exc:
-            if exc.conflict and (exc.revision is None or exc.entity is None):
+            if (
+                not isinstance(operation, ChallengeRestartOperation)
+                and exc.conflict
+                and (exc.revision is None or exc.entity is None)
+            ):
                 current_revision, current_entity = await current_entity_snapshot(
                     session,
                     user_id,
@@ -416,10 +560,14 @@ async def process_push(
             operation_record.error_code = "CONSTRAINT_VIOLATION"
 
         if next_protocol:
+            if require_internal(inspect(device), "ClientDevice state").expired:
+                # Nested rejection may expire the shared device ORM object.
+                # Reload explicitly before the next operation/cursor uses it.
+                await session.refresh(device)
             result = NextSyncOperationResult.model_validate(
                 result.model_dump(mode="json")
             )
-            validate_task_result_binding(operation, result)
+            _validate_result_binding(operation, result)
         operation_record.result_json = canonical_json(result.model_dump(mode="json"))
         operation_record.completed_at = utc_now()
         results.append(result)

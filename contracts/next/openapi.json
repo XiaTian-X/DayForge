@@ -286,6 +286,257 @@
         "title": "AssetTransferReceipt",
         "type": "object"
       },
+      "ChallengeBirth": {
+        "additionalProperties": false,
+        "properties": {
+          "entity_type": {
+            "enum": [
+              "activity_event",
+              "timer_session"
+            ],
+            "title": "Entity Type",
+            "type": "string"
+          },
+          "entity_uuid": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Entity Uuid",
+            "type": "string"
+          },
+          "head": {
+            "$ref": "#/components/schemas/ChallengeRoundHead"
+          }
+        },
+        "required": [
+          "entity_type",
+          "entity_uuid",
+          "head"
+        ],
+        "title": "ChallengeBirth",
+        "type": "object"
+      },
+      "ChallengeCheckpoint": {
+        "additionalProperties": false,
+        "properties": {
+          "head": {
+            "$ref": "#/components/schemas/ChallengeRoundHead"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/ChallengeRoundRecord"
+            },
+            "minItems": 1,
+            "title": "Records",
+            "type": "array"
+          }
+        },
+        "required": [
+          "head",
+          "records"
+        ],
+        "title": "ChallengeCheckpoint",
+        "type": "object"
+      },
+      "ChallengeRestartIntent": {
+        "additionalProperties": false,
+        "properties": {
+          "activity_uuid": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Activity Uuid",
+            "type": "string"
+          },
+          "expected_generation": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "title": "Expected Generation",
+            "type": "integer"
+          },
+          "expected_plan_revision": {
+            "maximum": 9223372036854775807,
+            "minimum": 1,
+            "title": "Expected Plan Revision",
+            "type": "integer"
+          },
+          "expected_round_uuid": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Expected Round Uuid",
+            "type": "string"
+          },
+          "round_uuid": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Round Uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "activity_uuid",
+          "round_uuid",
+          "expected_round_uuid",
+          "expected_generation",
+          "expected_plan_revision"
+        ],
+        "title": "ChallengeRestartIntent",
+        "type": "object"
+      },
+      "ChallengeRestartOperation": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "const": "upsert",
+            "title": "Action",
+            "type": "string"
+          },
+          "base_revision": {
+            "default": null,
+            "title": "Base Revision",
+            "type": "null"
+          },
+          "entity_type": {
+            "const": "challenge_round",
+            "title": "Entity Type",
+            "type": "string"
+          },
+          "entity_uuid": {
+            "format": "uuid",
+            "title": "Entity Uuid",
+            "type": "string"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/ChallengeRestartIntent"
+          }
+        },
+        "required": [
+          "operation_id",
+          "entity_type",
+          "entity_uuid",
+          "action",
+          "payload"
+        ],
+        "title": "ChallengeRestartOperation",
+        "type": "object"
+      },
+      "ChallengeRoundHead": {
+        "additionalProperties": false,
+        "properties": {
+          "activity_uuid": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Activity Uuid",
+            "type": "string"
+          },
+          "generation": {
+            "maximum": 2147483647,
+            "minimum": 0,
+            "title": "Generation",
+            "type": "integer"
+          },
+          "round_uuid": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Round Uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "activity_uuid",
+          "round_uuid",
+          "generation"
+        ],
+        "title": "ChallengeRoundHead",
+        "type": "object"
+      },
+      "ChallengeRoundRecord": {
+        "additionalProperties": false,
+        "description": "Immutable creation proof, not a claim of authenticated acceptance.",
+        "properties": {
+          "head": {
+            "$ref": "#/components/schemas/ChallengeRoundHead"
+          },
+          "restart_intent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChallengeRestartIntent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "restart_operation_uuid": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restart Operation Uuid"
+          },
+          "source_device_uuid": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Device Uuid"
+          }
+        },
+        "required": [
+          "head",
+          "source_device_uuid",
+          "restart_operation_uuid",
+          "restart_intent"
+        ],
+        "title": "ChallengeRoundRecord",
+        "type": "object"
+      },
+      "ChallengeSourceContext": {
+        "additionalProperties": false,
+        "properties": {
+          "affected_heads": {
+            "items": {
+              "$ref": "#/components/schemas/ChallengeRoundHead"
+            },
+            "maxItems": 1000,
+            "title": "Affected Heads",
+            "type": "array"
+          },
+          "head": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChallengeRoundHead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "legacy_initial": {
+            "default": false,
+            "title": "Legacy Initial",
+            "type": "boolean"
+          },
+          "source_uuid": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Source Uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_uuid",
+          "head"
+        ],
+        "title": "ChallengeSourceContext",
+        "type": "object"
+      },
       "CountDayPolicy": {
         "additionalProperties": false,
         "properties": {
@@ -1968,6 +2219,340 @@
           "role"
         ],
         "title": "RoleIcon",
+        "type": "object"
+      },
+      "RoundActiveTimerResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "births": {
+            "items": {
+              "$ref": "#/components/schemas/ChallengeBirth"
+            },
+            "title": "Births",
+            "type": "array"
+          },
+          "challenge_contract": {
+            "const": 1,
+            "title": "Challenge Contract",
+            "type": "integer"
+          },
+          "checkpoints": {
+            "items": {
+              "$ref": "#/components/schemas/ChallengeCheckpoint"
+            },
+            "title": "Checkpoints",
+            "type": "array"
+          },
+          "server_time": {
+            "format": "date-time",
+            "title": "Server Time",
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimerSessionResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "challenge_contract",
+          "checkpoints",
+          "births",
+          "server_time"
+        ],
+        "title": "RoundActiveTimerResponse",
+        "type": "object"
+      },
+      "RoundSyncBootstrapResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "births": {
+            "items": {
+              "$ref": "#/components/schemas/ChallengeBirth"
+            },
+            "title": "Births",
+            "type": "array"
+          },
+          "challenge_contract": {
+            "const": 1,
+            "title": "Challenge Contract",
+            "type": "integer"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/SyncChangeResponse"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "checkpoints": {
+            "items": {
+              "$ref": "#/components/schemas/ChallengeCheckpoint"
+            },
+            "title": "Checkpoints",
+            "type": "array"
+          },
+          "next_cursor": {
+            "title": "Next Cursor",
+            "type": "integer"
+          },
+          "one_time_checkpoints": {
+            "items": {
+              "$ref": "#/components/schemas/OneTimeProjection"
+            },
+            "title": "One Time Checkpoints",
+            "type": "array"
+          },
+          "server_time": {
+            "format": "date-time",
+            "title": "Server Time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "challenge_contract",
+          "checkpoints",
+          "births",
+          "changes",
+          "next_cursor",
+          "server_time",
+          "one_time_checkpoints"
+        ],
+        "title": "RoundSyncBootstrapResponse",
+        "type": "object"
+      },
+      "RoundSyncPullResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "births": {
+            "items": {
+              "$ref": "#/components/schemas/ChallengeBirth"
+            },
+            "title": "Births",
+            "type": "array"
+          },
+          "challenge_contract": {
+            "const": 1,
+            "title": "Challenge Contract",
+            "type": "integer"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/SyncChangeResponse"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "checkpoints": {
+            "items": {
+              "$ref": "#/components/schemas/ChallengeCheckpoint"
+            },
+            "title": "Checkpoints",
+            "type": "array"
+          },
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "title": "Next Cursor",
+            "type": "integer"
+          },
+          "server_time": {
+            "format": "date-time",
+            "title": "Server Time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "challenge_contract",
+          "checkpoints",
+          "births",
+          "changes",
+          "next_cursor",
+          "has_more",
+          "server_time"
+        ],
+        "title": "RoundSyncPullResponse",
+        "type": "object"
+      },
+      "RoundSyncPushRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "challenge_contract": {
+            "const": 1,
+            "title": "Challenge Contract",
+            "type": "integer"
+          },
+          "contexts": {
+            "items": {
+              "$ref": "#/components/schemas/ChallengeSourceContext"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Contexts",
+            "type": "array"
+          },
+          "device_id": {
+            "format": "uuid",
+            "title": "Device Id",
+            "type": "string"
+          },
+          "operations": {
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SyncOperationRequest"
+                },
+                {
+                  "$ref": "#/components/schemas/ChallengeRestartOperation"
+                }
+              ]
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Operations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "challenge_contract",
+          "device_id",
+          "operations",
+          "contexts"
+        ],
+        "title": "RoundSyncPushRequest",
+        "type": "object"
+      },
+      "RoundSyncPushResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "births": {
+            "items": {
+              "$ref": "#/components/schemas/ChallengeBirth"
+            },
+            "title": "Births",
+            "type": "array"
+          },
+          "challenge_contract": {
+            "const": 1,
+            "title": "Challenge Contract",
+            "type": "integer"
+          },
+          "checkpoints": {
+            "items": {
+              "$ref": "#/components/schemas/ChallengeCheckpoint"
+            },
+            "title": "Checkpoints",
+            "type": "array"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/NextSyncOperationResult"
+            },
+            "title": "Results",
+            "type": "array"
+          }
+        },
+        "required": [
+          "challenge_contract",
+          "checkpoints",
+          "births",
+          "results"
+        ],
+        "title": "RoundSyncPushResponse",
+        "type": "object"
+      },
+      "RoundTimerCommandBatchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "challenge_contract": {
+            "const": 1,
+            "title": "Challenge Contract",
+            "type": "integer"
+          },
+          "commands": {
+            "items": {
+              "$ref": "#/components/schemas/TimerCommandRequest"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Commands",
+            "type": "array"
+          },
+          "contexts": {
+            "items": {
+              "$ref": "#/components/schemas/ChallengeSourceContext"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Contexts",
+            "type": "array"
+          },
+          "device_id": {
+            "format": "uuid",
+            "title": "Device Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "challenge_contract",
+          "device_id",
+          "commands",
+          "contexts"
+        ],
+        "title": "RoundTimerCommandBatchRequest",
+        "type": "object"
+      },
+      "RoundTimerCommandBatchResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "births": {
+            "items": {
+              "$ref": "#/components/schemas/ChallengeBirth"
+            },
+            "title": "Births",
+            "type": "array"
+          },
+          "challenge_contract": {
+            "const": 1,
+            "title": "Challenge Contract",
+            "type": "integer"
+          },
+          "checkpoints": {
+            "items": {
+              "$ref": "#/components/schemas/ChallengeCheckpoint"
+            },
+            "title": "Checkpoints",
+            "type": "array"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/TimerCommandResult"
+            },
+            "title": "Results",
+            "type": "array"
+          },
+          "server_time": {
+            "format": "date-time",
+            "title": "Server Time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "challenge_contract",
+          "checkpoints",
+          "births",
+          "results",
+          "server_time"
+        ],
+        "title": "RoundTimerCommandBatchResponse",
         "type": "object"
       },
       "StrictFailurePolicy": {
@@ -3866,6 +4451,333 @@
         "summary": "v5 sync push; payload type is selected by entity_type, not client metadata"
       }
     },
+    "/api/v2/sync/rounds/bootstrap": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Server-Instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Sync-Epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "challenge_contract",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoundSyncBootstrapResponse"
+                }
+              }
+            },
+            "description": "Success after durable acknowledgement; immutable retries return the same identity"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "Explicit challenge contract 1; shared original receipts and durable birth evidence; not default activation",
+        "x-dayforge-challenge-contract": 1
+      }
+    },
+    "/api/v2/sync/rounds/changes": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Server-Instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Sync-Epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "challenge_contract",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoundSyncPullResponse"
+                }
+              }
+            },
+            "description": "Success after durable acknowledgement; immutable retries return the same identity"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "Explicit challenge contract 1; shared original receipts and durable birth evidence; not default activation",
+        "x-dayforge-challenge-contract": 1
+      }
+    },
+    "/api/v2/sync/rounds/push": {
+      "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Server-Instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Sync-Epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoundSyncPushRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoundSyncPushResponse"
+                }
+              }
+            },
+            "description": "Success after durable acknowledgement; immutable retries return the same identity"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "Explicit challenge contract 1; shared original receipts and durable birth evidence; not default activation",
+        "x-dayforge-challenge-contract": 1
+      }
+    },
     "/api/v2/timers/active": {
       "get": {
         "parameters": [
@@ -4055,6 +4967,322 @@
           }
         ],
         "summary": "Full timer commands; replay namespace includes protocol and captured replica"
+      }
+    },
+    "/api/v2/timers/rounds/active": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Server-Instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Sync-Epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "challenge_contract",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoundActiveTimerResponse"
+                }
+              }
+            },
+            "description": "Success after durable acknowledgement; immutable retries return the same identity"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "Explicit challenge contract 1; shared original receipts and durable birth evidence; not default activation",
+        "x-dayforge-challenge-contract": 1
+      }
+    },
+    "/api/v2/timers/rounds/commands": {
+      "post": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Server-Instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Sync-Epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoundTimerCommandBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoundTimerCommandBatchResponse"
+                }
+              }
+            },
+            "description": "Success after durable acknowledgement; immutable retries return the same identity"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "Explicit challenge contract 1; shared original receipts and durable birth evidence; not default activation",
+        "x-dayforge-challenge-contract": 1
+      }
+    },
+    "/api/v2/timers/rounds/session/{session_id}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Server-Instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Sync-Epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "challenge_contract",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoundActiveTimerResponse"
+                }
+              }
+            },
+            "description": "Success after durable acknowledgement; immutable retries return the same identity"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "Explicit challenge contract 1; shared original receipts and durable birth evidence; not default activation",
+        "x-dayforge-challenge-contract": 1
       }
     },
     "/api/v2/timers/{session_id}": {
