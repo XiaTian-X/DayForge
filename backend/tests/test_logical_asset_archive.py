@@ -92,7 +92,7 @@ def test_v3_round_trip_remaps_database_ids_but_not_byte_owners(
     )
     after = read_bundle(exported)
     assert after["collections"] == before["collections"]
-    assert after["manifest"]["format_version"] == 3
+    assert after["manifest"]["format_version"] == 4
     assert after["manifest"]["source_sync_epoch"] == epoch
     assert after["manifest"]["server_instance_id"] == original.server_instance_id
     assert not list(destination.rglob(".install-*"))
@@ -483,20 +483,45 @@ def test_export_sync_failure_never_clobbers_existing_backup(
     else:
         # Name publication happened before the directory sync error. Preserve
         # the complete output, report uncertain durability, never silently retry.
-        assert read_bundle(output)["manifest"]["format_version"] == 3
+        assert read_bundle(output)["manifest"]["format_version"] == 4
 
 
 def test_v2_cannot_publish_ready_metadata_even_when_no_byte_entries_remain(tmp_path):
     _, _, entries, archive, target, destination, url = prepared(tmp_path)
+    # Exercise the original v2 ready-byte boundary on its matching pre-round
+    # schema. The new v4 collection gate has an independent rejection test.
+    from alembic import command
+    from tests.test_alembic_migration import alembic_config
+
+    command.downgrade(alembic_config(str(target)), "000000000007")
     before = database_dump(target)
 
     def strip(members):
         for entry, _ in entries:
             del members[entry.name]
+        for name in (
+            "activity_challenge_rounds",
+            "activity_challenge_heads",
+            "activity_challenge_event_bindings",
+            "activity_challenge_timer_bindings",
+        ):
+            del members[f"collections/{name}.jsonl"]
+
+    def old_shape(bundle):
+        bundle["manifest"].update(format_version=2, alembic_head="000000000007")
+        for name in (
+            "activity_challenge_rounds",
+            "activity_challenge_heads",
+            "activity_challenge_event_bindings",
+            "activity_challenge_timer_bindings",
+        ):
+            assert bundle["manifest"]["collections"][name]["rows"] == 0
+            del bundle["manifest"]["collections"][name]
+            del bundle["collections"][name]
 
     rewrite(
         archive,
-        change=lambda bundle: bundle["manifest"].update(format_version=2),
+        change=old_shape,
         entries=strip,
     )
     with pytest.raises(StorageValidationError, match="complete byte backup"):

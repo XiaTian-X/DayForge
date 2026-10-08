@@ -20,6 +20,12 @@ from sqlalchemy import (
 from sqlmodel import Field, SQLModel
 
 from src.time_utils import utc_now
+from src.v2.challenge_models import (
+    ActivityChallengeRound as ActivityChallengeRound,
+    ActivityChallengeHead as ActivityChallengeHead,
+    ActivityChallengeEventBinding as ActivityChallengeEventBinding,
+    ActivityChallengeTimerBinding as ActivityChallengeTimerBinding,
+)
 
 
 def new_uuid() -> str:
@@ -146,6 +152,7 @@ class HouseholdMembership(SyncableFields, table=True):
 class ClientDevice(SQLModel, table=True):
     __tablename__ = "client_devices"
     __table_args__ = (
+        Index("uq_client_device_owner_identity", "user_id", "id", unique=True),
         UniqueConstraint("public_id", name="uq_client_devices_public_id"),
         UniqueConstraint(
             "user_id", "installation_id", name="uq_client_device_installation"
@@ -306,6 +313,13 @@ class ActivityDetail(SQLModel, table=True):
 class ActivityEvent(SyncableFields, table=True):
     __tablename__ = "activity_events"
     __table_args__ = (
+        Index(
+            "uq_activity_event_owner_activity_identity",
+            "owner_user_id",
+            "activity_node_id",
+            "id",
+            unique=True,
+        ),
         UniqueConstraint(
             "owner_user_id", "public_id", name="uq_activity_event_owner_public_id"
         ),
@@ -509,6 +523,13 @@ class ActivityMetricLinkV2(SyncableFields, table=True):
 class TimerSession(SQLModel, table=True):
     __tablename__ = "timer_sessions"
     __table_args__ = (
+        Index(
+            "uq_timer_session_owner_activity_identity",
+            "owner_user_id",
+            "activity_node_id",
+            "id",
+            unique=True,
+        ),
         UniqueConstraint(
             "owner_user_id", "public_id", name="uq_timer_session_owner_public_id"
         ),
@@ -730,6 +751,10 @@ class SyncCursor(SQLModel, table=True):
 
 
 __all__ = [
+    "ActivityChallengeRound",
+    "ActivityChallengeHead",
+    "ActivityChallengeEventBinding",
+    "ActivityChallengeTimerBinding",
     "ActivityDetail",
     "ActivityEvent",
     "ActivityEventType",
