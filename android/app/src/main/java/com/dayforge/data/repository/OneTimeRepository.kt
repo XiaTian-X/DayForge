@@ -41,7 +41,7 @@ class OneTimeRepository @Inject constructor(
     private val sessions: AccountSessionCoordinator,
     private val preferences: PreferencesManager
 ) {
-    private class ActionAuthority(val snapshot: OneTimeLocalSnapshot) : OneTimeActionAuthority()
+    private class ActionAuthority(val snapshot: OneTimeLocalSnapshot, val rounds: NextRoundWriteScope?) : OneTimeActionAuthority()
     @Volatile private var publicationBlocked = false
     @Volatile private var publicationStamp = Any()
     private val invalidator = object : com.dayforge.data.local.AccountIconMemory.Cache {
@@ -53,6 +53,7 @@ class OneTimeRepository @Inject constructor(
     init { tokens.registerIconCache(invalidator) }
     internal fun registerConsumer(cache: com.dayforge.data.local.AccountIconMemory.Cache) = tokens.registerIconCache(cache)
     private val intents = OneTimeLocalIntentStore(database, tokens, sessions, preferences)
+    private val producer = NextCoreLocalIntentStore(database, tokens, sessions)
     private val prompts = CompletionMetricPromptStore(database, tokens, sessions)
 
     // Include outbox changes even when no business row changes (rejection/replay/ACK).
@@ -69,6 +70,7 @@ class OneTimeRepository @Inject constructor(
             val habit = requireNotNull(database.habitDao().getHabitById(id)) { "ONE_TIME_NOT_FOUND" }
             if (expectedUuid != null) check(habit.uuid == expectedUuid) { "ONE_TIME_ACTIVITY_CHANGED" }
             val snapshot = intents.readInTransaction(habit.uuid, access.session)
+            val rounds = producer.captureDisplayedRoundsInTransaction()
             val state = snapshot.queue.optimisticState
             val factId = state.completionEventUuid?.let { uuid ->
                 val fact = requireNotNull(database.completionDao().getCompletionByUuid(uuid))
@@ -80,7 +82,7 @@ class OneTimeRepository @Inject constructor(
                 access.canAppend && !database.habitDao().hasPendingNextDeletion(habit.uuid) && snapshot.queue.blockedOperationIds.isEmpty() &&
                     snapshot.queue.awaitingReplayOperationIds.isEmpty(),
                 snapshot.queue.awaitingReplayOperationIds.isNotEmpty(), snapshot.queue.blockedOperationIds.isNotEmpty(),
-                ActionAuthority(snapshot))
+                ActionAuthority(snapshot, rounds))
         }
     }
 
@@ -90,7 +92,7 @@ class OneTimeRepository @Inject constructor(
         widgetClaim: WidgetFactClaim? = null, widgetReader: WidgetFactReader? = null): Long =
         withContext(Dispatchers.IO) {
             val (snapshot, status) = capture(id, expectedUuid)
-            validateAuthority(snapshot, authority)
+            val bound = validateAuthority(snapshot, authority, status)
             if (widgetClaim != null) check(snapshot.session == widgetClaim.session() &&
                 snapshot.activityUuid == widgetClaim.habitUuid && snapshot.queue.optimisticState == widgetClaim.oneTimeState) {
                 "ONE_TIME_ACTION_EXPIRED"
@@ -107,36 +109,42 @@ class OneTimeRepository @Inject constructor(
                 PendingOneTimeIntent(UUID.randomUUID().toString(), OneTimeIntent(UUID.randomUUID().toString(),
                     if (complete) "complete" else "undo", state.version, state.headEventUuid,
                     if (complete) null else state.completionEventUuid)), instant.toEpochMilli(), zone.id)
-            intents.append(snapshot.session, command) {
+            val validate: suspend (com.dayforge.data.local.entity.HabitEntity) -> Unit = {
                 if (widgetClaim != null) {
                     requireNotNull(widgetReader).requireInTransaction(widgetClaim)
                     check(instant.atZone(zone).toLocalDate().toString() == widgetClaim.date && zone.id == widgetClaim.timezone) {
                         "FACT_WIDGET_DAY_CHANGED"
                     }
                 }
-            }.factId
+            }
+            (bound.rounds?.let { intents.appendRounds(it, command, validate) }
+                ?: intents.append(snapshot.session, command, validate)).factId
         }
 
     internal suspend fun toggle(id: Long, expectedUuid: String? = null, authority: OneTimeActionAuthority? = null): Boolean = withContext(Dispatchers.IO) {
         val (snapshot, status) = capture(id, expectedUuid)
-        validateAuthority(snapshot, authority)
+        val bound = validateAuthority(snapshot, authority, status)
         check(status.canChange) { "ONE_TIME_PENDING_OR_DENIED" }
         val state = snapshot.queue.optimisticState
         val complete = !status.completed
         val instant = Instant.now()
         val zone = ZoneId.systemDefault()
-        intents.append(snapshot.session, OneTimeLocalCommand(snapshot.activityUuid,
+        val command = OneTimeLocalCommand(snapshot.activityUuid,
             PendingOneTimeIntent(UUID.randomUUID().toString(), OneTimeIntent(UUID.randomUUID().toString(),
                 if (complete) "complete" else "undo", state.version, state.headEventUuid,
-                if (complete) null else state.completionEventUuid)), instant.toEpochMilli(), zone.id))
+                if (complete) null else state.completionEventUuid)), instant.toEpochMilli(), zone.id)
+        bound.rounds?.let { intents.appendRounds(it, command) } ?: intents.append(snapshot.session, command)
         complete
     }
 
-    private fun validateAuthority(snapshot: OneTimeLocalSnapshot, authority: OneTimeActionAuthority?) {
-        if (authority == null) return
-        val captured = (authority as? ActionAuthority)?.snapshot
-        check(captured != null && captured.session == snapshot.session && captured.activityUuid == snapshot.activityUuid &&
-            captured.queue.optimisticState == snapshot.queue.optimisticState) { "ONE_TIME_ACTION_EXPIRED" }
+    private fun validateAuthority(snapshot: OneTimeLocalSnapshot, authority: OneTimeActionAuthority?, status: OneTimeStatus): ActionAuthority {
+        val current = status.authority as ActionAuthority
+        val bound = if (authority == null) current else authority as? ActionAuthority ?: error("ONE_TIME_ACTION_EXPIRED")
+        val captured = bound.snapshot
+        check(captured.session == snapshot.session && captured.activityUuid == snapshot.activityUuid &&
+            captured.queue.optimisticState == snapshot.queue.optimisticState &&
+            (bound.rounds == null) == (current.rounds == null) && bound.rounds?.access == current.rounds?.access) { "ONE_TIME_ACTION_EXPIRED" }
+        return bound
     }
 
     val pendingHabitIds: Flow<Set<Long>> = changes.map {

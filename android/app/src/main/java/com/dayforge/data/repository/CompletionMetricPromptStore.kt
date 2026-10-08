@@ -13,6 +13,10 @@ import com.dayforge.data.local.entity.SyncOutboxEntity
 import com.dayforge.data.local.entity.NextRequestOriginEntity
 import com.dayforge.data.api.dto.SyncV2Operation
 import com.dayforge.data.api.dto.NextSyncPushRequest
+import com.dayforge.data.api.dto.ChallengeSourceContext
+import com.dayforge.data.api.dto.RoundSyncPushRequest
+import com.dayforge.data.api.dto.ChallengeMetadata
+import com.dayforge.data.local.entity.NextSyncStateEntity
 import com.dayforge.data.api.dto.validateNextSyncOperation
 import com.dayforge.data.api.encodeSyncRequest
 import com.dayforge.data.api.decodeFrozenSyncRequest
@@ -43,7 +47,8 @@ internal data class CompletionMetricDraft(
 internal data class CompletionMetricPrompt(
     val row: CompletionMetricPromptEntity,
     val entries: List<CompletionMetricDraft>,
-    val session: LocalDataSession
+    val session: LocalDataSession,
+    val rounds: NextRoundWriteScope? = null
 )
 
 internal data class CompletionMetricInput(val value: String, val note: String = "")
@@ -65,6 +70,7 @@ internal class CompletionMetricPromptStore(
 ) {
     private val dao = database.completionFollowUpDao()
     private val outbox = database.syncOutboxDao()
+    private val producer = NextCoreLocalIntentStore(database, tokens, sessions)
 
     suspend fun pending(): List<CompletionMetricPrompt> = sessions.exclusive {
         val session = access(null, false)
@@ -88,12 +94,15 @@ internal class CompletionMetricPromptStore(
     ): CompletionMetricPrompt = sessions.exclusive {
         access(snapshot.session, true)
         database.withTransaction {
+            val checkpoint = requireProfile(snapshot)
             val current = editable(snapshot)
             if (!current.entries.map { it.metricUuid }.containsAll(inputs.keys)) fail(CompletionMetricPromptException.Reason.INVALID_INPUT)
             val entries = current.entries.map { entry -> inputs[entry.metricUuid]?.let {
                 entry.copy(input = it.value, note = it.note)
             } ?: entry }
-            if (entries == current.entries) current else replaceDraft(current, entries)
+            val result = if (entries == current.entries) current else replaceDraft(current, entries)
+            check(requireProfile(snapshot) == checkpoint)
+            result
         }
     }
 
@@ -101,22 +110,27 @@ internal class CompletionMetricPromptStore(
     suspend fun refreshMetadata(snapshot: CompletionMetricPrompt): CompletionMetricPrompt = sessions.exclusive {
         access(snapshot.session, true)
         database.withTransaction {
+            val checkpoint = requireProfile(snapshot)
             val current = editable(snapshot)
-            replaceDraft(current, current.entries.map { entry ->
+            val result = replaceDraft(current, current.entries.map { entry ->
                 val metric = target(current, entry, checkUnit = false)
                 entry.copy(metricName = metric.name, unit = metric.unit, decimalPlaces = metric.decimalPlaces)
             })
+            check(requireProfile(snapshot) == checkpoint)
+            result
         }
     }
 
     suspend fun dismiss(snapshot: CompletionMetricPrompt) = sessions.exclusive {
         access(snapshot.session, true)
         database.withTransaction {
+            val checkpoint = requireProfile(snapshot)
             val current = load(snapshot.row.eventUuid, snapshot.session)
             if (current.row.state == "dismissed" && current.row.revision == snapshot.row.revision) return@withTransaction
             if (current.row.revision != snapshot.row.revision) fail(CompletionMetricPromptException.Reason.STALE_DRAFT)
             if (current.row.state != "pending") fail(CompletionMetricPromptException.Reason.CLOSED)
             check(dao.updatePrompt(current.row.copy(state = "dismissed")) == 1)
+            check(requireProfile(snapshot) == checkpoint)
         }
     }
 
@@ -125,13 +139,14 @@ internal class CompletionMetricPromptStore(
         // Freeze the observation instant separately, so a later fact/outbox failure keeps it
         // together with the user's already-persisted input and original identities.
         val prepared = database.withTransaction {
+            val checkpoint = requireProfile(snapshot)
             val current = load(snapshot.row.eventUuid, snapshot.session)
             if (current.row.revision != snapshot.row.revision) fail(CompletionMetricPromptException.Reason.STALE_DRAFT)
             if (current.row.state == "dismissed") fail(CompletionMetricPromptException.Reason.CLOSED)
             selected(current)
             if (current.row.state == "saved") return@withTransaction current
             current.entries.filter { it.input.isNotBlank() }.forEach { target(current, it) }
-            if (current.row.recordedAtMillis != null) current else {
+            val result = if (current.row.recordedAtMillis != null) current else {
                 val instant = now()
                 val timezone = zone()
                 requireValidTime(instant, timezone)
@@ -139,8 +154,11 @@ internal class CompletionMetricPromptStore(
                 check(dao.updatePrompt(frozen) == 1)
                 decode(frozen, current.session)
             }
+            check(requireProfile(snapshot) == checkpoint)
+            result
         }
         database.withTransaction {
+            val checkpoint = requireProfile(snapshot)
             val current = load(prepared.row.eventUuid, prepared.session)
             if (current.row.copy(state = prepared.row.state) != prepared.row) fail(CompletionMetricPromptException.Reason.STALE_DRAFT)
             if (current.row.state == "dismissed") fail(CompletionMetricPromptException.Reason.CLOSED)
@@ -149,7 +167,9 @@ internal class CompletionMetricPromptStore(
                 entries.forEach { entry ->
                     val payload = SyncV2Mapper.metricObservation(log(current, entry, 0), entry.metricUuid).toString()
                     if (dao.submission(entry.operationId) != receipt(entry, payload)) fail(CompletionMetricPromptException.Reason.CORRUPT)
+                    verifyProfileOrigin(snapshot, entry, payload)
                 }
+                check(requireProfile(snapshot) == checkpoint)
                 return@withTransaction CompletionMetricSaved(entries.map { it.observationUuid }, true)
             }
             val rows = entries.map { entry ->
@@ -174,6 +194,7 @@ internal class CompletionMetricPromptStore(
             sql.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
             rows.forEach { (_, log, _) -> database.metricLogDao().insertForSync(log) }
             sql.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
+            val captured = mutableListOf<Pair<NextRequestOriginEntity, String>>()
             rows.forEach { (entry, _, payload) ->
                 outbox.insert(SyncOutboxEntity(operationId = entry.operationId, recordType = "metric_log",
                     entityUuid = entry.observationUuid, wireEntityUuid = entry.observationUuid,
@@ -183,25 +204,71 @@ internal class CompletionMetricPromptStore(
                 val operation = SyncV2Operation(entry.operationId, "metric_observation", entry.observationUuid,
                     "upsert", payload = Json.parseToJsonElement(payload) as JsonObject)
                 validateNextSyncOperation(operation)
-                val bytes = encodeSyncRequest(SyncV2Operation.serializer(), operation)
-                decodeFrozenSyncRequest(bytes, SyncV2Operation.serializer())
-                val envelope = encodeSyncRequest(NextSyncPushRequest.serializer(), NextSyncPushRequest(
-                    "00000000-0000-4000-8000-000000000000", listOf(operation)))
-                decodeFrozenSyncRequest(envelope, NextSyncPushRequest.serializer())
+                val source = snapshot.rounds?.let { NextRoundOperationIntent(1, operation,
+                    ChallengeSourceContext(operation.operationId, null), requireNotNull(it.access.deviceId)) }
+                val bytes = if (source == null) encodeSyncRequest(SyncV2Operation.serializer(), operation)
+                    else encodeSyncRequest(NextRoundOperationIntent.serializer(), source)
+                decodeNextOperationIntent(bytes.toString(Charsets.UTF_8))
+                if (source == null) {
+                    val envelope = encodeSyncRequest(NextSyncPushRequest.serializer(), NextSyncPushRequest(
+                        "00000000-0000-4000-8000-000000000000", listOf(operation)))
+                    decodeFrozenSyncRequest(envelope, NextSyncPushRequest.serializer())
+                } else {
+                    val envelope = encodeSyncRequest(RoundSyncPushRequest.serializer(), RoundSyncPushRequest(1,
+                        source.capturedDeviceId, listOf(operation), listOf(source.context)))
+                    decodeFrozenSyncRequest(envelope, RoundSyncPushRequest.serializer())
+                }
                 val queue = requireNotNull(outbox.getByOperationId(entry.operationId))
                 val hash = requireNotNull(NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(queue.id)))
                 val origin = NextRequestOriginEntity(NEXT_OPERATION, entry.operationId, queue.id, 5,
                     current.session.authentication.userId, current.session.serverInstanceId, current.session.syncEpoch,
                     hash, bytes.toString(Charsets.UTF_8))
                 database.nextRequestDao().insertOrigin(origin)
+                captured += origin to requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins",
+                    "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, entry.operationId)))
                 check(database.nextRequestDao().origin(NEXT_OPERATION, entry.operationId) == origin &&
                     NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(queue.id)) == hash &&
                     dao.submission(entry.operationId) == receipt(entry, payload))
             }
-            check(dao.updatePrompt(current.row.copy(state = "saved")) == 1)
+            val saved = current.row.copy(state = "saved")
+            check(dao.updatePrompt(saved) == 1)
+            for ((entry, log, payload) in rows) {
+                val actual = requireNotNull(database.metricLogDao().getLogByUuid(entry.observationUuid))
+                check(actual.id > 0 && actual.copy(id = 0) == log &&
+                    dao.submission(entry.operationId) == receipt(entry, payload)) { "METRIC_PROMPT_FACT_CHANGED" }
+            }
+            check(dao.prompt(current.row.eventUuid) == saved) { "METRIC_PROMPT_DRAFT_CHANGED" }
+            for ((origin, hash) in captured) check(database.nextRequestDao().origin(NEXT_OPERATION, origin.requestId) == origin &&
+                NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, origin.requestId)) == hash &&
+                NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(origin.queueId)) == origin.sourceHash)
+            check(requireProfile(snapshot) == checkpoint)
+            NextRequestSql.requireOutboxEnabled(sql)
             access(current.session, true)
             CompletionMetricSaved(entries.map { it.observationUuid }, false)
         }
+    }
+
+    /** Prompt authority comes from its displayed profile, not a later submit or an icon. */
+    private suspend fun requireProfile(snapshot: CompletionMetricPrompt): Pair<NextSyncStateEntity, ChallengeMetadata>? {
+        check(database.inTransaction())
+        val actual = producer.captureDisplayedRoundsInTransaction()
+        check((snapshot.rounds == null) == (actual == null) && snapshot.rounds?.access == actual?.access) {
+            "METRIC_PROMPT_PROFILE_CHANGED"
+        }
+        return snapshot.rounds?.let { NextChallengeStore(database).activeInTransaction(it.access) }
+    }
+
+    private suspend fun verifyProfileOrigin(snapshot: CompletionMetricPrompt, entry: CompletionMetricDraft, payload: String) {
+        val scope = snapshot.rounds ?: return
+        val sql = database.openHelper.writableDatabase
+        requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, entry.operationId)))
+        val original = requireNotNull(database.nextRequestDao().origin(NEXT_OPERATION, entry.operationId))
+        val operation = SyncV2Operation(entry.operationId, "metric_observation", entry.observationUuid,
+            "upsert", payload = Json.parseToJsonElement(payload) as JsonObject)
+        check(original.protocol == 5 && original.accountId == snapshot.session.authentication.userId &&
+            original.serverInstanceId == snapshot.session.serverInstanceId && original.syncEpoch == snapshot.session.syncEpoch &&
+            roundOperationIntent(original.intentJson) == NextRoundOperationIntent(1, operation,
+                ChallengeSourceContext(entry.operationId, null), requireNotNull(scope.access.deviceId))) { "METRIC_PROMPT_SOURCE_CHANGED" }
     }
 
     private suspend fun access(expected: LocalDataSession?, write: Boolean): LocalDataSession {
@@ -233,20 +300,24 @@ internal class CompletionMetricPromptStore(
         return decode(updated, current.session)
     }
 
-    private fun decode(row: CompletionMetricPromptEntity, session: LocalDataSession): CompletionMetricPrompt = try {
-        require(isContractUuid(row.eventUuid) && isContractUuid(row.activityUuid))
-        require(row.state in setOf("pending", "saved", "dismissed") && row.revision >= 0)
-        require((row.recordedAtMillis == null) == (row.timezone == null))
-        if (row.recordedAtMillis != null) requireValidTime(row.recordedAtMillis, requireNotNull(row.timezone))
-        if (row.state == "saved") require(row.recordedAtMillis != null)
-        val entries = json.decodeFromString<List<CompletionMetricDraft>>(row.entriesJson)
-        require(entries.isNotEmpty())
-        require(entries.map { it.metricUuid }.distinct().size == entries.size)
-        require(entries.map { it.operationId }.distinct().size == entries.size)
-        require(entries.map { it.observationUuid }.distinct().size == entries.size)
-        entries.forEach { require(listOf(it.linkUuid, it.metricUuid, it.operationId, it.observationUuid).all(::isContractUuid)) }
-        CompletionMetricPrompt(row, entries, session)
-    } catch (_: IllegalArgumentException) { fail(CompletionMetricPromptException.Reason.CORRUPT) }
+    private suspend fun decode(row: CompletionMetricPromptEntity, session: LocalDataSession): CompletionMetricPrompt {
+        val decoded = try {
+            require(isContractUuid(row.eventUuid) && isContractUuid(row.activityUuid))
+            require(row.state in setOf("pending", "saved", "dismissed") && row.revision >= 0)
+            require((row.recordedAtMillis == null) == (row.timezone == null))
+            if (row.recordedAtMillis != null) requireValidTime(row.recordedAtMillis, requireNotNull(row.timezone))
+            if (row.state == "saved") require(row.recordedAtMillis != null)
+            val entries = json.decodeFromString<List<CompletionMetricDraft>>(row.entriesJson)
+            require(entries.isNotEmpty())
+            require(entries.map { it.metricUuid }.distinct().size == entries.size)
+            require(entries.map { it.operationId }.distinct().size == entries.size)
+            require(entries.map { it.observationUuid }.distinct().size == entries.size)
+            entries.forEach { require(listOf(it.linkUuid, it.metricUuid, it.operationId, it.observationUuid).all(::isContractUuid)) }
+            CompletionMetricPrompt(row, entries, session)
+        } catch (_: IllegalArgumentException) { fail(CompletionMetricPromptException.Reason.CORRUPT) }
+        // Do not wrap cancellation/authentication/profile failures as draft decoding errors.
+        return decoded.copy(rounds = producer.captureDisplayedRoundsInTransaction())
+    }
 
     private fun selected(prompt: CompletionMetricPrompt): List<CompletionMetricDraft> {
         val entries = prompt.entries.filter { it.input.isNotBlank() }

@@ -46,7 +46,7 @@ class NextObjectEditor @Inject constructor(
         database.withTransaction {
             val row = database.habitDao().getVisibleHabitById(id)
             val ticket = row?.takeIf { it.appearance != null }?.let {
-                val rounds = displayedRounds()
+                val rounds = producer.captureDisplayedRoundsInTransaction()
                 ObjectEditAuthority(requireNotNull(access) { "OBJECT_EDIT_ACCESS_DENIED" }.session,
                     it.uuid, "plan_node", NextStructureMapper.writePlan(it), rounds,
                     if (rounds != null && it.habitType == com.dayforge.data.model.HabitType.GOAL)
@@ -63,7 +63,7 @@ class NextObjectEditor @Inject constructor(
             val row = database.metricDao().getMetricById(id)
             val ticket = row?.takeIf { it.appearance != null }?.let {
                 ObjectEditAuthority(requireNotNull(access) { "OBJECT_EDIT_ACCESS_DENIED" }.session,
-                    it.uuid, "metric", NextStructureMapper.writeMetric(it), displayedRounds())
+                    it.uuid, "metric", NextStructureMapper.writeMetric(it), producer.captureDisplayedRoundsInTransaction())
             }
             check(tokens.localCoreWriteAccess() == access) { "OBJECT_EDIT_SESSION_CHANGED" }
             ObjectEditSnapshot(row, ticket)
@@ -187,21 +187,6 @@ class NextObjectEditor @Inject constructor(
 
     private suspend fun <T> write(ticket: ObjectEditAuthority, commit: suspend () -> T): T =
         ticket.rounds?.let { producer.writeRounds(it, commit) } ?: producer.write(ticket.session, commit)
-
-    /** Only an already accepted explicit profile selects rounds; appearance never selects protocol. */
-    private suspend fun displayedRounds(): NextRoundWriteScope? {
-        check(database.inTransaction())
-        val contracts = database.openHelper.writableDatabase.query("SELECT challengeContract FROM next_sync_state").use { raw ->
-            buildList { while (raw.moveToNext()) {
-                require(raw.getType(0) == android.database.Cursor.FIELD_TYPE_INTEGER && raw.getLong(0) in 0L..1L)
-                add(raw.getLong(0))
-            } }
-        }
-        require(contracts.size <= 1)
-        if (contracts.singleOrNull() == 1L) return producer.captureRoundsInTransaction(requireNotNull(tokens.localSyncAccess()))
-        NextChallengeStore(database).requirePlainInTransaction()
-        return null
-    }
 
     private suspend fun authorize(ticket: ObjectEditAuthority, appearance: ObjectAppearance,
         previous: ObjectAppearance, oneTime: Boolean) {

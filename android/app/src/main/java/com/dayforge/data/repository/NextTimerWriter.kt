@@ -2,12 +2,15 @@ package com.dayforge.data.repository
 
 import androidx.room.withTransaction
 import com.dayforge.data.api.dto.TimerStartPolicy
+import com.dayforge.data.api.dto.ChallengeMetadata
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.TokenManager
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.domain.model.TimerActionAuthority
 import com.dayforge.domain.model.TimerStartGuard
+import com.dayforge.domain.model.ChallengeRoundHead
+import kotlinx.serialization.json.Json
 import com.dayforge.domain.service.AccountSessionCoordinator
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -84,10 +87,32 @@ class NextTimerWriter @Inject constructor(
         val access = tokens.localCoreWriteAccess() ?: return null
         require(habit.habitType == com.dayforge.data.model.HabitType.TIMER && habit.completionPolicy == "recurring")
         val log = database.timeLogDao().getActiveTimeLogForHabit(habit.id)
+        val rounds = producer.captureDisplayedRoundsInTransaction()
+        val head = rounds?.let { displayedHead(habit, log, it) }
         return TimerActionAuthority(access.session.authentication.userId, access.session.authentication.generation,
             access.session.serverInstanceId, access.session.syncEpoch, access.capturedDeviceId, habit.uuid, log?.uuid,
-            log?.timerNextCommandSequence, if (log == null) NextStructureMapper.writePlan(habit).toString() else null)
+            log?.timerNextCommandSequence, if (log == null) NextStructureMapper.writePlan(habit).toString() else null,
+            if (rounds == null) 0 else 1, head)
             .also { check(tokens.localCoreWriteAccess() == access) }
+    }
+
+    /** Active controls retain the original local start, not a newer current challenge head. */
+    private suspend fun displayedHead(habit: HabitEntity, log: TimeLogEntity?, scope: NextRoundWriteScope): ChallengeRoundHead {
+        val metadata = Json.decodeFromString(ChallengeMetadata.serializer(), scope.metadataJson)
+        if (log == null) return metadata.checkpoints.singleOrNull { it.head.activityUuid == habit.uuid }?.head
+            ?: scope.pendingInitials[habit.uuid]?.head ?: error("SYNC_CHALLENGE_HEAD_REQUIRED")
+        val access = requireNotNull(tokens.localCoreWriteAccess())
+        NextTimerPolicyStore(database).policy(access, log.uuid)
+        val (origin, start) = NextTimerPolicyStore(database).starts(sessionUuid = log.uuid).single()
+        val source = requireNotNull(roundTimerIntent(origin.intentJson)) { "SYNC_CHALLENGE_TIMER_START_REQUIRED" }
+        require(source.timer == start && source.capturedDeviceId == scope.access.deviceId &&
+            origin.accountId == scope.access.session.authentication.userId && origin.serverInstanceId == scope.access.session.serverInstanceId &&
+            origin.syncEpoch == scope.access.session.syncEpoch)
+        return requireNotNull(source.context.head).also { head ->
+            require(head.activityUuid == habit.uuid && (metadata.checkpoints.any { it.records.any { row -> row.head == head } } ||
+                scope.pendingInitials[habit.uuid]?.head == head))
+            metadata.births.singleOrNull { it.entityType == "timer_session" && it.entityUuid == log.uuid }?.let { require(it.head == head) }
+        }
     }
 
     suspend fun requireAction(habitId: Long, ticket: TimerActionAuthority?) = sessions.exclusive {
@@ -127,7 +152,11 @@ class NextTimerWriter @Inject constructor(
             database.withTransaction { validate(habitId, null); block() }
         }
         val bound = requireNotNull(ticket) { "TIMER_ACTION_TICKET_REQUIRED" }
-        return producer.write(bound.session()) {
+        val rounds = sessions.exclusive { database.withTransaction {
+            validate(habitId, bound)
+            producer.captureDisplayedRoundsInTransaction()
+        } }
+        val commit: suspend () -> T = {
             validate(habitId, bound)
             if (bound.sessionUuid == null) check(database.timeLogDao().getActiveTimeLog() == null) {
                 "TIMER_START_ACTIVE_SESSION_CHANGED"
@@ -148,6 +177,7 @@ class NextTimerWriter @Inject constructor(
             }
             result
         }
+        return rounds?.let { producer.writeRounds(it, commit) } ?: producer.write(bound.session(), commit)
     }
 
     internal suspend fun policy(habitId: Long, sessionUuid: String): TimerStartPolicy? = sessions.exclusive {
@@ -196,8 +226,9 @@ class NextTimerWriter @Inject constructor(
 
     private suspend fun validate(habitId: Long, ticket: TimerActionAuthority?) {
         val habit = requireNotNull(database.habitDao().getVisibleHabitById(habitId)) { "TIMER_ACTIVITY_NOT_FOUND" }
-        if (habit.appearance == null) { require(ticket == null); return }
+        if (habit.appearance == null) { require(ticket == null); NextChallengeStore(database).requirePlainInTransaction(); return }
         val bound = requireNotNull(ticket) { "TIMER_ACTION_TICKET_REQUIRED" }
+        bound.validate()
         val access = requireNotNull(tokens.localCoreWriteAccess())
         check(access.session == bound.session() && habit.uuid == bound.habitUuid) { "TIMER_ACTION_STALE_ACCOUNT" }
         check(access.capturedDeviceId == bound.deviceId) { "TIMER_ACTION_STALE_DEVICE" }
@@ -206,6 +237,9 @@ class NextTimerWriter @Inject constructor(
         check(log?.uuid == bound.sessionUuid && log?.timerNextCommandSequence == bound.nextSequence) { "TIMER_ACTION_STALE_SESSION" }
         if (log == null) check(NextStructureMapper.writePlan(habit).toString() == bound.originalPlan) { "TIMER_START_CONFIG_CHANGED" }
         else NextTimerPolicyStore(database).policy(access, log.uuid)
+        val rounds = producer.captureDisplayedRoundsInTransaction()
+        check(bound.challengeContract == if (rounds == null) 0 else 1) { "TIMER_ACTION_PROFILE_CHANGED" }
+        check(bound.challengeHead == rounds?.let { displayedHead(habit, log, it) }) { "TIMER_ACTION_CHALLENGE_CHANGED" }
         NextPlanDeletionStore(database).requireWritable(habit.uuid)
     }
 }

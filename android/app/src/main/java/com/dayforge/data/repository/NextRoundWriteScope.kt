@@ -75,7 +75,7 @@ internal class NextRoundOperationCapture(
                 val original = existing.singleOrNull { it.uuid == operation.entityUuid }
                 val recurring = if (original != null) original.let {
                     it.habitType != com.dayforge.data.model.HabitType.GOAL && it.completionPolicy == "recurring"
-                } else operation.payload["activity"]?.jsonObject?.get("completion_policy") == JsonPrimitive("recurring")
+                } else (operation.payload["activity"] as? JsonObject)?.get("completion_policy") == JsonPrimitive("recurring")
                 if (recurring) current(operation.entityUuid) else null
             }
             "activity_event" -> {

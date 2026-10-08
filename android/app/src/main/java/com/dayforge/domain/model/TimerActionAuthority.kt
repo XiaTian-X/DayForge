@@ -20,7 +20,10 @@ data class TimerActionAuthority internal constructor(
     val habitUuid: String,
     val sessionUuid: String?,
     internal val nextSequence: Int?,
-    internal val originalPlan: String?
+    internal val originalPlan: String?,
+    @Serializable(with = ContractIntegerSerializer::class)
+    internal val challengeContract: Int = 0,
+    internal val challengeHead: ChallengeRoundHead? = null
 ) {
     internal fun validate() {
         require(listOf(accountId, authenticationGeneration, habitUuid).all(::isContractUuid))
@@ -29,6 +32,8 @@ data class TimerActionAuthority internal constructor(
         require((sessionUuid == null) == (nextSequence == null))
         require(nextSequence == null || nextSequence > 1)
         require((sessionUuid == null) == (originalPlan != null))
+        require(challengeContract in 0..1 && (challengeContract == 1) == (challengeHead != null))
+        challengeHead?.let { require(it.activityUuid == habitUuid && deviceId != null && serverInstanceId != null) }
     }
     internal fun session() = LocalDataSession(AuthenticationSession(accountId, authenticationGeneration), serverInstanceId, syncEpoch)
     internal fun attach(intent: Intent) {
@@ -38,6 +43,7 @@ data class TimerActionAuthority internal constructor(
             .appendPath(authenticationGeneration).appendPath(sessionUuid ?: "start")
             .appendPath(serverInstanceId ?: "offline").appendPath(syncEpoch ?: "offline")
             .appendPath(deviceId ?: "unregistered")
+            .appendPath(challengeContract.toString()).appendPath(challengeHead?.roundUuid ?: "plain")
             .appendPath(nextSequence?.toString() ?: "new").appendPath(intent.action ?: "confirm").build()
     }
     companion object {
