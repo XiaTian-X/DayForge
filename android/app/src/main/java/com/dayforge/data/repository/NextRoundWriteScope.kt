@@ -13,7 +13,7 @@ internal class NextRoundWriteScope internal constructor(
     internal val metadataJson: String
 )
 
-/** Transaction participant for NEW ordinary operations. Not a restart or timer producer. */
+/** Transaction participant for NEW operations and local timer sources. Not a restart producer. */
 internal class NextRoundOperationCapture(
     private val database: HabitDatabase,
     private val scope: NextRoundWriteScope,
@@ -82,6 +82,40 @@ internal class NextRoundOperationCapture(
         }
         return NextRoundOperationIntent(1, operation, ChallengeSourceContext(operation.operationId, head),
             requireNotNull(scope.access.deviceId))
+    }
+
+    suspend fun captureTimer(intent: NextTimerIntent): NextRoundTimerIntent {
+        val command = intent.command
+        val head = if (command.commandType == "start") {
+            val local = requireNotNull(database.timeLogDao().getTimeLogByUuid(command.sessionId)) { "SYNC_CHALLENGE_TIMER_LOCAL_START_REQUIRED" }
+            require(database.habitDao().getHabitById(local.habitId)?.uuid == command.activityUuid &&
+                java.time.Instant.ofEpochMilli(local.startTime) == java.time.Instant.parse(command.occurredAt) &&
+                local.timerTimezone == command.timezone)
+            val segment = database.timeLogDao().getTimerSegments(command.sessionId).firstOrNull()
+            require(segment?.sequence == 1 && segment.startedAt == local.startTime) { "SYNC_CHALLENGE_TIMER_LOCAL_START_REQUIRED" }
+            current(requireNotNull(command.activityUuid))
+        } else {
+            // Successors retain the actual local immutable start's birth, even if today's head moved.
+            // Remote-recovered sessions need a separate authenticated policy/origin proof, not a
+            // fake local start receipt or a lookup of the current activity configuration.
+            val starts = NextTimerPolicyStore(database).starts(sessionUuid = command.sessionId)
+            val (origin, start) = starts.single { it.second.command.sessionId == command.sessionId }
+            val round = requireNotNull(roundTimerIntent(origin.intentJson)) { "SYNC_CHALLENGE_TIMER_START_REQUIRED" }
+            require(origin.accountId == scope.access.session.authentication.userId &&
+                origin.serverInstanceId == scope.access.session.serverInstanceId && origin.syncEpoch == scope.access.session.syncEpoch &&
+                round.capturedDeviceId == scope.access.deviceId && round.timer == start &&
+                round.timer.command.commandId == origin.requestId)
+            require(NextTimerPolicyStore(database).policy(com.dayforge.data.local.LocalCoreWriteAccess(
+                scope.access.session, scope.access.capabilities, scope.access.deviceId), command.sessionId) == start.command.startPolicy)
+            requireNotNull(round.context.head).also { birth ->
+                require(before.checkpoints.any { point -> point.records.any { it.head == birth } })
+                if (database.nextRequestDao().acceptance(NEXT_TIMER, origin.requestId) != null)
+                    require(before.requireBirth("timer_session", command.sessionId, birth.activityUuid).head == birth)
+                before.births.singleOrNull { it.entityType == "timer_session" && it.entityUuid == command.sessionId }
+                    ?.let { require(it.head == birth) }
+            }
+        }
+        return NextRoundTimerIntent(1, intent, ChallengeSourceContext(command.commandId, head), requireNotNull(scope.access.deviceId))
     }
 
     /** Undo of an unaccepted local fact inherits its immutable NEW source, never current appearance. */

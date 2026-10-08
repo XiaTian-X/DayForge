@@ -335,7 +335,7 @@ class NextRoundOperationStoreTest : NextCoreRequestFixture() {
         assertEquals(initialChallengeRoundHead(fresh.uuid), merger(http).challengeMetadata(access())!!.requireBirth("activity_event", id(402), fresh.uuid).head)
     }
 
-    @Test fun changedDeviceOrPermissionRejectsBeforeCallbackAndUnsupportedTimerRollsBackEntireBatch() = runBlocking {
+    @Test fun changedDeviceOrPermissionRejectsBeforeCallbackAndOrphanTimerRollsBackEntireBatch() = runBlocking {
         val (http, _) = channel { roundReply(it) }; initialize(http)
         val scope = producer().captureRounds()
         register(permissions = setOf("sync.read"), revision = 2)

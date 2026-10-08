@@ -10,6 +10,7 @@ import com.dayforge.data.api.dto.TimerCommandBatchRequest
 import com.dayforge.data.api.dto.validateNextSyncOperation
 import com.dayforge.data.api.dto.ChallengeMetadata
 import com.dayforge.data.api.dto.RoundSyncPushRequest
+import com.dayforge.data.api.dto.RoundTimerCommandBatchRequest
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.LocalDataSession
 import com.dayforge.data.local.TokenManager
@@ -124,7 +125,6 @@ internal class NextCoreLocalIntentStore(
                             decodeFrozenSyncRequest(envelope, RoundSyncPushRequest.serializer())
                         }
                     } else {
-                        require(roundCapture == null) { "SYNC_CHALLENGE_TIMER_PRODUCER_NOT_CONNECTED" }
                         val row = database.timeLogDao().getTimerCommand(id)
                             ?: rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
                         if (row.attemptCount != 0 || row.deadLetteredAt != null || row.lastError != null || row.errorCode != null)
@@ -139,13 +139,21 @@ internal class NextCoreLocalIntentStore(
                             database.habitDao().getHabitById(it.habitId)?.uuid
                         }
                         activity?.let { NextPlanDeletionStore(database).requireWritable(it) }
-                        bytes = if (command.startPolicy != null)
+                        val round = roundCapture?.captureTimer(intent)
+                        bytes = if (round != null) encodeSyncRequest(NextRoundTimerIntent.serializer(), round)
+                            else if (command.startPolicy != null)
                             encodeSyncRequest(NextTimerIntent.serializer(), intent)
                             else encodeSyncRequest(TimerCommandRequest.serializer(), command)
                         decodeNextTimerIntent(bytes.toString(Charsets.UTF_8))
-                        val envelope = encodeSyncRequest(TimerCommandBatchRequest.serializer(),
-                            TimerCommandBatchRequest(SIZE_DEVICE, listOf(command)))
-                        decodeFrozenSyncRequest(envelope, TimerCommandBatchRequest.serializer())
+                        if (round == null) {
+                            val envelope = encodeSyncRequest(TimerCommandBatchRequest.serializer(),
+                                TimerCommandBatchRequest(SIZE_DEVICE, listOf(command)))
+                            decodeFrozenSyncRequest(envelope, TimerCommandBatchRequest.serializer())
+                        } else {
+                            val envelope = encodeSyncRequest(RoundTimerCommandBatchRequest.serializer(),
+                                RoundTimerCommandBatchRequest(1, round.capturedDeviceId, listOf(command), listOf(round.context)))
+                            decodeFrozenSyncRequest(envelope, RoundTimerCommandBatchRequest.serializer())
+                        }
                     }
                     if (!isContractUuid(requestId)) rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
                     if (access.capabilities != null && permission !in access.capabilities)

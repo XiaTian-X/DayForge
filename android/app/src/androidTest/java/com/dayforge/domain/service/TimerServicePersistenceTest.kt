@@ -465,7 +465,10 @@ class TimerServicePersistenceTest {
             requireNotNull(database.habitDao().getHabitById(secondId)))))
         val oldClaim = switchClaim()
         fun awaitDialog() = compose.waitUntil(5000) {
-            compose.onAllNodes(androidx.compose.ui.test.hasText(context.getString(R.string.action_confirm))).fetchSemanticsNodes().isNotEmpty()
+            // The visible initial button is disabled until the real Room/authority read completes.
+            // Clicking that initial node is a no-op, not a successful or rejected confirmation.
+            compose.onAllNodes(androidx.compose.ui.test.hasText(context.getString(R.string.action_confirm)) and
+                androidx.compose.ui.test.isEnabled()).fetchSemanticsNodes().isNotEmpty()
         }
         ActivityScenario.launch<com.dayforge.widget.timer.TimerConfirmationActivity>(oldClaim.intent(context, "start", confirmation = true)).use { scenario ->
             awaitDialog()
