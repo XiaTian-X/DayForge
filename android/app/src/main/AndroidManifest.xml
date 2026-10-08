@@ -162,6 +162,11 @@
 
         <!-- Timer confirmation dialog (shown when starting timer from widget with existing timer) -->
         <activity
+            android:name=".widget.timer.WidgetTimerActionActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <activity
             android:name=".widget.timer.TimerConfirmationActivity"
             android:exported="false"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />

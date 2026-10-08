@@ -13,6 +13,9 @@ import com.dayforge.data.repository.MetricValueDraft
 import com.dayforge.data.repository.OneTimeRepository
 import com.dayforge.data.repository.OneTimeMetricPrompt
 import com.dayforge.data.repository.NextTimerWriter
+import com.dayforge.data.repository.ObjectEditSnapshot
+import com.dayforge.data.local.entity.HabitEntity
+import com.dayforge.data.local.entity.MetricEntity
 import com.dayforge.domain.model.TimerActionAuthority
 import com.dayforge.domain.service.TimerService
 import com.dayforge.ui.components.LinkedMetricInfo
@@ -30,13 +33,24 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 
+/** In-memory owner/metadata proof; never restored from UI state or a caller-selected account. */
+class TimerMetricPrompt internal constructor(
+    internal val source: TimerActionAuthority,
+    internal val habit: HabitEntity,
+    internal val metrics: List<ObjectEditSnapshot<MetricEntity>>
+) {
+    // Protected by promptWrites. A double tap or follow-up preference retry cannot append a second batch.
+    internal var submitted: List<MetricValueInput>? = null
+}
+
 data class LinkedMetricPromptState(
     val habitId: Long,
     val habitName: String,
     val linkedMetrics: List<LinkedMetricInfo>,
     val show: Boolean = true,
     val isTempTask: Boolean = false,
-    val oneTimePrompt: OneTimeMetricPrompt? = null
+    val oneTimePrompt: OneTimeMetricPrompt? = null,
+    val timerPrompt: TimerMetricPrompt? = null
 )
 
 /** Coordinates linked-metric card, prompt, and recording behavior for habit screens. */
@@ -95,7 +109,8 @@ class LinkedMetricCoordinator @Inject constructor(
         habitId: Long,
         habitName: String,
         isTempTask: Boolean,
-        completionPolicy: String?
+        completionPolicy: String?,
+        timerAuthority: TimerActionAuthority? = null
     ) {
         if (completionPolicy == "one_and_done") {
             promptWrites.withLock {
@@ -120,23 +135,52 @@ class LinkedMetricCoordinator @Inject constructor(
         }
 
         if (metricInfos.isNotEmpty()) {
-            _postCheckInState.value = LinkedMetricPromptState(
+            val timerProof = timerAuthority?.let { ticket ->
+                val habit = requireNotNull(habitRepository.getHabitById(habitId))
+                check(habit.uuid == ticket.habitUuid)
+                val metrics = metricInfos.map { info -> metricRepository.getMetricForEditing(info.metricId).also {
+                    check(it.authority?.session == ticket.session() && it.value?.appearance != null) { "TIMER_PROMPT_STALE_METRIC" }
+                } }
+                TimerMetricPrompt(ticket, habit, metrics)
+            }
+            val state = LinkedMetricPromptState(
                 habitId = habitId,
                 habitName = habitName,
-                linkedMetrics = metricInfos,
+                linkedMetrics = timerProof?.metrics?.map { snapshot ->
+                    val row = requireNotNull(snapshot.value)
+                    LinkedMetricInfo(row.name, row.id, metricInfos.single { it.metricId == row.id }.latestValue, row.unit, row.decimalPlaces)
+                } ?: metricInfos,
                 show = true,
-                isTempTask = isTempTask
+                isTempTask = isTempTask,
+                timerPrompt = timerProof
             )
+            if (timerAuthority != null) requireNotNull(timerWriter).publish(habitId, timerAuthority) { _postCheckInState.value = state }
+            else _postCheckInState.value = state
         }
     }
 
-    /** Waits for TimerService persistence, then shows the existing linked-metric prompt if needed. */
+    /** Explicit pending-card entry verifies the display identity before capturing metric tickets. */
+    suspend fun showPendingTimerWidgetPrompt(habitId: Long, authority: TimerActionAuthority) {
+        require(authority.sessionUuid == null)
+        requireNotNull(timerWriter).requireAction(habitId, authority)
+        if (habitId !in preferencesManager.pendingMetricHabits.first()) return
+        val habit = habitRepository.getHabitById(habitId) ?: return
+        showPromptForPolicy(habitId, habit.name, false, habit.completionPolicy, authority)
+    }
+
+    /** Waits for TimerService persistence; dispatch alone never creates a prompt. */
     suspend fun showPromptAfterTimerStop(stoppedHabitId: Long?, authority: TimerActionAuthority? = null) {
         stoppedHabitId ?: return
         if (authority != null) {
+            var confirmed = false
             requireNotNull(timerWriter).afterCompletion(stoppedHabitId, authority) {
-                val habit = habitRepository.getHabitById(stoppedHabitId) ?: return@afterCompletion
-                showPromptForPolicy(stoppedHabitId, habit.name, false, habit.completionPolicy)
+                confirmed = true
+            }
+            // afterCompletion publishes under the non-reentrant account lock. Metric tickets are
+            // captured only after releasing it, then the final prompt publication rechecks ownership.
+            if (confirmed) {
+                val habit = habitRepository.getHabitById(stoppedHabitId) ?: return
+                showPromptForPolicy(stoppedHabitId, habit.name, false, habit.completionPolicy, authority)
             }
             return
         }
@@ -146,29 +190,49 @@ class LinkedMetricCoordinator @Inject constructor(
         showPromptForPolicy(stoppedHabitId, habit.name, false, habit.completionPolicy)
     }
 
-    suspend fun recordMetricValues(habitId: Long, values: List<MetricValueInput>, expectedEventUuid: String? = null): Boolean {
+    suspend fun recordMetricValues(habitId: Long, values: List<MetricValueInput>, expectedEventUuid: String? = null,
+        expectedTimerPrompt: TimerMetricPrompt? = null): Boolean {
         return try {
-            if (expectedEventUuid != null || habitRepository.getHabitById(habitId)?.completionPolicy == "one_and_done") {
+            if (expectedTimerPrompt != null) {
                 promptWrites.withLock {
-                    val owner = requireNotNull(oneTimeRepository)
-                    val current = requireNotNull(_postCheckInState.value?.oneTimePrompt)
-                    check(current.habitId == habitId)
-                    if (expectedEventUuid != null) check(current.eventUuid == expectedEventUuid) { "ONE_TIME_PROMPT_EXPIRED" }
-                    val selected = current.entries.filter { it.input.isNotBlank() }
-                    check(selected.size == values.size && selected.all { entry -> values.any {
-                        it.metricId == entry.metricId && it.note == entry.note &&
-                            com.dayforge.util.NumericInputUtils.parseFiniteDouble(entry.input) == it.value
-                    } }) { "ONE_TIME_PROMPT_DRAFT_CHANGED" }
-                    // Retry the same persisted draft/time/identities; do not rewrite it on submit.
-                    owner.submit(current)
+                    check(expectedTimerPrompt.habit.id == habitId && _postCheckInState.value?.timerPrompt === expectedTimerPrompt) {
+                        "TIMER_PROMPT_EXPIRED"
+                    }
+                    require(values.isNotEmpty() && values.map { it.metricId }.distinct().size == values.size)
+                    if (expectedTimerPrompt.submitted == null) {
+                        val selected = values.map { input -> expectedTimerPrompt.metrics.single { it.value?.id == input.metricId } }
+                        metricRepository.recordValues(values.map { MetricValueDraft(it.metricId, it.value, it.note) },
+                            recordedAt = System.currentTimeMillis(), authority = requireNotNull(selected.first().authority),
+                            expectedMetrics = selected.map { requireNotNull(it.value) }, promptHabit = expectedTimerPrompt.habit)
+                        expectedTimerPrompt.submitted = values.toList()
+                    } else check(expectedTimerPrompt.submitted == values) { "TIMER_PROMPT_ALREADY_SUBMITTED" }
+                    requireNotNull(timerWriter).publish(habitId, expectedTimerPrompt.source) {
+                        preferencesManager.removePendingMetricHabit(habitId)
+                    }
                 }
             } else {
-                metricRepository.recordValues(
-                    values.map { input -> MetricValueDraft(input.metricId, input.value, input.note) },
-                    recordedAt = System.currentTimeMillis()
-                )
+                if (expectedEventUuid != null || habitRepository.getHabitById(habitId)?.completionPolicy == "one_and_done") {
+                    promptWrites.withLock {
+                        val owner = requireNotNull(oneTimeRepository)
+                        val current = requireNotNull(_postCheckInState.value?.oneTimePrompt)
+                        check(current.habitId == habitId)
+                        if (expectedEventUuid != null) check(current.eventUuid == expectedEventUuid) { "ONE_TIME_PROMPT_EXPIRED" }
+                        val selected = current.entries.filter { it.input.isNotBlank() }
+                        check(selected.size == values.size && selected.all { entry -> values.any {
+                            it.metricId == entry.metricId && it.note == entry.note &&
+                                com.dayforge.util.NumericInputUtils.parseFiniteDouble(entry.input) == it.value
+                        } }) { "ONE_TIME_PROMPT_DRAFT_CHANGED" }
+                        // Retry the same persisted draft/time/identities; do not rewrite it on submit.
+                        owner.submit(current)
+                    }
+                } else {
+                    metricRepository.recordValues(
+                        values.map { input -> MetricValueDraft(input.metricId, input.value, input.note) },
+                        recordedAt = System.currentTimeMillis()
+                    )
+                }
+                preferencesManager.removePendingMetricHabit(habitId)
             }
-            preferencesManager.removePendingMetricHabit(habitId)
             context.sendBroadcast(Intent(TimerService.ACTION_WIDGET_UPDATE).apply {
                 putExtra(TimerService.EXTRA_HABIT_ID, habitId)
                 setPackage(context.packageName)
@@ -186,8 +250,14 @@ class LinkedMetricCoordinator @Inject constructor(
         }
     }
 
-    suspend fun setNeverAskAgain(habitId: Long, value: Boolean, expectedEventUuid: String? = null) {
+    suspend fun setNeverAskAgain(habitId: Long, value: Boolean, expectedEventUuid: String? = null,
+        expectedTimerPrompt: TimerMetricPrompt? = null) {
         promptWrites.withLock {
+            if (expectedTimerPrompt != null) {
+                check(expectedTimerPrompt.habit.id == habitId && _postCheckInState.value?.timerPrompt === expectedTimerPrompt)
+                requireNotNull(timerWriter).publish(habitId, expectedTimerPrompt.source) { preferencesManager.setNeverAskAgain(habitId, value) }
+                return@withLock
+            }
             if (expectedEventUuid != null) {
                 val prompt = requireNotNull(_postCheckInState.value?.oneTimePrompt) { "ONE_TIME_PROMPT_EXPIRED" }
                 check(prompt.eventUuid == expectedEventUuid && prompt.habitId == habitId)
@@ -221,8 +291,13 @@ class LinkedMetricCoordinator @Inject constructor(
     }
 
     /** Explicit skip closes the durable prompt; closing the window alone retains it for retry. */
-    suspend fun skipPrompt(habitId: Long, expectedEventUuid: String? = null) {
+    suspend fun skipPrompt(habitId: Long, expectedEventUuid: String? = null, expectedTimerPrompt: TimerMetricPrompt? = null) {
         promptWrites.withLock {
+            if (expectedTimerPrompt != null) {
+                check(expectedTimerPrompt.habit.id == habitId && _postCheckInState.value?.timerPrompt === expectedTimerPrompt)
+                requireNotNull(timerWriter).publish(habitId, expectedTimerPrompt.source) { preferencesManager.removePendingMetricHabit(habitId) }
+                return@withLock
+            }
             if (expectedEventUuid != null) check(_postCheckInState.value?.oneTimePrompt?.eventUuid == expectedEventUuid) {
                 "ONE_TIME_PROMPT_EXPIRED"
             }

@@ -80,20 +80,20 @@ object HabitActionButtons {
         habitId: Long,
         targetMinutes: Int,
         isTimerActive: Boolean = false,
+        actionProof: String? = null,
         modifier: GlanceModifier = GlanceModifier.height(36.dp)
     ) {
         val context = LocalContext.current
 
+        val startAction = if (actionProof != null) com.dayforge.widget.timer.widgetTimerAction(context, habitId, targetMinutes, "start", actionProof)
+            else actionRunCallback<TimerStartCallback>(actionParametersOf(
+                ActionParameters.Key<Long>("habitId") to habitId,
+                ActionParameters.Key<Int>("targetMinutes") to targetMinutes))
         if (isTimerActive) {
             // Timer running: show disabled "正在计时..." button
             Button(
                 text = "正在计时...",
-                onClick = actionRunCallback<TimerStartCallback>(
-                    actionParametersOf(
-                        ActionParameters.Key<Long>("habitId") to habitId,
-                        ActionParameters.Key<Int>("targetMinutes") to targetMinutes
-                    )
-                ),
+                onClick = startAction,
                 modifier = modifier,
                 enabled = false,
                 colors = ButtonDefaults.buttonColors(
@@ -105,12 +105,7 @@ object HabitActionButtons {
             // Timer not running: show "启动计时" button
             Button(
                 text = context.getString(R.string.widget_timer_start),
-                onClick = actionRunCallback<TimerStartCallback>(
-                    actionParametersOf(
-                        ActionParameters.Key<Long>("habitId") to habitId,
-                        ActionParameters.Key<Int>("targetMinutes") to targetMinutes
-                    )
-                ),
+                onClick = startAction,
                 modifier = modifier
             )
         }

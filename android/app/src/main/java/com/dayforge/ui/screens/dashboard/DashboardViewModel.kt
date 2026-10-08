@@ -362,8 +362,9 @@ class DashboardViewModel @Inject constructor(
     suspend fun recordMetricValues(
         habitId: Long,
         values: List<MetricValueInput>,
-        expectedEventUuid: String? = null
-    ): Boolean = linkedMetricCoordinator.recordMetricValues(habitId, values, expectedEventUuid)
+        expectedEventUuid: String? = null,
+        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null
+    ): Boolean = linkedMetricCoordinator.recordMetricValues(habitId, values, expectedEventUuid, expectedTimerPrompt)
 
     /**
      * Set "never ask again" preference for a habit's metric prompt.
@@ -372,8 +373,9 @@ class DashboardViewModel @Inject constructor(
      * @param habitId The ID of the habit
      * @param value True to suppress future prompts
      */
-    suspend fun setNeverAskAgain(habitId: Long, value: Boolean, expectedEventUuid: String? = null) {
-        linkedMetricCoordinator.setNeverAskAgain(habitId, value, expectedEventUuid)
+    suspend fun setNeverAskAgain(habitId: Long, value: Boolean, expectedEventUuid: String? = null,
+        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null) {
+        linkedMetricCoordinator.setNeverAskAgain(habitId, value, expectedEventUuid, expectedTimerPrompt)
     }
 
     /**
@@ -383,7 +385,8 @@ class DashboardViewModel @Inject constructor(
         viewModelScope.launch { linkedMetricCoordinator.closePrompt() }
     }
 
-    suspend fun skipPostCheckInDialog(habitId: Long, expectedEventUuid: String? = null) = linkedMetricCoordinator.skipPrompt(habitId, expectedEventUuid)
+    suspend fun skipPostCheckInDialog(habitId: Long, expectedEventUuid: String? = null,
+        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null) = linkedMetricCoordinator.skipPrompt(habitId, expectedEventUuid, expectedTimerPrompt)
 
     fun refreshPostCheckInMetadata() {
         viewModelScope.launch {

@@ -112,6 +112,7 @@ class FocusWidget : GlanceAppWidget() {
         val HAS_HABITS_KEY = booleanPreferencesKey("hasHabits")
         val DATA_LOADED_KEY = booleanPreferencesKey("dataLoaded")
         val READ_FAILED_KEY = booleanPreferencesKey("timerReadFailed")
+        val TIMER_ACTION_PROOF_KEY = stringPreferencesKey("timerActionProof")
 
         /**
          * Refresh all FocusWidget instances without requiring glanceId.
@@ -221,6 +222,12 @@ class FocusWidget : GlanceAppWidget() {
 
             // Get stats for primary to avoid re-querying
             val primaryStats = primary?.let { habitsWithStats.find { it.habit.id == primary.habit.id } }
+            val primaryOriginal = primary?.let { item -> allActiveHabits.singleOrNull { it.id == item.habit.id } }
+            val primaryTimerSnapshot = if (primaryOriginal?.habitType == HabitType.TIMER && primaryOriginal.appearance != null) {
+                (activeSnapshot?.takeIf { it.habit.id == primaryOriginal.id }
+                    ?: com.dayforge.di.WidgetEntryPoint.from(appContext).timerWriter().widgetSnapshot(primaryOriginal))
+                    ?: error("TIMER_WIDGET_STALE_DISPLAY")
+            } else null
 
             val themes = DeviceThemeControllerEntryPoint.from(appContext).themeController()
             val widgetColorResolver = WidgetColorResolver(appContext, themes)
@@ -228,6 +235,9 @@ class FocusWidget : GlanceAppWidget() {
             updateAppWidgetState(appContext, glanceId) { prefs ->
                 prefs[DATA_LOADED_KEY] = true
                 prefs[READ_FAILED_KEY] = false
+                if (primaryTimerSnapshot != null) prefs[TIMER_ACTION_PROOF_KEY] =
+                    com.dayforge.widget.timer.WidgetTimerAction.from(primaryTimerSnapshot).encode()
+                else prefs.remove(TIMER_ACTION_PROOF_KEY)
 
                 if (primary != null) {
                     prefs[HAS_HABITS_KEY] = true
@@ -708,7 +718,8 @@ class FocusWidget : GlanceAppWidget() {
                     HabitActionButtons.TimerStartButton(
                         habitId = habitId,
                         targetMinutes = targetValue,
-                        isTimerActive = isTimerActive
+                        isTimerActive = isTimerActive,
+                        actionProof = state[TIMER_ACTION_PROOF_KEY]
                     )
                 } else if (isCheckInAllowed) {
                     // CHECK_IN type or AfterWindow (allow makeup check-in)

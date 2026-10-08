@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import com.dayforge.domain.model.TimerActionAuthority
+import com.dayforge.domain.model.TimerStartGuard
 
 /** Sends explicit commands to [TimerService] without owning timer state. */
 object TimerServiceController {
@@ -12,7 +13,8 @@ object TimerServiceController {
         habitId: Long,
         targetMinutes: Int,
         isCountdown: Boolean = false,
-        authority: TimerActionAuthority? = null
+        authority: TimerActionAuthority? = null,
+        startGuard: TimerStartGuard? = null
     ) {
         val intent = commandIntent(
             context = context,
@@ -22,6 +24,7 @@ object TimerServiceController {
             isCountdown = isCountdown,
             authority = authority
         )
+        startGuard?.attach(intent)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.startForegroundService(intent)
         } else {

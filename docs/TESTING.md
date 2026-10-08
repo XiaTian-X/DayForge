@@ -1229,6 +1229,14 @@ Room/outbox，并检查数据库重开、取消/确认删除和回调次数。�
 替身断言不代表实际 launcher、后台调度或设备重启验收。完整迁移和豁免见
 [组件审查报告](reviews/2026-09-20-widget-timer-device.md) 与 [最终验收](reviews/2026-09-20-test-confidence-final.md)。
 
+`WidgetTimerReadTest`/`WidgetTimerActionTest` 检查原开始规则、明确无活动会话、原切换身份、
+账户/命令序号变化、冷重开及有界严格声明解码；声明不能充当授权。
+`ProductionWorkflowInjectionTest` 调用计时/焦点组件的真实 Hilt 刷新并检查 Glance 中的同一会话声明。
+`TimerServicePersistenceTest` 从非导出的实际计时 Activity 开始/暂停/恢复，实际点击放弃和切换确认；
+过期确认不能改写新的会话。沿用真实一分钟计时，检查提交后指标票据、元数据/关联变更拒绝、
+原业务/outbox 同生、重复点击不追加第二批以及账户切换后拒绝旧弹窗。
+这些完整类的定向结果只证明所选链路，不代表厂商桌面 PendingIntent、所有组件外观或正式协议联合验收。
+
 ### 测试迁移后的独立复审（Issue #149）
 
 计时服务测试必须从命令调用前后的真实单调时钟获得有效时长上下界，排除暂停/重建时间。

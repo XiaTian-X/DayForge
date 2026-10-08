@@ -38,6 +38,8 @@ class MetricPromptActivity : ComponentActivity() {
 
         val habitId = intent.getLongExtra(EXTRA_HABIT_ID, -1L)
         val habitName = intent.getStringExtra(EXTRA_HABIT_NAME) ?: "Habit"
+        val timerAuthority = try { com.dayforge.domain.model.TimerActionAuthority.read(intent) }
+            catch (error: Exception) { finish(); return }
 
         if (habitId == -1L) {
             finish()
@@ -50,7 +52,9 @@ class MetricPromptActivity : ComponentActivity() {
 
                 LaunchedEffect(habitId) {
                     try {
-                        metricCoordinator.showPromptIfNeeded(habitId, habitName)
+                        if (timerAuthority?.sessionUuid != null) metricCoordinator.showPromptAfterTimerStop(habitId, timerAuthority)
+                        else if (timerAuthority != null) metricCoordinator.showPendingTimerWidgetPrompt(habitId, timerAuthority)
+                        else metricCoordinator.showPromptIfNeeded(habitId, habitName)
                         if (metricCoordinator.postCheckInState.value == null) finish()
                     } catch (error: Exception) {
                         if (error is CancellationException) throw error
@@ -88,9 +92,9 @@ class MetricPromptActivity : ComponentActivity() {
                         onRecord = { values, neverAskAgain ->
                             lifecycleScope.launch {
                                 try {
-                                    if (!metricCoordinator.recordMetricValues(habitId, values, prompt.oneTimePrompt?.eventUuid)) return@launch
+                                    if (!metricCoordinator.recordMetricValues(habitId, values, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt)) return@launch
                                     if (neverAskAgain) {
-                                        metricCoordinator.setNeverAskAgain(habitId, true, prompt.oneTimePrompt?.eventUuid)
+                                        metricCoordinator.setNeverAskAgain(habitId, true, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt)
                                     }
                                     finish()
                                 } catch (error: Exception) {
@@ -103,10 +107,10 @@ class MetricPromptActivity : ComponentActivity() {
                             lifecycleScope.launch {
                                 try {
                                     if (neverAskAgain) {
-                                        metricCoordinator.setNeverAskAgain(habitId, true, prompt.oneTimePrompt?.eventUuid)
+                                        metricCoordinator.setNeverAskAgain(habitId, true, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt)
                                     }
-                                    metricCoordinator.skipPrompt(habitId, prompt.oneTimePrompt?.eventUuid)
-                                    preferencesManager.removePendingMetricHabit(habitId)
+                                    metricCoordinator.skipPrompt(habitId, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt)
+                                    if (prompt.timerPrompt == null) preferencesManager.removePendingMetricHabit(habitId)
                                     finish()
                                 } catch (error: Exception) {
                                     if (error is CancellationException) throw error
@@ -135,12 +139,14 @@ class MetricPromptActivity : ComponentActivity() {
         /**
          * Create intent to start this activity.
          */
-        fun createIntent(context: android.content.Context, habitId: Long, habitName: String): Intent {
+        fun createIntent(context: android.content.Context, habitId: Long, habitName: String,
+            timerAuthority: com.dayforge.domain.model.TimerActionAuthority? = null): Intent {
             return Intent(context, MetricPromptActivity::class.java).apply {
                 putExtra(EXTRA_HABIT_ID, habitId)
                 putExtra(EXTRA_HABIT_NAME, habitName)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 addFlags(Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+                timerAuthority?.attach(this)
             }
         }
     }

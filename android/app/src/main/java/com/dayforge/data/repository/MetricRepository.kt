@@ -176,17 +176,33 @@ class MetricRepository @Inject constructor(
         values: List<MetricValueDraft>,
         recordedAt: Long = System.currentTimeMillis(),
         authority: ObjectEditAuthority? = null,
-        expectedMetricUuid: String? = null
+        expectedMetricUuid: String? = null,
+        expectedMetrics: List<MetricEntity>? = null,
+        promptHabit: com.dayforge.data.local.entity.HabitEntity? = null
     ): List<Long> {
         val capturedZone = java.time.ZoneId.systemDefault().id
         if (values.isEmpty()) return emptyList()
-        val targets = values.map { requireNotNull(metricDao.getMetricById(it.metricId)) {
+        val targets = expectedMetrics ?: values.map { requireNotNull(metricDao.getMetricById(it.metricId)) {
             "Metric no longer exists: ${it.metricId}"
         } }.distinctBy { it.id }
+        if (expectedMetrics != null) {
+            require(authority != null && targets.all { it.appearance != null })
+            require(targets.map { it.id }.toSet() == values.map { it.metricId }.toSet() &&
+                targets.size == targets.map { it.id }.toSet().size)
+        }
         if (expectedMetricUuid != null) check(targets.size == 1 && targets.single().uuid == expectedMetricUuid) {
             "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED"
         }
         return mutate(targets, authority, structural = false) {
+            if (promptHabit != null) {
+                check(habitDao.getVisibleHabitById(promptHabit.id)?.uuid == promptHabit.uuid) { "METRIC_PROMPT_ACTIVITY_CHANGED" }
+                targets.forEach { metric ->
+                    val link = requireNotNull(linkDao.getLink(promptHabit.id, metric.id)) { "METRIC_PROMPT_LINK_CHANGED" }
+                    check(link.isActive && link.promptOnComplete && link.habitUuid == promptHabit.uuid && link.metricUuid == metric.uuid) {
+                        "METRIC_PROMPT_LINK_CHANGED"
+                    }
+                }
+            }
             val logs = values.map { input ->
                 require(input.value.isFinite()) { "Metric value must be finite" }
                 val metric = requireNotNull(metricDao.getMetricById(input.metricId)) {

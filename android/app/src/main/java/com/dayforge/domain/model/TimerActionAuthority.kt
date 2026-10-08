@@ -22,6 +22,14 @@ data class TimerActionAuthority internal constructor(
     internal val nextSequence: Int?,
     internal val originalPlan: String?
 ) {
+    internal fun validate() {
+        require(listOf(accountId, authenticationGeneration, habitUuid).all(::isContractUuid))
+        require((serverInstanceId == null) == (syncEpoch == null))
+        listOfNotNull(serverInstanceId, syncEpoch, deviceId, sessionUuid).forEach { require(isContractUuid(it)) }
+        require((sessionUuid == null) == (nextSequence == null))
+        require(nextSequence == null || nextSequence > 1)
+        require((sessionUuid == null) == (originalPlan != null))
+    }
     internal fun session() = LocalDataSession(AuthenticationSession(accountId, authenticationGeneration), serverInstanceId, syncEpoch)
     internal fun attach(intent: Intent) {
         intent.putExtra(EXTRA, Json.encodeToString(this))
@@ -36,13 +44,10 @@ data class TimerActionAuthority internal constructor(
         private const val EXTRA = "com.dayforge.timer.authority"
         internal fun read(intent: Intent?): TimerActionAuthority? = intent?.getStringExtra(EXTRA)?.let {
             require(it.length <= 65_536)
-            Json.decodeFromString<TimerActionAuthority>(it).also { value ->
-                require(listOf(value.accountId, value.authenticationGeneration, value.habitUuid).all(::isContractUuid))
-                require((value.serverInstanceId == null) == (value.syncEpoch == null))
-                listOfNotNull(value.serverInstanceId, value.syncEpoch, value.deviceId, value.sessionUuid).forEach { id -> require(isContractUuid(id)) }
-                require((value.sessionUuid == null) == (value.nextSequence == null))
-                require(value.nextSequence == null || value.nextSequence > 1)
-                require((value.sessionUuid == null) == (value.originalPlan != null))
+            try {
+                com.dayforge.data.api.decodeSyncReply(it.toByteArray(Charsets.UTF_8), 65_536, serializer(), {}).also { value -> value.validate() }
+            } catch (error: com.dayforge.data.api.NextSyncReplyInvalid) {
+                throw IllegalArgumentException("TIMER_ACTION_INVALID", error)
             }
         }
     }

@@ -413,14 +413,16 @@ class NestedViewModel @Inject constructor(
     suspend fun recordMetricValues(
         habitId: Long,
         values: List<MetricValueInput>,
-        expectedEventUuid: String? = null
-    ): Boolean = metricCoordinator.recordMetricValues(habitId, values, expectedEventUuid)
+        expectedEventUuid: String? = null,
+        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null
+    ): Boolean = metricCoordinator.recordMetricValues(habitId, values, expectedEventUuid, expectedTimerPrompt)
 
     /**
      * Set "never ask again" preference for a habit's metric prompt.
      */
-    suspend fun setNeverAskAgain(habitId: Long, value: Boolean, expectedEventUuid: String? = null) {
-        metricCoordinator.setNeverAskAgain(habitId, value, expectedEventUuid)
+    suspend fun setNeverAskAgain(habitId: Long, value: Boolean, expectedEventUuid: String? = null,
+        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null) {
+        metricCoordinator.setNeverAskAgain(habitId, value, expectedEventUuid, expectedTimerPrompt)
     }
 
     /**
@@ -430,7 +432,8 @@ class NestedViewModel @Inject constructor(
         viewModelScope.launch { metricCoordinator.closePrompt() }
     }
 
-    suspend fun skipPostCheckInDialog(habitId: Long, expectedEventUuid: String? = null) = metricCoordinator.skipPrompt(habitId, expectedEventUuid)
+    suspend fun skipPostCheckInDialog(habitId: Long, expectedEventUuid: String? = null,
+        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null) = metricCoordinator.skipPrompt(habitId, expectedEventUuid, expectedTimerPrompt)
 
     fun refreshPostCheckInMetadata() {
         viewModelScope.launch {

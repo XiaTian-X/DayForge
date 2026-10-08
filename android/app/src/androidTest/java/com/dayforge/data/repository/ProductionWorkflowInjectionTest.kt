@@ -203,6 +203,11 @@ class ProductionWorkflowInjectionTest {
             assertEquals(1, focus[com.dayforge.widget.focus.FocusWidget.PRIMARY_TARGET_VALUE_KEY])
             assertEquals(true, focus[com.dayforge.widget.focus.FocusWidget.PRIMARY_IS_COUNTDOWN_KEY])
             assertEquals(false, focus[com.dayforge.widget.focus.FocusWidget.READ_FAILED_KEY])
+            val timerAction = com.dayforge.widget.timer.WidgetTimerAction.decode(requireNotNull(timer[com.dayforge.widget.timer.TimerWidget.ACTION_PROOF_KEY]))
+            val focusAction = com.dayforge.widget.timer.WidgetTimerAction.decode(requireNotNull(focus[com.dayforge.widget.focus.FocusWidget.TIMER_ACTION_PROOF_KEY]))
+            assertEquals(timerAction, focusAction)
+            assertEquals(id(80), timerAction.authority.sessionUuid)
+            assertNull(timerAction.startGuard)
         }
         try {
             refresh()

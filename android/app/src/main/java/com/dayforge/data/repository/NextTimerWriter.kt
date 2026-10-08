@@ -7,6 +7,7 @@ import com.dayforge.data.local.TokenManager
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.domain.model.TimerActionAuthority
+import com.dayforge.domain.model.TimerStartGuard
 import com.dayforge.domain.service.AccountSessionCoordinator
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -21,8 +22,11 @@ data class WidgetTimerReadSnapshot internal constructor(
     val habit: HabitEntity,
     val activeLog: TimeLogEntity?,
     val policy: TimerStartPolicy?,
-    val authority: TimerActionAuthority
+    val authority: TimerActionAuthority,
+    val startGuard: TimerStartGuard?
 )
+
+data class WidgetTimerSwitchDisplay(val incumbentName: String?, val requestedName: String)
 
 /** Production typed timer boundary. Only local state/segments/allocations belong in its callback. */
 @Singleton
@@ -60,8 +64,18 @@ class NextTimerWriter @Inject constructor(
             val log = database.timeLogDao().getActiveTimeLogForHabit(habit.id)
             check(log?.uuid == authority.sessionUuid && log?.timerNextCommandSequence == authority.nextSequence)
             val policy = log?.let { NextTimerPolicyStore(database).policy(access, it.uuid) }
+            val startGuard = if (log == null) {
+                val incumbentLog = database.timeLogDao().getActiveTimeLog()
+                val incumbent = incumbentLog?.let {
+                    val row = requireNotNull(database.habitDao().getVisibleHabitById(it.habitId))
+                    check(row.appearance != null) { "TIMER_WIDGET_MIXED_PROTOCOL" }
+                    NextTimerPolicyStore(database).policy(access, it.uuid)
+                    requireNotNull(captureInReadTransaction(row))
+                }
+                TimerStartGuard(incumbentLog?.habitId, incumbent)
+            } else null
             check(tokens.localCoreWriteAccess() == access) { "TIMER_WIDGET_STALE_ACCOUNT" }
-            WidgetTimerReadSnapshot(habit, log, policy, authority)
+            WidgetTimerReadSnapshot(habit, log, policy, authority, startGuard)
         }
     }
 
@@ -80,6 +94,34 @@ class NextTimerWriter @Inject constructor(
         database.withTransaction { validate(habitId, ticket) }
     }
 
+    /** Validate both ends of a widget switch in one account/read transaction; never adopt a new incumbent. */
+    suspend fun requireWidgetStart(habitId: Long, ticket: TimerActionAuthority, guard: TimerStartGuard) = sessions.exclusive {
+        database.withTransaction {
+            require(ticket.sessionUuid == null)
+            ticket.validate(); guard.validate()
+            validate(habitId, ticket)
+            val active = database.timeLogDao().getActiveTimeLog()
+            check(active?.habitId == guard.incumbentHabitId && active?.uuid == guard.incumbent?.sessionUuid &&
+                active?.timerNextCommandSequence == guard.incumbent?.nextSequence) { "TIMER_SWITCH_CHANGED" }
+            guard.incumbent?.let {
+                check(it.session() == ticket.session() && it.deviceId == ticket.deviceId) { "TIMER_SWITCH_STALE_ACCOUNT" }
+                validate(requireNotNull(guard.incumbentHabitId), it)
+            }
+            switchDisplayInTransaction(habitId)
+        }
+    }
+
+    /** Legacy dialog reads stay repository-owned; a typed object may never fall back to this path. */
+    suspend fun legacyWidgetSwitchDisplay(habitId: Long): WidgetTimerSwitchDisplay = sessions.exclusive {
+        database.withTransaction { validate(habitId, null); switchDisplayInTransaction(habitId) }
+    }
+
+    private suspend fun switchDisplayInTransaction(habitId: Long): WidgetTimerSwitchDisplay {
+        val requested = requireNotNull(database.habitDao().getVisibleHabitById(habitId))
+        val active = database.timeLogDao().getActiveTimeLog()?.takeIf { it.habitId != habitId }
+        return WidgetTimerSwitchDisplay(active?.let { database.habitDao().getVisibleHabitById(it.habitId)?.name }, requested.name)
+    }
+
     suspend fun <T> write(habitId: Long, ticket: TimerActionAuthority?, block: suspend () -> T): T {
         if (ticket == null) return sessions.exclusive {
             database.withTransaction { validate(habitId, null); block() }
@@ -87,6 +129,9 @@ class NextTimerWriter @Inject constructor(
         val bound = requireNotNull(ticket) { "TIMER_ACTION_TICKET_REQUIRED" }
         return producer.write(bound.session()) {
             validate(habitId, bound)
+            if (bound.sessionUuid == null) check(database.timeLogDao().getActiveTimeLog() == null) {
+                "TIMER_START_ACTIVE_SESSION_CHANGED"
+            }
             val sql = database.openHelper.writableDatabase
             val watermark = NextRequestSql.watermark(sql, "timer_command_outbox")
             val result = block()

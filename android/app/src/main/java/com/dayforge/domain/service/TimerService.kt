@@ -345,6 +345,8 @@ class TimerService : Service() {
             stopIfNoPersistedTimer()
             return
         }
+        val widgetGuard = com.dayforge.domain.model.TimerStartGuard.read(intent)
+        if (widgetGuard != null) timerWriter.requireWidgetStart(requestedHabitId, requireNotNull(actionAuthority), widgetGuard)
 
         // Recovery must win over the daily-completion guard. Otherwise a
         // process-recreated timer can be orphaned merely because an earlier
@@ -389,7 +391,7 @@ class TimerService : Service() {
         }
 
         if (existingLog != null) {
-            interruptTimer(existingLog)
+            interruptTimer(existingLog, widgetGuard?.incumbent)
         }
 
         habitId = requestedHabitId
@@ -501,11 +503,11 @@ class TimerService : Service() {
         return restoreState(active)
     }
 
-    private suspend fun interruptTimer(log: TimeLogEntity) {
+    private suspend fun interruptTimer(log: TimeLogEntity, capturedIncumbent: TimerActionAuthority? = null) {
         val interruptedHabit = habitDao.getHabitByIdSync(log.habitId)
         val policy = timerWriter.policy(log.habitId, log.uuid)
         val oldAction = actionAuthority
-        actionAuthority = timerWriter.capture(log.habitId)
+        actionAuthority = capturedIncumbent ?: timerWriter.capture(log.habitId)
         check(oldAction == null || actionAuthority?.session() == oldAction.session()) { "TIMER_INTERRUPTION_STALE_ACCOUNT" }
         val elapsedSeconds = calculateElapsedSecondsForLog(log)
         val targetSeconds = policy?.targetSeconds ?: ((interruptedHabit?.targetValue ?: 0) * 60)

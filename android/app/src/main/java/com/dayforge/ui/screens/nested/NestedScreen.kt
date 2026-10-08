@@ -513,9 +513,9 @@ fun NestedScreen(
                 onRecord = { values, neverAskAgain ->
                     scope.launch {
                         try {
-                            if (!viewModel.recordMetricValues(state.habitId, values, state.oneTimePrompt?.eventUuid)) return@launch
+                            if (!viewModel.recordMetricValues(state.habitId, values, state.oneTimePrompt?.eventUuid, state.timerPrompt)) return@launch
                             if (neverAskAgain) {
-                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid)
+                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt)
                             }
                             viewModel.dismissPostCheckInDialog()
                         } catch (error: Exception) {
@@ -529,9 +529,9 @@ fun NestedScreen(
                     scope.launch {
                         try {
                             if (neverAskAgain) {
-                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid)
+                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt)
                             }
-                            viewModel.skipPostCheckInDialog(state.habitId, state.oneTimePrompt?.eventUuid)
+                            viewModel.skipPostCheckInDialog(state.habitId, state.oneTimePrompt?.eventUuid, state.timerPrompt)
                         } catch (error: Exception) {
                             if (error is kotlinx.coroutines.CancellationException) throw error
                             Toast.makeText(context, context.getString(R.string.metric_error_record_failed,

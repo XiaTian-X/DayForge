@@ -74,6 +74,7 @@ class TimerWidget : GlanceAppWidget() {
         val IS_COMPLETED_KEY = booleanPreferencesKey("isCompleted")
         val DATA_LOADED_KEY = booleanPreferencesKey("dataLoaded")
         val READ_FAILED_KEY = booleanPreferencesKey("timerReadFailed")
+        val ACTION_PROOF_KEY = stringPreferencesKey("timerActionProof")
         val IS_DELETED_KEY = booleanPreferencesKey("isDeleted")
         val APP_WIDGET_ID_KEY = intPreferencesKey("appWidgetId")
         val IS_ACTIVE_KEY = booleanPreferencesKey("isActive")
@@ -242,6 +243,8 @@ class TimerWidget : GlanceAppWidget() {
                 prefs[IS_DELETED_KEY] = false
                 prefs[DATA_LOADED_KEY] = true
                 prefs[READ_FAILED_KEY] = false
+                if (snapshot != null) prefs[ACTION_PROOF_KEY] = WidgetTimerAction.from(snapshot).encode()
+                else prefs.remove(ACTION_PROOF_KEY)
                 // 写入新增状态
                 prefs[IS_CHECKIN_ALLOWED_KEY] = isCheckInAllowed
                 prefs[NEXT_CHECKIN_DATE_KEY] = nextCheckInDate
@@ -348,7 +351,8 @@ class TimerWidget : GlanceAppWidget() {
                         isCheckInAllowed = isCheckInAllowed,
                         nextCheckInDate = nextCheckInDate,
                         hasFailed = hasFailed,
-                        isGoalReached = isGoalReached
+                        isGoalReached = isGoalReached,
+                        actionProof = state[ACTION_PROOF_KEY]
                     )
                 }
             }
@@ -373,7 +377,8 @@ class TimerWidget : GlanceAppWidget() {
         isCheckInAllowed: Boolean = true,
         nextCheckInDate: String = "",
         hasFailed: Boolean = false,
-        isGoalReached: Boolean = false
+        isGoalReached: Boolean = false,
+        actionProof: String? = null
     ) {
         val context = androidx.glance.LocalContext.current
         // Use pre-computed colors from WidgetColorResolver
@@ -426,7 +431,8 @@ class TimerWidget : GlanceAppWidget() {
                             isCheckInAllowed = isCheckInAllowed,
                             hasFailed = hasFailed,
                             isGoalReached = isGoalReached,
-                            textColorArgb = textColorArgb
+                            textColorArgb = textColorArgb,
+                            actionProof = actionProof
                         )
                     }
                     "PAUSED" -> {
@@ -439,7 +445,8 @@ class TimerWidget : GlanceAppWidget() {
                             isCheckInAllowed = isCheckInAllowed,
                             hasFailed = hasFailed,
                             isGoalReached = isGoalReached,
-                            textColorArgb = textColorArgb
+                            textColorArgb = textColorArgb,
+                            actionProof = actionProof
                         )
                     }
                     else -> {
@@ -454,7 +461,8 @@ class TimerWidget : GlanceAppWidget() {
                             isCheckInAllowed = isCheckInAllowed,
                             hasFailed = hasFailed,
                             isGoalReached = isGoalReached,
-                            textColorArgb = textColorArgb
+                            textColorArgb = textColorArgb,
+                            actionProof = actionProof
                         )
                     }
                 }
@@ -485,7 +493,8 @@ class TimerWidget : GlanceAppWidget() {
         isCheckInAllowed: Boolean = true,
         hasFailed: Boolean = false,
         isGoalReached: Boolean = false,
-        textColorArgb: Int = android.graphics.Color.WHITE
+        textColorArgb: Int = android.graphics.Color.WHITE,
+        actionProof: String? = null
     ) {
         val context = androidx.glance.LocalContext.current
         val textColor = Color(textColorArgb)
@@ -509,13 +518,7 @@ class TimerWidget : GlanceAppWidget() {
             // Pause button
             Button(
                 text = context.getString(R.string.action_pause),
-                onClick = actionRunCallback<TimerActionCallback>(
-                    actionParametersOf(
-                        ActionParameters.Key<Long>("habitId") to habitId,
-                        ActionParameters.Key<String>("action") to "pause",
-                        ActionParameters.Key<Int>("targetMinutes") to targetMinutes
-                    )
-                ),
+                onClick = widgetTimerAction(context, habitId, targetMinutes, "pause", actionProof),
                 modifier = GlanceModifier.height(36.dp).width(50.dp),
                 colors = ButtonDefaults.buttonColors(
                     backgroundColor = ColorProvider(Color.Gray),
@@ -541,13 +544,7 @@ class TimerWidget : GlanceAppWidget() {
             // Stop button
             Button(
                 text = context.getString(R.string.action_stop),
-                onClick = actionRunCallback<TimerActionCallback>(
-                    actionParametersOf(
-                        ActionParameters.Key<Long>("habitId") to habitId,
-                        ActionParameters.Key<String>("action") to "stop",
-                        ActionParameters.Key<Int>("targetMinutes") to targetMinutes
-                    )
-                ),
+                onClick = widgetTimerAction(context, habitId, targetMinutes, "stop", actionProof),
                 modifier = GlanceModifier.height(36.dp).width(50.dp),
                 colors = ButtonDefaults.buttonColors(
                     backgroundColor = ColorProvider(Color.Gray),
@@ -567,7 +564,8 @@ class TimerWidget : GlanceAppWidget() {
         isCheckInAllowed: Boolean = true,
         hasFailed: Boolean = false,
         isGoalReached: Boolean = false,
-        textColorArgb: Int = android.graphics.Color.WHITE
+        textColorArgb: Int = android.graphics.Color.WHITE,
+        actionProof: String? = null
     ) {
         val context = androidx.glance.LocalContext.current
         val textColor = Color(textColorArgb)
@@ -591,13 +589,7 @@ class TimerWidget : GlanceAppWidget() {
             // Resume button
             Button(
                 text = context.getString(R.string.action_resume),
-                onClick = actionRunCallback<TimerActionCallback>(
-                    actionParametersOf(
-                        ActionParameters.Key<Long>("habitId") to habitId,
-                        ActionParameters.Key<String>("action") to "resume",
-                        ActionParameters.Key<Int>("targetMinutes") to targetMinutes
-                    )
-                ),
+                onClick = widgetTimerAction(context, habitId, targetMinutes, "resume", actionProof),
                 modifier = GlanceModifier.height(36.dp).width(50.dp),
                 colors = ButtonDefaults.buttonColors(
                     backgroundColor = ColorProvider(Color.Gray),
@@ -635,13 +627,7 @@ class TimerWidget : GlanceAppWidget() {
             // Stop button
             Button(
                 text = context.getString(R.string.action_stop),
-                onClick = actionRunCallback<TimerActionCallback>(
-                    actionParametersOf(
-                        ActionParameters.Key<Long>("habitId") to habitId,
-                        ActionParameters.Key<String>("action") to "stop",
-                        ActionParameters.Key<Int>("targetMinutes") to targetMinutes
-                    )
-                ),
+                onClick = widgetTimerAction(context, habitId, targetMinutes, "stop", actionProof),
                 modifier = GlanceModifier.height(36.dp).width(50.dp),
                 colors = ButtonDefaults.buttonColors(
                     backgroundColor = ColorProvider(Color.Gray),
@@ -663,7 +649,8 @@ class TimerWidget : GlanceAppWidget() {
         isCheckInAllowed: Boolean = true,
         hasFailed: Boolean = false,
         isGoalReached: Boolean = false,
-        textColorArgb: Int = android.graphics.Color.WHITE
+        textColorArgb: Int = android.graphics.Color.WHITE,
+        actionProof: String? = null
     ) {
         val context = androidx.glance.LocalContext.current
         val textColor = Color(textColorArgb)
@@ -735,13 +722,7 @@ class TimerWidget : GlanceAppWidget() {
                 if (!isCompleted) {
                     Button(
                         text = context.getString(R.string.widget_start),
-                        onClick = actionRunCallback<TimerActionCallback>(
-                            actionParametersOf(
-                                ActionParameters.Key<Long>("habitId") to habitId,
-                                ActionParameters.Key<String>("action") to "start",
-                                ActionParameters.Key<Int>("targetMinutes") to targetMinutes
-                            )
-                        ),
+                        onClick = widgetTimerAction(context, habitId, targetMinutes, "start", actionProof),
                         modifier = GlanceModifier.height(36.dp)
                     )
 
@@ -765,7 +746,9 @@ class TimerWidget : GlanceAppWidget() {
 
                     Button(
                         text = context.getString(R.string.widget_record),
-                        onClick = actionRunCallback<RecordMetricCallback>(
+                        onClick = if (actionProof != null) actionStartActivity(com.dayforge.widget.checkin.MetricPromptActivity.createIntent(
+                            context, habitId, habitName, WidgetTimerAction.decode(actionProof).authority))
+                        else actionRunCallback<RecordMetricCallback>(
                             actionParametersOf(
                                 ActionParameters.Key<Long>("habitId") to habitId,
                                 ActionParameters.Key<String>("habitName") to habitName
