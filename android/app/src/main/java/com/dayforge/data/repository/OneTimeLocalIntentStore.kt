@@ -1,6 +1,11 @@
 package com.dayforge.data.repository
 
 import androidx.room.withTransaction
+import com.dayforge.data.api.decodeFrozenSyncRequest
+import com.dayforge.data.api.encodeSyncRequest
+import com.dayforge.data.api.dto.ChallengeSourceContext
+import com.dayforge.data.api.dto.RoundSyncPushRequest
+import com.dayforge.data.api.dto.SyncV2Operation
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.LocalDataSession
 import com.dayforge.data.local.PreferencesManager
@@ -95,15 +100,51 @@ internal class OneTimeLocalIntentStore(
 
     suspend fun append(session: LocalDataSession, command: OneTimeLocalCommand,
         validateInTransaction: suspend (HabitEntity) -> Unit = {}): OneTimeLocalAppendResult =
+        append(session, command, null, validateInTransaction)
+
+    /** Explicit profile source; once keeps its independent CAS, never a challenge birth. */
+    suspend fun appendRounds(scope: NextRoundWriteScope, command: OneTimeLocalCommand,
+        validateInTransaction: suspend (HabitEntity) -> Unit = {}): OneTimeLocalAppendResult =
+        append(scope.access.session, command, scope, validateInTransaction)
+
+    private suspend fun append(session: LocalDataSession, command: OneTimeLocalCommand, scope: NextRoundWriteScope?,
+        validateInTransaction: suspend (HabitEntity) -> Unit): OneTimeLocalAppendResult =
         sessions.exclusive {
             val access = tokens.localFactAccess()
             if (access == null || access.session != session) reject(OneTimeLocalException.Reason.STALE_SESSION)
             if (!access.canAppend) reject(OneTimeLocalException.Reason.FACTS_DENIED)
             database.withTransaction {
+                val rounds = NextChallengeStore(database)
+                val checkpoint = if (scope == null) { rounds.requirePlainInTransaction(); null }
+                    else rounds.activeInTransaction(scope.access)
+                suspend fun verifyScope() {
+                    if (scope != null) {
+                        require(tokens.localSyncAccess() == scope.access && tokens.syncAuthenticationSnapshot(scope.access) != null &&
+                            "facts.append" in scope.access.capabilities) { "SYNC_CHALLENGE_CONTEXT_CHANGED" }
+                        check(rounds.activeInTransaction(scope.access) == checkpoint) { "SYNC_CHALLENGE_SOURCE_CHANGED" }
+                    } else rounds.requirePlainInTransaction()
+                    if (tokens.localFactAccess() != access) reject(OneTimeLocalException.Reason.STALE_SESSION)
+                }
+                verifyScope()
                 val loaded = load(command.activityUuid, session)
                 validateInTransaction(loaded.habit)
                 val fact = fact(command, loaded.habit.id)
                 val payload = payload(fact)
+                val operation = SyncV2Operation(command.pending.operationId,
+                    "activity_event", fact.uuid, "upsert", payload = Json.parseToJsonElement(payload).let {
+                        require(it is kotlinx.serialization.json.JsonObject); it
+                    })
+                suspend fun verifyOriginal() {
+                    if (scope != null) {
+                        requireNotNull(NextRequestSql.rowHash(database.openHelper.writableDatabase, "next_request_origins",
+                            "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, command.pending.operationId)))
+                        val original = requireNotNull(database.nextRequestDao().origin(NEXT_OPERATION, command.pending.operationId))
+                        val source = requireNotNull(roundOperationIntent(original.intentJson)) { "SYNC_CHALLENGE_SOURCE_REQUIRED" }
+                        require(original.accountId == session.authentication.userId && original.serverInstanceId == session.serverInstanceId &&
+                            original.syncEpoch == session.syncEpoch && original.protocol == 5 && source == NextRoundOperationIntent(1,
+                            operation, ChallengeSourceContext(operation.operationId, null), requireNotNull(scope.access.deviceId)))
+                    }
+                }
                 val receipt = followUps.submission(command.pending.operationId)
                 if (receipt != null) {
                     if (receipt != LocalFactSubmissionEntity(command.pending.operationId,
@@ -115,6 +156,7 @@ internal class OneTimeLocalIntentStore(
                     if (stored.habitId != fact.habitId || payload(stored) != payload) {
                         reject(OneTimeLocalException.Reason.INVALID_LOCAL_STATE)
                     }
+                    verifyOriginal(); verifyScope()
                     return@withTransaction OneTimeLocalAppendResult(stored.id, true, loaded.snapshot)
                 }
                 val previous = outbox.getByOperationId(command.pending.operationId)
@@ -123,6 +165,7 @@ internal class OneTimeLocalIntentStore(
                     if (stored == null || stored.habitId != fact.habitId || payload(stored) != payload ||
                         !matches(previous, fact, payload)
                     ) reject(OneTimeLocalException.Reason.OPERATION_ID_REUSED)
+                    verifyOriginal(); verifyScope()
                     return@withTransaction OneTimeLocalAppendResult(stored.id, true, loaded.snapshot)
                 }
                 if (facts.getCompletionByUuid(fact.uuid) != null || outbox.getState("activity_event", fact.uuid) != null ||
@@ -156,14 +199,20 @@ internal class OneTimeLocalIntentStore(
                     "activity_event", fact.uuid, command.activityUuid, payload))
                 // Prove birth with the business write, never adopt an old zero-attempt queue at send time.
                 val queueRow = requireNotNull(outbox.getByOperationId(command.pending.operationId))
-                val operation = com.dayforge.data.api.dto.SyncV2Operation(command.pending.operationId,
-                    "activity_event", fact.uuid, "upsert", payload = Json.parseToJsonElement(payload).let {
-                        require(it is kotlinx.serialization.json.JsonObject); it
-                    })
                 val sourceHash = requireNotNull(NextRequestSql.rowHash(sqlite, "sync_outbox", "id=?", arrayOf(queueRow.id)))
+                val intent = if (scope == null) json.encodeToString(operation) else {
+                    val source = NextRoundOperationIntent(1, operation,
+                        ChallengeSourceContext(operation.operationId, null), requireNotNull(scope.access.deviceId))
+                    val bytes = encodeSyncRequest(NextRoundOperationIntent.serializer(), source)
+                    decodeNextOperationIntent(bytes.toString(Charsets.UTF_8))
+                    val envelope = encodeSyncRequest(RoundSyncPushRequest.serializer(),
+                        RoundSyncPushRequest(1, source.capturedDeviceId, listOf(operation), listOf(source.context)))
+                    decodeFrozenSyncRequest(envelope, RoundSyncPushRequest.serializer())
+                    bytes.toString(Charsets.UTF_8)
+                }
                 val origin = NextRequestOriginEntity(NEXT_OPERATION, command.pending.operationId, queueRow.id, 5,
                     session.authentication.userId, session.serverInstanceId, session.syncEpoch, sourceHash,
-                    json.encodeToString(operation))
+                    intent)
                 database.nextRequestDao().insertOrigin(origin)
                 if (fact.oneTimeAction == "complete" && !preferences.getNeverAskAgain(loaded.habit.id).first()) {
                     CompletionMetricPromptStore.createInTransaction(database, loaded.habit, fact.uuid)
@@ -174,7 +223,7 @@ internal class OneTimeLocalIntentStore(
                     NextRequestSql.rowHash(sqlite, "sync_outbox", "id=?", arrayOf(queueRow.id)) == sourceHash &&
                     followUps.submission(command.pending.operationId) == LocalFactSubmissionEntity(command.pending.operationId,
                         "activity_event", fact.uuid, command.activityUuid, payload))
-                if (tokens.localFactAccess() != access) reject(OneTimeLocalException.Reason.STALE_SESSION)
+                verifyOriginal(); verifyScope()
                 OneTimeLocalAppendResult(id, false, load(command.activityUuid, session).snapshot)
             }
         }
