@@ -428,7 +428,8 @@ v5 预备实现使用 Room 身份绑定的恢复检查点，与接受的全部�
 初始基线和后续轮次必须显式区分：旧未绑定事实只能属于确定的初始基线，而不是当前头。
 迟到旧事实不推进新轮；旧冻结请求不补字段或重写字节。新的客户端/服务端须在完整能力
 准入和统一契约下写、读、bootstrap/pull 及恢复轮次，不能给现有严格 v5 parser 静默增加未知字段。
-具体 wire/schema 样例与增量迁移将在领域接线批次一起冻结；本节不是新字段的已上线声明。
+具体 wire/schema 样例位于 `next/challenge-sync.json` 与 `next/challenge-rounds.json`，
+增量迁移与受控后端入口已实现；本节不是正式服务已启用新字段的声明。
 完整归档须保留全部轮次、事实绑定和因果来源，配置包仍只复制配置并创建新身份、未开始。
 恢复头不能被旧页或旧回执回退，业务与 cursor 必须原子提交。已产生新轮数据后不得降级为
 忽略轮次的旧统计；正式 v4、部署、清库和 v5 联合启用继续受原门禁约束。
@@ -480,6 +481,19 @@ push 保留原 `operations` 对象，独立 `contexts` 为每个原 operation_id
 旧完整计时仍可正常结束明确初始出生的会话，但不能对正代次出生的新 session 发送无档位新命令。
 后端档位挂载不代表 Android Room/outbox、轮次统计、旧重启 UI 或全端联合启用已经完成。
 正式切换仍必须等这些消费者、完整恢复、联合回归及人工验收；不自动部署、清库或激活。
+
+Android `NextSyncHttp.Session` 的 `roundPush` / `roundPushFrozen`、`roundCommands` /
+`roundCommandsFrozen` 及 `roundBootstrap` / `roundPull` / `roundActive` / `roundStatus` 显式调用
+上述六个档位路径，不改变旧方法或放宽旧响应。GET 只发送一个 `challenge_contract=1`；JSON
+必须显式整数 1。沿用原账户/副本/Network、匿名精确 v5 准入、有限字节、取消关闭并 join 的边界。
+冻结方法持有调用方字节快照，校验但不重新编码；丢响应后只重发相同 envelope 和原来源。
+
+新严格响应要求唯一完整检查点、已证明的原出生与不可变轮创建来源；普通成功事实必须对应
+原请求出生/计数规则，重启 ACK 对应原 intent/device/operation/revision，成功计时对应原会话
+出生及开始规则，完成事实继承会话出生。一次性事项沿用独立历史证明，不能伪装成重复性事实。
+bootstrap 继续验证完整事项/计数日规则和结构外观，所有可见 recurring 活动都有轮次检查点。
+HTTP 只交付已绑定响应，不消费队列、不发布游标、不使 DTO 成为权限；本地 Room、原始来源
+sidecar/outbox、恢复与统一统计接入仍待完成，不能据网络入口存在替换旧重启或激活正式调度。
 
 后端先增加向后兼容能力，再发布客户端，最后在受支持窗口结束后删除旧能力。协议版本、Android Room schema 和后端 Alembic revision 独立演进。
 

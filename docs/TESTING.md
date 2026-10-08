@@ -168,6 +168,16 @@ Room schema、计时、后台任务或 Android 平台行为变化时还需要相
 相邻完整矩阵继续覆盖既有 v4/v5 同步、完整计时、日规则、事项、迁移、SQLite/HTTP 提交与快照、
 逻辑/物理/素材恢复及冻结契约；后端档位结果不能标作 Android/人工或正式启用验收通过。
 
+Android 完整 `ChallengeSyncContractTest` 使用相同 `next/challenge-sync.json` 与
+`next/challenge-rounds.json` 校验原 operation/command 不变、精确档位、唯一来源集合、重启
+不可合并/删除、完整链和原出生、原 device/intent/revision ACK、冻结计数规则及空结果的严格元数据。
+完整 `NextSyncHttpTest` 同时覆盖旧八类核心路径和新六个挑战档位：真实 socket/auth/DataStore，
+单值 GET 标记与原副本头、冻结字节/数字/省略字段的丢响应精确重试、坏请求零私有流量、
+坏或缺失证明拒绝、账户/副本/版本准入、取消时关闭 socket 并 join、无游标/注册发布及无旧路由回退。
+相邻完整类是 `ChallengeRoundContractTest`、`OneTimeSyncContractTest`、`ContractIntegerTest`、
+`NextCoreRequestStoreTest`；本范围不涉及 Room schema，不重复执行全部迁移。真实 HTTP 夹具
+不冒充服务端最终 COMMIT、Android Room 接受/轮次统计、正式 v5 调度或人工联合验收。
+
 卡片和指标详情的 UI 调整须保留功能信息回归：`HabitCardProgressTest` 检查长期完成/目标数值、
 可访问进度语义、窄宽大字体换行及原打卡回调，并对正/倒计时执行开始、暂停、恢复、停止的实际触摸，
 确认完成后不能重新开始且不误触卡片导航；`MetricCardTest` 检查空状态、展开/收起不误导航，

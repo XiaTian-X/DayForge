@@ -146,7 +146,7 @@ internal class NextSyncHttp private constructor(
 
         suspend fun bootstrap(): NextSyncBootstrapResponse = value(
             request("/api/v2/sync/bootstrap").queryDevice(), NextSyncBootstrapResponse.serializer(), BOOTSTRAP_REPLY
-        ).also { valid { require(it.nextCursor >= 0); Instant.parse(it.serverTime); it.changes.forEach(::validateChange) } }
+        ).also { valid { require(it.nextCursor >= 0); Instant.parse(it.serverTime); it.changes.forEach { change -> validateChange(change) } } }
 
         suspend fun pull(cursor: Long, limit: Int = 500): NextSyncPullResponse {
             require(cursor >= 0 && limit in 1..1000)
@@ -218,8 +218,89 @@ internal class NextSyncHttp private constructor(
             return response
         }
 
+        /** Explicit challenge profile. Existing envelopes/routes and journal bytes are unchanged. */
+        suspend fun roundPush(body: RoundSyncPushRequest): RoundSyncPushResponse {
+            require(body.deviceId == device())
+            val frozen = freeze(RoundSyncPushRequest.serializer(), body)
+            return roundPushBytes(frozen, encodeSyncRequest(RoundSyncPushRequest.serializer(), frozen))
+        }
+
+        suspend fun roundPushFrozen(body: ByteArray): RoundSyncPushResponse {
+            val bytes = snapshotSyncRequest(body)
+            return roundPushBytes(decodeFrozenSyncRequest(bytes, RoundSyncPushRequest.serializer()), bytes)
+        }
+
+        private suspend fun roundPushBytes(frozen: RoundSyncPushRequest, bytes: ByteArray): RoundSyncPushResponse {
+            require(frozen.deviceId == device())
+            return value(request("/api/v2/sync/rounds/push").post(bytes.toRequestBody(JSON_TYPE)),
+                RoundSyncPushResponse.serializer()).also { response -> valid { validateRoundResultBinding(frozen, response) } }
+        }
+
+        suspend fun roundBootstrap(): RoundSyncBootstrapResponse = value(
+            request("/api/v2/sync/rounds/bootstrap").queryRoundDevice(), RoundSyncBootstrapResponse.serializer(), BOOTSTRAP_REPLY
+        ).also { response -> valid {
+            require(response.nextCursor >= 0); Instant.parse(response.serverTime)
+            response.changes.forEach { validateChange(it, roundProfile = true) }
+        } }
+
+        suspend fun roundPull(cursor: Long, limit: Int = 500): RoundSyncPullResponse {
+            require(cursor >= 0 && limit in 1..1000)
+            val builder = request("/api/v2/sync/rounds/changes").queryRoundDevice()
+            val response = value(builder.url(builder.build().url.newBuilder().addQueryParameter("cursor", cursor.toString())
+                .addQueryParameter("limit", limit.toString()).build()), RoundSyncPullResponse.serializer())
+            valid {
+                require(response.nextCursor >= cursor && response.changes.size <= limit)
+                var previous = cursor
+                response.changes.forEach { change ->
+                    validateChange(change, roundProfile = true)
+                    require(change.sequence > previous && change.sequence <= response.nextCursor)
+                    previous = change.sequence
+                }
+                if (response.hasMore) require(response.changes.isNotEmpty() && previous == response.nextCursor)
+                Instant.parse(response.serverTime)
+            }
+            return response
+        }
+
+        suspend fun roundCommands(body: RoundTimerCommandBatchRequest): RoundTimerCommandBatchResponse {
+            require(body.deviceId == device())
+            val frozen = freeze(RoundTimerCommandBatchRequest.serializer(), body)
+            return roundCommandBytes(frozen, encodeSyncRequest(RoundTimerCommandBatchRequest.serializer(), frozen))
+        }
+
+        suspend fun roundCommandsFrozen(body: ByteArray): RoundTimerCommandBatchResponse {
+            val bytes = snapshotSyncRequest(body)
+            return roundCommandBytes(decodeFrozenSyncRequest(bytes, RoundTimerCommandBatchRequest.serializer()), bytes)
+        }
+
+        private suspend fun roundCommandBytes(frozen: RoundTimerCommandBatchRequest, bytes: ByteArray): RoundTimerCommandBatchResponse {
+            require(frozen.deviceId == device())
+            return value(request("/api/v2/timers/rounds/commands").post(bytes.toRequestBody(JSON_TYPE)),
+                RoundTimerCommandBatchResponse.serializer()).also { response -> valid {
+                validateRoundTimerBinding(frozen, response)
+                response.results.mapNotNull { it.session }.forEach(::validateTimer)
+                Instant.parse(response.serverTime)
+            } }
+        }
+
+        suspend fun roundActive(): RoundActiveTimerResponse = value(request("/api/v2/timers/rounds/active").queryRoundDevice(),
+            RoundActiveTimerResponse.serializer()).also { response -> valid {
+            response.session?.let(::validateTimer); Instant.parse(response.serverTime)
+        } }
+
+        suspend fun roundStatus(sessionId: String): RoundActiveTimerResponse {
+            require(isContractUuid(sessionId))
+            return value(request("/api/v2/timers/rounds/session/$sessionId").queryRoundDevice(),
+                RoundActiveTimerResponse.serializer()).also { response -> valid {
+                response.session?.let { validateTimer(it); require(it.sessionId == sessionId) }; Instant.parse(response.serverTime)
+            } }
+        }
+
         private fun device(): String = requireNotNull(context.deviceId)
         private fun Request.Builder.queryDevice(): Request.Builder = url(build().url.newBuilder().addQueryParameter("device_id", device()).build())
+        private fun Request.Builder.queryRoundDevice(): Request.Builder = queryDevice().let {
+            it.url(it.build().url.newBuilder().addQueryParameter("challenge_contract", "1").build())
+        }
         private fun request(path: String, public: Boolean = false): Request.Builder {
             val builder = Request.Builder().url(route.origin.newBuilder().encodedPath(path).build()).header("Accept-Encoding", "identity")
                 .tag(AuthenticationSession::class.java, context.session.authentication).tag(LocalSyncAccess::class.java, context)
@@ -304,9 +385,9 @@ internal class NextSyncHttp private constructor(
             code?.takeIf { it.isString && it.content.matches(Regex("[A-Z][A-Z0-9_]{0,63}")) }?.content
         } catch (_: IOException) { null } catch (_: IllegalArgumentException) { null } catch (_: IllegalStateException) { null }
 
-        private fun validateChange(change: SyncV2Change) {
+        private fun validateChange(change: SyncV2Change, roundProfile: Boolean = false) {
             require(isContractUuid(change.entityUuid) && change.revision > 0 && change.sequence >= 0 &&
-                change.entityType in setOf("plan_node", "metric", "activity_event", "metric_observation", "activity_metric_link") &&
+                (change.entityType in ORDINARY_ROUND_ENTITIES || roundProfile && change.entityType == "challenge_round") &&
                 change.operation in setOf("upsert", "delete"))
             change.originDeviceId?.let { require(isContractUuid(it)) }
             Instant.parse(change.changedAt)
