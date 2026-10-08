@@ -10,7 +10,8 @@ import kotlinx.serialization.json.*
 /** Capture with the displayed domain snapshot, not when an old callback finally runs. */
 internal class NextRoundWriteScope internal constructor(
     val access: LocalSyncAccess,
-    internal val metadataJson: String
+    internal val metadataJson: String,
+    internal val pendingInitials: Map<String, NextPendingInitial> = emptyMap()
 )
 
 /** Transaction participant for NEW operations and local timer sources. Not a restart producer. */
@@ -18,16 +19,19 @@ internal class NextRoundOperationCapture(
     private val database: HabitDatabase,
     private val scope: NextRoundWriteScope,
     private val before: ChallengeMetadata,
-    private val existing: List<HabitEntity>
+    private val existing: List<HabitEntity>,
+    private val pendingInitials: Map<String, NextPendingInitial> = emptyMap()
 ) {
     private val shown = Json.decodeFromString<ChallengeMetadata>(scope.metadataJson)
     private val touched = mutableSetOf<String>()
     private val freshHeads = mutableMapOf<String, ChallengeRoundHead>()
+    private val capturedInitialSources = mutableSetOf<String>()
 
     private suspend fun current(activity: String): ChallengeRoundHead {
         freshHeads[activity]?.let { return it }
         val actual = before.checkpoints.singleOrNull { it.head.activityUuid == activity }?.head
         val expected = shown.checkpoints.singleOrNull { it.head.activityUuid == activity }?.head
+            ?: scope.pendingInitials[activity]?.head
         if (actual != null) {
             require(expected == actual) { "SYNC_CHALLENGE_STALE_ACTION" }
             val latest = before.checkpoints.single { it.head == actual }.records.single { it.head == actual }
@@ -41,6 +45,14 @@ internal class NextRoundOperationCapture(
             }
             touched += activity
             return actual
+        }
+        pendingInitials[activity]?.let { pending ->
+            require(scope.pendingInitials[activity] == pending && expected == pending.head) { "SYNC_CHALLENGE_STALE_ACTION" }
+            require(existing.single { it.uuid == activity }.let {
+                it.completionPolicy == "recurring" && it.habitType != com.dayforge.data.model.HabitType.GOAL
+            })
+            touched += activity
+            return pending.head
         }
         // Only a genuinely NEW local identity in this transaction gets a deterministic baseline.
         // An omitted/deleted old activity must never be guessed into generation zero.
@@ -81,7 +93,9 @@ internal class NextRoundOperationCapture(
             else -> null
         }
         return NextRoundOperationIntent(1, operation, ChallengeSourceContext(operation.operationId, head),
-            requireNotNull(scope.access.deviceId))
+            requireNotNull(scope.access.deviceId), initialCreation = operation.entityType == "plan_node" &&
+                operation.action == "upsert" && freshHeads.containsKey(operation.entityUuid) && existing.none { it.uuid == operation.entityUuid } &&
+                capturedInitialSources.add(operation.entityUuid))
     }
 
     suspend fun captureTimer(intent: NextTimerIntent): NextRoundTimerIntent {
@@ -108,7 +122,7 @@ internal class NextRoundOperationCapture(
             require(NextTimerPolicyStore(database).policy(com.dayforge.data.local.LocalCoreWriteAccess(
                 scope.access.session, scope.access.capabilities, scope.access.deviceId), command.sessionId) == start.command.startPolicy)
             requireNotNull(round.context.head).also { birth ->
-                require(before.checkpoints.any { point -> point.records.any { it.head == birth } })
+                require(known(birth))
                 if (database.nextRequestDao().acceptance(NEXT_TIMER, origin.requestId) != null)
                     require(before.requireBirth("timer_session", command.sessionId, birth.activityUuid).head == birth)
                 before.births.singleOrNull { it.entityType == "timer_session" && it.entityUuid == command.sessionId }
@@ -140,17 +154,32 @@ internal class NextRoundOperationCapture(
                 NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(row.queueId)) == row.sourceHash &&
                 database.nextRequestDao().acceptance(NEXT_OPERATION, id) == null)
             requireNotNull(source.context.head).also { head ->
-                require(head.activityUuid == activity && before.checkpoints.any { point -> point.records.any { it.head == head } })
+                require(head.activityUuid == activity && known(head))
             }
         }
         return matches.single()
     }
 
-    fun verify(after: ChallengeMetadata) {
+    private fun known(head: ChallengeRoundHead) = before.checkpoints.any { point -> point.records.any { it.head == head } } ||
+        pendingInitials[head.activityUuid]?.head == head || freshHeads[head.activityUuid] == head
+
+    suspend fun verify(after: ChallengeMetadata) {
         require(after == before) { "SYNC_CHALLENGE_SOURCE_CHANGED" }
+        // Inherited timer successors do not call current(): their birth must not follow today's
+        // head. Re-audit all prior pending roots once, including origin-only late trigger faults.
+        if (pendingInitials.isNotEmpty()) {
+            val actualPending = NextRoundPendingInitialStore(database).read(scope.access, after)
+            require(pendingInitials.all { (activity, proof) -> actualPending[activity] == proof }) {
+                "SYNC_CHALLENGE_INITIAL_SOURCE_CHANGED"
+            }
+        }
         for (activity in touched) {
             val actual = before.checkpoints.singleOrNull { it.head.activityUuid == activity }?.head
-            if (actual != null) require(shown.checkpoints.singleOrNull { it.head.activityUuid == activity }?.head == actual)
+            if (actual != null) require((shown.checkpoints.singleOrNull { it.head.activityUuid == activity }?.head
+                ?: scope.pendingInitials[activity]?.head) == actual)
+            else pendingInitials[activity]?.let { pending ->
+                require(scope.pendingInitials[activity] == pending)
+            }
         }
     }
 }

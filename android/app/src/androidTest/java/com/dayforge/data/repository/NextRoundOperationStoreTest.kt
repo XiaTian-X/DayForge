@@ -335,6 +335,122 @@ class NextRoundOperationStoreTest : NextCoreRequestFixture() {
         assertEquals(initialChallengeRoundHead(fresh.uuid), merger(http).challengeMetadata(access())!!.requireBirth("activity_event", id(402), fresh.uuid).head)
     }
 
+    private suspend fun createPendingActivity(): com.dayforge.data.local.entity.HabitEntity {
+        val fresh = habit.copy(id = 0, uuid = id(501), name = "Offline new activity")
+        return producer().writeRounds(producer().captureRounds()) { fresh.copy(id = db.habitDao().insert(fresh)) }
+    }
+
+    private suspend fun pendingCount(fresh: com.dayforge.data.local.entity.HabitEntity,
+        ticket: NextRoundWriteScope? = null) {
+        producer().writeRounds(ticket ?: producer().captureRounds()) {
+            val fact = CompletionEntity(habitId = fresh.id, habitUuid = fresh.uuid, uuid = id(502), value = 3,
+                date = millis, actualCompletedAt = millis, recordedTimezone = "Etc/UTC", recordedLocalDate = "2026-10-06")
+            NextCountDayStore(db).capture(fresh, fact); db.completionDao().insert(fact)
+        }
+    }
+
+    @Test fun separateOfflineCreationEditCountAndUndoKeepOriginalRootThenActualAckPublishesInitialHead() = runBlocking {
+        val (http, server) = channel { roundReply(it, metadata(extra = id(501))) }; initialize(http)
+        val fresh = createPendingActivity(); val creation = db.syncOutboxDao().getAll().single()
+        val root = db.nextRequestDao().origin(NEXT_OPERATION, creation.operationId)!!
+        assertTrue(roundOperationIntent(root.intentJson)!!.initialCreation)
+        storage.reopen(); val ticket = producer().captureRounds()
+        assertEquals(creation.operationId, ticket.pendingInitials[fresh.uuid]!!.operationId)
+        pendingCount(fresh, ticket)
+        producer().writeRounds(producer().captureRounds()) {
+            habits().updateHabit(fresh.copy(description = "Later offline edit"))
+        }
+        producer().writeRounds(producer().captureRounds()) { db.completionDao().delete(db.completionDao().getCompletionByUuid(id(502))!!) }
+        val rows = db.syncOutboxDao().getAll()
+        assertEquals(4, rows.size); assertEquals(root, db.nextRequestDao().origin(NEXT_OPERATION, creation.operationId))
+        rows.forEach { val source = roundOperationIntent(db.nextRequestDao().origin(NEXT_OPERATION, it.operationId)!!.intentJson)!!
+            assertEquals(initialChallengeRoundHead(fresh.uuid), source.context.head)
+            assertEquals(it.operationId == creation.operationId, source.initialCreation) }
+        assertEquals(2, count("next_challenge_rounds")); assertEquals(0, count("next_challenge_births"))
+        assertNull(merger(http).challengeMetadata(access())!!.checkpoints.singleOrNull { it.head.activityUuid == fresh.uuid })
+        storage.reopen(); rows.forEach { assertEquals(NextOperationAcceptance.COMMITTED,
+            sender(http).sendAndAcceptOperation(access(), it.operationId)) }
+        assertTrue(db.syncOutboxDao().getAll().isEmpty()); assertNull(db.completionDao().getCompletionByUuid(id(502)))
+        assertEquals(10, db.countDayDao().get(fresh.id, "2026-10-06")!!.targetValue)
+        assertEquals(initialChallengeRoundHead(fresh.uuid), merger(http).challengeMetadata(access())!!.requireBirth("activity_event", id(502), fresh.uuid).head)
+        val calls = server.requests.size; storage.reopen()
+        rows.forEach { assertEquals(NextOperationAcceptance.REPLAYED, sender(http).sendAndAcceptOperation(access(), it.operationId)) }
+        assertEquals(calls, server.requests.size); assertTrue(producer().captureRounds().pendingInitials.isEmpty())
+    }
+
+    @Test fun preCreationTicketCannotClaimNewPendingIdentityButActualCreationAckKeepsItsFreshTicketUsable() = runBlocking {
+        val (http, _) = channel { roundReply(it, metadata(extra = id(501))) }; initialize(http)
+        val stale = producer().captureRounds(); val fresh = createPendingActivity()
+        rejected { pendingCount(fresh, stale) }; assertNull(db.completionDao().getCompletionByUuid(id(502)))
+        assertEquals(1, db.syncOutboxDao().getAll().size); assertNull(db.countDayDao().get(fresh.id, "2026-10-06"))
+        val shown = producer().captureRounds(); val creation = db.syncOutboxDao().getAll().single()
+        assertEquals(NextOperationAcceptance.COMMITTED, sender(http).sendAndAcceptOperation(access(), creation.operationId))
+        pendingCount(fresh, shown)
+        assertEquals(initialChallengeRoundHead(fresh.uuid), roundOperationIntent(db.nextRequestDao().origin(NEXT_OPERATION,
+            db.syncOutboxDao().getAll().single().operationId)!!.intentJson)!!.context.head)
+    }
+
+    @Test fun oldUnboundActivityIsNeverPromotedToPendingCreation() = runBlocking {
+        val (http, _) = channel { roundReply(it) }; initialize(http)
+        val fresh = habit.copy(id = 0, uuid = id(501), name = "Unknown old identity")
+        val key = db.withTransaction {
+            db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
+            val key = db.habitDao().insert(fresh)
+            db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1"); key
+        }
+        assertTrue(producer().captureRounds().pendingInitials.isEmpty())
+        rejected { pendingCount(fresh.copy(id = key)) }; assertNull(db.completionDao().getCompletionByUuid(id(502)))
+        assertEquals(0, count("next_request_origins")); assertEquals(0, count("count_days"))
+    }
+
+    @Test fun creationAndRepeatedEditsInOneTransactionHaveExactlyOneOriginalCreationProof() = runBlocking {
+        val (http, _) = channel { roundReply(it) }; initialize(http)
+        val fresh = habit.copy(id = 0, uuid = id(501), name = "One root")
+        producer().writeRounds(producer().captureRounds()) {
+            val key = db.habitDao().insert(fresh)
+            db.habitDao().update(fresh.copy(id = key, description = "Same transaction edit"))
+        }
+        val rows = db.syncOutboxDao().getAll(); assertEquals(2, rows.size)
+        val sources = rows.map { roundOperationIntent(db.nextRequestDao().origin(NEXT_OPERATION, it.operationId)!!.intentJson)!! }
+        assertTrue(sources.first().initialCreation); assertFalse(sources.last().initialCreation)
+        assertEquals(rows.first().operationId, producer().captureRounds().pendingInitials[fresh.uuid]!!.operationId)
+        assertEquals(rows.first().operationId, db.nextStructuralCausalDao().dependency(rows.last().operationId)!!.predecessorId)
+    }
+
+    @Test fun strictCreationTagAndBoundRootDamageCannotAdoptOldSourceOrCommitAnyNewFact() = runBlocking {
+        val (http, _) = channel { roundReply(it) }; initialize(http)
+        val fresh = createPendingActivity(); val row = db.syncOutboxDao().getAll().single()
+        val origin = db.nextRequestDao().origin(NEXT_OPERATION, row.operationId)!!
+        for (value in listOf("\"true\"", "1", "null")) {
+            db.openHelper.writableDatabase.execSQL("UPDATE next_request_origins SET intentJson=? WHERE requestId=?",
+                arrayOf(origin.intentJson.replace("\"initial_creation\":true", "\"initial_creation\":$value"), row.operationId))
+            rejected { producer().captureRounds() }
+        }
+        // A structurally old wrapper is not upgraded, even when it still names an initial head.
+        db.openHelper.writableDatabase.execSQL("UPDATE next_request_origins SET intentJson=? WHERE requestId=?",
+            arrayOf(origin.intentJson.replace(",\"initial_creation\":true", ""), row.operationId))
+        assertTrue(producer().captureRounds().pendingInitials.isEmpty())
+        rejected { pendingCount(fresh) }
+        db.openHelper.writableDatabase.execSQL("UPDATE next_request_origins SET intentJson=? WHERE requestId=?", arrayOf(origin.intentJson, row.operationId))
+        db.openHelper.writableDatabase.execSQL("UPDATE next_structural_dependencies SET capturedDeviceId=? WHERE operationId=?", arrayOf(id(9), row.operationId))
+        rejected { producer().captureRounds() }
+        assertNull(db.completionDao().getCompletionByUuid(id(502))); assertEquals(1, count("next_request_origins"))
+    }
+
+    @Test fun latePendingRootSourceFaultRollsBackFactDayPolicyAndNewOriginsThenOriginalRootCanRetry() = runBlocking {
+        val (http, _) = channel { roundReply(it) }; initialize(http)
+        val fresh = createPendingActivity(); val row = db.syncOutboxDao().getAll().single()
+        val origin = db.nextRequestDao().origin(NEXT_OPERATION, row.operationId)!!
+        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER pending_root_fault AFTER INSERT ON next_request_origins BEGIN UPDATE sync_outbox SET referenceUuid='TIMER' WHERE id=${row.id}; END")
+        rejected { pendingCount(fresh) }
+        db.openHelper.writableDatabase.execSQL("DROP TRIGGER pending_root_fault")
+        assertEquals(row, db.syncOutboxDao().getById(row.id)); assertEquals(origin, db.nextRequestDao().origin(NEXT_OPERATION, row.operationId))
+        assertNull(db.completionDao().getCompletionByUuid(id(502))); assertEquals(0, count("count_days")); assertEquals(1, count("next_request_origins"))
+        storage.reopen(); pendingCount(fresh)
+        assertEquals(2, count("next_request_origins")); assertEquals(3, db.completionDao().getCompletionByUuid(id(502))!!.value)
+        assertEquals(0, count("next_challenge_births")); assertEquals(20L, merger(http).state(access(), true)!!.cursor)
+    }
+
     @Test fun changedDeviceOrPermissionRejectsBeforeCallbackAndOrphanTimerRollsBackEntireBatch() = runBlocking {
         val (http, _) = channel { roundReply(it) }; initialize(http)
         val scope = producer().captureRounds()

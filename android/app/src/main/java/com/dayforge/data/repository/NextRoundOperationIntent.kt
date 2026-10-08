@@ -19,13 +19,18 @@ internal data class NextRoundOperationIntent(
     @SerialName("challenge_contract") val challengeContract: Int,
     val operation: SyncV2Operation,
     val context: ChallengeSourceContext,
-    @SerialName("captured_device_id") val capturedDeviceId: String
+    @SerialName("captured_device_id") val capturedDeviceId: String,
+    @Serializable(with = ContractBooleanSerializer::class)
+    @SerialName("initial_creation") val initialCreation: Boolean = false
 ) {
     init {
         require(challengeContract == 1 && isContractUuid(capturedDeviceId))
         require(context.sourceUuid == operation.operationId && !context.legacyInitial)
         RoundSyncPushRequest(1, capturedDeviceId, listOf(operation), listOf(context))
         validateNextSyncOperation(operation)
+        if (initialCreation) require(operation.entityType == "plan_node" && operation.action == "upsert" &&
+            operation.baseRevision == null && operation.payload["activity"]?.jsonObject?.get("completion_policy") == JsonPrimitive("recurring") &&
+            context.head == initialChallengeRoundHead(operation.entityUuid) && context.affectedHeads.isEmpty())
     }
 }
 

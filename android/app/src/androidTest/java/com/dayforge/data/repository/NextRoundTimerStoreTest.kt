@@ -138,6 +138,61 @@ class NextRoundTimerStoreTest : NextCoreRequestFixture() {
     @Test fun forwardOfflineStartPauseResumeStopAckAndColdReplayPreserveFullLocalState() = runBlocking { fullChain(false) }
     @Test fun countdownOfflineStartPauseResumeStopKeepOriginalPolicyAndBirth() = runBlocking { fullChain(true) }
 
+    @Test fun separatelyCreatedOfflineTimerKeepsFullLocalChainButWaitsForActualCreationAckBeforeCommandHttp() = runBlocking {
+        val (http, server) = channel(::respond); initialize(http)
+        val fresh = timerHabit.copy(id = 0, uuid = id(501), name = "New offline timer")
+        timerHabit = producer().writeRounds(producer().captureRounds()) { fresh.copy(id = db.habitDao().insert(fresh)) }
+        val creation = db.syncOutboxDao().getAll().single()
+        val origin = db.nextRequestDao().origin(NEXT_OPERATION, creation.operationId)!!
+        assertTrue(roundOperationIntent(origin.intentJson)!!.initialCreation)
+        storage.reopen(); val commands = offlineChain()
+        val local = db.timeLogDao().getTimeLogByUuid(id(20))!!; val segments = db.timeLogDao().getTimerSegments(id(20))
+        commands.forEach {
+            assertEquals(initialChallengeRoundHead(fresh.uuid), roundTimerIntent(db.nextRequestDao().origin(NEXT_TIMER, it.commandId)!!.intentJson)!!.context.head)
+        }
+        assertNull(merger(http).challengeMetadata(access())!!.checkpoints.singleOrNull { it.head.activityUuid == fresh.uuid })
+        assertEquals(NextRequestException.Reason.CAUSAL_PREDECESSOR_PENDING,
+            (rejected { timers(http).send(access(), commands.first().commandId) } as NextRequestException).reason)
+        val probe = server.requests.single()
+        assertEquals("GET", probe.method); assertEquals("/api/v2/system/identity", probe.path); assertNull(probe.headers["authorization"])
+        assertEquals(0, count("next_transmissions"))
+        assertEquals(NextOperationAcceptance.COMMITTED, sender(http).sendAndAcceptOperation(access(), creation.operationId))
+        storage.reopen(); assertEquals(4, timers(http).pushPending(access()))
+        assertEquals(local, db.timeLogDao().getTimeLogByUuid(id(20))); assertEquals(segments, db.timeLogDao().getTimerSegments(id(20)))
+        assertEquals(origin, db.nextRequestDao().origin(NEXT_OPERATION, creation.operationId))
+        assertEquals(initialChallengeRoundHead(fresh.uuid), merger(http).challengeMetadata(access())!!.requireBirth("activity_event", id(20), fresh.uuid).head)
+        assertEquals(60_000L, local.timerActiveElapsedMillis); assertEquals(0, count("completions"))
+        assertEquals(4, server.requests.count { it.path.endsWith("/commands") }); assertEquals(20L, merger(http).state(access(), true)!!.cursor)
+    }
+
+    @Test fun lateCreationOriginOnlyFaultDuringOfflineTimerSuccessorRollsBackFullTransitionAndOriginalRootRemainsUsable() = runBlocking {
+        val (http, server) = channel(::respond); initialize(http)
+        val fresh = timerHabit.copy(id = 0, uuid = id(501), name = "Pending timer proof")
+        timerHabit = producer().writeRounds(producer().captureRounds()) { fresh.copy(id = db.habitDao().insert(fresh)) }
+        val creation = db.syncOutboxDao().getAll().single()
+        val origin = db.nextRequestDao().origin(NEXT_OPERATION, creation.operationId)!!
+        val first = startRound(); val original = db.timeLogDao().getTimeLogByUuid(first.sessionUuid)!!
+        val segments = db.timeLogDao().getTimerSegments(first.sessionUuid)
+        suspend fun pause() = producer().writeRounds(producer().captureRounds()) {
+            db.timeLogDao().updatePauseAndQueue(original.id, true, millis + 30_000, 0, 3, millis + 30_000, 30_000, null, null,
+                TimerCommandEntity(commandId = id(22), sessionUuid = first.sessionUuid, sequence = 2, commandType = "pause",
+                    occurredAt = millis + 30_000, expectedControlGeneration = 1, activeElapsedMillis = 30_000))
+        }
+        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER timer_root_origin_fault AFTER INSERT ON next_request_origins WHEN NEW.requestId='${id(22)}' BEGIN UPDATE next_request_origins SET intentJson=replace(intentJson,'${id(4)}','${id(9)}') WHERE requestId='${creation.operationId}'; END")
+        rejected { pause() }; db.openHelper.writableDatabase.execSQL("DROP TRIGGER timer_root_origin_fault")
+        assertEquals(origin, db.nextRequestDao().origin(NEXT_OPERATION, creation.operationId))
+        assertEquals(original, db.timeLogDao().getTimeLogByUuid(first.sessionUuid)); assertEquals(segments, db.timeLogDao().getTimerSegments(first.sessionUuid))
+        assertEquals(listOf(first), db.timeLogDao().getPendingTimerCommands()); assertNull(db.nextRequestDao().origin(NEXT_TIMER, id(22)))
+        assertEquals(creation, db.syncOutboxDao().getById(creation.id)); assertEquals(2, count("next_request_origins"))
+        storage.reopen(); pause()
+        assertEquals(2, db.timeLogDao().getPendingTimerCommands().size)
+        assertTrue(db.timeLogDao().getTimeLogByUuid(first.sessionUuid)!!.isPaused)
+        assertEquals(origin, db.nextRequestDao().origin(NEXT_OPERATION, creation.operationId))
+        assertEquals(initialChallengeRoundHead(fresh.uuid), roundTimerIntent(db.nextRequestDao().origin(NEXT_TIMER, id(22))!!.intentJson)!!.context.head)
+        assertEquals(0, count("next_transmissions")); assertEquals(0, count("next_acceptances")); assertEquals(0, count("next_challenge_births"))
+        assertTrue(server.requests.isEmpty())
+    }
+
     @Test fun lostResponseColdRetryUsesSameWholeRoundEnvelopeAndAcceptedPolicyRemainsUsable() = runBlocking {
         var lose = true
         val (http, server) = channel { input -> val result = respond(input)
