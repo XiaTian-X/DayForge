@@ -129,6 +129,13 @@ warning 提升为 error。Kotlin、javac 与 Android 资源编译警告由
 
 Room schema、计时、后台任务或 Android 平台行为变化时还需要相应 instrumentation/真机测试。仅含 TODO、没有断言或没有执行路径的测试不计为有效覆盖。
 
+严格计时失败读取的受影响矩阵包括完整 `StrictTimerFailureTest`、`DurationDayAllocatorTest`、
+`TimerTransitionDaoTest`、`CapturedDayStatisticsTest` 和 `NestedViewModelTest`。
+`StrictTimerFailureTest` 使用真实文件 Room 验证跨午夜待结算不写完成/分摊/outbox、暂停不计时、
+确定的更早/更晚断签优先、捕获时区/DST/绝对时限上界、损坏片段拒绝、冷重开、正常 stop/cancel
+以及 App/小组件共同判定；不修改手机时钟，不冒充完整计时服务或新轮次同步验收。
+实际会话资格仍由原服务及开始规则测试覆盖；只读待结算上界不是完成阈值证明。
+
 卡片和指标详情的 UI 调整须保留功能信息回归：`HabitCardProgressTest` 检查长期完成/目标数值、
 可访问进度语义、窄宽大字体换行及原打卡回调，并对正/倒计时执行开始、暂停、恢复、停止的实际触摸，
 确认完成后不能重新开始且不误触卡片导航；`MetricCardTest` 检查空状态、展开/收起不误导航，
