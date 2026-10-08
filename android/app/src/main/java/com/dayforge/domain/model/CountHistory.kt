@@ -10,7 +10,9 @@ data class CountHistory(
     val quantities: Map<LocalDate, Long>,
     val todayPolicy: CountDayPolicy?,
     val unknownDates: Set<LocalDate>,
-    val completions: List<CompletionEntity>
+    val completions: List<CompletionEntity>,
+    /** Proven displayed round; null only on the unchanged plain profile. All day rules remain shared. */
+    val roundHead: ChallengeRoundHead? = null
 ) {
     val todayQuantity: Long get() = quantities[today] ?: 0L
     val completedToday: Boolean get() = todayPolicy?.let { todayQuantity >= it.targetValue } == true

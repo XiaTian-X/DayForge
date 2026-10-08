@@ -6,6 +6,7 @@ import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.businessDate
 import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.HabitEntity
+import com.dayforge.data.local.entity.NextRequestOriginEntity
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.model.CountDayPolicy
 import com.dayforge.domain.model.isContractUuid
@@ -20,18 +21,21 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
+internal data class CountFactOriginal(val row: NextRequestOriginEntity, val payload: JsonObject,
+    val rounds: NextRoundOperationIntent?)
+
 /** Read-only evidence for effective quantities, not a repair or a replacement for retained wire bytes. */
 internal class CountFactEvidence(private val database: HabitDatabase) {
     private val sql get() = database.openHelper.writableDatabase
 
-    suspend fun verify(habit: HabitEntity, facts: List<CompletionEntity>, policies: Map<LocalDate, CountDayPolicy>, account: String) {
+    suspend fun verify(habit: HabitEntity, facts: List<CompletionEntity>, policies: Map<LocalDate, CountDayPolicy>, account: String): Map<String, CountFactOriginal> {
         check(database.inTransaction())
         val originals = originals(habit, facts.mapTo(hashSetOf()) { it.uuid }, account)
         val reverted = acceptedReverts(habit)
         for (fact in facts) {
             currentCoroutineContext().ensureActive()
             check(fact.uuid !in reverted) { "COUNT_FACT_INVALID" }
-            val original = originals[fact.uuid]
+            val original = originals[fact.uuid]?.payload
             val accepted = accepted(fact.uuid)
             if (accepted != null) {
                 check(accepted.payload["event_type"] in quantityTypes) { "COUNT_FACT_INVALID" }
@@ -58,6 +62,7 @@ internal class CountFactEvidence(private val database: HabitDatabase) {
                 check(fact.businessDate !in policies) { "COUNT_FACT_INVALID" }
             }
         }
+        return originals
     }
 
     private suspend fun accepted(id: String, revertParent: String? = null): SyncV2Change? {
@@ -88,9 +93,9 @@ internal class CountFactEvidence(private val database: HabitDatabase) {
         return targets
     }
 
-    private suspend fun originals(habit: HabitEntity, needed: Set<String>, account: String): Map<String, JsonObject> {
+    private suspend fun originals(habit: HabitEntity, needed: Set<String>, account: String): Map<String, CountFactOriginal> {
         if (needed.isEmpty()) return emptyMap()
-        val found = hashMapOf<String, JsonObject>()
+        val found = hashMapOf<String, CountFactOriginal>()
         // One streamed pass per activity, not one lifetime scan per fact. Batches only bound allocation,
         // never the number of days/events a user may retain; no JSON1 dependency on older Android SQLite.
         sql.query("SELECT requestId FROM next_request_origins WHERE kind=? AND intentJson LIKE ? AND intentJson LIKE ?",
@@ -107,7 +112,7 @@ internal class CountFactEvidence(private val database: HabitDatabase) {
     }
 
     private suspend fun originalBatch(ids: List<String>, habit: HabitEntity, needed: Set<String>, account: String,
-        found: MutableMap<String, JsonObject>) {
+        found: MutableMap<String, CountFactOriginal>) {
         val hashes = NextRequestSql.boundedRowHashes(sql, "next_request_origins", "requestId", ids, NEXT_OPERATION)
         val rows = if (hashes == null) emptyMap() else database.nextRequestDao().origins(NEXT_OPERATION, ids).associateBy { it.requestId }
         for (id in ids) {
@@ -116,13 +121,15 @@ internal class CountFactEvidence(private val database: HabitDatabase) {
                 arrayOf(NEXT_OPERATION, id)))
             val origin = requireNotNull(if (hashes == null) database.nextRequestDao().origin(NEXT_OPERATION, id) else rows[id])
             check(origin.protocol == 5 && isContractUuid(origin.accountId) && origin.queueId > 0) { "COUNT_FACT_INVALID" }
-            val operation = decodeNextOperationIntent(origin.intentJson)
+            val rounds = roundOperationIntent(origin.intentJson)
+            val operation = rounds?.operation ?: decodeNextOperationIntent(origin.intentJson)
             validateNextSyncOperation(operation)
             check(operation.operationId == id) { "COUNT_FACT_INVALID" }
             if (operation.entityType != "activity_event" || operation.action != "upsert" ||
                 operation.payload["activity_uuid"] != JsonPrimitive(habit.uuid) || operation.payload["event_type"] !in quantityTypes) continue
             check(origin.accountId == account) { "COUNT_SESSION_CHANGED" }
-            if (operation.entityUuid in needed) check(found.put(operation.entityUuid, operation.payload) == null) { "COUNT_FACT_INVALID" }
+            if (operation.entityUuid in needed) check(found.put(operation.entityUuid,
+                CountFactOriginal(origin, operation.payload, rounds)) == null) { "COUNT_FACT_INVALID" }
         }
     }
 

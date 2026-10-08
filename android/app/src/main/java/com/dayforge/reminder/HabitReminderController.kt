@@ -34,11 +34,13 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 
 internal data class ReminderReading(val access: LocalFactAccess, val habit: HabitEntity,
-    val target: Int?, val countdown: Boolean?, val quantity: Long, val onceCompleted: Boolean, val enabled: Boolean) {
+    val target: Int?, val countdown: Boolean?, val quantity: Long, val onceCompleted: Boolean, val enabled: Boolean,
+    val roundHead: com.dayforge.domain.model.ChallengeRoundHead? = null) {
     val scope: String get() = reminderScope(access.session)
     val stamp: String get() = MessageDigest.getInstance("SHA-256").digest(listOf(scope, habit.uuid,
         habit.name, habit.bestTime, habit.schedule, habit.habitType, habit.isActive, target, countdown,
-        habit.completionPolicy).joinToString("\u0000").toByteArray(Charsets.UTF_8))
+        habit.completionPolicy).let { if (roundHead == null) it else it + roundHead }
+        .joinToString("\u0000").toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it) }
 }
 
@@ -213,6 +215,6 @@ class HabitReminderController internal constructor(
         check(tokens.localFactAccess() == access) { "REMINDER_SESSION_CHANGED" }
         return ReminderReading(access, habit,
             if (history != null) history.todayPolicy?.targetValue else habit.targetValue,
-            if (history != null) history.todayPolicy?.isCountdown else habit.isCountdown, quantity, once, enabled)
+            if (history != null) history.todayPolicy?.isCountdown else habit.isCountdown, quantity, once, enabled, history?.roundHead)
     }
 }

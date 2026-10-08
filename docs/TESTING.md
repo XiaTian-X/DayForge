@@ -199,6 +199,17 @@ DDL/最终 Room 校验失败回滚及冷重开；新增 cursor 列仅由这一�
 目标删除、一次性接受/发送、profile 恢复、统一 runtime、HTTP 与轮次/事项/整数合同类。
 Room schema 未改变，不重复无关全部迁移；这一范围不代替后续全量联合或人工验收。
 
+当前轮计数读取完整 `CountRoundConsumerTest` 使用真实文件 Room、账户、原 producer/ACK、
+连续 metadata/Plan 合并及共享消费者，验证同日归零而原日规则保留、旧事实晚接受不复活、
+冷重开、新待创建身份、隐藏旧事实/缺出生/原设备副本/冻结上下文损坏只读拒绝、账户替换、
+仅轮头变化的实际 Flow 刷新，以及旧物理清历史拒绝。小组件实际 increment/undo 与新来源
+绑定、旧 plain/旧轮声明和 PendingIntent 隔离、原提醒控制器的旧唤醒拒绝/当前进度读取继续
+执行。完整相邻矩阵包括 `CountConsumerWorkflowTest`、`CountFactEvidenceTest`、计数提醒、
+小组件事实入口/动作、档位 operation/writer、计数日、日历刷新、实际 CheckInService 与捕获日期。
+原事实验证先于轮次筛选；测试快照保留 SQLite 列类型及冻结 BLOB，不通过删除故障断言取绿。
+夹具修正且生产源码未变时，仅重跑完整受影响类及必要相邻类；保留原失败，不拼为全量成功。
+该范围不证明实际重启 API/离线新轮、打卡/计时及活跃度统一统计、正式激活或人工联合验收。
+
 档位计时完整 `NextRoundTimerStoreTest` 使用真实文件 Room、账户 DataStore 和 socket 验证正倒
 离线 start/pause/resume/stop、完整开始快照/原配置 ACK 前沿、原出生继承、取消不复活、响应丢失
 的完整原 envelope 冷重试及无网络冷收据重放。较新头的晚终态 ACK 保留旧出生、不伪造 Plan
