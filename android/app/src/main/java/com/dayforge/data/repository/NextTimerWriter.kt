@@ -5,6 +5,7 @@ import com.dayforge.data.api.dto.TimerStartPolicy
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.TokenManager
 import com.dayforge.data.local.entity.HabitEntity
+import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.domain.model.TimerActionAuthority
 import com.dayforge.domain.service.AccountSessionCoordinator
 import javax.inject.Inject
@@ -13,6 +14,15 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
+
+/** One account/Room read snapshot; an active typed timer never borrows the edited plan's policy. */
+@ConsistentCopyVisibility
+data class WidgetTimerReadSnapshot internal constructor(
+    val habit: HabitEntity,
+    val activeLog: TimeLogEntity?,
+    val policy: TimerStartPolicy?,
+    val authority: TimerActionAuthority
+)
 
 /** Production typed timer boundary. Only local state/segments/allocations belong in its callback. */
 @Singleton
@@ -34,14 +44,36 @@ class NextTimerWriter @Inject constructor(
             // Do not terminate the list Flow; omit its action ticket until fresh data arrives.
             if (expectedHabit != null && (habit.uuid != expectedHabit.uuid ||
                 NextStructureMapper.writePlan(habit) != NextStructureMapper.writePlan(expectedHabit))) return@withTransaction null
-            val access = tokens.localCoreWriteAccess() ?: return@withTransaction null
-            require(habit.habitType == com.dayforge.data.model.HabitType.TIMER && habit.completionPolicy == "recurring")
-            val log = database.timeLogDao().getActiveTimeLogForHabit(habitId)
-            TimerActionAuthority(access.session.authentication.userId, access.session.authentication.generation,
-                access.session.serverInstanceId, access.session.syncEpoch, access.capturedDeviceId, habit.uuid, log?.uuid,
-                log?.timerNextCommandSequence, if (log == null) NextStructureMapper.writePlan(habit).toString() else null)
-                .also { check(tokens.localCoreWriteAccess() == access) }
+            captureInReadTransaction(habit)
         }
+    }
+
+    /** Read-only production widget consumer. Null means stale/missing display, not legacy fallback. */
+    suspend fun widgetSnapshot(expectedHabit: HabitEntity): WidgetTimerReadSnapshot? = sessions.exclusive {
+        database.withTransaction {
+            val habit = database.habitDao().getVisibleHabitById(expectedHabit.id) ?: return@withTransaction null
+            if (habit.appearance == null || habit.uuid != expectedHabit.uuid ||
+                NextStructureMapper.writePlan(habit) != NextStructureMapper.writePlan(expectedHabit)) return@withTransaction null
+            val authority = captureInReadTransaction(habit) ?: return@withTransaction null
+            val access = requireNotNull(tokens.localCoreWriteAccess())
+            check(access.session == authority.session() && access.capturedDeviceId == authority.deviceId)
+            val log = database.timeLogDao().getActiveTimeLogForHabit(habit.id)
+            check(log?.uuid == authority.sessionUuid && log?.timerNextCommandSequence == authority.nextSequence)
+            val policy = log?.let { NextTimerPolicyStore(database).policy(access, it.uuid) }
+            check(tokens.localCoreWriteAccess() == access) { "TIMER_WIDGET_STALE_ACCOUNT" }
+            WidgetTimerReadSnapshot(habit, log, policy, authority)
+        }
+    }
+
+    /** Caller already holds the non-reentrant account mutex and the Room read transaction. */
+    private suspend fun captureInReadTransaction(habit: HabitEntity): TimerActionAuthority? {
+        val access = tokens.localCoreWriteAccess() ?: return null
+        require(habit.habitType == com.dayforge.data.model.HabitType.TIMER && habit.completionPolicy == "recurring")
+        val log = database.timeLogDao().getActiveTimeLogForHabit(habit.id)
+        return TimerActionAuthority(access.session.authentication.userId, access.session.authentication.generation,
+            access.session.serverInstanceId, access.session.syncEpoch, access.capturedDeviceId, habit.uuid, log?.uuid,
+            log?.timerNextCommandSequence, if (log == null) NextStructureMapper.writePlan(habit).toString() else null)
+            .also { check(tokens.localCoreWriteAccess() == access) }
     }
 
     suspend fun requireAction(habitId: Long, ticket: TimerActionAuthority?) = sessions.exclusive {

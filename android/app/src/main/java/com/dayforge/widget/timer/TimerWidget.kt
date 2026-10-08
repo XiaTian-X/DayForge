@@ -73,6 +73,7 @@ class TimerWidget : GlanceAppWidget() {
         val ELAPSED_SECONDS_KEY = intPreferencesKey("elapsedSeconds")
         val IS_COMPLETED_KEY = booleanPreferencesKey("isCompleted")
         val DATA_LOADED_KEY = booleanPreferencesKey("dataLoaded")
+        val READ_FAILED_KEY = booleanPreferencesKey("timerReadFailed")
         val IS_DELETED_KEY = booleanPreferencesKey("isDeleted")
         val APP_WIDGET_ID_KEY = intPreferencesKey("appWidgetId")
         val IS_ACTIVE_KEY = booleanPreferencesKey("isActive")
@@ -109,9 +110,9 @@ class TimerWidget : GlanceAppWidget() {
         suspend fun refreshWidgetData(context: Context, glanceId: GlanceId, habitId: Long) {
             val appContext = context.applicationContext
             val database = HabitDatabaseProvider.getInstance(appContext)
-            val habit = database.habitDao().getVisibleHabitById(habitId)
+            val visibleHabit = database.habitDao().getVisibleHabitById(habitId)
 
-            if (habit == null) {
+            if (visibleHabit == null) {
                 Log.w(TAG, "refreshWidgetData: habit $habitId not found")
                 updateAppWidgetState(appContext, glanceId) { prefs ->
                     prefs[HABIT_ID_KEY] = habitId
@@ -124,21 +125,30 @@ class TimerWidget : GlanceAppWidget() {
             val timeLogDao = database.timeLogDao()
 
             // Query active timer for this habit
-            val activeTimer = timeLogDao.getActiveTimeLogForHabit(habitId)
-
-            // Get habit timer settings for validation
-            val targetMinutes = habit.targetValue
-            val isCountdown = habit.isCountdown
-            val targetSeconds = targetMinutes * 60
-
-            // Calculate safe duration limit (same logic as TimerService)
-            // Absolute maximum: 24 hours (prevent runaway values from system date changes)
-            val absoluteMaxSeconds = 24 * 60 * 60
-            val safeDurationLimit = if (isCountdown) {
-                targetSeconds  // Countdown: cannot exceed target
-            } else {
-                if (targetMinutes > 0) targetSeconds * 3 else absoluteMaxSeconds  // Countup: threshold or absolute max
-            }
+            // v5 policy, row and session must come from one account-coordinated Room snapshot.
+            // A missing/corrupt original is not permission to display the newly edited target.
+            val snapshot = if (visibleHabit.appearance != null) {
+                try {
+                    com.dayforge.di.WidgetEntryPoint.from(appContext).timerWriter().widgetSnapshot(visibleHabit)
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    Log.w(TAG, "Timer widget original policy unavailable", error)
+                    null
+                } ?: run {
+                    updateAppWidgetState(appContext, glanceId) { prefs ->
+                        prefs[DATA_LOADED_KEY] = false
+                        prefs[READ_FAILED_KEY] = true
+                        prefs[IS_DELETED_KEY] = false
+                    }
+                    return
+                }
+            } else null
+            val habit = snapshot?.habit ?: visibleHabit
+            val activeTimer = snapshot?.activeLog ?: if (snapshot == null) timeLogDao.getActiveTimeLogForHabit(habitId) else null
+            val policy = WidgetTimerPolicy.read(habit, activeTimer, snapshot?.policy)
+            val targetMinutes = policy.targetMinutes
+            val isCountdown = policy.isCountdown
+            val targetSeconds = policy.targetSeconds
 
             // Determine timer state
             val timerState: String
@@ -149,13 +159,13 @@ class TimerWidget : GlanceAppWidget() {
                     timerState = "RUNNING"
                     val rawElapsed = TimerElapsedCalculator.elapsedSeconds(activeTimer, context)
                     // Clamp to safe limit to prevent abnormal display from system date changes
-                    elapsedSeconds = rawElapsed.coerceAtMost(safeDurationLimit)
+                    elapsedSeconds = policy.elapsed(rawElapsed)
                 }
                 activeTimer != null && activeTimer.isPaused -> {
                     timerState = "PAUSED"
                     val rawElapsed = TimerElapsedCalculator.elapsedSeconds(activeTimer, context)
                     // Clamp to safe limit
-                    elapsedSeconds = rawElapsed.coerceAtMost(safeDurationLimit)
+                    elapsedSeconds = policy.elapsed(rawElapsed)
                 }
                 else -> {
                     timerState = "NOT_RUNNING"
@@ -190,11 +200,7 @@ class TimerWidget : GlanceAppWidget() {
             val showMetricPrompt = isCompleted && habitId in pendingHabits
 
             // Calculate remaining seconds for countdown mode
-            val remainingSeconds = if (isCountdown) {
-                (targetSeconds - accumulatedSeconds).coerceAtLeast(0)
-            } else {
-                0  // Not used for countup mode
-            }
+            val remainingSeconds = policy.remaining(activeTimer, accumulatedFromCompleted, elapsedSeconds)
 
             // 新增状态计算
             val isCheckInAllowed = ScheduleValidator.isCheckInAllowedToday(habit.schedule, habit.createdAt)
@@ -235,6 +241,7 @@ class TimerWidget : GlanceAppWidget() {
                 prefs[SHOW_METRIC_PROMPT_KEY] = showMetricPrompt
                 prefs[IS_DELETED_KEY] = false
                 prefs[DATA_LOADED_KEY] = true
+                prefs[READ_FAILED_KEY] = false
                 // 写入新增状态
                 prefs[IS_CHECKIN_ALLOWED_KEY] = isCheckInAllowed
                 prefs[NEXT_CHECKIN_DATE_KEY] = nextCheckInDate
@@ -274,6 +281,10 @@ class TimerWidget : GlanceAppWidget() {
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Error loading initial data", e)
+            updateAppWidgetState(context, id) { prefs ->
+                prefs[DATA_LOADED_KEY] = false
+                prefs[READ_FAILED_KEY] = true
+            }
         }
 
         provideContent {
@@ -300,6 +311,12 @@ class TimerWidget : GlanceAppWidget() {
                         modifier = GlanceModifier.clickable(
                             androidx.glance.appwidget.action.actionStartActivity(intent)
                         )
+                    )
+                } else if (state[READ_FAILED_KEY] == true) {
+                    WidgetEmptyStates.EmptyConfigState(
+                        context.getString(R.string.data_read_failed) + "\n" + context.getString(R.string.action_retry),
+                        GlanceModifier.clickable(actionRunCallback<WidgetTimerRefreshCallback>(
+                            actionParametersOf(ActionParameters.Key<String>("widget") to "timer")))
                     )
                 } else if (!dataLoaded) {
                     WidgetEmptyStates.EmptyConfigState(context.getString(R.string.common_loading))

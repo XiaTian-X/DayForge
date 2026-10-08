@@ -2,6 +2,7 @@ package com.dayforge.data.repository
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.glance.appwidget.state.getAppWidgetState
 import com.dayforge.data.local.PhysicalDatabaseRule
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
@@ -40,6 +41,7 @@ class ProductionWorkflowInjectionTest {
     @Inject lateinit var reminders: com.dayforge.reminder.HabitReminderController
     @Inject lateinit var preferences: PreferencesManager
     @Inject lateinit var calendar: com.dayforge.domain.service.DeviceCalendar
+    @Inject lateinit var timerWriter: NextTimerWriter
     private val db get() = storage.database
     private val app get() = InstrumentationRegistry.getInstrumentation().targetContext
     private fun id(n: Int) = "ac310000-0000-4000-8000-${n.toString(16).padStart(12, '0')}"
@@ -156,5 +158,70 @@ class ProductionWorkflowInjectionTest {
         habits.logCompletion(app, saved.id, 2)
         assertEquals(2, db.completionDao().getByHabitOnce(saved.id).single().value)
         assertTrue(db.syncOutboxDao().getAll().all { db.nextRequestDao().origin(NEXT_OPERATION, it.operationId) == null })
+    }
+
+    @Test fun realTimerAndFocusWidgetsReadOriginalPolicyAndWithholdCorruptDisplay() = runBlocking<Unit> {
+        assertSame(timerWriter, com.dayforge.di.WidgetEntryPoint.from(app).timerWriter())
+        val now = java.time.ZonedDateTime.now()
+        val rowId = habits.createHabit("Hilt frozen widget timer", "", HabitType.TIMER, 0, "#123456", HabitSchedule.Daily,
+            targetValue = 1, isCountdown = true, bestTime = (now.hour * 60 + now.minute).toLong(),
+            completionPolicy = "recurring", appearance = appearance("habit.exercise"), creationAuthority = creator.capture())
+        val before = requireNotNull(habits.getHabitById(rowId))
+        val startAt = System.currentTimeMillis() - 10_000L
+        val producer = NextCoreLocalIntentStore(db, tokens, sessions)
+        producer.write(requireNotNull(tokens.localCoreWriteAccess()).session) {
+            db.timeLogDao().insertSyncedTimer(
+                com.dayforge.data.local.entity.TimeLogEntity(habitId = rowId, uuid = id(80), startTime = startAt,
+                    date = com.dayforge.util.DateTimeUtils.startOfDayMillis(), endTime = null, durationSeconds = 0,
+                    timerNextCommandSequence = 2, timerControlGeneration = 1, timerLastCommandAt = startAt,
+                    timerTimezone = now.zone.id),
+                com.dayforge.data.local.entity.TimerCommandEntity(commandId = id(81), sessionUuid = id(80),
+                    sequence = 1, commandType = "start", occurredAt = startAt, expectedControlGeneration = 0,
+                    activityUuid = before.uuid, timezone = now.zone.id),
+                com.dayforge.data.local.entity.TimerSegmentEntity(sessionUuid = id(80), sequence = 1, startedAt = startAt))
+        }
+        producer.write(requireNotNull(tokens.localCoreWriteAccess()).session) {
+            db.habitDao().update(before.copy(targetValue = 2, isCountdown = false))
+        }
+        val manager = androidx.glance.appwidget.GlanceAppWidgetManager(app)
+        fun glanceId(widgetId: Int) = requireNotNull(manager.getGlanceIdBy(android.content.Intent().putExtra(
+            android.appwidget.AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId)))
+        val timerId = glanceId((System.nanoTime() and 0x1fffffff).toInt() + 1)
+        val focusId = glanceId((System.nanoTime() and 0x1fffffff).toInt() + 0x20000000)
+        suspend fun refresh() {
+            com.dayforge.widget.timer.TimerWidget.refreshWidgetData(app, timerId, rowId)
+            com.dayforge.widget.focus.FocusWidget.refreshWidgetData(app, focusId)
+        }
+        suspend fun assertHealthy() {
+            val timer = com.dayforge.widget.timer.TimerWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, timerId)
+            val focus = com.dayforge.widget.focus.FocusWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, focusId)
+            assertEquals(1, timer[com.dayforge.widget.timer.TimerWidget.TARGET_MINUTES_KEY])
+            assertEquals(true, timer[com.dayforge.widget.timer.TimerWidget.IS_COUNTDOWN_KEY])
+            assertEquals("RUNNING", timer[com.dayforge.widget.timer.TimerWidget.TIMER_STATE_KEY])
+            assertEquals(false, timer[com.dayforge.widget.timer.TimerWidget.READ_FAILED_KEY])
+            assertEquals(rowId, focus[com.dayforge.widget.focus.FocusWidget.PRIMARY_HABIT_ID_KEY])
+            assertEquals(1, focus[com.dayforge.widget.focus.FocusWidget.PRIMARY_TARGET_VALUE_KEY])
+            assertEquals(true, focus[com.dayforge.widget.focus.FocusWidget.PRIMARY_IS_COUNTDOWN_KEY])
+            assertEquals(false, focus[com.dayforge.widget.focus.FocusWidget.READ_FAILED_KEY])
+        }
+        try {
+            refresh()
+            assertHealthy()
+            val queued = db.timeLogDao().getPendingTimerCommands()
+            val active = db.timeLogDao().getActiveTimeLog()
+            db.openHelper.writableDatabase.execSQL("UPDATE timer_command_outbox SET occurredAt=occurredAt+1 WHERE commandId=?", arrayOf(id(81)))
+            refresh()
+            val timer = com.dayforge.widget.timer.TimerWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, timerId)
+            val focus = com.dayforge.widget.focus.FocusWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, focusId)
+            assertEquals(true, timer[com.dayforge.widget.timer.TimerWidget.READ_FAILED_KEY])
+            assertEquals(false, timer[com.dayforge.widget.timer.TimerWidget.DATA_LOADED_KEY])
+            assertEquals(true, focus[com.dayforge.widget.focus.FocusWidget.READ_FAILED_KEY])
+            assertEquals(false, focus[com.dayforge.widget.focus.FocusWidget.DATA_LOADED_KEY])
+            assertEquals(active, db.timeLogDao().getActiveTimeLog())
+            db.openHelper.writableDatabase.execSQL("UPDATE timer_command_outbox SET occurredAt=? WHERE commandId=?", arrayOf<Any>(startAt, id(81)))
+            refresh()
+            assertHealthy()
+            assertEquals(queued, db.timeLogDao().getPendingTimerCommands())
+        } finally { com.dayforge.widget.FocusWidgetAlarmScheduler.cancelScheduledRefresh(app) }
     }
 }

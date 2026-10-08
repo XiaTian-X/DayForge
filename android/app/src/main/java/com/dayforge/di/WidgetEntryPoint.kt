@@ -11,6 +11,7 @@ import dagger.hilt.components.SingletonComponent
 interface WidgetEntryPoint {
     fun habitRepository(): HabitRepository
     fun habitStatusCalculator(): com.dayforge.domain.service.HabitStatusCalculator
+    fun timerWriter(): com.dayforge.data.repository.NextTimerWriter
 
     companion object {
         fun from(context: android.content.Context): WidgetEntryPoint = dagger.hilt.android.EntryPointAccessors
