@@ -136,6 +136,14 @@ Room schema、计时、后台任务或 Android 平台行为变化时还需要相
 以及 App/小组件共同判定；不修改手机时钟，不冒充完整计时服务或新轮次同步验收。
 实际会话资格仍由原服务及开始规则测试覆盖；只读待结算上界不是完成阈值证明。
 
+挑战轮次契约采用同一 `contracts/next/challenge-rounds.json`：后端完整
+`test_challenge_round_contract.py` 与 Android 完整 `ChallengeRoundContractTest` 验证 UUIDv5
+初始基线、整数/修订上界、严格类型、轮次及计划前置条件、未结束计时拒绝、精确创建绑定、
+旧页不回退、连续增量与完整恢复、原设备限定操作命名空间及输入不变性。相邻验证包括
+`test_one_time_sync_contract.py` / `test_next_contracts.py` 和 `OneTimeSyncContractTest` /
+`ContractIntegerTest`。这些是领域契约测试，不是迁移、账户授权、真实 SQL CAS、冷恢复或
+在线同步验收；持久接线完成后必须补对应矩阵，不能将有效序列化记录当成接受或写权限。
+
 卡片和指标详情的 UI 调整须保留功能信息回归：`HabitCardProgressTest` 检查长期完成/目标数值、
 可访问进度语义、窄宽大字体换行及原打卡回调，并对正/倒计时执行开始、暂停、恢复、停止的实际触摸，
 确认完成后不能重新开始且不误触卡片导航；`MetricCardTest` 检查空状态、展开/收起不误导航，

@@ -433,6 +433,23 @@ v5 预备实现使用 Room 身份绑定的恢复检查点，与接受的全部�
 恢复头不能被旧页或旧回执回退，业务与 cursor 必须原子提交。已产生新轮数据后不得降级为
 忽略轮次的旧统计；正式 v4、部署、清库和 v5 联合启用继续受原门禁约束。
 
+初始身份契约固定为 UUIDv5：namespace 是习惯的规范公开 UUID，UTF-8 name 为
+`dayforge.challenge.initial.v1`。仅 generation=0 使用这一身份；它不是当前轮次猜测，
+也不能从内部 ID、时间戳或上传顺序构造。账户/副本隔离仍由认证上下文和持久外键约束，
+相同公开 UUID 不构成账户证明。后续轮次使用新的 UUID，generation 为非负 32 位整数。
+`ChallengeRestartIntent` 固定 activity/新 round/expected round/expected generation 及正数
+64 位 `expected_plan_revision`，不携带 owner 或“已完成”声明。代次/修订耗尽拒绝，不回绕。
+记录保留创建的原 device/operation 身份和完整 intent；初始基线不虚构历史重启来源。
+
+`ChallengeRoundRecord` 的新头必须恰为其原 intent 的下一代，增量只推进连续的一步，
+同代不同头拒绝，旧页不回退头。bootstrap/归档的完整重建要求初始基线及全部连续记录，
+拒绝断链、重复 round UUID 或重复 device+operation 来源；不同设备的 operation UUID
+仍沿用原设备限定命名空间，不偷偷改成全局幂等键。已有旧记录的内容一致性须在持久层
+逐项校验，仅一个相同 head 不能证明原记录、来源或 ACK 有效。
+这些严格类型和共享向量位于 `contracts/next/challenge-rounds.json`，尚不是已挂载 API。
+实际 envelope/权限、Room/Alembic、SQL CAS、outbox/收据、事实/会话出生绑定及恢复检查点
+将在接线批次实现；纯 reducer 不替代事务、账户验证、重放或旧队列的副本证明。
+
 后端先增加向后兼容能力，再发布客户端，最后在受支持窗口结束后删除旧能力。协议版本、Android Room schema 和后端 Alembic revision 独立演进。
 
 ## 可执行契约
