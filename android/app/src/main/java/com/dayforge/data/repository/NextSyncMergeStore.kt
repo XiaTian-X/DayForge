@@ -143,6 +143,9 @@ internal class NextSyncMergeStore(
                 require(current == expected) { "SYNC_CURSOR_CHANGED" }
                 auditShadows()
                 val sources = pendingSources()
+                if (metadata != null) for (change in frozen.changes)
+                    NextRestartStore(database).capturePlanFrame(access, change, metadata)
+                val restartPlans = cacheProof(listOf("next_restart_plan_proofs"))
                 for (change in frozen.changes) {
                     currentCoroutineContext().ensureActive()
                     // Immutable round records are validated by the full sidecar, never structure-merged.
@@ -167,6 +170,7 @@ internal class NextSyncMergeStore(
                 check(pendingSources() == sources)
                 if (metadata != null) mergeRounds(access, current, next, metadata)
                 check(pendingSources() == sources)
+                check(cacheProof(listOf("next_restart_plan_proofs")) == restartPlans)
                 if (cacheOnly) rounds.requireQuiescentInTransaction()
                 if (metadata == null && frozen.changes.isEmpty() && frozen.nextCursor == expected.cursor) current
                 else commitState(access, current, next)
@@ -271,7 +275,7 @@ internal class NextSyncMergeStore(
         val metrics = database.metricDao().getAllMetricsOnce()
         val commands = database.timeLogDao().getPendingTimerCommands(Int.MAX_VALUE) + database.timeLogDao().getRejectedTimerCommands()
         val prompts = database.completionFollowUpDao().pendingPrompts()
-        val protectedPlans = pending.filter { it.recordType == "habit" }.map { it.entityUuid }.toMutableSet()
+        val protectedPlans = pending.filter { it.recordType in setOf("habit", RESTART_RECORD) }.map { it.entityUuid }.toMutableSet()
         protectedPlans += pending.mapNotNull { it.referenceUuid }.filter { ref -> habits.any { it.uuid == ref } }
         protectedPlans += conflicts.filter { it.entityType == "plan_node" }.map { it.localEntityUuid }
         protectedPlans += conflicts.mapNotNull { it.referenceUuid }.filter { ref -> habits.any { it.uuid == ref } }
@@ -355,7 +359,7 @@ internal class NextSyncMergeStore(
     private suspend fun pendingSources() = listOf("sync_outbox", "timer_command_outbox").associateWith {
         NextRequestSql.sources(database.openHelper.writableDatabase, it)
     } to cacheProof(listOf("next_request_origins", "next_transmissions", "next_acceptances",
-        "next_structural_dependencies", "next_structural_supersessions"))
+        "next_structural_dependencies", "next_structural_supersessions", "next_restart_materializations"))
 
     private suspend fun mergeRounds(access: LocalSyncAccess, current: NextSyncStateEntity?, next: NextSyncStateEntity,
         metadata: ChallengeMetadata) {
@@ -404,7 +408,7 @@ internal class NextSyncMergeStore(
         "metric_logs", "habit_metric_links", "sync_entity_state", "sync_outbox", "timer_command_outbox", "sync_conflicts",
         "local_fact_submissions", "completion_metric_prompts", "one_time_transmissions", "next_request_origins",
         "next_transmissions", "next_acceptances", "next_structural_dependencies", "next_structural_supersessions", "next_recovery_state", "next_rejections",
-        "next_challenge_state", "next_challenge_rounds", "next_challenge_births")
+        "next_challenge_state", "next_challenge_rounds", "next_challenge_births", "next_restart_materializations", "next_restart_plan_proofs")
 
     private suspend fun cacheProof(tables: List<String> = cacheTables): String {
         val digest = MessageDigest.getInstance("SHA-256")

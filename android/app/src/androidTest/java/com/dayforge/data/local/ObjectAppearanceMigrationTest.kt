@@ -128,7 +128,7 @@ class ObjectAppearanceMigrationTest {
         repeat(2) {
             val db = open()
             val sql = db.openHelper.writableDatabase
-            assertEquals(14, sql.version)
+            assertEquals(15, sql.version)
             assertEquals(before, snapshot(sql))
             tables.forEach { table ->
                 val current = rows(sql, "PRAGMA table_info(`$table`)")
@@ -168,7 +168,7 @@ class ObjectAppearanceMigrationTest {
             }
             raw.execSQL("ALTER TABLE unavailable_transmissions RENAME TO one_time_transmissions")
         }
-        assertEquals(14, open().openHelper.writableDatabase.version)
+        assertEquals(15, open().openHelper.writableDatabase.version)
     }
 
     @Test fun forgedVersionFiveIdentityFailsWithoutErasingRows() {

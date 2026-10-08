@@ -43,6 +43,7 @@ internal class NextSyncRuntime @Inject constructor(
     private val onceFacts = OneTimeAcceptedEventStore(database, tokens, sessions, localOnce, timerRequests = timers)
     private val once = NextOneTimeRequestStore(database, tokens, sessions, http, onceFacts, core)
     private val merge = NextSyncMergeStore(database, tokens, sessions, onceFacts, timers)
+    private val restart = NextChallengeRestartRepository(database, tokens, sessions, http)
 
     /** Captures authority once. Failure, unsupported v5, pending/conflicting work are never success. */
     suspend fun sync(progress: (SyncProgress) -> Unit = {}, afterSync: (suspend () -> Unit)? = null) = syncProfile(false, progress, afterSync)
@@ -64,6 +65,15 @@ internal class NextSyncRuntime @Inject constructor(
             val snapshot = http.session(access) { it.roundBootstrap() } ?: unsupported()
             merge.bootstrap(access, expected, snapshot, cacheOnly = true)
         } else merge.state(access, challengeProfile)
+        var pages = 0
+        suspend fun catchUpRounds() {
+            var state = requireNotNull(merge.state(access, true))
+            do {
+                require(++pages <= 100) { "SYNC_DOWNLOAD_LIMIT_REACHED" }
+                val page = http.session(access) { it.roundPull(state.cursor) } ?: unsupported()
+                state = merge.page(access, state, page)
+            } while (page.hasMore)
+        }
         val blocked = linkedSetOf<String>()
         val waiting = linkedSetOf<String>()
         var permanentBlock = false
@@ -103,7 +113,14 @@ internal class NextSyncRuntime @Inject constructor(
                         continue
                     }
                     timers.accept(delivery)
-                } else if (requireNotNull(operation).recordType == "one_time_completion") {
+                } else if (requireNotNull(operation).recordType == RESTART_RECORD) {
+                    require(challengeProfile)
+                    when (restart.sendAndAccept(access, requestId) ?: unsupported()) {
+                        NextRestartOutcome.COMMITTED, NextRestartOutcome.REPLAYED -> catchUpRounds()
+                        NextRestartOutcome.REJECTED -> { permanentBlock = true; blocked += requestId; continue }
+                        NextRestartOutcome.RETRY_REQUIRED -> { blocked += requestId; continue }
+                    }
+                } else if (operation.recordType == "one_time_completion") {
                     when (once.sendAndAccept(access, requestId) ?: unsupported()) {
                         is NextOneTimeOutcome.Accepted -> Unit
                         is NextOneTimeOutcome.Rejected -> { permanentBlock = true; blocked += requestId; continue }
@@ -156,7 +173,6 @@ internal class NextSyncRuntime @Inject constructor(
             state = merge.bootstrap(access, null, snapshot)
         }
         progress(SyncProgress.Downloading)
-        var pages = 0
         do {
             require(++pages <= 100) { "SYNC_DOWNLOAD_LIMIT_REACHED" }
             val expected = requireNotNull(state)
@@ -239,7 +255,13 @@ internal class NextSyncRuntime @Inject constructor(
             else NextChallengeStore(database).requirePlainInTransaction()
             NextRequestSql.sources(sql, "sync_outbox"); NextRequestSql.sources(sql, "timer_command_outbox")
             val causal = NextStructuralCausalStore(database)
-            val ordered = database.syncOutboxDao().getAll().map { it to causal.logicalOrder(it) }.sortedBy { it.second }.map { it.first }
+            if (challengeProfile) {
+                val metadata = NextChallengeStore(database).activeInTransaction(access).second
+                NextRestartStore(database).pending(access, metadata, NextRoundPendingInitialStore(database).read(access, metadata))
+            }
+            val ordered = database.syncOutboxDao().getAll().map {
+                it to if (it.recordType == RESTART_RECORD) it.id else causal.logicalOrder(it)
+            }.sortedBy { it.second }.map { it.first }
             val rejected = sql.query("SELECT kind,requestId FROM next_rejections ORDER BY kind,requestId").use { cursor ->
                 buildSet {
                     while (cursor.moveToNext()) {
@@ -262,7 +284,9 @@ internal class NextSyncRuntime @Inject constructor(
                     val origin = requireNotNull(database.nextRequestDao().origin(kind, id))
                     require(origin.protocol == 5 && origin.accountId == access.session.authentication.userId &&
                         origin.serverInstanceId == access.session.serverInstanceId && origin.syncEpoch == access.session.syncEpoch)
-                    val device = if (kind == NEXT_OPERATION) roundOperationIntent(origin.intentJson)?.capturedDeviceId
+                    val device = if (kind == NEXT_OPERATION) restartProposal(origin.intentJson)?.let {
+                        NextRestartStore(database).original(access, id); it.deviceId
+                    } ?: roundOperationIntent(origin.intentJson)?.capturedDeviceId
                         else roundTimerIntent(origin.intentJson)?.capturedDeviceId
                     require(device == access.deviceId) { "SYNC_CHALLENGE_SOURCE_REQUIRED" }
                 }

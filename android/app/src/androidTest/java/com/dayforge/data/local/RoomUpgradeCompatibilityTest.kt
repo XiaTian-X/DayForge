@@ -79,7 +79,7 @@ class RoomUpgradeCompatibilityTest {
 
     private fun structure(db: SupportSQLiteDatabase) = rows(db,
         "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' " +
-            "AND tbl_name NOT IN ('next_challenge_state','next_challenge_rounds','next_challenge_births','count_days','next_sync_state','next_rejections','next_structural_dependencies','next_structural_supersessions','local_fact_submissions', 'completion_metric_prompts', 'one_time_transmissions', 'next_recovery_state', 'next_request_origins', 'next_transmissions', 'next_acceptances') " +
+            "AND tbl_name NOT IN ('next_restart_materializations','next_restart_plan_proofs','next_challenge_state','next_challenge_rounds','next_challenge_births','count_days','next_sync_state','next_rejections','next_structural_dependencies','next_structural_supersessions','local_fact_submissions', 'completion_metric_prompts', 'one_time_transmissions', 'next_recovery_state', 'next_request_origins', 'next_transmissions', 'next_acceptances') " +
             "AND NOT (type = 'table' AND name IN ('habits', 'completions', 'metrics')) " +
             "AND name NOT IN ('sync_habits_update','sync_metrics_update') ORDER BY type, name")
 
@@ -171,7 +171,7 @@ class RoomUpgradeCompatibilityTest {
         repeat(2) {
             val db = open()
             val sql = db.openHelper.writableDatabase
-            assertEquals(14, sql.version)
+            assertEquals(15, sql.version)
             assertEquals(before, snapshot(sql))
             assertEquals(ddl, structure(sql))
             assertEquals(listOf(listOf(null, null, null, null), listOf(null, null, null, null)),
@@ -180,7 +180,7 @@ class RoomUpgradeCompatibilityTest {
             assertEquals(listOf(listOf(null, null, null, null)), rows(sql,
                 "SELECT oneTimeAction, oneTimeExpectedVersion, oneTimeExpectedHeadEventUuid, oneTimeRevertsEventUuid FROM completions"))
             val currentSchema = InstrumentationRegistry.getInstrumentation().context.assets
-                .open("com.dayforge.data.local.HabitDatabase/14.json").bufferedReader().use { it.readText() }
+                .open("com.dayforge.data.local.HabitDatabase/15.json").bufferedReader().use { it.readText() }
             assertEquals(listOf(listOf(Json.parseToJsonElement(currentSchema).jsonObject.getValue("database")
                 .jsonObject.getValue("identityHash").jsonPrimitive.content)),
                 rows(sql, "SELECT identity_hash FROM room_master_table WHERE id = 42"))

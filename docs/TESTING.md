@@ -19,6 +19,30 @@
 
 ## 验证层级
 
+### 离线重启内部链验证记录（2026-10-09，Issue #332）
+
+新增完整 `NextRestartMigrationTest` 和 `NextRestartWorkflowTest`。真实文件 Room 验证
+冻结 14→15 的旧行/DDL/原冻结字节不变、两张空私有表、错误 identity/占表/最终验证失败
+整体回滚及冷重开。真实 producer、账户存储、socket 和内部 runtime 验证连续两次离线
+重启、真实配置后继接受后才物化 revision、start/cancel 终态等待、响应丢失原字节重放、
+日志先于本地 ACK 不造接受、永久/暂时拒绝、账户/原来源变化、合法 JSON 替换原文拒绝、
+Plan proof 晚期副作用/接受写入故障回滚及远端墓碑不得级联待同步重启。
+socket 边界不是实际后端 SQL 联合验收；新增接受故障用例是提交前故障，不能称为新增
+重启专属 deferred 最终 COMMIT 故障证明，相邻已有最终 COMMIT 矩阵仍保留。
+
+初次构建失败（`06fc27c0422148348200330a850303eb`）修正新响应夹具参数；随后构建/lint
+通过但发现拒绝非 Unit JUnit 方法（`4ef961cc114e4648800452a678df310e`），均没有行为通过。
+完整受影响 32 类/313 项实际执行 312 passed、1 failed、0 skipped，17m54s，证据
+`cfa44da6d826455e8ba095e3083b8345`：新增配置链夹具漏传真实编辑票据，生产拒绝正确。
+收尾后合批补真实票据、原文绑定、逻辑顺序、UTC 等价锚点及删除保护，再执行全部受影响
+完整类：`NextRestartWorkflowTest`、`NextRestartMigrationTest`、`NextChallengeRestoreTest`、
+`NextRoundSyncRuntimeTest`、`NextSyncRuntimeTest`、`NextStructureRestoreTest`。
+最终 6 类/75 项全部通过，无失败/错误/跳过，connected 4m38s，独立证据
+`8893279b8035401199d34a9e9646c9c9/targeted.json`。根工具 51 项、构建/lint/警告门禁、
+APK/发现/XML/新覆盖输入及 testbed 清理通过。迁移旧 schema 1–14 没有改写。
+不拼接成 313 项或 Android 全量成功，不重复执行未变迁移/长链矩阵；未执行正式 UI、
+新轮后继离线录入、后端 SQL 联合、人工、外网或 NAS 验收，正式包未安装或清除。
+
 ### 按风险选择验证范围（2026-10-07 用户决策）
 
 日常开发不再为每个小修改执行全量测试。先明确受影响入口、调用方和持久化边界，再选择下表范围；

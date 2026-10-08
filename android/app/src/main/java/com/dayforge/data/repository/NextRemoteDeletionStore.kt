@@ -38,7 +38,8 @@ internal class NextRemoteDeletionStore(private val database: HabitDatabase) {
         val pending = dao.getAll() + dao.getDeadLetters()
         val record = when (type) { "plan_node" -> "habit"; "metric" -> "metric";
             "metric_observation" -> "metric_log"; else -> "link" }
-        require(pending.none { it.recordType == record && (it.entityUuid == id || it.wireEntityUuid == id) }) {
+        require(pending.none { (it.recordType == record || type == "plan_node" && it.recordType == RESTART_RECORD) &&
+            (it.entityUuid == id || it.wireEntityUuid == id) }) {
             "SYNC_LOCAL_WORK_REQUIRES_RESOLUTION"
         }
         require(database.syncConflictDao().getUnresolved().none { it.entityType == type &&
