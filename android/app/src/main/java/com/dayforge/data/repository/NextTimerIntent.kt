@@ -2,7 +2,6 @@ package com.dayforge.data.repository
 
 import com.dayforge.data.api.decodeFrozenSyncRequest
 import com.dayforge.data.api.dto.TimerCommandRequest
-import com.dayforge.data.api.dto.TimerCommandBatchRequest
 import com.dayforge.data.api.dto.TimerCommandResult
 import com.dayforge.data.api.dto.TimerStartPolicy
 import com.dayforge.data.local.HabitDatabase
@@ -22,6 +21,7 @@ internal data class NextTimerIntent(
 )
 
 internal suspend fun decodeNextTimerIntent(json: String): NextTimerIntent {
+    roundTimerIntent(json)?.let { return it.timer }
     val bytes = json.toByteArray(Charsets.UTF_8)
     // Both formats are strictly decoded. This reads old proof; it never adopts old queue rows.
     return if (Json.parseToJsonElement(json).jsonObject.containsKey("command"))
@@ -120,8 +120,7 @@ internal class NextTimerPolicyStore(private val database: HabitDatabase) {
                 sent.queueId == origin.queueId && sent.accountId == origin.accountId &&
                 sent.serverInstanceId == session.serverInstanceId && sent.syncEpoch == session.syncEpoch &&
                 sent.deviceId == access.capturedDeviceId && sent.wireHash == nextRequestHash(sent.wireBytes))
-            val envelope = decodeFrozenSyncRequest(sent.wireBytes, TimerCommandBatchRequest.serializer())
-            require(envelope.deviceId == sent.deviceId && envelope.commands == listOf(intent.command))
+            require(validateNextTimerEnvelope(origin.intentJson, sent.wireBytes, sent.deviceId) == intent.command)
         }
         if (acceptanceHash == null) {
             require(NextRequestSql.rowHash(sql, "timer_command_outbox", "id=?", arrayOf(origin.queueId)) == origin.sourceHash)

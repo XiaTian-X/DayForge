@@ -55,9 +55,11 @@ internal class NextCoreRequestStore(
         val access = captured.copy(capabilities = captured.capabilities.toSet())
         return http.session(access) { channel ->
             val prepared = prepare(access, NEXT_TIMER, commandId, timerOrder = firstSendOrder)
-            val response = channel.commandsFrozen(prepared.row.wireBytes)
+            val round = if (prepared.challengeProfile) channel.roundCommandsFrozen(prepared.row.wireBytes) else null
+            val response = if (round == null) channel.commandsFrozen(prepared.row.wireBytes)
+                else TimerCommandBatchResponse(round.results, round.serverTime)
             requireStillCurrent(access, prepared)
-            NextCoreDelivery(access, commandId, response, prepared.proof)
+            NextCoreDelivery(access, commandId, response, prepared.proof, round?.metadata())
         }
     }
 
@@ -130,7 +132,7 @@ internal class NextCoreRequestStore(
                 require(result.status in setOf("conflict", "rejected") && !result.errorCode.isNullOrBlank())
             } else {
                 require(kind == NEXT_TIMER)
-                val command = decodeFrozenSyncRequest(journal.wireBytes, TimerCommandBatchRequest.serializer()).commands.single()
+                val command = validateNextTimerEnvelope(captured.intentJson, journal.wireBytes, requireNotNull(access.deviceId))
                 val result = decodeFrozenSyncRequest(resultJson.toByteArray(Charsets.UTF_8), TimerCommandResult.serializer())
                 require(result.commandId == command.commandId && result.sessionId == command.sessionId &&
                     result.status in setOf("conflict", "rejected") && !result.errorCode.isNullOrBlank())
@@ -399,7 +401,8 @@ internal class NextCoreRequestStore(
             if (NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(kind, requestedId)) == null)
                 rejectNextRequest(NextRequestException.Reason.OLD_INTENT)
             val original = requireNotNull(database.nextRequestDao().origin(kind, requestedId))
-            val challengeProfile = kind == NEXT_OPERATION && roundOperationIntent(original.intentJson) != null
+            val challengeProfile = if (kind == NEXT_OPERATION) roundOperationIntent(original.intentJson) != null
+                else roundTimerIntent(original.intentJson) != null
             if (challengeProfile) NextChallengeStore(database).activeInTransaction(access)
             else NextChallengeStore(database).requirePlainInTransaction()
             val causal = if (kind == NEXT_OPERATION) NextStructuralCausalStore(database, requireNotNull(memo)) else null
@@ -438,7 +441,11 @@ internal class NextCoreRequestStore(
                     if (command.commandType == "start") NextTimerOrderingStore(database, tokens, sessions, this@NextCoreRequestStore)
                         .requireStartReady(requireNotNull(database.timeLogDao().getTimerCommand(origin.queueId)), access)
                     timerOrder?.invoke(requireNotNull(database.timeLogDao().getTimerCommand(origin.queueId)))
-                    encodeSyncRequest(TimerCommandBatchRequest.serializer(), TimerCommandBatchRequest(requireNotNull(access.deviceId), listOf(command)))
+                    val round = roundTimerIntent(origin.intentJson)
+                    if (round == null) encodeSyncRequest(TimerCommandBatchRequest.serializer(),
+                        TimerCommandBatchRequest(requireNotNull(access.deviceId), listOf(command)))
+                    else encodeSyncRequest(RoundTimerCommandBatchRequest.serializer(),
+                        RoundTimerCommandBatchRequest(1, requireNotNull(access.deviceId), listOf(command), listOf(round.context)))
                 }
                 NextTransmissionEntity(kind, id, origin.queueId, 5, origin.accountId,
                     requireNotNull(access.session.serverInstanceId), requireNotNull(access.session.syncEpoch),
@@ -453,7 +460,8 @@ internal class NextCoreRequestStore(
             if (causal != null) require(causal.resolve(requestedId, access) == id)
             NextRequestSql.requireOutboxEnabled(sql)
             authorize(access)
-            require((kind == NEXT_OPERATION && roundOperationIntent(origin.intentJson) != null) == challengeProfile)
+            require((if (kind == NEXT_OPERATION) roundOperationIntent(origin.intentJson) != null
+                else roundTimerIntent(origin.intentJson) != null) == challengeProfile)
             Prepared(stored, proof, challengeProfile)
         }
     }
@@ -525,9 +533,8 @@ internal class NextCoreRequestStore(
             validateNextOperationEnvelope(origin.intentJson, row.wireBytes, row.deviceId)
             if (roundOperationIntent(origin.intentJson) != null) NextChallengeStore(database).activeInTransaction(access)
         } else {
-            val request = decodeFrozenSyncRequest(row.wireBytes, TimerCommandBatchRequest.serializer())
-            require(request.deviceId == row.deviceId && request.commands.size == 1 &&
-                request.commands.single() == decodeNextTimerIntent(origin.intentJson).command)
+            validateNextTimerEnvelope(origin.intentJson, row.wireBytes, row.deviceId)
+            if (roundTimerIntent(origin.intentJson) != null) NextChallengeStore(database).activeInTransaction(access)
         }
     }
 
