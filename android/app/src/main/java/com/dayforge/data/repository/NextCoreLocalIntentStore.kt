@@ -49,8 +49,10 @@ internal class NextCoreLocalIntentStore(
         check(database.inTransaction())
         require(tokens.localSyncAccess() == access && tokens.syncAuthenticationSnapshot(access) != null && access.deviceId != null)
         val metadata = NextChallengeStore(database).activeInTransaction(access).second
+        val initials = NextRoundPendingInitialStore(database).read(access, metadata)
         return NextRoundWriteScope(access.copy(capabilities = access.capabilities.toSet()),
-            Json.encodeToString(ChallengeMetadata.serializer(), metadata), NextRoundPendingInitialStore(database).read(access, metadata))
+            Json.encodeToString(ChallengeMetadata.serializer(), metadata), initials,
+            NextRestartStore(database).pending(access, metadata, initials))
     }
 
     /** Same displayed snapshot chooses an already accepted profile; never upgrade an old ticket. */
@@ -86,8 +88,10 @@ internal class NextCoreLocalIntentStore(
             } else {
                 require(tokens.localSyncAccess() == scope.access && access.capturedDeviceId == scope.access.deviceId &&
                     tokens.syncAuthenticationSnapshot(scope.access) != null) { "SYNC_CHALLENGE_CONTEXT_CHANGED" }
-                NextRoundOperationCapture(database, scope, requireNotNull(roundState).second,
-                    database.habitDao().getAllHabitsOnce(), NextRoundPendingInitialStore(database).read(scope.access, roundState.second))
+                val initials = NextRoundPendingInitialStore(database).read(scope.access, requireNotNull(roundState).second)
+                NextRoundOperationCapture(database, scope, roundState.second,
+                    database.habitDao().getAllHabitsOnce(), initials,
+                    NextRestartStore(database).pending(scope.access, roundState.second, initials))
             }
             val sql = database.openHelper.writableDatabase
             NextRequestSql.requireOutboxEnabled(sql)

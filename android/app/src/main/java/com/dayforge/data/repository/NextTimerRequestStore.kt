@@ -217,6 +217,17 @@ internal class NextTimerRequestStore(
         return true
     }
 
+    /** Restart waits for the complete real terminal receipt, not a missing queue/local end time. */
+    internal suspend fun requireAcceptedTerminalInTransaction(access: LocalSyncAccess, id: String, session: String, sequence: Int): String {
+        check(database.inTransaction())
+        if (hash("next_acceptances", id) == null) rejectNextRequest(NextRequestException.Reason.CAUSAL_PREDECESSOR_PENDING)
+        val saved = receipt(access, id)
+        require(saved.command.sessionId == session && saved.command.sequence == sequence &&
+            saved.command.commandType in setOf("stop", "cancel") &&
+            saved.result.session?.state == if (saved.command.commandType == "stop") "completed" else "cancelled")
+        return saved.proof
+    }
+
     private suspend fun requireHead(command: TimerCommandEntity, access: LocalSyncAccess) {
         if (command.commandType == "start")
             NextTimerOrderingStore(database, tokens, sessions, requests).requireStartReady(command, access)

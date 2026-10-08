@@ -15,14 +15,15 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** Production 13→14 migration, final Room validation and cold reopen; no data reconstruction. */
+/** Actual frozen 14→15 production upgrade, old bytes/DDL, failure rollback and cold reopen. */
 @RunWith(AndroidJUnit4::class)
-class NextChallengeMigrationTest {
+class NextRestartMigrationTest {
     private lateinit var context: Context
     private var room: HabitDatabase? = null
+    private val identity = "1e4ec9cd8102513240ee379e3d30d1aa"
     private val schema by lazy {
         Json.parseToJsonElement(InstrumentationRegistry.getInstrumentation().context.assets
-            .open("com.dayforge.data.local.HabitDatabase/13.json").bufferedReader().use { it.readText() })
+            .open("com.dayforge.data.local.HabitDatabase/14.json").bufferedReader().use { it.readText() })
             .jsonObject.getValue("database").jsonObject
     }
     private val entities get() = schema.getValue("entities").jsonArray.map { it.jsonObject }
@@ -30,7 +31,7 @@ class NextChallengeMigrationTest {
         context = ApplicationProvider.getApplicationContext()
         check(context.packageName == "com.dayforge.testbed")
         HabitDatabaseProvider.clearInstanceForTesting(); context.deleteDatabase("habit_database")
-        assertEquals("524307869b791fde05e3bd4497ef798b", schema.getValue("identityHash").jsonPrimitive.content)
+        assertEquals(identity, schema.getValue("identityHash").jsonPrimitive.content)
     }
     @After fun cleanup() {
         room?.close(); HabitDatabaseProvider.clearInstanceForTesting(); context.deleteDatabase("habit_database")
@@ -44,7 +45,7 @@ class NextChallengeMigrationTest {
         buildList { while (c.moveToNext()) add(List(c.columnCount) { i -> when (c.getType(i)) {
             android.database.Cursor.FIELD_TYPE_NULL -> null
             android.database.Cursor.FIELD_TYPE_BLOB -> "blob:" + c.getBlob(i).joinToString("") { "%02x".format(it) }
-            else -> c.getString(i)
+            else -> c.getType(i).toString() + ":" + c.getString(i)
         } }) }
     }
     private fun snapshot(db: SupportSQLiteDatabase) = entities.associate { entity ->
@@ -53,10 +54,10 @@ class NextChallengeMigrationTest {
         table to rows(db, "SELECT $columns FROM `$table` ORDER BY rowid")
     }
     private fun ddl(db: SupportSQLiteDatabase) = rows(db, "SELECT type,name,tbl_name,sql FROM sqlite_master " +
-        "WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('next_restart_materializations','next_restart_plan_proofs','next_sync_state','next_challenge_state','next_challenge_rounds','next_challenge_births') ORDER BY type,name")
+        "WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('next_restart_materializations','next_restart_plan_proofs') ORDER BY type,name")
     private fun seed(block: (SupportSQLiteDatabase) -> Unit = {}) {
         FrameworkSQLiteOpenHelperFactory().create(SupportSQLiteOpenHelper.Configuration.builder(context)
-            .name("habit_database").callback(object : SupportSQLiteOpenHelper.Callback(13) {
+            .name("habit_database").callback(object : SupportSQLiteOpenHelper.Callback(14) {
                 override fun onCreate(db: SupportSQLiteDatabase) {
                     entities.forEach { entity ->
                         val table = entity.getValue("tableName").jsonPrimitive.content
@@ -70,65 +71,53 @@ class NextChallengeMigrationTest {
             }).build()).use { helper ->
             val db = helper.writableDatabase
             db.execSQL("INSERT INTO sync_control(id,suppressOutbox) VALUES(1,0)")
-            db.execSQL("""INSERT INTO next_sync_state(accountId,serverInstanceId,syncEpoch,deviceId,generation,cursor,bootstrapHash,batchHash,id)
-                VALUES('account','server','epoch','device',7,12,'frozen-bootstrap','frozen-batch',1)""")
+            // Deliberately opaque historical bytes must be preserved, never interpreted as authority.
             db.execSQL("""INSERT INTO next_request_origins(kind,requestId,queueId,protocol,accountId,serverInstanceId,syncEpoch,sourceHash,intentJson)
                 VALUES('sync_operation','original',1,5,'account',NULL,NULL,'frozen-source','{"untouched":true}')""")
             db.execSQL("""INSERT INTO next_transmissions(kind,requestId,queueId,protocol,accountId,serverInstanceId,syncEpoch,deviceId,wireHash,wireBytes)
                 VALUES('sync_operation','original',1,5,'account','server','epoch','device','frozen-wire',X'007FFF')""")
-            SyncSchemaCallback.onOpen(db)
-            block(db)
+            SyncSchemaCallback.onOpen(db); block(db)
         }
     }
-    @Test fun oldRowsDdlAndFrozenBytesSurviveWithoutInventingBirths() {
+    @Test fun completeOldRowsDdlAndFrozenWireSurviveAndPrivateTablesStartEmpty() {
         var before = emptyMap<String, List<List<String?>>>()
         var structure = emptyList<List<String?>>()
-        var cursorColumns = emptyList<List<String?>>()
-        seed { before = snapshot(it); structure = ddl(it); cursorColumns = rows(it, "PRAGMA table_info(next_sync_state)") }
-        assertEquals(25, entities.size)
+        seed { before = snapshot(it); structure = ddl(it) }
+        assertEquals(28, entities.size)
         repeat(2) {
             val db = open()
             assertEquals(15, db.version); assertEquals(before, snapshot(db)); assertEquals(structure, ddl(db))
-            assertEquals(cursorColumns, rows(db, "PRAGMA table_info(next_sync_state)").dropLast(1))
-            assertEquals(listOf(listOf("0")), rows(db, "SELECT challengeContract FROM next_sync_state"))
-            for (table in listOf("next_challenge_rounds", "next_challenge_births", "next_challenge_state"))
-                assertTrue(rows(db, "SELECT * FROM $table").isEmpty())
+            for (table in listOf("next_restart_materializations", "next_restart_plan_proofs")) assertTrue(rows(db, "SELECT * FROM $table").isEmpty())
             assertTrue(rows(db, "PRAGMA foreign_key_check").isEmpty())
-            assertEquals(listOf(listOf("ok")), rows(db, "PRAGMA integrity_check"))
+            assertEquals(listOf(listOf("3:ok")), rows(db, "PRAGMA integrity_check"))
         }
     }
-    @Test fun occupiedNewTableFailsWithoutOverwritingOldRowsOrOriginalIdentity() {
-        seed { it.execSQL("CREATE TABLE next_challenge_rounds(unproven TEXT)"); it.execSQL("INSERT INTO next_challenge_rounds VALUES('keep')") }
-        assertNotNull(runCatching { open() }.exceptionOrNull())
-        room!!.close()
+    @Test fun occupiedSecondTableRollsBackFirstDdlWithoutOverwritingExistingRows() {
+        seed { it.execSQL("CREATE TABLE next_restart_plan_proofs(unproven TEXT)"); it.execSQL("INSERT INTO next_restart_plan_proofs VALUES('keep')") }
+        assertNotNull(runCatching { open() }.exceptionOrNull()); room!!.close()
         SQLiteDatabase.openDatabase(context.getDatabasePath("habit_database").path, null, SQLiteDatabase.OPEN_READONLY).use { raw ->
-            assertEquals(13, raw.version)
-            raw.rawQuery("SELECT * FROM next_sync_state", null).use { assertEquals(-1, it.getColumnIndex("challengeContract")) }
-            raw.rawQuery("SELECT unproven FROM next_challenge_rounds", null).use { assertTrue(it.moveToFirst()); assertEquals("keep", it.getString(0)) }
-            raw.rawQuery("SELECT identity_hash FROM room_master_table WHERE id=42", null).use {
-                assertTrue(it.moveToFirst()); assertEquals("524307869b791fde05e3bd4497ef798b", it.getString(0))
-            }
+            assertEquals(14, raw.version)
+            raw.rawQuery("SELECT unproven FROM next_restart_plan_proofs", null).use { assertTrue(it.moveToFirst()); assertEquals("keep", it.getString(0)) }
+            raw.rawQuery("SELECT name FROM sqlite_master WHERE tbl_name='next_restart_materializations'", null).use { assertFalse(it.moveToFirst()) }
+            raw.rawQuery("SELECT identity_hash FROM room_master_table WHERE id=42", null).use { assertTrue(it.moveToFirst()); assertEquals(identity, it.getString(0)) }
         }
     }
-    @Test fun finalRoomValidationFailureRollsBackTableIndicesAndAllowsExactRetry() {
+    @Test fun finalRoomValidationFailureRollsBackBothTablesAndAllowsExactRetry() {
         seed { it.execSQL("ALTER TABLE one_time_transmissions RENAME TO unavailable_transmissions") }
-        assertNotNull(runCatching { open() }.exceptionOrNull())
-        room!!.close()
+        assertNotNull(runCatching { open() }.exceptionOrNull()); room!!.close()
         SQLiteDatabase.openDatabase(context.getDatabasePath("habit_database").path, null, SQLiteDatabase.OPEN_READWRITE).use { raw ->
-            assertEquals(13, raw.version)
-            raw.rawQuery("SELECT * FROM next_sync_state", null).use { assertEquals(-1, it.getColumnIndex("challengeContract")) }
-            raw.rawQuery("SELECT name FROM sqlite_master WHERE tbl_name='next_challenge_rounds'", null).use { assertFalse(it.moveToFirst()) }
+            assertEquals(14, raw.version)
+            raw.rawQuery("SELECT name FROM sqlite_master WHERE tbl_name LIKE 'next_restart_%'", null).use { assertFalse(it.moveToFirst()) }
             raw.execSQL("ALTER TABLE unavailable_transmissions RENAME TO one_time_transmissions")
         }
         assertEquals(15, open().version)
     }
-    @Test fun fakeVersion13IdentityCannotAcquireRoundAuthority() {
+    @Test fun fakeVersion14IdentityCannotAcquirePrivateProofTables() {
         seed { it.execSQL("UPDATE room_master_table SET identity_hash='unproven' WHERE id=42") }
-        assertNotNull(runCatching { open() }.exceptionOrNull())
-        room!!.close()
+        assertNotNull(runCatching { open() }.exceptionOrNull()); room!!.close()
         SQLiteDatabase.openDatabase(context.getDatabasePath("habit_database").path, null, SQLiteDatabase.OPEN_READONLY).use { raw ->
-            assertEquals(13, raw.version)
-            raw.rawQuery("SELECT name FROM sqlite_master WHERE tbl_name='next_challenge_rounds'", null).use { assertFalse(it.moveToFirst()) }
+            assertEquals(14, raw.version)
+            raw.rawQuery("SELECT name FROM sqlite_master WHERE tbl_name LIKE 'next_restart_%'", null).use { assertFalse(it.moveToFirst()) }
         }
     }
 }

@@ -588,6 +588,24 @@ NEW observation/source/本地提交证明同事务保存，末尾重新检查整
 小组件声明区分 plain/profile 与实际轮头，即使增量操作也须重新核验；提醒旧头唤醒不得显示
 新轮进度。旧物理清历史入口拒绝 profile，尚未因此实现离线重启、打卡/计时统一统计或正式 v5。
 
+离线重启内部链新增严格私有 `restart_proposal=1` 原意图；它不是 HTTP payload，不含
+`expected_plan_revision`。出生时原队列 body 与 intent 原文一致，整行 hash 绑定原身份，
+不能在冷重开时用另一段合法 JSON 替换意图。旧头/上一重启/配置来源及 stop/cancel 前沿
+均审计原账户、原副本、设备、来源及完整真实接受；配置受控替代使用原逻辑顺序。
+只有前驱完整确认，才首次创建严格 `challenge_round` canonical 操作和完整传输日志；
+重放始终使用原 operation ID/冻结字节。暂时拒绝保留原工作，不记录永久拒绝。
+真实 ACK 的共享接受记录、accepted metadata 与自身队列消费同一 Room COMMIT，
+不改变旧事实、本机计时终态或下载 cursor。重启不会借新头改写原开始/每日计数政策。
+
+重启 ACK 没有 Plan 实体，不能补造普通 Plan ACK。内部 Plan proof 仅从已认证连续日志
+捕获对应 `expected_plan_revision+1`、原设备和完整真实重启记录，保存原 Plan JSON 与
+日志序号，另绑定原意图及完整传输 hash。该日志即使先于丢失的本地 ACK 到达，也不代表
+接受；后继同时需要实际共享 ACK 与 Plan proof。创建锚点比较相同 UTC 瞬时，原时间格式
+及请求/响应字节不重写。一个同步调用的中间 Plan 追赶和末尾下载共用原 100 页预算。
+Room 14→15 仅追加两个空私有证明表，不转换旧工作或轮次；存在证明时禁止降级到 plain。
+待同步重启保护本机投影和来源免于远端墓碑/快照裁剪。当前同活动后继写入明确等待，
+其离线原来源绑定、统一本轮统计、正式重启/UI/Worker 和联合验收仍未完成；不提前启用 v5。
+
 后端先增加向后兼容能力，再发布客户端，最后在受支持窗口结束后删除旧能力。协议版本、Android Room schema 和后端 Alembic revision 独立演进。
 
 ## 可执行契约

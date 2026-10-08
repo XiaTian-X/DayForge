@@ -53,7 +53,7 @@ class CountDayMigrationTest {
         table to rows(db, "SELECT $columns FROM `$table` ORDER BY rowid")
     }
     private fun ddl(db: SupportSQLiteDatabase) = rows(db, "SELECT type,name,tbl_name,sql FROM sqlite_master " +
-        "WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('next_sync_state','next_challenge_state','next_challenge_rounds','next_challenge_births','count_days') ORDER BY type,name")
+        "WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('next_restart_materializations','next_restart_plan_proofs','next_sync_state','next_challenge_state','next_challenge_rounds','next_challenge_births','count_days') ORDER BY type,name")
     private fun seed(block: (SupportSQLiteDatabase) -> Unit = {}) {
         FrameworkSQLiteOpenHelperFactory().create(SupportSQLiteOpenHelper.Configuration.builder(context)
             .name("habit_database").callback(object : SupportSQLiteOpenHelper.Callback(12) {
@@ -85,7 +85,7 @@ class CountDayMigrationTest {
         assertEquals(24, entities.size)
         repeat(2) {
             val db = open()
-            assertEquals(14, db.version); assertEquals(before, snapshot(db)); assertEquals(structure, ddl(db))
+            assertEquals(15, db.version); assertEquals(before, snapshot(db)); assertEquals(structure, ddl(db))
             assertTrue(rows(db, "SELECT * FROM count_days").isEmpty())
             assertTrue(rows(db, "PRAGMA foreign_key_check").isEmpty())
             assertEquals(listOf(listOf("ok")), rows(db, "PRAGMA integrity_check"))
@@ -112,7 +112,7 @@ class CountDayMigrationTest {
             raw.rawQuery("SELECT name FROM sqlite_master WHERE tbl_name='count_days'", null).use { assertFalse(it.moveToFirst()) }
             raw.execSQL("ALTER TABLE unavailable_transmissions RENAME TO one_time_transmissions")
         }
-        assertEquals(14, open().version)
+        assertEquals(15, open().version)
     }
     @Test fun fakeVersion12IdentityCannotAcquireDailyRules() {
         seed { it.execSQL("UPDATE room_master_table SET identity_hash='unproven' WHERE id=42") }

@@ -11,7 +11,8 @@ import kotlinx.serialization.json.*
 internal class NextRoundWriteScope internal constructor(
     val access: LocalSyncAccess,
     internal val metadataJson: String,
-    internal val pendingInitials: Map<String, NextPendingInitial> = emptyMap()
+    internal val pendingInitials: Map<String, NextPendingInitial> = emptyMap(),
+    internal val pendingRestarts: Map<String, NextRestartReference> = emptyMap()
 )
 
 /** Transaction participant for NEW operations and local timer sources. Not a restart producer. */
@@ -20,7 +21,8 @@ internal class NextRoundOperationCapture(
     private val scope: NextRoundWriteScope,
     private val before: ChallengeMetadata,
     private val existing: List<HabitEntity>,
-    private val pendingInitials: Map<String, NextPendingInitial> = emptyMap()
+    private val pendingInitials: Map<String, NextPendingInitial> = emptyMap(),
+    private val pendingRestarts: Map<String, NextRestartReference> = emptyMap()
 ) {
     private val shown = Json.decodeFromString<ChallengeMetadata>(scope.metadataJson)
     private val touched = mutableSetOf<String>()
@@ -30,9 +32,11 @@ internal class NextRoundOperationCapture(
 
     private suspend fun current(activity: String): ChallengeRoundHead {
         freshHeads[activity]?.let { return it }
+        if (activity in pendingRestarts) rejectNextRequest(NextRequestException.Reason.CAUSAL_PREDECESSOR_PENDING)
         val actual = before.checkpoints.singleOrNull { it.head.activityUuid == activity }?.head
-        val expected = shown.checkpoints.singleOrNull { it.head.activityUuid == activity }?.head
+        val expected = scope.pendingRestarts[activity]?.head ?: shown.checkpoints.singleOrNull { it.head.activityUuid == activity }?.head
             ?: scope.pendingInitials[activity]?.head
+        scope.pendingRestarts[activity]?.let { NextRestartStore(database).acceptedPlan(scope.access, it) }
         if (actual != null) {
             require(expected == actual) { "SYNC_CHALLENGE_STALE_ACTION" }
             val latest = before.checkpoints.single { it.head == actual }.records.single { it.head == actual }
@@ -70,6 +74,9 @@ internal class NextRoundOperationCapture(
     }
 
     suspend fun capture(operation: SyncV2Operation): NextRoundOperationIntent {
+        if (operation.entityType == "plan_node" && operation.action == "delete" && "child_policy" in operation.payload &&
+            existing.any { it.parentHabitId == operation.entityUuid && it.uuid in pendingRestarts })
+            rejectNextRequest(NextRequestException.Reason.CAUSAL_PREDECESSOR_PENDING)
         val head = when (operation.entityType) {
             "plan_node" -> {
                 val original = existing.singleOrNull { it.uuid == operation.entityUuid }
@@ -175,9 +182,11 @@ internal class NextRoundOperationCapture(
                 "SYNC_CHALLENGE_INITIAL_SOURCE_CHANGED"
             }
         }
+        require(NextRestartStore(database).pending(scope.access, after,
+            NextRoundPendingInitialStore(database).read(scope.access, after)) == pendingRestarts) { "SYNC_RESTART_SOURCE_CHANGED" }
         for (activity in touched) {
             val actual = before.checkpoints.singleOrNull { it.head.activityUuid == activity }?.head
-            if (actual != null) require((shown.checkpoints.singleOrNull { it.head.activityUuid == activity }?.head
+            if (actual != null) require((scope.pendingRestarts[activity]?.head ?: shown.checkpoints.singleOrNull { it.head.activityUuid == activity }?.head
                 ?: scope.pendingInitials[activity]?.head) == actual)
             else pendingInitials[activity]?.let { pending ->
                 require(scope.pendingInitials[activity] == pending)

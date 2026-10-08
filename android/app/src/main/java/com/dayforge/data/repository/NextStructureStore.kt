@@ -97,7 +97,7 @@ internal class NextStructureStore(private val database: HabitDatabase) {
                 }
             }
             val recordType = if (isPlan) "habit" else "metric"
-            val othersPending = pending.any { it.id != acceptedQueueId && it.recordType == recordType &&
+            val othersPending = pending.any { it.id != acceptedQueueId && (it.recordType == recordType || isPlan && it.recordType == RESTART_RECORD) &&
                 (it.entityUuid == change.entityUuid || it.wireEntityUuid == change.entityUuid) }
             if (conflicts.any { it.recordType == recordType && (it.localEntityUuid == change.entityUuid || it.wireEntityUuid == change.entityUuid) } ||
                 acceptedQueueId == null && !incremental && othersPending) {
