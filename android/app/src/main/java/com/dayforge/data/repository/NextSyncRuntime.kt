@@ -45,21 +45,34 @@ internal class NextSyncRuntime @Inject constructor(
     private val merge = NextSyncMergeStore(database, tokens, sessions, onceFacts, timers)
 
     /** Captures authority once. Failure, unsupported v5, pending/conflicting work are never success. */
-    suspend fun sync(progress: (SyncProgress) -> Unit = {}, afterSync: (suspend () -> Unit)? = null) = mutex.withLock {
+    suspend fun sync(progress: (SyncProgress) -> Unit = {}, afterSync: (suspend () -> Unit)? = null) = syncProfile(false, progress, afterSync)
+
+    /** Explicit complete profile coordinator; not the formal UI/Worker activation switch. */
+    suspend fun syncRounds(progress: (SyncProgress) -> Unit = {}, afterSync: (suspend () -> Unit)? = null) = syncProfile(true, progress, afterSync)
+
+    private suspend fun syncProfile(challengeProfile: Boolean, progress: (SyncProgress) -> Unit,
+        afterSync: (suspend () -> Unit)?) = mutex.withLock {
         val access = sessions.exclusive {
             val captured = requireNotNull(tokens.localSyncAccess())
             captured.copy(capabilities = captured.capabilities.toSet())
         }
-        merge.state(access) // Refuse a challenge cache before any plain upload or journal preparation.
+        // A legacy/unknown queue cannot be converted to profile sources during bootstrap.
+        if (challengeProfile && merge.state(access, true) == null) {
+            requireNoChallengeUpload(access)
+            progress(SyncProgress.Recovering)
+            val expected = merge.challengeBootstrapExpectation(access)
+            val snapshot = http.session(access) { it.roundBootstrap() } ?: unsupported()
+            merge.bootstrap(access, expected, snapshot, cacheOnly = true)
+        } else merge.state(access, challengeProfile)
         val blocked = linkedSetOf<String>()
         val waiting = linkedSetOf<String>()
         var permanentBlock = false
         var uploaded = 0
-        var total = queues(access).let { it.operations.size + it.commands.size }
+        var total = queues(access, challengeProfile).let { it.operations.size + it.commands.size }
         progress(SyncProgress.UploadingChanges(0, total))
         while (true) {
             currentCoroutineContext().ensureActive()
-            val queues = queues(access)
+            val queues = queues(access, challengeProfile)
             blocked += queues.rejectedIds
             if (queues.rejectedIds.isNotEmpty()) permanentBlock = true
             val operations = queues.operations.filter { it.operationId !in blocked }
@@ -82,7 +95,8 @@ internal class NextSyncRuntime @Inject constructor(
                     if (result.status in setOf("conflict", "rejected")) {
                         if (result.errorCode !in TRANSIENT_ERRORS) {
                             core.recordRejection(access, NEXT_TIMER, delivery.requestId, delivery.transmissionProof,
-                                encodeSyncRequest(TimerCommandResult.serializer(), result).toString(Charsets.UTF_8))
+                                encodeSyncRequest(TimerCommandResult.serializer(), result).toString(Charsets.UTF_8),
+                                delivery.challengeMetadata, delivery.result.serverTime)
                             permanentBlock = true
                         }
                         blocked += requestId
@@ -100,7 +114,7 @@ internal class NextSyncRuntime @Inject constructor(
                     if (result.status in setOf("conflict", "rejected")) {
                         if (result.errorCode !in TRANSIENT_ERRORS) {
                             core.recordRejection(access, NEXT_OPERATION, delivery.requestId, delivery.transmissionProof,
-                                encodeSyncRequest(NextSyncOperationResult.serializer(), result).toString(Charsets.UTF_8))
+                                encodeSyncRequest(NextSyncOperationResult.serializer(), result).toString(Charsets.UTF_8), delivery.challengeMetadata)
                             permanentBlock = true
                         }
                         blocked += delivery.requestId
@@ -134,8 +148,9 @@ internal class NextSyncRuntime @Inject constructor(
                 blocked += requestId
             }
         }
-        var state = merge.state(access)
+        var state = merge.state(access, challengeProfile)
         if (state == null) {
+            require(!challengeProfile) { "SYNC_CHALLENGE_CHECKPOINT_MISSING" }
             progress(SyncProgress.Recovering)
             val snapshot = http.session(access) { it.bootstrap() } ?: unsupported()
             state = merge.bootstrap(access, null, snapshot)
@@ -145,13 +160,20 @@ internal class NextSyncRuntime @Inject constructor(
         do {
             require(++pages <= 100) { "SYNC_DOWNLOAD_LIMIT_REACHED" }
             val expected = requireNotNull(state)
-            val page = http.session(access) { it.pull(expected.cursor) } ?: unsupported()
-            state = merge.page(access, expected, page)
-        } while (page.hasMore)
+            val hasMore = if (challengeProfile) {
+                val page = http.session(access) { it.roundPull(expected.cursor) } ?: unsupported()
+                state = merge.page(access, expected, page); page.hasMore
+            } else {
+                val page = http.session(access) { it.pull(expected.cursor) } ?: unsupported()
+                state = merge.page(access, expected, page); page.hasMore
+            }
+        } while (hasMore)
         sessions.exclusive {
             authorize(access)
             database.withTransaction {
                 NextRequestSql.requireOutboxEnabled(database.openHelper.writableDatabase)
+                if (challengeProfile) NextChallengeStore(database).activeInTransaction(access)
+                else NextChallengeStore(database).requirePlainInTransaction()
                 val outstanding = database.syncOutboxDao().getAll() + database.syncOutboxDao().getDeadLetters()
                 blocked += outstanding.map { it.operationId }
                 blocked += (database.timeLogDao().getPendingTimerCommands(Int.MAX_VALUE) +
@@ -208,11 +230,13 @@ internal class NextSyncRuntime @Inject constructor(
 
     private data class Queues(val operations: List<SyncOutboxEntity>, val commands: List<TimerCommandEntity>, val rejectedIds: Set<String>)
 
-    private suspend fun queues(access: LocalSyncAccess): Queues = sessions.exclusive {
+    private suspend fun queues(access: LocalSyncAccess, challengeProfile: Boolean): Queues = sessions.exclusive {
         authorize(access)
         database.withTransaction {
             val sql = database.openHelper.writableDatabase
             NextRequestSql.requireOutboxEnabled(sql)
+            if (challengeProfile) NextChallengeStore(database).activeInTransaction(access)
+            else NextChallengeStore(database).requirePlainInTransaction()
             NextRequestSql.sources(sql, "sync_outbox"); NextRequestSql.sources(sql, "timer_command_outbox")
             val causal = NextStructuralCausalStore(database)
             val ordered = database.syncOutboxDao().getAll().map { it to causal.logicalOrder(it) }.sortedBy { it.second }.map { it.first }
@@ -228,7 +252,22 @@ internal class NextSyncRuntime @Inject constructor(
                     }
                 }
             }
-            Queues(ordered, database.timeLogDao().getPendingTimerCommands(10_001), rejected)
+            val commands = database.timeLogDao().getPendingTimerCommands(10_001)
+            if (challengeProfile) {
+                val originals = (ordered + database.syncOutboxDao().getDeadLetters()).map { NEXT_OPERATION to it.operationId } +
+                    (commands + database.timeLogDao().getRejectedTimerCommands()).map { NEXT_TIMER to it.commandId } +
+                    database.nextSyncStateDao().rejections().map { it.kind to it.requestId }
+                for ((kind, id) in originals.distinct()) {
+                    requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(kind, id)))
+                    val origin = requireNotNull(database.nextRequestDao().origin(kind, id))
+                    require(origin.protocol == 5 && origin.accountId == access.session.authentication.userId &&
+                        origin.serverInstanceId == access.session.serverInstanceId && origin.syncEpoch == access.session.syncEpoch)
+                    val device = if (kind == NEXT_OPERATION) roundOperationIntent(origin.intentJson)?.capturedDeviceId
+                        else roundTimerIntent(origin.intentJson)?.capturedDeviceId
+                    require(device == access.deviceId) { "SYNC_CHALLENGE_SOURCE_REQUIRED" }
+                }
+            }
+            Queues(ordered, commands, rejected)
         }
     }
 
