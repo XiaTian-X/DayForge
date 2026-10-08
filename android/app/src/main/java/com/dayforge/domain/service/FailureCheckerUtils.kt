@@ -119,19 +119,40 @@ object FailureCheckerUtils {
         firstCompletionDate: LocalDate,
         completionDao: CompletionDao,
         timeLogDao: TimeLogDao
-    ): Boolean {
-        val today = LocalDate.now()
+    ): Boolean = evaluateStrictFailure(habit, firstCompletionDate, completionDao, timeLogDao) == StrictFailureState.FAILED
+
+    /**
+     * A session still awaiting stop/cancel may settle a past date. Keep checking other dates:
+     * an unrelated older miss wins over pending evidence. Never publish provisional duration.
+     */
+    suspend fun evaluateStrictFailure(
+        habit: HabitEntity,
+        firstCompletionDate: LocalDate,
+        completionDao: CompletionDao,
+        timeLogDao: TimeLogDao,
+        today: LocalDate = LocalDate.now()
+    ): StrictFailureState {
         var checkDate = firstCompletionDate
+        var awaitingTimer = false
 
         while (checkDate < today) {
             if (ScheduleValidator.isCheckInAllowedOnDate(habit.schedule, habit.createdAt, checkDate)) {
-                if (!hasTargetMetOnDate(habit, completionDao, timeLogDao, checkDate)) {
-                    return true
+                if (habit.habitType == HabitType.TIMER) {
+                    val start = checkDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                    val snapshot = timeLogDao.getTimerFailureDaySnapshot(habit.id, checkDate.toString(), start,
+                        DateTimeUtils.startOfNextDayMillis(start))
+                    val targetSeconds = habit.targetValue.toLong() * 60
+                    if (snapshot.completedSeconds < targetSeconds) {
+                        if (UnsettledTimerFailure.maySettle(snapshot, checkDate, targetSeconds)) awaitingTimer = true
+                        else return StrictFailureState.FAILED
+                    }
+                } else if (!hasTargetMetOnDate(habit, completionDao, timeLogDao, checkDate)) {
+                    return StrictFailureState.FAILED
                 }
             }
             checkDate = checkDate.plusDays(1)
         }
 
-        return false
+        return if (awaitingTimer) StrictFailureState.AWAITING_TIMER_SETTLEMENT else StrictFailureState.NOT_FAILED
     }
 }

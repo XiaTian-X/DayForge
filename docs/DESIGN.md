@@ -123,7 +123,7 @@
 | 归属和关联 | 独立存在或归属一个顶层目标，可选多指标关联 | D-003、`HabitRepository`、创建/编辑表单 |
 | 编辑限制 | 类型与部分计划项不能任意修改；执行日/周期限制、已有记录后锁定长期次数和失败模式；运行计时限制模式变更 | `EditHabitScreen`、`EditHabitViewModel`；本轮按原行为保留 |
 | 执行 | 打卡/撤销、计数操作、计时开始/暂停/恢复/停止、关联指标后续录入 | `HabitCard`、`ParentHabitCard`、`HabitCompletionCoordinator`、`HabitTimerCoordinator` |
-| 长期生命周期 | 达到长期次数后的结束确认或继续追踪；严格模式断签失败；重新激活有清理历史的确认 | `HabitLifecycleCoordinator`、`FailureChecker`；不能把重新激活包装成无损开关 |
+| 长期生命周期 | 达到长期次数后的结束确认或继续追踪；严格模式断签失败；当前重新激活仍有清理历史确认 | `HabitLifecycleCoordinator`、`FailureChecker`；D-018 计划替换为保留事实的本轮重启，完整接线前不能只改文案 |
 | 详情回顾 | 启停、满足条件时的单习惯提醒开关、当前/最佳连续天数、长期进度或活跃度、完成日历 | `HabitDetailScreen`、`HabitDetailViewModel` |
 | 删除 | 普通删除；有子项时区分连同子项删除和解除子项归属 | `HabitDeletionCoordinator`、`HabitRepository` |
 
@@ -282,7 +282,7 @@
 | 周期、目标次数、失败模式、执行时间：CreateHabit/EditHabit | 按类型分组，有当前配置摘要 | 不丢弃未展开字段；保存失败无部分写入 |
 | 预设和归属：CreateHabit、单父节点仓库规则 | 创建捷径保留，只能归属顶层目标 | 普通习惯不可作父节点；不暗中转换类型 |
 | 新目标及子项草稿：CreateGoal | 保存目标前明确为草稿；取消不落地子项 | 目标/子项/指标/outbox 整体提交或回滚 |
-| 长期次数达成、停用/重新激活：Nested/HabitDetail | 保留结束或继续追踪的既有流程，不与父目标结果字段混淆 | 失败模式、历史清理确认；不自动宣布父目标成功 |
+| 长期次数达成、停用/重新激活：Nested/HabitDetail | 保留结束或继续追踪的既有流程，不与父目标结果字段混淆 | 当前历史清理确认仍须保留；D-018 完整接线后才替换为本轮重启，不自动宣布父目标成功 |
 | 目标删除：Dashboard/Nested | 明确级联删除与保留子项的选择 | 取消无写入；同账户与事务边界不变 |
 | 指标配置：CreateMetric/EditMetric | 单位、小数位、聚合、方向/范围目标可发现 | 正确单位、上下界与格式校验 |
 | 指标记录/趋势/历史：MetricCard、MetricDetail | 当前值、时间、平均/合计/全部分开；保留 7/30 天切换 | 不因换图表修改日期归属、聚合公式或聚合配置持久化 |
