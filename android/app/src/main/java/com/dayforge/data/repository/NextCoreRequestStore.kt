@@ -113,12 +113,17 @@ internal class NextCoreRequestStore(
 
     /** Bound explicit failure persisted separately; an unknown transport failure is not a rejection. */
     internal suspend fun recordRejection(access: LocalSyncAccess, kind: String, id: String,
-        deliveryProof: String, resultJson: String) = sessions.exclusive {
+        deliveryProof: String, resultJson: String, metadata: ChallengeMetadata? = null, serverTime: String? = null) = sessions.exclusive {
         authorize(access)
         database.withTransaction {
             val sql = database.openHelper.writableDatabase
             NextRequestSql.requireOutboxEnabled(sql)
             val captured = origin(access, kind, id)
+            val profile = if (kind == NEXT_OPERATION) roundOperationIntent(captured.intentJson) != null else roundTimerIntent(captured.intentJson) != null
+            val rounds = NextChallengeStore(database)
+            val checkpoint = if (profile) rounds.activeInTransaction(access) else {
+                rounds.requirePlainInTransaction(); require(metadata == null); null
+            }
             val sources = listOf("sync_outbox", "timer_command_outbox").associateWith { NextRequestSql.sources(sql, it) }
             val journal = requireNotNull(database.nextRequestDao().transmission(kind, id))
             validate(captured, journal, access)
@@ -137,6 +142,21 @@ internal class NextCoreRequestStore(
                 require(result.commandId == command.commandId && result.sessionId == command.sessionId &&
                     result.status in setOf("conflict", "rejected") && !result.errorCode.isNullOrBlank())
             }
+            val merged = if (!profile) null else {
+                val actual = decodeFrozenSyncRequest(encodeSyncRequest(ChallengeMetadata.serializer(),
+                    requireNotNull(metadata) { "SYNC_CHALLENGE_ACK_REQUIRED" }), ChallengeMetadata.serializer())
+                if (kind == NEXT_OPERATION) validateRoundResultBinding(
+                    decodeFrozenSyncRequest(journal.wireBytes, RoundSyncPushRequest.serializer()), RoundSyncPushResponse(
+                        listOf(decodeFrozenSyncRequest(resultJson.toByteArray(Charsets.UTF_8), NextSyncOperationResult.serializer())),
+                        1, actual.checkpoints, actual.births))
+                else validateRoundTimerBinding(decodeFrozenSyncRequest(journal.wireBytes, RoundTimerCommandBatchRequest.serializer()),
+                    TimerCommandResult.serializer().let { serializer ->
+                        val result = decodeFrozenSyncRequest(resultJson.toByteArray(Charsets.UTF_8), serializer)
+                        RoundTimerCommandBatchResponse(listOf(result), requireNotNull(serverTime) { "SYNC_CHALLENGE_TIMER_REPLY_REQUIRED" },
+                            1, actual.checkpoints, actual.births)
+                    })
+                rounds.acknowledgeInTransaction(access, actual)
+            }
             val row = com.dayforge.data.local.entity.NextRejectionEntity(kind, id, originHash, transmissionHash,
                 nextRequestHash(resultJson.toByteArray(Charsets.UTF_8)), resultJson)
             val dao = database.nextSyncStateDao()
@@ -148,6 +168,10 @@ internal class NextCoreRequestStore(
                 NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", arrayOf(kind, id)) == transmissionHash &&
                 NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(kind, id)) == originHash)
             check(sources == listOf("sync_outbox", "timer_command_outbox").associateWith { NextRequestSql.sources(sql, it) })
+            if (checkpoint != null) {
+                val current = rounds.activeInTransaction(access)
+                check(current.first == checkpoint.first && current.second == merged) { "SYNC_CHALLENGE_ACK_CHANGED" }
+            } else rounds.requirePlainInTransaction()
             authorize(access)
         }
     }
