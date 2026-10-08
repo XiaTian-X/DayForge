@@ -21,7 +21,8 @@ internal data class NextRoundOperationIntent(
     val context: ChallengeSourceContext,
     @SerialName("captured_device_id") val capturedDeviceId: String,
     @Serializable(with = ContractBooleanSerializer::class)
-    @SerialName("initial_creation") val initialCreation: Boolean = false
+    @SerialName("initial_creation") val initialCreation: Boolean = false,
+    @SerialName("goal_child_frontier") val goalChildFrontier: List<NextGoalChildFrontier>? = null
 ) {
     init {
         require(challengeContract == 1 && isContractUuid(capturedDeviceId))
@@ -31,6 +32,13 @@ internal data class NextRoundOperationIntent(
         if (initialCreation) require(operation.entityType == "plan_node" && operation.action == "upsert" &&
             operation.baseRevision == null && operation.payload["activity"]?.jsonObject?.get("completion_policy") == JsonPrimitive("recurring") &&
             context.head == initialChallengeRoundHead(operation.entityUuid) && context.affectedHeads.isEmpty())
+        goalChildFrontier?.let { children ->
+            require(operation.entityType == "plan_node" && operation.action == "delete" &&
+                operation.payload["child_policy"] in setOf(JsonPrimitive("cascade_children"), JsonPrimitive("detach_children")) &&
+                context.head == null && context.affectedHeads.isEmpty() && !initialCreation && children.size <= 1000 &&
+                children.map { it.childUuid }.distinct().size == children.size &&
+                children.map { it.operationId }.distinct().size == children.size && children.none { it.childUuid == operation.entityUuid })
+        }
     }
 }
 
