@@ -53,7 +53,7 @@ internal class OneTimeAcceptedEventStore(
     /** Only the causal head is sendable, even if a pull has already seen its fact. */
     suspend fun prepare(activityUuid: String): PreparedOneTimeSubmission? = sessions.exclusive {
         val context = access(write = true)
-        database.withTransaction { prepareInTransaction(context, activityUuid) }
+        database.withTransaction { NextChallengeStore(database).requirePlainInTransaction(); prepareInTransaction(context, activityUuid) }
     }
 
     /** The durable HTTP journal is the attempt proof; its source row must remain byte-identical. */
@@ -83,7 +83,7 @@ internal class OneTimeAcceptedEventStore(
     }
 
     suspend fun acknowledge(prepared: PreparedOneTimeSubmission, result: NextSyncOperationResult): OneTimeLocalSnapshot = sessions.exclusive {
-        database.withTransaction { requireNotNull(acknowledgeInTransaction(prepared, result)) }
+        database.withTransaction { NextChallengeStore(database).requirePlainInTransaction(); requireNotNull(acknowledgeInTransaction(prepared, result)) }
     }
 
     internal suspend fun acknowledgeInTransaction(prepared: PreparedOneTimeSubmission, result: NextSyncOperationResult,
@@ -127,7 +127,7 @@ internal class OneTimeAcceptedEventStore(
 
     /** Only an explicit, bound per-operation result quarantines a causal suffix. */
     suspend fun reject(prepared: PreparedOneTimeSubmission, result: NextSyncOperationResult): OneTimeLocalSnapshot = sessions.exclusive {
-        database.withTransaction { requireNotNull(rejectInTransaction(prepared, result)) }
+        database.withTransaction { NextChallengeStore(database).requirePlainInTransaction(); requireNotNull(rejectInTransaction(prepared, result)) }
     }
 
     internal suspend fun rejectInTransaction(prepared: PreparedOneTimeSubmission, result: NextSyncOperationResult,

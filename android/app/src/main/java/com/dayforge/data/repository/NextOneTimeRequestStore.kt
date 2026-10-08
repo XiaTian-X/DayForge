@@ -55,6 +55,8 @@ internal class NextOneTimeRequestStore(
                 database.withTransaction {
                     NextRequestSql.requireOutboxEnabled(database.openHelper.writableDatabase)
                     var evidence = evidence(access, id)
+                    val profile = roundOperationIntent(evidence.origin.intentJson) != null
+                    val checkpoint = if (profile) NextChallengeStore(database).activeInTransaction(access) else null
                     if (evidence.transmission == null) {
                         // Birth is already proved. A legacy attempt/binding must never be adopted.
                         require(evidence.hashes.binding == null && hash("next_acceptances", id) == null)
@@ -63,8 +65,11 @@ internal class NextOneTimeRequestStore(
                         val original = requireNotNull(facts.prepareInTransaction(evidence.prepared.context,
                             activity(evidence.prepared.operation), journalled = true))
                         require(original == evidence.prepared)
-                        val bytes = encodeSyncRequest(NextSyncPushRequest.serializer(), NextSyncPushRequest(
+                        val round = roundOperationIntent(evidence.origin.intentJson)
+                        val bytes = if (round == null) encodeSyncRequest(NextSyncPushRequest.serializer(), NextSyncPushRequest(
                             requireNotNull(access.deviceId), listOf(original.operation)))
+                        else encodeSyncRequest(RoundSyncPushRequest.serializer(), RoundSyncPushRequest(1,
+                            requireNotNull(access.deviceId), listOf(original.operation), listOf(round.context)))
                         val transmission = NextTransmissionEntity(NEXT_OPERATION, id, evidence.origin.queueId, 5,
                             evidence.origin.accountId, requireNotNull(access.session.serverInstanceId),
                             requireNotNull(access.session.syncEpoch), requireNotNull(access.deviceId), nextRequestHash(bytes), bytes)
@@ -77,13 +82,17 @@ internal class NextOneTimeRequestStore(
                     require(savedOutcome(access, id) == null)
                     requireHead(evidence)
                     NextRequestSql.requireOutboxEnabled(database.openHelper.writableDatabase)
+                    if (checkpoint != null) check(NextChallengeStore(database).activeInTransaction(access) == checkpoint) {
+                        "SYNC_CHALLENGE_SOURCE_CHANGED"
+                    }
                     authorize(access)
                     evidence
                 }
             }
             val transmission = requireNotNull(prepared.transmission)
             // Both the account mutex and Room write transaction have ended before network I/O.
-            val response = channel.pushFrozen(transmission.wireBytes)
+            val round = if (roundOperationIntent(prepared.origin.intentJson) != null) channel.roundPushFrozen(transmission.wireBytes) else null
+            val response = if (round == null) channel.pushFrozen(transmission.wireBytes) else NextSyncPushResponse(round.results)
             sessions.exclusive {
                 authorize(access)
                 database.withTransaction {
@@ -92,7 +101,7 @@ internal class NextOneTimeRequestStore(
                     if (hash("next_acceptances", id) != null) require(savedOutcome(access, id) is NextOneTimeOutcome.Accepted)
                 }
             }
-            NextCoreDelivery(access, id, response, requireNotNull(prepared.hashes.transmission))
+            NextCoreDelivery(access, id, response, requireNotNull(prepared.hashes.transmission), round?.metadata())
         }
     }
 
@@ -110,6 +119,24 @@ internal class NextOneTimeRequestStore(
             val evidence = evidence(access, delivery.requestId, consumed = saved is NextOneTimeOutcome.Accepted,
                 rejected = saved is NextOneTimeOutcome.Rejected)
             require(evidence.hashes.transmission == delivery.transmissionProof)
+            val rounds = NextChallengeStore(database)
+            val round = roundOperationIntent(evidence.origin.intentJson)
+            val checkpoint = if (round == null) { require(delivery.challengeMetadata == null); null } else rounds.activeInTransaction(access)
+            val merged = if (round == null) null else {
+                val metadata = decodeFrozenSyncRequest(encodeSyncRequest(ChallengeMetadata.serializer(),
+                    requireNotNull(delivery.challengeMetadata) { "SYNC_CHALLENGE_ACK_REQUIRED" }), ChallengeMetadata.serializer())
+                // Once facts have their own state/history, never a recurring challenge birth.
+                require(metadata.births.none { it.entityType == "activity_event" && it.entityUuid == evidence.prepared.operation.entityUuid })
+                validateRoundResultBinding(decodeFrozenSyncRequest(requireNotNull(evidence.transmission).wireBytes, RoundSyncPushRequest.serializer()),
+                    RoundSyncPushResponse(listOf(result), 1, metadata.checkpoints, metadata.births))
+                rounds.acknowledgeInTransaction(access, metadata)
+            }
+            suspend fun verifyRounds() {
+                if (checkpoint != null) {
+                    val actual = rounds.activeInTransaction(access)
+                    check(actual.first == checkpoint.first && actual.second == merged) { "SYNC_CHALLENGE_ACK_CHANGED" }
+                } else rounds.requirePlainInTransaction()
+            }
             if (saved != null) {
                 when (saved) {
                     is NextOneTimeOutcome.Accepted -> {
@@ -120,7 +147,7 @@ internal class NextOneTimeRequestStore(
                     }
                     is NextOneTimeOutcome.Rejected -> require(saved.result == result)
                 }
-                authorize(access)
+                verifyRounds(); authorize(access)
                 return@withTransaction saved
             }
             requireHead(evidence)
@@ -162,6 +189,7 @@ internal class NextOneTimeRequestStore(
             if (parentProof != null) require(core.parentDeletionProofInTransaction(access,
                 activity(evidence.prepared.operation)) == parentProof)
             NextRequestSql.requireOutboxEnabled(sql)
+            verifyRounds()
             authorize(access)
             outcome
         }
@@ -204,6 +232,12 @@ internal class NextOneTimeRequestStore(
             (origin.serverInstanceId != access.session.serverInstanceId || origin.syncEpoch != access.session.syncEpoch))
             rejectNextRequest(NextRequestException.Reason.TRANSMISSION_CONTEXT_CHANGED)
         val operation = decodeNextOperationIntent(origin.intentJson)
+        val round = roundOperationIntent(origin.intentJson)
+        if (round == null) NextChallengeStore(database).requirePlainInTransaction()
+        else {
+            NextChallengeStore(database).activeInTransaction(access)
+            require(round.capturedDeviceId == access.deviceId && round.context.head == null && round.context.affectedHeads.isEmpty())
+        }
         require(operation.operationId == id && operation.entityType == "activity_event" && operation.action == "upsert" &&
             operation.baseRevision == null && operation.payload["one_time"] is JsonObject)
         validateNextSyncOperation(operation)
@@ -217,8 +251,7 @@ internal class NextOneTimeRequestStore(
             require(it.kind == origin.kind && it.requestId == id && it.queueId == origin.queueId && it.protocol == 5 &&
                 it.accountId == origin.accountId && it.serverInstanceId == access.session.serverInstanceId &&
                 it.syncEpoch == access.session.syncEpoch && it.deviceId == access.deviceId && nextRequestHash(it.wireBytes) == it.wireHash)
-            val request = decodeFrozenSyncRequest(it.wireBytes, NextSyncPushRequest.serializer())
-            require(request.deviceId == it.deviceId && request.operations == listOf(operation))
+            require(validateNextOperationEnvelope(origin.intentJson, it.wireBytes, it.deviceId) == operation)
             requireNotNull(bindingHash)
             facts.validateTransmission(requireNotNull(database.completionFollowUpDao().transmission(id)), prepared.context, operation, sending = true)
         }
@@ -255,13 +288,24 @@ internal class NextOneTimeRequestStore(
             val result = decodeFrozenSyncRequest(receipt.resultJson.toByteArray(Charsets.UTF_8), NextSyncOperationResult.serializer())
             require(result.status == "applied")
             validateSuccess(evidence.prepared, result)
+            verifySavedMetadata(access, evidence, result)
             return NextOneTimeOutcome.Accepted(NextOperationAcceptance.REPLAYED)
         }
         if (linkedHash("one_time_transmissions", id) == null) return null
         val binding = requireNotNull(database.completionFollowUpDao().transmission(id))
         if (binding.rejectionJson == null) return null
-        evidence(access, id, rejected = true)
-        return NextOneTimeOutcome.Rejected(decodeFrozenSyncRequest(binding.rejectionJson.toByteArray(Charsets.UTF_8), NextSyncOperationResult.serializer()))
+        val evidence = evidence(access, id, rejected = true)
+        val result = decodeFrozenSyncRequest(binding.rejectionJson.toByteArray(Charsets.UTF_8), NextSyncOperationResult.serializer())
+        verifySavedMetadata(access, evidence, result)
+        return NextOneTimeOutcome.Rejected(result)
+    }
+
+    private suspend fun verifySavedMetadata(access: LocalSyncAccess, evidence: Evidence, result: NextSyncOperationResult) {
+        if (roundOperationIntent(evidence.origin.intentJson) == null) return
+        val actual = NextChallengeStore(database).activeInTransaction(access).second
+        require(actual.births.none { it.entityType == "activity_event" && it.entityUuid == evidence.prepared.operation.entityUuid })
+        validateRoundResultBinding(decodeFrozenSyncRequest(requireNotNull(evidence.transmission).wireBytes, RoundSyncPushRequest.serializer()),
+            RoundSyncPushResponse(listOf(result), 1, actual.checkpoints, actual.births))
     }
 
     private fun validateSuccess(prepared: PreparedOneTimeSubmission, result: NextSyncOperationResult) {
