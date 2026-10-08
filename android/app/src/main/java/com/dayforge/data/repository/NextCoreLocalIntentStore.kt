@@ -42,7 +42,7 @@ internal class NextCoreLocalIntentStore(
         database.withTransaction {
             val metadata = NextChallengeStore(database).activeInTransaction(access).second
             NextRoundWriteScope(access.copy(capabilities = access.capabilities.toSet()),
-                Json.encodeToString(ChallengeMetadata.serializer(), metadata))
+                Json.encodeToString(ChallengeMetadata.serializer(), metadata), NextRoundPendingInitialStore(database).read(access, metadata))
         }
     }
 
@@ -65,7 +65,7 @@ internal class NextCoreLocalIntentStore(
                 require(tokens.localSyncAccess() == scope.access && access.capturedDeviceId == scope.access.deviceId &&
                     tokens.syncAuthenticationSnapshot(scope.access) != null) { "SYNC_CHALLENGE_CONTEXT_CHANGED" }
                 NextRoundOperationCapture(database, scope, requireNotNull(roundState).second,
-                    database.habitDao().getAllHabitsOnce())
+                    database.habitDao().getAllHabitsOnce(), NextRoundPendingInitialStore(database).read(scope.access, roundState.second))
             }
             val sql = database.openHelper.writableDatabase
             NextRequestSql.requireOutboxEnabled(sql)
