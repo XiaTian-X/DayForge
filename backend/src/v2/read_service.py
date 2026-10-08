@@ -36,6 +36,7 @@ from src.v2.schemas import SyncBootstrapResponse, SyncChangeResponse, SyncPullRe
 from src.v2.next_sync_contract import NextSyncBootstrapResponse, NextSyncPullResponse
 from src.v2.one_time_recovery import read_one_time_checkpoints
 from src.v2.count_recovery import require_count_history
+from src.v2.challenge_recovery import require_roundless_view, require_challenge_history
 
 
 def _change_response(
@@ -92,6 +93,9 @@ async def pull_changes(
     device = await require_device(
         require_internal(user.id, "User.id"), device_public_id, session
     )
+    await require_roundless_view(session, require_internal(user.id, "User.id"))
+    if next_protocol:
+        await require_challenge_history(session, require_internal(user.id, "User.id"))
     max_result: Result[tuple[int]] = await session.execute(
         select(func.coalesce(func.max(col(SyncChange.sequence)), 0)).where(
             col(SyncChange.recipient_user_id) == user.id
@@ -173,6 +177,8 @@ async def bootstrap(
     )
     if next_protocol:
         await require_count_history(session, require_internal(user.id, "User.id"))
+        await require_challenge_history(session, require_internal(user.id, "User.id"))
+    await require_roundless_view(session, require_internal(user.id, "User.id"))
     max_result: Result[tuple[int]] = await session.execute(
         select(func.coalesce(func.max(col(SyncChange.sequence)), 0)).where(
             col(SyncChange.recipient_user_id) == user.id

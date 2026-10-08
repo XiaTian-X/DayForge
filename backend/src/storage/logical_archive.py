@@ -43,6 +43,9 @@ from src.storage.database_adapter import configure_sqlite_transactions
 from src.v2.one_time_recovery import OneTimeRecoveryError, read_connection_history
 from src.v2.count_recovery import CountRecoveryError, read_connection_count_history
 from src.v2.count_policy import CountDayPolicy
+from src.v2.challenge_recovery import ChallengeRecoveryError, read_connection_challenges
+from src.v2.challenge_round import Generation
+from pydantic import TypeAdapter
 from src.v2.asset_recovery import AssetRecoveryError, ReadyBlob, read_asset_metadata
 from src.v2.object_appearance_recovery import (
     ObjectAppearanceRecoveryError,
@@ -50,7 +53,7 @@ from src.v2.object_appearance_recovery import (
 )
 
 
-LOGICAL_FORMAT_VERSION = 3
+LOGICAL_FORMAT_VERSION = 4
 TABLE_ORDER = (
     "users",
     "user_profiles",
@@ -67,14 +70,18 @@ TABLE_ORDER = (
     "plan_nodes",
     "goal_details",
     "activity_details",
+    "activity_challenge_rounds",
+    "activity_challenge_heads",
     "plan_node_appearances",
     "tracked_metrics",
     "metric_appearances",
     "activity_metric_links_v2",
     "activity_events",
     "activity_count_days",
+    "activity_challenge_event_bindings",
     "metric_observations",
     "timer_sessions",
+    "activity_challenge_timer_bindings",
     "timer_segments",
     "timer_commands",
     "duration_day_allocations",
@@ -205,6 +212,12 @@ def _identity_key(
         return f"{primary_keys[('activity_events', row['activity_event_id'])]}:{row['local_date']}"
     if table == "activity_count_days":
         return f"{primary_keys[('plan_nodes', row['activity_node_id'])]}:count-day:{row['local_date']}"
+    if table == "activity_challenge_heads":
+        return f"{primary_keys[('plan_nodes', row['activity_node_id'])]}:challenge-head"
+    if table == "activity_challenge_event_bindings":
+        return f"{primary_keys[('activity_events', row['event_id'])]}:challenge-birth"
+    if table == "activity_challenge_timer_bindings":
+        return f"{primary_keys[('timer_sessions', row['session_id'])]}:challenge-birth"
     if table == "sync_operations":
         return f"{primary_keys[('client_devices', row['device_id'])]}:{row['operation_id']}"
     if table == "entity_revision_snapshots":
@@ -347,6 +360,15 @@ def _validate_count_history(connection: Connection, metadata: MetaData) -> None:
         raise StorageValidationError(f"invalid count history: {error}") from error
 
 
+def _validate_challenges(connection: Connection, metadata: MetaData) -> None:
+    if "activity_challenge_rounds" not in metadata.tables:
+        return  # Older matching schema cannot contain a non-baseline round.
+    try:
+        read_connection_challenges(connection)
+    except ChallengeRecoveryError as error:
+        raise StorageValidationError(f"invalid challenge history: {error}") from error
+
+
 def _validate_hierarchy(connection: Connection, metadata: MetaData) -> None:
     nodes = metadata.tables.get("plan_nodes")
     if nodes is None:
@@ -447,6 +469,7 @@ def export_archive(
             _validate_hierarchy(connection, metadata)
             _validate_one_time_history(connection, metadata)
             _validate_count_history(connection, metadata)
+            _validate_challenges(connection, metadata)
             entries: list[ArchiveBlob] = []
             _validate_appearance(
                 connection,
@@ -567,6 +590,15 @@ def _insert_collection(
         deferred: list[dict[str, Any]] = []
         progressed = False
         for record in pending:
+            if table.name == "activity_challenge_rounds":
+                try:
+                    TypeAdapter(Generation).validate_python(
+                        record["data"]["generation"]
+                    )
+                except (ValueError, KeyError, TypeError) as error:
+                    raise StorageValidationError(
+                        "invalid challenge history in logical archive"
+                    ) from error
             if table.name == "activity_count_days":
                 # Validate before generic SQL coercion: bool("false") would otherwise
                 # turn a malformed archive into a different, apparently valid rule.
@@ -694,6 +726,7 @@ def _import_records(
             )
     _validate_one_time_history(connection, metadata)
     _validate_count_history(connection, metadata)
+    _validate_challenges(connection, metadata)
     _validate_hierarchy(connection, metadata)
     _validate_appearance(connection, metadata, verify_assets=verify_assets)
     for name in TRANSPORT_TABLES:
@@ -768,7 +801,7 @@ def import_archive(
         metadata = _reflect(engine)
         new_epoch = str(uuid4())
         entries: list[ArchiveBlob] = []
-        verifier = entries.extend if manifest["format_version"] == 3 else None
+        verifier = entries.extend if manifest["format_version"] >= 3 else None
         # Validate the full graph with the real target schema, always rollback.
         # No file I/O or root cleanup is allowed while this transaction is open.
         with engine.connect() as connection:

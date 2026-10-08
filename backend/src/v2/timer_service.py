@@ -15,6 +15,9 @@ from sqlmodel import col, select
 
 from src.auth.models import User
 from src.v2.change_log import append_change
+from src.v2.challenge_storage import capture_timer_birth, inherit_completed_timer_birth
+from src.v2.challenge_models import ActivityChallengeTimerBinding
+from src.v2.challenge_recovery import require_roundless_view
 from src.v2.encoding import canonical_json, parse_json, timer_command_hash
 from src.v2.replica_context import ReplicaIdentity, replay_replica
 from src.v2.entity_snapshots import serialize_activity_event_with_allocations
@@ -582,6 +585,10 @@ async def process_timer_commands(
 
         try:
             async with db.begin_nested():
+                if command.command_type == "start":
+                    await require_roundless_view(
+                        db, require_internal(user.id, "User.id")
+                    )
                 if (
                     next_protocol
                     and command.command_type == "start"
@@ -592,6 +599,16 @@ async def process_timer_commands(
                         "Protocol 5 start requires its original policy",
                     )
                 timer = await _apply_command(db, user, device, command)
+                if next_protocol:
+                    if timer.state == "completed":
+                        if (
+                            await db.get(ActivityChallengeTimerBinding, timer.id)
+                            is None
+                        ):
+                            await capture_timer_birth(db, timer)
+                        await inherit_completed_timer_birth(db, timer)
+                    else:
+                        await capture_timer_birth(db, timer)
                 snapshot = await serialize_timer_session(db, timer)
             result = TimerCommandResult(
                 command_id=command.command_id,

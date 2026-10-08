@@ -168,7 +168,7 @@ def test_owned_same_uuid_original_rules_and_undo_survive_recovery(tmp_path, kind
     assert inspect_database(source).valid
     if kind == "physical":
         backup, _ = create_backup(source, tmp_path / "backups", kind="manual")
-        restore_backup(backup, target, expected_alembic_head="000000000007")
+        restore_backup(backup, target, expected_alembic_head="000000000008")
     else:
         archive = export_archive(f"sqlite:///{source}", tmp_path / "archive.zip")
         bundle = read_bundle(archive)

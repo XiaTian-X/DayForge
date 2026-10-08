@@ -100,7 +100,7 @@ def read_collections(
         archive.read("manifest.json", limit=MANIFEST_LIMIT), limit=MANIFEST_LIMIT
     )
     version = manifest.get("format_version")
-    if type(version) is not int or version not in (1, 2, 3):
+    if type(version) is not int or version not in (1, 2, 3, 4):
         raise StorageValidationError("unsupported logical archive version")
     specifications = manifest.get("collections")
     if (
@@ -110,6 +110,16 @@ def read_collections(
         raise StorageValidationError("logical archive is missing required collections")
     if not specifications.keys() <= allowed:
         raise StorageValidationError("logical archive has an unknown collection")
+    challenge_collections = {
+        "activity_challenge_rounds",
+        "activity_challenge_heads",
+        "activity_challenge_event_bindings",
+        "activity_challenge_timer_bindings",
+    }
+    if version < 4 and specifications.keys() & challenge_collections:
+        raise StorageValidationError(
+            "challenge collections require logical archive version 4"
+        )
     expected = {"manifest.json"}
     collections = {}
     budget = Budget()

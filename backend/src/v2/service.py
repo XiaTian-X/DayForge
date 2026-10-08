@@ -48,6 +48,7 @@ from src.v2.next_sync_contract import (
     validate_task_result_binding,
 )
 from src.v2.one_time_storage import OneTimeStateConflict
+from src.v2.challenge_recovery import require_roundless_view
 
 
 async def _prepare_three_way_merge(
@@ -320,6 +321,7 @@ async def process_push(
 
         try:
             async with session.begin_nested():
+                await require_roundless_view(session, user_id)
                 if (
                     operation.entity_type in STRUCTURAL_ENTITY_TYPES
                     and not can_write_structure

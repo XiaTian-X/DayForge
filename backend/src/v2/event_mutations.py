@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
 from src.v2.change_log import append_change
+from src.v2.challenge_storage import bind_created_event
 from src.v2.encoding import canonical_json
 from src.v2.entity_snapshots import serialize_activity_event_with_allocations
 from src.v2.errors import DomainError
@@ -223,6 +224,8 @@ async def mutate_activity_event(
     try:
         await session.flush()
         await persist_count_day(session, event, count_day)
+        if one_time_contract:
+            await bind_created_event(session, event)
     except IntegrityError as exc:
         if payload.event_type == "revert":
             raise DomainError(
