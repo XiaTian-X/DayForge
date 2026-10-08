@@ -668,6 +668,9 @@ class HabitRepository @Inject constructor(
         require(habit.completionPolicy != "one_and_done") { "ONE_TIME_HISTORY_IS_IMMUTABLE" }
         structuralEditGuard?.requireAllowed()
         database.withTransaction {
+            // A profile cache may already contain another round. Physical history deletion is
+            // never a challenge restart; leave all facts/requests intact until its new entry is ready.
+            NextChallengeStore(database).requirePlainInTransaction()
             val current = requireNotNull(habitDao.getHabitById(habit.id))
             check(current.uuid == habit.uuid) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
             require(current.completionPolicy != "one_and_done") { "ONE_TIME_HISTORY_IS_IMMUTABLE" }
@@ -701,6 +704,9 @@ class HabitRepository @Inject constructor(
      * @return Sum of completion values for today
      */
     suspend fun getTodayCompletionCount(habitId: Long): Int {
+        val habit = habitDao.getHabitById(habitId)
+        if (habit?.habitType == HabitType.COUNTING && habit.appearance != null)
+            return getCountHistory(habit).todayQuantity.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
         val today = DateTimeUtils.today()
         val tomorrow = today.plusDays(1)
         val completions = completionDao.getCompletionsInRange(habitId, today, tomorrow)
@@ -754,6 +760,11 @@ class HabitRepository @Inject constructor(
      * @return Completion ID if completed today, null otherwise
      */
     suspend fun getTodayCompletionId(habitId: Long): Long? {
+        val habit = habitDao.getHabitById(habitId)
+        if (habit?.habitType == HabitType.COUNTING && habit.appearance != null) {
+            val history = getCountHistory(habit)
+            return history.completions.filter { it.recordedLocalDate == history.today.toString() }.maxByOrNull { it.id }?.id
+        }
         val today = DateTimeUtils.today()
         val tomorrow = today.plusDays(1)
         return completionDao.getTodayCompletionId(habitId, today, tomorrow)

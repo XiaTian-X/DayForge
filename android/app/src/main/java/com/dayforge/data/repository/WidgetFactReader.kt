@@ -13,6 +13,8 @@ import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.model.CountDayPolicy
 import com.dayforge.domain.model.CountHistory
+import com.dayforge.domain.model.ChallengeRoundHead
+import com.dayforge.domain.model.ContractIntegerSerializer
 import com.dayforge.domain.model.OneTimeState
 import com.dayforge.domain.model.isContractUuid
 import com.dayforge.domain.service.AccountSessionCoordinator
@@ -45,7 +47,10 @@ data class WidgetFactClaim internal constructor(
     internal val timezone: String,
     internal val completionUuid: String?,
     internal val oneTimeState: OneTimeState?,
-    internal val countPolicy: JsonObject?
+    internal val countPolicy: JsonObject?,
+    @Serializable(with = ContractIntegerSerializer::class)
+    internal val challengeContract: Int = 0,
+    internal val roundHead: ChallengeRoundHead? = null
 ) {
     internal fun session() = LocalDataSession(AuthenticationSession(accountId, generation), serverInstanceId, syncEpoch)
     fun encode(): String = Json.encodeToString(this)
@@ -72,6 +77,8 @@ data class WidgetFactClaim internal constructor(
                 require(LocalDate.parse(claim.date).toString() == claim.date)
                 claim.countPolicy?.let(CountDayPolicy::fromJson)
                 require(claim.oneTimeState == null || claim.countPolicy == null)
+                require(claim.challengeContract in 0..1 && (claim.challengeContract != 0 || claim.roundHead == null))
+                require(claim.roundHead == null || claim.roundHead.activityUuid == claim.habitUuid && claim.oneTimeState == null)
             }
         }
     }
@@ -116,7 +123,8 @@ class WidgetFactReader @Inject constructor(
                 val view = requireInTransaction(claim, exactFact)
                 // Mint the actual in-memory ticket from the trusted current row, not decoded plan/owner fields.
                 ObjectEditSnapshot(view.habit, ObjectEditAuthority(requireNotNull(tokens.localCoreWriteAccess()).session,
-                    view.habit.uuid, "plan_node", NextStructureMapper.writePlan(view.habit)))
+                    view.habit.uuid, "plan_node", NextStructureMapper.writePlan(view.habit),
+                    NextCoreLocalIntentStore(database, tokens, sessions).captureDisplayedRoundsInTransaction()))
             }
         }
 
@@ -131,6 +139,9 @@ class WidgetFactReader @Inject constructor(
         if (requireDay) check(ZoneId.systemDefault().id == claim.timezone &&
             Instant.now().atZone(ZoneId.of(claim.timezone)).toLocalDate().toString() == claim.date) { "FACT_WIDGET_DAY_CHANGED" }
         val current = snapshot(habit, LocalDate.parse(claim.date), ZoneId.of(claim.timezone))
+        check(current.claim.challengeContract == claim.challengeContract && current.claim.roundHead == claim.roundHead) {
+            "FACT_WIDGET_ROUND_CHANGED"
+        }
         check(current.claim.oneTimeState == claim.oneTimeState && current.claim.countPolicy == claim.countPolicy) {
             "FACT_WIDGET_STATE_CHANGED"
         }
@@ -178,18 +189,25 @@ class WidgetFactReader @Inject constructor(
         val date = capturedDate ?: Instant.now().atZone(zone).toLocalDate()
         check(habit.appearance != null && habit.habitType in setOf(HabitType.CHECK_IN, HabitType.COUNTING))
         val access = requireNotNull(tokens.localCoreWriteAccess()) { "FACT_WIDGET_STALE_ACCOUNT" }
+        val rounds = NextCoreLocalIntentStore(database, tokens, sessions).captureDisplayedRoundsInTransaction()
         val oneTime = if (habit.completionPolicy == "one_and_done") {
             val view = once.readInTransaction(habit.uuid, access.session)
             view.queue.optimisticState
         } else null
         val history = if (habit.habitType == HabitType.COUNTING) counts.readInTransaction(habit, date) else null
-        val facts = if (oneTime != null) emptyList() else database.completionDao().getCompletionsInRange(habit.id, date, date.plusDays(1))
+        val facts = if (oneTime != null) emptyList() else history?.completions?.filter { it.recordedLocalDate == date.toString() }
+            ?: database.completionDao().getCompletionsInRange(habit.id, date, date.plusDays(1))
         check(facts.all { it.habitUuid == habit.uuid && it.oneTimeAction == null }) { "FACT_WIDGET_FACT_INVALID" }
         val latest = facts.maxByOrNull { it.id }?.uuid
         val claim = WidgetFactClaim(access.session.authentication.userId, access.session.authentication.generation,
             access.session.serverInstanceId, access.session.syncEpoch, access.capturedDeviceId, habit.id, habit.uuid,
             NextStructureMapper.writePlan(habit), date.toString(), zone.id, oneTime?.completionEventUuid ?: latest,
-            oneTime, history?.todayPolicy?.toJson())
+            oneTime, history?.todayPolicy?.toJson(), if (rounds == null) 0 else 1,
+            history?.roundHead ?: if (rounds == null || oneTime != null) null else {
+                val metadata = Json.decodeFromString<com.dayforge.data.api.dto.ChallengeMetadata>(rounds.metadataJson)
+                metadata.checkpoints.singleOrNull { it.head.activityUuid == habit.uuid }?.head
+                    ?: requireNotNull(rounds.pendingInitials[habit.uuid]) { "FACT_WIDGET_ROUND_REQUIRED" }.head
+            })
         check(history == null || history.todayPolicy != null) { "COUNT_RULE_UNKNOWN" }
         check(tokens.localCoreWriteAccess() == access) { "FACT_WIDGET_STALE_ACCOUNT" }
         val progress = if (oneTime != null) 0 else history?.qualifiedDates?.size
