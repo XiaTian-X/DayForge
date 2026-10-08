@@ -72,6 +72,7 @@ internal class NextTimerRequestStore(
         transmissionProof: String): NextOperationAcceptance = sessions.exclusive {
         authorize(access)
         database.withTransaction {
+            NextChallengeStore(database).requirePlainInTransaction()
             val sql = database.openHelper.writableDatabase
             NextRequestSql.requireOutboxEnabled(sql)
             require(isContractUuid(id))

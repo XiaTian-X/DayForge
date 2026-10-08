@@ -24,6 +24,22 @@ class ChallengeSyncContractTest {
     private fun replace(raw: JsonObject, key: String, value: JsonElement) = JsonObject(raw + (key to value))
     private fun invalid(block: () -> Unit) { assertThrows(IllegalArgumentException::class.java) { block() } }
 
+    @Test fun incrementalRecurringPlanAndDurationFactRequireCompleteRoundAttribution() {
+        val plan = SyncV2Change(1, "plan_node", head(0).activityUuid, "upsert", 1, buildJsonObject {
+            put("node_kind", "activity"); put("activity", buildJsonObject { put("completion_policy", "recurring") })
+        }, "2026-10-08T00:00:00Z")
+        invalid { RoundSyncPullResponse(listOf(plan), 1, false, plan.changedAt, 1, emptyList(), emptyList()) }
+        val event = SyncV2Change(1, "activity_event", head(2).roundUuid, "upsert", 1, buildJsonObject {
+            put("activity_uuid", head(0).activityUuid); put("event_type", "duration_session")
+            put("metadata", buildJsonObject { put("timer_session_id", head(3).roundUuid) })
+        }, plan.changedAt)
+        val history = metadata().checkpoints
+        val birth = ChallengeBirth("activity_event", event.entityUuid, head(1))
+        invalid { RoundSyncPullResponse(listOf(event), 1, false, event.changedAt, 1, history, listOf(birth)) }
+        invalid { RoundSyncPullResponse(listOf(event), 1, false, event.changedAt, 1, history,
+            listOf(birth, ChallengeBirth("timer_session", head(3).roundUuid, head(0)))) }
+    }
+
     @Test fun sharedRequestsRoundTripExactlyAndLeaveOriginalObjectsUnchanged() {
         for (key in listOf("restart_request", "fact_request")) {
             val original = wire.getValue(key)

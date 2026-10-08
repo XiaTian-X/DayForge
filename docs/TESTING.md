@@ -175,8 +175,18 @@ Android 完整 `ChallengeSyncContractTest` 使用相同 `next/challenge-sync.jso
 单值 GET 标记与原副本头、冻结字节/数字/省略字段的丢响应精确重试、坏请求零私有流量、
 坏或缺失证明拒绝、账户/副本/版本准入、取消时关闭 socket 并 join、无游标/注册发布及无旧路由回退。
 相邻完整类是 `ChallengeRoundContractTest`、`OneTimeSyncContractTest`、`ContractIntegerTest`、
-`NextCoreRequestStoreTest`；本范围不涉及 Room schema，不重复执行全部迁移。真实 HTTP 夹具
+`NextCoreRequestStoreTest`；单独 HTTP 改动不重复执行全部迁移。真实 HTTP 夹具
 不冒充服务端最终 COMMIT、Android Room 接受/轮次统计、正式 v5 调度或人工联合验收。
+
+Room 挑战恢复改动须运行完整 `NextChallengeMigrationTest`、原全部生产迁移/新库/兼容升级类，
+及 `NextChallengeRestoreTest`、`NextSyncRuntimeTest`、核心发送/计时接受/准入和相邻 HTTP/契约类。
+13→14 对冻结 v13 全部旧列、原队列/字节、旧 cursor 列/约束逐项比较，检查空轮次表、旧档位 0、
+DDL/最终 Room 校验失败回滚及冷重开；新增 cursor 列仅由这一迁移负责验证，旧 schema 不改写。
+真实 profile HTTP→Room 测试覆盖分页/冷恢复、旧出生不跟随新头、共享 count-day、空页检查点、
+原创建来源唯一性、缓存裁剪不删历史/出生、不重建删除计划、旧冻结队列不变、旧路径拒绝、
+下载期间新增本地工作不提交、坏历史/出生/SQLite 类型/档位、账户/设备/epoch、晚期游标及
+轮次写入触发器故障整体回滚、同响应重试仍审计历史。testbed 明确清理后外键/重开正常；
+只读恢复不声明完整上传、计时命令归属、统计/UI 重启、正式协议启用或人工联合验收已通过。
 
 卡片和指标详情的 UI 调整须保留功能信息回归：`HabitCardProgressTest` 检查长期完成/目标数值、
 可访问进度语义、窄宽大字体换行及原打卡回调，并对正/倒计时执行开始、暂停、恢复、停止的实际触摸，
@@ -219,7 +229,7 @@ teardown，最后恢复真实调度对象。测试仍检查真实业务数据/ou
 
 `NextRecoveryMigrationTest` 从已提交 v7 schema 经生产入口升级到 v8 并冷重开，逐列比较原 16 表、
 原 DDL 和冻结请求，验证恢复表为空、伪身份拒绝、DDL/最终 schema 校验失败回滚后重试。
-旧迁移测试继续比较其原始 schema 的全部列和约束；最终生产版本断言随增量迁移推进（当前 v13），新增恢复表
+旧迁移测试继续比较其原始 schema 的全部列和约束；最终生产版本断言随增量迁移推进（当前 v14），新增恢复表
 由独立迁移测试及新库测试验证，不纳入旧 DDL 比较。`NextCommonRestoreTest` 的恢复检查点测试
 验证全部实体/事项历史与候选 cursor 的同事务提交、最终检查点 ABORT/IGNORE 和晚期实体失败回滚、
 取消、重开及精确重放、认证/四类副本身份/旧代次/倒退 cursor/耗尽/非单例损坏行拒绝、并发 CAS，并保留真实

@@ -30,7 +30,7 @@ interface SyncOutboxDao {
     suspend fun hasOneTimeIntents(): Boolean
 
     /** Even an orphaned/damaged staged checkpoint must block legacy recovery and mutation. */
-    @Query("SELECT EXISTS(SELECT 1 FROM next_recovery_state) OR EXISTS(SELECT 1 FROM next_sync_state) OR EXISTS(SELECT 1 FROM next_rejections)")
+    @Query("SELECT EXISTS(SELECT 1 FROM next_recovery_state) OR EXISTS(SELECT 1 FROM next_sync_state) OR EXISTS(SELECT 1 FROM next_rejections) OR EXISTS(SELECT 1 FROM next_challenge_state) OR EXISTS(SELECT 1 FROM next_challenge_rounds) OR EXISTS(SELECT 1 FROM next_challenge_births)")
     suspend fun hasProtocolNextRecovery(): Boolean
 
     /** Origins/journals block v4 even if their source was removed or malformed. */

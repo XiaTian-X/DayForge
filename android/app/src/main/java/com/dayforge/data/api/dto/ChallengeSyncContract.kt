@@ -253,13 +253,21 @@ private fun validateTimerBirth(metadata: ChallengeMetadata, timer: TimerSessionR
 
 private fun validateRoundChanges(changes: List<SyncV2Change>, metadata: ChallengeMetadata) {
     changes.forEach { change ->
+        if (change.entityType == "plan_node" && change.operation == "upsert" &&
+            change.payload["node_kind"] == JsonPrimitive("activity") &&
+            change.payload["activity"]?.jsonObject?.get("completion_policy") == JsonPrimitive("recurring"))
+            require(metadata.checkpoints.any { it.head.activityUuid == change.entityUuid })
         if (change.entityType == "activity_event") validateRoundCountProof(change.payload)
         if (change.entityType == "challenge_round") {
             val record = Json.decodeFromJsonElement<ChallengeRoundRecord>(change.payload)
             require(change.operation == "upsert" && change.revision == 1L && metadata.requireRecord(change.entityUuid) == record &&
                 record.sourceDeviceUuid == change.originDeviceId)
         } else if (change.entityType == "activity_event" && !change.payload.isOnceFact()) {
-            metadata.requireBirth("activity_event", change.entityUuid, change.payload.activityUuid())
+            val birth = metadata.requireBirth("activity_event", change.entityUuid, change.payload.activityUuid())
+            if (change.payload["event_type"] == JsonPrimitive("duration_session")) {
+                val sessionId = change.payload.getValue("metadata").jsonObject.getValue("timer_session_id").jsonPrimitive.content
+                require(metadata.requireBirth("timer_session", sessionId, birth.head.activityUuid).head == birth.head)
+            }
         }
     }
 }

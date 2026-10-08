@@ -492,8 +492,21 @@ Android `NextSyncHttp.Session` 的 `roundPush` / `roundPushFrozen`、`roundComma
 原请求出生/计数规则，重启 ACK 对应原 intent/device/operation/revision，成功计时对应原会话
 出生及开始规则，完成事实继承会话出生。一次性事项沿用独立历史证明，不能伪装成重复性事实。
 bootstrap 继续验证完整事项/计数日规则和结构外观，所有可见 recurring 活动都有轮次检查点。
-HTTP 只交付已绑定响应，不消费队列、不发布游标、不使 DTO 成为权限；本地 Room、原始来源
-sidecar/outbox、恢复与统一统计接入仍待完成，不能据网络入口存在替换旧重启或激活正式调度。
+HTTP 只交付已绑定响应，不消费队列、不发布游标、不使 DTO 成为权限。
+
+Android Room 13→14 只追加已确认轮次、原事实/session 出生和账户/副本/设备检查点表，及
+`next_sync_state.challengeContract`（旧行默认 0）。显式档位游标为 1；历史/出生/检查点与缓存/
+ACTIVE cursor 原子提交。全部历史内容和原 device+operation 身份逐项检查，新出生不能覆盖
+已有出生，旧检查点不能回退当前头；缓存删除或 bootstrap 缺项不删除轮次历史、不重建可见对象。
+空增量页仍可提交更新的轮次检查点；相同游标不是缺失历史或损坏来源的接受证明。
+档位不匹配、侧表丢失、坏原 SQLite 类型、断链、账户/副本/设备改变及晚期 COMMIT 故障均拒绝。
+
+`NextSyncRuntime.refreshChallengeCache` 使用实际 roundBootstrap/roundPull 与共用事务合并器，
+只完成读取恢复，不消费/重新包装旧待发送工作或写“同步成功”时间。旧普通 v5 游标不能跳过
+档位 bootstrap。下载期间出现本地待上传/拒绝/冲突工作，事务内重新检查并阻止本批提交；
+已确认档位缓存拒绝无轮次的旧 v5 producer/sender/acceptance/merge，不偷偷回退旧 HTTP 路径。
+原始来源 sidecar/outbox、新轮待接受投影、计时后继归属、统一统计和正式重启尚待完成，
+不能据只读恢复存在替换旧重启、清库、部署或激活正式调度。
 
 后端先增加向后兼容能力，再发布客户端，最后在受支持窗口结束后删除旧能力。协议版本、Android Room schema 和后端 Alembic revision 独立演进。
 
