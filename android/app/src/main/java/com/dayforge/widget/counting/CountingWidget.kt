@@ -80,6 +80,8 @@ class CountingWidget : GlanceAppWidget() {
         // Pre-computed colors for widget rendering (per WIDGET-COLOR-01, WIDGET-COLOR-06)
         val BACKGROUND_COLOR_KEY = intPreferencesKey("backgroundColor")
         val TEXT_COLOR_KEY = intPreferencesKey("textColor")
+        val ACTION_PROOF_KEY = stringPreferencesKey("factActionProof")
+        val READ_FAILED_KEY = booleanPreferencesKey("readFailed")
 
         suspend fun refreshWidgetData(context: Context, glanceId: GlanceId, habitId: Long) {
             val appContext = context.applicationContext
@@ -92,13 +94,17 @@ class CountingWidget : GlanceAppWidget() {
                     prefs[HABIT_ID_KEY] = habitId
                     prefs[IS_DELETED_KEY] = true
                     prefs[DATA_LOADED_KEY] = true
+                    prefs[READ_FAILED_KEY] = false
+                    prefs.remove(ACTION_PROOF_KEY)
                 }
                 return
             }
 
             val stats = com.dayforge.di.WidgetEntryPoint.calculator(appContext, database).calculate(habit)
-            val completedToday = stats.todayCount
-            val isCompleted = stats.completedToday
+            val typed = if (habit.appearance != null) com.dayforge.di.WidgetEntryPoint.from(appContext)
+                .factReader().read(habit) else null
+            val completedToday = typed?.count?.todayQuantity?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt() ?: stats.todayCount
+            val isCompleted = typed?.completed ?: stats.completedToday
 
             // Status calculation
             val isCheckInAllowed = stats.isCheckInAllowed
@@ -118,16 +124,18 @@ class CountingWidget : GlanceAppWidget() {
             val resolvedColors = widgetColorResolver.resolveWidgetColors(habit.colorHex)
 
             updateAppWidgetState(appContext, glanceId) { prefs ->
+                if (typed != null) prefs[ACTION_PROOF_KEY] = typed.claim.encode() else prefs.remove(ACTION_PROOF_KEY)
+                prefs[READ_FAILED_KEY] = false
                 prefs[HABIT_ID_KEY] = habitId
                 prefs[HABIT_NAME_KEY] = habit.name
                 prefs[COLOR_HEX_KEY] = habit.colorHex
-                prefs[TARGET_VALUE_KEY] = stats.displayTargetValue
+                prefs[TARGET_VALUE_KEY] = typed?.count?.todayPolicy?.targetValue ?: stats.displayTargetValue
                 prefs[COMPLETED_TODAY_KEY] = completedToday
-                prefs[ACTUAL_COUNT_KEY] = stats.actualTodayCount
+                prefs[ACTUAL_COUNT_KEY] = typed?.count?.todayQuantity ?: stats.actualTodayCount
                 prefs[COUNT_RULE_KNOWN_KEY] = stats.countRuleKnown
                 prefs[IS_COMPLETED_KEY] = isCompleted
                 prefs[IS_ACTIVE_KEY] = habit.isActive
-                prefs[IS_COUNTDOWN_KEY] = stats.displayIsCountdown
+                prefs[IS_COUNTDOWN_KEY] = typed?.count?.todayPolicy?.isCountdown ?: stats.displayIsCountdown
                 prefs[IS_DELETED_KEY] = false
                 prefs[DATA_LOADED_KEY] = true
                 // Write status fields
@@ -164,6 +172,11 @@ class CountingWidget : GlanceAppWidget() {
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Error loading initial data", e)
+            updateAppWidgetState(context, id) { prefs ->
+                prefs[READ_FAILED_KEY] = true
+                prefs[DATA_LOADED_KEY] = false
+                prefs.remove(ACTION_PROOF_KEY)
+            }
         }
 
         provideContent {
@@ -175,7 +188,11 @@ class CountingWidget : GlanceAppWidget() {
                 val isDeleted = state[IS_DELETED_KEY] ?: false
                 val appWidgetId = state[APP_WIDGET_ID_KEY] ?: android.appwidget.AppWidgetManager.INVALID_APPWIDGET_ID
 
-                if (habitId == -1L) {
+                if (state[READ_FAILED_KEY] == true) {
+                    WidgetEmptyStates.EmptyConfigState(context.getString(R.string.data_read_failed) + "\n" + context.getString(R.string.action_retry),
+                        GlanceModifier.clickable(actionRunCallback<com.dayforge.widget.timer.WidgetTimerRefreshCallback>(
+                            actionParametersOf(ActionParameters.Key<String>("widget") to "counting"))))
+                } else if (habitId == -1L) {
                     WidgetEmptyStates.EmptyConfigState(context.getString(R.string.widget_configure_first))
                 } else if (isDeleted) {
                     val intent = android.content.Intent(context, CountingWidgetConfigActivity::class.java).apply {
@@ -212,7 +229,8 @@ class CountingWidget : GlanceAppWidget() {
                         isCheckInAllowed = isCheckInAllowed,
                         nextCheckInDate = nextCheckInDate,
                         hasFailed = hasFailed,
-                        isGoalReached = isGoalReached
+                        isGoalReached = isGoalReached,
+                        actionProof = state[ACTION_PROOF_KEY]
                     )
                 }
             }
@@ -235,7 +253,8 @@ class CountingWidget : GlanceAppWidget() {
         hasFailed: Boolean = false,
         isGoalReached: Boolean = false,
         actualCount: Long = completedToday.toLong(),
-        countRuleKnown: Boolean = true
+        countRuleKnown: Boolean = true,
+        actionProof: String? = null
     ) {
         val context = LocalContext.current
         // Use pre-computed colors from WidgetColorResolver
@@ -404,12 +423,8 @@ class CountingWidget : GlanceAppWidget() {
                             // Check-in button
                             Button(
                                 text = context.getString(R.string.action_check_in),
-                                onClick = actionRunCallback<CheckInActionCallback>(
-                                    actionParametersOf(
-                                        ActionParameters.Key<Long>("habitId") to habitId,
-                                        ActionParameters.Key<String>("action") to if (isCountdown) "decrement" else "increment"
-                                    )
-                                ),
+                                onClick = com.dayforge.widget.checkin.widgetFactAction(context, habitId,
+                                    if (isCountdown) "decrement" else "increment", actionProof),
                                 modifier = GlanceModifier.height(36.dp)
                             )
                             Spacer(modifier = GlanceModifier.width(8.dp))

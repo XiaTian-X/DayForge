@@ -180,6 +180,11 @@
 
         <!-- Metric prompt dialog (shown after widget check-in with linked metrics) -->
         <activity
+            android:name=".widget.checkin.WidgetFactActionActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <activity
             android:name=".widget.checkin.MetricPromptActivity"
             android:exported="false"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />

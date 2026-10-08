@@ -86,10 +86,15 @@ class OneTimeRepository @Inject constructor(
 
     /** A racing action is a CAS conflict, never a silent second toggle or a physical fact delete. */
     internal suspend fun change(id: Long, complete: Boolean, expectedCompletionId: Long? = null,
-        expectedUuid: String? = null, authority: OneTimeActionAuthority? = null): Long =
+        expectedUuid: String? = null, authority: OneTimeActionAuthority? = null,
+        widgetClaim: WidgetFactClaim? = null, widgetReader: WidgetFactReader? = null): Long =
         withContext(Dispatchers.IO) {
             val (snapshot, status) = capture(id, expectedUuid)
             validateAuthority(snapshot, authority)
+            if (widgetClaim != null) check(snapshot.session == widgetClaim.session() &&
+                snapshot.activityUuid == widgetClaim.habitUuid && snapshot.queue.optimisticState == widgetClaim.oneTimeState) {
+                "ONE_TIME_ACTION_EXPIRED"
+            }
             check(status.canChange) { "ONE_TIME_PENDING_OR_DENIED" }
             check(status.completed != complete) { "ONE_TIME_STATE_CHANGED" }
             if (expectedCompletionId != null) check(status.completionId == expectedCompletionId) {
@@ -102,7 +107,14 @@ class OneTimeRepository @Inject constructor(
                 PendingOneTimeIntent(UUID.randomUUID().toString(), OneTimeIntent(UUID.randomUUID().toString(),
                     if (complete) "complete" else "undo", state.version, state.headEventUuid,
                     if (complete) null else state.completionEventUuid)), instant.toEpochMilli(), zone.id)
-            intents.append(snapshot.session, command).factId
+            intents.append(snapshot.session, command) {
+                if (widgetClaim != null) {
+                    requireNotNull(widgetReader).requireInTransaction(widgetClaim)
+                    check(instant.atZone(zone).toLocalDate().toString() == widgetClaim.date && zone.id == widgetClaim.timezone) {
+                        "FACT_WIDGET_DAY_CHANGED"
+                    }
+                }
+            }.factId
         }
 
     internal suspend fun toggle(id: Long, expectedUuid: String? = null, authority: OneTimeActionAuthority? = null): Boolean = withContext(Dispatchers.IO) {

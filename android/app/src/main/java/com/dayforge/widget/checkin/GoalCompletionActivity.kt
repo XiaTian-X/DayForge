@@ -9,12 +9,15 @@ import androidx.activity.compose.setContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import com.dayforge.R
-import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.repository.HabitRepository
+import com.dayforge.data.repository.WidgetFactClaim
+import com.dayforge.data.repository.WidgetFactReader
 import com.dayforge.ui.components.GoalCompletionDialog
 import dagger.hilt.android.AndroidEntryPoint
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -33,10 +36,11 @@ import javax.inject.Inject
 class GoalCompletionActivity : ComponentActivity() {
 
     @Inject
-    lateinit var habitDatabase: HabitDatabase
+    lateinit var factReader: WidgetFactReader
 
     @Inject
     lateinit var habitRepository: HabitRepository
+    private var actionPending = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -45,56 +49,94 @@ class GoalCompletionActivity : ComponentActivity() {
         val habitName = intent.getStringExtra(EXTRA_HABIT_NAME) ?: "Habit"
         val progress = intent.getIntExtra(EXTRA_PROGRESS, 0)
         val target = intent.getIntExtra(EXTRA_TARGET, 0)
+        val claim = try { WidgetFactClaim.read(intent) } catch (error: Exception) { finish(); return }
+        if (claim != null && claim.habitId != habitId) { finish(); return }
 
         if (habitId == -1L) {
             finish()
             return
         }
+        if (claim != null) lifecycleScope.launch {
+            factReader.accessChanges.catch { finish() }.collect { access ->
+                if (access == null || access.session != claim.session() || access.capturedDeviceId != claim.deviceId) finish()
+            }
+        }
 
         setContent {
             MaterialTheme {
-                GoalCompletionDialog(
-                    habitName = habitName,
-                    progress = progress,
-                    target = target,
-                    onConfirm = {
-                        lifecycleScope.launch(Dispatchers.IO) {
-                            runCatching {
-                                habitRepository.updateIsActive(habitId, false, applicationContext)
-                            }.fold(
-                                onSuccess = {
-                                    withContext(Dispatchers.Main) {
-                                        Toast.makeText(applicationContext, getString(R.string.goal_completion_toast), Toast.LENGTH_SHORT).show()
-                                        finish()
-                                    }
-                                },
-                                onFailure = { error ->
-                                    withContext(Dispatchers.Main) {
-                                        Toast.makeText(applicationContext, error.message ?: getString(R.string.goal_completion_update_error), Toast.LENGTH_LONG).show()
-                                    }
-                                }
-                            )
-                        }
-                    },
-                    onDismiss = {
-                        lifecycleScope.launch(Dispatchers.IO) {
-                            runCatching {
-                                val habit = habitDatabase.habitDao().getVisibleHabitById(habitId)
-                                if (habit != null && habit.failMode == com.dayforge.data.model.FailMode.STRICT) {
-                                    habitRepository.updateFailMode(habitId, com.dayforge.data.model.FailMode.LOOSE, applicationContext)
-                                }
-                            }.fold(
-                                onSuccess = { withContext(Dispatchers.Main) { finish() } },
-                                onFailure = { error ->
-                                    withContext(Dispatchers.Main) {
-                                        Toast.makeText(applicationContext, error.message ?: getString(R.string.goal_completion_update_error), Toast.LENGTH_LONG).show()
-                                    }
-                                }
-                            )
-                        }
+                var ready by remember { mutableStateOf(false) }
+                var displayedName by remember { mutableStateOf(habitName) }
+                var displayedTarget by remember { mutableIntStateOf(target) }
+                var displayedProgress by remember { mutableIntStateOf(progress) }
+                LaunchedEffect(claim) {
+                    try {
+                        val display = claim?.let { factReader.goalDisplay(it) }
+                        val habit = display?.habit
+                            ?: requireNotNull(habitRepository.getHabitById(habitId)).also {
+                                check(it.appearance == null) { "FACT_WIDGET_CLAIM_REQUIRED" }
+                            }
+                        displayedName = habit.name
+                        displayedTarget = requireNotNull(habit.targetCycles)
+                        if (display != null) displayedProgress = display.progress
+                        ready = true
+                    } catch (error: Exception) {
+                        if (error is CancellationException) throw error
+                        Toast.makeText(applicationContext, getString(R.string.goal_completion_update_error), Toast.LENGTH_LONG).show()
+                        finish()
                     }
-                )
+                }
+                if (ready) {
+                    GoalCompletionDialog(
+                        habitName = displayedName,
+                        progress = displayedProgress,
+                        target = displayedTarget,
+                        onConfirm = { submitGoal(habitId, claim, true) },
+                        onDismiss = { submitGoal(habitId, claim, false) }
+                    )
+                }
             }
+        }
+    }
+
+    private fun submitGoal(habitId: Long, claim: WidgetFactClaim?, complete: Boolean) {
+        if (actionPending) return
+        actionPending = true
+        lifecycleScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    if (claim != null) habitRepository.applyWidgetGoal(applicationContext, claim, complete)
+                    else {
+                        val habit = requireNotNull(habitRepository.getHabitById(habitId))
+                        check(habit.appearance == null) { "FACT_WIDGET_CLAIM_REQUIRED" }
+                        if (complete) habitRepository.updateIsActive(habitId, false, applicationContext)
+                        else if (habit.failMode == com.dayforge.data.model.FailMode.STRICT)
+                            habitRepository.updateFailMode(habitId, com.dayforge.data.model.FailMode.LOOSE, applicationContext)
+                    }
+                }
+                if (complete) Toast.makeText(this@GoalCompletionActivity, getString(R.string.goal_completion_toast), Toast.LENGTH_SHORT).show()
+                followUp(claim)
+                finish()
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                Toast.makeText(this@GoalCompletionActivity, error.message ?: getString(R.string.goal_completion_update_error), Toast.LENGTH_LONG).show()
+                // A stale confirmation cannot become writable again by dismissing the same dialog.
+                // Close it so Back/Continue cannot trap the user on an expired, non-writable screen.
+                if (claim != null) {
+                    com.dayforge.widget.WidgetRefreshScheduler.request(this@GoalCompletionActivity)
+                    finish()
+                }
+            } finally { actionPending = false }
+        }
+    }
+
+    private suspend fun followUp(claim: WidgetFactClaim?) {
+        if (claim == null) return
+        try {
+            val current = factReader.afterWrite(claim)
+            startActivity(MetricPromptActivity.createIntent(this, current.habit.id, current.habit.name, factClaim = current.claim))
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            Toast.makeText(this, getString(R.string.metric_error_record_failed, error.message.orEmpty()), Toast.LENGTH_LONG).show()
         }
     }
 
@@ -119,7 +161,8 @@ class GoalCompletionActivity : ComponentActivity() {
             habitId: Long,
             habitName: String,
             progress: Int,
-            target: Int
+            target: Int,
+            claim: WidgetFactClaim? = null
         ): Intent {
             return Intent(context, GoalCompletionActivity::class.java).apply {
                 putExtra(EXTRA_HABIT_ID, habitId)
@@ -128,6 +171,7 @@ class GoalCompletionActivity : ComponentActivity() {
                 putExtra(EXTRA_TARGET, target)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 addFlags(Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+                claim?.attach(this)
             }
         }
     }

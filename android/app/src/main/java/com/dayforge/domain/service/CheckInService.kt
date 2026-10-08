@@ -24,6 +24,17 @@ class CheckInService @Inject constructor(
     private val timeLogDao: TimeLogDao
 ) {
 
+    /** Typed widget operations reuse the normal repository and target-progress rules. */
+    suspend fun widgetAction(context: Context, claim: com.dayforge.data.repository.WidgetFactClaim,
+        action: String): CheckInResult.Success {
+        val committed = habitRepository.performWidgetFact(context, claim, action)
+        val habit = committed.habit
+        if (habit.completionPolicy == "one_and_done") return CheckInResult.Success(committed.completed, 0, false)
+        val progress = committed.targetProgress
+        val added = action == "increment" || (action == "toggle" && claim.completionUuid == null)
+        return CheckInResult.Success(committed.completed, progress, added && habit.targetCycles != null && progress >= habit.targetCycles)
+    }
+
     /**
      * Gets the distinct day count for target progress calculation.
      * TIMER habits use timelogs table, other types use completions table.

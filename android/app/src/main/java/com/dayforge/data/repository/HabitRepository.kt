@@ -39,7 +39,8 @@ class HabitRepository @Inject constructor(
     private val nextObjectEditor: NextObjectEditor? = null,
     private val nextObjectCreator: NextObjectCreator? = null,
     private val oneTimeRepository: OneTimeRepository? = null,
-    private val countHistoryReader: CountHistoryReader? = null
+    private val countHistoryReader: CountHistoryReader? = null,
+    private val widgetFactReader: WidgetFactReader? = null
 ) {
     val allHabits: Flow<List<HabitEntity>> = habitDao.getAllHabits()
 
@@ -70,6 +71,61 @@ class HabitRepository @Inject constructor(
 
     suspend fun getHabitForEditing(id: Long): ObjectEditSnapshot<HabitEntity> =
         nextObjectEditor?.habit(id) ?: ObjectEditSnapshot(habitDao.getHabitById(id), null)
+
+    /** Explicit display-time operation; a stale click must never become a fresh toggle. */
+    internal suspend fun performWidgetFact(context: Context, claim: WidgetFactClaim, action: String): WidgetFactSnapshot {
+        val reader = requireNotNull(widgetFactReader)
+        val before = reader.authorize(claim, exactFact = action != "increment")
+        val habit = requireNotNull(before.value)
+        if (habit.completionPolicy == "one_and_done") {
+            require(action == "toggle")
+            val complete = requireNotNull(claim.oneTimeState).completionEventUuid == null
+            requireNotNull(oneTimeRepository).change(habit.id, complete, expectedUuid = habit.uuid,
+                widgetClaim = claim, widgetReader = reader)
+            notifyWidgetUpdate(context)
+            return reader.afterWrite(claim)
+        }
+        when (action) {
+            "toggle" -> {
+                require(habit.habitType == HabitType.CHECK_IN)
+                if (claim.completionUuid == null) logCompletion(context, habit.id, authority = before.authority,
+                    expectedHabitUuid = habit.uuid, widgetClaim = claim)
+                else undoCompletion(context, requireNotNull(completionDao.getCompletionByUuid(claim.completionUuid)).id,
+                    authority = before.authority, widgetClaim = claim)
+            }
+            "increment" -> {
+                require(habit.habitType == HabitType.COUNTING)
+                logCompletion(context, habit.id, authority = before.authority, expectedHabitUuid = habit.uuid, widgetClaim = claim)
+            }
+            "undo" -> {
+                require(habit.habitType == HabitType.COUNTING && claim.completionUuid != null)
+                undoCompletion(context, requireNotNull(completionDao.getCompletionByUuid(claim.completionUuid)).id,
+                    authority = before.authority, widgetClaim = claim)
+            }
+            else -> error("FACT_WIDGET_UNKNOWN_ACTION")
+        }
+        return reader.afterWrite(claim)
+    }
+
+    /** Goal confirmation uses the post-write display claim, not a newly selected owner or plan. */
+    suspend fun applyWidgetGoal(context: Context, claim: WidgetFactClaim, complete: Boolean) {
+        val reader = requireNotNull(widgetFactReader)
+        val before = reader.authorize(claim)
+        val expected = requireNotNull(before.value)
+        mutate(expected, before.authority) { habit ->
+            val view = reader.requireInTransaction(claim)
+            val progress = view.count?.qualifiedDates?.size ?: completionDao.getDistinctDayCount(habit.id)
+            check(habit.completionPolicy == "recurring" && habit.targetCycles != null && progress >= habit.targetCycles) {
+                "FACT_WIDGET_GOAL_CHANGED"
+            }
+            if (complete) habitDao.updateIsActive(habit.id, false)
+            else if (habit.failMode == FailMode.STRICT) habitDao.updateFailMode(habit.id, FailMode.LOOSE)
+        }
+        // Preserve updateIsActive's post-COMMIT reminder side effect. The facade re-reads the
+        // current owner/row, so a late callback cannot cancel another account's reused local ID.
+        if (complete && expected.bestTime != null) HabitReminderScheduler.cancelReminder(context, claim.habitId)
+        notifyWidgetUpdate(context)
+    }
 
     suspend fun createHabit(
         name: String,
@@ -505,18 +561,33 @@ class HabitRepository @Inject constructor(
      * @return The ID of the inserted completion
      */
     suspend fun logCompletion(context: Context, habitId: Long, value: Int = 1,
-        authority: ObjectEditAuthority? = null, expectedHabitUuid: String? = null): Long {
+        authority: ObjectEditAuthority? = null, expectedHabitUuid: String? = null,
+        widgetClaim: WidgetFactClaim? = null): Long {
         val capturedHabit = habitDao.getHabitById(habitId)
         if (expectedHabitUuid != null) check(capturedHabit?.uuid == expectedHabitUuid) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
         if (capturedHabit?.completionPolicy == "one_and_done") {
             require(value == 1) { "ONE_TIME_VALUE_MUST_BE_ONE" }
-            val id = requireNotNull(oneTimeRepository).change(habitId, complete = true, expectedUuid = capturedHabit.uuid)
+            val id = requireNotNull(oneTimeRepository).change(habitId, complete = true, expectedUuid = capturedHabit.uuid,
+                widgetClaim = widgetClaim, widgetReader = widgetFactReader)
             notifyWidgetUpdate(context)
             return id
         }
         val occurredAt = java.time.Instant.now()
         val capturedZone = java.time.ZoneId.systemDefault()
         val id = mutate(requireNotNull(capturedHabit), authority, structural = !capturedHabit.isActive) { habit ->
+            if (widgetClaim != null) {
+                val view = requireNotNull(widgetFactReader).requireInTransaction(widgetClaim,
+                    exactFact = habit.habitType != HabitType.COUNTING)
+                check(com.dayforge.domain.service.ScheduleValidator.isCheckInAllowedToday(habit.schedule, habit.createdAt)) {
+                    "FACT_WIDGET_NOT_SCHEDULED"
+                }
+                check(occurredAt.atZone(capturedZone).toLocalDate().toString() == widgetClaim.date &&
+                    capturedZone.id == widgetClaim.timezone) { "FACT_WIDGET_DAY_CHANGED" }
+                view.count?.let { history ->
+                    val policy = requireNotNull(history.todayPolicy)
+                    check(!policy.isCountdown || history.todayQuantity < policy.targetValue) { "COUNT_DAY_ALREADY_COMPLETED" }
+                }
+            }
             // Auto-reactivate if habit is currently inactive
             if (!habit.isActive) {
                 habitDao.updateIsActive(habitId, true)
@@ -553,20 +624,25 @@ class HabitRepository @Inject constructor(
      */
     suspend fun undoCompletion(context: Context, completionId: Long,
         oneTimeAuthority: com.dayforge.domain.model.OneTimeActionAuthority? = null,
-        authority: ObjectEditAuthority? = null) {
+        authority: ObjectEditAuthority? = null, widgetClaim: WidgetFactClaim? = null) {
         val initial = completionDao.getCompletionById(completionId)
         if (oneTimeAuthority != null) check(initial?.oneTimeAction == "complete") { "ONE_TIME_ACTION_EXPIRED" }
         if (initial?.oneTimeAction != null) {
             require(initial.oneTimeAction == "complete") { "ONE_TIME_ONLY_COMPLETION_CAN_BE_UNDONE" }
             requireNotNull(oneTimeRepository).change(initial.habitId, complete = false,
-                expectedCompletionId = completionId, expectedUuid = initial.habitUuid, authority = oneTimeAuthority)
+                expectedCompletionId = completionId, expectedUuid = initial.habitUuid, authority = oneTimeAuthority,
+                widgetClaim = widgetClaim, widgetReader = widgetFactReader)
             notifyWidgetUpdate(context)
             return
         }
-        if (initial == null) return
+        if (initial == null) { check(widgetClaim == null) { "FACT_WIDGET_FACT_CHANGED" }; return }
         val expected = requireNotNull(habitDao.getHabitById(initial.habitId))
         if (expected.appearance != null) check(initial.habitUuid == expected.uuid) { "OBJECT_WRITE_FACT_CHANGED" }
         mutate(expected, authority, structural = false) {
+            if (widgetClaim != null) {
+                requireNotNull(widgetFactReader).requireInTransaction(widgetClaim)
+                check(initial.uuid == widgetClaim.completionUuid) { "FACT_WIDGET_FACT_CHANGED" }
+            }
             val completion = completionDao.getCompletionById(completionId)
             // Ordinary undo has always been a no-op when another click already removed it.
             if (completion == null) return@mutate

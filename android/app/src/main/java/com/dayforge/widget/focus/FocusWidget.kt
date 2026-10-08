@@ -113,6 +113,7 @@ class FocusWidget : GlanceAppWidget() {
         val DATA_LOADED_KEY = booleanPreferencesKey("dataLoaded")
         val READ_FAILED_KEY = booleanPreferencesKey("timerReadFailed")
         val TIMER_ACTION_PROOF_KEY = stringPreferencesKey("timerActionProof")
+        val FACT_ACTION_PROOF_KEY = stringPreferencesKey("factActionProof")
 
         /**
          * Refresh all FocusWidget instances without requiring glanceId.
@@ -230,6 +231,19 @@ class FocusWidget : GlanceAppWidget() {
             } else null
 
             val themes = DeviceThemeControllerEntryPoint.from(appContext).themeController()
+            val primaryFactSnapshot = if (primaryOriginal?.appearance != null &&
+                primaryOriginal.habitType in setOf(HabitType.CHECK_IN, HabitType.COUNTING)) {
+                com.dayforge.di.WidgetEntryPoint.from(appContext).factReader().read(primaryOriginal)
+            } else null
+            primaryFactSnapshot?.let { view ->
+                // Ranking/slot inputs and the command claim must describe the same read state.
+                // A sync fact can change without changing the habit's display-only fields.
+                val stats = requireNotNull(primaryStats)
+                check(view.completed == stats.completedToday && (view.count == null ||
+                    (view.count.todayQuantity == stats.actualTodayCount &&
+                        view.count.todayPolicy?.targetValue == stats.displayTargetValue &&
+                        view.count.todayPolicy?.isCountdown == stats.displayIsCountdown))) { "FACT_WIDGET_STALE_DISPLAY" }
+            }
             val widgetColorResolver = WidgetColorResolver(appContext, themes)
 
             updateAppWidgetState(appContext, glanceId) { prefs ->
@@ -238,6 +252,8 @@ class FocusWidget : GlanceAppWidget() {
                 if (primaryTimerSnapshot != null) prefs[TIMER_ACTION_PROOF_KEY] =
                     com.dayforge.widget.timer.WidgetTimerAction.from(primaryTimerSnapshot).encode()
                 else prefs.remove(TIMER_ACTION_PROOF_KEY)
+                if (primaryFactSnapshot != null) prefs[FACT_ACTION_PROOF_KEY] = primaryFactSnapshot.claim.encode()
+                else prefs.remove(FACT_ACTION_PROOF_KEY)
 
                 if (primary != null) {
                     prefs[HAS_HABITS_KEY] = true
@@ -695,12 +711,8 @@ class FocusWidget : GlanceAppWidget() {
                         }
                         Button(
                             text = context.getString(com.dayforge.R.string.action_check_in),
-                            onClick = actionRunCallback<com.dayforge.widget.checkin.CheckInActionCallback>(
-                                actionParametersOf(
-                                    ActionParameters.Key<Long>("habitId") to habitId,
-                                    ActionParameters.Key<String>("action") to if (isCountdown) "decrement" else "increment"
-                                )
-                            ),
+                            onClick = com.dayforge.widget.checkin.widgetFactAction(context, habitId,
+                                if (isCountdown) "decrement" else "increment", state[FACT_ACTION_PROOF_KEY]),
                             modifier = GlanceModifier.height(36.dp)
                         )
                         Spacer(modifier = GlanceModifier.width(8.dp))
@@ -725,7 +737,8 @@ class FocusWidget : GlanceAppWidget() {
                     // CHECK_IN type or AfterWindow (allow makeup check-in)
                     HabitActionButtons.CheckInButton(
                         habitId = habitId,
-                        isCompleted = isCompleted
+                        isCompleted = isCompleted,
+                        actionProof = state[FACT_ACTION_PROOF_KEY]
                     )
                 } else if (matchType == "AfterWindow") {
                     // AfterWindow but not failed/completed and not in check-in window

@@ -45,13 +45,18 @@ class CheckInActionCallback : ActionCallback {
         val completionDao = database.completionDao()
         val habitDao = database.habitDao()
         val timeLogDao = database.timeLogDao()
+        // A cached v4 button cannot silently recapture authority for a typed object.
+        if (habitDao.getVisibleHabitById(habitId)?.appearance != null) {
+            com.dayforge.widget.WidgetRefreshScheduler.request(context)
+            return
+        }
         val repository = runCatching {
             EntryPointAccessors.fromApplication(
                 context.applicationContext,
                 WidgetEntryPoint::class.java
             ).habitRepository()
         }.getOrElse {
-            // Plain Robolectric/unit environments do not own a Hilt component.
+            // Isolated legacy device fixtures do not own a Hilt component.
             HabitRepository(habitDao, completionDao, timeLogDao, database)
         }
         val service = CheckInService(repository, completionDao, timeLogDao)

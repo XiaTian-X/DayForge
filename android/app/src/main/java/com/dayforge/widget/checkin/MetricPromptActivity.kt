@@ -32,6 +32,7 @@ class MetricPromptActivity : ComponentActivity() {
 
     @Inject
     lateinit var preferencesManager: PreferencesManager
+    @Inject lateinit var habits: com.dayforge.data.repository.HabitRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -40,6 +41,9 @@ class MetricPromptActivity : ComponentActivity() {
         val habitName = intent.getStringExtra(EXTRA_HABIT_NAME) ?: "Habit"
         val timerAuthority = try { com.dayforge.domain.model.TimerActionAuthority.read(intent) }
             catch (error: Exception) { finish(); return }
+        val factClaim = try { com.dayforge.data.repository.WidgetFactClaim.read(intent) }
+            catch (error: Exception) { finish(); return }
+        if (timerAuthority != null && factClaim != null) { finish(); return }
 
         if (habitId == -1L) {
             finish()
@@ -49,12 +53,25 @@ class MetricPromptActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 val state by metricCoordinator.postCheckInState.collectAsState()
+                var hadPrompt by remember { mutableStateOf(false) }
+                LaunchedEffect(state) {
+                    if (state != null) {
+                        hadPrompt = true
+                        if (state?.habitId != habitId) finish()
+                    } else if (hadPrompt) finish()
+                }
 
                 LaunchedEffect(habitId) {
                     try {
-                        if (timerAuthority?.sessionUuid != null) metricCoordinator.showPromptAfterTimerStop(habitId, timerAuthority)
+                        if (factClaim != null) {
+                            check(factClaim.habitId == habitId)
+                            metricCoordinator.showWidgetFactPrompt(factClaim)
+                        } else if (timerAuthority?.sessionUuid != null) metricCoordinator.showPromptAfterTimerStop(habitId, timerAuthority)
                         else if (timerAuthority != null) metricCoordinator.showPendingTimerWidgetPrompt(habitId, timerAuthority)
-                        else metricCoordinator.showPromptIfNeeded(habitId, habitName)
+                        else {
+                            check(habits.getHabitById(habitId)?.appearance == null) { "FACT_WIDGET_CLAIM_REQUIRED" }
+                            metricCoordinator.showPromptIfNeeded(habitId, habitName)
+                        }
                         if (metricCoordinator.postCheckInState.value == null) finish()
                     } catch (error: Exception) {
                         if (error is CancellationException) throw error
@@ -63,7 +80,7 @@ class MetricPromptActivity : ComponentActivity() {
                     }
                 }
 
-                state?.let { prompt ->
+                state?.takeIf { it.habitId == habitId }?.let { prompt ->
                     // PostCheckInDialog is already an AlertDialog, no need to wrap in Dialog
                     PostCheckInDialog(
                         habitName = prompt.habitName,
@@ -92,9 +109,9 @@ class MetricPromptActivity : ComponentActivity() {
                         onRecord = { values, neverAskAgain ->
                             lifecycleScope.launch {
                                 try {
-                                    if (!metricCoordinator.recordMetricValues(habitId, values, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt)) return@launch
+                                    if (!metricCoordinator.recordMetricValues(habitId, values, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt, prompt.factPrompt)) return@launch
                                     if (neverAskAgain) {
-                                        metricCoordinator.setNeverAskAgain(habitId, true, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt)
+                                        metricCoordinator.setNeverAskAgain(habitId, true, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt, prompt.factPrompt)
                                     }
                                     finish()
                                 } catch (error: Exception) {
@@ -107,10 +124,11 @@ class MetricPromptActivity : ComponentActivity() {
                             lifecycleScope.launch {
                                 try {
                                     if (neverAskAgain) {
-                                        metricCoordinator.setNeverAskAgain(habitId, true, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt)
+                                        metricCoordinator.setNeverAskAgain(habitId, true, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt, prompt.factPrompt)
                                     }
-                                    metricCoordinator.skipPrompt(habitId, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt)
-                                    if (prompt.timerPrompt == null) preferencesManager.removePendingMetricHabit(habitId)
+                                    metricCoordinator.skipPrompt(habitId, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt, prompt.factPrompt)
+                                    if (prompt.timerPrompt == null && prompt.factPrompt == null && prompt.oneTimePrompt == null)
+                                        preferencesManager.removePendingMetricHabit(habitId)
                                     finish()
                                 } catch (error: Exception) {
                                     if (error is CancellationException) throw error
@@ -140,13 +158,15 @@ class MetricPromptActivity : ComponentActivity() {
          * Create intent to start this activity.
          */
         fun createIntent(context: android.content.Context, habitId: Long, habitName: String,
-            timerAuthority: com.dayforge.domain.model.TimerActionAuthority? = null): Intent {
+            timerAuthority: com.dayforge.domain.model.TimerActionAuthority? = null,
+            factClaim: com.dayforge.data.repository.WidgetFactClaim? = null): Intent {
             return Intent(context, MetricPromptActivity::class.java).apply {
                 putExtra(EXTRA_HABIT_ID, habitId)
                 putExtra(EXTRA_HABIT_NAME, habitName)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 addFlags(Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
                 timerAuthority?.attach(this)
+                factClaim?.attach(this)
             }
         }
     }

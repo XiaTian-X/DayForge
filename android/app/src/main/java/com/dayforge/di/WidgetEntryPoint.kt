@@ -12,6 +12,7 @@ interface WidgetEntryPoint {
     fun habitRepository(): HabitRepository
     fun habitStatusCalculator(): com.dayforge.domain.service.HabitStatusCalculator
     fun timerWriter(): com.dayforge.data.repository.NextTimerWriter
+    fun factReader(): com.dayforge.data.repository.WidgetFactReader
 
     companion object {
         fun from(context: android.content.Context): WidgetEntryPoint = dagger.hilt.android.EntryPointAccessors

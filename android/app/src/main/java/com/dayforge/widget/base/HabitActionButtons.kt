@@ -46,7 +46,8 @@ object HabitActionButtons {
     fun CheckInButton(
         habitId: Long,
         isCompleted: Boolean,
-        modifier: GlanceModifier = GlanceModifier.height(40.dp)
+        modifier: GlanceModifier = GlanceModifier.height(40.dp),
+        actionProof: String? = null
     ) {
         val context = LocalContext.current
         Button(
@@ -55,12 +56,7 @@ object HabitActionButtons {
             } else {
                 context.getString(R.string.action_check_in)
             },
-            onClick = actionRunCallback<CheckInActionCallback>(
-                actionParametersOf(
-                    ActionParameters.Key<Long>("habitId") to habitId,
-                    ActionParameters.Key<String>("action") to "toggle"
-                )
-            ),
+            onClick = com.dayforge.widget.checkin.widgetFactAction(context, habitId, "toggle", actionProof),
             modifier = modifier
         )
     }

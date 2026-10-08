@@ -40,7 +40,8 @@ class MetricRepository @Inject constructor(
     private val linkDao: HabitMetricLinkDao,
     private val structuralEditGuard: StructuralEditGuard? = null,
     private val nextObjectEditor: NextObjectEditor? = null,
-    private val nextObjectCreator: NextObjectCreator? = null
+    private val nextObjectCreator: NextObjectCreator? = null,
+    private val widgetFactReader: WidgetFactReader? = null
 ) {
     fun observeActiveMetrics(): Flow<List<MetricEntity>> = metricDao.getAllActiveMetrics()
 
@@ -178,10 +179,13 @@ class MetricRepository @Inject constructor(
         authority: ObjectEditAuthority? = null,
         expectedMetricUuid: String? = null,
         expectedMetrics: List<MetricEntity>? = null,
-        promptHabit: com.dayforge.data.local.entity.HabitEntity? = null
+        promptHabit: com.dayforge.data.local.entity.HabitEntity? = null,
+        promptFact: WidgetFactClaim? = null
     ): List<Long> {
         val capturedZone = java.time.ZoneId.systemDefault().id
         if (values.isEmpty()) return emptyList()
+        if (promptFact != null) require(authority != null && expectedMetrics != null && promptHabit != null &&
+            promptHabit.id == promptFact.habitId && promptHabit.uuid == promptFact.habitUuid) { "FACT_PROMPT_TICKET_REQUIRED" }
         val targets = expectedMetrics ?: values.map { requireNotNull(metricDao.getMetricById(it.metricId)) {
             "Metric no longer exists: ${it.metricId}"
         } }.distinctBy { it.id }
@@ -194,6 +198,11 @@ class MetricRepository @Inject constructor(
             "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED"
         }
         return mutate(targets, authority, structural = false) {
+            if (promptFact != null) {
+                check(authority?.session == promptFact.session()) { "FACT_PROMPT_STALE_ACCOUNT" }
+                requireNotNull(widgetFactReader).requireInTransaction(promptFact, requireDay = false)
+                check(promptFact.completionUuid != null) { "FACT_PROMPT_COMPLETION_CHANGED" }
+            }
             if (promptHabit != null) {
                 check(habitDao.getVisibleHabitById(promptHabit.id)?.uuid == promptHabit.uuid) { "METRIC_PROMPT_ACTIVITY_CHANGED" }
                 targets.forEach { metric ->

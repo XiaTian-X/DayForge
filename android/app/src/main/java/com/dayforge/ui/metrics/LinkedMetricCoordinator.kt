@@ -43,6 +43,15 @@ class TimerMetricPrompt internal constructor(
     internal var submitted: List<MetricValueInput>? = null
 }
 
+/** Ordinary-widget prompt tickets stay in memory, just like timer metric tickets. */
+class FactMetricPrompt internal constructor(
+    internal val source: com.dayforge.data.repository.WidgetFactClaim,
+    internal val habit: HabitEntity,
+    internal val metrics: List<ObjectEditSnapshot<MetricEntity>>
+) {
+    internal var submitted: List<MetricValueInput>? = null
+}
+
 data class LinkedMetricPromptState(
     val habitId: Long,
     val habitName: String,
@@ -50,7 +59,8 @@ data class LinkedMetricPromptState(
     val show: Boolean = true,
     val isTempTask: Boolean = false,
     val oneTimePrompt: OneTimeMetricPrompt? = null,
-    val timerPrompt: TimerMetricPrompt? = null
+    val timerPrompt: TimerMetricPrompt? = null,
+    val factPrompt: FactMetricPrompt? = null
 )
 
 /** Coordinates linked-metric card, prompt, and recording behavior for habit screens. */
@@ -60,7 +70,8 @@ class LinkedMetricCoordinator @Inject constructor(
     private val metricRepository: MetricRepository,
     private val habitRepository: HabitRepository,
     private val oneTimeRepository: OneTimeRepository? = null,
-    private val timerWriter: NextTimerWriter? = null
+    private val timerWriter: NextTimerWriter? = null,
+    private val factReader: com.dayforge.data.repository.WidgetFactReader? = null
 ) {
     val pendingMetricHabits: Flow<Set<Long>> = combine(preferencesManager.pendingMetricHabits,
         oneTimeRepository?.pendingHabitIds ?: kotlinx.coroutines.flow.flowOf(emptySet())) { old, once -> old + once }
@@ -103,6 +114,38 @@ class LinkedMetricCoordinator @Inject constructor(
     ) {
         showPromptForPolicy(habitId, habitName, isTempTask,
             habitRepository.getHabitById(habitId)?.completionPolicy)
+    }
+
+    suspend fun showWidgetFactPrompt(claim: com.dayforge.data.repository.WidgetFactClaim) {
+        _postCheckInState.value = null
+        val reader = requireNotNull(factReader)
+        val habit = reader.requireCurrent(claim)
+        if (habit.completionPolicy == "one_and_done") {
+            // The persisted once prompt already owns its event, metadata, draft and observations.
+            val owner = requireNotNull(oneTimeRepository)
+            val prompt = owner.prompt(habit.id) ?: return
+            check(prompt.eventUuid == claim.completionUuid && prompt.snapshot.session == claim.session()) {
+                "ONE_TIME_PROMPT_EXPIRED"
+            }
+            owner.publish(prompt) { _postCheckInState.value = prompt.toState() }
+            return
+        }
+        check(claim.completionUuid != null) { "FACT_PROMPT_COMPLETION_CHANGED" }
+        if (preferencesManager.getNeverAskAgain(habit.id).first()) return
+        val infos = metricRepository.getLinkedMetricSnapshots(habit.id).filter { it.promptOnComplete }
+        if (infos.isEmpty()) return
+        val snapshots = infos.map { info -> metricRepository.getMetricForEditing(info.metricId).also {
+            check(it.authority?.session == claim.session() && it.value?.appearance != null) { "FACT_PROMPT_STALE_METRIC" }
+        } }
+        val proof = FactMetricPrompt(claim, habit, snapshots)
+        reader.publish(claim) {
+            _postCheckInState.value = LinkedMetricPromptState(habit.id, habit.name,
+                snapshots.map { snapshot ->
+                    val metric = requireNotNull(snapshot.value)
+                    LinkedMetricInfo(metric.name, metric.id, infos.single { it.metricId == metric.id }.latestValue,
+                        metric.unit, metric.decimalPlaces)
+                }, factPrompt = proof)
+        }
     }
 
     private suspend fun showPromptForPolicy(
@@ -191,9 +234,24 @@ class LinkedMetricCoordinator @Inject constructor(
     }
 
     suspend fun recordMetricValues(habitId: Long, values: List<MetricValueInput>, expectedEventUuid: String? = null,
-        expectedTimerPrompt: TimerMetricPrompt? = null): Boolean {
+        expectedTimerPrompt: TimerMetricPrompt? = null, expectedFactPrompt: FactMetricPrompt? = null): Boolean {
         return try {
-            if (expectedTimerPrompt != null) {
+            if (expectedFactPrompt != null) {
+                promptWrites.withLock {
+                    check(expectedFactPrompt.habit.id == habitId && _postCheckInState.value?.factPrompt === expectedFactPrompt) {
+                        "FACT_PROMPT_EXPIRED"
+                    }
+                    require(values.isNotEmpty() && values.map { it.metricId }.distinct().size == values.size)
+                    if (expectedFactPrompt.submitted == null) {
+                        val selected = values.map { input -> expectedFactPrompt.metrics.single { it.value?.id == input.metricId } }
+                        metricRepository.recordValues(values.map { MetricValueDraft(it.metricId, it.value, it.note) },
+                            authority = requireNotNull(selected.first().authority), expectedMetrics = selected.map { requireNotNull(it.value) },
+                            promptHabit = expectedFactPrompt.habit, promptFact = expectedFactPrompt.source)
+                        expectedFactPrompt.submitted = values.toList()
+                    } else check(expectedFactPrompt.submitted == values) { "FACT_PROMPT_ALREADY_SUBMITTED" }
+                    requireNotNull(factReader).publish(expectedFactPrompt.source) { preferencesManager.removePendingMetricHabit(habitId) }
+                }
+            } else if (expectedTimerPrompt != null) {
                 promptWrites.withLock {
                     check(expectedTimerPrompt.habit.id == habitId && _postCheckInState.value?.timerPrompt === expectedTimerPrompt) {
                         "TIMER_PROMPT_EXPIRED"
@@ -251,8 +309,13 @@ class LinkedMetricCoordinator @Inject constructor(
     }
 
     suspend fun setNeverAskAgain(habitId: Long, value: Boolean, expectedEventUuid: String? = null,
-        expectedTimerPrompt: TimerMetricPrompt? = null) {
+        expectedTimerPrompt: TimerMetricPrompt? = null, expectedFactPrompt: FactMetricPrompt? = null) {
         promptWrites.withLock {
+            if (expectedFactPrompt != null) {
+                check(expectedFactPrompt.habit.id == habitId && _postCheckInState.value?.factPrompt === expectedFactPrompt)
+                requireNotNull(factReader).publish(expectedFactPrompt.source) { preferencesManager.setNeverAskAgain(habitId, value) }
+                return@withLock
+            }
             if (expectedTimerPrompt != null) {
                 check(expectedTimerPrompt.habit.id == habitId && _postCheckInState.value?.timerPrompt === expectedTimerPrompt)
                 requireNotNull(timerWriter).publish(habitId, expectedTimerPrompt.source) { preferencesManager.setNeverAskAgain(habitId, value) }
@@ -291,8 +354,14 @@ class LinkedMetricCoordinator @Inject constructor(
     }
 
     /** Explicit skip closes the durable prompt; closing the window alone retains it for retry. */
-    suspend fun skipPrompt(habitId: Long, expectedEventUuid: String? = null, expectedTimerPrompt: TimerMetricPrompt? = null) {
+    suspend fun skipPrompt(habitId: Long, expectedEventUuid: String? = null, expectedTimerPrompt: TimerMetricPrompt? = null,
+        expectedFactPrompt: FactMetricPrompt? = null) {
         promptWrites.withLock {
+            if (expectedFactPrompt != null) {
+                check(expectedFactPrompt.habit.id == habitId && _postCheckInState.value?.factPrompt === expectedFactPrompt)
+                requireNotNull(factReader).publish(expectedFactPrompt.source) { preferencesManager.removePendingMetricHabit(habitId) }
+                return@withLock
+            }
             if (expectedTimerPrompt != null) {
                 check(expectedTimerPrompt.habit.id == habitId && _postCheckInState.value?.timerPrompt === expectedTimerPrompt)
                 requireNotNull(timerWriter).publish(habitId, expectedTimerPrompt.source) { preferencesManager.removePendingMetricHabit(habitId) }

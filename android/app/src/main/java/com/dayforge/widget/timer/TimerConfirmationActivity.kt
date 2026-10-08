@@ -19,6 +19,7 @@ import com.dayforge.domain.service.TimerServiceController
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 
 /**
@@ -46,7 +47,7 @@ class TimerConfirmationActivity : ComponentActivity() {
             return
         }
         if (claim != null) lifecycleScope.launch {
-            writer.accessChanges.collect { access ->
+            writer.accessChanges.catch { finish() }.collect { access ->
                 if (access == null || access.session != claim.authority.session() || access.capturedDeviceId != claim.authority.deviceId) finish()
             }
         }

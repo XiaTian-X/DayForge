@@ -12,6 +12,8 @@ class WidgetTimerRefreshCallback : ActionCallback {
         when (parameters[ActionParameters.Key<String>("widget")]) {
             "timer" -> TimerWidget().update(context, glanceId)
             "focus" -> FocusWidget().update(context, glanceId)
+            "checkin" -> com.dayforge.widget.checkin.CheckInWidget().update(context, glanceId)
+            "counting" -> com.dayforge.widget.counting.CountingWidget().update(context, glanceId)
         }
     }
 }
