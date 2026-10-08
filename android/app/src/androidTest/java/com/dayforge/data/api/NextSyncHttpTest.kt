@@ -13,6 +13,9 @@ import com.dayforge.data.appearance.MaterialSocketServer
 import com.dayforge.data.local.LocalSyncAccess
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
+import com.dayforge.domain.model.ChallengeRoundRecord
+import com.dayforge.domain.model.ChallengeRestartIntent
+import com.dayforge.domain.model.initialChallengeRoundHead
 import java.io.File
 import java.io.IOException
 import java.net.Socket
@@ -730,5 +733,187 @@ class NextSyncHttpTest {
             assertEquals(if (refresh) 3 else 2, server.requests.size)
             assertEquals(context, capture()); assertEquals("synthetic-access", tokens.authenticationSnapshot()!!.accessToken)
         }
+    }
+
+    private fun roundRecords(): List<ChallengeRoundRecord> {
+        val initial = initialChallengeRoundHead(id(11))
+        val intent = ChallengeRestartIntent(id(11), id(30), initial.roundUuid, 0, 3)
+        return listOf(ChallengeRoundRecord(initial, null, null, null),
+            ChallengeRoundRecord(initial.copy(roundUuid = id(30), generation = 1), id(4), id(12), intent))
+    }
+    private fun roundMetadata(births: List<ChallengeBirth> = emptyList()) = ChallengeMetadata(1,
+        listOf(ChallengeCheckpoint(roundRecords().last().head, roundRecords())), births)
+    private fun withRoundMetadata(body: JsonObject, births: List<ChallengeBirth> = emptyList()) =
+        JsonObject(body + Json.encodeToJsonElement(roundMetadata(births)).jsonObject)
+    private fun roundPush() = RoundSyncPushRequest(1, id(4), push().operations,
+        listOf(ChallengeSourceContext(id(20), null)))
+    private fun roundCommands() = RoundTimerCommandBatchRequest(1, id(4), commands().commands.map {
+        it.copy(startPolicy = TimerStartPolicy(60, true, 60))
+    }, listOf(ChallengeSourceContext(id(12), roundRecords().last().head)))
+    private fun roundCommandReply() = withRoundMetadata(Json.parseToJsonElement(commandsReply().replace("86400", "60")).jsonObject,
+        listOf(ChallengeBirth("timer_session", id(10), roundRecords().last().head)))
+    private fun roundStatusReply() = withRoundMetadata(Json.parseToJsonElement(status().replace("86400", "60")).jsonObject,
+        listOf(ChallengeBirth("timer_session", id(10), roundRecords().last().head)))
+    private fun roundBootstrapReply() = withRoundMetadata(fixture.getValue("bootstrap").jsonObject)
+    private fun roundPullReply(): JsonObject {
+        val record = roundRecords().last()
+        val change = SyncV2Change(8, "challenge_round", id(30), "upsert", 1,
+            Json.encodeToJsonElement(record).jsonObject, time, id(4))
+        return withRoundMetadata(buildJsonObject {
+            put("changes", Json.encodeToJsonElement(listOf(change))); put("next_cursor", 8)
+            put("has_more", false); put("server_time", time)
+        })
+    }
+    private fun normalRound(input: MaterialSocketServer.Input): MaterialSocketServer.Reply {
+        headers(input)
+        return when (input.path) {
+            "/api/v2/system/identity" -> json(identity())
+            "/api/v2/sync/rounds/push" -> json(withRoundMetadata(Json.parseToJsonElement(pushReply()).jsonObject).toString())
+            "/api/v2/sync/rounds/bootstrap" -> json(roundBootstrapReply().toString())
+            "/api/v2/sync/rounds/changes" -> json(roundPullReply().toString())
+            "/api/v2/timers/rounds/commands" -> json(roundCommandReply().toString())
+            "/api/v2/timers/rounds/active", "/api/v2/timers/rounds/session/${id(10)}" -> json(roundStatusReply().toString())
+            else -> error("Unexpected profile path ${input.path}")
+        }
+    }
+
+    @Test fun sixChallengePathsUseExplicitProfileOriginalReplicaAndNeverPublishCursor() = runBlocking<Unit> {
+        val context = capture(); val (http, server) = http { input, _ -> normalRound(input) }
+        http.session(context) { session ->
+            assertEquals("INVALID_PAYLOAD", session.roundPush(roundPush()).results.single().errorCode)
+            assertEquals(1, session.roundBootstrap().oneTimeCheckpoints.single().state.version)
+            assertEquals("challenge_round", session.roundPull(7, 1000).changes.single().entityType)
+            assertEquals(60, session.roundCommands(roundCommands()).results.single().session!!.maxDurationSeconds)
+            assertEquals(id(30), session.roundActive().births.single().head.roundUuid)
+            assertEquals(id(10), session.roundStatus(id(10)).session!!.sessionId)
+        }
+        assertEquals(7, server.requests.size)
+        val private = server.requests.filterNot { it.path.endsWith("/identity") }
+        assertEquals(6, private.map { it.path }.distinct().size)
+        private.filter { it.method == "GET" }.forEach { input ->
+            val url = server.origin.resolve(input.target)!!
+            assertEquals(listOf("1"), url.queryParameterValues("challenge_contract"))
+            assertEquals(listOf(id(4)), url.queryParameterValues("device_id"))
+        }
+        private.filter { it.method == "POST" }.forEach { assertEquals(1, parsed(it).getValue("challenge_contract").jsonPrimitive.int) }
+        assertEquals(context, capture()); assertEquals(0L, tokens.syncCursor.first())
+    }
+
+    @Test fun challengeLostResponsesReplayOriginalEnvelopeBytesAndContextWithoutChangingIds() = runBlocking<Unit> {
+        val context = capture(); var drop = true
+        val (http, server) = http { input, _ ->
+            headers(input)
+            if (!input.path.endsWith("/identity") && drop) null else normalRound(input)
+        }
+        val operation = originalPushBytes().toString(Charsets.UTF_8).replaceFirst("{", """{ "challenge_contract":1,
+          "contexts":[{"source_uuid":"${id(20)}","head":null,"legacy_initial":false,"affected_heads":[]}],""").toByteArray()
+        val command = encodeSyncRequest(RoundTimerCommandBatchRequest.serializer(), roundCommands())
+            .toString(Charsets.UTF_8).replaceFirst("{", "{\n  ").toByteArray()
+        for ((body, timer) in listOf(operation to false, command to true)) {
+            val before = body.copyOf(); drop = true
+            assertTrue(rejected { http.session(context) { if (timer) it.roundCommandsFrozen(body) else it.roundPushFrozen(body) } } is IOException)
+            drop = false
+            http.session(context) { if (timer) it.roundCommandsFrozen(body) else it.roundPushFrozen(body) }
+            val sent = server.requests.filter { it.path.endsWith(if (timer) "/commands" else "/push") }
+            assertEquals(2, sent.size); sent.forEach { assertArrayEquals(before, it.body) }
+            assertArrayEquals(before, body); assertEquals(context, capture()); assertEquals(0L, tokens.syncCursor.first())
+        }
+        assertEquals("1.2300e-2", parsed(server.requests.first { it.path.endsWith("/push") }).getValue("operations")
+            .jsonArray.single().jsonObject.getValue("payload").jsonObject.getValue("decimal").jsonPrimitive.content)
+    }
+
+    @Test fun invalidChallengeRequestsFailBeforePrivateTrafficAndDoNotTouchFrozenBytes() = runBlocking<Unit> {
+        val context = capture(); val (http, server) = http { input, _ ->
+            assertTrue(input.path.endsWith("/identity")); headers(input); json(identity())
+        }
+        val push = encodeSyncRequest(RoundSyncPushRequest.serializer(), roundPush()).toString(Charsets.UTF_8)
+        val command = encodeSyncRequest(RoundTimerCommandBatchRequest.serializer(), roundCommands()).toString(Charsets.UTF_8)
+        for ((raw, timer) in listOf(push to false, command to true)) {
+            val bad = listOf(raw.replace("\"challenge_contract\":1", "\"challenge_contract\":\"1\""),
+                raw.replace("\"challenge_contract\":1", "\"challenge_contract\":1.0"),
+                raw.replaceFirst("{", "{\"challenge_contract\":1,"), raw.replace(id(4), id(40)),
+                raw.replace("\"contexts\":", "\"unknown\":"),
+                raw.replace("\"source_uuid\":\"${if (timer) id(12) else id(20)}\"", "\"source_uuid\":\"${id(40)}\""))
+            bad.forEach { text ->
+                val bytes = text.toByteArray(); val before = bytes.copyOf()
+                assertTrue(rejected { http.session(context) { if (timer) it.roundCommandsFrozen(bytes) else it.roundPushFrozen(bytes) } }
+                    is IllegalArgumentException)
+                assertArrayEquals(before, bytes); assertEquals(context, capture())
+            }
+        }
+        assertEquals(12, server.requests.size); assertEquals(0L, tokens.syncCursor.first())
+    }
+
+    @Test fun challengeResponsesRejectMissingBrokenOrCoercedProofAndNeverFallBackToOldRoutes() = runBlocking<Unit> {
+        val context = capture(); var response = roundStatusReply()
+        val (http, server) = http { input, _ ->
+            headers(input)
+            if (input.path.endsWith("/identity")) json(identity()) else {
+                assertEquals("/api/v2/timers/rounds/active", input.path); json(response.toString())
+            }
+        }
+        val correct = roundStatusReply()
+        val bad = listOf(JsonObject(correct - "challenge_contract"), JsonObject(correct + ("challenge_contract" to JsonPrimitive("1"))),
+            JsonObject(correct - "checkpoints"), JsonObject(correct + ("births" to JsonArray(emptyList()))),
+            JsonObject(correct + ("checkpoints" to JsonArray(emptyList()))),
+            JsonObject(correct + ("births" to JsonArray(correct.getValue("births").jsonArray + correct.getValue("births").jsonArray))),
+            JsonObject(correct + ("checkpoints" to JsonArray(listOf(buildJsonObject {
+                put("head", Json.encodeToJsonElement(roundRecords().last().head))
+                put("records", Json.encodeToJsonElement(listOf(roundRecords().last())))
+            })))), JsonObject(correct + ("extra" to JsonPrimitive(true))))
+        for (body in bad) {
+            response = body; assertTrue(rejected { http.session(context) { it.roundActive() } } is NextSyncReplyInvalid)
+            assertEquals(context, capture()); assertEquals(0L, tokens.syncCursor.first())
+        }
+        assertEquals(bad.size * 2, server.requests.size)
+    }
+
+    @Test fun challengeMetadataCannotChangeTheOriginalAcceptedTimerBirthOrCommandIdentity() = runBlocking<Unit> {
+        val context = capture(); var response = roundCommandReply()
+        val (http, _) = http { input, _ ->
+            headers(input)
+            if (input.path.endsWith("/identity")) json(identity()) else json(response.toString())
+        }
+        val body = roundCommands()
+        val before = response
+        val raw = before.getValue("births").jsonArray.single().jsonObject
+        response = JsonObject(before + ("births" to JsonArray(listOf(JsonObject(raw +
+            ("head" to Json.encodeToJsonElement(roundRecords().first().head)))))))
+        assertTrue(rejected { http.session(context) { it.roundCommands(body) } } is NextSyncReplyInvalid)
+        response = Json.parseToJsonElement(before.toString().replace(id(12), id(40))).jsonObject
+        assertTrue(rejected { http.session(context) { it.roundCommands(body) } } is NextSyncReplyInvalid)
+        assertEquals(context, capture()); assertEquals(0L, tokens.syncCursor.first())
+    }
+
+    @Test fun challengeProfileUnsupportedServerAndWrongReplicaSendZeroPersonalRequests() = runBlocking<Unit> {
+        val context = capture(); var reply = identity(4)
+        val (http, server) = http { input, _ ->
+            assertTrue(input.path.endsWith("/identity")); headers(input); json(reply)
+        }
+        assertNull(http.session(context) { it.roundPush(roundPush()) })
+        reply = identity().replace(id(3), id(40))
+        val failure = rejected { http.session(context) { it.roundCommands(roundCommands()) } }
+        assertEquals("SYNC_EPOCH_MISMATCH", (failure as NextSyncHttpFailure).code)
+        assertEquals(2, server.requests.size); assertEquals(context, capture()); assertEquals(0L, tokens.syncCursor.first())
+    }
+
+    @Test fun challengeCancellationClosesAndJoinsTheActualSocketWithoutMovingState() = runBlocking<Unit> {
+        val context = capture(); val sent = CountDownLatch(1); val closed = CountDownLatch(1)
+        val (http, _) = http { input, socket ->
+            headers(input)
+            if (input.path.endsWith("/identity")) json(identity()) else {
+                assertEquals("/api/v2/timers/rounds/active", input.path)
+                socket.getOutputStream().apply {
+                    write("HTTP/1.1 200 Fixture\r\nContent-Type: application/json\r\nContent-Length: 1024\r\n\r\n".toByteArray()); flush()
+                }
+                sent.countDown(); assertEquals(-1, socket.getInputStream().read()); closed.countDown(); null
+            }
+        }
+        val task = async(Dispatchers.IO) { http.session(context) { it.roundActive() } }
+        try {
+            assertTrue(sent.await(5, TimeUnit.SECONDS)); withTimeout(5000) { task.cancelAndJoin() }
+            assertTrue(closed.await(5, TimeUnit.SECONDS)); assertTrue(task.isCompleted)
+        } finally { withContext(NonCancellable) { task.cancelAndJoin() } }
+        assertEquals(context, capture()); assertEquals(0L, tokens.syncCursor.first())
     }
 }
