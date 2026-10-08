@@ -53,6 +53,21 @@ internal class NextCoreLocalIntentStore(
             Json.encodeToString(ChallengeMetadata.serializer(), metadata), NextRoundPendingInitialStore(database).read(access, metadata))
     }
 
+    /** Same displayed snapshot chooses an already accepted profile; never upgrade an old ticket. */
+    internal suspend fun captureDisplayedRoundsInTransaction(): NextRoundWriteScope? {
+        check(database.inTransaction())
+        val contracts = database.openHelper.writableDatabase.query("SELECT challengeContract FROM next_sync_state").use { raw ->
+            buildList { while (raw.moveToNext()) {
+                require(raw.getType(0) == android.database.Cursor.FIELD_TYPE_INTEGER && raw.getLong(0) in 0L..1L)
+                add(raw.getLong(0))
+            } }
+        }
+        require(contracts.size <= 1)
+        if (contracts.singleOrNull() == 1L) return captureRoundsInTransaction(requireNotNull(tokens.localSyncAccess()))
+        NextChallengeStore(database).requirePlainInTransaction()
+        return null
+    }
+
     suspend fun <T> writeRounds(scope: NextRoundWriteScope, writeInTransaction: suspend () -> T): T =
         write(scope.access.session, scope, writeInTransaction)
 

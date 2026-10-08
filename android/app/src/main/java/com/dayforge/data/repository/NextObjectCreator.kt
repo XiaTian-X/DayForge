@@ -1,5 +1,6 @@
 package com.dayforge.data.repository
 
+import androidx.room.withTransaction
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.LocalDataSession
 import com.dayforge.data.local.TokenManager
@@ -20,6 +21,7 @@ import javax.inject.Singleton
 
 /** Issued only by an explicit next-protocol workflow, never inferred from icon IDs or old rows. */
 class ObjectCreationAuthority internal constructor(session: LocalDataSession,
+    internal val rounds: NextRoundWriteScope? = null,
     creationClock: () -> Pair<Instant, ZoneId> = { Instant.now() to ZoneId.systemDefault() }
 ) : ObjectAppearanceAuthority(session) {
     // Opening a form/picker is not object creation. Freeze the original time at its first save,
@@ -30,7 +32,8 @@ class ObjectCreationAuthority internal constructor(session: LocalDataSession,
     // Non-secret saved-draft binding. Reauthentication requires discarding/reopening the old draft,
     // rather than adopting another account's IDs, links or imported references.
     internal val scopeKey = listOf(session.authentication.userId, session.authentication.generation,
-        session.serverInstanceId, session.syncEpoch).joinToString(":")
+        session.serverInstanceId, session.syncEpoch).joinToString(":") +
+        (rounds?.let { ":challenge:1:${it.access.deviceId}" } ?: "")
 }
 
 /** One account lock/transaction for a complete new object graph, including original v5 intent. */
@@ -46,7 +49,11 @@ class NextObjectCreator @Inject constructor(
     internal suspend fun capture(): ObjectCreationAuthority = sessions.exclusive {
         val access = requireNotNull(tokens.localCoreWriteAccess()) { "OBJECT_CREATE_ACCESS_DENIED" }
         check(access.capabilities == null || "structure.write" in access.capabilities) { "OBJECT_CREATE_ACCESS_DENIED" }
-        ObjectCreationAuthority(access.session)
+        database.withTransaction {
+            val ticket = ObjectCreationAuthority(access.session, producer.captureDisplayedRoundsInTransaction())
+            check(tokens.localCoreWriteAccess() == access) { "OBJECT_CREATE_SESSION_CHANGED" }
+            ticket
+        }
     }
 
     internal fun habit(draft: HabitDraft, parent: String?, ticket: ObjectCreationAuthority): HabitEntity {
@@ -77,7 +84,7 @@ class NextObjectCreator @Inject constructor(
                 IconReference.Role(if (row.completionPolicy == "one_and_done") "task.default" else "habit.default"),
                 row.completionPolicy == "one_and_done")
         }
-        return producer.write(ticket.session, commit)
+        return write(ticket, commit)
     }
 
     internal suspend fun <T> metric(row: MetricEntity, ticket: ObjectCreationAuthority,
@@ -87,6 +94,9 @@ class NextObjectCreator @Inject constructor(
         NextStructureMapper.writeMetric(saved)
         icons.authorizeEditReference(ticket.session, requireNotNull(saved.appearance).icon,
             IconReference.Role("metric.default"), false)
-        return producer.write(ticket.session) { commit(saved) }
+        return write(ticket) { commit(saved) }
     }
+
+    private suspend fun <T> write(ticket: ObjectCreationAuthority, commit: suspend () -> T): T =
+        ticket.rounds?.let { producer.writeRounds(it, commit) } ?: producer.write(ticket.session, commit)
 }
