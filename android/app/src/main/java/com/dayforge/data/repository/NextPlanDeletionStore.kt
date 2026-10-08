@@ -152,5 +152,8 @@ internal class NextPlanDeletionStore(private val database: HabitDatabase) {
         fun payload(row: SyncOutboxEntity): JsonObject? = metadata(row)?.let { metadata ->
             buildJsonObject { metadata.getValue("child_policy").takeUnless { it == JsonNull }?.let { put("child_policy", it) } }
         }
+
+        fun children(row: SyncOutboxEntity): List<String> = requireNotNull(metadata(row))
+            .getValue("child_uuids").jsonArray.map { it.jsonPrimitive.content }
     }
 }

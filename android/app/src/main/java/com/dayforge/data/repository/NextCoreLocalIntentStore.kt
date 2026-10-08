@@ -40,10 +40,17 @@ internal class NextCoreLocalIntentStore(
         val access = requireNotNull(tokens.localSyncAccess())
         require(tokens.syncAuthenticationSnapshot(access) != null && access.deviceId != null)
         database.withTransaction {
-            val metadata = NextChallengeStore(database).activeInTransaction(access).second
-            NextRoundWriteScope(access.copy(capabilities = access.capabilities.toSet()),
-                Json.encodeToString(ChallengeMetadata.serializer(), metadata), NextRoundPendingInitialStore(database).read(access, metadata))
+            captureRoundsInTransaction(access)
         }
+    }
+
+    /** The caller already owns the account lock and the same displayed Room snapshot. */
+    internal suspend fun captureRoundsInTransaction(access: com.dayforge.data.local.LocalSyncAccess): NextRoundWriteScope {
+        check(database.inTransaction())
+        require(tokens.localSyncAccess() == access && tokens.syncAuthenticationSnapshot(access) != null && access.deviceId != null)
+        val metadata = NextChallengeStore(database).activeInTransaction(access).second
+        return NextRoundWriteScope(access.copy(capabilities = access.capabilities.toSet()),
+            Json.encodeToString(ChallengeMetadata.serializer(), metadata), NextRoundPendingInitialStore(database).read(access, metadata))
     }
 
     suspend fun <T> writeRounds(scope: NextRoundWriteScope, writeInTransaction: suspend () -> T): T =

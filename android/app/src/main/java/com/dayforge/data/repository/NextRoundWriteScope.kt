@@ -26,6 +26,7 @@ internal class NextRoundOperationCapture(
     private val touched = mutableSetOf<String>()
     private val freshHeads = mutableMapOf<String, ChallengeRoundHead>()
     private val capturedInitialSources = mutableSetOf<String>()
+    private val goalFrontiers = mutableListOf<NextRoundOperationIntent>()
 
     private suspend fun current(activity: String): ChallengeRoundHead {
         freshHeads[activity]?.let { return it }
@@ -75,10 +76,6 @@ internal class NextRoundOperationCapture(
                 val recurring = if (original != null) original.let {
                     it.habitType != com.dayforge.data.model.HabitType.GOAL && it.completionPolicy == "recurring"
                 } else operation.payload["activity"]?.jsonObject?.get("completion_policy") == JsonPrimitive("recurring")
-                if (operation.action == "delete" && original?.habitType == com.dayforge.data.model.HabitType.GOAL) {
-                    // Child detachment/deletion requires its own accepted causal frontier, not a guessed send-time set.
-                    require(existing.none { it.parentHabitId == original.uuid }) { "SYNC_CHALLENGE_GOAL_FRONTIER_REQUIRED" }
-                }
                 if (recurring) current(operation.entityUuid) else null
             }
             "activity_event" -> {
@@ -92,10 +89,13 @@ internal class NextRoundOperationCapture(
             }
             else -> null
         }
+        val frontier = if (operation.entityType == "plan_node" && operation.action == "delete" && "child_policy" in operation.payload)
+            NextGoalChildFrontierStore(database).capture(operation, scope.access, existing) else null
         return NextRoundOperationIntent(1, operation, ChallengeSourceContext(operation.operationId, head),
             requireNotNull(scope.access.deviceId), initialCreation = operation.entityType == "plan_node" &&
                 operation.action == "upsert" && freshHeads.containsKey(operation.entityUuid) && existing.none { it.uuid == operation.entityUuid } &&
-                capturedInitialSources.add(operation.entityUuid))
+                capturedInitialSources.add(operation.entityUuid), goalChildFrontier = frontier)
+            .also { if (frontier != null) goalFrontiers += it }
     }
 
     suspend fun captureTimer(intent: NextTimerIntent): NextRoundTimerIntent {
@@ -165,6 +165,8 @@ internal class NextRoundOperationCapture(
 
     suspend fun verify(after: ChallengeMetadata) {
         require(after == before) { "SYNC_CHALLENGE_SOURCE_CHANGED" }
+        for (source in goalFrontiers) for (item in requireNotNull(source.goalChildFrontier))
+            NextGoalChildFrontierStore(database).validateCaptured(item, source.operation, scope.access)
         // Inherited timer successors do not call current(): their birth must not follow today's
         // head. Re-audit all prior pending roots once, including origin-only late trigger faults.
         if (pendingInitials.isNotEmpty()) {

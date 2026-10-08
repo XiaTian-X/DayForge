@@ -455,6 +455,14 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         return requireNotNull(proof.result.entity)
     }
 
+    /** A goal's frozen child transition uses the original audited replacement chain and full ACK. */
+    internal suspend fun acceptedPlanTransition(id: String, access: LocalSyncAccess): Pair<SyncV2Operation, JsonObject> {
+        check(database.inTransaction())
+        val proof = accepted(resolve(id, access), access)
+        require(proof.operation.entityType == "plan_node")
+        return proof.operation to requireNotNull(proof.result.entity)
+    }
+
     /** Full receipt proof, not a mutable shadow or inferred absence. */
     private suspend fun accepted(id: String, access: LocalSyncAccess): Accepted {
         val origin = original(id)

@@ -21,7 +21,9 @@ class ObjectEditAuthority internal constructor(
     session: LocalDataSession,
     internal val uuid: String,
     internal val type: String,
-    internal val original: JsonObject
+    internal val original: JsonObject,
+    internal val rounds: NextRoundWriteScope? = null,
+    internal val goalChildUuids: List<String>? = null
 ) : ObjectAppearanceAuthority(session)
 
 data class ObjectEditSnapshot<T>(val value: T?, val authority: ObjectEditAuthority?)
@@ -44,8 +46,11 @@ class NextObjectEditor @Inject constructor(
         database.withTransaction {
             val row = database.habitDao().getVisibleHabitById(id)
             val ticket = row?.takeIf { it.appearance != null }?.let {
+                val rounds = displayedRounds()
                 ObjectEditAuthority(requireNotNull(access) { "OBJECT_EDIT_ACCESS_DENIED" }.session,
-                    it.uuid, "plan_node", NextStructureMapper.writePlan(it))
+                    it.uuid, "plan_node", NextStructureMapper.writePlan(it), rounds,
+                    if (rounds != null && it.habitType == com.dayforge.data.model.HabitType.GOAL)
+                        database.habitDao().getChildrenByParentUuidOnce(it.uuid).map { child -> child.uuid }.sorted() else null)
             }
             check(tokens.localCoreWriteAccess() == access) { "OBJECT_EDIT_SESSION_CHANGED" }
             ObjectEditSnapshot(row, ticket)
@@ -58,7 +63,7 @@ class NextObjectEditor @Inject constructor(
             val row = database.metricDao().getMetricById(id)
             val ticket = row?.takeIf { it.appearance != null }?.let {
                 ObjectEditAuthority(requireNotNull(access) { "OBJECT_EDIT_ACCESS_DENIED" }.session,
-                    it.uuid, "metric", NextStructureMapper.writeMetric(it))
+                    it.uuid, "metric", NextStructureMapper.writeMetric(it), displayedRounds())
             }
             check(tokens.localCoreWriteAccess() == access) { "OBJECT_EDIT_SESSION_CHANGED" }
             ObjectEditSnapshot(row, ticket)
@@ -72,7 +77,7 @@ class NextObjectEditor @Inject constructor(
         require(edited.completionPolicy == before.completionPolicy) { "OBJECT_EDIT_POLICY_CHANGE_REQUIRES_HISTORY_CHECK" }
         authorize(ticket, requireNotNull(edited.appearance), requireNotNull(before.appearance),
             before.completionPolicy == "one_and_done")
-        return producer.write(ticket.session) {
+        return write(ticket) {
             NextPlanDeletionStore(database).requireWritable(ticket.uuid)
             val current = requireNotNull(database.habitDao().getHabitById(edited.id)) { "OBJECT_EDIT_NOT_FOUND" }
             check(current.uuid == ticket.uuid && NextStructureMapper.writePlan(current) == ticket.original) {
@@ -98,7 +103,7 @@ class NextObjectEditor @Inject constructor(
         require(ticket.type == "metric" && ticket.uuid == edited.uuid)
         val before = requireNotNull(database.metricDao().getMetricById(edited.id)) { "OBJECT_EDIT_NOT_FOUND" }
         authorize(ticket, requireNotNull(edited.appearance), requireNotNull(before.appearance), false)
-        return producer.write(ticket.session) {
+        return write(ticket) {
             val current = requireNotNull(database.metricDao().getMetricById(edited.id)) { "OBJECT_EDIT_NOT_FOUND" }
             check(current.uuid == ticket.uuid && NextStructureMapper.writeMetric(current) == ticket.original) {
                 "OBJECT_EDIT_CHANGED_RELOAD_REQUIRED"
@@ -115,7 +120,7 @@ class NextObjectEditor @Inject constructor(
         val ticket = authority ?: requireNotNull(habit(expected.id).authority) { "OBJECT_WRITE_TICKET_REQUIRED" }
         check(ticket.type == "plan_node" && ticket.uuid == expected.uuid &&
             ticket.original == NextStructureMapper.writePlan(expected)) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
-        return producer.write(ticket.session) {
+        return write(ticket) {
             NextPlanDeletionStore(database).requireWritable(ticket.uuid)
             val current = requireNotNull(database.habitDao().getHabitById(expected.id)) { "OBJECT_WRITE_NOT_FOUND" }
             check(current.uuid == ticket.uuid && NextStructureMapper.writePlan(current) == ticket.original) {
@@ -130,7 +135,7 @@ class NextObjectEditor @Inject constructor(
         val ticket = authority ?: requireNotNull(habit(expected.id).authority) { "OBJECT_WRITE_TICKET_REQUIRED" }
         check(ticket.type == "plan_node" && ticket.uuid == expected.uuid &&
             ticket.original == NextStructureMapper.writePlan(expected)) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
-        return producer.write(ticket.session) {
+        return write(ticket) {
             val current = requireNotNull(database.habitDao().getHabitById(expected.id)) { "OBJECT_WRITE_NOT_FOUND" }
             check(current.uuid == ticket.uuid) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
             if (database.habitDao().hasPendingNextDeletion(current.uuid)) {
@@ -142,6 +147,8 @@ class NextObjectEditor @Inject constructor(
                 "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED"
             }
             val children = database.habitDao().getChildrenByParentUuidOnce(current.uuid)
+            if (ticket.rounds != null && current.habitType == com.dayforge.data.model.HabitType.GOAL)
+                check(ticket.goalChildUuids == children.map { it.uuid }.sorted()) { "OBJECT_DELETE_CHILDREN_CHANGED_RELOAD_REQUIRED" }
             require(current.habitType == com.dayforge.data.model.HabitType.GOAL || children.isEmpty())
             require(children.all { it.appearance != null && it.habitType != com.dayforge.data.model.HabitType.GOAL }) {
                 "OBJECT_WRITE_MIXED_PROTOCOL_OR_INVALID_PARENT"
@@ -167,7 +174,7 @@ class NextObjectEditor @Inject constructor(
         val ticket = authority ?: requireNotNull(metric(first.id).authority) { "OBJECT_WRITE_TICKET_REQUIRED" }
         check(ticket.type == "metric" && ticket.uuid == first.uuid &&
             ticket.original == NextStructureMapper.writeMetric(first)) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
-        return producer.write(ticket.session) {
+        return write(ticket) {
             expected.forEach { row ->
                 val current = requireNotNull(database.metricDao().getMetricById(row.id)) { "OBJECT_WRITE_NOT_FOUND" }
                 check(current.uuid == row.uuid && NextStructureMapper.writeMetric(current) == NextStructureMapper.writeMetric(row)) {
@@ -176,6 +183,24 @@ class NextObjectEditor @Inject constructor(
             }
             commit()
         }
+    }
+
+    private suspend fun <T> write(ticket: ObjectEditAuthority, commit: suspend () -> T): T =
+        ticket.rounds?.let { producer.writeRounds(it, commit) } ?: producer.write(ticket.session, commit)
+
+    /** Only an already accepted explicit profile selects rounds; appearance never selects protocol. */
+    private suspend fun displayedRounds(): NextRoundWriteScope? {
+        check(database.inTransaction())
+        val contracts = database.openHelper.writableDatabase.query("SELECT challengeContract FROM next_sync_state").use { raw ->
+            buildList { while (raw.moveToNext()) {
+                require(raw.getType(0) == android.database.Cursor.FIELD_TYPE_INTEGER && raw.getLong(0) in 0L..1L)
+                add(raw.getLong(0))
+            } }
+        }
+        require(contracts.size <= 1)
+        if (contracts.singleOrNull() == 1L) return producer.captureRoundsInTransaction(requireNotNull(tokens.localSyncAccess()))
+        NextChallengeStore(database).requirePlainInTransaction()
+        return null
     }
 
     private suspend fun authorize(ticket: ObjectEditAuthority, appearance: ObjectAppearance,

@@ -119,6 +119,8 @@ internal class NextCoreRequestStore(
             val sql = database.openHelper.writableDatabase
             NextRequestSql.requireOutboxEnabled(sql)
             val captured = origin(access, kind, id)
+            val goalSource = if (kind == NEXT_OPERATION) roundOperationIntent(captured.intentJson) else null
+            val goalProof = goalSource?.let { NextGoalChildFrontierStore(database).requireAccepted(it, access) }
             val profile = if (kind == NEXT_OPERATION) roundOperationIntent(captured.intentJson) != null else roundTimerIntent(captured.intentJson) != null
             val rounds = NextChallengeStore(database)
             val checkpoint = if (profile) rounds.activeInTransaction(access) else {
@@ -168,6 +170,7 @@ internal class NextCoreRequestStore(
                 NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", arrayOf(kind, id)) == transmissionHash &&
                 NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(kind, id)) == originHash)
             check(sources == listOf("sync_outbox", "timer_command_outbox").associateWith { NextRequestSql.sources(sql, it) })
+            if (goalSource != null) check(NextGoalChildFrontierStore(database).requireAccepted(goalSource, access) == goalProof)
             if (checkpoint != null) {
                 val current = rounds.activeInTransaction(access)
                 check(current.first == checkpoint.first && current.second == merged) { "SYNC_CHALLENGE_ACK_CHANGED" }
@@ -225,6 +228,7 @@ internal class NextCoreRequestStore(
             val transmission = requireNotNull(dao.transmission(NEXT_OPERATION, id))
             val rounds = NextChallengeStore(database)
             val roundOrigin = roundOperationIntent(rawOrigin.intentJson)
+            val goalFrontierProof = roundOrigin?.let { NextGoalChildFrontierStore(database).requireAccepted(it, access) }
             val currentCheckpoint = if (roundOrigin == null) {
                 rounds.requirePlainInTransaction()
                 require(delivery.challengeMetadata == null)
@@ -325,6 +329,7 @@ internal class NextCoreRequestStore(
             // Receipt/outbox triggers may change another intent; re-audit exact parent evidence after all writes.
             for ((key, proof) in parentDeletionProofs) require(provenParentDeletion(access, key.first, key.second) == proof)
             NextCountDayStore(database).verify(countDays)
+            if (roundOrigin != null) check(NextGoalChildFrontierStore(database).requireAccepted(roundOrigin, access) == goalFrontierProof)
             require(causal.resolve(id, access) == id)
             NextRequestSql.requireOutboxEnabled(sql)
             if (currentCheckpoint != null) {
@@ -433,6 +438,8 @@ internal class NextCoreRequestStore(
             val id = causal?.prepare(requestedId, access) ?: requestedId
             val origin = origin(access, kind, id)
             val dao = database.nextRequestDao()
+            val goalSource = if (kind == NEXT_OPERATION) roundOperationIntent(origin.intentJson) else null
+            val goalProof = goalSource?.let { NextGoalChildFrontierStore(database).requireAccepted(it, access) }
             val oldProof = NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", arrayOf(kind, id))
             if (kind == NEXT_OPERATION) {
                 if (oldProof == null) NextTimerOrderingStore(database, tokens, sessions, this@NextCoreRequestStore)
@@ -481,6 +488,7 @@ internal class NextCoreRequestStore(
             validate(origin, stored, access)
             check(stored.wireBytes.contentEquals(row.wireBytes))
             check(origin(access, kind, id) == origin)
+            if (goalSource != null) check(NextGoalChildFrontierStore(database).requireAccepted(goalSource, access) == goalProof)
             if (causal != null) require(causal.resolve(requestedId, access) == id)
             NextRequestSql.requireOutboxEnabled(sql)
             authorize(access)
@@ -501,6 +509,9 @@ internal class NextCoreRequestStore(
                 "kind=? AND requestId=?", arrayOf(row.kind, row.requestId))
             if (proof != prepared.proof) rejectNextRequest(NextRequestException.Reason.SOURCE_CHANGED)
             validate(origin, requireNotNull(database.nextRequestDao().transmission(row.kind, row.requestId)), access)
+            if (row.kind == NEXT_OPERATION) roundOperationIntent(origin.intentJson)?.let {
+                NextGoalChildFrontierStore(database).requireAccepted(it, access)
+            }
             authorize(access)
         }
     }

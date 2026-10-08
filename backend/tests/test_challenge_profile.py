@@ -681,6 +681,111 @@ async def test_goal_child_mutations_require_complete_current_round_set(
     assert state["checkpoints"][0]["head"] == head
 
 
+@pytest.mark.parametrize("policy", ["cascade_children", "detach_children"])
+@pytest.mark.parametrize("completed", [False, True])
+async def test_goal_cannot_mutate_unproven_once_child_and_original_conflict_stays_frozen(
+    production_v5, policy, completed
+):
+    client, engine, headers, device = production_v5
+    parent, child, event = (str(uuid4()) for _ in range(3))
+    assert (
+        await call_push(
+            client, headers, batch(device, [operation(goal(), identity=parent)])
+        )
+    )["results"][0]["status"] == "applied"
+    plan = {**node(once=True), "parent_uuid": parent}
+    assert (
+        await call_push(
+            client, headers, batch(device, [operation(plan, identity=child)])
+        )
+    )["results"][0]["status"] == "applied"
+    if completed:
+        completion = operation(
+            dict(
+                activity_uuid=child,
+                event_type="check_in",
+                occurred_at="2026-10-08T01:00:00.123456Z",
+                local_date="2026-10-08",
+                timezone="UTC",
+                one_time=dict(
+                    event_uuid=event,
+                    action="complete",
+                    expected_version=0,
+                    expected_head_event_uuid=None,
+                    reverts_event_uuid=None,
+                ),
+            ),
+            identity=event,
+            kind="activity_event",
+        )
+        assert (await call_push(client, headers, batch(device, [completion])))[
+            "results"
+        ][0]["status"] == "applied"
+
+    async def business():
+        return {
+            name: rows
+            for name, rows in (await database_state(engine)).items()
+            if name.startswith("activity_")
+            or name in {"plan_nodes", "sync_changes", "entity_revision_snapshots"}
+        }
+
+    before = await business()
+    deletion = operation(
+        dict(child_policy=policy), identity=parent, revision=1, action="delete"
+    )
+    original = deepcopy(batch(device, [deletion]))
+    # The once child has no head. An empty affected_heads is not proof of an
+    # empty child set, irrespective of whether its independent task is complete.
+    for _ in range(2):
+        result = (await call_push(client, headers, original))["results"][0]
+        assert result["status"] == "conflict"
+        assert result["error_code"] == "CHALLENGE_STATE_CONFLICT"
+        assert await business() == before
+
+    transition = operation(
+        {} if policy == "cascade_children" else {**plan, "parent_uuid": None},
+        identity=child,
+        revision=1,
+        action="delete" if policy == "cascade_children" else "upsert",
+    )
+    assert (await call_push(client, headers, batch(device, [transition])))["results"][
+        0
+    ]["status"] == "applied"
+    changed = await business()
+    assert (await call_push(client, headers, original))["results"][0][
+        "error_code"
+    ] == "CHALLENGE_STATE_CONFLICT"
+    assert await business() == changed  # Old rejection is never re-executed.
+    deletion["operation_id"] = str(uuid4())  # Explicit NEW confirmation only.
+    assert (await call_push(client, headers, batch(device, [deletion])))["results"][0][
+        "status"
+    ] == "applied"
+    snapshot_after = await snapshot(client, headers, device)
+    plans = {
+        change["entity_uuid"]: change["payload"]
+        for change in snapshot_after["changes"]
+        if change["entity_type"] == "plan_node"
+    }
+    assert parent not in plans and (child in plans) == (policy == "detach_children")
+    if policy == "detach_children":
+        assert plans[child]["parent_uuid"] is None
+        assert snapshot_after["one_time_checkpoints"][0]["state"]["version"] == int(
+            completed
+        )
+    assert not snapshot_after["checkpoints"] and not snapshot_after["births"]
+    if completed:
+        async with engine.connect() as connection:
+            assert (
+                await connection.execute(
+                    text(
+                        "SELECT public_id FROM activity_events WHERE public_id=:event"
+                    ),
+                    {"event": event},
+                )
+            ).scalar_one() == event  # The true fact survives both deletion policies.
+
+
 @pytest.mark.parametrize("countdown", [False, True])
 async def test_late_offline_timer_stays_in_its_initial_round_and_cancel_has_no_fact(
     production_v5, countdown

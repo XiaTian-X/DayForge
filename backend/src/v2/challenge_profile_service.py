@@ -174,10 +174,20 @@ async def validate_operation_context(
                             col(PlanNode.owner_user_id) == owner,
                             col(PlanNode.parent_node_id) == goal.id,
                             col(PlanNode.deleted_at).is_(None),
-                            col(ActivityDetail.completion_policy) == "recurring",
                         )
                     )
                 ).all()
+                # Once items have no challenge head. An empty recurring set must not
+                # authorize mutating unseen once children through their parent. Each
+                # once child must first complete its own accepted detach/delete.
+                if any(
+                    detail.completion_policy != "recurring" for _, detail in children
+                ):
+                    raise DomainError(
+                        "CHALLENGE_STATE_CONFLICT",
+                        "Independent one-time children require their own accepted transition",
+                        conflict=True,
+                    )
                 claimed = {head.activity_uuid: head for head in context.affected_heads}
                 if set(claimed) != {child.public_id for child, _ in children}:
                     raise DomainError(
