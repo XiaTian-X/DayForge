@@ -8,6 +8,12 @@ account/device identifiers or credentials are here.
 
 - `one-time-transitions.json`: state/intent/result or exact domain error. The
   reducer deliberately does not implement authentication, storage or operation replay.
+- `challenge-rounds.json`: D-018 canonical initial identities, exact round/plan
+  preconditions, immutable creation records, monotonic one-step delivery and complete
+  causal-history recovery. Consumed by `test_challenge_round_contract.py` and physical
+  `ChallengeRoundContractTest`. These are domain values, not mounted sync operations:
+  authentication, durable CAS, original-ID replay, migrations and fact/session binding
+  must be wired together before the old restart entry is replaced.
 - `icon-pack.json`: valid immutable catalog metadata with both color modes and a dark variant.
 - `icon-references.json`: role/pinned references, purpose restrictions and unresolved assets.
 - `invalid.json`: a base vector plus a typed path replacement; each must be rejected.
