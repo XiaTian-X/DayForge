@@ -51,6 +51,7 @@ class HabitDatabaseBaselineTest {
         val expectedTables = setOf(
             "habits",
             "completions",
+            "count_days",
             "timelogs",
             "metrics",
             "metric_logs",
@@ -75,11 +76,11 @@ class HabitDatabaseBaselineTest {
             "next_rejections"
         )
 
-        assertEquals(12, sqlite.version)
+        assertEquals(13, sqlite.version)
         assertTrue(tables.containsAll(expectedTables))
         sqlite.query("SELECT identity_hash FROM room_master_table WHERE id=42").use { cursor ->
             assertTrue(cursor.moveToFirst())
-            assertEquals("b1550ba4b5c0f0bb60bb638e6ad1a168", cursor.getString(0))
+            assertEquals("524307869b791fde05e3bd4497ef798b", cursor.getString(0))
         }
         sqlite.query("SELECT suppressOutbox FROM sync_control WHERE id = 1").use { cursor ->
             assertTrue(cursor.moveToFirst())

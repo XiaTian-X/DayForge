@@ -8,6 +8,8 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.combine
+import com.dayforge.domain.service.DeviceCalendar
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -17,7 +19,8 @@ import javax.inject.Singleton
  */
 @Singleton
 class PreferencesManager @Inject constructor(
-    private val dataStore: DataStore<Preferences>
+    private val dataStore: DataStore<Preferences>,
+    val calendar: DeviceCalendar = DeviceCalendar()
 ) {
     companion object {
         private val LAST_SYNC_TIMESTAMP_KEY = longPreferencesKey("last_sync_timestamp")
@@ -374,15 +377,14 @@ class PreferencesManager @Inject constructor(
     // ========== Date Change Refresh Management ==========
 
     /**
-     * Flow that emits when the date changes.
-     * Used to trigger UI refresh when user opens the app on a new day.
+     * Refreshes after persisted date changes or foreground calendar/clock/zone invalidation.
      *
-     * Emits the current date in epoch days. When this value changes,
-     * subscribers should refresh their data.
+     * Keeps the legacy epoch-day value; equal emissions can signal a zone/clock change.
+     * Consumers must recalculate on every emission, not distinctUntilChanged this trigger.
      */
     val dateChangeTrigger: Flow<Long> = dataStore.data.map { prefs ->
         prefs[LAST_SEEN_DATE_KEY] ?: 0L
-    }
+    }.combine(calendar.changes) { date, _ -> date }
 
     /**
      * Updates the last seen date to today.

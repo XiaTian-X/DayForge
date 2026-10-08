@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="count_rule_unknown_quantity">Recorded: %1$d · daily target unavailable</string>
+    <string name="count_rule_unknown_history">Some past counts lack their original daily rule. Quantities are preserved, but these days are not classified as achieved or failed.</string>
     <string name="theme_custom_version">Custom · v%1$d · %2$s</string>
     <string name="theme_unavailable_version">Unavailable · v%1$d · %2$s</string>
     <string name="theme_actions">Theme actions</string>
@@ -59,6 +61,7 @@
     <string name="action_done">Done</string>
     <string name="action_close">Close</string>
     <string name="action_retry">Retry</string>
+    <string name="data_read_failed">Could not read your data. Nothing has been changed. Retry after checking your account or synchronization status.</string>
     <string name="theme_load_failed">Theme could not be loaded. Your saved selection and personal data have been preserved.</string>
     <string name="theme_unavailable">Unavailable / recovery required</string>
     <string name="theme_loading">Loading theme…</string>
@@ -244,7 +247,7 @@
     <string name="notification_channel_habit_reminders">Habit Reminders</string>
     <string name="notification_channel_habit_reminders_desc">Notifications for habit reminders</string>
     <string name="notification_scheduled_time">Scheduled at %s</string>
-    <string name="notification_slot_progress">第%1$d次/共%2$d次 (已完成%3$d次)</string>
+    <string name="notification_count_progress">Today: %1$d / %2$d</string>
 
     <!-- Habit Card Status -->
     <string name="habit_card_status_completed">Completed</string>

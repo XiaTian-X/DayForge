@@ -58,6 +58,7 @@ fun DashboardScreen(
 ) {
     val habitsWithStats by viewModel.habitsWithStats.collectAsState()
     val isInitialized by viewModel.isInitialized.collectAsState()
+    val readError by viewModel.readError.collectAsState()
     val activeTimer by viewModel.activeTimerState.collectAsState()
     val linkedMetricsByHabit by viewModel.linkedMetricsByHabit.collectAsState()
     val postCheckInState by viewModel.postCheckInState.collectAsState()
@@ -221,6 +222,9 @@ fun DashboardScreen(
                     )
                 }
             }
+        } else if (readError) {
+            com.dayforge.ui.components.DataReadFailure(viewModel::retryRead,
+                Modifier.fillMaxSize().padding(padding))
         } else if (habitsWithStats.isEmpty()) {
             EmptyHabitList(
                 modifier = Modifier.padding(padding),
@@ -256,8 +260,8 @@ fun DashboardScreen(
                     onIncrement = { habitId -> viewModel.incrementCount(habitId) },
                     onDecrement = { habitId ->
                         // Find habit for countdown vs countup logic
-                        val habit = habitsWithStats.find { it.habit.id == habitId }?.habit
-                        if (habit?.isCountdown == true) {
+                        val stats = habitsWithStats.find { it.habit.id == habitId }
+                        if (stats?.displayIsCountdown == true) {
                             viewModel.incrementCount(habitId)  // Countdown: - button = increment (reduce remaining)
                         } else {
                             viewModel.decrementCount(habitId)  // Countup: - button = decrement
@@ -322,6 +326,7 @@ fun DashboardScreen(
                             actionsEnabled = habitWithStats.oneTimeStatus?.canChange ?: true,
                             undoAvailable = habitWithStats.lastCompletionId != null,
                             todayCount = habitWithStats.todayCount,
+                            countHistory = habitWithStats.countHistory,
                             onCheckIn = { value ->
                                 scope.launch {
                                     // Per TARGET-15: Use checkIn method for goal detection
@@ -339,7 +344,7 @@ fun DashboardScreen(
                             onDecrement = {
                                 // Countdown mode: - button = increment count (reduce remaining)
                                 // Countup mode: - button = decrement count
-                                if (habit.isCountdown) {
+                                if (habitWithStats.displayIsCountdown) {
                                     viewModel.incrementCount(habit.id)
                                 } else {
                                     viewModel.decrementCount(habit.id)

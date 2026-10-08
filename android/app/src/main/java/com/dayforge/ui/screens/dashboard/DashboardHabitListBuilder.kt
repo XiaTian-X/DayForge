@@ -37,7 +37,7 @@ class DashboardHabitListBuilder @Inject constructor(
     ): List<HabitWithStats> {
         val habitsWithSlotProgress = habits.map { stats ->
             stats.copy(
-                slotProgress = slotProgress(stats.habit, filterMode, currentTime)
+                slotProgress = if (stats.countRuleKnown) slotProgress(stats.windowHabit, filterMode, currentTime) else null
             )
         }
 
@@ -67,7 +67,7 @@ class DashboardHabitListBuilder @Inject constructor(
         pendingMetricHabitIds: Set<Long>
     ): List<HabitWithStats> {
         val eligibleHabits = habits.filter {
-            it.habit.bestTime != null && !it.hasFailed && !it.isGoalCompleted
+            it.habit.bestTime != null && it.countRuleKnown && !it.hasFailed && !it.isGoalCompleted
         }
         val checkInAllowedHabits = eligibleHabits.filter(HabitWithStats::isCheckInAllowed)
         val nonCheckInDayHabits = eligibleHabits.filterNot(HabitWithStats::isCheckInAllowed)
@@ -76,13 +76,13 @@ class DashboardHabitListBuilder @Inject constructor(
             it.habit.id to it.todayCount
         }
         val allowedPriorities = HabitPriorityCalculator.calculatePriorities(
-            checkInAllowedHabits.map(HabitWithStats::habit),
+            checkInAllowedHabits.map(HabitWithStats::windowHabit),
             currentTime,
             completedCountByHabitId,
             pendingMetricHabitIds
         )
         val nonCheckInPriorities = HabitPriorityCalculator.calculatePriorities(
-            nonCheckInDayHabits.map(HabitWithStats::habit),
+            nonCheckInDayHabits.map(HabitWithStats::windowHabit),
             currentTime,
             emptyMap(),
             emptySet()
@@ -101,7 +101,7 @@ class DashboardHabitListBuilder @Inject constructor(
         val habit = stats.habit
         val isGoal = habit.habitType == HabitType.GOAL
         val isTerminated = stats.hasFailed || stats.isGoalCompleted
-        val isPositiveCounting = habit.habitType == HabitType.COUNTING && !habit.isCountdown
+        val isPositiveCounting = habit.habitType == HabitType.COUNTING && !stats.displayIsCountdown && stats.countRuleKnown
         val hasPendingMetric = (habit.habitType == HabitType.TIMER || habit.completionPolicy == "one_and_done") &&
             habit.id in pendingMetricHabitIds
         val isNormallyCheckable = !stats.completedForDisplay &&

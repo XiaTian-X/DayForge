@@ -132,7 +132,7 @@ def test_complete_byte_round_trip_keeps_all_tables_ownership_and_pending(
     target, target_root = tmp_path / "restored.db", tmp_path / "restored-assets"
     target_root.mkdir()
     safety, epoch = restore_backup(
-        backup, target, asset_root=target_root, expected_alembic_head="000000000006"
+        backup, target, asset_root=target_root, expected_alembic_head="000000000007"
     )
     assert safety is None and epoch != inspection.sync_epoch
     after = database_dump(target)

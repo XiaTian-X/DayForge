@@ -47,6 +47,7 @@ internal class NextCoreLocalIntentStore(
             val expectedSources = tables.associateWith { NextRequestSql.sources(sql, it) }
             val createdOrigins = mutableMapOf<Pair<String, String>, String>()
             val createdDependencies = mutableMapOf<String, String>()
+            val countDays = mutableMapOf<Pair<Long, String>, String>()
             val causal = NextStructuralCausalStore(database)
             for ((index, table) in tables.withIndex()) {
                 val after = NextRequestSql.sources(sql, table)
@@ -121,6 +122,15 @@ internal class NextCoreLocalIntentStore(
                     check(dao.origin(kind, requestId) == origin)
                     if (kind == NEXT_OPERATION) causal.capture(origin,
                         decodeFrozenSyncRequest(bytes, SyncV2Operation.serializer()), access)
+                    if (kind == NEXT_OPERATION) {
+                        val operation = decodeFrozenSyncRequest(bytes, SyncV2Operation.serializer())
+                        NextCountDayStore(database).bind(origin, operation, access)
+                        if ("count_policy" in operation.payload) {
+                            val habit = requireNotNull(database.habitDao().getHabitByUuid(operation.payload.getValue("activity_uuid").jsonPrimitive.content))
+                            val date = operation.payload.getValue("local_date").jsonPrimitive.content
+                            countDays[habit.id to date] = requireNotNull(NextRequestSql.rowHash(sql, "count_days", "habitId=? AND localDate=?", arrayOf(habit.id, date)))
+                        }
+                    }
                     createdOrigins[kind to requestId] = requireNotNull(NextRequestSql.rowHash(sql,
                         "next_request_origins", "kind=? AND requestId=?", arrayOf(kind, requestId)))
                     if (kind == NEXT_OPERATION) NextRequestSql.rowHash(sql, "next_structural_dependencies", "operationId=?", arrayOf(requestId))
@@ -133,6 +143,10 @@ internal class NextCoreLocalIntentStore(
             for ((id, hash) in createdDependencies) {
                 check(NextRequestSql.rowHash(sql, "next_structural_dependencies", "operationId=?", arrayOf(id)) == hash)
                 causal.auditCaptured(id, access)
+            }
+            for ((key, hash) in countDays) {
+                check(NextRequestSql.rowHash(sql, "count_days", "habitId=? AND localDate=?", arrayOf(key.first, key.second)) == hash)
+                requireNotNull(NextCountDayStore(database).read(requireNotNull(database.habitDao().getHabitById(key.first)), key.second))
             }
             NextRequestSql.requireOutboxEnabled(sql)
             if (tokens.localCoreWriteAccess() != access) rejectNextRequest(NextRequestException.Reason.STALE_ACCESS)
@@ -174,7 +188,11 @@ internal class NextCoreLocalIntentStore(
                 require(habit.habitType in setOf(HabitType.CHECK_IN, HabitType.COUNTING) && habit.completionPolicy == "recurring" &&
                     fact.oneTimeAction == null && fact.oneTimeExpectedVersion == null &&
                     fact.oneTimeExpectedHeadEventUuid == null && fact.oneTimeRevertsEventUuid == null)
-                SyncV2Mapper.completion(fact, habit)
+                val body = SyncV2Mapper.completion(fact, habit)
+                if (habit.habitType == HabitType.COUNTING && habit.appearance != null) {
+                    val day = requireNotNull(NextCountDayStore(database).read(habit, fact.recordedLocalDate, allowUnbound = true))
+                    JsonObject(body + ("count_policy" to day.policy.toJson()))
+                } else body
             }
             "metric_log" -> {
                 val fact = requireNotNull(database.metricLogDao().getLogByUuid(row.entityUuid))

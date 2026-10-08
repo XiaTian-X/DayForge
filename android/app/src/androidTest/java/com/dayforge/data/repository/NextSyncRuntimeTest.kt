@@ -130,6 +130,30 @@ class NextSyncRuntimeTest : NextCoreRequestFixture() {
         assertEquals(next, store.page(access(), state, page))
     }
 
+    @Test fun lateCursorTriggerCannotChangeOrDeleteOriginalCountDayWhileCommittingAnotherEntity() = runBlocking {
+        register(); val (http, _) = channel { successReply(it) }
+        val state = initial(http)
+        val first = completion()
+        assertEquals(NextOperationAcceptance.COMMITTED, sender(http).sendAndAcceptOperation(access(), first.operationId))
+        val day = requireNotNull(db.countDayDao().get(habit.id, "2026-10-06"))
+        val origin = originalIntent(first)
+        val page = NextSyncPullResponse(listOf(renamed(21, 2, "Together with count rule")), 21, false, time)
+        for (fault in listOf("UPDATE count_days SET targetValue=11;", "DELETE FROM count_days;")) {
+            db.openHelper.writableDatabase.execSQL("CREATE TRIGGER damage_day_cursor AFTER UPDATE ON next_sync_state BEGIN $fault END")
+            rejected { merger(http).page(access(), state, page) }
+            db.openHelper.writableDatabase.execSQL("DROP TRIGGER damage_day_cursor")
+            storage.reopen()
+            assertEquals(state, merger(http).state(access()))
+            assertEquals(day, db.countDayDao().get(habit.id, day.localDate))
+            assertEquals(origin, originalIntent(first))
+            assertEquals(3, db.completionDao().getCompletionByUuid(first.entityUuid)!!.value)
+            assertEquals(metric.name, db.metricDao().getMetricByUuid(metric.uuid)!!.name)
+            assertNotNull(db.nextRequestDao().acceptance(NEXT_OPERATION, first.operationId))
+        }
+        assertEquals(21L, merger(http).page(access(), state, page).cursor)
+        assertEquals(day, db.countDayDao().get(habit.id, day.localDate))
+    }
+
     @Test fun malformedLatePageEntryCannotCommitEarlierValidEntryOrCursor() = runBlocking {
         register(); val (http, _) = channel(); val store = merger(http); val state = initial(http)
         val broken = renamed(22, 3, "Broken").let { it.copy(payload = JsonObject(it.payload + ("decimal_places" to JsonPrimitive("2")))) }

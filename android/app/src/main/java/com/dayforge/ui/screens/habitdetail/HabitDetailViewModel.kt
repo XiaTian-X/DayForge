@@ -29,6 +29,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
@@ -61,9 +62,11 @@ data class HabitDetailUiState(
     val lastCompletionId: Long? = null,
     val oneTimeStatus: com.dayforge.domain.model.OneTimeStatus? = null,
     val writeAuthority: com.dayforge.data.repository.ObjectEditAuthority? = null,
+    val countHistory: com.dayforge.domain.model.CountHistory? = null,
     val targetProgress: Int = 0,  // Distinct days completed for habits with targetCycles
     val isLoading: Boolean = true,
     val errorMessage: String? = null,
+    val readError: Boolean = false,
     // Per TARGET-02: Reactivation confirmation dialog state
     val showReactivationDialog: Boolean = false,
     val reactivationHabitName: String = "",
@@ -91,6 +94,11 @@ class HabitDetailViewModel @Inject constructor(
 
     private var currentHabitId: Long? = null
     private var habitLoadJob: Job? = null
+    fun retryRead() {
+        val id = currentHabitId ?: return
+        currentHabitId = null
+        loadHabit(id) // Restart DAO/preferences subscriptions as well as the projection.
+    }
 
     fun loadHabit(habitId: Long) {
         // Reset if different habit to ensure fresh data load
@@ -108,15 +116,21 @@ class HabitDetailViewModel @Inject constructor(
             // Per NOTIFY-04: Include notification preference to avoid nested collect leak
             combine(
                 habitRepository.getHabit(habitId),
-                combine(habitRepository.getAllCompletions(), habitRepository.oneTimeChanges) { rows, _ -> rows },
+                combine(habitRepository.getAllCompletions(), habitRepository.oneTimeChanges,
+                    habitRepository.countChanges, preferencesManager.dateChangeTrigger) { rows, _, _, _ -> rows },
                 preferencesManager.getHabitNotificationEnabled(habitId)
             ) { habit, allCompletions, notificationEnabled ->
+                try {
                 val habitCompletions = allCompletions.filter { it.habitId == habitId }
+                val countHistory =
+                    habit?.takeIf { it.habitType == HabitType.COUNTING && it.appearance != null }
+                        ?.let { habitRepository.getCountHistory(it) }
 
                 // Calculate targetProgress for habits with targetCycles
                 // Per TARGET-06: TIMER habits use timelogs, other types use completions
                 val targetProgress = if (habit?.targetCycles != null) {
-                    if (habit.habitType == HabitType.TIMER) {
+                    if (countHistory != null) countHistory.qualifiedDates.size
+                    else if (habit.habitType == HabitType.TIMER) {
                         timeLogDao.getDistinctDayCount(habitId)
                     } else {
                         completionDao.getDistinctDayCount(habitId)
@@ -129,6 +143,12 @@ class HabitDetailViewModel @Inject constructor(
                 if (habit?.completionPolicy == "one_and_done") {
                     LoadResult(habit, null, habitCompletions, emptyList(), 0, emptyList(), notificationEnabled,
                         habitRepository.getOneTimeStatus(habitId, habit.uuid))
+                } else if (countHistory != null) {
+                    val qualified = countHistory.qualifiedDates
+                    LoadResult(habit, StreakStats(StreakCalculator.currentFromBusinessDates(qualified, countHistory.today),
+                        StreakCalculator.bestFromBusinessDates(qualified), qualified.maxOrNull()?.toDisplayMillis()),
+                        countHistory.completions, emptyList(), targetProgress, emptyList(), notificationEnabled,
+                        countHistory = countHistory)
                 } else if (habit?.habitType == HabitType.TIMER) {
                     val timeLogs = timeLogDao.getAllTimeLogsForHabit(habitId)
                     val targetSeconds = habit.targetValue * 60
@@ -166,13 +186,24 @@ class HabitDetailViewModel @Inject constructor(
 
                     LoadResult(habit, streakStats, habitCompletions, emptyList(), targetProgress, emptyList(), notificationEnabled)
                 }
+                } catch (error: Exception) {
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    android.util.Log.e("HabitDetail", "Cannot read personal data; retry remains available", error)
+                    LoadResult(null, null, emptyList(), emptyList(), 0, emptyList(), notificationEnabled,
+                        errorMessage = error.message ?: "HABIT_READ_UNAVAILABLE")
+                }
+            }.catch { error ->
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                android.util.Log.e("HabitDetail", "Read source failed; explicit retry restarts the subscription", error)
+                emit(LoadResult(null, null, emptyList(), emptyList(), 0, emptyList(), true,
+                    errorMessage = error.message ?: "HABIT_READ_UNAVAILABLE"))
             }.collect { result ->
                 val captured = try {
                     result.habit?.takeIf { it.appearance != null && it.completionPolicy == "recurring" }
                         ?.let { habitRepository.getHabitForEditing(it.id) }
                 } catch (error: Exception) {
                     if (error is kotlinx.coroutines.CancellationException) throw error
-                    _uiState.value = _uiState.value.copy(isLoading = false, writeAuthority = null,
+                    _uiState.value = HabitDetailUiState(habitId = habitId, isLoading = false, readError = true,
                         errorMessage = error.message)
                     return@collect
                 }
@@ -187,6 +218,9 @@ class HabitDetailViewModel @Inject constructor(
                     metrics = result.metrics,
                     notificationEnabled = result.notificationEnabled,  // Per NOTIFY-04: From combined flow
                     oneTimeStatus = result.oneTimeStatus,
+                    countHistory = result.countHistory,
+                    errorMessage = result.errorMessage,
+                    readError = result.errorMessage != null,
                     lastCompletionId = if (result.oneTimeStatus != null) result.oneTimeStatus.completionId
                         else _uiState.value.lastCompletionId,
                     isLoading = false
@@ -350,7 +384,9 @@ class HabitDetailViewModel @Inject constructor(
         val targetProgress: Int,
         val metrics: List<MetricDisplayInfo>,
         val notificationEnabled: Boolean,  // Per NOTIFY-04: Included to avoid nested collect
-        val oneTimeStatus: com.dayforge.domain.model.OneTimeStatus? = null
+        val oneTimeStatus: com.dayforge.domain.model.OneTimeStatus? = null,
+        val countHistory: com.dayforge.domain.model.CountHistory? = null,
+        val errorMessage: String? = null
     )
 
     fun logCompletion(value: Int = 1) {
@@ -410,7 +446,9 @@ class HabitDetailViewModel @Inject constructor(
         if (habit.targetCycles == null) return true
 
         // Check progress - Per TARGET-06: TIMER uses timelogs, others use completions
-        val progress = if (habit.habitType == HabitType.TIMER) {
+        val progress = if (habit.habitType == HabitType.COUNTING && habit.appearance != null) {
+            habitRepository.getCountHistory(habit).qualifiedDates.size
+        } else if (habit.habitType == HabitType.TIMER) {
             timeLogDao.getDistinctDayCount(habit.id)
         } else {
             completionDao.getDistinctDayCount(habit.id)

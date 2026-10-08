@@ -87,13 +87,16 @@ class CheckInActionCallback : ActionCallback {
                 // For countdown mode: - button means "record one done" (increment completedToday)
                 // For countup mode: - button means "subtract one" (decrement completedToday)
                 val habit = database.habitDao().getVisibleHabitById(habitId)
-                if (habit?.isCountdown == true) {
+                val history = habit?.takeIf { it.appearance != null && it.habitType == com.dayforge.data.model.HabitType.COUNTING }
+                    ?.let { repository.getCountHistory(it) }
+                if (history != null) check(history.todayPolicy != null) { "COUNT_DAY_POLICY_UNKNOWN" }
+                if ((history?.todayPolicy?.isCountdown ?: habit?.isCountdown) == true) {
                     // Countdown mode: check if remaining is already 0
                     val today = DateTimeUtils.today()
-                    val todayCount = database.completionDao()
+                    val todayCount = history?.todayQuantity ?: database.completionDao()
                         .getCompletionsInRange(habitId, today, today.plusDays(1))
-                        .sumOf { it.value }
-                    val remaining = habit.targetValue - todayCount
+                        .sumOf { it.value.toLong() }
+                    val remaining = (history?.todayPolicy?.targetValue ?: requireNotNull(habit).targetValue).toLong() - todayCount
                     if (remaining <= 0) {
                         Log.d(TAG, "decrement: countdown already at 0, ignoring")
                         return // Don't go below 0 remaining for countdown mode

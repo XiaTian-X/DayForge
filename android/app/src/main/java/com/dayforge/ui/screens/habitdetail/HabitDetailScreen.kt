@@ -111,7 +111,7 @@ fun HabitDetailScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = {
+                    IconButton(enabled = state.habit != null && !state.readError, onClick = {
                         if (state.habit?.habitType == HabitType.GOAL) {
                             onEditGoalClick(habitId)
                         } else {
@@ -133,7 +133,9 @@ fun HabitDetailScreen(
             )
         }
     ) { paddingValues ->
-        Surface(
+        if (state.readError) com.dayforge.ui.components.DataReadFailure(viewModel::retryRead,
+            Modifier.fillMaxSize().padding(paddingValues))
+        else Surface(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
@@ -143,6 +145,14 @@ fun HabitDetailScreen(
         ) {
             Column {
                 state.errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                state.countHistory?.let { history ->
+                    val policy = history.todayPolicy
+                    Text(if (policy == null) stringResource(R.string.count_rule_unknown_quantity, history.todayQuantity)
+                        else stringResource(R.string.timer_countup_progress, history.todayQuantity, policy.targetValue),
+                        style = MaterialTheme.typography.bodySmall)
+                    if (history.unknownDates.isNotEmpty()) Text(stringResource(R.string.count_rule_unknown_history),
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 // Active Status Toggle
                 Row(
                     modifier = Modifier
@@ -273,7 +283,7 @@ fun HabitDetailScreen(
                     }
                 } else if (habit?.habitType != HabitType.GOAL) {
                     val completions: List<CompletionEntity> = state.completions
-                    CompletionCalendar(completions = completions)
+                    CompletionCalendar(completions = completions, qualifiedDates = state.countHistory?.qualifiedDates)
                 }
 
                 // Metrics section for GOAL habits

@@ -46,7 +46,7 @@ class MotivationWidget : GlanceAppWidget() {
 
             // Create services manually (widgets don't use Hilt)
             val failureChecker = FailureChecker(completionDao, timeLogDao)
-            val habitStatusCalculator = HabitStatusCalculator(failureChecker, completionDao, timeLogDao)
+            val habitStatusCalculator = com.dayforge.di.WidgetEntryPoint.calculator(context, database)
 
             val habits = habitDao.getAllHabits().first().filter { it.completionPolicy != "one_and_done" }
 
@@ -67,8 +67,12 @@ class MotivationWidget : GlanceAppWidget() {
                     }
                     HabitType.CHECK_IN,
                     HabitType.COUNTING -> {
+                        if (habit.habitType == HabitType.COUNTING && habit.appearance != null) {
+                            habitStatusCalculator.calculate(habit).bestStreak
+                        } else {
                         val completions = completionDao.getCompletionsByHabit(habit.id).first()
                         StreakCalculator.calculateBestStreak(completions)
+                        }
                     }
                     HabitType.GOAL -> 0  // GOAL type doesn't have streaks
                 }

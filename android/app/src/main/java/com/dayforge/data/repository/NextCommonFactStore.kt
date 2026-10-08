@@ -56,6 +56,7 @@ internal class NextCommonFactStore(private val database: HabitDatabase) {
             if (it.text("event_type") == "revert") require(isContractUuid(it.text("reverts_event_uuid")))
         } }.toMutableMap()
         incoming.filter { it.entityType == "activity_event" }.forEach { events[it.entityUuid] = it.payload }
+        val countDays = NextCountDayStore(database).restore(events, planIds)
         val undoTargets = events.filterValues { it["event_type"] == JsonPrimitive("revert") &&
             it["one_time"].let { proof -> proof == null || proof == JsonNull } }
             .mapValues { (_, value) -> value.text("reverts_event_uuid") }
@@ -228,6 +229,7 @@ internal class NextCommonFactStore(private val database: HabitDatabase) {
         writes.forEach { it() }; deletes.forEach { it() }
         shadows.forEach { outbox.upsertState(it); check(outbox.getState(it.entityType, it.entityUuid) == it) }
         sql.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
+        NextCountDayStore(database).verify(countDays)
         for ((change, proof) in timerProofs) check(acceptedTimerCompletion?.invoke(change) == proof)
     }
 
@@ -254,7 +256,8 @@ internal object NextCommonFactProof {
         // must be replayed/handled by the coordinator, not claimed by a coincident UUID.
         if (explicitDevice) require(request["source_device_id"] == JsonPrimitive(device))
         val fields = if (change.entityType == "metric_observation") setOf("metric_uuid", "value", "unit") else
-            setOf("activity_uuid", "event_type", "value", "reverts_event_uuid", "duration_seconds", "duration_milliseconds", "started_at", "ended_at")
+            setOf("activity_uuid", "event_type", "value", "reverts_event_uuid", "duration_seconds", "duration_milliseconds", "started_at", "ended_at") +
+                if ("count_policy" in request || "count_policy" in actual) setOf("count_policy") else emptySet()
         val common = setOf("occurred_at", "local_date", "timezone", "note", "source_type", "source_device_id", "external_event_id", "metadata")
         require(request.keys.all { it in fields + common })
         val defaults = mapOf("note" to JsonPrimitive(""), "source_type" to JsonPrimitive("app"), "metadata" to buildJsonObject {},

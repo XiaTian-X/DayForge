@@ -3,6 +3,7 @@ package com.dayforge.data.repository
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.dayforge.data.local.PhysicalDatabaseRule
+import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.MetricEntity
@@ -36,6 +37,9 @@ class ProductionWorkflowInjectionTest {
     @Inject lateinit var once: OneTimeRepository
     @Inject lateinit var tokens: TokenManager
     @Inject lateinit var sessions: AccountSessionCoordinator
+    @Inject lateinit var reminders: com.dayforge.reminder.HabitReminderController
+    @Inject lateinit var preferences: PreferencesManager
+    @Inject lateinit var calendar: com.dayforge.domain.service.DeviceCalendar
     private val db get() = storage.database
     private val app get() = InstrumentationRegistry.getInstrumentation().targetContext
     private fun id(n: Int) = "ac310000-0000-4000-8000-${n.toString(16).padStart(12, '0')}"
@@ -44,6 +48,8 @@ class ProductionWorkflowInjectionTest {
     @Before fun setup() = runBlocking<Unit> {
         check(app.packageName == "com.dayforge.testbed")
         hilt.inject()
+        assertSame(reminders, com.dayforge.di.ReminderEntryPoint.from(app))
+        assertSame(calendar, preferences.calendar)
         sessions.exclusive {
             tokens.clearTokens()
             tokens.saveLoginSession("synthetic-graph-access", "synthetic-graph-refresh", "member", id(1), false)
@@ -64,6 +70,26 @@ class ProductionWorkflowInjectionTest {
             assertEquals(5, origin.protocol)
             assertNull(origin.serverInstanceId); assertNull(origin.syncEpoch)
         }
+    }
+
+    @Test fun accountCleanupWithTheRealSharedLockDoesNotReenterReminderScheduling() = runBlocking<Unit> {
+        val rowId = habits.createHabit("Hilt reminder cleanup", "", HabitType.COUNTING, 0, "#123456", HabitSchedule.Daily,
+            targetValue = 10, bestTime = 540, completionPolicy = "recurring", appearance = appearance("habit.exercise"),
+            context = app, creationAuthority = creator.capture())
+        try {
+            habits.logCompletion(app, rowId, 1)
+            assertTrue(db.countDayDao().forHabit(rowId).isNotEmpty())
+            fun existing() = android.app.PendingIntent.getBroadcast(app, 0,
+                com.dayforge.reminder.AndroidReminderAlarms.alarmIntent(app, rowId),
+                android.app.PendingIntent.FLAG_NO_CREATE or android.app.PendingIntent.FLAG_IMMUTABLE)
+            assertNotNull(existing())
+            val session = tokens.authenticationSnapshot()!!.session
+            kotlinx.coroutines.withTimeout(5000) { sessions.exclusive { habits.clearAllData(app) } }
+            assertTrue(db.habitDao().getAllHabitsOnce().isEmpty()); assertTrue(db.syncOutboxDao().getAll().isEmpty())
+            assertTrue(db.countDayDao().forHabit(rowId).isEmpty())
+            assertNull(existing())
+            assertEquals(session, tokens.authenticationSnapshot()!!.session)
+        } finally { reminders.cancelAllNow() }
     }
 
     @Test fun injectedOnceAndMetricRepositoriesCreateCompletePromptUndoAndStageDeleteOffline() = runBlocking<Unit> {

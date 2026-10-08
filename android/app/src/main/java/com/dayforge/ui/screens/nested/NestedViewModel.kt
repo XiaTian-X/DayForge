@@ -59,8 +59,12 @@ data class ChildHabitWithStats(
     val targetProgress: Int = 0,  // Distinct days completed for habits with targetCycles
     val hasFailed: Boolean = false,  // Failure status for target-based habits
     val oneTimeStatus: com.dayforge.domain.model.OneTimeStatus? = null,
-    val timerAuthority: com.dayforge.domain.model.TimerActionAuthority? = null
+    val timerAuthority: com.dayforge.domain.model.TimerActionAuthority? = null,
+    val countHistory: com.dayforge.domain.model.CountHistory? = null
 ) {
+    val actualTodayCount: Long get() = countHistory?.todayQuantity ?: todayCount.toLong()
+    val displayTargetValue: Int get() = countHistory?.todayPolicy?.targetValue ?: habit.targetValue
+    val displayIsCountdown: Boolean get() = countHistory?.todayPolicy?.isCountdown ?: habit.isCountdown
     val completedForDisplay: Boolean get() = oneTimeStatus?.completed ?: completedToday
     /**
      * Whether the goal has been completed (reached targetCycles and deactivated).
@@ -127,15 +131,18 @@ class NestedViewModel @Inject constructor(
     /**
      * Top-level habits (parentHabitId = null) with their children and stats.
      */
-    val topLevelHabitsWithChildren: StateFlow<List<ParentHabitWithChildren>> = combine(
+    private val readMonitor = com.dayforge.ui.DataReadMonitor(TAG)
+    val readError = readMonitor.error
+    fun retryRead() = readMonitor.retry()
+    val topLevelHabitsWithChildren: StateFlow<List<ParentHabitWithChildren>> = readMonitor.recover(emptyList()) { combine(
         habitDao.getTopLevelHabits(),
-        combine(allCompletions, habitRepository.oneTimeChanges) { rows, _ -> rows },
+        combine(allCompletions, habitRepository.oneTimeChanges, habitRepository.countChanges) { rows, _, _ -> rows },
         timeLogDao.getActiveTimeLogFlow(),
-        preferencesManager.dateChangeTrigger  // Triggers when date changes
+        preferencesManager.dateChangeTrigger
     ) { topLevelHabits, completions, activeTimeLog, _ ->
         Log.d(TAG, "topLevelHabitsWithChildren combine triggered: topLevelHabits=${topLevelHabits.size}")
-        nestedHabitTreeBuilder.build(topLevelHabits, completions)
-    }
+        readMonitor.read(emptyList()) { nestedHabitTreeBuilder.build(topLevelHabits, completions) }
+    } }
         .onEach { _isInitialized.value = true }
         .stateIn(
         scope = viewModelScope,
@@ -264,7 +271,7 @@ class NestedViewModel @Inject constructor(
      * Triggers post-check-in dialog for linked metrics.
      */
     fun incrementCount(habitId: Long) {
-        viewModelScope.launch {
+        launchCompletion {
             val outcome = completionCoordinator.incrementCount(habitId) {
                 findHabitById(habitId)
             }
@@ -280,7 +287,7 @@ class NestedViewModel @Inject constructor(
      * Uses the shared completion coordinator for consistent behavior across habit screens.
      */
     fun decrementCount(habitId: Long) {
-        viewModelScope.launch {
+        launchCompletion {
             completionCoordinator.decrementCount(habitId).goalProgress
                 ?.let { progress -> onGoalReached(habitId, progress) }
         }

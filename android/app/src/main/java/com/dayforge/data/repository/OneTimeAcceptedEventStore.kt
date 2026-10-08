@@ -283,8 +283,10 @@ internal class OneTimeAcceptedEventStore(
             if (current == accepted) return@withTransaction current
             if (current != expected) throw OneTimeLocalException(OneTimeLocalException.Reason.RECOVERY_STATE_CHANGED)
             restoreAcceptedDataInTransaction(context, snapshot)
+            val countDays = NextCountDayStore(database).proofs(snapshot.changes)
             check(dao.update(accepted) == 1)
             check(dao.state() == accepted)
+            NextCountDayStore(database).verify(countDays)
             accepted
         }
     }

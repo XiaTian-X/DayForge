@@ -286,6 +286,27 @@
         "title": "AssetTransferReceipt",
         "type": "object"
       },
+      "CountDayPolicy": {
+        "additionalProperties": false,
+        "properties": {
+          "is_countdown": {
+            "title": "Is Countdown",
+            "type": "boolean"
+          },
+          "target_value": {
+            "maximum": 2147483647,
+            "minimum": 1,
+            "title": "Target Value",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "target_value",
+          "is_countdown"
+        ],
+        "title": "CountDayPolicy",
+        "type": "object"
+      },
       "DailyRule": {
         "additionalProperties": false,
         "properties": {
@@ -804,6 +825,17 @@
             "format": "uuid",
             "title": "Activity Uuid",
             "type": "string"
+          },
+          "count_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CountDayPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "duration_milliseconds": {
             "anyOf": [

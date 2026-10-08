@@ -4,6 +4,7 @@ from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 import json
 from types import SimpleNamespace
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -798,7 +799,7 @@ async def test_actual_sync_covers_normal_habits_counts_metrics_links_and_tombsto
         (up, "count_delta"),
         (down, "count_delta"),
     ):
-        payload = dict(
+        payload: dict[str, Any] = dict(
             activity_uuid=identity,
             event_type=mode,
             occurred_at="2026-09-23T16:30:00.123456Z",
@@ -807,6 +808,9 @@ async def test_actual_sync_covers_normal_habits_counts_metrics_links_and_tombsto
         )
         if mode == "count_delta":
             payload["value"] = "2"
+            payload["count_policy"] = dict(
+                target_value=1, is_countdown=identity == down
+            )
         operations.append(
             operation(payload, identity=str(uuid4()), kind="activity_event")
         )

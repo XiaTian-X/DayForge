@@ -66,8 +66,11 @@ object FocusWidgetAlarmScheduler {
             val bestTime = habit.bestTime!!
 
             if (habit.habitType == HabitType.COUNTING) {
+                val target = if (habit.appearance == null) habit.targetValue else
+                    com.dayforge.di.WidgetEntryPoint.from(appContext).habitRepository().getCountHistory(habit)
+                        .todayPolicy?.targetValue ?: continue
                 // COUNTING习惯：计算所有slot窗口边界
-                val slots = CountingSlotCalculator.calculateSlots(bestTime, habit.targetValue, currentTime)
+                val slots = CountingSlotCalculator.distinctSlots(bestTime, target, currentTime)
                 for (slot in slots) {
                     if (!slot.isPast) {
                         windowBoundaries.add(slot.windowStart)

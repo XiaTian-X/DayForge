@@ -42,6 +42,7 @@ fun HabitCard(
     completed: Boolean = false,
     undoAvailable: Boolean = false,
     todayCount: Int = 0,
+    countHistory: com.dayforge.domain.model.CountHistory? = null,
     onCheckIn: (Int) -> Unit = {},
     onUndo: () -> Unit = {},
     onIncrement: () -> Unit = {},
@@ -163,7 +164,7 @@ fun HabitCard(
                                 )
                             }
                             // 倒计数标签（仅计数型习惯且为倒计数模式时显示）- 白底主题色字
-                            if (habit.habitType == HabitType.COUNTING && habit.isCountdown) {
+                            if (habit.habitType == HabitType.COUNTING && (countHistory?.todayPolicy?.isCountdown ?: habit.isCountdown)) {
                                 Spacer(modifier = Modifier.width(8.dp))
                                 AssistChip(
                                     onClick = { },
@@ -310,10 +311,12 @@ fun HabitCard(
                                 actionsEnabled = actionsEnabled,
                                 undoAvailable = undoAvailable,
                                 habitType = habit.habitType,
-                                targetValue = activeTimer?.takeIf { it.habitId == habit.id }?.targetMinutes ?: habit.targetValue,
+                                targetValue = activeTimer?.takeIf { it.habitId == habit.id }?.targetMinutes ?: countHistory?.todayPolicy?.targetValue ?: habit.targetValue,
                                 currentCount = displayCount,
+                                actualCount = countHistory?.todayQuantity ?: displayCount.toLong(),
+                                countRuleKnown = countHistory == null || countHistory.todayPolicy != null,
                                 timerState = timerState,
-                                isCountdown = activeTimer?.takeIf { it.habitId == habit.id }?.isCountdown ?: habit.isCountdown,
+                                isCountdown = activeTimer?.takeIf { it.habitId == habit.id }?.isCountdown ?: countHistory?.todayPolicy?.isCountdown ?: habit.isCountdown,
                                 onCheckIn = onCheckIn,
                                 onUndo = onUndo,
                                 onIncrement = onIncrement,

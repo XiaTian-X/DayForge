@@ -14,6 +14,17 @@ import java.time.ZoneId
  * Extracted from FailureChecker and WidgetFailureChecker to reduce duplication.
  */
 object FailureCheckerUtils {
+    fun countHasFailed(habit: HabitEntity, history: com.dayforge.domain.model.CountHistory): Boolean {
+        if (!shouldCheckFailure(habit) || !isStrictMode(habit)) return false
+        var date = history.firstDate ?: return false
+        val qualified = history.qualifiedDates
+        while (date < history.today) {
+            if (date !in history.unknownDates &&
+                ScheduleValidator.isCheckInAllowedOnDate(habit.schedule, habit.createdAt, date) && date !in qualified) return true
+            date = date.plusDays(1)
+        }
+        return false
+    }
 
     /**
      * Checks if a habit should be evaluated for failure.
@@ -78,6 +89,7 @@ object FailureCheckerUtils {
                 completedSeconds >= targetSeconds
             }
             HabitType.COUNTING -> {
+                check(habit.appearance == null) { "COUNT_READER_REQUIRED" }
                 val completions = completionDao.getCompletionsInRange(
                     habit.id,
                     date,

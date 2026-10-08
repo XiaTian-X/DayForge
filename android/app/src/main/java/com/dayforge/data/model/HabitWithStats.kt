@@ -26,8 +26,16 @@ data class HabitWithStats(
     val hasFailed: Boolean = false,  // Failure status for target-based habits
     val slotProgress: String? = null,  // Slot progress for COUNTING habits in focus mode: "第 X 个/共 Y 个"
     val oneTimeStatus: com.dayforge.domain.model.OneTimeStatus? = null,
-    val timerAuthority: com.dayforge.domain.model.TimerActionAuthority? = null
+    val timerAuthority: com.dayforge.domain.model.TimerActionAuthority? = null,
+    val countHistory: com.dayforge.domain.model.CountHistory? = null
 ) {
+    val actualTodayCount: Long get() = countHistory?.todayQuantity ?: todayCount.toLong()
+    val countRuleKnown: Boolean get() = countHistory == null || countHistory.todayPolicy != null
+    val displayTargetValue: Int get() = countHistory?.todayPolicy?.targetValue ?: habit.targetValue
+    val displayIsCountdown: Boolean get() = countHistory?.todayPolicy?.isCountdown ?: habit.isCountdown
+    /** Pure ranking/window input only. Never use this copy as a write authority. */
+    val windowHabit: HabitEntity get() = if (countHistory == null) habit else
+        habit.copy(targetValue = displayTargetValue, isCountdown = displayIsCountdown)
     val completedForDisplay: Boolean get() = oneTimeStatus?.completed ?: completedToday
     /**
      * Whether the goal has been reached (targetCycles achieved).
@@ -58,6 +66,7 @@ data class HabitWithStats(
             // GOAL type doesn't count towards progress
             if (habit.habitType == HabitType.GOAL) return false
             if (habit.completionPolicy == "one_and_done") return false
+            if (!countRuleKnown) return false
 
             // Not a check-in day
             if (!isCheckInAllowed) return false

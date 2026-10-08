@@ -14,8 +14,10 @@ import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.navArgument
 import com.dayforge.data.local.TokenManager
+import com.dayforge.reminder.ReminderDetailRequest
 import com.dayforge.ui.screens.createhabit.CreateHabitScreen
 import com.dayforge.ui.screens.createtemptask.CreateTempTaskScreen
 import com.dayforge.ui.screens.creategoal.CreateGoalScreen
@@ -105,7 +107,9 @@ fun HabitNavGraph(
     selectedTab: Int,
     onTabSelected: (Int) -> Unit,
     windowSizeClass: WindowSizeClass,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    reminderRequest: ReminderDetailRequest? = null,
+    onReminderConsumed: (ReminderDetailRequest) -> Unit = {}
 ) {
     // Determine start destination based on login state
     var startDestination by remember { mutableStateOf<String?>(null) }
@@ -125,6 +129,13 @@ fun HabitNavGraph(
     val nestedViewModel: NestedViewModel = hiltViewModel()
     val metricsViewModel: MetricsViewModel = hiltViewModel()
     val profileViewModel: ProfileViewModel = hiltViewModel()
+
+    val reminderViewModel: ReminderNavigationViewModel = hiltViewModel()
+    val navigationEntry by navController.currentBackStackEntryAsState()
+    ReminderNavigationEffect(reminderRequest, navigationEntry != null,
+        navigationEntry?.destination?.route == Screen.Login.route, reminderViewModel::open, onReminderConsumed) { id ->
+        navController.navigate(Screen.HabitDetail.createRoute(id)) { launchSingleTop = true }
+    }
 
     NavHost(
         navController = navController,

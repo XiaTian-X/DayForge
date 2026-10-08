@@ -110,11 +110,14 @@ class DashboardViewModel @Inject constructor(
     // Use getActiveTimeLogFlow() as trigger - it changes when timer starts (INSERT) or stops (UPDATE sets endTime)
     // Use dateChangeTrigger to refresh when date changes (user opens app on new day)
     // Use filterMode to switch between different display modes (all, time_window, checkable, terminated)
+    private val readMonitor = com.dayforge.ui.DataReadMonitor(TAG)
+    val readError = readMonitor.error
+    fun retryRead() = readMonitor.retry()
     private val baseCombineFlow = combine(
         habitRepository.allHabits,
         allCompletions,
         timeLogDao.getActiveTimeLogFlow(),  // Triggers when timer state changes (start/stop)
-        preferencesManager.dateChangeTrigger,  // Triggers when date changes
+        preferencesManager.dateChangeTrigger,
         preferencesManager.filterMode  // Triggers when filter mode changes
     ) { habits, completions, _, _, filterModeValue ->
         DashboardHabitListInput(
@@ -124,8 +127,8 @@ class DashboardViewModel @Inject constructor(
         )
     }
 
-    val habitsWithStats: StateFlow<List<HabitWithStats>> = combine(
-        combine(baseCombineFlow, habitRepository.oneTimeChanges) { data, _ -> data },
+    val habitsWithStats: StateFlow<List<HabitWithStats>> = readMonitor.recover(emptyList()) { combine(
+        combine(baseCombineFlow, habitRepository.oneTimeChanges, habitRepository.countChanges) { data, _, _ -> data },
         timeWindowTickFlow,
         pendingMetricHabits
     ) { input, _, pendingMetricHabitIds ->
@@ -134,14 +137,14 @@ class DashboardViewModel @Inject constructor(
             "habitsWithStats combine triggered: habits=${input.habits.size}, " +
                 "completions=${input.completions.size}, filterMode=${input.filterMode.value}"
         )
-        dashboardHabitListBuilder.build(
+        readMonitor.read(emptyList()) { dashboardHabitListBuilder.build(
             habits = input.habits,
             completions = input.completions,
             filterMode = input.filterMode,
             currentTime = ZonedDateTime.now(ZoneId.systemDefault()),
             pendingMetricHabitIds = pendingMetricHabitIds
-        )
-    }
+        ) }
+    } }
         .onEach { _isInitialized.value = true }
         .stateIn(
             scope = viewModelScope,
@@ -596,7 +599,7 @@ class DashboardViewModel @Inject constructor(
      * Triggers post-check-in dialog for linked metrics.
      */
     fun incrementCount(habitId: Long) {
-        viewModelScope.launch {
+        launchCompletion {
             val outcome = completionCoordinator.incrementCount(habitId) {
                 habitsWithStats.value.find { it.habit.id == habitId }?.habit
             }
@@ -613,7 +616,7 @@ class DashboardViewModel @Inject constructor(
      * Triggers goal completion dialog if targetCycles reached.
      */
     fun decrementCount(habitId: Long) {
-        viewModelScope.launch {
+        launchCompletion {
             completionCoordinator.decrementCount(habitId).goalProgress
                 ?.let { progress -> onGoalReached(habitId, progress) }
         }

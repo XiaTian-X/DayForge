@@ -68,6 +68,7 @@ fun NestedScreen(
 ) {
     val topLevelHabitsWithChildren by viewModel.topLevelHabitsWithChildren.collectAsState()
     val isInitialized by viewModel.isInitialized.collectAsState()
+    val readError by viewModel.readError.collectAsState()
     val activeTimer by viewModel.activeTimerState.collectAsState()
     val pendingMetricHabits by viewModel.pendingMetricHabits.collectAsState()
     val linkedMetricsByHabit by viewModel.linkedMetricsByHabit.collectAsState()
@@ -191,6 +192,9 @@ fun NestedScreen(
                     )
                 }
             }
+        } else if (readError) {
+            com.dayforge.ui.components.DataReadFailure(viewModel::retryRead,
+                Modifier.fillMaxSize().padding(padding))
         } else if (topLevelHabitsWithChildren.isEmpty()) {
             // Empty state
             Column(
@@ -267,7 +271,7 @@ fun NestedScreen(
                             },
                             onChildDecrement = { habitId ->
                                 val child = parentWithChildren.children.find { it.habit.id == habitId }
-                                if (child != null && child.habit.isCountdown) {
+                                if (child != null && child.displayIsCountdown) {
                                     viewModel.incrementCount(habitId)
                                 } else {
                                     viewModel.decrementCount(habitId)
@@ -347,7 +351,7 @@ fun NestedScreen(
                             },
                             onChildDecrement = { habitId ->
                                 val child = parentWithChildren.children.find { it.habit.id == habitId }
-                                if (child != null && child.habit.isCountdown) {
+                                if (child != null && child.displayIsCountdown) {
                                     viewModel.incrementCount(habitId)
                                 } else {
                                     viewModel.decrementCount(habitId)

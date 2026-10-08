@@ -3,7 +3,7 @@ package com.dayforge.reminder
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.os.Build
+import android.net.Uri
 import androidx.core.app.NotificationCompat
 import com.dayforge.MainActivity
 import com.dayforge.R
@@ -23,7 +23,7 @@ object ReminderNotificationBuilder {
      * Builds a notification for habit reminder.
      *
      * @param context Application context
-     * @param habitId The habit ID for notification ID and PendingIntent request code
+     * @param habitId The local habit ID, resolved against the verified navigation identity
      * @param habitName The habit name to display as notification title
      * @param bestTime The scheduled time in minutes since midnight (nullable)
      * @param slotIndex Slot index for COUNTING habits (-1 for single reminder)
@@ -38,11 +38,11 @@ object ReminderNotificationBuilder {
         bestTime: Long?,
         slotIndex: Int = -1,
         targetValue: Int = 1,
-        completedToday: Int = 0
+        completedToday: Long = 0,
+        navigationIdentity: String = habitId.toString()
     ): android.app.Notification {
-        val contentText = if (slotIndex >= 0 && targetValue > 1) {
-            // COUNTING habit: show slot progress
-            formatSlotProgressText(context, slotIndex, targetValue, completedToday)
+        val contentText = if (slotIndex >= 0) {
+            context.getString(R.string.notification_count_progress, completedToday, targetValue)
         } else {
             // CHECK_IN/TIMER: show scheduled time
             formatTimeText(context, bestTime)
@@ -53,35 +53,33 @@ object ReminderNotificationBuilder {
             .setContentText(contentText)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setAutoCancel(true)  // Dismiss on tap
-            .setContentIntent(createHabitDetailPendingIntent(context, habitId))
+            .setContentIntent(createHabitDetailPendingIntent(context, habitId, navigationIdentity))
+            .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .build()
     }
 
     /**
      * Creates PendingIntent to open habit detail screen when notification is tapped.
-     * Per T-86-02: Uses FLAG_IMMUTABLE for security, unique request code per habit.
+     * Uses FLAG_IMMUTABLE and full account/habit URI identity rather than truncated request codes.
      *
      * @param context Application context
      * @param habitId The habit ID for navigation target
      * @return PendingIntent targeting MainActivity with habitId extra
      */
-    fun createHabitDetailPendingIntent(context: Context, habitId: Long): PendingIntent {
-        val intent = Intent(context, MainActivity::class.java).apply {
+    fun createHabitDetailPendingIntent(context: Context, habitId: Long, identity: String = habitId.toString()): PendingIntent {
+        return PendingIntent.getActivity(context, 0, habitDetailIntent(context, habitId, identity),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+    }
+
+    internal fun habitDetailIntent(context: Context, habitId: Long, identity: String): Intent =
+        Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            data = Uri.Builder().scheme("dayforge-reminder").authority("detail").appendPath(identity).build()
             putExtra(EXTRA_HABIT_ID, habitId)
             putExtra(EXTRA_NAVIGATION_DESTINATION, "habit_detail")
         }
 
-        val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-
-        return PendingIntent.getActivity(
-            context,
-            habitId.toInt(),  // Unique request code per habit
-            intent,
-            flags
-        )
-    }
 
     /**
      * Formats the time text for notification content.
@@ -104,27 +102,4 @@ object ReminderNotificationBuilder {
         return context.getString(R.string.notification_scheduled_time, formattedTime)
     }
 
-    /**
-     * Formats the slot progress text for COUNTING habit notifications.
-     *
-     * @param context Application context for localized string
-     * @param slotIndex Current slot index (0-based)
-     * @param targetValue Total target completions
-     * @param completedToday Number of completions today
-     * @return Formatted progress string, e.g., "第1次/共3次 (已完成0次)"
-     */
-    private fun formatSlotProgressText(
-        context: Context,
-        slotIndex: Int,
-        targetValue: Int,
-        completedToday: Int
-    ): String {
-        // slotIndex is 0-based, display as 1-based (第1次, 第2次, etc.)
-        return context.getString(
-            R.string.notification_slot_progress,
-            slotIndex + 1,
-            targetValue,
-            completedToday
-        )
-    }
 }

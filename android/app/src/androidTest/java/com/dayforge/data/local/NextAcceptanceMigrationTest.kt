@@ -59,7 +59,7 @@ class NextAcceptanceMigrationTest {
     }
     private fun structure(db: SupportSQLiteDatabase) = rows(db,
         "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' " +
-            "AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('next_sync_state','next_rejections','next_structural_dependencies','next_structural_supersessions','next_acceptances') ORDER BY type,name")
+            "AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('count_days','next_sync_state','next_rejections','next_structural_dependencies','next_structural_supersessions','next_acceptances') ORDER BY type,name")
     private fun insert(db: SupportSQLiteDatabase, table: String, values: Map<String, Any>) {
         val content = ContentValues()
         entities.first { it.getValue("tableName").jsonPrimitive.content == table }.getValue("fields").jsonArray.forEach {
@@ -128,7 +128,7 @@ class NextAcceptanceMigrationTest {
         assertEquals(19, entities.size)
         repeat(2) {
             val db = open(); val sql = db.openHelper.writableDatabase
-            assertEquals(12, sql.version); assertEquals(before, snapshot(sql)); assertEquals(ddl, structure(sql))
+            assertEquals(13, sql.version); assertEquals(before, snapshot(sql)); assertEquals(ddl, structure(sql))
             assertTrue(db.nextRequestDao().hasAny())
             assertTrue(rows(sql, "SELECT * FROM next_acceptances").isEmpty())
             assertEquals(listOf(listOf("ok")), rows(sql, "PRAGMA integrity_check"))
@@ -147,7 +147,7 @@ class NextAcceptanceMigrationTest {
             }
             raw.execSQL("ALTER TABLE unavailable_transmissions RENAME TO one_time_transmissions")
         }
-        assertEquals(12, open().openHelper.writableDatabase.version)
+        assertEquals(13, open().openHelper.writableDatabase.version)
     }
     @Test fun forgedVersionNineIdentityCannotInitializeReceiptsOrModifyFrozenRows() {
         seed { it.execSQL("UPDATE room_master_table SET identity_hash='unknown' WHERE id=42") }
@@ -172,7 +172,7 @@ class NextAcceptanceMigrationTest {
             raw.rawQuery("SELECT hex(wireBytes) FROM next_transmissions", null).use { assertTrue(it.moveToFirst()); assertEquals("007FFF", it.getString(0)) }
             raw.execSQL("DROP TABLE next_acceptances") // Only the exact obstacle injected by this test.
         }
-        assertEquals(12, open().openHelper.writableDatabase.version)
+        assertEquals(13, open().openHelper.writableDatabase.version)
     }
 
     @Test fun missingExtraOrWrongStorageTypeIdentityCannotInitializeReceipts() {

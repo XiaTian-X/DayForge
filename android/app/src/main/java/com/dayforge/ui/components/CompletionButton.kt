@@ -106,6 +106,7 @@ fun CompletionButton(
     habitType: HabitType = HabitType.CHECK_IN,
     targetValue: Int = 1,
     currentCount: Int = 0,
+    actualCount: Long = currentCount.toLong(),
     timerState: TimerState = TimerState.NOT_RUNNING,
     isCountdown: Boolean = false,
     onCheckIn: (Int) -> Unit,
@@ -125,7 +126,8 @@ fun CompletionButton(
     onReactivation: () -> Unit = {},
     textColor: Color = Color.Unspecified,
     modifier: Modifier = Modifier,
-    actionsEnabled: Boolean = true
+    actionsEnabled: Boolean = true,
+    countRuleKnown: Boolean = true
 ) {
     // Resolve text color: use provided color or fallback to theme default
     val resolvedTextColor = if (textColor != Color.Unspecified) {
@@ -139,6 +141,7 @@ fun CompletionButton(
             // 1. TIMER 运行中/暂停中 - 最高优先级，不中断计时
             habitType == HabitType.TIMER && timerState == TimerState.RUNNING -> "timer_running"
             habitType == HabitType.TIMER && timerState == TimerState.PAUSED -> "timer_paused"
+            habitType == HabitType.COUNTING && !countRuleKnown -> "count_unknown"
 
             // 2. 非打卡日 - 禁止新打卡（但不中断运行中的计时）
             !isCheckInAllowed -> "disabled_checkin"
@@ -174,6 +177,8 @@ fun CompletionButton(
         modifier = modifier.animateContentSize()
     ) { state ->
         when (state) {
+            "count_unknown" -> Text(stringResource(R.string.count_rule_unknown_quantity, actualCount),
+                color = resolvedTextColor, style = MaterialTheme.typography.labelLarge)
             "timer_running" -> {
                 // Running timer: [Pause] MM:SS / X分钟 [Stop]
                 // For countdown mode: [Pause] 还剩 MM:SS / X分钟 [Stop]
@@ -375,7 +380,7 @@ fun CompletionButton(
             "counting" -> {
                 // 统一使用打卡按钮样式
                 val remaining = if (isCountdown) {
-                    (targetValue - currentCount).coerceAtLeast(0)
+                    (targetValue.toLong() - actualCount).coerceAtLeast(0L)
                 } else {
                     0
                 }
@@ -383,7 +388,7 @@ fun CompletionButton(
                 val isCompleted = if (isCountdown) {
                     remaining <= 0
                 } else {
-                    currentCount >= targetValue
+                    actualCount >= targetValue
                 }
 
                 // 倒计数完成后不能再打卡，正计数可以继续打卡
@@ -443,7 +448,7 @@ fun CompletionButton(
                         val progressText = if (isCountdown) {
                             stringResource(R.string.timer_countdown_remaining, remaining)
                         } else {
-                            stringResource(R.string.timer_countup_progress, currentCount, targetValue)
+                            stringResource(R.string.timer_countup_progress, actualCount, targetValue)
                         }
                         Text(
                             text = progressText,

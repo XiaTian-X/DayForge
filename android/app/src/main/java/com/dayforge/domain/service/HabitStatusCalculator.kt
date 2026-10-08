@@ -34,7 +34,8 @@ class HabitStatusCalculator @Inject constructor(
     private val completionDao: CompletionDao,
     private val timeLogDao: TimeLogDao,
     private val oneTimeRepository: com.dayforge.data.repository.OneTimeRepository? = null,
-    private val timerWriter: com.dayforge.data.repository.NextTimerWriter? = null
+    private val timerWriter: com.dayforge.data.repository.NextTimerWriter? = null,
+    private val countHistoryReader: com.dayforge.data.repository.CountHistoryReader? = null
 ) {
     /**
      * Calculate complete status for a habit.
@@ -54,6 +55,19 @@ class HabitStatusCalculator @Inject constructor(
             return HabitWithStats(habit, completedToday = false, todayCount = 0,
                 lastCompletionId = status.completionId, currentStreak = 0, bestStreak = 0,
                 isCheckInAllowed = true, oneTimeStatus = status)
+        }
+        if (habit.habitType == HabitType.COUNTING && habit.appearance != null) {
+            val history = requireNotNull(countHistoryReader) { "COUNT_READER_REQUIRED" }.read(habit)
+            val allowed = ScheduleValidator.isCheckInAllowedToday(habit.schedule, habit.createdAt)
+            return HabitWithStats(habit, history.completedToday,
+                history.todayQuantity.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                history.completions.filter { it.recordedLocalDate == history.today.toString() }.maxByOrNull { it.id }?.id,
+                StreakCalculator.currentFromBusinessDates(history.qualifiedDates, history.today),
+                StreakCalculator.bestFromBusinessDates(history.qualifiedDates),
+                activityRate = habit.activityRate, isCheckInAllowed = allowed && history.todayPolicy != null,
+                nextCheckInDate = if (allowed) null else ScheduleValidator.getNextCheckInDate(habit.schedule, habit.createdAt),
+                targetProgress = if (habit.targetCycles == null) 0 else history.qualifiedDates.size,
+                hasFailed = FailureCheckerUtils.countHasFailed(habit, history), countHistory = history)
         }
         // Fetch data if not provided
         val habitCompletions = completions?.filter { it.habitId == habit.id }

@@ -38,11 +38,17 @@ class HabitRepository @Inject constructor(
     private val structuralEditGuard: StructuralEditGuard? = null,
     private val nextObjectEditor: NextObjectEditor? = null,
     private val nextObjectCreator: NextObjectCreator? = null,
-    private val oneTimeRepository: OneTimeRepository? = null
+    private val oneTimeRepository: OneTimeRepository? = null,
+    private val countHistoryReader: CountHistoryReader? = null
 ) {
     val allHabits: Flow<List<HabitEntity>> = habitDao.getAllHabits()
 
     val oneTimeChanges: Flow<Unit> = oneTimeRepository?.changes ?: kotlinx.coroutines.flow.flowOf(Unit)
+
+    val countChanges: Flow<Unit> = countHistoryReader?.changes ?: kotlinx.coroutines.flow.flowOf(Unit)
+
+    suspend fun getCountHistory(habit: HabitEntity): com.dayforge.domain.model.CountHistory =
+        requireNotNull(countHistoryReader) { "COUNT_READER_REQUIRED" }.read(habit)
 
     suspend fun getOneTimeStatus(id: Long, expectedUuid: String? = null): OneTimeStatus = requireNotNull(oneTimeRepository) {
         "ONE_TIME_REPOSITORY_REQUIRED"
@@ -116,7 +122,7 @@ class HabitRepository @Inject constructor(
         // Side effects only after the complete business/original intent transaction commits.
         context?.let { notifyWidgetUpdate(it) }
         if (habit.bestTime != null && habit.habitType != HabitType.GOAL) {
-            context?.let { HabitReminderScheduler.scheduleReminder(it, id, habit.bestTime, habit.habitType, habit.targetValue) }
+            context?.let { HabitReminderScheduler.scheduleReminder(it, id) }
         }
         return id
     }
@@ -199,8 +205,7 @@ class HabitRepository @Inject constructor(
             notifyWidgetUpdate(appContext)
             saved.forEach { habit ->
                 if (habit.bestTime != null && habit.habitType != HabitType.GOAL) {
-                    HabitReminderScheduler.scheduleReminder(appContext, habit.id, habit.bestTime,
-                        habit.habitType, habit.targetValue)
+                    HabitReminderScheduler.scheduleReminder(appContext, habit.id)
                 }
             }
         }
@@ -250,17 +255,14 @@ class HabitRepository @Inject constructor(
 
             // Cancel existing reminder if needed
             if (needsCancel) {
-                HabitReminderScheduler.cancelReminder(it, habit.id, previousHabitType, previousTargetValue)
+                HabitReminderScheduler.cancelReminder(it, habit.id)
             }
 
             // Schedule new reminder if needed
             if (needsSchedule) {
                 HabitReminderScheduler.scheduleReminder(
                     it,
-                    persistedHabit.id,
-                    newBestTime,
-                    persistedHabit.habitType,
-                    persistedHabit.targetValue
+                    persistedHabit.id
                 )
             }
         }
@@ -355,9 +357,7 @@ class HabitRepository @Inject constructor(
                 if (deleted.bestTime != null) {
                     HabitReminderScheduler.cancelReminder(
                         appContext,
-                        deleted.id,
-                        deleted.habitType,
-                        deleted.targetValue
+                        deleted.id
                     )
                 }
             }
@@ -390,9 +390,7 @@ class HabitRepository @Inject constructor(
             if (habit.bestTime != null) {
                 HabitReminderScheduler.cancelReminder(
                     appContext,
-                    habit.id,
-                    habit.habitType,
-                    habit.targetValue
+                    habit.id
                 )
             }
             notifyWidgetUpdate(appContext)
@@ -408,11 +406,11 @@ class HabitRepository @Inject constructor(
         return habitDao.getVisibleChildrenByParentUuidOnce(habitUuid)
     }
 
-    private fun afterHabitDeletion(deleted: List<HabitEntity>, context: Context?) {
+    private suspend fun afterHabitDeletion(deleted: List<HabitEntity>, context: Context?) {
         if (deleted.isEmpty()) return
         context?.let { appContext ->
             deleted.forEach { habit -> if (habit.bestTime != null) {
-                HabitReminderScheduler.cancelReminder(appContext, habit.id, habit.habitType, habit.targetValue)
+                HabitReminderScheduler.cancelReminder(appContext, habit.id)
             } }
             notifyWidgetUpdate(appContext)
         }
@@ -465,10 +463,10 @@ class HabitRepository @Inject constructor(
         if (habit != null && habit.bestTime != null && habit.habitType != HabitType.GOAL) {
             if (!isActive) {
                 // Habit deactivated: cancel reminder
-                HabitReminderScheduler.cancelReminder(context, habitId, habit.habitType, habit.targetValue)
+                HabitReminderScheduler.cancelReminder(context, habitId)
             } else {
                 // Habit reactivated: schedule reminder
-                HabitReminderScheduler.scheduleReminder(context, habitId, habit.bestTime, habit.habitType, habit.targetValue)
+                HabitReminderScheduler.scheduleReminder(context, habitId)
             }
         }
 
@@ -533,6 +531,8 @@ class HabitRepository @Inject constructor(
                 habitUuid = habit.uuid,
                 recordedTimezone = capturedZone.id
             )
+            if (habit.appearance != null && habit.habitType == HabitType.COUNTING)
+                NextCountDayStore(database).capture(habit, completion)
             val completionId = completionDao.insert(completion)
             updateActivityRate(habitId)
             completionId
@@ -637,10 +637,17 @@ class HabitRepository @Inject constructor(
      * @return Flow of StreakStats with current and best streak
      */
     fun getStreakStats(habitId: Long): Flow<StreakStats> {
-        return completionDao.getCompletionsByHabit(habitId)
+        return kotlinx.coroutines.flow.combine(completionDao.getCompletionsByHabit(habitId), countChanges,
+            habitDao.getHabitByIdFlow(habitId)) { rows, _, _ -> rows }
             .map { completions ->
-                if (habitDao.getHabitById(habitId)?.completionPolicy == "one_and_done") {
+                val habit = habitDao.getHabitById(habitId)
+                if (habit?.completionPolicy == "one_and_done") {
                     return@map StreakStats(0, 0, null)
+                }
+                if (habit?.habitType == HabitType.COUNTING && habit.appearance != null) {
+                    val history = getCountHistory(habit)
+                    return@map StreakStats(StreakCalculator.currentFromBusinessDates(history.qualifiedDates, history.today),
+                        StreakCalculator.bestFromBusinessDates(history.qualifiedDates), history.qualifiedDates.maxOrNull()?.toDisplayMillis())
                 }
                 val currentStreak = StreakCalculator.calculateCurrentStreak(completions)
                 val bestStreak = StreakCalculator.calculateBestStreak(completions)
@@ -681,17 +688,13 @@ class HabitRepository @Inject constructor(
      * Called when user logs out or a new user logs in.
      */
     suspend fun clearAllData(context: Context? = null) {
-        // Cancel all habit reminders before clearing database
-        context?.let {
-            val allHabits = habitDao.getAllHabitsOnce()
-            for (habit in allHabits) {
-                if (habit.bestTime != null) {
-                    HabitReminderScheduler.cancelReminder(it, habit.id, habit.habitType, habit.targetValue)
-                }
-            }
-        }
         database.clearAllData()
-        context?.let { notifyWidgetUpdate(it) }
+        context?.let {
+            // Login/logout owns the account lock here. Cancel only after the clear commits;
+            // never call a scheduler that attempts to reacquire the same non-reentrant lock.
+            HabitReminderScheduler.cancelAllReminders(it)
+            notifyWidgetUpdate(it)
+        }
     }
 
     /**

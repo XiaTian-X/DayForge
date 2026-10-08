@@ -71,6 +71,7 @@ class FocusWidget : GlanceAppWidget() {
         val PRIMARY_HABIT_TYPE_KEY = stringPreferencesKey("primaryHabitType")
         val PRIMARY_TARGET_VALUE_KEY = intPreferencesKey("primaryTargetValue")
         val PRIMARY_COMPLETED_TODAY_KEY = intPreferencesKey("primaryCompletedToday")
+        val PRIMARY_ACTUAL_COUNT_KEY = longPreferencesKey("primaryActualCount")
         val PRIMARY_IS_COMPLETED_KEY = booleanPreferencesKey("primaryIsCompleted")
         val PRIMARY_IS_ACTIVE_KEY = booleanPreferencesKey("primaryIsActive")
         val PRIMARY_BACKGROUND_COLOR_KEY = intPreferencesKey("primaryBackgroundColor")
@@ -137,11 +138,7 @@ class FocusWidget : GlanceAppWidget() {
             // Create services manually (widgets don't use Hilt injection)
             // Reuse app's centralized status calculation logic
             val failureChecker = FailureChecker(database.completionDao(), database.timeLogDao())
-            val habitStatusCalculator = HabitStatusCalculator(
-                failureChecker,
-                database.completionDao(),
-                database.timeLogDao()
-            )
+            val habitStatusCalculator = com.dayforge.di.WidgetEntryPoint.calculator(appContext, database)
 
             // Get all active habits
             val allActiveHabits = database.habitDao().getVisibleHabitsOnce().filter { it.isActive && it.completionPolicy != "one_and_done" }
@@ -183,7 +180,7 @@ class FocusWidget : GlanceAppWidget() {
                 habit.id to (baseCount + activeElapsed)
             }
             val priorities = HabitPriorityCalculator.calculatePriorities(
-                eligibleHabits.map { it.habit },
+                eligibleHabits.map { it.windowHabit },
                 currentTime,
                 completedCountMap,
                 pendingMetricHabits
@@ -249,6 +246,7 @@ class FocusWidget : GlanceAppWidget() {
                     val totalTodayCount = baseTodayCount + activeElapsedSeconds
 
                     prefs[PRIMARY_COMPLETED_TODAY_KEY] = totalTodayCount
+                    prefs[PRIMARY_ACTUAL_COUNT_KEY] = primaryStats?.actualTodayCount ?: totalTodayCount.toLong()
                     prefs[PRIMARY_TODAY_COUNT_KEY] = totalTodayCount  // 实际完成次数（含实时计时）
                     prefs[PRIMARY_IS_TIMER_ACTIVE_KEY] = isTimerActive
                     prefs[PRIMARY_TIMER_ELAPSED_KEY] = activeElapsedSeconds  // 正在计时的实时秒数
@@ -379,6 +377,7 @@ class FocusWidget : GlanceAppWidget() {
         }
         val targetValue = state[PRIMARY_TARGET_VALUE_KEY] ?: 1
         val completedToday = state[PRIMARY_COMPLETED_TODAY_KEY] ?: 0
+        val actualCount = state[PRIMARY_ACTUAL_COUNT_KEY] ?: completedToday.toLong()
         val todayCount = state[PRIMARY_TODAY_COUNT_KEY] ?: 0  // 实际完成次数（含实时计时）
         val isCompleted = state[PRIMARY_IS_COMPLETED_KEY] ?: false
         val isActive = state[PRIMARY_IS_ACTIVE_KEY] ?: true
@@ -619,13 +618,13 @@ class FocusWidget : GlanceAppWidget() {
                     // COUNTING type: single check-in button + progress
                     // Unified default button styling matches CHECK_IN and TIMER types
                     val remaining = if (isCountdown) {
-                        (targetValue - completedToday).coerceAtLeast(0)
+                        (targetValue.toLong() - actualCount).coerceAtLeast(0L)
                     } else 0
-                    val showCompleted = if (isCountdown) remaining <= 0 else completedToday >= targetValue
+                    val showCompleted = if (isCountdown) remaining <= 0 else actualCount >= targetValue
                     val progressText = if (isCountdown) {
                         context.getString(com.dayforge.R.string.timer_countdown_remaining, remaining)
                     } else {
-                        context.getString(com.dayforge.R.string.timer_countup_progress, completedToday, targetValue)
+                        context.getString(com.dayforge.R.string.timer_countup_progress, actualCount, targetValue)
                     }
                     Row(
                         modifier = GlanceModifier.fillMaxWidth(),

@@ -116,7 +116,8 @@ internal class NextSyncRuntime @Inject constructor(
                 total = maxOf(total, uploaded + queues.operations.size + queues.commands.size - 1)
                 progress(SyncProgress.UploadingChanges(uploaded, total))
             } catch (error: NextRequestException) {
-                if (error.reason == NextRequestException.Reason.TIMER_START_CONFIG_CHANGED) {
+                if (error.reason in setOf(NextRequestException.Reason.TIMER_START_CONFIG_CHANGED,
+                        NextRequestException.Reason.COUNT_START_CONFIG_CHANGED)) {
                     permanentBlock = true
                     blocked += requestId
                     continue

@@ -24,6 +24,7 @@ from src.v2.models import (
 from src.v2.schemas import SyncOperationRequest
 from src.v2.one_time_storage import stored_event_proof
 from src.v2.object_appearance import read_object_appearance
+from src.v2.count_policy import CountDayPolicy
 
 
 async def serialize_plan_node(
@@ -125,6 +126,15 @@ def serialize_activity_event(
         result["one_time_state_after"] = proof.one_time_state_after.model_dump(
             mode="json"
         )
+    if event.count_policy_json is not None:
+        if (
+            event.event_type not in {"count_delta", "count_snapshot"}
+            or proof is not None
+        ):
+            raise ValueError("count proof belongs to another event type")
+        result["count_policy"] = CountDayPolicy.model_validate(
+            parse_json(event.count_policy_json)
+        ).model_dump(mode="json")
     return result
 
 
