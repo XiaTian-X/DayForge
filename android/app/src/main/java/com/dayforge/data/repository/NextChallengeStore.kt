@@ -10,11 +10,58 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.nio.ByteBuffer
+import java.security.MessageDigest
 
 /** Internal transaction participant, not an account/HTTP entry or restart acceptance API. */
 internal class NextChallengeStore(private val database: HabitDatabase) {
     private val json = Json { encodeDefaults = true }
     private val dao get() = database.nextChallengeDao()
+
+    suspend fun activeInTransaction(access: LocalSyncAccess): Pair<NextSyncStateEntity, ChallengeMetadata> {
+        check(database.inTransaction())
+        require(access.deviceId != null)
+        requireNotNull(NextRequestSql.rowHash(database.openHelper.writableDatabase, "next_sync_state", "1=1", emptyArray()))
+        val state = database.nextSyncStateDao().rows().single()
+        require(state.challengeContract == 1)
+        return state to requireNotNull(readInTransaction(access, state))
+    }
+
+    /** Sidecar-only ACK merge; caller commits the original receipt and business in the SAME transaction. */
+    suspend fun acknowledgeInTransaction(access: LocalSyncAccess, incoming: ChallengeMetadata): ChallengeMetadata {
+        val (state, _) = activeInTransaction(access)
+        val before = otherTablesProof()
+        mergeInTransaction(access, state, state, incoming)
+        check(otherTablesProof() == before) { "SYNC_CHALLENGE_ACK_SIDE_EFFECT" }
+        return activeInTransaction(access).second
+    }
+
+    private suspend fun otherTablesProof(): String {
+        val sql = database.openHelper.writableDatabase
+        val names = sql.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").use { c ->
+            buildList { while (c.moveToNext()) add(c.getString(0)) }
+        }.filterNot { it.startsWith("next_challenge_") }
+        val digest = MessageDigest.getInstance("SHA-256")
+        fun bytes(value: ByteArray) { digest.update(ByteBuffer.allocate(4).putInt(value.size).array()); digest.update(value) }
+        for (table in names) {
+            require(table.matches(Regex("[a-zA-Z_][a-zA-Z_0-9]*")))
+            bytes(table.toByteArray(Charsets.UTF_8))
+            sql.query("SELECT * FROM $table ORDER BY rowid").use { row -> while (row.moveToNext()) {
+                currentCoroutineContext().ensureActive()
+                for (column in 0 until row.columnCount) {
+                    digest.update(row.getType(column).toByte())
+                    when (row.getType(column)) {
+                        Cursor.FIELD_TYPE_NULL -> Unit
+                        Cursor.FIELD_TYPE_INTEGER -> bytes(ByteBuffer.allocate(8).putLong(row.getLong(column)).array())
+                        Cursor.FIELD_TYPE_FLOAT -> bytes(ByteBuffer.allocate(8).putDouble(row.getDouble(column)).array())
+                        Cursor.FIELD_TYPE_STRING -> bytes(row.getString(column).toByteArray(Charsets.UTF_8))
+                        Cursor.FIELD_TYPE_BLOB -> bytes(row.getBlob(column))
+                    }
+                }
+            } }
+        }
+        return nextRequestHash(digest.digest())
+    }
 
     suspend fun requirePlainInTransaction() {
         check(database.inTransaction())

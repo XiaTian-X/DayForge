@@ -203,7 +203,7 @@ internal class NextOneTimeRequestStore(
         if (origin.accountId != access.session.authentication.userId || origin.serverInstanceId != null &&
             (origin.serverInstanceId != access.session.serverInstanceId || origin.syncEpoch != access.session.syncEpoch))
             rejectNextRequest(NextRequestException.Reason.TRANSMISSION_CONTEXT_CHANGED)
-        val operation = decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
+        val operation = decodeNextOperationIntent(origin.intentJson)
         require(operation.operationId == id && operation.entityType == "activity_event" && operation.action == "upsert" &&
             operation.baseRevision == null && operation.payload["one_time"] is JsonObject)
         validateNextSyncOperation(operation)

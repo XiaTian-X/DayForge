@@ -193,9 +193,16 @@ class NextPlanDeletionWorkflowTest : NextObjectEditorFixture() {
         accept(http, db.syncOutboxDao().getAll().first { it.entityUuid == item.uuid && it.action == "upsert" })
         // Old attachment is accepted, but the pending detach still belongs before the root delete.
         blocked(http, deletion)
+        val detach = db.syncOutboxDao().getAll().single { it.entityUuid == item.uuid && it.action == "upsert" }
+        // D-017: a later configuration cannot jump the first count's original ACK, even when
+        // keeping children. Preserve that barrier rather than weakening it to fit old test order.
+        blocked(http, detach)
+        val firstCount = db.syncOutboxDao().getAll().single { it.recordType == "completion" }
+        accept(http, firstCount)
         structures(http)
         accept(http, deletion)
-        accept(http, db.syncOutboxDao().getAll().single { it.recordType == "completion" })
+        assertNotNull(db.nextRequestDao().acceptance(NEXT_OPERATION, firstCount.operationId))
+        assertTrue(db.syncOutboxDao().getAll().none { it.recordType == "completion" })
         reopen()
         assertNull(db.habitDao().getHabitByUuid(root.uuid)); assertNull(db.habitDao().getHabitById(item.id)!!.parentHabitId)
         assertEquals(1, db.completionDao().getByHabitOnce(item.id).size)

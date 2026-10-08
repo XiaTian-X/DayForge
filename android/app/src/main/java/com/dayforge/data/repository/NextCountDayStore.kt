@@ -45,7 +45,7 @@ internal class NextCountDayStore(private val database: HabitDatabase) {
                 require(row.originHash == NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?",
                     arrayOf(NEXT_OPERATION, row.originRequestId)))
                 require(origin.protocol == 5 && origin.queueId > row.planQueueWatermark)
-                val operation = decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
+                val operation = decodeNextOperationIntent(origin.intentJson)
                 require(operation.operationId == row.originRequestId && operation.entityType == "activity_event" &&
                     operation.action == "upsert" && operation.entityUuid == row.firstEventUuid &&
                     operation.payload["activity_uuid"] == JsonPrimitive(habit.uuid) &&
@@ -60,7 +60,7 @@ internal class NextCountDayStore(private val database: HabitDatabase) {
                             arrayOf(row.planPredecessorId)))
                     val predecessor = requireNotNull(database.nextRequestDao().origin(NEXT_OPERATION, row.planPredecessorId))
                     require(predecessor.accountId == origin.accountId && predecessor.queueId <= row.planQueueWatermark)
-                    val plan = decodeFrozenSyncRequest(predecessor.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
+                    val plan = decodeNextOperationIntent(predecessor.intentJson)
                     require(plan.entityType == "plan_node" && plan.entityUuid == habit.uuid && plan.action == "upsert" &&
                         policyFromPlan(plan.payload) == row.policy)
                 }
@@ -98,7 +98,7 @@ internal class NextCountDayStore(private val database: HabitDatabase) {
             val origin = requireNotNull(database.nextRequestDao().origin(NEXT_OPERATION, id))
             require(origin.protocol == 5 && isContractUuid(origin.accountId) && isContractUuid(id))
             if (accountId != null) require(origin.accountId == accountId) { "COUNT_SESSION_CHANGED" }
-            val operation = decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
+            val operation = decodeNextOperationIntent(origin.intentJson)
             require(operation.operationId == id)
             if (operation.entityType == "activity_event" && operation.action == "upsert" &&
                 operation.payload["activity_uuid"] == JsonPrimitive(habit.uuid) &&
