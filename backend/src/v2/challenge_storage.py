@@ -1,8 +1,9 @@
 """Actual challenge persistence inside caller-owned transactions.
 
-Birth capture is used by guarded v5 fact/timer producers. Restart is not mounted
-in an API yet: the future dispatcher must own replica admission, the original
-SyncOperation receipt and wire/source verification before acknowledging success.
+Birth capture is used by guarded v5 fact/timer producers. The challenge-profile
+dispatcher owns replica admission, the original shared SyncOperation receipt
+and wire/source verification before acknowledging success; this helper alone
+never establishes that API authority.
 No helper commits, authenticates self-declared owner fields, or resets facts.
 """
 
@@ -313,7 +314,7 @@ async def restart_stored_challenge(
     """Durable CAS/creation inside a SAVEPOINT + caller's outer transaction.
 
     It is not a standalone API receipt. Replica/raw-operation admission and the
-    shared SyncOperation namespace must be integrated before exposing restart.
+    shared SyncOperation namespace are the caller's responsibility.
     """
     TypeAdapter(PublicId).validate_python(operation_uuid)
     device = await require_device(user_id, device_uuid, session)
@@ -442,7 +443,7 @@ async def restart_stored_challenge(
         await _validate_history(session, user_id, node_id)
         record = decode_round(created.model_dump(), node.public_id, device.public_id)
         # Baseline birth capture alone does not publish an unsupported entity
-        # into current v5 pull. A future admitted restart publishes both steps.
+        # into legacy v5 pull. An admitted challenge restart publishes both steps.
         if previous.generation == 0:
             initial_snapshot = (
                 await session.execute(

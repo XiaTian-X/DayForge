@@ -49,8 +49,7 @@ def test_incremental_upgrade_keeps_every_old_column_row_and_ddl_without_guessing
             for name in names
             if name != "alembic_version"
         }
-    command.upgrade(alembic_config(str(path)), "head")
-    command.check(alembic_config(str(path)))
+    command.upgrade(alembic_config(str(path)), "000000000008")
     with closing(sqlite3.connect(path)) as connection:
         current_objects = connection.execute(
             "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name"
@@ -66,6 +65,8 @@ def test_incremental_upgrade_keeps_every_old_column_row_and_ddl_without_guessing
             for table in TABLES
         )
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    command.upgrade(alembic_config(str(path)), "head")
+    command.check(alembic_config(str(path)))
     command.downgrade(alembic_config(str(path)), "000000000007")
     assert database_dump(path) == before
 

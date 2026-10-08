@@ -597,6 +597,256 @@
         "title": "AssetTransferReceipt",
         "type": "object"
       },
+      "ChallengeBirth": {
+        "additionalProperties": false,
+        "properties": {
+          "entity_type": {
+            "enum": [
+              "activity_event",
+              "timer_session"
+            ],
+            "title": "Entity Type",
+            "type": "string"
+          },
+          "entity_uuid": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Entity Uuid",
+            "type": "string"
+          },
+          "head": {
+            "$ref": "#/components/schemas/ChallengeRoundHead"
+          }
+        },
+        "required": [
+          "entity_type",
+          "entity_uuid",
+          "head"
+        ],
+        "title": "ChallengeBirth",
+        "type": "object"
+      },
+      "ChallengeCheckpoint": {
+        "additionalProperties": false,
+        "properties": {
+          "head": {
+            "$ref": "#/components/schemas/ChallengeRoundHead"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/ChallengeRoundRecord"
+            },
+            "minItems": 1,
+            "title": "Records",
+            "type": "array"
+          }
+        },
+        "required": [
+          "head",
+          "records"
+        ],
+        "title": "ChallengeCheckpoint",
+        "type": "object"
+      },
+      "ChallengeRestartIntent": {
+        "additionalProperties": false,
+        "properties": {
+          "activity_uuid": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Activity Uuid",
+            "type": "string"
+          },
+          "expected_generation": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Expected Generation",
+            "type": "integer"
+          },
+          "expected_plan_revision": {
+            "maximum": 9.223372036854776e+18,
+            "minimum": 1.0,
+            "title": "Expected Plan Revision",
+            "type": "integer"
+          },
+          "expected_round_uuid": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Expected Round Uuid",
+            "type": "string"
+          },
+          "round_uuid": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Round Uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "activity_uuid",
+          "round_uuid",
+          "expected_round_uuid",
+          "expected_generation",
+          "expected_plan_revision"
+        ],
+        "title": "ChallengeRestartIntent",
+        "type": "object"
+      },
+      "ChallengeRestartOperation": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "const": "upsert",
+            "title": "Action",
+            "type": "string"
+          },
+          "base_revision": {
+            "title": "Base Revision",
+            "type": "null"
+          },
+          "entity_type": {
+            "const": "challenge_round",
+            "title": "Entity Type",
+            "type": "string"
+          },
+          "entity_uuid": {
+            "format": "uuid",
+            "title": "Entity Uuid",
+            "type": "string"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/ChallengeRestartIntent"
+          }
+        },
+        "required": [
+          "operation_id",
+          "entity_type",
+          "entity_uuid",
+          "action",
+          "payload"
+        ],
+        "title": "ChallengeRestartOperation",
+        "type": "object"
+      },
+      "ChallengeRoundHead": {
+        "additionalProperties": false,
+        "properties": {
+          "activity_uuid": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Activity Uuid",
+            "type": "string"
+          },
+          "generation": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Generation",
+            "type": "integer"
+          },
+          "round_uuid": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Round Uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "activity_uuid",
+          "round_uuid",
+          "generation"
+        ],
+        "title": "ChallengeRoundHead",
+        "type": "object"
+      },
+      "ChallengeRoundRecord": {
+        "additionalProperties": false,
+        "description": "Immutable creation proof, not a claim of authenticated acceptance.",
+        "properties": {
+          "head": {
+            "$ref": "#/components/schemas/ChallengeRoundHead"
+          },
+          "restart_intent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChallengeRestartIntent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "restart_operation_uuid": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restart Operation Uuid"
+          },
+          "source_device_uuid": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Device Uuid"
+          }
+        },
+        "required": [
+          "head",
+          "source_device_uuid",
+          "restart_operation_uuid",
+          "restart_intent"
+        ],
+        "title": "ChallengeRoundRecord",
+        "type": "object"
+      },
+      "ChallengeSourceContext": {
+        "additionalProperties": false,
+        "properties": {
+          "affected_heads": {
+            "items": {
+              "$ref": "#/components/schemas/ChallengeRoundHead"
+            },
+            "maxItems": 1000,
+            "title": "Affected Heads",
+            "type": "array"
+          },
+          "head": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChallengeRoundHead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "legacy_initial": {
+            "default": false,
+            "title": "Legacy Initial",
+            "type": "boolean"
+          },
+          "source_uuid": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Source Uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_uuid",
+          "head"
+        ],
+        "title": "ChallengeSourceContext",
+        "type": "object"
+      },
       "DeviceEditingUpdate": {
         "additionalProperties": false,
         "properties": {
@@ -915,6 +1165,118 @@
         "title": "IconPack",
         "type": "object"
       },
+      "NextSyncOperationResult": {
+        "additionalProperties": false,
+        "properties": {
+          "base_entity": {
+            "title": "Base Entity"
+          },
+          "conflict_kind": {
+            "title": "Conflict Kind"
+          },
+          "conflicting_fields": {
+            "title": "Conflicting Fields"
+          },
+          "entity": {
+            "title": "Entity"
+          },
+          "entity_type": {
+            "title": "Entity Type"
+          },
+          "entity_uuid": {
+            "title": "Entity Uuid"
+          },
+          "error_code": {
+            "title": "Error Code"
+          },
+          "local_entity": {
+            "title": "Local Entity"
+          },
+          "message": {
+            "title": "Message"
+          },
+          "one_time_conflict": {},
+          "operation_id": {
+            "title": "Operation Id"
+          },
+          "revision": {
+            "title": "Revision"
+          },
+          "status": {
+            "title": "Status"
+          }
+        },
+        "required": [
+          "operation_id",
+          "entity_type",
+          "entity_uuid",
+          "status"
+        ],
+        "title": "NextSyncOperationResult",
+        "type": "object"
+      },
+      "OneTimeProjection": {
+        "additionalProperties": false,
+        "description": "Also the shape of result.one_time_conflict; not an activity_event entity.",
+        "properties": {
+          "activity_uuid": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Activity Uuid",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/OneTimeState"
+          }
+        },
+        "required": [
+          "activity_uuid",
+          "state"
+        ],
+        "title": "OneTimeProjection",
+        "type": "object"
+      },
+      "OneTimeState": {
+        "additionalProperties": false,
+        "properties": {
+          "completion_event_uuid": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion Event Uuid"
+          },
+          "head_event_uuid": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Event Uuid"
+          },
+          "version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "head_event_uuid",
+          "completion_event_uuid"
+        ],
+        "title": "OneTimeState",
+        "type": "object"
+      },
       "PackCatalogEntry": {
         "additionalProperties": false,
         "properties": {
@@ -956,6 +1318,249 @@
           "pack"
         ],
         "title": "PackDeclaration",
+        "type": "object"
+      },
+      "RoundActiveTimerResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "births": {
+            "title": "Births"
+          },
+          "challenge_contract": {
+            "title": "Challenge Contract"
+          },
+          "checkpoints": {
+            "title": "Checkpoints"
+          },
+          "server_time": {
+            "title": "Server Time"
+          },
+          "session": {}
+        },
+        "required": [
+          "challenge_contract",
+          "checkpoints",
+          "births",
+          "server_time"
+        ],
+        "title": "RoundActiveTimerResponse",
+        "type": "object"
+      },
+      "RoundSyncBootstrapResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "births": {
+            "title": "Births"
+          },
+          "challenge_contract": {
+            "title": "Challenge Contract"
+          },
+          "changes": {
+            "title": "Changes"
+          },
+          "checkpoints": {
+            "title": "Checkpoints"
+          },
+          "next_cursor": {
+            "title": "Next Cursor"
+          },
+          "one_time_checkpoints": {
+            "title": "One Time Checkpoints"
+          },
+          "server_time": {
+            "title": "Server Time"
+          }
+        },
+        "required": [
+          "challenge_contract",
+          "checkpoints",
+          "births",
+          "changes",
+          "next_cursor",
+          "server_time",
+          "one_time_checkpoints"
+        ],
+        "title": "RoundSyncBootstrapResponse",
+        "type": "object"
+      },
+      "RoundSyncPullResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "births": {
+            "title": "Births"
+          },
+          "challenge_contract": {
+            "title": "Challenge Contract"
+          },
+          "changes": {
+            "title": "Changes"
+          },
+          "checkpoints": {
+            "title": "Checkpoints"
+          },
+          "has_more": {
+            "title": "Has More"
+          },
+          "next_cursor": {
+            "title": "Next Cursor"
+          },
+          "server_time": {
+            "title": "Server Time"
+          }
+        },
+        "required": [
+          "challenge_contract",
+          "checkpoints",
+          "births",
+          "changes",
+          "next_cursor",
+          "has_more",
+          "server_time"
+        ],
+        "title": "RoundSyncPullResponse",
+        "type": "object"
+      },
+      "RoundSyncPushRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "challenge_contract": {
+            "const": 1,
+            "title": "Challenge Contract",
+            "type": "integer"
+          },
+          "contexts": {
+            "items": {
+              "$ref": "#/components/schemas/ChallengeSourceContext"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Contexts",
+            "type": "array"
+          },
+          "device_id": {
+            "format": "uuid",
+            "title": "Device Id",
+            "type": "string"
+          },
+          "operations": {
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SyncOperationRequest"
+                },
+                {
+                  "$ref": "#/components/schemas/ChallengeRestartOperation"
+                }
+              ]
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Operations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "challenge_contract",
+          "device_id",
+          "operations",
+          "contexts"
+        ],
+        "title": "RoundSyncPushRequest",
+        "type": "object"
+      },
+      "RoundSyncPushResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "births": {
+            "title": "Births"
+          },
+          "challenge_contract": {
+            "title": "Challenge Contract"
+          },
+          "checkpoints": {
+            "title": "Checkpoints"
+          },
+          "results": {
+            "title": "Results"
+          }
+        },
+        "required": [
+          "challenge_contract",
+          "checkpoints",
+          "births",
+          "results"
+        ],
+        "title": "RoundSyncPushResponse",
+        "type": "object"
+      },
+      "RoundTimerCommandBatchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "challenge_contract": {
+            "const": 1,
+            "title": "Challenge Contract",
+            "type": "integer"
+          },
+          "commands": {
+            "items": {
+              "$ref": "#/components/schemas/TimerCommandRequest"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Commands",
+            "type": "array"
+          },
+          "contexts": {
+            "items": {
+              "$ref": "#/components/schemas/ChallengeSourceContext"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Contexts",
+            "type": "array"
+          },
+          "device_id": {
+            "format": "uuid",
+            "title": "Device Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "challenge_contract",
+          "device_id",
+          "commands",
+          "contexts"
+        ],
+        "title": "RoundTimerCommandBatchRequest",
+        "type": "object"
+      },
+      "RoundTimerCommandBatchResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "births": {
+            "title": "Births"
+          },
+          "challenge_contract": {
+            "title": "Challenge Contract"
+          },
+          "checkpoints": {
+            "title": "Checkpoints"
+          },
+          "results": {
+            "title": "Results"
+          },
+          "server_time": {
+            "title": "Server Time"
+          }
+        },
+        "required": [
+          "challenge_contract",
+          "checkpoints",
+          "births",
+          "results",
+          "server_time"
+        ],
+        "title": "RoundTimerCommandBatchResponse",
         "type": "object"
       },
       "ServerIdentityResponse": {
@@ -4368,6 +4973,301 @@
         }
       }
     },
+    "/api/v2/sync/rounds/bootstrap": {
+      "get": {
+        "operationId": "full_snapshot_api_v2_sync_rounds_bootstrap_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Device Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "challenge_contract",
+            "required": true,
+            "schema": {
+              "pattern": "^1$",
+              "title": "Challenge Contract",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                "5"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Server-Instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Sync-Epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoundSyncBootstrapResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "summary": "Full Snapshot",
+        "tags": [
+          "v5-challenge-profile"
+        ],
+        "x-dayforge-v5-challenge-profile": {
+          "activation": "guarded-not-default",
+          "challenge_contract": 1,
+          "contract": "contracts/next/openapi.json",
+          "requires_actual_server_version": 5,
+          "requires_registered_device_version": 5
+        }
+      }
+    },
+    "/api/v2/sync/rounds/changes": {
+      "get": {
+        "operationId": "changes_api_v2_sync_rounds_changes_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Device Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "challenge_contract",
+            "required": true,
+            "schema": {
+              "pattern": "^1$",
+              "title": "Challenge Contract",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Cursor",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                "5"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Server-Instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Sync-Epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoundSyncPullResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "summary": "Changes",
+        "tags": [
+          "v5-challenge-profile"
+        ],
+        "x-dayforge-v5-challenge-profile": {
+          "activation": "guarded-not-default",
+          "challenge_contract": 1,
+          "contract": "contracts/next/openapi.json",
+          "requires_actual_server_version": 5,
+          "requires_registered_device_version": 5
+        }
+      }
+    },
+    "/api/v2/sync/rounds/push": {
+      "post": {
+        "operationId": "push_api_v2_sync_rounds_push_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                "5"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Server-Instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Sync-Epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoundSyncPushRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoundSyncPushResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "summary": "Push",
+        "tags": [
+          "v5-challenge-profile"
+        ],
+        "x-dayforge-v5-challenge-profile": {
+          "activation": "guarded-not-default",
+          "challenge_contract": 1,
+          "contract": "contracts/next/openapi.json",
+          "requires_actual_server_version": 5,
+          "requires_registered_device_version": 5
+        }
+      }
+    },
     "/api/v2/system/identity": {
       "get": {
         "description": "Return the non-secret identity used to verify local/proxy failover.",
@@ -4502,6 +5402,288 @@
           ],
           "requires_actual_server_version": 5,
           "response_model": "TimerCommandBatchResponse"
+        }
+      }
+    },
+    "/api/v2/timers/rounds/active": {
+      "get": {
+        "operationId": "active_api_v2_timers_rounds_active_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Device Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "challenge_contract",
+            "required": true,
+            "schema": {
+              "pattern": "^1$",
+              "title": "Challenge Contract",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                "5"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Server-Instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Sync-Epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoundActiveTimerResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "summary": "Active",
+        "tags": [
+          "v5-challenge-profile"
+        ],
+        "x-dayforge-v5-challenge-profile": {
+          "activation": "guarded-not-default",
+          "challenge_contract": 1,
+          "contract": "contracts/next/openapi.json",
+          "requires_actual_server_version": 5,
+          "requires_registered_device_version": 5
+        }
+      }
+    },
+    "/api/v2/timers/rounds/commands": {
+      "post": {
+        "operationId": "commands_api_v2_timers_rounds_commands_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                "5"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Server-Instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Sync-Epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoundTimerCommandBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoundTimerCommandBatchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "summary": "Commands",
+        "tags": [
+          "v5-challenge-profile"
+        ],
+        "x-dayforge-v5-challenge-profile": {
+          "activation": "guarded-not-default",
+          "challenge_contract": 1,
+          "contract": "contracts/next/openapi.json",
+          "requires_actual_server_version": 5,
+          "requires_registered_device_version": 5
+        }
+      }
+    },
+    "/api/v2/timers/rounds/session/{session_id}": {
+      "get": {
+        "operationId": "timer_status_api_v2_timers_rounds_session__session_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Device Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "challenge_contract",
+            "required": true,
+            "schema": {
+              "pattern": "^1$",
+              "title": "Challenge Contract",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                "5"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Server-Instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Sync-Epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoundActiveTimerResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "summary": "Timer Status",
+        "tags": [
+          "v5-challenge-profile"
+        ],
+        "x-dayforge-v5-challenge-profile": {
+          "activation": "guarded-not-default",
+          "challenge_contract": 1,
+          "contract": "contracts/next/openapi.json",
+          "requires_actual_server_version": 5,
+          "requires_registered_device_version": 5
         }
       }
     },

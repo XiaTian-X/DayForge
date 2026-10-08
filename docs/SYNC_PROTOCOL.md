@@ -418,7 +418,7 @@ v5 预备实现使用 Room 身份绑定的恢复检查点，与接受的全部�
 
 ## 兼容性
 
-### 重新挑战扩展边界（D-018，尚未接入）
+### 重新挑战扩展边界（D-018，受控 v5 后端档位）
 
 重启须有独立轮次 UUID、当前头/代次以及预期旧头；原事实、计时会话和全部后继命令绑定
 出生轮次。原习惯 UUID、计划锚点、父目标及指标关联保持不变。重启采用领域 CAS 和原操作
@@ -446,17 +446,40 @@ v5 预备实现使用 Room 身份绑定的恢复检查点，与接受的全部�
 拒绝断链、重复 round UUID 或重复 device+operation 来源；不同设备的 operation UUID
 仍沿用原设备限定命名空间，不偷偷改成全局幂等键。已有旧记录的内容一致性须在持久层
 逐项校验，仅一个相同 head 不能证明原记录、来源或 ACK 有效。
-这些严格类型和共享向量位于 `contracts/next/challenge-rounds.json`，尚不是已挂载 API。
+领域严格类型和共享向量位于 `contracts/next/challenge-rounds.json`；有效 DTO 不构成授权证明。
 
-后端 Alembic 8 已追加独立轮次/头/出生绑定；现有受控 v5 的真实事实与完整计时生产者仅捕获
-明确初始出生，不加新 wire 字段或改变原请求指纹。内部重启存储具备真实计划/设备/计时判断、
-原来源、SQL CAS、计划 revision 与日志保存点，但还没有挂入 push 的共用原请求收据/能力准入。
-不能把该存储函数直接暴露成另一个 API；`challenge_round` 仍由旧/当前严格 envelope 拒绝。
-当前 v4/v5 bootstrap/pull 与新普通写入/计时 start 在正代次存在时明确要求升级；
-精确已接受操作/命令的原收据仍优先重放，不据旧读者重新累计历史。正式 round-aware 协调接入
-必须替换这一门禁并共同发送/恢复完整轮次和出生证明，不能通过移除拒绝提前开放新重启。
-实际 envelope/权限与共用收据、Room/outbox、跨端出生字段及恢复检查点仍须在接线批次完成；
-已实现的后端内部存储不能替代这些准入、重放或旧队列的副本证明。
+Alembic 8 追加轮次、当前头和事实/计时出生绑定，Alembic 9 仅在原 `sync_operations` /
+`timer_commands` 末尾追加可空 `challenge_context_json`。不回填或改写旧请求、hash、结果。
+新档位仍是协议 5，不使用协议 6，也不改变正式/default v4：实际服务器版本 5、实际注册设备
+证明 5、三个单值原副本请求头仍全部必需。新入口是 `/api/v2/sync/rounds/{push,bootstrap,changes}`
+和 `/api/v2/timers/rounds/{commands,active,session/{session_id}}`；JSON 必须显式整数
+`challenge_contract: 1`，GET 必须单个 `challenge_contract=1`。旧路径及严格 envelope 不放宽。
+
+push 保留原 `operations` 对象，独立 `contexts` 为每个原 operation_id 恰好提供一个出生/前置
+上下文；commands 同样保留原 `commands` 对象，以 command_id 绑定上下文。新 recurring 事实
+必须携带原出生头；晚到的已知旧轮事实仍属于旧轮，撤销和全部计时后继命令继承原出生。
+结构编辑/删除核查实际当前头，目标的 cascade/detach 额外用 `affected_heads` 核查其完整 recurring
+子习惯集合及当前头；不允许用普通结构自动合并跨越轮次。目标/指标/一次性事项不生成挑战事实。
+`challenge_round` 只能 upsert，entity_uuid 必须为新轮 UUID，payload 为原重启 intent；只通过
+共用 SyncOperation 收据分派，不另建可绕过原命名空间的重启 API。缺失原收据的内部旧轮创建
+不能被客户端原 ID 重新占用以补造接受权限。未结束计时仍明确冲突，不伪造 stop/cancel。
+
+原请求 hash 仍只含原对象和捕获副本。私有 sidecar 保存规范上下文、原对象及原 instance/epoch，
+与接受/拒绝原结果同事务持久化；相同原 ID/hash 改上下文报 `CHALLENGE_SOURCE_REUSED`。
+已有无 sidecar 的 v5 收据需要 `legacy_initial: true`；只接受已证明的初始出生，返回原结果，
+不改写旧收据。v4 待发队列必须在实际 v4 阶段排空，不能重新套 v5 副本 hash 或猜补开始规则。
+旧客户端重放带新 sidecar 的收据明确要求升级；不剥离新归属后确认成功。
+
+档位读取和写入结果单独返回完整连续 `checkpoints` 及所返回事实/session 的 `births`，
+原日志/冻结结果 payload 保持原样。bootstrap 同时返回会话出生，支持冷恢复；旧页带最新检查点
+不使本机头回退，原创建记录仍精确核对。生成初始描述不写数据库、不虚构正代次。删除对象的
+已持久轮次保留在检查点中，不借其重建可见对象。缺失/坏链、归属或私有原收据拒绝，并回滚游标。
+物理/逻辑恢复核查原 sidecar 与原 hash/结果/真实出生，使用原捕获副本而非恢复后的新 epoch。
+
+当前旧 v4/v5 读者及新普通写入/计时 start 在正代次存在时仍要求升级；已有旧精确收据优先。
+旧完整计时仍可正常结束明确初始出生的会话，但不能对正代次出生的新 session 发送无档位新命令。
+后端档位挂载不代表 Android Room/outbox、轮次统计、旧重启 UI 或全端联合启用已经完成。
+正式切换仍必须等这些消费者、完整恢复、联合回归及人工验收；不自动部署、清库或激活。
 
 后端先增加向后兼容能力，再发布客户端，最后在受支持窗口结束后删除旧能力。协议版本、Android Room schema 和后端 Alembic revision 独立演进。
 

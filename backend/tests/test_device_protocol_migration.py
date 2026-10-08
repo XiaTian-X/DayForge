@@ -171,7 +171,7 @@ def test_registration_proof_roundtrips_without_guessing_or_changing_owned_identi
     before = database_dump(source)
     if kind == "physical":
         backup, _ = create_backup(source, tmp_path / "backups", kind="manual")
-        _, epoch = restore_backup(backup, target, expected_alembic_head="000000000008")
+        _, epoch = restore_backup(backup, target, expected_alembic_head="000000000009")
         with closing(sqlite3.connect(source)) as connection:
             old_epoch = connection.execute(
                 "SELECT sync_epoch FROM server_instances"

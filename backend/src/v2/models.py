@@ -636,6 +636,7 @@ class TimerCommand(SQLModel, table=True):
     error_code: Optional[str] = Field(default=None, max_length=100)
     received_at: datetime = Field(default_factory=utc_now)
     completed_at: Optional[datetime] = Field(default=None)
+    challenge_context_json: Optional[str] = Field(default=None)
 
 
 class DurationDayAllocation(SQLModel, table=True):
@@ -678,6 +679,7 @@ class SyncOperation(SQLModel, table=True):
     error_code: Optional[str] = Field(default=None, max_length=100)
     received_at: datetime = Field(default_factory=utc_now)
     completed_at: Optional[datetime] = Field(default=None)
+    challenge_context_json: Optional[str] = Field(default=None)
 
 
 class EntityRevisionSnapshot(SQLModel, table=True):

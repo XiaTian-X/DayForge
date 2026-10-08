@@ -156,6 +156,18 @@ Room schema、计时、后台任务或 Android 平台行为变化时还需要相
 全部逻辑归档/账户复合引用/素材归档、物理备份及 HTTP 提交边界模块。此批不代表挂载重启 API、
 共用操作收据/全客户端协商、Android Room/统计/完整恢复或正式重启入口已经完成。
 
+后端挑战档位由完整 `test_challenge_profile.py` / `test_challenge_receipt_migration.py` 验证：
+共享 wire 向量 `contracts/next/challenge-sync.json` 的完整 `test_challenge_sync_contract.py`
+另验证原对象/副本 hash 不因 sidecar 替换、严格创建绑定和完整元数据，尚不是 Android 消费者验收。
+真实 JWT/API Token HTTP 准入、严格档位/原来源集合、共用原收据、新头后的旧接受/拒绝重放、
+旧冻结 v5 初始出生不改写、晚到旧轮事实/计时、同日新轮及共享计数日规则、撤销继承、
+正倒完整暂停/恢复/stop/cancel、未终态重启冲突、目标级联/分离的完整子头检查、混合批次拒绝
+不毒化后继操作、最终 COMMIT 失败整体回滚/原请求重试、坏响应/原 hash/结果/归属不推进游标。
+物理与逻辑往返保留原 sidecar/原副本，重新校验和的坏收据导入逐表回滚；增量迁移只追加 NULL 列，
+保持全部旧列/原请求不变，中间 DDL/最后 checkpoint 失败可重试，非空证据/离线禁止降级。
+相邻完整矩阵继续覆盖既有 v4/v5 同步、完整计时、日规则、事项、迁移、SQLite/HTTP 提交与快照、
+逻辑/物理/素材恢复及冻结契约；后端档位结果不能标作 Android/人工或正式启用验收通过。
+
 卡片和指标详情的 UI 调整须保留功能信息回归：`HabitCardProgressTest` 检查长期完成/目标数值、
 可访问进度语义、窄宽大字体换行及原打卡回调，并对正/倒计时执行开始、暂停、恢复、停止的实际触摸，
 确认完成后不能重新开始且不误触卡片导航；`MetricCardTest` 检查空状态、展开/收起不误导航，

@@ -12,6 +12,7 @@ from src.admin.router import router as admin_router
 from src.tokens.router import router as tokens_router
 from src.tokens.admin_router import router as admin_tokens_router
 from src.v2.router import router as v2_router
+from src.v2.challenge_router import router as challenge_router
 from src.v2.asset_router import router as appearance_router, AppearanceNoRedirect
 from src.v2.asset_lifecycle import AppearanceLifecycle
 from src.v2 import asset_models as asset_models  # Register the full database model.
@@ -111,6 +112,7 @@ app.include_router(admin_router, prefix="/api/v1")
 app.include_router(tokens_router, prefix="/api/v1")
 app.include_router(admin_tokens_router, prefix="/api/v1")
 app.include_router(v2_router)
+app.include_router(challenge_router)
 app.include_router(appearance_router)
 app.add_middleware(AppearanceNoRedirect)
 
