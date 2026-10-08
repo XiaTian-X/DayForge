@@ -76,9 +76,12 @@ import kotlinx.coroutines.withContext
         NextStructuralDependencyEntity::class,
         NextStructuralSupersessionEntity::class,
         NextSyncStateEntity::class,
-        NextRejectionEntity::class
+        NextRejectionEntity::class,
+        com.dayforge.data.local.entity.NextChallengeRoundEntity::class,
+        com.dayforge.data.local.entity.NextChallengeBirthEntity::class,
+        com.dayforge.data.local.entity.NextChallengeStateEntity::class
     ],
-    version = 13,
+    version = 14,
     exportSchema = true
 )
 @TypeConverters(HabitTypeConverter::class)
@@ -95,6 +98,8 @@ abstract class HabitDatabase : RoomDatabase() {
     abstract fun nextRecoveryDao(): NextRecoveryDao
 
     abstract fun nextSyncStateDao(): NextSyncStateDao
+
+    abstract fun nextChallengeDao(): com.dayforge.data.local.dao.NextChallengeDao
 
     abstract fun nextRequestDao(): NextRequestDao
 

@@ -179,6 +179,7 @@ internal class NextCoreRequestStore(
         val access = delivery.access
         authorize(access)
         database.withTransaction {
+            NextChallengeStore(database).requirePlainInTransaction()
             val sql = database.openHelper.writableDatabase
             NextRequestSql.requireOutboxEnabled(sql)
             val id = delivery.requestId
@@ -373,6 +374,7 @@ internal class NextCoreRequestStore(
         timerOrder: (suspend (com.dayforge.data.local.entity.TimerCommandEntity) -> Unit)? = null): Prepared = sessions.exclusive {
         authorize(access)
         database.withTransaction {
+            NextChallengeStore(database).requirePlainInTransaction()
             val causal = if (kind == NEXT_OPERATION) NextStructuralCausalStore(database, requireNotNull(memo)) else null
             val id = causal?.prepare(requestedId, access) ?: requestedId
             val origin = origin(access, kind, id)

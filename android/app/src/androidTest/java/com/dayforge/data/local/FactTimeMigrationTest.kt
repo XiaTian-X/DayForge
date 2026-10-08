@@ -155,7 +155,7 @@ class FactTimeMigrationTest {
         }
         val db = open() // Production path chains every migration and validates the final schema.
         val rows = db.completionDao().getAllCompletionsOnce().associateBy { it.uuid }
-        assertEquals(13, db.openHelper.writableDatabase.version)
+        assertEquals(14, db.openHelper.writableDatabase.version)
         assertEquals("Asia/Shanghai", rows.getValue(uuids[0]).recordedTimezone)
         assertEquals("2026-09-12", rows.getValue(uuids[0]).recordedLocalDate)
         assertEquals("America/New_York", rows.getValue(uuids[1]).recordedTimezone)
@@ -340,7 +340,7 @@ class FactTimeMigrationTest {
             raw.execSQL("DROP TRIGGER reject_metric_backfill")
         }
         val retried = open()
-        assertEquals(13, retried.openHelper.writableDatabase.version)
+        assertEquals(14, retried.openHelper.writableDatabase.version)
         assertEquals(originalQueue, queueSnapshot(retried.openHelper.readableDatabase))
         assertEquals("Asia/Shanghai", retried.completionDao().getCompletionByUuid("completion")!!.recordedTimezone)
         assertEquals("America/Los_Angeles", retried.metricLogDao().getById(1)!!.recordedTimezone)
@@ -439,7 +439,7 @@ class FactTimeMigrationTest {
             }
         }
         TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
-        assertEquals(13, open().openHelper.writableDatabase.version)
+        assertEquals(14, open().openHelper.writableDatabase.version)
         room!!.close()
         TimeZone.setDefault(TimeZone.getTimeZone("Asia/Tokyo"))
         val db = open()

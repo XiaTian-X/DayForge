@@ -37,6 +37,7 @@ internal class NextCoreLocalIntentStore(
         val access = tokens.localCoreWriteAccess()
         if (access == null || access.session != session) rejectNextRequest(NextRequestException.Reason.STALE_ACCESS)
         database.withTransaction {
+            NextChallengeStore(database).requirePlainInTransaction()
             val sql = database.openHelper.writableDatabase
             NextRequestSql.requireOutboxEnabled(sql)
             val tables = listOf("sync_outbox", "timer_command_outbox")

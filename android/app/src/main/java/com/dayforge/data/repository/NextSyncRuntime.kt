@@ -50,6 +50,7 @@ internal class NextSyncRuntime @Inject constructor(
             val captured = requireNotNull(tokens.localSyncAccess())
             captured.copy(capabilities = captured.capabilities.toSet())
         }
+        merge.state(access) // Refuse a challenge cache before any plain upload or journal preparation.
         val blocked = linkedSetOf<String>()
         val waiting = linkedSetOf<String>()
         var permanentBlock = false
@@ -169,6 +170,39 @@ internal class NextSyncRuntime @Inject constructor(
             preferences.setLastSyncTimestamp(System.currentTimeMillis())
             authorize(access)
             afterSync?.invoke()
+        }
+    }
+
+    /** Actual profile HTTP→Room refresh, not full sync: cannot consume/rewrap an old queue. */
+    suspend fun refreshChallengeCache(progress: (SyncProgress) -> Unit = {}): com.dayforge.data.local.entity.NextSyncStateEntity = mutex.withLock {
+        val access = sessions.exclusive {
+            requireNotNull(tokens.localSyncAccess()).let { it.copy(capabilities = it.capabilities.toSet()) }
+        }
+        requireNoChallengeUpload(access)
+        var state = merge.state(access, challengeProfile = true)
+        if (state == null) {
+            progress(SyncProgress.Recovering)
+            // Keep the old plain cursor as the compare-and-swap expectation, not as profile admission.
+            val previous = merge.challengeBootstrapExpectation(access)
+            val snapshot = http.session(access) { it.roundBootstrap() } ?: unsupported()
+            state = merge.bootstrap(access, previous, snapshot, cacheOnly = true)
+        }
+        progress(SyncProgress.Downloading)
+        var pages = 0
+        do {
+            require(++pages <= 100) { "SYNC_DOWNLOAD_LIMIT_REACHED" }
+            val expected = requireNotNull(state)
+            val page = http.session(access) { it.roundPull(expected.cursor) } ?: unsupported()
+            state = merge.page(access, expected, page, cacheOnly = true)
+        } while (page.hasMore)
+        requireNoChallengeUpload(access)
+        requireNotNull(state)
+    }
+
+    private suspend fun requireNoChallengeUpload(access: LocalSyncAccess) = sessions.exclusive {
+        authorize(access)
+        database.withTransaction {
+            NextChallengeStore(database).requireQuiescentInTransaction()
         }
     }
 

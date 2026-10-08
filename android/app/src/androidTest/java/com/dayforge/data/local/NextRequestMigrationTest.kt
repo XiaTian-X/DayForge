@@ -55,7 +55,7 @@ class NextRequestMigrationTest {
     }
     private fun structure(db: SupportSQLiteDatabase) = rows(db,
         "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' " +
-            "AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('count_days','next_sync_state','next_rejections','next_structural_dependencies','next_structural_supersessions','next_request_origins','next_transmissions','next_acceptances') ORDER BY type,name")
+            "AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('next_challenge_state','next_challenge_rounds','next_challenge_births','count_days','next_sync_state','next_rejections','next_structural_dependencies','next_structural_supersessions','next_request_origins','next_transmissions','next_acceptances') ORDER BY type,name")
     private fun insert(db: SupportSQLiteDatabase, table: String, values: Map<String, Any>) {
         val content = ContentValues()
         entities.first { it.getValue("tableName").jsonPrimitive.content == table }.getValue("fields").jsonArray.forEach {
@@ -114,7 +114,7 @@ class NextRequestMigrationTest {
         assertEquals(17, entities.size)
         repeat(2) {
             val db = open(); val sql = db.openHelper.writableDatabase
-            assertEquals(13, sql.version); assertEquals(before, snapshot(sql)); assertEquals(ddl, structure(sql))
+            assertEquals(14, sql.version); assertEquals(before, snapshot(sql)); assertEquals(ddl, structure(sql))
             assertFalse(db.nextRequestDao().hasAny())
             assertEquals(listOf(listOf("ok")), rows(sql, "PRAGMA integrity_check"))
             assertTrue(rows(sql, "PRAGMA foreign_key_check").isEmpty())
@@ -132,7 +132,7 @@ class NextRequestMigrationTest {
             }
             raw.execSQL("ALTER TABLE unavailable_transmissions RENAME TO one_time_transmissions")
         }
-        assertEquals(13, open().openHelper.writableDatabase.version)
+        assertEquals(14, open().openHelper.writableDatabase.version)
     }
     @Test fun forgedVersionEightIdentityCannotInitializeJournalsOrModifyFrozenRows() {
         seed { it.execSQL("UPDATE room_master_table SET identity_hash='unknown' WHERE id=42") }

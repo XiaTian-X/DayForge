@@ -65,13 +65,14 @@ internal object NextRequestSql {
         if (!enabled) rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
     }
 
-    private val ints = setOf("protocol", "attemptCount", "sequence", "expectedControlGeneration", "expectedRevision", "targetValue")
+    private val ints = setOf("protocol", "attemptCount", "sequence", "expectedControlGeneration", "expectedRevision", "targetValue", "challengeContract")
     private val longs = ints + setOf("id", "queueId", "baseRevision", "attemptedAt", "deadLetteredAt", "createdAt",
         "occurredAt", "activeElapsedMillis", "revision", "deleted", "updatedAt", "logicalOrder", "originalQueueId", "replacementQueueId", "generation", "cursor",
         "habitId", "isCountdown", "planQueueWatermark")
     private val tables = setOf("sync_outbox", "timer_command_outbox", "next_request_origins", "next_transmissions", "next_acceptances",
         "sync_entity_state", "next_structural_dependencies", "next_structural_supersessions",
-        "local_fact_submissions", "one_time_transmissions", "next_sync_state", "next_rejections", "count_days")
+        "local_fact_submissions", "one_time_transmissions", "next_sync_state", "next_rejections", "count_days",
+        "next_challenge_state", "next_challenge_rounds", "next_challenge_births")
     fun table(kind: String): String = when (kind) {
         NEXT_OPERATION -> "sync_outbox"
         NEXT_TIMER -> "timer_command_outbox"

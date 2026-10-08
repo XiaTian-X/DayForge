@@ -26,25 +26,64 @@ internal class NextSyncMergeStore(
 ) {
     private val json = Json { encodeDefaults = true }
 
-    suspend fun state(access: LocalSyncAccess): NextSyncStateEntity? = sessions.exclusive {
+    suspend fun state(access: LocalSyncAccess, challengeProfile: Boolean = false): NextSyncStateEntity? = sessions.exclusive {
         authorize(access)
-        database.withTransaction { readState(access) }
+        database.withTransaction {
+            val state = readState(access)
+            val rounds = NextChallengeStore(database)
+            if (challengeProfile) {
+                val metadata = rounds.readInTransaction(access, state)
+                // An old plain cursor cannot skip the mandatory challenge bootstrap.
+                if (metadata == null) null else state
+            } else { rounds.requirePlainInTransaction(); state }
+        }
+    }
+
+    suspend fun challengeMetadata(access: LocalSyncAccess): ChallengeMetadata? = sessions.exclusive {
+        authorize(access)
+        database.withTransaction { NextChallengeStore(database).readInTransaction(access, readState(access)) }
+    }
+
+    suspend fun challengeBootstrapExpectation(access: LocalSyncAccess): NextSyncStateEntity? = sessions.exclusive {
+        authorize(access)
+        database.withTransaction {
+            val state = readState(access)
+            require(NextChallengeStore(database).readInTransaction(access, state) == null) { "SYNC_CURSOR_CHANGED" }
+            state
+        }
     }
 
     suspend fun bootstrap(access: LocalSyncAccess, expected: NextSyncStateEntity?, response: NextSyncBootstrapResponse): NextSyncStateEntity {
         val frozen = json.decodeFromString<NextSyncBootstrapResponse>(json.encodeToString(response))
+        return bootstrapPrepared(access, expected, frozen, syncPayloadHash(json.encodeToString(frozen)), null)
+    }
+
+    suspend fun bootstrap(access: LocalSyncAccess, expected: NextSyncStateEntity?, response: RoundSyncBootstrapResponse,
+        cacheOnly: Boolean = false): NextSyncStateEntity {
+        val frozen = json.decodeFromString<RoundSyncBootstrapResponse>(json.encodeToString(response))
+        return bootstrapPrepared(access, expected, NextSyncBootstrapResponse(frozen.changes.filter { it.entityType != "challenge_round" },
+            frozen.nextCursor, frozen.serverTime, frozen.oneTimeCheckpoints), syncPayloadHash(json.encodeToString(frozen)), frozen.metadata(), cacheOnly)
+    }
+
+    private suspend fun bootstrapPrepared(access: LocalSyncAccess, expected: NextSyncStateEntity?, frozen: NextSyncBootstrapResponse,
+        hash: String, metadata: ChallengeMetadata?, cacheOnly: Boolean = false): NextSyncStateEntity {
+        require(frozen.nextCursor >= 0)
+        Instant.parse(frozen.serverTime)
         frozen.changes.forEach { change ->
             require(Instant.parse(change.changedAt) == Instant.parse(change.payload.getValue("updated_at").jsonPrimitive.content))
             change.originDeviceId?.let { require(com.dayforge.domain.model.isContractUuid(it)) }
         }
-        val hash = syncPayloadHash(json.encodeToString(frozen))
         val next = NextSyncStateEntity(access.session.authentication.userId,
             requireNotNull(access.session.serverInstanceId), requireNotNull(access.session.syncEpoch),
-            requireNotNull(access.deviceId), nextGeneration(expected), frozen.nextCursor, hash, hash)
+            requireNotNull(access.deviceId), nextGeneration(expected), frozen.nextCursor, hash, hash,
+            challengeContract = if (metadata == null) 0 else 1)
         return sessions.exclusive {
             authorize(access)
             database.withTransaction {
                 val current = readState(access)
+                val rounds = NextChallengeStore(database)
+                if (cacheOnly) rounds.requireQuiescentInTransaction()
+                if (metadata == null) rounds.requirePlainInTransaction() else rounds.readInTransaction(access, current)
                 if (current == next) return@withTransaction current
                 require(current == expected) { "SYNC_CURSOR_CHANGED" }
                 val recovery = database.nextRecoveryDao().state()
@@ -60,6 +99,9 @@ internal class NextSyncMergeStore(
                 pruneCache(frozen)
                 once.restoreAcceptedDataInTransaction(context(access), frozen)
                 check(pendingSources() == sources)
+                if (metadata != null) mergeRounds(access, current, next, metadata)
+                check(pendingSources() == sources)
+                if (cacheOnly) rounds.requireQuiescentInTransaction()
                 commitState(access, current, next)
             }
         }
@@ -67,26 +109,44 @@ internal class NextSyncMergeStore(
 
     suspend fun page(access: LocalSyncAccess, expected: NextSyncStateEntity, response: NextSyncPullResponse): NextSyncStateEntity {
         val frozen = json.decodeFromString<NextSyncPullResponse>(json.encodeToString(response))
+        return pagePrepared(access, expected, frozen, syncPayloadHash(json.encodeToString(frozen)), null)
+    }
+
+    suspend fun page(access: LocalSyncAccess, expected: NextSyncStateEntity, response: RoundSyncPullResponse,
+        cacheOnly: Boolean = false): NextSyncStateEntity {
+        val frozen = json.decodeFromString<RoundSyncPullResponse>(json.encodeToString(response))
+        return pagePrepared(access, expected, NextSyncPullResponse(frozen.changes, frozen.nextCursor, frozen.hasMore, frozen.serverTime),
+            syncPayloadHash(json.encodeToString(frozen)), frozen.metadata(), cacheOnly)
+    }
+
+    private suspend fun pagePrepared(access: LocalSyncAccess, expected: NextSyncStateEntity, frozen: NextSyncPullResponse,
+        hash: String, metadata: ChallengeMetadata?, cacheOnly: Boolean = false): NextSyncStateEntity {
         require(frozen.nextCursor >= expected.cursor && frozen.changes.size <= 1000)
         Instant.parse(frozen.serverTime)
         var previous = expected.cursor
         frozen.changes.forEach { change ->
             require(change.sequence > previous && change.sequence <= frozen.nextCursor)
+            Instant.parse(change.changedAt)
             previous = change.sequence
         }
         require(!frozen.hasMore || frozen.changes.isNotEmpty() && previous == frozen.nextCursor)
         val next = expected.copy(generation = nextGeneration(expected), cursor = frozen.nextCursor,
-            batchHash = syncPayloadHash(json.encodeToString(frozen)))
+            batchHash = hash, challengeContract = if (metadata == null) 0 else 1)
         return sessions.exclusive {
             authorize(access)
             database.withTransaction {
                 val current = requireNotNull(readState(access))
+                val rounds = NextChallengeStore(database)
+                if (cacheOnly) rounds.requireQuiescentInTransaction()
+                if (metadata == null) rounds.requirePlainInTransaction() else requireNotNull(rounds.readInTransaction(access, current))
                 if (current == next) return@withTransaction current
                 require(current == expected) { "SYNC_CURSOR_CHANGED" }
                 auditShadows()
                 val sources = pendingSources()
                 for (change in frozen.changes) {
                     currentCoroutineContext().ensureActive()
+                    // Immutable round records are validated by the full sidecar, never structure-merged.
+                    if (change.entityType == "challenge_round") { require(metadata != null); continue }
                     require(change.revision > 0 && change.payload["public_id"] == JsonPrimitive(change.entityUuid))
                     val updated = change.payload.getValue("updated_at").let { require(it is JsonPrimitive && it.isString); Instant.parse(it.content) }
                     require(updated == Instant.parse(change.changedAt))
@@ -105,7 +165,10 @@ internal class NextSyncMergeStore(
                     }
                 }
                 check(pendingSources() == sources)
-                if (frozen.changes.isEmpty() && frozen.nextCursor == expected.cursor) current
+                if (metadata != null) mergeRounds(access, current, next, metadata)
+                check(pendingSources() == sources)
+                if (cacheOnly) rounds.requireQuiescentInTransaction()
+                if (metadata == null && frozen.changes.isEmpty() && frozen.nextCursor == expected.cursor) current
                 else commitState(access, current, next)
             }
         }
@@ -181,6 +244,7 @@ internal class NextSyncMergeStore(
         val dao = database.nextSyncStateDao()
         if (current == null) check(dao.insert(next) == 1L) else check(dao.update(next) == 1)
         check(readState(access) == next && cacheProof() == before)
+        NextChallengeStore(database).readInTransaction(access, next)
         NextRequestSql.requireOutboxEnabled(database.openHelper.writableDatabase)
         authorize(access)
         currentCoroutineContext().ensureActive()
@@ -290,6 +354,15 @@ internal class NextSyncMergeStore(
 
     private suspend fun pendingSources() = listOf("sync_outbox", "timer_command_outbox").associateWith {
         NextRequestSql.sources(database.openHelper.writableDatabase, it)
+    } to cacheProof(listOf("next_request_origins", "next_transmissions", "next_acceptances",
+        "next_structural_dependencies", "next_structural_supersessions"))
+
+    private suspend fun mergeRounds(access: LocalSyncAccess, current: NextSyncStateEntity?, next: NextSyncStateEntity,
+        metadata: ChallengeMetadata) {
+        val otherTables = cacheTables.filterNot { it.startsWith("next_challenge_") }
+        val before = cacheProof(otherTables)
+        NextChallengeStore(database).mergeInTransaction(access, current, next, metadata)
+        check(cacheProof(otherTables) == before) // Round insertion triggers cannot mutate business or original work.
     }
 
     /** Room must not coerce a damaged revision/deleted flag or BLOB body into trusted authority. */
@@ -327,13 +400,16 @@ internal class NextSyncMergeStore(
     }
 
     /** Detect late cursor triggers altering data or durable work after their merge validation. */
-    private suspend fun cacheProof(): String {
+    private val cacheTables = listOf("habits", "metrics", "completions", "count_days", "timelogs", "timer_segments", "timelog_day_allocations",
+        "metric_logs", "habit_metric_links", "sync_entity_state", "sync_outbox", "timer_command_outbox", "sync_conflicts",
+        "local_fact_submissions", "completion_metric_prompts", "one_time_transmissions", "next_request_origins",
+        "next_transmissions", "next_acceptances", "next_structural_dependencies", "next_structural_supersessions", "next_recovery_state", "next_rejections",
+        "next_challenge_state", "next_challenge_rounds", "next_challenge_births")
+
+    private suspend fun cacheProof(tables: List<String> = cacheTables): String {
         val digest = MessageDigest.getInstance("SHA-256")
         fun bytes(value: ByteArray) { digest.update(ByteBuffer.allocate(4).putInt(value.size).array()); digest.update(value) }
-        for (table in listOf("habits", "metrics", "completions", "count_days", "timelogs", "timer_segments", "timelog_day_allocations",
-            "metric_logs", "habit_metric_links", "sync_entity_state", "sync_outbox", "timer_command_outbox", "sync_conflicts",
-            "local_fact_submissions", "completion_metric_prompts", "one_time_transmissions", "next_request_origins",
-            "next_transmissions", "next_acceptances", "next_structural_dependencies", "next_structural_supersessions", "next_recovery_state", "next_rejections")) {
+        for (table in tables) {
             bytes(table.toByteArray(Charsets.UTF_8))
             database.openHelper.writableDatabase.query("SELECT * FROM $table ORDER BY rowid").use { row ->
                 while (row.moveToNext()) {
