@@ -18,7 +18,7 @@ import kotlinx.serialization.json.jsonObject
 
 /** A strictly bound HTTP result, NOT an acknowledgement/queue-consumption/cursor commit. */
 internal data class NextCoreDelivery<T>(val access: LocalSyncAccess, val requestId: String, val result: T,
-    val transmissionProof: String)
+    val transmissionProof: String, val challengeMetadata: ChallengeMetadata? = null)
 
 internal enum class NextOperationAcceptance { COMMITTED, REPLAYED }
 
@@ -42,9 +42,10 @@ internal class NextCoreRequestStore(
         val access = captured.copy(capabilities = captured.capabilities.toSet())
         return http.session(access) { channel ->
             val prepared = prepare(access, NEXT_OPERATION, operationId, memo)
-            val response = channel.pushFrozen(prepared.row.wireBytes)
+            val round = if (prepared.challengeProfile) channel.roundPushFrozen(prepared.row.wireBytes) else null
+            val response = if (round == null) channel.pushFrozen(prepared.row.wireBytes) else NextSyncPushResponse(round.results)
             requireStillCurrent(access, prepared, memo)
-            NextCoreDelivery(access, prepared.row.requestId, response, prepared.proof)
+            NextCoreDelivery(access, prepared.row.requestId, response, prepared.proof, round?.metadata())
         }
     }
 
@@ -77,7 +78,7 @@ internal class NextCoreRequestStore(
         validate(origin, transmission, access)
     }
 
-    private data class Prepared(val row: NextTransmissionEntity, val proof: String)
+    private data class Prepared(val row: NextTransmissionEntity, val proof: String, val challengeProfile: Boolean = false)
 
     /** Exact ordinary count ACK, not queue absence or a pulled shadow. No account lock is reacquired. */
     internal suspend fun requireAcceptedCountInTransaction(access: LocalSyncAccess, id: String) {
@@ -100,7 +101,7 @@ internal class NextCoreRequestStore(
         require(receipt.kind == NEXT_OPERATION && receipt.requestId == id && receipt.originHash == originHash &&
             receipt.transmissionHash == transmissionHash && receipt.resultHash == nextRequestHash(receipt.resultJson.toByteArray(Charsets.UTF_8)))
         val result = decodeFrozenSyncRequest(receipt.resultJson.toByteArray(Charsets.UTF_8), NextSyncOperationResult.serializer())
-        val operation = decodeFrozenSyncRequest(original.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
+        val operation = decodeNextOperationIntent(original.intentJson)
         require(result.status == "applied" && operation.entityType == "activity_event" && "count_policy" in operation.payload)
         NextOrdinaryResultMapper.validate(operation, result, requireNotNull(access.deviceId))
         require(NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(original.queueId)) == null &&
@@ -123,7 +124,7 @@ internal class NextCoreRequestStore(
             val transmissionHash = requireNotNull(NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", arrayOf(kind, id)))
             require(transmissionHash == deliveryProof && database.nextRequestDao().acceptance(kind, id) == null)
             if (kind == NEXT_OPERATION) {
-                val operation = decodeFrozenSyncRequest(journal.wireBytes, NextSyncPushRequest.serializer()).operations.single()
+                val operation = validateNextOperationEnvelope(captured.intentJson, journal.wireBytes, requireNotNull(access.deviceId))
                 val result = decodeFrozenSyncRequest(resultJson.toByteArray(Charsets.UTF_8), NextSyncOperationResult.serializer())
                 validateTaskResultBinding(operation, result)
                 require(result.status in setOf("conflict", "rejected") && !result.errorCode.isNullOrBlank())
@@ -162,7 +163,10 @@ internal class NextCoreRequestStore(
                     val receipt = requireNotNull(database.nextRequestDao().acceptance(NEXT_OPERATION, actualId))
                     val result = decodeFrozenSyncRequest(receipt.resultJson.toByteArray(Charsets.UTF_8), NextSyncOperationResult.serializer())
                     val proof = requireNotNull(NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, actualId)))
-                    NextCoreDelivery(access, actualId, NextSyncPushResponse(listOf(result)), proof)
+                    val original = requireNotNull(database.nextRequestDao().origin(NEXT_OPERATION, actualId))
+                    val metadata = if (roundOperationIntent(original.intentJson) == null) null
+                        else NextChallengeStore(database).activeInTransaction(access).second
+                    NextCoreDelivery(access, actualId, NextSyncPushResponse(listOf(result)), proof, metadata)
                 }
             }
         }
@@ -179,7 +183,6 @@ internal class NextCoreRequestStore(
         val access = delivery.access
         authorize(access)
         database.withTransaction {
-            NextChallengeStore(database).requirePlainInTransaction()
             val sql = database.openHelper.writableDatabase
             NextRequestSql.requireOutboxEnabled(sql)
             val id = delivery.requestId
@@ -194,8 +197,22 @@ internal class NextCoreRequestStore(
             if (transmissionHash != delivery.transmissionProof) rejectNextRequest(NextRequestException.Reason.SOURCE_CHANGED)
             val rawOrigin = requireNotNull(dao.origin(NEXT_OPERATION, id))
             val transmission = requireNotNull(dao.transmission(NEXT_OPERATION, id))
+            val rounds = NextChallengeStore(database)
+            val roundOrigin = roundOperationIntent(rawOrigin.intentJson)
+            val currentCheckpoint = if (roundOrigin == null) {
+                rounds.requirePlainInTransaction()
+                require(delivery.challengeMetadata == null)
+                null
+            } else rounds.activeInTransaction(access)
             validate(rawOrigin, transmission, access)
-            val operation = decodeFrozenSyncRequest(transmission.wireBytes, NextSyncPushRequest.serializer()).operations.single()
+            val operation = validateNextOperationEnvelope(rawOrigin.intentJson, transmission.wireBytes, requireNotNull(access.deviceId))
+            val mergedMetadata = if (roundOrigin == null) null else {
+                val metadata = requireNotNull(delivery.challengeMetadata) { "SYNC_CHALLENGE_ACK_REQUIRED" }
+                val frozen = decodeFrozenSyncRequest(encodeSyncRequest(ChallengeMetadata.serializer(), metadata), ChallengeMetadata.serializer())
+                val response = RoundSyncPushResponse(delivery.result.results, 1, frozen.checkpoints, frozen.births)
+                validateRoundResultBinding(decodeFrozenSyncRequest(transmission.wireBytes, RoundSyncPushRequest.serializer()), response)
+                rounds.acknowledgeInTransaction(access, frozen)
+            }
             val permission = if (operation.entityType in setOf("activity_event", "metric_observation")) "facts.append" else "structure.write"
             if (permission !in access.capabilities) rejectNextRequest(NextRequestException.Reason.PERMISSION_DENIED)
             val result = delivery.result.results.single()
@@ -284,6 +301,10 @@ internal class NextCoreRequestStore(
             NextCountDayStore(database).verify(countDays)
             require(causal.resolve(id, access) == id)
             NextRequestSql.requireOutboxEnabled(sql)
+            if (currentCheckpoint != null) {
+                val actual = rounds.activeInTransaction(access)
+                check(actual.first == currentCheckpoint.first && actual.second == mergedMetadata) { "SYNC_CHALLENGE_ACK_CHANGED" }
+            }
             authorize(access)
             outcome
         }
@@ -316,7 +337,7 @@ internal class NextCoreRequestStore(
         }
         for (queue in pending) {
             val proof = origin(access, NEXT_OPERATION, queue.operationId)
-            val operation = decodeFrozenSyncRequest(proof.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
+            val operation = decodeNextOperationIntent(proof.intentJson)
             validateNextSyncOperation(operation)
             require(operation.entityType == type && operation.entityUuid == uuid && operation.action == "delete")
             val originHash = requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?",
@@ -355,7 +376,7 @@ internal class NextCoreRequestStore(
             validate(original, transmission, access)
             require(receipt.kind == NEXT_OPERATION && receipt.requestId == id && receipt.originHash == originHash &&
                 receipt.transmissionHash == transmissionHash && result.status == "applied")
-            val operation = decodeFrozenSyncRequest(transmission.wireBytes, NextSyncPushRequest.serializer()).operations.single()
+            val operation = validateNextOperationEnvelope(original.intentJson, transmission.wireBytes, requireNotNull(access.deviceId))
             if (operation.action != "delete") continue
             val change = NextOrdinaryResultMapper.validate(operation, result, requireNotNull(access.deviceId))
             require(change.entityType == type && change.entityUuid == uuid && change.revision <= state.revision)
@@ -374,17 +395,22 @@ internal class NextCoreRequestStore(
         timerOrder: (suspend (com.dayforge.data.local.entity.TimerCommandEntity) -> Unit)? = null): Prepared = sessions.exclusive {
         authorize(access)
         database.withTransaction {
-            NextChallengeStore(database).requirePlainInTransaction()
+            val sql = database.openHelper.writableDatabase
+            if (NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(kind, requestedId)) == null)
+                rejectNextRequest(NextRequestException.Reason.OLD_INTENT)
+            val original = requireNotNull(database.nextRequestDao().origin(kind, requestedId))
+            val challengeProfile = kind == NEXT_OPERATION && roundOperationIntent(original.intentJson) != null
+            if (challengeProfile) NextChallengeStore(database).activeInTransaction(access)
+            else NextChallengeStore(database).requirePlainInTransaction()
             val causal = if (kind == NEXT_OPERATION) NextStructuralCausalStore(database, requireNotNull(memo)) else null
             val id = causal?.prepare(requestedId, access) ?: requestedId
             val origin = origin(access, kind, id)
             val dao = database.nextRequestDao()
-            val sql = database.openHelper.writableDatabase
             val oldProof = NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", arrayOf(kind, id))
             if (kind == NEXT_OPERATION) {
                 if (oldProof == null) NextTimerOrderingStore(database, tokens, sessions, this@NextCoreRequestStore)
                     .requireStructureReady(requireNotNull(database.syncOutboxDao().getById(origin.queueId)), access)
-                val operation = decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
+                val operation = decodeNextOperationIntent(origin.intentJson)
                 if (oldProof == null) {
                     val countOrder = NextCountOrderingStore(database, this@NextCoreRequestStore)
                     countOrder.requireStructureReady(requireNotNull(database.syncOutboxDao().getById(origin.queueId)), access)
@@ -395,13 +421,17 @@ internal class NextCoreRequestStore(
             }
             val row = if (oldProof == null) {
                 val bytes = if (kind == NEXT_OPERATION) {
-                    val operation = decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
+                    val operation = decodeNextOperationIntent(origin.intentJson)
                     require(operation.operationId == id)
                     // Mutable deletes cannot jump their predecessor. Immutable undo has a new wire ID;
                     // preserve its original send/replay behavior, with dependency checks at acceptance.
                     if (operation.action == "delete") requireNotNull(causal).requireHead(
                         requireNotNull(database.syncOutboxDao().getById(origin.queueId)))
-                    encodeSyncRequest(NextSyncPushRequest.serializer(), NextSyncPushRequest(requireNotNull(access.deviceId), listOf(operation)))
+                    val round = roundOperationIntent(origin.intentJson)
+                    if (round == null) encodeSyncRequest(NextSyncPushRequest.serializer(),
+                        NextSyncPushRequest(requireNotNull(access.deviceId), listOf(operation)))
+                    else encodeSyncRequest(RoundSyncPushRequest.serializer(),
+                        RoundSyncPushRequest(1, requireNotNull(access.deviceId), listOf(operation), listOf(round.context)))
                 } else {
                     val command = decodeNextTimerIntent(origin.intentJson).command
                     require(command.commandId == id)
@@ -423,7 +453,8 @@ internal class NextCoreRequestStore(
             if (causal != null) require(causal.resolve(requestedId, access) == id)
             NextRequestSql.requireOutboxEnabled(sql)
             authorize(access)
-            Prepared(stored, proof)
+            require((kind == NEXT_OPERATION && roundOperationIntent(origin.intentJson) != null) == challengeProfile)
+            Prepared(stored, proof, challengeProfile)
         }
     }
 
@@ -459,7 +490,7 @@ internal class NextCoreRequestStore(
             rejectNextRequest(NextRequestException.Reason.SOURCE_CHANGED)
         val permission = if (kind == NEXT_OPERATION) {
             val queue = requireNotNull(database.syncOutboxDao().getById(row.queueId))
-            val operation = decodeFrozenSyncRequest(row.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
+            val operation = decodeNextOperationIntent(row.intentJson)
             require(queue.operationId == id && operation.operationId == id && isContractUuid(operation.entityUuid))
             val type = when (queue.recordType) {
                 "habit" -> "plan_node"; "metric" -> "metric"; "completion" -> "activity_event"
@@ -491,9 +522,8 @@ internal class NextCoreRequestStore(
             rejectNextRequest(NextRequestException.Reason.TRANSMISSION_CONTEXT_CHANGED)
         if (nextRequestHash(row.wireBytes) != row.wireHash) rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
         if (row.kind == NEXT_OPERATION) {
-            val request = decodeFrozenSyncRequest(row.wireBytes, NextSyncPushRequest.serializer())
-            require(request.deviceId == row.deviceId && request.operations.size == 1 &&
-                request.operations.single() == decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer()))
+            validateNextOperationEnvelope(origin.intentJson, row.wireBytes, row.deviceId)
+            if (roundOperationIntent(origin.intentJson) != null) NextChallengeStore(database).activeInTransaction(access)
         } else {
             val request = decodeFrozenSyncRequest(row.wireBytes, TimerCommandBatchRequest.serializer())
             require(request.deviceId == row.deviceId && request.commands.size == 1 &&

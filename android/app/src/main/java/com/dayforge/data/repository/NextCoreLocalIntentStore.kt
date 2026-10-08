@@ -8,6 +8,8 @@ import com.dayforge.data.api.dto.TimerCommandRequest
 import com.dayforge.data.api.dto.NextSyncPushRequest
 import com.dayforge.data.api.dto.TimerCommandBatchRequest
 import com.dayforge.data.api.dto.validateNextSyncOperation
+import com.dayforge.data.api.dto.ChallengeMetadata
+import com.dayforge.data.api.dto.RoundSyncPushRequest
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.LocalDataSession
 import com.dayforge.data.local.TokenManager
@@ -33,11 +35,37 @@ internal class NextCoreLocalIntentStore(
     private val tokens: TokenManager,
     private val sessions: AccountSessionCoordinator
 ) {
-    suspend fun <T> write(session: LocalDataSession, writeInTransaction: suspend () -> T): T = sessions.exclusive {
+    suspend fun captureRounds(): NextRoundWriteScope = sessions.exclusive {
+        val access = requireNotNull(tokens.localSyncAccess())
+        require(tokens.syncAuthenticationSnapshot(access) != null && access.deviceId != null)
+        database.withTransaction {
+            val metadata = NextChallengeStore(database).activeInTransaction(access).second
+            NextRoundWriteScope(access.copy(capabilities = access.capabilities.toSet()),
+                Json.encodeToString(ChallengeMetadata.serializer(), metadata))
+        }
+    }
+
+    suspend fun <T> writeRounds(scope: NextRoundWriteScope, writeInTransaction: suspend () -> T): T =
+        write(scope.access.session, scope, writeInTransaction)
+
+    suspend fun <T> write(session: LocalDataSession, writeInTransaction: suspend () -> T): T =
+        write(session, null, writeInTransaction)
+
+    private suspend fun <T> write(session: LocalDataSession, scope: NextRoundWriteScope?,
+        writeInTransaction: suspend () -> T): T = sessions.exclusive {
         val access = tokens.localCoreWriteAccess()
         if (access == null || access.session != session) rejectNextRequest(NextRequestException.Reason.STALE_ACCESS)
         database.withTransaction {
-            NextChallengeStore(database).requirePlainInTransaction()
+            val rounds = NextChallengeStore(database)
+            val roundState = scope?.let { rounds.activeInTransaction(it.access) }
+            val roundCapture = if (scope == null) {
+                rounds.requirePlainInTransaction(); null
+            } else {
+                require(tokens.localSyncAccess() == scope.access && access.capturedDeviceId == scope.access.deviceId &&
+                    tokens.syncAuthenticationSnapshot(scope.access) != null) { "SYNC_CHALLENGE_CONTEXT_CHANGED" }
+                NextRoundOperationCapture(database, scope, requireNotNull(roundState).second,
+                    database.habitDao().getAllHabitsOnce())
+            }
             val sql = database.openHelper.writableDatabase
             NextRequestSql.requireOutboxEnabled(sql)
             val tables = listOf("sync_outbox", "timer_command_outbox")
@@ -80,14 +108,23 @@ internal class NextCoreLocalIntentStore(
                                 deleted.requireWritable(operation.payload.getValue("activity_uuid").jsonPrimitive.content)
                             }
                         }
-                        bytes = encodeSyncRequest(SyncV2Operation.serializer(), operation)
-                        decodeFrozenSyncRequest(bytes, SyncV2Operation.serializer())
+                        val round = roundCapture?.capture(operation)
+                        bytes = if (round == null) encodeSyncRequest(SyncV2Operation.serializer(), operation)
+                            else encodeSyncRequest(NextRoundOperationIntent.serializer(), round)
+                        decodeNextOperationIntent(bytes.toString(Charsets.UTF_8))
                         // Prove full-envelope limits while still able to roll back the local write.
                         // This placeholder is only a size/type oracle, never persisted or transmitted.
-                        val envelope = encodeSyncRequest(NextSyncPushRequest.serializer(),
-                            NextSyncPushRequest(SIZE_DEVICE, listOf(operation)))
-                        decodeFrozenSyncRequest(envelope, NextSyncPushRequest.serializer())
+                        if (round == null) {
+                            val envelope = encodeSyncRequest(NextSyncPushRequest.serializer(),
+                                NextSyncPushRequest(SIZE_DEVICE, listOf(operation)))
+                            decodeFrozenSyncRequest(envelope, NextSyncPushRequest.serializer())
+                        } else {
+                            val envelope = encodeSyncRequest(RoundSyncPushRequest.serializer(),
+                                RoundSyncPushRequest(1, round.capturedDeviceId, listOf(operation), listOf(round.context)))
+                            decodeFrozenSyncRequest(envelope, RoundSyncPushRequest.serializer())
+                        }
                     } else {
+                        require(roundCapture == null) { "SYNC_CHALLENGE_TIMER_PRODUCER_NOT_CONNECTED" }
                         val row = database.timeLogDao().getTimerCommand(id)
                             ?: rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
                         if (row.attemptCount != 0 || row.deadLetteredAt != null || row.lastError != null || row.errorCode != null)
@@ -122,9 +159,9 @@ internal class NextCoreLocalIntentStore(
                     check(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(kind, requestId)) != null)
                     check(dao.origin(kind, requestId) == origin)
                     if (kind == NEXT_OPERATION) causal.capture(origin,
-                        decodeFrozenSyncRequest(bytes, SyncV2Operation.serializer()), access)
+                        decodeNextOperationIntent(bytes.toString(Charsets.UTF_8)), access)
                     if (kind == NEXT_OPERATION) {
-                        val operation = decodeFrozenSyncRequest(bytes, SyncV2Operation.serializer())
+                        val operation = decodeNextOperationIntent(bytes.toString(Charsets.UTF_8))
                         NextCountDayStore(database).bind(origin, operation, access)
                         if ("count_policy" in operation.payload) {
                             val habit = requireNotNull(database.habitDao().getHabitByUuid(operation.payload.getValue("activity_uuid").jsonPrimitive.content))
@@ -150,6 +187,12 @@ internal class NextCoreLocalIntentStore(
                 requireNotNull(NextCountDayStore(database).read(requireNotNull(database.habitDao().getHabitById(key.first)), key.second))
             }
             NextRequestSql.requireOutboxEnabled(sql)
+            if (scope != null) {
+                val actual = rounds.activeInTransaction(scope.access)
+                require(actual.first == requireNotNull(roundState).first) { "SYNC_CHALLENGE_CURSOR_CHANGED" }
+                roundCapture!!.verify(actual.second)
+                require(tokens.localSyncAccess() == scope.access && tokens.syncAuthenticationSnapshot(scope.access) != null)
+            }
             if (tokens.localCoreWriteAccess() != access) rejectNextRequest(NextRequestException.Reason.STALE_ACCESS)
             result
         }

@@ -71,8 +71,8 @@ internal class NextPlanDeletionStore(private val database: HabitDatabase) {
             database.timeLogDao().getRejectedTimerCommands()
         val childStructurePending = pending.filter { it.recordType == "habit" && it.action == "upsert" }.any {
             val origin = database.nextRequestDao().origin(NEXT_OPERATION, it.operationId)
-            origin?.intentJson?.let { json -> Json.parseToJsonElement(json).jsonObject
-                .getValue("payload").jsonObject["parent_uuid"] == JsonPrimitive(habit.uuid) } == true
+            origin?.intentJson?.let { json -> decodeNextOperationIntent(json)
+                .payload["parent_uuid"] == JsonPrimitive(habit.uuid) } == true
         }
         if (pending.any { it.id != queue.id && (it.referenceUuid == habit.uuid ||
                 it.recordType == "habit" && it.entityUuid == habit.uuid || it.recordType == "link" && it.entityUuid in links) } ||

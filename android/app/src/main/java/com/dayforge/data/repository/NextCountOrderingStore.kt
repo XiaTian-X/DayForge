@@ -52,7 +52,7 @@ internal class NextCountOrderingStore(private val database: HabitDatabase, priva
         require(origin.accountId == access.session.authentication.userId &&
             (origin.serverInstanceId == null || origin.serverInstanceId == access.session.serverInstanceId && origin.syncEpoch == access.session.syncEpoch) &&
             (day.capturedDeviceId == null || day.capturedDeviceId == access.deviceId))
-        val operation = decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
+        val operation = decodeNextOperationIntent(origin.intentJson)
         require(operation.entityUuid == day.firstEventUuid && NextCommonFactMapper.countPolicy(operation.payload) == day.policy)
     }
 }

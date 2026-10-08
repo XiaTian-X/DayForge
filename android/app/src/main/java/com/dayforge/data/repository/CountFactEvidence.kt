@@ -1,8 +1,6 @@
 package com.dayforge.data.repository
 
-import com.dayforge.data.api.decodeFrozenSyncRequest
 import com.dayforge.data.api.dto.SyncV2Change
-import com.dayforge.data.api.dto.SyncV2Operation
 import com.dayforge.data.api.dto.validateNextSyncOperation
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.businessDate
@@ -118,7 +116,7 @@ internal class CountFactEvidence(private val database: HabitDatabase) {
                 arrayOf(NEXT_OPERATION, id)))
             val origin = requireNotNull(if (hashes == null) database.nextRequestDao().origin(NEXT_OPERATION, id) else rows[id])
             check(origin.protocol == 5 && isContractUuid(origin.accountId) && origin.queueId > 0) { "COUNT_FACT_INVALID" }
-            val operation = decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
+            val operation = decodeNextOperationIntent(origin.intentJson)
             validateNextSyncOperation(operation)
             check(operation.operationId == id) { "COUNT_FACT_INVALID" }
             if (operation.entityType != "activity_event" || operation.action != "upsert" ||

@@ -104,7 +104,7 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
     private suspend fun envelope(bytes: ByteArray, hash: String): NextSyncPushRequest {
         currentCoroutineContext().ensureActive()
         parsedEnvelopes[hash]?.let { if (it.bytes.contentEquals(bytes)) return it.value }
-        return decode(bytes, NextSyncPushRequest.serializer()).also { value ->
+        return decodeNextOperationEnvelope(bytes).also { value ->
             // Digest alone is never sufficient to reuse a parse. Own and compare the complete bytes.
             if (hash !in parsedEnvelopes) retainParsing(bytes.size) {
                 parsedEnvelopes[hash] = ParsedEnvelope(bytes.copyOf(), value)
@@ -292,7 +292,7 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         currentCoroutineContext().ensureActive()
         val value = parsedIntents[origin.intentJson] ?: run {
             val bytes = origin.intentJson.toByteArray(Charsets.UTF_8)
-            decode(bytes, SyncV2Operation.serializer()).also {
+            decodeNextOperationIntent(origin.intentJson).also {
                 require(it.operationId == origin.requestId && ordinary(it))
                 retainParsing(bytes.size) { parsedIntents[origin.intentJson] = it }
             }
@@ -425,6 +425,17 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
     private suspend fun merged(before: NextRequestOriginEntity, after: NextRequestOriginEntity,
         parent: Accepted, replacementId: String): SyncV2Operation {
         currentCoroutineContext().ensureActive()
+        val oldRound = roundOperationIntent(before.intentJson)
+        val newRound = roundOperationIntent(after.intentJson)
+        val acceptedRound = roundOperationIntent(parent.intentJson)
+        if (listOf(oldRound, newRound, acceptedRound).any { it != null }) {
+            require(oldRound != null && newRound != null && acceptedRound != null &&
+                oldRound.capturedDeviceId == newRound.capturedDeviceId &&
+                acceptedRound.capturedDeviceId == newRound.capturedDeviceId &&
+                oldRound.context.head == newRound.context.head && acceptedRound.context.head == newRound.context.head &&
+                oldRound.context.affectedHeads == newRound.context.affectedHeads &&
+                acceptedRound.context.affectedHeads == newRound.context.affectedHeads) { "SYNC_CHALLENGE_STRUCTURAL_CONFLICT" }
+        }
         val key = MergeKey(before.intentJson, after.intentJson, parent.intentJson, parent.resultJson, replacementId)
         mergedIntents[key]?.let { return it }
         return NextStructuralRebase.merge(intent(before), intent(after), parent.result,
@@ -460,6 +471,8 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         val envelope = envelope(transmission.wireBytes, transmission.wireHash)
         val operation = intent(origin)
         require(envelope.deviceId == transmission.deviceId && envelope.operations == listOf(operation))
+        validateNextOperationEnvelope(origin.intentJson, transmission.wireBytes, transmission.deviceId)
+        if (roundOperationIntent(origin.intentJson) != null) NextChallengeStore(database).activeInTransaction(access)
         val receipt = proof?.acceptances?.get(id) ?: requireNotNull(requests.acceptance(NEXT_OPERATION, id))
         require(receipt.kind == NEXT_OPERATION && receipt.requestId == id && receipt.originHash == originHash &&
             receipt.transmissionHash == transmissionHash && receipt.resultHash == nextRequestHash(receipt.resultJson.toByteArray(Charsets.UTF_8)))
@@ -512,6 +525,7 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
             hash("next_structural_dependencies", "operationId", row.replacementId) == null && byOriginal(row.replacementId) == null)
         val desired = merged(original(requireNotNull(dep.predecessorId)), origin, parent, row.replacementId)
         require(intent(replacement) == desired)
+        require(replacement.intentJson == encodeNextOperationIntent(desired, origin.intentJson).toString(Charsets.UTF_8))
         val newSource = source.copy(id = replacement.queueId, operationId = replacement.requestId)
         require(replacement.sourceHash == NextRequestSql.sourceHash(newSource))
         val receiptHash = requestHash("next_acceptances", replacement.requestId)
@@ -579,7 +593,7 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         if (actual != id || byReplacement(id) != null) return actual
         if (requestHash("next_transmissions", id) != null || requestHash("next_acceptances", id) != null) return id
         val origin = original(id)
-        val operation = decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
+        val operation = decodeNextOperationIntent(origin.intentJson)
         if (!ordinary(operation) || operation.action == "delete" &&
             hash("next_structural_dependencies", "operationId", id) == null) return id
         require(rowHash("sync_outbox", "id=?", arrayOf(origin.queueId)) == origin.sourceHash)
@@ -598,8 +612,8 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         if (requests.origin(NEXT_OPERATION, replacementId) != null || requests.transmission(NEXT_OPERATION, replacementId) != null ||
             requests.acceptance(NEXT_OPERATION, replacementId) != null) rejectNextRequest(NextRequestException.Reason.REQUEST_ID_REUSED)
         val replacementOperation = merged(original(dep.predecessorId), origin, parent, replacementId)
-        val intentBytes = encodeSyncRequest(SyncV2Operation.serializer(), replacementOperation)
-        decodeFrozenSyncRequest(intentBytes, SyncV2Operation.serializer())
+        val intentBytes = encodeNextOperationIntent(replacementOperation, origin.intentJson)
+        decodeNextOperationIntent(intentBytes.toString(Charsets.UTF_8))
         val envelope = encodeSyncRequest(NextSyncPushRequest.serializer(), NextSyncPushRequest(requireNotNull(access.deviceId), listOf(replacementOperation)))
         decodeFrozenSyncRequest(envelope, NextSyncPushRequest.serializer())
         val before = NextRequestSql.sources(sql, "sync_outbox")
