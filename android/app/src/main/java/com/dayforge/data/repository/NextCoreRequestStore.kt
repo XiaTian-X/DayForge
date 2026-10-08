@@ -79,6 +79,35 @@ internal class NextCoreRequestStore(
 
     private data class Prepared(val row: NextTransmissionEntity, val proof: String)
 
+    /** Exact ordinary count ACK, not queue absence or a pulled shadow. No account lock is reacquired. */
+    internal suspend fun requireAcceptedCountInTransaction(access: LocalSyncAccess, id: String) {
+        check(database.inTransaction())
+        val sql = database.openHelper.writableDatabase
+        val dao = database.nextRequestDao()
+        val args = arrayOf<Any>(NEXT_OPERATION, id)
+        val originHash = requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", args))
+        val receiptHash = NextRequestSql.rowHash(sql, "next_acceptances", "kind=? AND requestId=?", args)
+            ?: rejectNextRequest(NextRequestException.Reason.CAUSAL_PREDECESSOR_PENDING)
+        val transmissionHash = requireNotNull(NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", args))
+        val original = requireNotNull(dao.origin(NEXT_OPERATION, id))
+        val sent = requireNotNull(dao.transmission(NEXT_OPERATION, id))
+        require(original.kind == NEXT_OPERATION && original.requestId == id && original.protocol == 5 && original.queueId > 0 &&
+            (original.serverInstanceId == null) == (original.syncEpoch == null))
+        if (original.serverInstanceId != null && (original.serverInstanceId != access.session.serverInstanceId || original.syncEpoch != access.session.syncEpoch))
+            rejectNextRequest(NextRequestException.Reason.TRANSMISSION_CONTEXT_CHANGED)
+        validate(original, sent, access)
+        val receipt = requireNotNull(dao.acceptance(NEXT_OPERATION, id))
+        require(receipt.kind == NEXT_OPERATION && receipt.requestId == id && receipt.originHash == originHash &&
+            receipt.transmissionHash == transmissionHash && receipt.resultHash == nextRequestHash(receipt.resultJson.toByteArray(Charsets.UTF_8)))
+        val result = decodeFrozenSyncRequest(receipt.resultJson.toByteArray(Charsets.UTF_8), NextSyncOperationResult.serializer())
+        val operation = decodeFrozenSyncRequest(original.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
+        require(result.status == "applied" && operation.entityType == "activity_event" && "count_policy" in operation.payload)
+        NextOrdinaryResultMapper.validate(operation, result, requireNotNull(access.deviceId))
+        require(NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(original.queueId)) == null &&
+            database.syncOutboxDao().getByOperationId(id) == null)
+        check(NextRequestSql.rowHash(sql, "next_acceptances", "kind=? AND requestId=?", args) == receiptHash)
+    }
+
     /** Bound explicit failure persisted separately; an unknown transport failure is not a rejection. */
     internal suspend fun recordRejection(access: LocalSyncAccess, kind: String, id: String,
         deliveryProof: String, resultJson: String) = sessions.exclusive {
@@ -177,6 +206,7 @@ internal class NextCoreRequestStore(
                 causal.validateStructuralResult(resultJson)
             val previousHash = NextRequestSql.rowHash(sql, "next_acceptances", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, id))
             val parentDeletionProofs = mutableMapOf<Pair<String, String>, String>()
+            val countDays = mutableListOf<Pair<com.dayforge.data.local.entity.CountDayEntity, String>>()
             val outcome = if (previousHash != null) {
                 val receipt = requireNotNull(dao.acceptance(NEXT_OPERATION, id))
                 require(receipt.kind == NEXT_OPERATION && receipt.requestId == id && receipt.originHash == originHash &&
@@ -196,6 +226,8 @@ internal class NextCoreRequestStore(
                 val queue = requireNotNull(database.syncOutboxDao().getById(rawOrigin.queueId))
                 // A later callback cannot jump a predecessor and install an incorrect merge base.
                 causal.requireHead(queue)
+                if (operation.action == "delete")
+                    NextPlanDeletionStore(database).requireReady(queue)
                 auditShadow(change.entityType, change.entityUuid)
                 if (operation.action == "upsert" && change.entityType in setOf("activity_event", "metric_observation", "activity_metric_link")) {
                     // Common-fact revert validation reads historical shadows, including invisible events.
@@ -226,6 +258,7 @@ internal class NextCoreRequestStore(
                         }
                     }
                 }
+                countDays += NextCountDayStore(database).proofs(listOf(change), allowDeletedParents = true)
                 val acceptedShadow = requireNotNull(NextRequestSql.rowHash(sql, "sync_entity_state", "entityType=? AND entityUuid=?",
                     arrayOf(change.entityType, change.entityUuid)))
                 val receipt = NextAcceptanceEntity(NEXT_OPERATION, id, originHash, transmissionHash, nextRequestHash(bytes), resultJson)
@@ -247,6 +280,7 @@ internal class NextCoreRequestStore(
             }
             // Receipt/outbox triggers may change another intent; re-audit exact parent evidence after all writes.
             for ((key, proof) in parentDeletionProofs) require(provenParentDeletion(access, key.first, key.second) == proof)
+            NextCountDayStore(database).verify(countDays)
             require(causal.resolve(id, access) == id)
             NextRequestSql.requireOutboxEnabled(sql)
             authorize(access)
@@ -345,6 +379,18 @@ internal class NextCoreRequestStore(
             val dao = database.nextRequestDao()
             val sql = database.openHelper.writableDatabase
             val oldProof = NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", arrayOf(kind, id))
+            if (kind == NEXT_OPERATION) {
+                if (oldProof == null) NextTimerOrderingStore(database, tokens, sessions, this@NextCoreRequestStore)
+                    .requireStructureReady(requireNotNull(database.syncOutboxDao().getById(origin.queueId)), access)
+                val operation = decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
+                if (oldProof == null) {
+                    val countOrder = NextCountOrderingStore(database, this@NextCoreRequestStore)
+                    countOrder.requireStructureReady(requireNotNull(database.syncOutboxDao().getById(origin.queueId)), access)
+                    countOrder.requireFactReady(operation, access)
+                }
+                if (operation.action == "delete")
+                    NextPlanDeletionStore(database).requireReady(requireNotNull(database.syncOutboxDao().getById(origin.queueId)))
+            }
             val row = if (oldProof == null) {
                 val bytes = if (kind == NEXT_OPERATION) {
                     val operation = decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
@@ -355,8 +401,10 @@ internal class NextCoreRequestStore(
                         requireNotNull(database.syncOutboxDao().getById(origin.queueId)))
                     encodeSyncRequest(NextSyncPushRequest.serializer(), NextSyncPushRequest(requireNotNull(access.deviceId), listOf(operation)))
                 } else {
-                    val command = decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), TimerCommandRequest.serializer())
+                    val command = decodeNextTimerIntent(origin.intentJson).command
                     require(command.commandId == id)
+                    if (command.commandType == "start") NextTimerOrderingStore(database, tokens, sessions, this@NextCoreRequestStore)
+                        .requireStartReady(requireNotNull(database.timeLogDao().getTimerCommand(origin.queueId)), access)
                     timerOrder?.invoke(requireNotNull(database.timeLogDao().getTimerCommand(origin.queueId)))
                     encodeSyncRequest(TimerCommandBatchRequest.serializer(), TimerCommandBatchRequest(requireNotNull(access.deviceId), listOf(command)))
                 }
@@ -424,8 +472,9 @@ internal class NextCoreRequestStore(
             if (queue.recordType in setOf("completion", "metric_log")) "facts.append" else "structure.write"
         } else {
             val queue = requireNotNull(database.timeLogDao().getTimerCommand(row.queueId))
-            val command = decodeFrozenSyncRequest(row.intentJson.toByteArray(Charsets.UTF_8), TimerCommandRequest.serializer())
-            require(queue.commandId == id && timerRequest(queue) == command)
+            val command = decodeNextTimerIntent(row.intentJson).command
+            require(queue.commandId == id && timerRequest(queue) == command.copy(startPolicy = null))
+            command.startPolicy?.let { require(command.commandType == "start"); it.validate() }
             "timer.control"
         }
         if (permission !in access.capabilities) rejectNextRequest(NextRequestException.Reason.PERMISSION_DENIED)
@@ -446,7 +495,7 @@ internal class NextCoreRequestStore(
         } else {
             val request = decodeFrozenSyncRequest(row.wireBytes, TimerCommandBatchRequest.serializer())
             require(request.deviceId == row.deviceId && request.commands.size == 1 &&
-                request.commands.single() == decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), TimerCommandRequest.serializer()))
+                request.commands.single() == decodeNextTimerIntent(origin.intentJson).command)
         }
     }
 

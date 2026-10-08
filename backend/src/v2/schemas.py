@@ -589,6 +589,25 @@ class TimerSessionResponse(ApiModel):
     completed_event_id: Optional[UUID] = None
 
 
+class TimerStartPolicy(ApiModel):
+    target_seconds: int = Field(ge=0, le=86_400, strict=True)
+    is_countdown: bool = Field(strict=True)
+    max_duration_seconds: int = Field(ge=1, le=86_400, strict=True)
+
+    @model_validator(mode="after")
+    def validate_policy(self):
+        if self.is_countdown and self.target_seconds == 0:
+            raise ValueError("Countdown requires a positive target")
+        expected = (
+            86_400
+            if self.target_seconds == 0
+            else min(self.target_seconds * (1 if self.is_countdown else 3), 86_400)
+        )
+        if self.max_duration_seconds != expected:
+            raise ValueError("Timer limit does not match the target and mode")
+        return self
+
+
 class TimerCommandRequest(ApiModel):
     command_id: UUID
     session_id: UUID
@@ -600,6 +619,9 @@ class TimerCommandRequest(ApiModel):
     activity_uuid: Optional[UUID] = None
     timezone: Optional[str] = Field(default=None, min_length=1, max_length=64)
     active_elapsed_ms: Optional[int] = Field(default=None, ge=0, le=86_400_000)
+    start_policy: Optional[TimerStartPolicy] = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @field_validator("occurred_at")
     @classmethod
@@ -629,8 +651,14 @@ class TimerCommandRequest(ApiModel):
                 raise ValueError(
                     "start must not expect an existing generation or revision"
                 )
-        elif self.activity_uuid is not None or self.timezone is not None:
-            raise ValueError("activity_uuid and timezone are only valid for start")
+        elif (
+            self.activity_uuid is not None
+            or self.timezone is not None
+            or self.start_policy is not None
+        ):
+            raise ValueError(
+                "activity_uuid, timezone and start_policy are only valid for start"
+            )
         if (
             self.command_type not in {"pause", "stop", "cancel"}
             and self.active_elapsed_ms is not None

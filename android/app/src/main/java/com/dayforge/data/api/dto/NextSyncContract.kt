@@ -65,6 +65,11 @@ fun validateNextSyncOperation(operation: SyncV2Operation) {
         "metric" -> validateNextAppearancePayload(operation.payload, metric = true)
         "activity_event" -> {
             require("one_time_state_after" !in operation.payload)
+            if ("count_policy" in operation.payload) {
+                require(operation.payload.text("event_type") in setOf("count_delta", "count_snapshot") &&
+                    !operation.payload.hasValue("one_time"))
+                CountDayPolicy.fromJson(operation.payload.getValue("count_policy"))
+            }
             if (operation.payload.hasValue("one_time")) {
                 val intent = Json.decodeFromJsonElement<OneTimeIntent>(operation.payload.getValue("one_time"))
                 validateOneTimeBinding(operation.entityUuid, operation.payload.text("event_type") ?: "",
@@ -150,12 +155,22 @@ data class NextSyncBootstrapResponse(
         val checkpoints = oneTimeCheckpoints.associateBy { it.activityUuid }
         require(checkpoints.size == oneTimeCheckpoints.size && checkpoints.keys == once)
         val histories = once.associateWith { mutableListOf<OneTimeEventProof>() }
+        val countPolicies = mutableMapOf<Pair<String?, String?>, CountDayPolicy?>()
         changes.filter { it.entityType == "activity_event" }.forEach { change ->
             val activity = change.payload.text("activity_uuid")
             require(activity in activities)
             val proof = eventProof(change.payload, change.entityUuid)
             require((activity in once) == (proof != null))
             if (proof != null) histories.getValue(proof.activityUuid).add(proof)
+            if ("count_policy" in change.payload) {
+                require(change.payload.text("event_type") in setOf("count_delta", "count_snapshot") && proof == null)
+                CountDayPolicy.fromJson(change.payload.getValue("count_policy"))
+            }
+            if (change.payload.text("event_type") in setOf("count_delta", "count_snapshot")) {
+                val key = activity to change.payload.text("local_date")
+                val policy = change.payload["count_policy"]?.let(CountDayPolicy::fromJson)
+                if (key in countPolicies) require(countPolicies[key] == policy) else countPolicies[key] = policy
+            }
         }
         checkpoints.forEach { (id, checkpoint) -> rebuildOneTimeHistory(checkpoint, histories.getValue(id)) }
     }

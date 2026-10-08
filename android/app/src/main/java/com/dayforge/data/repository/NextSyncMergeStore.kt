@@ -330,7 +330,7 @@ internal class NextSyncMergeStore(
     private suspend fun cacheProof(): String {
         val digest = MessageDigest.getInstance("SHA-256")
         fun bytes(value: ByteArray) { digest.update(ByteBuffer.allocate(4).putInt(value.size).array()); digest.update(value) }
-        for (table in listOf("habits", "metrics", "completions", "timelogs", "timer_segments", "timelog_day_allocations",
+        for (table in listOf("habits", "metrics", "completions", "count_days", "timelogs", "timer_segments", "timelog_day_allocations",
             "metric_logs", "habit_metric_links", "sync_entity_state", "sync_outbox", "timer_command_outbox", "sync_conflicts",
             "local_fact_submissions", "completion_metric_prompts", "one_time_transmissions", "next_request_origins",
             "next_transmissions", "next_acceptances", "next_structural_dependencies", "next_structural_supersessions", "next_recovery_state", "next_rejections")) {

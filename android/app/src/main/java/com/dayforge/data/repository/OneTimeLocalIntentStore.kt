@@ -93,13 +93,15 @@ internal class OneTimeLocalIntentStore(
         return load(activityUuid, session).snapshot
     }
 
-    suspend fun append(session: LocalDataSession, command: OneTimeLocalCommand): OneTimeLocalAppendResult =
+    suspend fun append(session: LocalDataSession, command: OneTimeLocalCommand,
+        validateInTransaction: suspend (HabitEntity) -> Unit = {}): OneTimeLocalAppendResult =
         sessions.exclusive {
             val access = tokens.localFactAccess()
             if (access == null || access.session != session) reject(OneTimeLocalException.Reason.STALE_SESSION)
             if (!access.canAppend) reject(OneTimeLocalException.Reason.FACTS_DENIED)
             database.withTransaction {
                 val loaded = load(command.activityUuid, session)
+                validateInTransaction(loaded.habit)
                 val fact = fact(command, loaded.habit.id)
                 val payload = payload(fact)
                 val receipt = followUps.submission(command.pending.operationId)
@@ -129,6 +131,7 @@ internal class OneTimeLocalIntentStore(
                     reject(OneTimeLocalException.Reason.EVENT_ID_REUSED)
                 }
                 val queue = loaded.snapshot.queue
+                if (habits.hasPendingNextDeletion(command.activityUuid)) reject(OneTimeLocalException.Reason.ENTITY_DELETED)
                 if (queue.blockedOperationIds.isNotEmpty()) reject(OneTimeLocalException.Reason.PENDING_REJECTED)
                 if (queue.awaitingReplayOperationIds.isNotEmpty()) reject(OneTimeLocalException.Reason.PENDING_REPLAY)
                 advanceOneTime(queue.optimisticState, command.pending.intent)

@@ -68,6 +68,7 @@ fun NestedScreen(
 ) {
     val topLevelHabitsWithChildren by viewModel.topLevelHabitsWithChildren.collectAsState()
     val isInitialized by viewModel.isInitialized.collectAsState()
+    val readError by viewModel.readError.collectAsState()
     val activeTimer by viewModel.activeTimerState.collectAsState()
     val pendingMetricHabits by viewModel.pendingMetricHabits.collectAsState()
     val linkedMetricsByHabit by viewModel.linkedMetricsByHabit.collectAsState()
@@ -191,6 +192,9 @@ fun NestedScreen(
                     )
                 }
             }
+        } else if (readError) {
+            com.dayforge.ui.components.DataReadFailure(viewModel::retryRead,
+                Modifier.fillMaxSize().padding(padding))
         } else if (topLevelHabitsWithChildren.isEmpty()) {
             // Empty state
             Column(
@@ -267,7 +271,7 @@ fun NestedScreen(
                             },
                             onChildDecrement = { habitId ->
                                 val child = parentWithChildren.children.find { it.habit.id == habitId }
-                                if (child != null && child.habit.isCountdown) {
+                                if (child != null && child.displayIsCountdown) {
                                     viewModel.incrementCount(habitId)
                                 } else {
                                     viewModel.decrementCount(habitId)
@@ -347,7 +351,7 @@ fun NestedScreen(
                             },
                             onChildDecrement = { habitId ->
                                 val child = parentWithChildren.children.find { it.habit.id == habitId }
-                                if (child != null && child.habit.isCountdown) {
+                                if (child != null && child.displayIsCountdown) {
                                     viewModel.incrementCount(habitId)
                                 } else {
                                     viewModel.decrementCount(habitId)
@@ -501,21 +505,38 @@ fun NestedScreen(
             PostCheckInDialog(
                 habitName = state.habitName,
                 linkedMetrics = state.linkedMetrics,
+                promptIdentity = state.oneTimePrompt?.eventUuid,
+                missingTargets = state.oneTimePrompt?.entries?.filterNot { it.available }?.map { it.name }.orEmpty(),
+                onRefreshMetadata = if (state.oneTimePrompt != null) viewModel::refreshPostCheckInMetadata else null,
+                initialInputs = state.oneTimePrompt?.entries?.associate { it.metricId to (it.input to it.note) }.orEmpty(),
+                onDraftChange = { inputs -> state.oneTimePrompt?.let { viewModel.savePostCheckInDraft(it.eventUuid, inputs) } },
                 onRecord = { values, neverAskAgain ->
                     scope.launch {
-                        if (!viewModel.recordMetricValues(state.habitId, values)) return@launch
-                        if (neverAskAgain) {
-                            viewModel.setNeverAskAgain(state.habitId, true)
+                        try {
+                            if (!viewModel.recordMetricValues(state.habitId, values, state.oneTimePrompt?.eventUuid, state.timerPrompt)) return@launch
+                            if (neverAskAgain) {
+                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt)
+                            }
+                            viewModel.dismissPostCheckInDialog()
+                        } catch (error: Exception) {
+                            if (error is kotlinx.coroutines.CancellationException) throw error
+                            Toast.makeText(context, context.getString(R.string.metric_error_record_failed,
+                                error.message.orEmpty()), Toast.LENGTH_LONG).show()
                         }
-                        viewModel.dismissPostCheckInDialog()
                     }
                 },
                 onSkip = { neverAskAgain ->
                     scope.launch {
-                        if (neverAskAgain) {
-                            viewModel.setNeverAskAgain(state.habitId, true)
+                        try {
+                            if (neverAskAgain) {
+                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt)
+                            }
+                            viewModel.skipPostCheckInDialog(state.habitId, state.oneTimePrompt?.eventUuid, state.timerPrompt)
+                        } catch (error: Exception) {
+                            if (error is kotlinx.coroutines.CancellationException) throw error
+                            Toast.makeText(context, context.getString(R.string.metric_error_record_failed,
+                                error.message.orEmpty()), Toast.LENGTH_LONG).show()
                         }
-                        viewModel.dismissPostCheckInDialog()
                     }
                 },
                 onDismiss = { viewModel.dismissPostCheckInDialog() }

@@ -10,6 +10,12 @@ import com.dayforge.data.local.entity.LocalFactSubmissionEntity
 import com.dayforge.data.local.entity.MetricEntity
 import com.dayforge.data.local.entity.MetricLogEntity
 import com.dayforge.data.local.entity.SyncOutboxEntity
+import com.dayforge.data.local.entity.NextRequestOriginEntity
+import com.dayforge.data.api.dto.SyncV2Operation
+import com.dayforge.data.api.dto.NextSyncPushRequest
+import com.dayforge.data.api.dto.validateNextSyncOperation
+import com.dayforge.data.api.encodeSyncRequest
+import com.dayforge.data.api.decodeFrozenSyncRequest
 import com.dayforge.domain.model.isContractUuid
 import com.dayforge.domain.service.AccountSessionCoordinator
 import com.dayforge.util.NumericInputUtils
@@ -19,6 +25,7 @@ import java.util.UUID
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 
 @Serializable
 internal data class CompletionMetricDraft(
@@ -61,7 +68,12 @@ internal class CompletionMetricPromptStore(
 
     suspend fun pending(): List<CompletionMetricPrompt> = sessions.exclusive {
         val session = access(null, false)
-        database.withTransaction { dao.pendingPrompts().map { decode(it, session) } }
+        database.withTransaction { pendingInTransaction(session) }
+    }
+
+    internal suspend fun pendingInTransaction(session: LocalDataSession): List<CompletionMetricPrompt> {
+        check(database.inTransaction())
+        return dao.pendingPrompts().map { decode(it, session) }
     }
 
     suspend fun read(eventUuid: String): CompletionMetricPrompt = sessions.exclusive {
@@ -81,7 +93,7 @@ internal class CompletionMetricPromptStore(
             val entries = current.entries.map { entry -> inputs[entry.metricUuid]?.let {
                 entry.copy(input = it.value, note = it.note)
             } ?: entry }
-            replaceDraft(current, entries)
+            if (entries == current.entries) current else replaceDraft(current, entries)
         }
     }
 
@@ -145,6 +157,9 @@ internal class CompletionMetricPromptStore(
                 if (database.metricLogDao().getLogByUuid(entry.observationUuid) != null ||
                     outbox.getState("metric_observation", entry.observationUuid) != null ||
                     outbox.getByOperationId(entry.operationId) != null || dao.submission(entry.operationId) != null ||
+                    database.nextRequestDao().origin(NEXT_OPERATION, entry.operationId) != null ||
+                    database.nextRequestDao().transmission(NEXT_OPERATION, entry.operationId) != null ||
+                    database.nextRequestDao().acceptance(NEXT_OPERATION, entry.operationId) != null ||
                     dao.submissionForEntity("metric_observation", entry.observationUuid) != null
                 ) fail(CompletionMetricPromptException.Reason.CORRUPT)
                 val log = log(current, entry, metric.id)
@@ -165,8 +180,26 @@ internal class CompletionMetricPromptStore(
                     action = "upsert", referenceUuid = entry.metricUuid, payloadJson = payload,
                     createdAt = requireNotNull(current.row.recordedAtMillis)))
                 dao.insertSubmission(receipt(entry, payload))
+                val operation = SyncV2Operation(entry.operationId, "metric_observation", entry.observationUuid,
+                    "upsert", payload = Json.parseToJsonElement(payload) as JsonObject)
+                validateNextSyncOperation(operation)
+                val bytes = encodeSyncRequest(SyncV2Operation.serializer(), operation)
+                decodeFrozenSyncRequest(bytes, SyncV2Operation.serializer())
+                val envelope = encodeSyncRequest(NextSyncPushRequest.serializer(), NextSyncPushRequest(
+                    "00000000-0000-4000-8000-000000000000", listOf(operation)))
+                decodeFrozenSyncRequest(envelope, NextSyncPushRequest.serializer())
+                val queue = requireNotNull(outbox.getByOperationId(entry.operationId))
+                val hash = requireNotNull(NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(queue.id)))
+                val origin = NextRequestOriginEntity(NEXT_OPERATION, entry.operationId, queue.id, 5,
+                    current.session.authentication.userId, current.session.serverInstanceId, current.session.syncEpoch,
+                    hash, bytes.toString(Charsets.UTF_8))
+                database.nextRequestDao().insertOrigin(origin)
+                check(database.nextRequestDao().origin(NEXT_OPERATION, entry.operationId) == origin &&
+                    NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(queue.id)) == hash &&
+                    dao.submission(entry.operationId) == receipt(entry, payload))
             }
             check(dao.updatePrompt(current.row.copy(state = "saved")) == 1)
+            access(current.session, true)
             CompletionMetricSaved(entries.map { it.observationUuid }, false)
         }
     }

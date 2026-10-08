@@ -174,6 +174,28 @@ class AccountIconController internal constructor(
         it.metadata.authorized(context) { refreshReferences(context.namespace) }
         catalog
     }
+    /** New fixed references require owned immutable metadata; an unchanged missing reference is retained. */
+    internal suspend fun authorizeEditReference(session: com.dayforge.data.local.LocalDataSession,
+        reference: IconReference, previous: IconReference, oneTime: Boolean) {
+        if (reference is IconReference.Role) {
+            require(com.dayforge.domain.model.iconAllowed(reference, oneTime)) { "ICON_PURPOSE_MISMATCH" }
+            return
+        }
+        val access = tokens.localIconAccess()
+        if (access == null) {
+            check(reference == previous) { "ICON_ACCESS_DENIED" }
+            return
+        }
+        check(access.session == session) { "ICON_SESSION_CHANGED" }
+        io {
+            val context = it.metadata.capture()
+            check(context.access == access) { "ICON_SESSION_CHANGED" }
+            val asset = it.metadata.asset(context, (reference as IconReference.Asset).assetId)
+            if (asset == null) check(reference == previous) { "ICON_ASSET_NOT_OWNED" }
+            else require(com.dayforge.domain.model.iconAllowed(reference, oneTime, asset)) { "ICON_PURPOSE_MISMATCH" }
+            it.metadata.reauthorize(context)
+        }
+    }
     // Publication has no payload queued back to Main; guards + short state update share authority.
     internal suspend fun publish(context: AccountIconContext, block: () -> Unit) = io { it.metadata.authorized(context, block) }
     internal suspend fun preview(context: AccountIconContext, uri: Uri): AccountIconPackPreview = io { storage ->

@@ -51,7 +51,7 @@ class NextSyncStateMigrationTest {
         table to rows(db, "SELECT * FROM `$table` ORDER BY rowid")
     }
     private fun ddl(db: SupportSQLiteDatabase) = rows(db, "SELECT type,name,tbl_name,sql FROM sqlite_master " +
-        "WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('next_sync_state','next_rejections') ORDER BY type,name")
+        "WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('count_days','next_sync_state','next_rejections') ORDER BY type,name")
     private fun seed(block: (SupportSQLiteDatabase) -> Unit = {}) {
         FrameworkSQLiteOpenHelperFactory().create(SupportSQLiteOpenHelper.Configuration.builder(context)
             .name("habit_database").callback(object : SupportSQLiteOpenHelper.Callback(11) {
@@ -84,7 +84,7 @@ class NextSyncStateMigrationTest {
         assertEquals(22, entities.size)
         repeat(2) {
             val db = open()
-            assertEquals(12, db.version); assertEquals(before, snapshot(db)); assertEquals(structure, ddl(db))
+            assertEquals(13, db.version); assertEquals(before, snapshot(db)); assertEquals(structure, ddl(db))
             assertTrue(rows(db, "SELECT * FROM next_sync_state").isEmpty())
             assertTrue(rows(db, "SELECT * FROM next_rejections").isEmpty())
             assertTrue(rows(db, "PRAGMA foreign_key_check").isEmpty())
@@ -110,7 +110,7 @@ class NextSyncStateMigrationTest {
             raw.rawQuery("SELECT name FROM sqlite_master WHERE name IN ('next_sync_state','next_rejections')", null).use { assertFalse(it.moveToFirst()) }
             raw.execSQL("ALTER TABLE unavailable_transmissions RENAME TO one_time_transmissions")
         }
-        assertEquals(12, open().version)
+        assertEquals(13, open().version)
     }
     @Test fun fakeVersion11IdentityCannotAcquireAnActiveCursor() {
         seed { it.execSQL("UPDATE room_master_table SET identity_hash='unproven' WHERE id=42") }

@@ -63,4 +63,8 @@ def operation_hash(
 def timer_command_hash(
     command: TimerCommandRequest, *, replica: ReplicaIdentity | None = None
 ) -> str:
-    return _request_hash(command.model_dump(mode="json"), "timer_command", replica)
+    payload = command.model_dump(mode="json")
+    # Do not change fingerprints of old commands which never carried the new precondition.
+    if command.start_policy is None:
+        payload.pop("start_policy", None)
+    return _request_hash(payload, "timer_command", replica)

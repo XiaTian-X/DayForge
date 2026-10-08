@@ -2,6 +2,7 @@ package com.dayforge.data.repository
 
 import android.content.Context
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.room.withTransaction
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -13,6 +14,7 @@ import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.TimerCommandEntity
 import com.dayforge.data.local.entity.NextRecoveryStateEntity
 import com.dayforge.domain.model.OneTimeProjection
+import com.dayforge.domain.model.CountDayPolicy
 import com.dayforge.domain.model.OneTimeState
 import com.dayforge.domain.model.OneTimeIntent
 import com.dayforge.domain.model.PendingOneTimeIntent
@@ -32,6 +34,141 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class NextCommonRestoreTest {
+    private fun countParent() = activity().let { row -> revise(row, fields = arrayOf("activity" to JsonObject(
+        row.payload.getValue("activity").jsonObject + mapOf("tracking_mode" to JsonPrimitive("count"), "target_value" to JsonPrimitive(99))))) }
+    private fun counted(id: String = checkId, value: Int = 5) = fact(id).let { row -> row.copy(payload = JsonObject(row.payload +
+        mapOf("value" to JsonPrimitive(value), "count_policy" to buildJsonObject { put("target_value", 10); put("is_countdown", false) }))) }
+    private suspend fun countRead() = CountHistoryReader(db, tokens, sessions).read(
+        requireNotNull(db.habitDao().getHabitByUuid(activityId)), java.time.LocalDate.parse("2026-09-28"))
+    private suspend fun countReadRejectsWithoutWrites() {
+        val before = durable()
+        assertNotNull("Changed or reverted effective fact must be rejected", runCatching { countRead() }.exceptionOrNull())
+        assertEquals(before, durable())
+    }
+
+    @Test fun acceptedCountSnapshotsAndColdReopenValidateEveryQuantityWithoutLocalOrigins() = runBlocking<Unit> {
+        restore(snapshot(countParent(), counted(), counted(durationId, 6)))
+        val row = db.completionDao().getCompletionByUuid(durationId)!!
+        assertEquals(11L, countRead().todayQuantity); assertTrue(countRead().completedToday)
+        assertEquals(CountDayPolicy(10, false), countRead().todayPolicy)
+        storage.reopen()
+        assertEquals(11L, countRead().todayQuantity)
+        for (assignment in listOf("value=7", "actualCompletedAt=actualCompletedAt+1", "createdAt=createdAt+1",
+            "recordedLocalDate='2026-09-29'", "recordedTimezone='UTC'")) {
+            db.withTransaction {
+                db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
+                db.openHelper.writableDatabase.execSQL("UPDATE completions SET $assignment WHERE id=?", arrayOf(row.id))
+                db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
+            }
+            countReadRejectsWithoutWrites()
+            db.withTransaction {
+                db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
+                db.completionDao().upsert(row)
+                db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
+            }
+            assertEquals(11L, countRead().todayQuantity)
+        }
+        db.openHelper.writableDatabase.execSQL("UPDATE sync_entity_state SET payloadHash='damaged' WHERE entityUuid=?", arrayOf(durationId))
+        countReadRejectsWithoutWrites()
+    }
+
+    @Test fun acceptedRevertPreventsAResurrectedProjectionFromCountingAgain() = runBlocking<Unit> {
+        val event = counted()
+        restore(snapshot(countParent(), event, fact(undoId, "revert", target = checkId)))
+        assertEquals(0L, countRead().todayQuantity); assertEquals(CountDayPolicy(10, false), countRead().todayPolicy)
+        db.withTransaction {
+            db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
+            val h = requireNotNull(db.habitDao().getHabitByUuid(activityId))
+            db.completionDao().insertForSync(NextCommonFactMapper.completion(event, h))
+            db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
+        }
+        countReadRejectsWithoutWrites()
+    }
+
+    @Test fun acceptedHistoricalCheckInUnderTodaysCountingPlanRetainsUnknownRuleAndActualQuantity() = runBlocking<Unit> {
+        val old = fact(kind = "check_in").let { it.copy(payload = JsonObject(it.payload + ("value" to JsonPrimitive(1)))) }
+        restore(snapshot(countParent(), old))
+        val before = durable(); val history = countRead()
+        assertEquals(1L, history.todayQuantity); assertNull(history.todayPolicy)
+        assertEquals(setOf(java.time.LocalDate.parse("2026-09-28")), history.unknownDates)
+        assertTrue(history.qualifiedDates.isEmpty()); assertEquals(before, durable())
+    }
+
+    @Test fun acceptedHistoricalCheckInCanCoexistWithCountFactsWithoutInventingItsCountPolicy() = runBlocking<Unit> {
+        val old = fact(durationId, "check_in").let { it.copy(payload = JsonObject(it.payload + ("value" to JsonPrimitive(1)))) }
+        restore(snapshot(countParent(), counted(), old))
+        val before = durable(); val history = countRead()
+        // Preserve the existing aggregation (5 + 1), not a tracking-mode conversion feature.
+        assertEquals(6L, history.todayQuantity); assertEquals(CountDayPolicy(10, false), history.todayPolicy)
+        assertFalse(history.completedToday); assertTrue(history.qualifiedDates.isEmpty())
+        assertFalse(db.syncOutboxDao().getState("activity_event", durationId)!!.payloadJson!!.contains("count_policy"))
+        assertEquals(before, durable())
+    }
+
+    @Test fun acceptedUndoneCountRestoresOriginalDayWithoutUsingTodaysMutableConfiguration() = runBlocking<Unit> {
+        val parent = activity().let { row -> revise(row, fields = arrayOf("activity" to JsonObject(
+            row.payload.getValue("activity").jsonObject + mapOf("tracking_mode" to JsonPrimitive("count"), "target_value" to JsonPrimitive(99))))) }
+        val counted = fact().let { row -> row.copy(payload = JsonObject(row.payload + ("count_policy" to
+            buildJsonObject { put("target_value", 10); put("is_countdown", true) }))) }
+        val undo = fact(undoId, "revert", target = checkId)
+        val response = snapshot(parent, counted, undo)
+        restore(response)
+        val habit = requireNotNull(db.habitDao().getHabitByUuid(activityId))
+        assertEquals(99, habit.targetValue)
+        assertTrue(db.completionDao().getByHabitOnce(habit.id).isEmpty())
+        assertEquals(10, db.countDayDao().get(habit.id, "2026-09-28")!!.targetValue)
+        assertTrue(db.countDayDao().get(habit.id, "2026-09-28")!!.isCountdown)
+        assertEquals(checkId, db.countDayDao().get(habit.id, "2026-09-28")!!.firstEventUuid)
+        assertNull(db.countDayDao().get(habit.id, "2026-09-28")!!.originRequestId)
+        val accepted = durable()
+        storage.reopen()
+        restore(response)
+        assertEquals(accepted, durable())
+    }
+
+    @Test fun mixedCountRulesAndLateDayMutationCannotPartiallyRestoreAcceptedSnapshot() = runBlocking<Unit> {
+        val policy = buildJsonObject { put("target_value", 10); put("is_countdown", false) }
+        val counted = fact().let { it.copy(payload = JsonObject(it.payload + ("count_policy" to policy))) }
+        val parent = activity()
+        val unknown = fact(linkId)
+        val before = durable()
+        assertTrue(runCatching { snapshot(parent, counted, unknown) }.isFailure)
+        assertEquals(before, durable())
+        db.openHelper.writableDatabase.execSQL("""CREATE TRIGGER damage_count_day AFTER INSERT ON sync_entity_state
+            BEGIN UPDATE count_days SET targetValue=11; END""")
+        val withFault = durable()
+        assertTrue(runCatching { restore(snapshot(parent, counted)) }.isFailure)
+        assertEquals(withFault, durable())
+        db.openHelper.writableDatabase.execSQL("DROP TRIGGER damage_count_day")
+        restore(snapshot(parent, counted))
+        val habit = requireNotNull(db.habitDao().getHabitByUuid(activityId))
+        assertEquals(10, db.countDayDao().get(habit.id, "2026-09-28")!!.targetValue)
+        assertEquals(5, db.completionDao().getByHabitOnce(habit.id).single().value)
+    }
+    @Test fun lateRecoveryCheckpointCannotAcceptAChangedOrMissingOriginalCountDay() = runBlocking<Unit> {
+        val counted = fact().let { it.copy(payload = JsonObject(it.payload + ("count_policy" to
+            buildJsonObject { put("target_value", 10); put("is_countdown", false) }))) }
+        val response = snapshot(activity(), counted)
+        val context = sync().context()
+        val stage = sync().beginRecovery(context, null)
+        for (fault in listOf("UPDATE count_days SET targetValue=11;", "DELETE FROM count_days;")) {
+            db.openHelper.writableDatabase.execSQL("CREATE TRIGGER damage_count_checkpoint AFTER UPDATE ON next_recovery_state BEGIN $fault END")
+            val before = durable()
+            assertTrue(runCatching { sync().acceptRecovery(context, stage, response) }.isFailure)
+            assertEquals(before, durable())
+            assertEquals(stage, sync().recoveryState(context))
+            db.openHelper.writableDatabase.execSQL("DROP TRIGGER damage_count_checkpoint")
+            storage.reopen()
+            assertTrue(db.countDayDao().observeAll().first().isEmpty())
+            assertEquals(stage, sync().recoveryState(context))
+        }
+        val accepted = sync().acceptRecovery(context, stage, response)
+        val parent = requireNotNull(db.habitDao().getHabitByUuid(activityId))
+        assertEquals(10, db.countDayDao().get(parent.id, "2026-09-28")!!.targetValue)
+        storage.reopen()
+        assertEquals(accepted, sync().acceptRecovery(context, stage, response))
+    }
+
     @get:Rule val storage = PhysicalDatabaseRule()
     private val db get() = storage.database
     private val sessions = AccountSessionCoordinator()

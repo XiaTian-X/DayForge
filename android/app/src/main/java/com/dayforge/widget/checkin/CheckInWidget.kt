@@ -80,6 +80,8 @@ class CheckInWidget : GlanceAppWidget() {
         // Pre-computed colors for widget rendering (per WIDGET-COLOR-01, WIDGET-COLOR-06)
         val BACKGROUND_COLOR_KEY = intPreferencesKey("backgroundColor")
         val TEXT_COLOR_KEY = intPreferencesKey("textColor")
+        val ACTION_PROOF_KEY = stringPreferencesKey("factActionProof")
+        val READ_FAILED_KEY = booleanPreferencesKey("readFailed")
 
         /**
          * Load habit data from Room and write into Glance state.
@@ -89,7 +91,7 @@ class CheckInWidget : GlanceAppWidget() {
         suspend fun refreshWidgetData(context: Context, glanceId: GlanceId, habitId: Long) {
             val appContext = context.applicationContext
             val database = HabitDatabaseProvider.getInstance(appContext)
-            val habit = database.habitDao().getHabitById(habitId)
+            val habit = database.habitDao().getVisibleHabitById(habitId)
 
             if (habit == null) {
                 Log.w(TAG, "refreshWidgetData: habit $habitId not found")
@@ -97,6 +99,8 @@ class CheckInWidget : GlanceAppWidget() {
                     prefs[HABIT_ID_KEY] = habitId
                     prefs[IS_DELETED_KEY] = true
                     prefs[DATA_LOADED_KEY] = true
+                    prefs[READ_FAILED_KEY] = false
+                    prefs.remove(ACTION_PROOF_KEY)
                 }
                 return
             }
@@ -105,10 +109,15 @@ class CheckInWidget : GlanceAppWidget() {
             val tomorrow = today.plusDays(1)
             val completions = database.completionDao().getCompletionsInRange(habitId, today, tomorrow)
             val completedToday = completions.sumOf { it.value }
-            val isCompleted = completedToday >= habit.targetValue
+            val typed = if (habit.appearance != null) com.dayforge.di.WidgetEntryPoint.from(appContext)
+                .factReader().read(habit) else null
+            val oneTime = if (habit.completionPolicy == "one_and_done") dagger.hilt.android.EntryPointAccessors
+                .fromApplication(appContext, com.dayforge.di.WidgetEntryPoint::class.java).habitRepository()
+                .getOneTimeStatus(habitId) else null
+            val isCompleted = typed?.completed ?: oneTime?.completed ?: (completedToday >= habit.targetValue)
 
             // 新增状态计算
-            val isCheckInAllowed = ScheduleValidator.isCheckInAllowedToday(habit.schedule, habit.createdAt)
+            val isCheckInAllowed = oneTime?.canChange ?: ScheduleValidator.isCheckInAllowedToday(habit.schedule, habit.createdAt)
             val nextCheckInDate = if (!isCheckInAllowed) {
                 ScheduleValidator.getNextCheckInDate(habit.schedule, habit.createdAt).toString()
             } else ""
@@ -130,6 +139,8 @@ class CheckInWidget : GlanceAppWidget() {
             val resolvedColors = widgetColorResolver.resolveWidgetColors(habit.colorHex)
 
             updateAppWidgetState(appContext, glanceId) { prefs ->
+                if (typed != null) prefs[ACTION_PROOF_KEY] = typed.claim.encode() else prefs.remove(ACTION_PROOF_KEY)
+                prefs[READ_FAILED_KEY] = false
                 prefs[HABIT_ID_KEY] = habitId
                 prefs[HABIT_NAME_KEY] = habit.name
                 prefs[COLOR_HEX_KEY] = habit.colorHex
@@ -173,6 +184,11 @@ class CheckInWidget : GlanceAppWidget() {
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Error loading initial data", e)
+            updateAppWidgetState(context, id) { prefs ->
+                prefs[READ_FAILED_KEY] = true
+                prefs[DATA_LOADED_KEY] = false
+                prefs.remove(ACTION_PROOF_KEY)
+            }
         }
 
         provideContent {
@@ -187,7 +203,11 @@ class CheckInWidget : GlanceAppWidget() {
 
                 Log.d(TAG, "provideContent: habitId=$habitId, dataLoaded=$dataLoaded")
 
-                if (habitId == -1L) {
+                if (state[READ_FAILED_KEY] == true) {
+                    WidgetEmptyStates.EmptyConfigState(context.getString(R.string.data_read_failed) + "\n" + context.getString(R.string.action_retry),
+                        GlanceModifier.clickable(actionRunCallback<com.dayforge.widget.timer.WidgetTimerRefreshCallback>(
+                            actionParametersOf(ActionParameters.Key<String>("widget") to "checkin"))))
+                } else if (habitId == -1L) {
                     WidgetEmptyStates.EmptyConfigState(context.getString(R.string.widget_configure_first))
                 } else if (isDeleted) {
                     val intent = android.content.Intent(context, CheckInWidgetConfigActivity::class.java).apply {
@@ -219,7 +239,8 @@ class CheckInWidget : GlanceAppWidget() {
                         isCheckInAllowed = isCheckInAllowed,
                         nextCheckInDate = nextCheckInDate,
                         hasFailed = hasFailed,
-                        isGoalReached = isGoalReached
+                        isGoalReached = isGoalReached,
+                        actionProof = state[ACTION_PROOF_KEY]
                     )
                 }
             }
@@ -237,7 +258,8 @@ class CheckInWidget : GlanceAppWidget() {
         isCheckInAllowed: Boolean = true,
         nextCheckInDate: String = "",
         hasFailed: Boolean = false,
-        isGoalReached: Boolean = false
+        isGoalReached: Boolean = false,
+        actionProof: String? = null
     ) {
         val context = androidx.glance.LocalContext.current
         // Use pre-computed colors from WidgetColorResolver
@@ -337,23 +359,13 @@ class CheckInWidget : GlanceAppWidget() {
                     if (isCompleted) {
                         Button(
                             text = context.getString(R.string.widget_status_completed),
-                            onClick = actionRunCallback<CheckInActionCallback>(
-                                actionParametersOf(
-                                    ActionParameters.Key<Long>("habitId") to habitId,
-                                    ActionParameters.Key<String>("action") to "toggle"
-                                )
-                            ),
+                            onClick = widgetFactAction(context, habitId, "toggle", actionProof),
                             modifier = GlanceModifier.height(40.dp)
                         )
                     } else {
                         Button(
                             text = context.getString(R.string.action_check_in),
-                            onClick = actionRunCallback<CheckInActionCallback>(
-                                actionParametersOf(
-                                    ActionParameters.Key<Long>("habitId") to habitId,
-                                    ActionParameters.Key<String>("action") to "toggle"
-                                )
-                            ),
+                            onClick = widgetFactAction(context, habitId, "toggle", actionProof),
                             modifier = GlanceModifier.height(40.dp)
                         )
                     }

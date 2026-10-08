@@ -40,7 +40,10 @@ class NextOrdinaryResultStoreTest : NextCoreRequestFixture() {
     private suspend fun remove(type: String, uuid: String): SyncOutboxEntity {
         producer().write(local()) {
             when (type) {
-                "plan_node" -> habits().deleteHabit(requireNotNull(db.habitDao().getHabitByUuid(uuid)))
+                // This low-level acceptance fixture deliberately exercises hard-deleted caches.
+                // Formal typed repository deletion retains rows until ACK and is covered by
+                // NextPlanDeletionWorkflowTest; do not nest its account lock inside producer.write.
+                "plan_node" -> db.habitDao().delete(requireNotNull(db.habitDao().getHabitByUuid(uuid)))
                 "metric" -> metrics().deleteMetric(requireNotNull(db.metricDao().getMetricByUuid(uuid)))
                 "metric_observation" -> db.metricLogDao().delete(requireNotNull(db.metricLogDao().getLogByUuid(uuid)))
                 "activity_metric_link" -> metrics().unlinkHabit(requireNotNull(db.habitMetricLinkDao().getLinkByUuid(uuid)).id)

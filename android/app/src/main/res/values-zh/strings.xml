@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="count_rule_unknown_quantity">已记录 %1$d · 当日目标未知</string>
+    <string name="count_rule_unknown_history">部分历史计数缺少原始每日规则，保留数量，但不判定这些日期是否达标或失败。</string>
     <string name="theme_custom_version">自定义 · v%1$d · %2$s</string>
     <string name="theme_unavailable_version">不可用 · v%1$d · %2$s</string>
     <string name="theme_actions">主题操作</string>
@@ -59,6 +61,7 @@
     <string name="action_done">完成</string>
     <string name="action_close">关闭</string>
     <string name="action_retry">重试</string>
+    <string name="data_read_failed">暂时无法读取数据，未修改任何记录。请检查账户或同步状态后重试。</string>
     <string name="theme_load_failed">主题加载失败。已保留原选择与个人数据。</string>
     <string name="theme_unavailable">不可用 / 需要恢复</string>
     <string name="theme_loading">正在加载主题…</string>
@@ -244,7 +247,7 @@
     <string name="notification_channel_habit_reminders">习惯提醒</string>
     <string name="notification_channel_habit_reminders_desc">习惯打卡提醒通知</string>
     <string name="notification_scheduled_time">预定时间: %s</string>
-    <string name="notification_slot_progress">第%1$d次/共%2$d次 (已完成%3$d次)</string>
+    <string name="notification_count_progress">今日进度：%1$d / %2$d</string>
 
     <!-- Habit Card Status -->
     <string name="habit_card_status_completed">已完成</string>
@@ -1099,6 +1102,13 @@
     <string name="sync_device_role_facts_only">此设备用于打卡、计数、指标和计时</string>
     <string name="sync_device_make_primary">设为主要设备</string>
     <string name="sync_device_role_failed">无法更新当前设备角色</string>
+    <string name="object_icon_picker_title">对象图标</string>
+    <string name="object_icon_picker_hint">角色随当前图标包变化，固定图标保留素材身份。图片缺失时保留原引用并显示占位。</string>
+    <string name="object_icon_picker_expired">图标选择不可用或账户上下文已变化，请关闭并重新打开编辑页。</string>
+    <string name="object_icon_tint_theme">主题色</string>
+    <string name="object_icon_tint_object">对象色</string>
+    <string name="object_icon_role">跟随图标包</string>
+    <string name="object_icon_fixed">固定素材</string>
     <string name="icon_library_title">图标库</string>
     <string name="icon_library_entry_description">导入、预览和选择本机图标包</string>
     <string name="icon_library_local_only">这里只管理本机安装与选择，不代表服务端同步成功。新协议联合接入前，现有习惯、目标和指标图标保持不变。</string>
@@ -1126,4 +1136,12 @@
     <string name="icon_library_preview">预览</string>
     <string name="icon_library_select">在本机选择</string>
     <string name="icon_library_image_failed">图像不可用</string>
+    <string name="once_not_completed">未完成</string>
+    <string name="once_change_unavailable">暂不可变更：需要同步恢复或账户权限</string>
+    <string name="once_undo">撤销完成</string>
+    <string name="once_history">完成历史</string>
+    <string name="once_history_completed">完成 · %1$s</string>
+    <string name="once_history_undone">撤销 · %1$s</string>
+    <string name="once_refresh_metrics">重新读取指标名称、单位和精度（保留输入）</string>
+    <string name="once_metrics_missing">指标已不可用：%1$s。清空对应输入后可保存其他指标，也可跳过本次提示。</string>
 </resources>

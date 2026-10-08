@@ -18,5 +18,7 @@ data class HabitDraft(
     val targetCycles: Int? = null,
     val failMode: FailMode = FailMode.STRICT,
     val bestTime: Long? = null,
-    val selectedMetricIds: Set<Long> = emptySet()
+    val selectedMetricIds: Set<Long> = emptySet(),
+    val appearance: com.dayforge.domain.model.ObjectAppearance? = null,
+    val completionPolicy: String? = null
 )

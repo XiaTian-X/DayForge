@@ -10,7 +10,13 @@ from enum import Enum
 from typing import Optional
 import uuid
 
-from sqlalchemy import CheckConstraint, Index, UniqueConstraint, text
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKeyConstraint,
+    Index,
+    UniqueConstraint,
+    text,
+)
 from sqlmodel import Field, SQLModel
 
 from src.time_utils import utc_now
@@ -373,6 +379,37 @@ class ActivityEvent(SyncableFields, table=True):
     one_time_expected_head_event_uuid: Optional[str] = Field(
         default=None, max_length=36
     )
+    # NULL means original rule unknown (v4/development history), not current target.
+    count_policy_json: Optional[str] = Field(default=None)
+
+
+class ActivityCountDay(SQLModel, table=True):
+    """One rule per literal business date; survives undo of all original facts."""
+
+    __tablename__ = "activity_count_days"
+    __table_args__ = (
+        UniqueConstraint(
+            "activity_node_id", "local_date", name="uq_count_day_activity_date"
+        ),
+        ForeignKeyConstraint(
+            ["owner_user_id", "activity_node_id"],
+            ["plan_nodes.owner_user_id", "plan_nodes.id"],
+            name="fk_count_day_owner_activity",
+        ),
+        UniqueConstraint("first_event_id", name="uq_count_day_first_event"),
+        CheckConstraint(
+            "target_value BETWEEN 1 AND 2147483647", name="ck_count_day_target"
+        ),
+        CheckConstraint("is_countdown IN (false, true)", name="ck_count_day_direction"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    owner_user_id: int = Field(foreign_key="users.id", nullable=False, index=True)
+    activity_node_id: int = Field(foreign_key="plan_nodes.id", nullable=False)
+    local_date: date = Field(nullable=False)
+    target_value: int = Field(nullable=False)
+    is_countdown: bool = Field(nullable=False)
+    first_event_id: int = Field(foreign_key="activity_events.id", nullable=False)
 
 
 class TrackedMetric(SyncableFields, table=True):

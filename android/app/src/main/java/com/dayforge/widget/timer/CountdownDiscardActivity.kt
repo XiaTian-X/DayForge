@@ -42,6 +42,12 @@ class CountdownDiscardActivity : ComponentActivity() {
         val targetMinutes = intent.getIntExtra(EXTRA_TARGET_MINUTES, 0)
         val seconds = intent.getIntExtra(EXTRA_SECONDS, 0)
         val isCountdown = intent.getBooleanExtra(EXTRA_IS_COUNTDOWN, true)
+        val authority = try {
+            com.dayforge.domain.model.TimerActionAuthority.read(intent)
+        } catch (_: IllegalArgumentException) {
+            finish()
+            return
+        }
 
         if (habitId == -1L) {
             finish()
@@ -96,7 +102,8 @@ class CountdownDiscardActivity : ComponentActivity() {
                                             TimerServiceController.discardTimer(
                                                 this@CountdownDiscardActivity,
                                                 habitId,
-                                                targetMinutes
+                                                targetMinutes,
+                                                authority
                                             )
                                             finish()
                                         }
@@ -150,7 +157,8 @@ class CountdownDiscardActivity : ComponentActivity() {
             habitId: Long,
             targetMinutes: Int,
             seconds: Int,
-            isCountdown: Boolean = true
+            isCountdown: Boolean = true,
+            authority: com.dayforge.domain.model.TimerActionAuthority? = null
         ): Intent {
             return Intent(context, CountdownDiscardActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -158,6 +166,7 @@ class CountdownDiscardActivity : ComponentActivity() {
                 putExtra(EXTRA_TARGET_MINUTES, targetMinutes)
                 putExtra(EXTRA_SECONDS, seconds)
                 putExtra(EXTRA_IS_COUNTDOWN, isCountdown)
+                authority?.attach(this)
             }
         }
     }

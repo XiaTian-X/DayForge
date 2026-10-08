@@ -45,13 +45,18 @@ class CheckInActionCallback : ActionCallback {
         val completionDao = database.completionDao()
         val habitDao = database.habitDao()
         val timeLogDao = database.timeLogDao()
+        // A cached v4 button cannot silently recapture authority for a typed object.
+        if (habitDao.getVisibleHabitById(habitId)?.appearance != null) {
+            com.dayforge.widget.WidgetRefreshScheduler.request(context)
+            return
+        }
         val repository = runCatching {
             EntryPointAccessors.fromApplication(
                 context.applicationContext,
                 WidgetEntryPoint::class.java
             ).habitRepository()
         }.getOrElse {
-            // Plain Robolectric/unit environments do not own a Hilt component.
+            // Isolated legacy device fixtures do not own a Hilt component.
             HabitRepository(habitDao, completionDao, timeLogDao, database)
         }
         val service = CheckInService(repository, completionDao, timeLogDao)
@@ -86,14 +91,17 @@ class CheckInActionCallback : ActionCallback {
             "decrement" -> {
                 // For countdown mode: - button means "record one done" (increment completedToday)
                 // For countup mode: - button means "subtract one" (decrement completedToday)
-                val habit = database.habitDao().getHabitById(habitId)
-                if (habit?.isCountdown == true) {
+                val habit = database.habitDao().getVisibleHabitById(habitId)
+                val history = habit?.takeIf { it.appearance != null && it.habitType == com.dayforge.data.model.HabitType.COUNTING }
+                    ?.let { repository.getCountHistory(it) }
+                if (history != null) check(history.todayPolicy != null) { "COUNT_DAY_POLICY_UNKNOWN" }
+                if ((history?.todayPolicy?.isCountdown ?: habit?.isCountdown) == true) {
                     // Countdown mode: check if remaining is already 0
                     val today = DateTimeUtils.today()
-                    val todayCount = database.completionDao()
+                    val todayCount = history?.todayQuantity ?: database.completionDao()
                         .getCompletionsInRange(habitId, today, today.plusDays(1))
-                        .sumOf { it.value }
-                    val remaining = habit.targetValue - todayCount
+                        .sumOf { it.value.toLong() }
+                    val remaining = (history?.todayPolicy?.targetValue ?: requireNotNull(habit).targetValue).toLong() - todayCount
                     if (remaining <= 0) {
                         Log.d(TAG, "decrement: countdown already at 0, ignoring")
                         return // Don't go below 0 remaining for countdown mode
@@ -156,7 +164,7 @@ class CheckInActionCallback : ActionCallback {
         Log.d(TAG, "showGoalCompletionDialog: habitId=$habitId, progress=$progress")
 
         // Get habit info for dialog
-        val habit = database.habitDao().getHabitById(habitId)
+        val habit = database.habitDao().getVisibleHabitById(habitId)
         if (habit == null) {
             Log.d(TAG, "Habit not found for id=$habitId")
             return

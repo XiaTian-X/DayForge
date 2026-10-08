@@ -289,8 +289,7 @@ object HabitPriorityCalculator {
 
         // 当前slot未完成且在窗口内：InWindow
         if (slotInfo != null) {
-            val slots = CountingSlotCalculator.calculateSlots(bestTimeMinutes, targetValue, currentTime)
-            val currentSlot = slots.find { it.index == slotInfo.first }
+            val currentSlot = CountingSlotCalculator.slotAt(bestTimeMinutes, targetValue, slotInfo.first, currentTime)
             if (currentSlot != null) {
                 return Triple(
                     1.0f + IN_WINDOW_BONUS,
@@ -346,7 +345,7 @@ object HabitPriorityCalculator {
         }
 
         // Not in any slot window: calculate distance to nearest slot
-        val slots = CountingSlotCalculator.calculateSlots(bestTimeMinutes, targetValue, currentTime)
+        val slots = CountingSlotCalculator.distinctSlots(bestTimeMinutes, targetValue, currentTime)
 
         // Find nearest upcoming slot (BeforeWindow logic)
         val nearestFutureSlot = slots.filter { !it.isPast && !it.isCurrent }.minByOrNull {
@@ -384,7 +383,7 @@ object HabitPriorityCalculator {
         currentMinutes: Int,
         currentTime: ZonedDateTime
     ): TimeMatchResult {
-        val slots = CountingSlotCalculator.calculateSlots(bestTimeMinutes, targetValue, currentTime)
+        val slots = CountingSlotCalculator.distinctSlots(bestTimeMinutes, targetValue, currentTime)
 
         // Find nearest upcoming slot
         val nearestFutureSlot = slots.filter { !it.isPast && !it.isCurrent }.minByOrNull {

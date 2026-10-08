@@ -286,6 +286,27 @@
         "title": "AssetTransferReceipt",
         "type": "object"
       },
+      "CountDayPolicy": {
+        "additionalProperties": false,
+        "properties": {
+          "is_countdown": {
+            "title": "Is Countdown",
+            "type": "boolean"
+          },
+          "target_value": {
+            "maximum": 2147483647,
+            "minimum": 1,
+            "title": "Target Value",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "target_value",
+          "is_countdown"
+        ],
+        "title": "CountDayPolicy",
+        "type": "object"
+      },
       "DailyRule": {
         "additionalProperties": false,
         "properties": {
@@ -804,6 +825,17 @@
             "format": "uuid",
             "title": "Activity Uuid",
             "type": "string"
+          },
+          "count_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CountDayPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "duration_milliseconds": {
             "anyOf": [
@@ -2210,6 +2242,17 @@
             "title": "Session Id",
             "type": "string"
           },
+          "start_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimerStartPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "timezone": {
             "anyOf": [
               {
@@ -2476,6 +2519,34 @@
         "title": "TimerSessionResponse",
         "type": "object"
       },
+      "TimerStartPolicy": {
+        "additionalProperties": false,
+        "properties": {
+          "is_countdown": {
+            "title": "Is Countdown",
+            "type": "boolean"
+          },
+          "max_duration_seconds": {
+            "maximum": 86400,
+            "minimum": 1,
+            "title": "Max Duration Seconds",
+            "type": "integer"
+          },
+          "target_seconds": {
+            "maximum": 86400,
+            "minimum": 0,
+            "title": "Target Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "target_seconds",
+          "is_countdown",
+          "max_duration_seconds"
+        ],
+        "title": "TimerStartPolicy",
+        "type": "object"
+      },
       "WeeklyRule": {
         "additionalProperties": false,
         "properties": {
@@ -2541,7 +2612,7 @@
     }
   },
   "info": {
-    "description": "Guarded production registration/sync/timer/appearance handlers are mounted, but the default and advertised server protocol remain v4. Activation requires coordinated backend/Android release and an explicitly confirmed empty baseline. Authentication remains in ../openapi.json. V5 registration and every sync/timer request require a single exact protocol header plus captured canonical server-instance/epoch headers; timer bodies are unchanged. Appearance retains its existing body/query replica context. See D-014 and APPEARANCE_CONTRACT.md. Mounted handlers do not establish coordinated v5 activation or client readiness.",
+    "description": "Guarded production registration/sync/timer/appearance handlers are mounted, but the default and advertised server protocol remain v4. Activation requires coordinated backend/Android release and an explicitly confirmed empty baseline. Authentication remains in ../openapi.json. V5 registration and every sync/timer request require a single exact protocol header plus captured canonical server-instance/epoch headers. Fresh v5 timer starts require their original start_policy; existing receipts and v4 commands retain their original fingerprints. Appearance retains its existing body/query replica context. See D-014, D-016 and APPEARANCE_CONTRACT.md. Mounted handlers do not establish coordinated v5 activation or client readiness.",
     "title": "DayForge v5 appearance and one-time delta (NOT ACTIVE)",
     "version": "5-planned"
   },

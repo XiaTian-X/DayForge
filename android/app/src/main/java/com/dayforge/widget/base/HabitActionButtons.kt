@@ -46,7 +46,8 @@ object HabitActionButtons {
     fun CheckInButton(
         habitId: Long,
         isCompleted: Boolean,
-        modifier: GlanceModifier = GlanceModifier.height(40.dp)
+        modifier: GlanceModifier = GlanceModifier.height(40.dp),
+        actionProof: String? = null
     ) {
         val context = LocalContext.current
         Button(
@@ -55,12 +56,7 @@ object HabitActionButtons {
             } else {
                 context.getString(R.string.action_check_in)
             },
-            onClick = actionRunCallback<CheckInActionCallback>(
-                actionParametersOf(
-                    ActionParameters.Key<Long>("habitId") to habitId,
-                    ActionParameters.Key<String>("action") to "toggle"
-                )
-            ),
+            onClick = com.dayforge.widget.checkin.widgetFactAction(context, habitId, "toggle", actionProof),
             modifier = modifier
         )
     }
@@ -80,20 +76,20 @@ object HabitActionButtons {
         habitId: Long,
         targetMinutes: Int,
         isTimerActive: Boolean = false,
+        actionProof: String? = null,
         modifier: GlanceModifier = GlanceModifier.height(36.dp)
     ) {
         val context = LocalContext.current
 
+        val startAction = if (actionProof != null) com.dayforge.widget.timer.widgetTimerAction(context, habitId, targetMinutes, "start", actionProof)
+            else actionRunCallback<TimerStartCallback>(actionParametersOf(
+                ActionParameters.Key<Long>("habitId") to habitId,
+                ActionParameters.Key<Int>("targetMinutes") to targetMinutes))
         if (isTimerActive) {
             // Timer running: show disabled "正在计时..." button
             Button(
                 text = "正在计时...",
-                onClick = actionRunCallback<TimerStartCallback>(
-                    actionParametersOf(
-                        ActionParameters.Key<Long>("habitId") to habitId,
-                        ActionParameters.Key<Int>("targetMinutes") to targetMinutes
-                    )
-                ),
+                onClick = startAction,
                 modifier = modifier,
                 enabled = false,
                 colors = ButtonDefaults.buttonColors(
@@ -105,12 +101,7 @@ object HabitActionButtons {
             // Timer not running: show "启动计时" button
             Button(
                 text = context.getString(R.string.widget_timer_start),
-                onClick = actionRunCallback<TimerStartCallback>(
-                    actionParametersOf(
-                        ActionParameters.Key<Long>("habitId") to habitId,
-                        ActionParameters.Key<Int>("targetMinutes") to targetMinutes
-                    )
-                ),
+                onClick = startAction,
                 modifier = modifier
             )
         }

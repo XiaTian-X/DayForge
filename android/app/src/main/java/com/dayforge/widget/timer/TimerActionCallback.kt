@@ -51,7 +51,7 @@ class TimerActionCallback : ActionCallback {
                 val database = HabitDatabaseProvider.getInstance(context.applicationContext)
 
                 // Check if already completed today
-                val habit = database.habitDao().getHabitById(habitId)
+                val habit = database.habitDao().getVisibleHabitById(habitId)
                 val todayStart = DateTimeUtils.startOfDayMillis()
                 val todayEnd = DateTimeUtils.startOfNextDayMillis(todayStart)
                 val completedSeconds = database.timeLogDao().getCompletedDurationSecondsForDate(
@@ -94,7 +94,7 @@ class TimerActionCallback : ActionCallback {
             "stop" -> {
                 // Check if this is an incomplete session (countdown or countup)
                 val database = HabitDatabaseProvider.getInstance(context.applicationContext)
-                val habit = database.habitDao().getHabitById(habitId)
+                val habit = database.habitDao().getVisibleHabitById(habitId)
                 val activeLog = database.timeLogDao().getActiveTimeLog()
 
                 val targetSeconds = (habit?.targetValue ?: 0) * 60

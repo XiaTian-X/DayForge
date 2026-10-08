@@ -19,6 +19,7 @@ from src.v2.models import ActivityDetail, ActivityEvent, ClientDevice, PlanNode
 from src.v2.plan_node_mutations import get_plan_node
 from src.v2.schemas import ActivityEventPayload, SyncOperationRequest
 from src.v2.one_time import OneTimeTransitionError
+from src.v2.count_storage import prepare_count_day, persist_count_day
 from src.v2.one_time_sync import NextActivityEventPayload, validate_one_time_binding
 from src.v2.one_time_storage import (
     advance_stored_one_time,
@@ -202,6 +203,15 @@ async def mutate_activity_event(
         reverts_event_id=revert_event.id if revert_event else None,
         payload_json=canonical_json(payload.metadata),
     )
+    count_day = await prepare_count_day(
+        session,
+        user_id,
+        activity,
+        detail,
+        event,
+        payload.count_policy if isinstance(payload, NextActivityEventPayload) else None,
+        next_protocol=one_time_contract,
+    )
     if intent is not None:
         capture_one_time_intent(
             event,
@@ -212,6 +222,7 @@ async def mutate_activity_event(
     session.add(event)
     try:
         await session.flush()
+        await persist_count_day(session, event, count_day)
     except IntegrityError as exc:
         if payload.event_type == "revert":
             raise DomainError(

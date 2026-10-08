@@ -19,6 +19,9 @@ import com.dayforge.data.local.dao.HabitMetricLinkDao
 import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.data.local.entity.TimerCommandEntity
 import com.dayforge.data.local.entity.TimerSegmentEntity
+import com.dayforge.data.repository.NextTimerWriter
+import com.dayforge.domain.model.TimerActionAuthority
+import kotlinx.coroutines.CancellationException
 import com.dayforge.util.DateTimeUtils
 import com.dayforge.widget.WidgetRefreshScheduler
 import com.dayforge.widget.checkin.GoalCompletionActivity
@@ -105,6 +108,8 @@ class TimerService : Service() {
     @Inject
     lateinit var autoSyncCoordinator: AutoSyncCoordinator
 
+    @Inject lateinit var timerWriter: NextTimerWriter
+
     // Coroutine scope for database operations
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val commandMutex = Mutex()
@@ -129,6 +134,9 @@ class TimerService : Service() {
     private var timerBootCount: Int? = null
     private var targetReachedNotified: Boolean = false  // Track if target notification was shown
     private var lastHeartbeatAttemptAt: Long = 0L
+    private var activeAuthority: TimerActionAuthority? = null
+    private var actionAuthority: TimerActionAuthority? = null
+    private var maximumDurationSeconds: Int? = null
 
     private lateinit var notificationManager: NotificationManager
     private lateinit var notificationFactory: TimerNotificationFactory
@@ -150,6 +158,9 @@ class TimerService : Service() {
         serviceScope.launch {
             commandMutex.withLock {
                 runCatching {
+                    actionAuthority = TimerActionAuthority.read(intent)
+                    if (action in setOf(ACTION_START, ACTION_PAUSE, ACTION_RESUME, ACTION_STOP, ACTION_DISCARD))
+                        timerWriter.requireAction(requireNotNull(expectedHabitId), actionAuthority)
                     when (action) {
                         ACTION_START -> handleStart(intent)
                         ACTION_PAUSE -> handlePause(expectedHabitId)
@@ -160,6 +171,7 @@ class TimerService : Service() {
                         else -> stopIfNoPersistedTimer()
                     }
                 }.onFailure { error ->
+                    if (error is CancellationException) throw error
                     Log.e(TAG, "Timer command failed: $action", error)
                     stopIfNoPersistedTimer()
                 }
@@ -224,12 +236,17 @@ class TimerService : Service() {
                             val elapsedSeconds = calculateElapsedSeconds()
                             val elapsedMinutes = elapsedSeconds / 60
 
-                            if (elapsedMinutes >= thresholdMinutes) {
+                            if (elapsedMinutes >= thresholdMinutes || maximumDurationSeconds?.let { elapsedSeconds >= it } == true) {
                                 // Auto-stop: show notification and stop timer
                                 showThresholdReachedNotification()
                                 launchTerminalStop()
                                 return@launch  // Exit ticker loop
                             }
+                        }
+                        if (targetMinutes == 0 && maximumDurationSeconds?.let { calculateElapsedSeconds() >= it } == true) {
+                            showThresholdReachedNotification()
+                            launchTerminalStop()
+                            return@launch
                         }
                     }
                 }
@@ -239,10 +256,13 @@ class TimerService : Service() {
     }
 
     private fun launchTerminalStop() {
+        val capturedAuthority = activeAuthority
+        val capturedHabitId = habitId
         serviceScope.launch {
             commandMutex.withLock {
-                runCatching { handleStop(habitId.takeIf { it > 0 }) }
-                    .onFailure { Log.e(TAG, "Automatic timer stop failed", it) }
+                actionAuthority = capturedAuthority
+                runCatching { handleStop(capturedHabitId.takeIf { it > 0 }) }
+                    .onFailure { if (it is CancellationException) throw it; Log.e(TAG, "Automatic timer stop failed", it); stopServiceAndClearNotification() }
             }
         }
     }
@@ -251,6 +271,8 @@ class TimerService : Service() {
         val now = SystemClock.elapsedRealtime()
         if (now - lastHeartbeatAttemptAt < HEARTBEAT_INTERVAL_MILLIS) return
         lastHeartbeatAttemptAt = now
+        // The formal v5 coordinator owns bound network traffic; never send a typed session to v4.
+        if (activeAuthority != null) { autoSyncCoordinator.enqueueNow(); return }
         val sessionUuid = timerSessionUuid ?: return
         val deviceId = tokenManager.syncDeviceId.first() ?: run {
             autoSyncCoordinator.enqueueNow()
@@ -323,6 +345,8 @@ class TimerService : Service() {
             stopIfNoPersistedTimer()
             return
         }
+        val widgetGuard = com.dayforge.domain.model.TimerStartGuard.read(intent)
+        if (widgetGuard != null) timerWriter.requireWidgetStart(requestedHabitId, requireNotNull(actionAuthority), widgetGuard)
 
         // Recovery must win over the daily-completion guard. Otherwise a
         // process-recreated timer can be orphaned merely because an earlier
@@ -339,7 +363,7 @@ class TimerService : Service() {
             return
         }
 
-        val requestedHabit = habitDao.getHabitByIdSync(requestedHabitId)
+        val requestedHabit = habitDao.getVisibleHabitByIdSync(requestedHabitId)
         if (requestedHabit == null) {
             stopIfNoPersistedTimer()
             return
@@ -367,7 +391,7 @@ class TimerService : Service() {
         }
 
         if (existingLog != null) {
-            interruptTimer(existingLog)
+            interruptTimer(existingLog, widgetGuard?.incumbent)
         }
 
         habitId = requestedHabitId
@@ -389,7 +413,7 @@ class TimerService : Service() {
         val sessionUuid = UUID.randomUUID().toString()
         timerSessionUuid = sessionUuid
         val capturedTimezone = requireNotNull(timerTimezone)
-        currentLogId = timeLogDao.insertSyncedTimer(
+        currentLogId = timerWriter.write(habitId, actionAuthority) { timeLogDao.insertSyncedTimer(
             TimeLogEntity(
                 habitId = habitId,
                 startTime = startTime,
@@ -422,7 +446,9 @@ class TimerService : Service() {
                 sequence = 1,
                 startedAt = startTime
             )
-        )
+        ) }
+        activeAuthority = timerWriter.capture(habitId)
+        maximumDurationSeconds = timerWriter.policy(habitId, sessionUuid)?.maxDurationSeconds
         updateNotification()
         autoSyncCoordinator.enqueueNow()
         startTicker()
@@ -440,10 +466,13 @@ class TimerService : Service() {
 
     private suspend fun restoreState(log: TimeLogEntity): Boolean {
         val habit = habitDao.getHabitByIdSync(log.habitId) ?: return false
+        val policy = timerWriter.policy(log.habitId, log.uuid)
         currentLogId = log.id
         habitId = log.habitId
-        targetMinutes = habit.targetValue
-        isCountdown = habit.isCountdown
+        targetMinutes = policy?.targetSeconds?.div(60) ?: habit.targetValue
+        isCountdown = policy?.isCountdown ?: habit.isCountdown
+        maximumDurationSeconds = policy?.maxDurationSeconds
+        activeAuthority = timerWriter.capture(log.habitId)
         startTime = log.startTime
         isPaused = log.isPaused
         pausedAt = log.pausedAt
@@ -474,16 +503,20 @@ class TimerService : Service() {
         return restoreState(active)
     }
 
-    private suspend fun interruptTimer(log: TimeLogEntity) {
+    private suspend fun interruptTimer(log: TimeLogEntity, capturedIncumbent: TimerActionAuthority? = null) {
         val interruptedHabit = habitDao.getHabitByIdSync(log.habitId)
+        val policy = timerWriter.policy(log.habitId, log.uuid)
+        val oldAction = actionAuthority
+        actionAuthority = capturedIncumbent ?: timerWriter.capture(log.habitId)
+        check(oldAction == null || actionAuthority?.session() == oldAction.session()) { "TIMER_INTERRUPTION_STALE_ACCOUNT" }
         val elapsedSeconds = calculateElapsedSecondsForLog(log)
-        val targetSeconds = (interruptedHabit?.targetValue ?: 0) * 60
-        val shouldSave = interruptedHabit?.isCountdown != true &&
+        val targetSeconds = policy?.targetSeconds ?: ((interruptedHabit?.targetValue ?: 0) * 60)
+        val shouldSave = (policy?.isCountdown ?: interruptedHabit?.isCountdown) != true &&
             targetSeconds > 0 && elapsedSeconds >= targetSeconds
 
         if (shouldSave) {
             val safeElapsed = elapsedSeconds.coerceAtMost(
-                calculateSafeDurationLimit(false, interruptedHabit?.targetValue ?: 0)
+                policy?.maxDurationSeconds ?: calculateSafeDurationLimit(false, interruptedHabit?.targetValue ?: 0)
             )
             finishInterruptedTimer(log, safeElapsed)
         } else {
@@ -493,6 +526,7 @@ class TimerService : Service() {
         tickerJob?.cancel()
         tickerJob = null
         clearState()
+        actionAuthority = oldAction
     }
 
     /**
@@ -518,7 +552,7 @@ class TimerService : Service() {
         } else {
             maxOf(System.currentTimeMillis(), (log.timerLastCommandAt ?: log.startTime) + 1)
         }
-        timeLogDao.finishTimerAndQueue(
+        timerWriter.write(log.habitId, actionAuthority) { timeLogDao.finishTimerAndQueue(
             id = log.id,
             endTime = endTime,
             durationSeconds = durationSeconds,
@@ -535,7 +569,7 @@ class TimerService : Service() {
             ),
             wasPaused = log.isPaused
         )
-        persistDayAllocations(log.id)
+        persistDayAllocations(log.id) }
     }
 
     private suspend fun persistDayAllocations(logId: Long) {
@@ -556,7 +590,7 @@ class TimerService : Service() {
             System.currentTimeMillis(),
             (log.timerLastCommandAt ?: log.startTime) + 1
         )
-        timeLogDao.deleteTimerAndQueue(
+        timerWriter.write(log.habitId, actionAuthority) { timeLogDao.deleteTimerAndQueue(
             log,
             timerCommand(
                 log.uuid,
@@ -565,7 +599,7 @@ class TimerService : Service() {
                 commandAt,
                 log.timerControlGeneration
             )
-        )
+        ) }
     }
 
     private fun nextCommandTime(): Long {
@@ -605,7 +639,7 @@ class TimerService : Service() {
         val commandAt = nextRunningBoundary(activeElapsed)
         val sessionUuid = requireNotNull(timerSessionUuid)
         val sequence = nextCommandSequence
-        timeLogDao.updatePauseAndQueue(
+        timerWriter.write(habitId, actionAuthority) { timeLogDao.updatePauseAndQueue(
             id = currentLogId,
             isPaused = true,
             pausedAt = commandAt,
@@ -620,13 +654,14 @@ class TimerService : Service() {
                 activeElapsedMillis = activeElapsed
             ),
             resumedSegment = null
-        )
+        ) }
 
         activeElapsedAtAnchor = activeElapsed
         elapsedRealtimeAnchor = null
         isPaused = true
         pausedAt = commandAt
         nextCommandSequence = sequence + 1
+        activeAuthority = timerWriter.capture(habitId)
         notifyWidgetUpdate()
         autoSyncCoordinator.enqueueNow()
         updateNotification()
@@ -647,7 +682,7 @@ class TimerService : Service() {
         val resumedBootCount = currentBootCount()
         val sessionUuid = requireNotNull(timerSessionUuid)
         val sequence = nextCommandSequence
-        timeLogDao.updatePauseAndQueue(
+        timerWriter.write(habitId, actionAuthority) { timeLogDao.updatePauseAndQueue(
             id = currentLogId,
             isPaused = false,
             pausedAt = null,
@@ -663,7 +698,7 @@ class TimerService : Service() {
                 sequence = sequence,
                 startedAt = resumedAt
             )
-        )
+        ) }
 
         accumulatedPauseDuration = resumedAccumulatedPause
         isPaused = false
@@ -671,6 +706,7 @@ class TimerService : Service() {
         elapsedRealtimeAnchor = resumedElapsedAnchor
         timerBootCount = resumedBootCount
         nextCommandSequence = sequence + 1
+        activeAuthority = timerWriter.capture(habitId)
         notifyWidgetUpdate()
         autoSyncCoordinator.enqueueNow()
         updateNotification()
@@ -705,7 +741,8 @@ class TimerService : Service() {
                 habitId,
                 targetMinutes,
                 remainingOrElapsedSeconds,
-                isCountdown
+                isCountdown,
+                actionAuthority
             )
             startActivity(intent)
             return  // Don't stop the timer, let user decide
@@ -723,7 +760,7 @@ class TimerService : Service() {
                 .coerceIn(0, Int.MAX_VALUE.toLong()).toInt()
 
             // Clamp duration to safe limit to prevent abnormal values from system date changes
-            val safeDurationLimit = calculateSafeDurationLimit(isCountdown, targetMinutes)
+            val safeDurationLimit = maximumDurationSeconds ?: calculateSafeDurationLimit(isCountdown, targetMinutes)
             val durationSeconds = rawDurationSeconds.coerceAtMost(safeDurationLimit)
             val activeElapsedMillis = rawActiveElapsedMillis.coerceAtMost(
                 safeDurationLimit * 1_000L
@@ -740,7 +777,7 @@ class TimerService : Service() {
 
             val sessionUuid = requireNotNull(timerSessionUuid)
             val sequence = nextCommandSequence
-            timeLogDao.finishTimerAndQueue(
+            timerWriter.write(habitId, actionAuthority) { timeLogDao.finishTimerAndQueue(
                 id = logIdToStop,
                 endTime = endTime,
                 durationSeconds = durationSeconds,
@@ -753,8 +790,9 @@ class TimerService : Service() {
                 ),
                 wasPaused = isPaused
             )
+            persistDayAllocations(logIdToStop) }
             nextCommandSequence = sequence + 1
-            persistDayAllocations(logIdToStop)
+            timerWriter.publish(stoppedHabitId, actionAuthority) {
             autoSyncCoordinator.enqueueNow()
 
             // Check if this habit has linked metrics with promptOnComplete=true
@@ -802,6 +840,7 @@ class TimerService : Service() {
             }
             // Notify all widgets to update (Progress, Motivation, etc.)
             WidgetRefreshScheduler.request(this@TimerService)
+            }
         }
 
         clearState()
@@ -835,7 +874,7 @@ class TimerService : Service() {
                     System.currentTimeMillis(),
                     (logToDelete.timerLastCommandAt ?: logToDelete.startTime) + 1
                 )
-                timeLogDao.deleteTimerAndQueue(
+                timerWriter.write(habitId, actionAuthority) { timeLogDao.deleteTimerAndQueue(
                     logToDelete,
                     timerCommand(
                         logToDelete.uuid,
@@ -844,7 +883,7 @@ class TimerService : Service() {
                         commandAt,
                         logToDelete.timerControlGeneration
                     )
-                )
+                ) }
             }
             autoSyncCoordinator.enqueueNow()
         }
@@ -863,11 +902,19 @@ class TimerService : Service() {
     }
 
     private suspend fun stopIfNoPersistedTimer() {
-        val persisted = timeLogDao.getActiveTimeLog()
-        if (persisted != null && restoreState(persisted)) {
+        val restored = try {
+            val persisted = timeLogDao.getActiveTimeLog()
+            persisted != null && restoreState(persisted)
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            Log.e(TAG, "Timer recovery rejected; persistent state retained", error)
+            false
+        }
+        if (restored) {
             updateNotification()
             startTicker()
         } else {
+            clearState()
             stopServiceAndClearNotification()
         }
     }
@@ -899,6 +946,8 @@ class TimerService : Service() {
         timerBootCount = null
         targetReachedNotified = false
         lastHeartbeatAttemptAt = 0L
+        activeAuthority = null
+        maximumDurationSeconds = null
     }
 
     /**
@@ -911,7 +960,8 @@ class TimerService : Service() {
             isPaused = isPaused,
             targetMinutes = targetMinutes,
             isCountdown = isCountdown,
-            habitId = habitId
+            habitId = habitId,
+            authority = activeAuthority
         )
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -936,7 +986,8 @@ class TimerService : Service() {
             isPaused = isPaused,
             targetMinutes = targetMinutes,
             isCountdown = isCountdown,
-            habitId = habitId
+            habitId = habitId,
+            authority = activeAuthority
         )
         notificationManager.notify(NOTIFICATION_ID, notification)
     }

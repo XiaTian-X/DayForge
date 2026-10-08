@@ -35,7 +35,7 @@ internal class NextTimerRequestStore(
         }
         if (saved != null) return acceptResult(access, id, saved.result, saved.transmissionProof)
         // Order is proved in the first journal transaction. Frozen unknown results remain exact replay.
-        val delivered = requests.sendCommand(access, id, ::requireHead) ?: return null
+        val delivered = requests.sendCommand(access, id) { requireHead(it, access) } ?: return null
         return accept(delivered)
     }
 
@@ -46,7 +46,7 @@ internal class NextTimerRequestStore(
     }
 
     internal suspend fun send(access: LocalSyncAccess, id: String): NextCoreDelivery<TimerCommandBatchResponse>? =
-        requests.sendCommand(access, id, ::requireHead)
+        requests.sendCommand(access, id) { requireHead(it, access) }
 
     /** Actual queue drain for the later unified scheduler; a rejection does not silently delete an intent. */
     suspend fun pushPending(access: LocalSyncAccess): Int {
@@ -94,7 +94,7 @@ internal class NextTimerRequestStore(
             }
             require(requests.requireTimerOriginInTransaction(access, id) == origin)
             val queue = requireNotNull(database.timeLogDao().getTimerCommand(origin.queueId))
-            requireHead(queue)
+            requireHead(queue, access)
             val sources = NextRequestSql.sources(sql, "timer_command_outbox")
             val local = database.timeLogDao().getTimeLogByUuid(command.sessionId)
             val segments = database.timeLogDao().getTimerSegments(command.sessionId)
@@ -182,7 +182,17 @@ internal class NextTimerRequestStore(
         return found
     }
 
-    private suspend fun requireHead(command: TimerCommandEntity) {
+    internal suspend fun hasAcceptedStartInTransaction(access: LocalSyncAccess, id: String): Boolean {
+        check(database.inTransaction())
+        if (hash("next_acceptances", id) == null) return false
+        val saved = receipt(access, id)
+        require(saved.command.commandType == "start")
+        return true
+    }
+
+    private suspend fun requireHead(command: TimerCommandEntity, access: LocalSyncAccess) {
+        if (command.commandType == "start")
+            NextTimerOrderingStore(database, tokens, sessions, requests).requireStartReady(command, access)
         val sql = database.openHelper.writableDatabase
         NextRequestSql.sources(sql, "timer_command_outbox")
         val ids = sql.query("SELECT id FROM timer_command_outbox WHERE sessionUuid=? AND sequence<? LIMIT 10001",

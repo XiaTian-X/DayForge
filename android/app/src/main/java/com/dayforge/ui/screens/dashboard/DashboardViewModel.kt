@@ -110,11 +110,14 @@ class DashboardViewModel @Inject constructor(
     // Use getActiveTimeLogFlow() as trigger - it changes when timer starts (INSERT) or stops (UPDATE sets endTime)
     // Use dateChangeTrigger to refresh when date changes (user opens app on new day)
     // Use filterMode to switch between different display modes (all, time_window, checkable, terminated)
+    private val readMonitor = com.dayforge.ui.DataReadMonitor(TAG)
+    val readError = readMonitor.error
+    fun retryRead() = readMonitor.retry()
     private val baseCombineFlow = combine(
         habitRepository.allHabits,
         allCompletions,
         timeLogDao.getActiveTimeLogFlow(),  // Triggers when timer state changes (start/stop)
-        preferencesManager.dateChangeTrigger,  // Triggers when date changes
+        preferencesManager.dateChangeTrigger,
         preferencesManager.filterMode  // Triggers when filter mode changes
     ) { habits, completions, _, _, filterModeValue ->
         DashboardHabitListInput(
@@ -124,8 +127,8 @@ class DashboardViewModel @Inject constructor(
         )
     }
 
-    val habitsWithStats: StateFlow<List<HabitWithStats>> = combine(
-        baseCombineFlow,
+    val habitsWithStats: StateFlow<List<HabitWithStats>> = readMonitor.recover(emptyList()) { combine(
+        combine(baseCombineFlow, habitRepository.oneTimeChanges, habitRepository.countChanges) { data, _, _ -> data },
         timeWindowTickFlow,
         pendingMetricHabits
     ) { input, _, pendingMetricHabitIds ->
@@ -134,14 +137,14 @@ class DashboardViewModel @Inject constructor(
             "habitsWithStats combine triggered: habits=${input.habits.size}, " +
                 "completions=${input.completions.size}, filterMode=${input.filterMode.value}"
         )
-        dashboardHabitListBuilder.build(
+        readMonitor.read(emptyList()) { dashboardHabitListBuilder.build(
             habits = input.habits,
             completions = input.completions,
             filterMode = input.filterMode,
             currentTime = ZonedDateTime.now(ZoneId.systemDefault()),
             pendingMetricHabitIds = pendingMetricHabitIds
-        )
-    }
+        ) }
+    } }
         .onEach { _isInitialized.value = true }
         .stateIn(
             scope = viewModelScope,
@@ -233,8 +236,13 @@ class DashboardViewModel @Inject constructor(
      * @param targetMinutes Target duration in minutes
      */
     fun startTimer(habitId: Long, targetMinutes: Int) {
+        val authority = habitsWithStats.value.find { it.habit.id == habitId }?.timerAuthority
         viewModelScope.launch {
-            timerCoordinator.startTimer(habitId, targetMinutes)
+            try { timerCoordinator.startTimer(habitId, targetMinutes, authority) }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                Toast.makeText(context, context.getString(R.string.metric_error_record_failed, error.message.orEmpty()), Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -262,9 +270,14 @@ class DashboardViewModel @Inject constructor(
     fun stopTimer() {
         val currentState = activeTimerState.value ?: return
         viewModelScope.launch {
-            linkedMetricCoordinator.showPromptAfterTimerStop(
-                timerCoordinator.stopTimer(currentState)
-            )
+            try {
+                linkedMetricCoordinator.showPromptAfterTimerStop(
+                    timerCoordinator.stopTimer(currentState), currentState.authority
+                )
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                Toast.makeText(context, context.getString(R.string.metric_error_record_failed, error.message.orEmpty()), Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -334,7 +347,7 @@ class DashboardViewModel @Inject constructor(
     suspend fun checkAndShowPostCheckInDialog(habitId: Long, habitName: String) {
         val habit = habitDao.getHabitById(habitId)
         val isTempTask = habit?.let { h ->
-            h.targetCycles == 1 && h.failMode == com.dayforge.data.model.FailMode.LOOSE && h.habitType == HabitType.CHECK_IN && h.iconResId == 53
+            h.completionPolicy == null && h.targetCycles == 1 && h.failMode == com.dayforge.data.model.FailMode.LOOSE && h.habitType == HabitType.CHECK_IN && h.iconResId == 53
         } ?: false
         linkedMetricCoordinator.showPromptIfNeeded(habitId, habitName, isTempTask)
     }
@@ -348,8 +361,10 @@ class DashboardViewModel @Inject constructor(
      */
     suspend fun recordMetricValues(
         habitId: Long,
-        values: List<MetricValueInput>
-    ): Boolean = linkedMetricCoordinator.recordMetricValues(habitId, values)
+        values: List<MetricValueInput>,
+        expectedEventUuid: String? = null,
+        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null
+    ): Boolean = linkedMetricCoordinator.recordMetricValues(habitId, values, expectedEventUuid, expectedTimerPrompt)
 
     /**
      * Set "never ask again" preference for a habit's metric prompt.
@@ -358,15 +373,41 @@ class DashboardViewModel @Inject constructor(
      * @param habitId The ID of the habit
      * @param value True to suppress future prompts
      */
-    suspend fun setNeverAskAgain(habitId: Long, value: Boolean) {
-        linkedMetricCoordinator.setNeverAskAgain(habitId, value)
+    suspend fun setNeverAskAgain(habitId: Long, value: Boolean, expectedEventUuid: String? = null,
+        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null) {
+        linkedMetricCoordinator.setNeverAskAgain(habitId, value, expectedEventUuid, expectedTimerPrompt)
     }
 
     /**
      * Dismiss the post-check-in dialog.
      */
     fun dismissPostCheckInDialog() {
-        linkedMetricCoordinator.dismissPrompt()
+        viewModelScope.launch { linkedMetricCoordinator.closePrompt() }
+    }
+
+    suspend fun skipPostCheckInDialog(habitId: Long, expectedEventUuid: String? = null,
+        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null) = linkedMetricCoordinator.skipPrompt(habitId, expectedEventUuid, expectedTimerPrompt)
+
+    fun refreshPostCheckInMetadata() {
+        viewModelScope.launch {
+            try { linkedMetricCoordinator.refreshPrompt() }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                android.widget.Toast.makeText(context, context.getString(com.dayforge.R.string.metric_error_record_failed,
+                    error.message.orEmpty()), android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    fun savePostCheckInDraft(eventUuid: String, inputs: List<com.dayforge.ui.components.MetricInputState>) {
+        viewModelScope.launch {
+            try { linkedMetricCoordinator.savePromptDraft(eventUuid, inputs) }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                android.widget.Toast.makeText(context, context.getString(com.dayforge.R.string.metric_error_record_failed,
+                    error.message.orEmpty()), android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     // ========== Goal Completion Dialog Methods ==========
@@ -447,25 +488,34 @@ class DashboardViewModel @Inject constructor(
     // ========== Habit Operations ==========
 
     fun deleteHabit(habit: HabitEntity) {
-        viewModelScope.launch {
+        runDeletion {
             deletionCoordinator.requestDeletion(habit)
         }
     }
 
     fun deleteHabitWithChildren() {
-        viewModelScope.launch {
+        runDeletion {
             deletionCoordinator.deleteWithChildren()
         }
     }
 
     fun deleteHabitKeepChildren() {
-        viewModelScope.launch {
+        runDeletion {
             deletionCoordinator.deleteKeepingChildren()
         }
     }
 
     fun dismissChildrenDialog() {
         deletionCoordinator.dismissDeletion()
+    }
+
+    private fun runDeletion(action: suspend () -> Unit) {
+        viewModelScope.launch {
+            try { action() } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                Toast.makeText(context, context.getString(R.string.goal_delete_failed, error.message), Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     /**
@@ -502,11 +552,13 @@ class DashboardViewModel @Inject constructor(
      * For temporary tasks: deletes after completion if no linked metrics.
      */
     fun checkIn(habitId: Long) {
-        viewModelScope.launch {
+        val displayed = habitsWithStats.value.find { it.habit.id == habitId }
+        launchCompletion {
             val outcome = completionCoordinator.checkIn(
                 habitId = habitId,
                 finalizeTemporaryTasks = true,
-                displayedHabit = { habitsWithStats.value.find { it.habit.id == habitId }?.habit }
+                displayedHabit = { displayed?.habit },
+                oneTimeAuthority = displayed?.oneTimeStatus?.authority
             )
             outcome.goalProgress?.let { progress -> onGoalReached(habitId, progress) }
             if (outcome.shouldDeleteTemporaryTask) {
@@ -519,14 +571,27 @@ class DashboardViewModel @Inject constructor(
     }
 
     fun logCompletion(habitId: Long, value: Int = 1) {
-        viewModelScope.launch {
+        launchCompletion {
             completionCoordinator.recordCompletion(habitId, value)
         }
     }
 
     fun undoCompletion(completionId: Long) {
+        val authority = habitsWithStats.value.find { it.lastCompletionId == completionId }?.oneTimeStatus?.authority
+        launchCompletion {
+            completionCoordinator.undoCompletion(completionId, authority)
+        }
+    }
+
+    private fun launchCompletion(block: suspend () -> Unit) {
         viewModelScope.launch {
-            completionCoordinator.undoCompletion(completionId)
+            try { block() }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                Log.e(TAG, "Completion operation failed", error)
+                android.widget.Toast.makeText(context, context.getString(com.dayforge.R.string.metric_error_record_failed,
+                    error.message.orEmpty()), android.widget.Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -537,7 +602,7 @@ class DashboardViewModel @Inject constructor(
      * Triggers post-check-in dialog for linked metrics.
      */
     fun incrementCount(habitId: Long) {
-        viewModelScope.launch {
+        launchCompletion {
             val outcome = completionCoordinator.incrementCount(habitId) {
                 habitsWithStats.value.find { it.habit.id == habitId }?.habit
             }
@@ -554,7 +619,7 @@ class DashboardViewModel @Inject constructor(
      * Triggers goal completion dialog if targetCycles reached.
      */
     fun decrementCount(habitId: Long) {
-        viewModelScope.launch {
+        launchCompletion {
             completionCoordinator.decrementCount(habitId).goalProgress
                 ?.let { progress -> onGoalReached(habitId, progress) }
         }

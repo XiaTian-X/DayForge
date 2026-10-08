@@ -476,6 +476,9 @@ async def test_full_timer_state_machine_lost_response_replay_uses_new_namespace(
             active_elapsed_ms=60000,
         ),
     ]
+    commands[0]["start_policy"] = dict(
+        target_seconds=60, is_countdown=False, max_duration_seconds=180
+    )
     body = dict(device_id=device, commands=commands)
     first = await client.post("/__test/v5/timers", headers=headers, json=body)
     again = await client.post("/__test/v5/timers", headers=headers, json=body)

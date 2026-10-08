@@ -11,6 +11,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 internal class NextStructuralCausalConflict(val fields: List<String>) : IllegalStateException("Structural causal conflict")
 
@@ -42,7 +43,9 @@ internal object NextStructuralRebase {
         submittedPredecessor: SyncV2Operation = predecessor): SyncV2Operation {
         require(isContractUuid(replacementId) && replacementId != predecessor.operationId && replacementId != successor.operationId)
         require(predecessor.operationId != successor.operationId && predecessor.entityType == successor.entityType &&
-            predecessor.entityUuid == successor.entityUuid && predecessor.action == "upsert" && successor.action == "upsert")
+            predecessor.entityUuid == successor.entityUuid && predecessor.action == "upsert" &&
+            (successor.action == "upsert" || successor.action == "delete" &&
+                successor.entityType in setOf("plan_node", "activity_metric_link")))
         val paths = when (predecessor.entityType) {
             "plan_node" -> planPaths
             "metric" -> metricPaths
@@ -50,7 +53,10 @@ internal object NextStructuralRebase {
             else -> error("Only ordinary structural upserts can be rebased")
         }
         validateWrite(predecessor.entityType, predecessor.entityUuid, predecessor.payload)
-        validateWrite(successor.entityType, successor.entityUuid, successor.payload)
+        if (successor.action == "upsert") validateWrite(successor.entityType, successor.entityUuid, successor.payload)
+        else require(if (predecessor.payload["node_kind"] == JsonPrimitive("goal"))
+            successor.payload.keys == setOf("child_policy") && successor.payload["child_policy"] in
+                setOf(JsonPrimitive("cascade_children"), JsonPrimitive("detach_children")) else successor.payload.isEmpty())
         // A preceding logical intent may itself have a replacement. Keep its ORIGINAL local
         // baseline, but bind the receipt to the actually submitted operation, never to a guessed ID.
         require(submittedPredecessor.entityType == predecessor.entityType &&
@@ -72,6 +78,22 @@ internal object NextStructuralRebase {
                 NextCommonFactMapper.validateLinkSnapshot(SyncV2Change(0, predecessor.entityType, predecessor.entityUuid,
                     "upsert", confirmed.revision, canonical, updated))
             }
+        }
+        if (successor.action == "delete") {
+            // Only an explicit NEW, never-transmitted delete can inherit its own proven predecessor ACK.
+            // Retain the exact child policy; do not infer a base from a mutable current shadow.
+            if (predecessor.entityType == "plan_node") {
+                require(predecessor.payload["node_kind"] == canonical["node_kind"] &&
+                    predecessor.payload["node_kind"] == submittedPredecessor.payload["node_kind"] &&
+                    Instant.parse(predecessor.payload.getValue("created_at").jsonPrimitive.content) ==
+                        Instant.parse(canonical.getValue("created_at").jsonPrimitive.content) &&
+                    Instant.parse(predecessor.payload.getValue("created_at").jsonPrimitive.content) ==
+                        Instant.parse(submittedPredecessor.payload.getValue("created_at").jsonPrimitive.content))
+            } else for (key in listOf("activity_uuid", "metric_uuid")) {
+                require(predecessor.payload[key] == canonical[key] &&
+                    predecessor.payload[key] == submittedPredecessor.payload[key])
+            }
+            return successor.copy(operationId = replacementId, baseRevision = confirmed.revision)
         }
         require(predecessor.payload.keys == successor.payload.keys && canonical.keys.containsAll(predecessor.payload.keys))
         var merged = JsonObject(canonical.filterKeys { it in predecessor.payload.keys })
@@ -112,8 +134,7 @@ internal object NextStructuralRebase {
         when (type) {
             "plan_node" -> {
                 NextStructureMapper.validatePlanWrite(body, uuid)
-                // Its stateful chain/strict acceptance is handled by the separate one-time path.
-                require((body["activity"] as? JsonObject)?.get("completion_policy") != JsonPrimitive("one_and_done"))
+                // This is structure only: the confirmed one-time projection is never in a write payload.
             }
             "metric" -> NextStructureMapper.validateMetricWrite(body)
             "activity_metric_link" -> NextCommonFactMapper.validateLinkWrite(body)

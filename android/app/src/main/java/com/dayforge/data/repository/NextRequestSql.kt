@@ -14,7 +14,7 @@ internal const val NEXT_TIMER = "timer_command"
 internal class NextRequestException(val reason: Reason) : IllegalStateException(reason.name) {
     enum class Reason { STALE_ACCESS, PERMISSION_DENIED, INVALID_LOCAL_STATE, OLD_INTENT,
         SOURCE_CHANGED, TRANSMISSION_CONTEXT_CHANGED, REQUEST_ID_REUSED, UNSUPPORTED_ACCEPTANCE, RESULT_CHANGED,
-        CAUSAL_PREDECESSOR_PENDING }
+        CAUSAL_PREDECESSOR_PENDING, TIMER_START_CONFIG_CHANGED, COUNT_START_CONFIG_CHANGED }
 }
 
 internal fun rejectNextRequest(reason: NextRequestException.Reason): Nothing = throw NextRequestException(reason)
@@ -65,12 +65,13 @@ internal object NextRequestSql {
         if (!enabled) rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
     }
 
-    private val ints = setOf("protocol", "attemptCount", "sequence", "expectedControlGeneration", "expectedRevision")
+    private val ints = setOf("protocol", "attemptCount", "sequence", "expectedControlGeneration", "expectedRevision", "targetValue")
     private val longs = ints + setOf("id", "queueId", "baseRevision", "attemptedAt", "deadLetteredAt", "createdAt",
-        "occurredAt", "activeElapsedMillis", "revision", "deleted", "updatedAt", "logicalOrder", "originalQueueId", "replacementQueueId", "generation", "cursor")
+        "occurredAt", "activeElapsedMillis", "revision", "deleted", "updatedAt", "logicalOrder", "originalQueueId", "replacementQueueId", "generation", "cursor",
+        "habitId", "isCountdown", "planQueueWatermark")
     private val tables = setOf("sync_outbox", "timer_command_outbox", "next_request_origins", "next_transmissions", "next_acceptances",
         "sync_entity_state", "next_structural_dependencies", "next_structural_supersessions",
-        "local_fact_submissions", "one_time_transmissions", "next_sync_state", "next_rejections")
+        "local_fact_submissions", "one_time_transmissions", "next_sync_state", "next_rejections", "count_days")
     fun table(kind: String): String = when (kind) {
         NEXT_OPERATION -> "sync_outbox"
         NEXT_TIMER -> "timer_command_outbox"
@@ -176,6 +177,10 @@ internal object NextRequestSql {
                         if (name in ints && value !in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong())
                             rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
                         if (name == "deleted" && value !in 0..1) rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
+                        if (table == "count_days" && (name == "isCountdown" && value !in 0..1 ||
+                            name == "targetValue" && value <= 0 || name == "habitId" && value <= 0 ||
+                            name == "planQueueWatermark" && value < 0))
+                            rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
                         bytes(ByteBuffer.allocate(8).putLong(value).array())
                     }
                     Cursor.FIELD_TYPE_BLOB -> bytes(c.getBlob(i))

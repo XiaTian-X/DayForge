@@ -47,6 +47,7 @@ internal class NextCoreLocalIntentStore(
             val expectedSources = tables.associateWith { NextRequestSql.sources(sql, it) }
             val createdOrigins = mutableMapOf<Pair<String, String>, String>()
             val createdDependencies = mutableMapOf<String, String>()
+            val countDays = mutableMapOf<Pair<Long, String>, String>()
             val causal = NextStructuralCausalStore(database)
             for ((index, table) in tables.withIndex()) {
                 val after = NextRequestSql.sources(sql, table)
@@ -68,6 +69,16 @@ internal class NextCoreLocalIntentStore(
                         requestId = row.operationId
                         permission = if (row.recordType in setOf("completion", "metric_log")) "facts.append" else "structure.write"
                         val operation = operation(row)
+                        if (operation.action == "upsert") {
+                            val deleted = NextPlanDeletionStore(database)
+                            if (operation.entityType == "plan_node") {
+                                deleted.requireWritable(operation.entityUuid)
+                                operation.payload["parent_uuid"]?.takeUnless { it == JsonNull }?.jsonPrimitive?.content
+                                    ?.let { deleted.requireWritable(it) }
+                            } else if (operation.entityType in setOf("activity_event", "activity_metric_link")) {
+                                deleted.requireWritable(operation.payload.getValue("activity_uuid").jsonPrimitive.content)
+                            }
+                        }
                         bytes = encodeSyncRequest(SyncV2Operation.serializer(), operation)
                         decodeFrozenSyncRequest(bytes, SyncV2Operation.serializer())
                         // Prove full-envelope limits while still able to roll back the local write.
@@ -81,9 +92,19 @@ internal class NextCoreLocalIntentStore(
                         if (row.attemptCount != 0 || row.deadLetteredAt != null || row.lastError != null || row.errorCode != null)
                             rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
                         requestId = row.commandId; permission = "timer.control"
-                        val command = timerRequest(row)
-                        bytes = encodeSyncRequest(TimerCommandRequest.serializer(), command)
-                        decodeFrozenSyncRequest(bytes, TimerCommandRequest.serializer())
+                        val originalCommand = timerRequest(row)
+                        val intent = if (row.commandType == "start")
+                            NextTimerPolicyStore(database).capture(originalCommand, access)
+                            else NextTimerIntent(originalCommand)
+                        val command = intent.command
+                        val activity = row.activityUuid ?: database.timeLogDao().getTimeLogByUuid(row.sessionUuid)?.let {
+                            database.habitDao().getHabitById(it.habitId)?.uuid
+                        }
+                        activity?.let { NextPlanDeletionStore(database).requireWritable(it) }
+                        bytes = if (command.startPolicy != null)
+                            encodeSyncRequest(NextTimerIntent.serializer(), intent)
+                            else encodeSyncRequest(TimerCommandRequest.serializer(), command)
+                        decodeNextTimerIntent(bytes.toString(Charsets.UTF_8))
                         val envelope = encodeSyncRequest(TimerCommandBatchRequest.serializer(),
                             TimerCommandBatchRequest(SIZE_DEVICE, listOf(command)))
                         decodeFrozenSyncRequest(envelope, TimerCommandBatchRequest.serializer())
@@ -101,6 +122,15 @@ internal class NextCoreLocalIntentStore(
                     check(dao.origin(kind, requestId) == origin)
                     if (kind == NEXT_OPERATION) causal.capture(origin,
                         decodeFrozenSyncRequest(bytes, SyncV2Operation.serializer()), access)
+                    if (kind == NEXT_OPERATION) {
+                        val operation = decodeFrozenSyncRequest(bytes, SyncV2Operation.serializer())
+                        NextCountDayStore(database).bind(origin, operation, access)
+                        if ("count_policy" in operation.payload) {
+                            val habit = requireNotNull(database.habitDao().getHabitByUuid(operation.payload.getValue("activity_uuid").jsonPrimitive.content))
+                            val date = operation.payload.getValue("local_date").jsonPrimitive.content
+                            countDays[habit.id to date] = requireNotNull(NextRequestSql.rowHash(sql, "count_days", "habitId=? AND localDate=?", arrayOf(habit.id, date)))
+                        }
+                    }
                     createdOrigins[kind to requestId] = requireNotNull(NextRequestSql.rowHash(sql,
                         "next_request_origins", "kind=? AND requestId=?", arrayOf(kind, requestId)))
                     if (kind == NEXT_OPERATION) NextRequestSql.rowHash(sql, "next_structural_dependencies", "operationId=?", arrayOf(requestId))
@@ -113,6 +143,10 @@ internal class NextCoreLocalIntentStore(
             for ((id, hash) in createdDependencies) {
                 check(NextRequestSql.rowHash(sql, "next_structural_dependencies", "operationId=?", arrayOf(id)) == hash)
                 causal.auditCaptured(id, access)
+            }
+            for ((key, hash) in countDays) {
+                check(NextRequestSql.rowHash(sql, "count_days", "habitId=? AND localDate=?", arrayOf(key.first, key.second)) == hash)
+                requireNotNull(NextCountDayStore(database).read(requireNotNull(database.habitDao().getHabitById(key.first)), key.second))
             }
             NextRequestSql.requireOutboxEnabled(sql)
             if (tokens.localCoreWriteAccess() != access) rejectNextRequest(NextRequestException.Reason.STALE_ACCESS)
@@ -144,7 +178,7 @@ internal class NextCoreLocalIntentStore(
             }
         } else if (row.action == "delete") {
             require(row.recordType in setOf("habit", "metric", "metric_log", "link"))
-            SyncV2Mapper.deletePayload(row.recordType, row.referenceUuid)
+            NextPlanDeletionStore.payload(row) ?: SyncV2Mapper.deletePayload(row.recordType, row.referenceUuid)
         } else when (row.recordType) {
             "habit" -> NextStructureMapper.writePlan(requireNotNull(database.habitDao().getHabitByUuid(row.entityUuid)))
             "metric" -> NextStructureMapper.writeMetric(requireNotNull(database.metricDao().getMetricByUuid(row.entityUuid)))
@@ -154,7 +188,11 @@ internal class NextCoreLocalIntentStore(
                 require(habit.habitType in setOf(HabitType.CHECK_IN, HabitType.COUNTING) && habit.completionPolicy == "recurring" &&
                     fact.oneTimeAction == null && fact.oneTimeExpectedVersion == null &&
                     fact.oneTimeExpectedHeadEventUuid == null && fact.oneTimeRevertsEventUuid == null)
-                SyncV2Mapper.completion(fact, habit)
+                val body = SyncV2Mapper.completion(fact, habit)
+                if (habit.habitType == HabitType.COUNTING && habit.appearance != null) {
+                    val day = requireNotNull(NextCountDayStore(database).read(habit, fact.recordedLocalDate, allowUnbound = true))
+                    JsonObject(body + ("count_policy" to day.policy.toJson()))
+                } else body
             }
             "metric_log" -> {
                 val fact = requireNotNull(database.metricLogDao().getLogByUuid(row.entityUuid))

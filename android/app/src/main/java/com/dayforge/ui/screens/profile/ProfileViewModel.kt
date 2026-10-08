@@ -25,7 +25,8 @@ import javax.inject.Inject
 class ProfileViewModel @Inject constructor(
     private val habitRepository: HabitRepository,
     private val timeLogDao: TimeLogDao,
-    private val habitStatusCalculator: HabitStatusCalculator
+    private val habitStatusCalculator: HabitStatusCalculator,
+    private val preferencesManager: com.dayforge.data.local.PreferencesManager
 ) : ViewModel() {
 
     // Track if data has been loaded at least once
@@ -37,15 +38,20 @@ class ProfileViewModel @Inject constructor(
      * Uses HabitStatusCalculator for consistent status calculation.
      * Filters out non-check-in days, failed habits, and goal-completed habits.
      */
-    val todayProgress: StateFlow<Pair<Int, Int>> = combine(
+    private val readMonitor = com.dayforge.ui.DataReadMonitor("ProfileViewModel")
+    val readError = readMonitor.error
+    fun retryRead() = readMonitor.retry()
+    val todayProgress: StateFlow<Pair<Int, Int>> = readMonitor.recover(0 to 0) { combine(
         habitRepository.allHabits,
-        habitRepository.getAllCompletions(),
+        combine(habitRepository.getAllCompletions(), habitRepository.countChanges,
+            habitRepository.oneTimeChanges,
+            preferencesManager.dateChangeTrigger) { rows, _, _, _ -> rows },
         timeLogDao.getActiveTimeLogFlow()
     ) { habits, completions, _ ->
         // Calculate status for each habit
-        val stats = habits.map { habit ->
+        val stats = readMonitor.read(emptyList()) { habits.map { habit ->
             habitStatusCalculator.calculate(habit, completions, null)
-        }
+        } }
 
         // Filter eligible habits (check-in day + not failed + not goal-completed)
         val eligibleStats = stats.filter { it.shouldCountToday }
@@ -53,7 +59,7 @@ class ProfileViewModel @Inject constructor(
         // Count completed
         val completed = eligibleStats.count { it.completedToday }
         Pair(completed, eligibleStats.size)
-    }
+    } }
         .onEach { _isInitialized.value = true }
         .stateIn(
         scope = viewModelScope,

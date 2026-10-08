@@ -21,7 +21,6 @@ import com.dayforge.data.local.dao.MetricLogDao
 import com.dayforge.data.local.dao.TimeLogDao
 import com.dayforge.data.local.dao.SyncConflictDao
 import com.dayforge.data.local.dao.SyncOutboxDao
-import com.dayforge.data.repository.HabitRepository
 import com.dayforge.domain.service.StructuralEditGuard
 import com.dayforge.data.repository.IncrementalSyncRepository
 import com.dayforge.data.repository.SyncV2Merger
@@ -95,18 +94,6 @@ abstract class DatabaseModule {
 
         @Provides
         @Singleton
-        fun provideHabitRepository(
-            habitDao: HabitDao,
-            completionDao: CompletionDao,
-            timeLogDao: TimeLogDao,
-            database: HabitDatabase,
-            structuralEditGuard: StructuralEditGuard
-        ): HabitRepository {
-            return HabitRepository(habitDao, completionDao, timeLogDao, database, structuralEditGuard)
-        }
-
-        @Provides
-        @Singleton
         fun provideDataStore(@ApplicationContext context: Context): DataStore<Preferences> {
             // Use singleton DataStoreProvider to avoid "multiple DataStores active" error
             return DataStoreProvider.get(context.applicationContext)
@@ -118,8 +105,8 @@ abstract class DatabaseModule {
 
         @Provides
         @Singleton
-        fun providePreferencesManager(dataStore: DataStore<Preferences>): PreferencesManager {
-            return PreferencesManager(dataStore)
+        fun providePreferencesManager(dataStore: DataStore<Preferences>, calendar: com.dayforge.domain.service.DeviceCalendar): PreferencesManager {
+            return PreferencesManager(dataStore, calendar)
         }
 
         @Provides

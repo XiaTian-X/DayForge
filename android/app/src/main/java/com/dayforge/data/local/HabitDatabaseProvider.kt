@@ -17,7 +17,7 @@ object HabitDatabaseProvider {
     private fun build(context: Context): HabitDatabase =
         Room.databaseBuilder(context, HabitDatabase::class.java, DATABASE_NAME)
             // Unsupported development schemas/downgrades must fail, never erase production data.
-            .addMigrations(FactTimeMigration, OneTimePreparationMigration, CompletionFollowUpMigration, OneTimeTransmissionMigration, ObjectAppearanceMigration, PlanMetadataMigration, NextRecoveryMigration, NextRequestMigration, NextAcceptanceMigration, NextStructuralCausalMigration, NextSyncStateMigration)
+            .addMigrations(FactTimeMigration, OneTimePreparationMigration, CompletionFollowUpMigration, OneTimeTransmissionMigration, ObjectAppearanceMigration, PlanMetadataMigration, NextRecoveryMigration, NextRequestMigration, NextAcceptanceMigration, NextStructuralCausalMigration, NextSyncStateMigration, CountDayMigration)
             .addCallback(SyncSchemaCallback)
             .build()
 

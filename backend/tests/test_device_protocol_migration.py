@@ -50,8 +50,9 @@ def test_upgrade_preserves_all_legacy_rows_ddl_ids_and_unknown_proof_and_roundtr
 ):
     before = database_dump(previous)
     rows, objects = state(previous)
-    command.upgrade(alembic_config(str(previous)), "head")
-    command.check(alembic_config(str(previous)))
+    command.upgrade(alembic_config(str(previous)), "000000000006")
+    # This frozen test exercises revision 6, not today's model/head. The full
+    # chain/model check is covered by test_alembic_migration and count migration.
     current, current_objects = state(previous)
     assert current == rows | {
         "client_devices": [
@@ -85,7 +86,7 @@ def test_upgrade_preserves_all_legacy_rows_ddl_ids_and_unknown_proof_and_roundtr
 def test_database_rejects_invalid_bounds_or_non_numeric_evidence_without_change(
     previous, value
 ):
-    command.upgrade(alembic_config(str(previous)), "head")
+    command.upgrade(alembic_config(str(previous)), "000000000006")
     before = database_dump(previous)
     with closing(sqlite3.connect(previous)) as connection:
         with pytest.raises(
@@ -100,7 +101,7 @@ def test_database_rejects_invalid_bounds_or_non_numeric_evidence_without_change(
 
 @pytest.mark.parametrize("value", [4, 5, 6, 2_147_483_647])
 def test_recorded_evidence_cannot_be_dropped_by_downgrade(previous, value):
-    command.upgrade(alembic_config(str(previous)), "head")
+    command.upgrade(alembic_config(str(previous)), "000000000006")
     with closing(sqlite3.connect(previous)) as connection:
         connection.execute(
             "UPDATE client_devices SET registered_protocol_version=?", (value,)
@@ -127,12 +128,17 @@ def test_late_migration_failure_rolls_back_column_version_and_all_rows_then_retr
     event.listen(Engine, "before_cursor_execute", fail)
     try:
         with pytest.raises(RuntimeError, match="device proof checkpoint"):
-            command.upgrade(alembic_config(str(previous)), "head")
+            command.upgrade(alembic_config(str(previous)), "000000000006")
     finally:
         event.remove(Engine, "before_cursor_execute", fail)
     assert database_dump(previous) == before
-    command.upgrade(alembic_config(str(previous)), "head")
-    command.check(alembic_config(str(previous)))
+    command.upgrade(alembic_config(str(previous)), "000000000006")
+    # Verify the intended old endpoint without asking Alembic to compare it
+    # against newer counting models. Row/DDL preservation above remains exact.
+    with closing(sqlite3.connect(previous)) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == ("000000000006",)
 
 
 def test_offline_downgrade_cannot_bypass_proof_guard(tmp_path):
@@ -165,7 +171,7 @@ def test_registration_proof_roundtrips_without_guessing_or_changing_owned_identi
     before = database_dump(source)
     if kind == "physical":
         backup, _ = create_backup(source, tmp_path / "backups", kind="manual")
-        _, epoch = restore_backup(backup, target, expected_alembic_head="000000000006")
+        _, epoch = restore_backup(backup, target, expected_alembic_head="000000000007")
         with closing(sqlite3.connect(source)) as connection:
             old_epoch = connection.execute(
                 "SELECT sync_epoch FROM server_instances"

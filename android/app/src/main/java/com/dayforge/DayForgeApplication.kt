@@ -11,7 +11,6 @@ import androidx.core.os.LocaleListCompat
 import com.dayforge.data.local.DataStoreProvider
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.reminder.HabitReminderReceiver
-import com.dayforge.reminder.HabitReminderScheduler
 import com.dayforge.sync.AutoSyncCoordinator
 import com.dayforge.sync.AccountIconWorkCoordinator
 import com.dayforge.widget.WidgetRefreshScheduler
@@ -21,7 +20,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.util.Locale
 import javax.inject.Inject
@@ -34,6 +32,9 @@ class DayForgeApplication : Application() {
 
     @Inject
     lateinit var accountIconWorkCoordinator: AccountIconWorkCoordinator
+
+    @Inject
+    lateinit var habitReminderController: com.dayforge.reminder.HabitReminderController
 
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -54,20 +55,14 @@ class DayForgeApplication : Application() {
         // Independent failures/retries: material work never blocks the business sync worker.
         accountIconWorkCoordinator.start()
 
+        habitReminderController.start(applicationScope)
+
         // Recover presentation state after a process restart; work reads current Room data.
         WidgetRefreshScheduler.request(this)
 
         // Create notification channel for habit reminders
         createReminderNotificationChannel()
 
-        // Reschedule all habit reminders on app start (alarms are lost after device reboot)
-        applicationScope.launch {
-            try {
-                HabitReminderScheduler.rescheduleAllReminders(this@DayForgeApplication)
-            } catch (e: Exception) {
-                // Log error but continue - reminders will be rescheduled next app start
-            }
-        }
     }
 
     /**

@@ -51,43 +51,62 @@ object CountingSlotCalculator {
     ): List<CountingSlot> {
         if (targetValue <= 0) return emptyList()
 
-        val bestTime = bestTimeMinutes.toInt()
-        val currentMinutes = currentTime.hour * 60 + currentTime.minute
-
-        // Calculate interval between slots
-        // If bestTime is outside valid period, adjust it
-        val adjustedBestTime = bestTime.coerceIn(VALID_PERIOD_START, VALID_PERIOD_END)
-
-        // Interval in minutes between each slot
-        // For targetValue=8, interval = 960/8 = 120 minutes (2 hours)
-        val intervalMinutes = VALID_PERIOD_DURATION / targetValue
-
-        return (0 until targetValue).map { slotIndex ->
-            // Calculate slot time, capping at 23:00 boundary
-            val rawSlotTime = adjustedBestTime + intervalMinutes * slotIndex
-            val slotTime = rawSlotTime.coerceAtMost(VALID_PERIOD_END)
-
-            // Calculate window boundaries (±15 minutes)
-            val rawWindowStart = slotTime - SLOT_WINDOW_HALF_WIDTH
-            val rawWindowEnd = slotTime + SLOT_WINDOW_HALF_WIDTH
-
-            // Cap window end at 23:00 for midnight boundary handling
-            val windowStart = rawWindowStart.coerceAtLeast(VALID_PERIOD_START)
-            val windowEnd = rawWindowEnd.coerceAtMost(VALID_PERIOD_END)
-
-            // Determine slot status
-            val isPast = currentMinutes > windowEnd
-            val isCurrent = currentMinutes in windowStart..windowEnd
-
-            CountingSlot(
-                index = slotIndex,
-                slotTime = slotTime,
-                windowStart = windowStart,
-                windowEnd = windowEnd,
-                isCurrent = isCurrent,
-                isPast = isPast
-            )
+        // Preserve every logical slot, without allocating targetValue objects. Consumers which
+        // iterate time boundaries use distinctSlots; quantities and slot indices are not capped.
+        return object : AbstractList<CountingSlot>() {
+            override val size = targetValue
+            override fun get(index: Int): CountingSlot {
+                if (index !in 0 until size) throw IndexOutOfBoundsException("Slot $index outside target $size")
+                return requireNotNull(slotAt(bestTimeMinutes, targetValue, index, currentTime))
+            }
         }
+    }
+
+    fun slotAt(bestTimeMinutes: Long, targetValue: Int, index: Int, currentTime: ZonedDateTime): CountingSlot? {
+        if (targetValue <= 0 || index !in 0 until targetValue) return null
+        val bestTime = bestTimeMinutes.coerceIn(VALID_PERIOD_START.toLong(), VALID_PERIOD_END.toLong()).toInt()
+        val slotTime = (bestTime.toLong() + (VALID_PERIOD_DURATION / targetValue).toLong() * index)
+            .coerceAtMost(VALID_PERIOD_END.toLong()).toInt()
+        val start = (slotTime - SLOT_WINDOW_HALF_WIDTH).coerceAtLeast(VALID_PERIOD_START)
+        val end = (slotTime + SLOT_WINDOW_HALF_WIDTH).coerceAtMost(VALID_PERIOD_END)
+        val minutes = currentTime.hour * 60 + currentTime.minute
+        return CountingSlot(index, slotTime, start, end, minutes in start..end, minutes > end)
+    }
+
+    /** At most 961 distinct minute windows, retaining the first original index for each. */
+    fun distinctSlots(bestTimeMinutes: Long, targetValue: Int, currentTime: ZonedDateTime): List<CountingSlot> {
+        if (targetValue <= 0) return emptyList()
+        val result = ArrayList<CountingSlot>()
+        var index = 0
+        while (index < targetValue) {
+            val slot = requireNotNull(slotAt(bestTimeMinutes, targetValue, index, currentTime))
+            result += slot
+            index = lowerBound(targetValue) {
+                requireNotNull(slotAt(bestTimeMinutes, targetValue, it, currentTime)).slotTime > slot.slotTime
+            }
+        }
+        return result
+    }
+
+    /** Merge equal reminder starts, including the 07:00 clamp; keep all original indices. */
+    fun reminderWindows(bestTimeMinutes: Long, targetValue: Int, currentTime: ZonedDateTime): List<CountingReminderWindow> {
+        if (targetValue <= 0) return emptyList()
+        return distinctSlots(bestTimeMinutes, targetValue, currentTime).distinctBy { it.windowStart }.map { slot ->
+            val after = lowerBound(targetValue) {
+                requireNotNull(slotAt(bestTimeMinutes, targetValue, it, currentTime)).windowStart > slot.windowStart
+            }
+            CountingReminderWindow(slot.windowStart, slot.index, after - 1)
+        }
+    }
+
+    private fun lowerBound(size: Int, matches: (Int) -> Boolean): Int {
+        var low = 0
+        var high = size
+        while (low < high) {
+            val mid = low + (high - low) / 2
+            if (matches(mid)) high = mid else low = mid + 1
+        }
+        return low
     }
 
     /**
@@ -104,8 +123,12 @@ object CountingSlotCalculator {
         targetValue: Int,
         currentTime: ZonedDateTime
     ): CountingSlot? {
-        val slots = calculateSlots(bestTimeMinutes, targetValue, currentTime)
-        return slots.find { it.isCurrent }
+        if (targetValue <= 0) return null
+        val minutes = currentTime.hour * 60 + currentTime.minute
+        val index = lowerBound(targetValue) {
+            requireNotNull(slotAt(bestTimeMinutes, targetValue, it, currentTime)).windowEnd >= minutes
+        }
+        return slotAt(bestTimeMinutes, targetValue, index, currentTime)?.takeIf { it.isCurrent }
     }
 
     /**
@@ -144,13 +167,12 @@ object CountingSlotCalculator {
         completedToday: Int,
         currentTime: ZonedDateTime
     ): CountingSlot? {
-        val slots = calculateSlots(bestTimeMinutes, targetValue, currentTime)
-        // 找到第一个未完成的slot：slotIndex >= completedToday 且不是过去的
-        // 注意：completedToday是已完成次数（1,2,3...），slotIndex是0-based（0,1,2...）
-        // 所以 slot已完成 = completedToday > slotIndex
-        return slots
-            .filter { slot -> slot.index >= completedToday && !slot.isPast }
-            .minByOrNull { it.index }
+        if (targetValue <= 0) return null
+        val minutes = currentTime.hour * 60 + currentTime.minute
+        val firstNotPast = lowerBound(targetValue) {
+            requireNotNull(slotAt(bestTimeMinutes, targetValue, it, currentTime)).windowEnd >= minutes
+        }
+        return slotAt(bestTimeMinutes, targetValue, maxOf(firstNotPast, completedToday.coerceAtLeast(0)), currentTime)
     }
 
     /**
@@ -164,3 +186,5 @@ object CountingSlotCalculator {
         return completedToday > currentSlotIndex
     }
 }
+
+data class CountingReminderWindow(val minute: Int, val firstIndex: Int, val lastIndex: Int)

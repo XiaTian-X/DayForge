@@ -29,7 +29,7 @@ interface HabitMetricLinkDao {
     fun getLinksByHabitSync(habitId: Long): List<HabitMetricLinkEntity>
 
     // Queries by metric
-    @Query("SELECT * FROM habit_metric_links WHERE metricId = :metricId AND isActive = 1")
+    @Query("SELECT links.* FROM habit_metric_links links JOIN habits ON habits.id=links.habitId WHERE links.metricId = :metricId AND links.isActive = 1 AND NOT EXISTS (SELECT 1 FROM sync_outbox q JOIN next_request_origins o ON o.kind='sync_operation' AND o.requestId=q.operationId AND o.queueId=q.id AND o.protocol=5 WHERE q.recordType='habit' AND q.action='delete' AND q.entityUuid=habits.uuid)")
     fun getLinksByMetric(metricId: Long): Flow<List<HabitMetricLinkEntity>>
 
     /**

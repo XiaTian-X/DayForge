@@ -29,7 +29,10 @@ class NestedHabitTreeBuilder @Inject constructor(
     private val habitDao: HabitDao,
     private val completionDao: CompletionDao,
     private val timeLogDao: TimeLogDao,
-    private val failureChecker: FailureChecker
+    private val failureChecker: FailureChecker,
+    private val oneTimeRepository: com.dayforge.data.repository.OneTimeRepository? = null,
+    private val timerWriter: com.dayforge.data.repository.NextTimerWriter? = null,
+    private val countHistoryReader: com.dayforge.data.repository.CountHistoryReader? = null
 ) {
 
     suspend fun build(
@@ -46,7 +49,7 @@ class NestedHabitTreeBuilder @Inject constructor(
             it.habit.isActive && it.isCheckInAllowed
         }
         val checkInAllowedChildren = sortedChildren.filter {
-            it.isCheckInAllowed && !it.isGoalCompleted && !it.hasFailed
+            it.habit.completionPolicy != "one_and_done" && it.isCheckInAllowed && !it.isGoalCompleted && !it.hasFailed
         }
         val parentIsCheckInAllowed = ScheduleValidator.isCheckInAllowedToday(
             parentHabit.schedule,
@@ -84,6 +87,25 @@ class NestedHabitTreeBuilder @Inject constructor(
         child: HabitEntity,
         completions: List<CompletionEntity>
     ): ChildHabitWithStats {
+        if (child.completionPolicy == "one_and_done") {
+            val status = requireNotNull(oneTimeRepository).read(child.id, child.uuid)
+            return ChildHabitWithStats(child, completedToday = false, todayCount = 0,
+                lastCompletionId = status.completionId, currentStreak = 0, bestStreak = 0,
+                isCheckInAllowed = true, oneTimeStatus = status)
+        }
+        if (child.habitType == HabitType.COUNTING && child.appearance != null) {
+            val history = requireNotNull(countHistoryReader) { "COUNT_READER_REQUIRED" }.read(child)
+            val allowed = ScheduleValidator.isCheckInAllowedToday(child.schedule, child.createdAt)
+            return ChildHabitWithStats(child, history.completedToday,
+                history.todayQuantity.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                history.completions.filter { it.recordedLocalDate == history.today.toString() }.maxByOrNull { it.id }?.id,
+                StreakCalculator.currentFromBusinessDates(history.qualifiedDates, history.today),
+                StreakCalculator.bestFromBusinessDates(history.qualifiedDates), activityRate = child.activityRate,
+                isCheckInAllowed = allowed && history.todayPolicy != null,
+                nextCheckInDate = if (allowed) null else ScheduleValidator.getNextCheckInDate(child.schedule, child.createdAt),
+                targetProgress = if (child.targetCycles == null) 0 else history.qualifiedDates.size,
+                hasFailed = com.dayforge.domain.service.FailureCheckerUtils.countHasFailed(child, history), countHistory = history)
+        }
         val habitCompletions = completions.filter { it.habitId == child.id }
         val today = DateTimeUtils.today().toString()
         val todayCompletions = habitCompletions.filter { it.recordedLocalDate == today }
@@ -165,7 +187,9 @@ class NestedHabitTreeBuilder @Inject constructor(
                 ScheduleValidator.getNextCheckInDate(child.schedule, child.createdAt)
             },
             targetProgress = targetProgress,
-            hasFailed = hasFailed
+            hasFailed = hasFailed,
+            timerAuthority = if (child.habitType == HabitType.TIMER && child.appearance != null)
+                requireNotNull(timerWriter).capture(child.id, child) else null
         )
     }
 }

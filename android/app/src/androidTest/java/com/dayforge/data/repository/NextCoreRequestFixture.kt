@@ -39,6 +39,7 @@ abstract class NextCoreRequestFixture {
     internal lateinit var directory: File
     internal lateinit var scope: CoroutineScope
     internal lateinit var tokens: TokenManager
+    internal lateinit var dataStore: androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>
     internal lateinit var preferences: PreferencesManager
     internal lateinit var client: OkHttpClient
     internal lateinit var habit: HabitEntity
@@ -71,6 +72,7 @@ abstract class NextCoreRequestFixture {
         directory = Files.createTempDirectory(app.filesDir.toPath(), "next-journal-").toFile()
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val data = PreferenceDataStoreFactory.create(scope = scope, produceFile = { File(directory, "auth.preferences_pb") })
+        dataStore = data
         tokens = TokenManager(data); preferences = PreferencesManager(data)
         client = OkHttpClient.Builder().addInterceptor(BaseUrlInterceptor(preferences)).addInterceptor(AuthInterceptor(tokens))
             .authenticator(TokenAuthenticator(tokens, preferences, SelectedNetworkTransport())).build()
@@ -238,9 +240,11 @@ abstract class NextCoreRequestFixture {
             db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
         }
         producer().write(local()) {
-            db.completionDao().insert(CompletionEntity(habitId = habit.id, habitUuid = habit.uuid, uuid = id(210),
+            val fact = CompletionEntity(habitId = habit.id, habitUuid = habit.uuid, uuid = id(210),
                 value = if (type == HabitType.CHECK_IN) 1 else 3, date = millis, actualCompletedAt = millis,
-                recordedTimezone = "Etc/UTC", recordedLocalDate = "2026-10-06"))
+                recordedTimezone = "Etc/UTC", recordedLocalDate = "2026-10-06")
+            if (type == HabitType.COUNTING) NextCountDayStore(db).capture(habit, fact)
+            db.completionDao().insert(fact)
         }
         return db.syncOutboxDao().getAll().single()
     }

@@ -37,6 +37,9 @@ data class EditHabitUiState(
     val description: String = "",
     val habitType: HabitType = HabitType.CHECK_IN,
     val iconResId: Int = 0,
+    val appearance: com.dayforge.domain.model.ObjectAppearance? = null,
+    val completionPolicy: String? = null,
+    val editAuthority: com.dayforge.data.repository.ObjectEditAuthority? = null,
     val colorHex: String = "#2196F3",
     val schedule: HabitSchedule = HabitSchedule.Daily,
     val originalScheduleDays: Int = 1,  // Days count of original schedule, used for edit restriction
@@ -93,6 +96,9 @@ class EditHabitViewModel @Inject constructor(
     val uiState: StateFlow<EditHabitUiState> = _uiState.asStateFlow()
 
     private var originalHabit: HabitEntity? = null
+    private var loadJob: kotlinx.coroutines.Job? = null
+    private fun preserveEdit() = !_uiState.value.isLoading &&
+        (_uiState.value.hasChanges || _uiState.value.isSaving || _uiState.value.saved)
 
     // Lazy load flags - prevent repeated loading
     @Volatile
@@ -142,13 +148,18 @@ class EditHabitViewModel @Inject constructor(
     }
 
     fun loadHabit(id: Long) {
-        viewModelScope.launch {
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true)
             try {
                 val habit = habitRepository.getHabit(id)
-                habit.collect { entity ->
+                habit.collect {
+                    // A background refresh must not silently replace a user's in-progress edit or save result.
+                    // Typed saves prove the original structure and ask for reload if it changed remotely.
+                    if (preserveEdit()) return@collect
+                    val snapshot = habitRepository.getHabitForEditing(id)
+                    val entity = snapshot.value
                     if (entity != null) {
-                        originalHabit = entity
                         // Find parent name if parent exists
                         val parentName = if (entity.parentHabitId != null) {
                             habitDao.getHabitByUuid(entity.parentHabitId)?.name
@@ -167,19 +178,24 @@ class EditHabitViewModel @Inject constructor(
                         } else {
                             completionDao.hasCompletions(entity.id)
                         }
-                        val originalScheduleDays = getScheduleDays(entity.schedule)
+                        val originalScheduleDays = if (entity.completionPolicy == "one_and_done") 0 else getScheduleDays(entity.schedule)
 
                         // Load existing metric links
                         val existingLinks = habitMetricLinkDao.getAllLinksForHabit(entity.id)
                         val linkedMetricIds = existingLinks.map { it.metricId }.toSet()
-
+                        // Room reads above suspend; recheck after them before replacing either draft or ticket.
+                        if (preserveEdit()) return@collect
+                        originalHabit = entity
                         _uiState.value = EditHabitUiState(
                             habitId = entity.id,
                             name = entity.name,
                             description = entity.description,
                             habitType = entity.habitType,
                             iconResId = entity.iconResId,
-                            colorHex = entity.colorHex,
+                            appearance = entity.appearance,
+                            completionPolicy = entity.completionPolicy,
+                            editAuthority = snapshot.authority,
+                            colorHex = entity.appearance?.accentColor ?: entity.colorHex,
                             schedule = entity.schedule,
                             originalScheduleDays = originalScheduleDays,
                             monthlyInputValue = monthlyInput,
@@ -207,6 +223,8 @@ class EditHabitViewModel @Inject constructor(
                         )
                     }
                 }
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
@@ -234,6 +252,7 @@ class EditHabitViewModel @Inject constructor(
     }
 
     fun updateIcon(iconResId: Int) {
+        if (_uiState.value.appearance != null) return
         _uiState.value = _uiState.value.copy(
             iconResId = iconResId,
             hasChanges = true
@@ -243,11 +262,19 @@ class EditHabitViewModel @Inject constructor(
     fun updateColor(colorHex: String) {
         _uiState.value = _uiState.value.copy(
             colorHex = colorHex,
+            appearance = _uiState.value.appearance?.copy(accentColor = colorHex),
             hasChanges = true
         )
     }
 
+    fun updateAppearance(appearance: com.dayforge.domain.model.ObjectAppearance) {
+        if (_uiState.value.appearance == null) return
+        _uiState.value = _uiState.value.copy(appearance = appearance, colorHex = appearance.accentColor,
+            hasChanges = true, showIconPicker = false)
+    }
+
     fun updateSchedule(schedule: HabitSchedule) {
+        if (_uiState.value.completionPolicy == "one_and_done") return
         // Initialize input values when switching schedule type
         val monthlyInput = if (schedule is HabitSchedule.Monthly) "1" else _uiState.value.monthlyInputValue
         val customInput = if (schedule is HabitSchedule.Custom) "1" else _uiState.value.customInputValue
@@ -290,6 +317,7 @@ class EditHabitViewModel @Inject constructor(
     }
 
     fun updateTargetCycles(value: Int?) {
+        if (_uiState.value.completionPolicy == "one_and_done") return
         _uiState.value = _uiState.value.copy(
             targetCycles = value,
             hasChanges = true
@@ -297,6 +325,7 @@ class EditHabitViewModel @Inject constructor(
     }
 
     fun updateFailMode(mode: FailMode) {
+        if (_uiState.value.completionPolicy == "one_and_done") return
         _uiState.value = _uiState.value.copy(
             failMode = mode,
             hasChanges = true
@@ -304,10 +333,12 @@ class EditHabitViewModel @Inject constructor(
     }
 
     fun updateBestTime(time: Long?) {
+        if (_uiState.value.completionPolicy == "one_and_done") return
         _uiState.value = _uiState.value.copy(bestTime = time, hasChanges = true)
     }
 
     fun toggleTimePicker() {
+        if (_uiState.value.completionPolicy == "one_and_done") return
         _uiState.value = _uiState.value.copy(showTimePicker = !_uiState.value.showTimePicker)
     }
 
@@ -355,70 +386,61 @@ class EditHabitViewModel @Inject constructor(
     }
 
     fun deleteHabit(onDeleted: () -> Unit) {
+        val captured = _uiState.value
+        val habit = originalHabit ?: return
         viewModelScope.launch {
-            val habitId = _uiState.value.habitId
             try {
-                val habit = habitRepository.getHabit(habitId).first()
-                if (habit != null) {
-                    val children = habitRepository.getHabitChildren(habit.uuid)
-                    if (children.isNotEmpty()) {
-                        _uiState.value = _uiState.value.copy(
-                            showDeleteDialog = false,
-                            showDeleteChildrenDialog = true,
-                            pendingDeleteChildrenCount = children.size
-                        )
-                    } else {
-                        habitRepository.deleteHabit(habit, context)
-                        _uiState.value = _uiState.value.copy(
-                            showDeleteDialog = false,
-                            habitId = 0L
-                        )
-                        onDeleted()
-                    }
+                val children = habitRepository.getHabitChildren(habit.uuid)
+                if (children.isNotEmpty()) {
+                    _uiState.value = _uiState.value.copy(
+                        showDeleteDialog = false,
+                        showDeleteChildrenDialog = true,
+                        pendingDeleteChildrenCount = children.size
+                    )
+                } else {
+                    habitRepository.deleteHabit(habit, context, authority = captured.editAuthority)
+                    _uiState.value = _uiState.value.copy(showDeleteDialog = false, habitId = 0L)
+                    onDeleted()
                 }
             } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(showDeleteDialog = false)
-                onDeleted()
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _uiState.value = _uiState.value.copy(errorMessage = context.getString(R.string.goal_delete_failed, e.message))
             }
         }
     }
 
     fun deleteHabitWithChildren(onDeleted: () -> Unit) {
+        val captured = _uiState.value
+        val habit = originalHabit ?: return
         viewModelScope.launch {
-            val habitId = _uiState.value.habitId
             try {
-                val habit = habitRepository.getHabit(habitId).first()
-                if (habit != null) {
-                    habitRepository.deleteHabitWithChildren(habit, context)
-                }
+                habitRepository.deleteHabitWithChildren(habit, context, captured.editAuthority)
                 _uiState.value = _uiState.value.copy(
                     showDeleteChildrenDialog = false,
                     habitId = 0L
                 )
                 onDeleted()
             } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(showDeleteChildrenDialog = false)
-                onDeleted()
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _uiState.value = _uiState.value.copy(errorMessage = context.getString(R.string.goal_delete_failed, e.message))
             }
         }
     }
 
     fun deleteHabitKeepChildren(onDeleted: () -> Unit) {
+        val captured = _uiState.value
+        val habit = originalHabit ?: return
         viewModelScope.launch {
-            val habitId = _uiState.value.habitId
             try {
-                val habit = habitRepository.getHabit(habitId).first()
-                if (habit != null) {
-                    habitRepository.deleteHabitOrphanChildren(habit, context)
-                }
+                habitRepository.deleteHabitOrphanChildren(habit, context, captured.editAuthority)
                 _uiState.value = _uiState.value.copy(
                     showDeleteChildrenDialog = false,
                     habitId = 0L
                 )
                 onDeleted()
             } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(showDeleteChildrenDialog = false)
-                onDeleted()
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _uiState.value = _uiState.value.copy(errorMessage = context.getString(R.string.goal_delete_failed, e.message))
             }
         }
     }
@@ -446,7 +468,7 @@ class EditHabitViewModel @Inject constructor(
     }
 
     fun saveChanges(onSaved: () -> Unit = {}) {
-        if (!_uiState.value.hasChanges || !_uiState.value.isValid) return
+        if (!_uiState.value.hasChanges || !_uiState.value.isValid || _uiState.value.isSaving) return
 
         val currentState = _uiState.value
 
@@ -489,24 +511,26 @@ class EditHabitViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(isSaving = true, saved = false)
             try {
                 val updatedHabit = originalHabit?.copy(
-                    name = _uiState.value.name,
-                    description = _uiState.value.description,
-                    habitType = _uiState.value.habitType,
-                    iconResId = _uiState.value.iconResId,
-                    colorHex = _uiState.value.colorHex,
+                    name = currentState.name,
+                    description = currentState.description,
+                    habitType = currentState.habitType,
+                    iconResId = currentState.iconResId,
+                    appearance = currentState.appearance,
+                    colorHex = currentState.colorHex,
                     schedule = finalSchedule,
-                    targetValue = _uiState.value.targetValue ?: 1,
-                    isCountdown = _uiState.value.isCountdown,
+                    targetValue = currentState.targetValue ?: 1,
+                    isCountdown = currentState.isCountdown,
                     parentHabitId = currentState.selectedParentUuid,
-                    targetCycles = _uiState.value.targetCycles,
-                    failMode = _uiState.value.failMode,
-                    bestTime = _uiState.value.bestTime
+                    targetCycles = currentState.targetCycles,
+                    failMode = currentState.failMode,
+                    bestTime = currentState.bestTime
                 )
                 if (updatedHabit != null) {
                     habitRepository.updateHabit(
                         updatedHabit,
                         context,
-                        selectedMetricIds = currentState.selectedMetricIds
+                        selectedMetricIds = currentState.selectedMetricIds,
+                        editAuthority = currentState.editAuthority
                     )
                     originalHabit = updatedHabit.copy(parentHabitId = currentState.selectedParentUuid)
 
@@ -530,8 +554,12 @@ class EditHabitViewModel @Inject constructor(
                         showDuplicateDialog = true,
                         errorMessage = context.getString(R.string.dialog_duplicate_habit_message)
                     )
-                } catch (e: Exception) {
+                } catch (error: kotlinx.coroutines.CancellationException) {
                     _uiState.value = _uiState.value.copy(isSaving = false, saved = false)
+                    throw error
+                } catch (e: Exception) {
+                    _uiState.value = _uiState.value.copy(isSaving = false, saved = false,
+                        errorMessage = context.getString(R.string.toast_save_failed, e.message))
                 }
         }
     }
@@ -617,6 +645,7 @@ class EditHabitViewModel @Inject constructor(
         return current.name != original.name ||
                 current.description != original.description ||
                 current.iconResId != original.iconResId ||
+                current.appearance != original.appearance ||
                 current.colorHex != original.colorHex ||
                 current.schedule != original.schedule ||
                 current.targetValue != original.targetValue ||

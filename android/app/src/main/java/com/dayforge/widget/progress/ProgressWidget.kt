@@ -44,9 +44,9 @@ class ProgressWidget : GlanceAppWidget() {
 
             // Create services manually (widgets don't use Hilt)
             val failureChecker = FailureChecker(completionDao, timeLogDao)
-            val habitStatusCalculator = HabitStatusCalculator(failureChecker, completionDao, timeLogDao)
+            val habitStatusCalculator = com.dayforge.di.WidgetEntryPoint.calculator(context, database)
 
-            val habits = habitDao.getAllHabits().first()
+            val habits = habitDao.getAllHabits().first().filter { it.completionPolicy != "one_and_done" }
 
             // Calculate status for each habit
             val stats = habits.map { habit ->

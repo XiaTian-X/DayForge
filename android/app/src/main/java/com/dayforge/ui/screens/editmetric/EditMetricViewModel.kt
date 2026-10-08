@@ -43,6 +43,8 @@ data class EditMetricUiState(
 
     // Appearance
     val iconResId: Int = 1,
+    val appearance: com.dayforge.domain.model.ObjectAppearance? = null,
+    val editAuthority: com.dayforge.data.repository.ObjectEditAuthority? = null,
     val colorHex: String = "#2196F3",
     val isActive: Boolean = true,
 
@@ -94,39 +96,49 @@ class EditMetricViewModel @Inject constructor(
      */
     private fun loadMetric() {
         viewModelScope.launch {
-            val metric = metricDao.getMetricById(metricId)
-            if (metric == null) {
-                _uiState.value = _uiState.value.copy(
-                    isLoaded = true,
-                    errorMessage = context.getString(R.string.toast_metric_not_found)
-                )
-                return@launch
-            }
+            try {
+                val snapshot = metricRepository.getMetricForEditing(metricId)
+                val metric = snapshot.value
+                if (metric == null) {
+                    _uiState.value = _uiState.value.copy(
+                        isLoaded = true,
+                        errorMessage = context.getString(R.string.toast_metric_not_found)
+                    )
+                    return@launch
+                }
 
-            val isCustom = !metric.unit.isNullOrEmpty() &&
-                !com.dayforge.ui.components.MetricUnits.isPreset(metric.unit)
+                val isCustom = !metric.unit.isNullOrEmpty() &&
+                    !com.dayforge.ui.components.MetricUnits.isPreset(metric.unit)
 
-            _uiState.value = EditMetricUiState(
-                metricId = metric.id,
-                name = metric.name,
-                description = metric.description,
-                unit = metric.unit,
-                isUnitCustom = isCustom,
-                customUnit = if (isCustom) metric.unit else "",
-                decimalPlaces = metric.decimalPlaces,
-                aggregationType = metric.aggregationType,
-                targetDirection = metric.targetDirection,
-                targetValueInput = formatDoubleToString(metric.targetValue, metric.decimalPlaces),
-                targetValueUpperInput = formatDoubleToString(metric.targetValueUpper, metric.decimalPlaces),
-                iconResId = metric.iconResId,
-                colorHex = metric.colorHex,
-                isActive = metric.isActive,
-                isLoaded = true,
-                isValid = validateState(
+                _uiState.value = EditMetricUiState(
+                    metricId = metric.id,
                     name = metric.name,
-                    unit = metric.unit
+                    description = metric.description,
+                    unit = metric.unit,
+                    isUnitCustom = isCustom,
+                    customUnit = if (isCustom) metric.unit else "",
+                    decimalPlaces = metric.decimalPlaces,
+                    aggregationType = metric.aggregationType,
+                    targetDirection = metric.targetDirection,
+                    targetValueInput = formatDoubleToString(metric.targetValue, metric.decimalPlaces),
+                    targetValueUpperInput = formatDoubleToString(metric.targetValueUpper, metric.decimalPlaces),
+                    iconResId = metric.iconResId,
+                    appearance = metric.appearance,
+                    editAuthority = snapshot.authority,
+                    colorHex = metric.appearance?.accentColor ?: metric.colorHex,
+                    isActive = metric.isActive,
+                    isLoaded = true,
+                    isValid = validateState(
+                        name = metric.name,
+                        unit = metric.unit
+                    )
                 )
-            )
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                _uiState.value = _uiState.value.copy(isLoaded = true,
+                    errorMessage = context.getString(R.string.toast_save_failed, error.message))
+            }
         }
     }
 
@@ -202,6 +214,7 @@ class EditMetricViewModel @Inject constructor(
     }
 
     fun updateIcon(iconResId: Int) {
+        if (_uiState.value.appearance != null) return
         _uiState.value = _uiState.value.copy(
             iconResId = iconResId,
             showIconPicker = false
@@ -211,8 +224,15 @@ class EditMetricViewModel @Inject constructor(
     fun updateColor(colorHex: String) {
         _uiState.value = _uiState.value.copy(
             colorHex = colorHex,
+            appearance = _uiState.value.appearance?.copy(accentColor = colorHex),
             showColorPicker = false
         )
+    }
+
+    fun updateAppearance(appearance: com.dayforge.domain.model.ObjectAppearance) {
+        if (_uiState.value.appearance == null) return
+        _uiState.value = _uiState.value.copy(appearance = appearance, colorHex = appearance.accentColor,
+            showIconPicker = false)
     }
 
     fun toggleActive() {
@@ -301,12 +321,13 @@ class EditMetricViewModel @Inject constructor(
                     targetValue = currentState.targetValueInput.toDoubleOrNull(),
                     targetValueUpper = currentState.targetValueUpperInput.toDoubleOrNull(),
                     iconResId = currentState.iconResId,
+                    appearance = currentState.appearance,
                     colorHex = currentState.colorHex,
                     isActive = currentState.isActive,
                     updatedAt = System.currentTimeMillis()
                 )
 
-                metricRepository.updateMetric(updatedMetric)
+                metricRepository.updateMetric(updatedMetric, currentState.editAuthority)
 
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,
@@ -315,6 +336,8 @@ class EditMetricViewModel @Inject constructor(
                     showColorPicker = false,
                     showUnitPicker = false
                 )
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
             } catch (_: DuplicateMetricNameException) {
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,

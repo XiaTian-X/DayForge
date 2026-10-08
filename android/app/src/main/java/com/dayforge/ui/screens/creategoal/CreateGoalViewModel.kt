@@ -32,6 +32,9 @@ data class CreateGoalUiState(
     val failMode: FailMode = FailMode.STRICT,
     val parentUuid: String = UUID.randomUUID().toString(),
     val children: List<HabitDraft> = emptyList(),
+    val appearance: com.dayforge.domain.model.ObjectAppearance? = null,
+    val creationScope: String? = null,
+    @Transient val creationAuthority: com.dayforge.data.repository.ObjectCreationAuthority? = null,
     @Transient val isSaving: Boolean = false,
     @Transient val savedGoalId: Long? = null,
     @Transient val showIconPicker: Boolean = false,
@@ -60,10 +63,30 @@ class CreateGoalViewModel @Inject constructor(
 
     init { update(_uiState.value) }
 
+    fun beginCreation(authority: com.dayforge.data.repository.ObjectCreationAuthority) {
+        val current = _uiState.value
+        if (current.creationAuthority === authority) return
+        if (current.creationAuthority != null || current.isSaving || current.savedGoalId != null ||
+            (current.creationScope != null && current.creationScope != authority.scopeKey) ||
+            current.children.any { it.appearance == null }) {
+            update(current.copy(errorMessage = context.getString(R.string.toast_save_failed, "OBJECT_CREATE_DRAFT_EXPIRED")))
+            return
+        }
+        update(current.copy(creationAuthority = authority, creationScope = authority.scopeKey,
+            appearance = current.appearance ?: com.dayforge.domain.model.ObjectAppearance(
+                com.dayforge.domain.model.IconReference.Role("goal.default"), current.colorHex, "theme")))
+    }
+
+    fun updateAppearance(value: com.dayforge.domain.model.ObjectAppearance) {
+        if (_uiState.value.creationAuthority == null) return
+        update(_uiState.value.copy(appearance = value, colorHex = value.accentColor, showIconPicker = false))
+    }
+
     fun updateName(name: String) = update(_uiState.value.copy(name = name))
     fun updateDescription(description: String) = update(_uiState.value.copy(description = description))
-    fun updateIcon(iconResId: Int) = update(_uiState.value.copy(iconResId = iconResId))
-    fun updateColor(colorHex: String) = update(_uiState.value.copy(colorHex = colorHex))
+    fun updateIcon(iconResId: Int) { if (_uiState.value.appearance == null) update(_uiState.value.copy(iconResId = iconResId)) }
+    fun updateColor(colorHex: String) = update(_uiState.value.copy(colorHex = colorHex,
+        appearance = _uiState.value.appearance?.copy(accentColor = colorHex)))
     fun updateTargetCycles(value: Int?) = update(_uiState.value.copy(targetCycles = value))
     fun updateFailMode(mode: FailMode) = update(_uiState.value.copy(failMode = mode))
     fun toggleIconPicker() = update(_uiState.value.copy(showIconPicker = !_uiState.value.showIconPicker))
@@ -72,6 +95,7 @@ class CreateGoalViewModel @Inject constructor(
     fun addChildHabit(draft: HabitDraft) {
         check(!_uiState.value.isSaving)
         require(draft.habitType != HabitType.GOAL)
+        require((draft.appearance == null) == (_uiState.value.appearance == null)) { "OBJECT_CREATE_DRAFT_PROTOCOL_MISMATCH" }
         update(_uiState.value.copy(children = _uiState.value.children.filterNot { it.id == draft.id } + draft))
     }
 
@@ -88,8 +112,8 @@ class CreateGoalViewModel @Inject constructor(
             try {
                 val goal = HabitDraft(id = state.parentUuid, name = state.name, description = state.description,
                     habitType = HabitType.GOAL, iconResId = state.iconResId, colorHex = state.colorHex,
-                    targetCycles = state.targetCycles, failMode = state.failMode)
-                val id = habitRepository.createGoal(goal, state.children, context)
+                    targetCycles = state.targetCycles, failMode = state.failMode, appearance = state.appearance)
+                val id = habitRepository.createGoal(goal, state.children, context, state.creationAuthority)
                 update(_uiState.value.copy(isSaving = false, savedGoalId = id))
             } catch (e: CancellationException) {
                 update(_uiState.value.copy(isSaving = false))

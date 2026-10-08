@@ -25,9 +25,16 @@ import com.dayforge.data.model.HabitType
 fun CreateTempTaskScreen(
     viewModel: CreateTempTaskViewModel = hiltViewModel(),
     parentUuid: String? = null,
+    creationAuthority: com.dayforge.data.repository.ObjectCreationAuthority? = null,
     onNavigateBack: () -> Unit
 ) {
-    val uiState by viewModel.uiState.collectAsState()
+    val uiState by viewModel.uiState.collectAsState(context = kotlinx.coroutines.Dispatchers.Main)
+    LaunchedEffect(creationAuthority) { creationAuthority?.let(viewModel::beginCreation) }
+
+    if (uiState.showIconPicker) uiState.appearance?.let {
+        com.dayforge.ui.components.ObjectAppearancePicker(it, true, uiState.creationAuthority,
+            viewModel::updateAppearance, viewModel::toggleIconPicker)
+    }
 
     // Set parent UUID if provided from navigation
     LaunchedEffect(parentUuid) {
@@ -65,6 +72,16 @@ fun CreateTempTaskScreen(
             )
 
             Spacer(modifier = Modifier.height(16.dp))
+
+            uiState.appearance?.let { appearance ->
+                TextButton(onClick = viewModel::toggleIconPicker) {
+                    com.dayforge.ui.components.ObjectIcon("new-once", appearance, true,
+                        0, androidx.compose.ui.graphics.Color.Unspecified, 24.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text(stringResource(R.string.edit_habit_icon_label))
+                }
+            }
+            uiState.errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
 
             // Metric linking section (optional) - expandable card
             var metricSectionExpanded by remember { mutableStateOf(false) }

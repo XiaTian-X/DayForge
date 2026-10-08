@@ -332,7 +332,7 @@ def rendered_contract():
         "info": {
             "title": "DayForge v5 appearance and one-time delta (NOT ACTIVE)",
             "version": "5-planned",
-            "description": "Guarded production registration/sync/timer/appearance handlers are mounted, but the default and advertised server protocol remain v4. Activation requires coordinated backend/Android release and an explicitly confirmed empty baseline. Authentication remains in ../openapi.json. V5 registration and every sync/timer request require a single exact protocol header plus captured canonical server-instance/epoch headers; timer bodies are unchanged. Appearance retains its existing body/query replica context. See D-014 and APPEARANCE_CONTRACT.md. Mounted handlers do not establish coordinated v5 activation or client readiness.",
+            "description": "Guarded production registration/sync/timer/appearance handlers are mounted, but the default and advertised server protocol remain v4. Activation requires coordinated backend/Android release and an explicitly confirmed empty baseline. Authentication remains in ../openapi.json. V5 registration and every sync/timer request require a single exact protocol header plus captured canonical server-instance/epoch headers. Fresh v5 timer starts require their original start_policy; existing receipts and v4 commands retain their original fingerprints. Appearance retains its existing body/query replica context. See D-014, D-016 and APPEARANCE_CONTRACT.md. Mounted handlers do not establish coordinated v5 activation or client readiness.",
         },
         "x-activation-state": "planned",
         "paths": paths,

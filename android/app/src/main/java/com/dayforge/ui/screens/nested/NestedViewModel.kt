@@ -57,8 +57,15 @@ data class ChildHabitWithStats(
     val isCheckInAllowed: Boolean = true,
     val nextCheckInDate: LocalDate? = null,
     val targetProgress: Int = 0,  // Distinct days completed for habits with targetCycles
-    val hasFailed: Boolean = false  // Failure status for target-based habits
+    val hasFailed: Boolean = false,  // Failure status for target-based habits
+    val oneTimeStatus: com.dayforge.domain.model.OneTimeStatus? = null,
+    val timerAuthority: com.dayforge.domain.model.TimerActionAuthority? = null,
+    val countHistory: com.dayforge.domain.model.CountHistory? = null
 ) {
+    val actualTodayCount: Long get() = countHistory?.todayQuantity ?: todayCount.toLong()
+    val displayTargetValue: Int get() = countHistory?.todayPolicy?.targetValue ?: habit.targetValue
+    val displayIsCountdown: Boolean get() = countHistory?.todayPolicy?.isCountdown ?: habit.isCountdown
+    val completedForDisplay: Boolean get() = oneTimeStatus?.completed ?: completedToday
     /**
      * Whether the goal has been completed (reached targetCycles and deactivated).
      * Used for CompletionButton to show "目标已完成" state.
@@ -124,15 +131,18 @@ class NestedViewModel @Inject constructor(
     /**
      * Top-level habits (parentHabitId = null) with their children and stats.
      */
-    val topLevelHabitsWithChildren: StateFlow<List<ParentHabitWithChildren>> = combine(
+    private val readMonitor = com.dayforge.ui.DataReadMonitor(TAG)
+    val readError = readMonitor.error
+    fun retryRead() = readMonitor.retry()
+    val topLevelHabitsWithChildren: StateFlow<List<ParentHabitWithChildren>> = readMonitor.recover(emptyList()) { combine(
         habitDao.getTopLevelHabits(),
-        allCompletions,
+        combine(allCompletions, habitRepository.oneTimeChanges, habitRepository.countChanges) { rows, _, _ -> rows },
         timeLogDao.getActiveTimeLogFlow(),
-        preferencesManager.dateChangeTrigger  // Triggers when date changes
+        preferencesManager.dateChangeTrigger
     ) { topLevelHabits, completions, activeTimeLog, _ ->
         Log.d(TAG, "topLevelHabitsWithChildren combine triggered: topLevelHabits=${topLevelHabits.size}")
-        nestedHabitTreeBuilder.build(topLevelHabits, completions)
-    }
+        readMonitor.read(emptyList()) { nestedHabitTreeBuilder.build(topLevelHabits, completions) }
+    } }
         .onEach { _isInitialized.value = true }
         .stateIn(
         scope = viewModelScope,
@@ -216,11 +226,13 @@ class NestedViewModel @Inject constructor(
      * Triggers post-check-in dialog for linked metrics.
      */
     fun logCompletion(habitId: Long, value: Int = 1) {
-        viewModelScope.launch {
+        val displayed = topLevelHabitsWithChildren.value.flatMap { it.children }.find { it.habit.id == habitId }
+        launchCompletion {
             val outcome = completionCoordinator.checkIn(
                 habitId = habitId,
                 finalizeTemporaryTasks = false,
-                displayedHabit = { findHabitById(habitId) }
+                displayedHabit = { displayed?.habit ?: findHabitById(habitId) },
+                oneTimeAuthority = displayed?.oneTimeStatus?.authority
             )
             outcome.goalProgress?.let { progress -> onGoalReached(habitId, progress) }
             outcome.metricPromptHabit?.let { habit ->
@@ -233,8 +245,22 @@ class NestedViewModel @Inject constructor(
      * Undo a completion for a child habit.
      */
     fun undoCompletion(completionId: Long) {
+        val authority = topLevelHabitsWithChildren.value.flatMap { it.children }
+            .find { it.lastCompletionId == completionId }?.oneTimeStatus?.authority
+        launchCompletion {
+            completionCoordinator.undoCompletion(completionId, authority)
+        }
+    }
+
+    private fun launchCompletion(block: suspend () -> Unit) {
         viewModelScope.launch {
-            completionCoordinator.undoCompletion(completionId)
+            try { block() }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                Log.e(TAG, "Completion operation failed", error)
+                android.widget.Toast.makeText(context, context.getString(com.dayforge.R.string.metric_error_record_failed,
+                    error.message.orEmpty()), android.widget.Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -245,7 +271,7 @@ class NestedViewModel @Inject constructor(
      * Triggers post-check-in dialog for linked metrics.
      */
     fun incrementCount(habitId: Long) {
-        viewModelScope.launch {
+        launchCompletion {
             val outcome = completionCoordinator.incrementCount(habitId) {
                 findHabitById(habitId)
             }
@@ -261,7 +287,7 @@ class NestedViewModel @Inject constructor(
      * Uses the shared completion coordinator for consistent behavior across habit screens.
      */
     fun decrementCount(habitId: Long) {
-        viewModelScope.launch {
+        launchCompletion {
             completionCoordinator.decrementCount(habitId).goalProgress
                 ?.let { progress -> onGoalReached(habitId, progress) }
         }
@@ -304,8 +330,14 @@ class NestedViewModel @Inject constructor(
      * Delegates to HabitTimerCoordinator for shared implementation.
      */
     fun startTimer(habitId: Long, targetMinutes: Int) {
+        val authority = topLevelHabitsWithChildren.value.flatMap { it.children }
+            .find { it.habit.id == habitId }?.timerAuthority
         viewModelScope.launch {
-            timerCoordinator.startTimer(habitId, targetMinutes)
+            try { timerCoordinator.startTimer(habitId, targetMinutes, authority) }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                Toast.makeText(context, context.getString(R.string.metric_error_record_failed, error.message.orEmpty()), Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -332,9 +364,14 @@ class NestedViewModel @Inject constructor(
     fun stopTimer() {
         val currentState = activeTimerState.value ?: return
         viewModelScope.launch {
-            metricCoordinator.showPromptAfterTimerStop(
-                timerCoordinator.stopTimer(currentState)
-            )
+            try {
+                metricCoordinator.showPromptAfterTimerStop(
+                    timerCoordinator.stopTimer(currentState), currentState.authority
+                )
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                Toast.makeText(context, context.getString(R.string.metric_error_record_failed, error.message.orEmpty()), Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -375,21 +412,49 @@ class NestedViewModel @Inject constructor(
      */
     suspend fun recordMetricValues(
         habitId: Long,
-        values: List<MetricValueInput>
-    ): Boolean = metricCoordinator.recordMetricValues(habitId, values)
+        values: List<MetricValueInput>,
+        expectedEventUuid: String? = null,
+        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null
+    ): Boolean = metricCoordinator.recordMetricValues(habitId, values, expectedEventUuid, expectedTimerPrompt)
 
     /**
      * Set "never ask again" preference for a habit's metric prompt.
      */
-    suspend fun setNeverAskAgain(habitId: Long, value: Boolean) {
-        metricCoordinator.setNeverAskAgain(habitId, value)
+    suspend fun setNeverAskAgain(habitId: Long, value: Boolean, expectedEventUuid: String? = null,
+        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null) {
+        metricCoordinator.setNeverAskAgain(habitId, value, expectedEventUuid, expectedTimerPrompt)
     }
 
     /**
      * Dismiss the post-check-in dialog.
      */
     fun dismissPostCheckInDialog() {
-        metricCoordinator.dismissPrompt()
+        viewModelScope.launch { metricCoordinator.closePrompt() }
+    }
+
+    suspend fun skipPostCheckInDialog(habitId: Long, expectedEventUuid: String? = null,
+        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null) = metricCoordinator.skipPrompt(habitId, expectedEventUuid, expectedTimerPrompt)
+
+    fun refreshPostCheckInMetadata() {
+        viewModelScope.launch {
+            try { metricCoordinator.refreshPrompt() }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                android.widget.Toast.makeText(context, context.getString(com.dayforge.R.string.metric_error_record_failed,
+                    error.message.orEmpty()), android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    fun savePostCheckInDraft(eventUuid: String, inputs: List<com.dayforge.ui.components.MetricInputState>) {
+        viewModelScope.launch {
+            try { metricCoordinator.savePromptDraft(eventUuid, inputs) }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                android.widget.Toast.makeText(context, context.getString(com.dayforge.R.string.metric_error_record_failed,
+                    error.message.orEmpty()), android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     // ========== Goal Completion Dialog Methods ==========
@@ -473,25 +538,34 @@ class NestedViewModel @Inject constructor(
      * Delete a child habit.
      */
     fun deleteHabit(habit: HabitEntity) {
-        viewModelScope.launch {
+        runDeletion {
             deletionCoordinator.requestDeletion(habit)
         }
     }
 
     fun deleteHabitWithChildren() {
-        viewModelScope.launch {
+        runDeletion {
             deletionCoordinator.deleteWithChildren()
         }
     }
 
     fun deleteHabitKeepChildren() {
-        viewModelScope.launch {
+        runDeletion {
             deletionCoordinator.deleteKeepingChildren()
         }
     }
 
     fun dismissChildrenDialog() {
         deletionCoordinator.dismissDeletion()
+    }
+
+    private fun runDeletion(action: suspend () -> Unit) {
+        viewModelScope.launch {
+            try { action() } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                Toast.makeText(context, context.getString(R.string.goal_delete_failed, error.message), Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     // ========== Expand State Management ==========

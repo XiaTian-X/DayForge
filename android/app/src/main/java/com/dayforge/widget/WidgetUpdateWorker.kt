@@ -55,7 +55,7 @@ class WidgetUpdateWorker(
         val database = HabitDatabaseProvider.getInstance(applicationContext)
         val habitDao = database.habitDao()
         val completionDao = database.completionDao()
-        val habits = habitDao.getAllHabitsOnce()
+        val habits = habitDao.getVisibleHabitsOnce()
 
         for (habit in habits) {
             val completions = completionDao.getCompletionsByHabit(habit.id).first()

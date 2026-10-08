@@ -39,9 +39,11 @@ import com.dayforge.ui.components.UnitPicker
 @Composable
 fun CreateMetricScreen(
     viewModel: CreateMetricViewModel = hiltViewModel(),
+    creationAuthority: com.dayforge.data.repository.ObjectCreationAuthority? = null,
     onNavigateBack: () -> Unit
 ) {
-    val uiState by viewModel.uiState.collectAsState()
+    val uiState by viewModel.uiState.collectAsState(context = kotlinx.coroutines.Dispatchers.Main)
+    LaunchedEffect(creationAuthority) { creationAuthority?.let(viewModel::beginCreation) }
 
     Scaffold(
         topBar = {
@@ -135,7 +137,10 @@ fun CreateMetricScreen(
         }
 
         if (uiState.showIconPicker) {
-            IconPicker(
+            val appearance = uiState.appearance
+            if (appearance != null) com.dayforge.ui.components.ObjectAppearancePicker(appearance, false, uiState.creationAuthority,
+                viewModel::updateAppearance, viewModel::toggleIconPicker)
+            else IconPicker(
                 selectedIconId = uiState.iconResId,
                 onIconSelected = viewModel::updateIcon,
                 onDismiss = viewModel::toggleIconPicker
@@ -407,6 +412,8 @@ private fun MetricAppearanceStep(
                 style = MaterialTheme.typography.bodyLarge
             )
             Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = stringResource(R.string.edit_metric_select_icon))
+            uiState.appearance?.let { com.dayforge.ui.components.ObjectIcon("new-metric", it, false,
+                0, androidx.compose.ui.graphics.Color.Unspecified, 24.dp) }
         }
     }
 

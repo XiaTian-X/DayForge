@@ -41,6 +41,8 @@ from src.storage.backup_zip import BackupZip, ZipLimits
 from src.storage import logical_io
 from src.storage.database_adapter import configure_sqlite_transactions
 from src.v2.one_time_recovery import OneTimeRecoveryError, read_connection_history
+from src.v2.count_recovery import CountRecoveryError, read_connection_count_history
+from src.v2.count_policy import CountDayPolicy
 from src.v2.asset_recovery import AssetRecoveryError, ReadyBlob, read_asset_metadata
 from src.v2.object_appearance_recovery import (
     ObjectAppearanceRecoveryError,
@@ -70,6 +72,7 @@ TABLE_ORDER = (
     "metric_appearances",
     "activity_metric_links_v2",
     "activity_events",
+    "activity_count_days",
     "metric_observations",
     "timer_sessions",
     "timer_segments",
@@ -200,6 +203,8 @@ def _identity_key(
         )
     if table == "duration_day_allocations":
         return f"{primary_keys[('activity_events', row['activity_event_id'])]}:{row['local_date']}"
+    if table == "activity_count_days":
+        return f"{primary_keys[('plan_nodes', row['activity_node_id'])]}:count-day:{row['local_date']}"
     if table == "sync_operations":
         return f"{primary_keys[('client_devices', row['device_id'])]}:{row['operation_id']}"
     if table == "entity_revision_snapshots":
@@ -333,6 +338,15 @@ def _validate_one_time_history(connection: Connection, metadata: MetaData) -> No
         raise StorageValidationError(f"invalid one-time history: {error}") from error
 
 
+def _validate_count_history(connection: Connection, metadata: MetaData) -> None:
+    if "activity_count_days" not in metadata.tables:
+        return  # Matching older schema has no captured counting evidence.
+    try:
+        read_connection_count_history(connection)
+    except CountRecoveryError as error:
+        raise StorageValidationError(f"invalid count history: {error}") from error
+
+
 def _validate_hierarchy(connection: Connection, metadata: MetaData) -> None:
     nodes = metadata.tables.get("plan_nodes")
     if nodes is None:
@@ -432,6 +446,7 @@ def export_archive(
             collections, identity = _portable_collections(connection, metadata)
             _validate_hierarchy(connection, metadata)
             _validate_one_time_history(connection, metadata)
+            _validate_count_history(connection, metadata)
             entries: list[ArchiveBlob] = []
             _validate_appearance(
                 connection,
@@ -552,6 +567,20 @@ def _insert_collection(
         deferred: list[dict[str, Any]] = []
         progressed = False
         for record in pending:
+            if table.name == "activity_count_days":
+                # Validate before generic SQL coercion: bool("false") would otherwise
+                # turn a malformed archive into a different, apparently valid rule.
+                try:
+                    CountDayPolicy.model_validate(
+                        {
+                            "target_value": record["data"]["target_value"],
+                            "is_countdown": record["data"]["is_countdown"],
+                        }
+                    )
+                except (ValueError, KeyError, TypeError) as error:
+                    raise StorageValidationError(
+                        "invalid count history in logical archive"
+                    ) from error
             values: dict[str, Any] = {}
             unresolved = False
             for name, value in record["data"].items():
@@ -664,6 +693,7 @@ def _import_records(
                 target_keys,
             )
     _validate_one_time_history(connection, metadata)
+    _validate_count_history(connection, metadata)
     _validate_hierarchy(connection, metadata)
     _validate_appearance(connection, metadata, verify_assets=verify_assets)
     for name in TRANSPORT_TABLES:

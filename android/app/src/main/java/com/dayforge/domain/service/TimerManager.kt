@@ -8,6 +8,8 @@ import com.dayforge.data.local.dao.TimeLogDao
 import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.util.DateTimeUtils
 import com.dayforge.widget.timer.CountdownDiscardActivity
+import com.dayforge.domain.model.TimerActionAuthority
+import com.dayforge.data.repository.NextTimerWriter
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 
@@ -18,7 +20,8 @@ import javax.inject.Inject
 class TimerManager @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val habitDao: HabitDao,
-    private val timeLogDao: TimeLogDao
+    private val timeLogDao: TimeLogDao,
+    private val timerWriter: NextTimerWriter? = null
 ) {
     /** Restores foreground execution for a persisted running or paused timer. */
     suspend fun recoverRunningTimer() {
@@ -29,6 +32,7 @@ class TimerManager @Inject constructor(
             putExtra(TimerService.EXTRA_HABIT_ID, activeLog.habitId)
             putExtra(TimerService.EXTRA_TARGET_MINUTES, habit.targetValue)
             putExtra(TimerService.EXTRA_IS_COUNTDOWN, habit.isCountdown)
+            timerWriter?.capture(habit.id)?.attach(this)
         }
         ContextCompat.startForegroundService(context, intent)
     }
@@ -38,7 +42,8 @@ class TimerManager @Inject constructor(
      * @param habitId ID of the habit to start timer for
      * @param targetMinutes Target duration in minutes
      */
-    suspend fun startTimer(habitId: Long, targetMinutes: Int) {
+    suspend fun startTimer(habitId: Long, targetMinutes: Int, authority: TimerActionAuthority? = null) {
+        timerWriter?.requireAction(habitId, authority)
         val todayStart = DateTimeUtils.startOfDayMillis()
         val todayEnd = DateTimeUtils.startOfNextDayMillis(todayStart)
         val completedSeconds = timeLogDao.getCompletedDurationSecondsForDate(
@@ -54,6 +59,7 @@ class TimerManager @Inject constructor(
             action = TimerService.ACTION_START
             putExtra(TimerService.EXTRA_HABIT_ID, habitId)
             putExtra(TimerService.EXTRA_TARGET_MINUTES, targetMinutes)
+            authority?.attach(this)
         }
         ContextCompat.startForegroundService(context, intent)
     }
@@ -63,11 +69,12 @@ class TimerManager @Inject constructor(
      * @param habitId Current habit ID
      * @param targetMinutes Current target minutes
      */
-    fun pauseTimer(habitId: Long, targetMinutes: Int) {
+    fun pauseTimer(habitId: Long, targetMinutes: Int, authority: TimerActionAuthority? = null) {
         val intent = Intent(context, TimerService::class.java).apply {
             action = TimerService.ACTION_PAUSE
             putExtra(TimerService.EXTRA_HABIT_ID, habitId)
             putExtra(TimerService.EXTRA_TARGET_MINUTES, targetMinutes)
+            authority?.attach(this)
         }
         context.startService(intent)
     }
@@ -77,11 +84,12 @@ class TimerManager @Inject constructor(
      * @param habitId Current habit ID
      * @param targetMinutes Current target minutes
      */
-    fun resumeTimer(habitId: Long, targetMinutes: Int) {
+    fun resumeTimer(habitId: Long, targetMinutes: Int, authority: TimerActionAuthority? = null) {
         val intent = Intent(context, TimerService::class.java).apply {
             action = TimerService.ACTION_RESUME
             putExtra(TimerService.EXTRA_HABIT_ID, habitId)
             putExtra(TimerService.EXTRA_TARGET_MINUTES, targetMinutes)
+            authority?.attach(this)
         }
         context.startService(intent)
     }
@@ -95,16 +103,19 @@ class TimerManager @Inject constructor(
      */
     suspend fun stopTimer(
         habitId: Long,
-        targetMinutes: Int
+        targetMinutes: Int,
+        authority: TimerActionAuthority? = null
     ): Long? {
+        timerWriter?.requireAction(habitId, authority)
         val habit = habitDao.getHabitById(habitId)
         val activeLog = timeLogDao.getActiveTimeLog()
-        val isCountdown = habit?.isCountdown == true
+        val policy = activeLog?.takeIf { it.habitId == habitId }?.let { timerWriter?.policy(habitId, it.uuid) }
+        val isCountdown = policy?.isCountdown ?: (habit?.isCountdown == true)
 
         val elapsedSeconds = if (activeLog != null && activeLog.habitId == habitId) {
             calculateElapsedSeconds(activeLog)
         } else 0
-        val targetSeconds = (habit?.targetValue ?: 0) * 60
+        val targetSeconds = policy?.targetSeconds ?: ((habit?.targetValue ?: 0) * 60)
 
         val isIncomplete = if (isCountdown) {
             (targetSeconds - elapsedSeconds) > 0
@@ -121,9 +132,10 @@ class TimerManager @Inject constructor(
             val intent = CountdownDiscardActivity.createIntent(
                 context,
                 habitId,
-                targetMinutes,
+                policy?.targetSeconds?.div(60) ?: targetMinutes,
                 seconds,
-                isCountdown
+                isCountdown,
+                authority
             )
             context.startActivity(intent)
             return null
@@ -132,6 +144,7 @@ class TimerManager @Inject constructor(
                 action = TimerService.ACTION_STOP
                 putExtra(TimerService.EXTRA_HABIT_ID, habitId)
                 putExtra(TimerService.EXTRA_TARGET_MINUTES, targetMinutes)
+                authority?.attach(this)
             }
             context.startService(intent)
             return habitId

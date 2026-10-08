@@ -104,7 +104,7 @@ class ReactivationActivity : ComponentActivity() {
                                             lifecycleScope.launch(Dispatchers.IO) {
                                                 try {
                                                     val habitDao = habitDatabase.habitDao()
-                                                    val habit = habitDao.getHabitById(habitId)
+                                                    val habit = habitDao.getVisibleHabitById(habitId)
                                                     if (habit != null) {
                                                         habitRepository.clearHabitHistory(habit, this@ReactivationActivity)
                                                     }

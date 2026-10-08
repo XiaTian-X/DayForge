@@ -9,19 +9,13 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
-import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.PreferencesManager
-import com.dayforge.data.repository.MetricRepository
-import com.dayforge.data.repository.MetricValueDraft
-import com.dayforge.domain.service.TimerService
-import com.dayforge.ui.components.LinkedMetricInfo
+import com.dayforge.ui.metrics.LinkedMetricCoordinator
 import com.dayforge.ui.components.PostCheckInDialog
 import dagger.hilt.android.AndroidEntryPoint
 import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 /**
@@ -34,19 +28,22 @@ import javax.inject.Inject
 class MetricPromptActivity : ComponentActivity() {
 
     @Inject
-    lateinit var habitDatabase: HabitDatabase
+    lateinit var metricCoordinator: LinkedMetricCoordinator
 
     @Inject
     lateinit var preferencesManager: PreferencesManager
-
-    @Inject
-    lateinit var metricRepository: MetricRepository
+    @Inject lateinit var habits: com.dayforge.data.repository.HabitRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         val habitId = intent.getLongExtra(EXTRA_HABIT_ID, -1L)
         val habitName = intent.getStringExtra(EXTRA_HABIT_NAME) ?: "Habit"
+        val timerAuthority = try { com.dayforge.domain.model.TimerActionAuthority.read(intent) }
+            catch (error: Exception) { finish(); return }
+        val factClaim = try { com.dayforge.data.repository.WidgetFactClaim.read(intent) }
+            catch (error: Exception) { finish(); return }
+        if (timerAuthority != null && factClaim != null) { finish(); return }
 
         if (habitId == -1L) {
             finish()
@@ -55,88 +52,101 @@ class MetricPromptActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme {
-                var linkedMetrics by remember { mutableStateOf<List<LinkedMetricInfo>>(emptyList()) }
-                var isLoading by remember { mutableStateOf(true) }
+                val state by metricCoordinator.postCheckInState.collectAsState()
+                var hadPrompt by remember { mutableStateOf(false) }
+                LaunchedEffect(state) {
+                    if (state != null) {
+                        hadPrompt = true
+                        if (state?.habitId != habitId) finish()
+                    } else if (hadPrompt) finish()
+                }
 
                 LaunchedEffect(habitId) {
-                    val metricInfos = withContext(Dispatchers.IO) {
-                        // Get linked metrics with promptOnComplete=true
-                        val links = habitDatabase.habitMetricLinkDao().getLinksByHabit(habitId).first()
-                        val promptLinks = links.filter { it.promptOnComplete }
-
-                        // Build linked metric info list
-                        promptLinks.mapNotNull { link ->
-                            val metric = habitDatabase.metricDao().getMetricById(link.metricId) ?: return@mapNotNull null
-                            val latestLog = habitDatabase.metricLogDao().getLatestLog(link.metricId)
-                            LinkedMetricInfo(
-                                metricName = metric.name,
-                                metricId = metric.id,
-                                latestValue = latestLog?.value,
-                                unit = metric.unit,
-                                decimalPlaces = metric.decimalPlaces
-                            )
+                    try {
+                        if (factClaim != null) {
+                            check(factClaim.habitId == habitId)
+                            metricCoordinator.showWidgetFactPrompt(factClaim)
+                        } else if (timerAuthority?.sessionUuid != null) metricCoordinator.showPromptAfterTimerStop(habitId, timerAuthority)
+                        else if (timerAuthority != null) metricCoordinator.showPendingTimerWidgetPrompt(habitId, timerAuthority)
+                        else {
+                            check(habits.getHabitById(habitId)?.appearance == null) { "FACT_WIDGET_CLAIM_REQUIRED" }
+                            metricCoordinator.showPromptIfNeeded(habitId, habitName)
                         }
-                    }
-                    if (metricInfos.isEmpty()) {
+                        if (metricCoordinator.postCheckInState.value == null) finish()
+                    } catch (error: Exception) {
+                        if (error is CancellationException) throw error
+                        report(error)
                         finish()
-                    } else {
-                        linkedMetrics = metricInfos
-                        isLoading = false
                     }
                 }
 
-                if (!isLoading && linkedMetrics.isNotEmpty()) {
+                state?.takeIf { it.habitId == habitId }?.let { prompt ->
                     // PostCheckInDialog is already an AlertDialog, no need to wrap in Dialog
                     PostCheckInDialog(
-                        habitName = habitName,
-                        linkedMetrics = linkedMetrics,
+                        habitName = prompt.habitName,
+                        linkedMetrics = prompt.linkedMetrics,
+                        promptIdentity = prompt.oneTimePrompt?.eventUuid,
+                        missingTargets = prompt.oneTimePrompt?.entries?.filterNot { it.available }?.map { it.name }.orEmpty(),
+                        onRefreshMetadata = if (prompt.oneTimePrompt != null) ({
+                            lifecycleScope.launch {
+                                try { metricCoordinator.refreshPrompt() }
+                                catch (error: Exception) {
+                                    if (error is CancellationException) throw error
+                                    report(error)
+                                }
+                            }
+                        }) else null,
+                        initialInputs = prompt.oneTimePrompt?.entries?.associate { it.metricId to (it.input to it.note) }.orEmpty(),
+                        onDraftChange = { inputs -> prompt.oneTimePrompt?.let { ticket ->
+                            lifecycleScope.launch {
+                                try { metricCoordinator.savePromptDraft(ticket.eventUuid, inputs) }
+                                catch (error: Exception) {
+                                    if (error is CancellationException) throw error
+                                    report(error)
+                                }
+                            }
+                        } },
                         onRecord = { values, neverAskAgain ->
                             lifecycleScope.launch {
                                 try {
-                                    withContext(Dispatchers.IO) {
-                                        metricRepository.recordValues(
-                                            values.map { input ->
-                                                MetricValueDraft(input.metricId, input.value, input.note)
-                                            }
-                                        )
-                                        if (neverAskAgain) {
-                                            preferencesManager.setNeverAskAgain(habitId, true)
-                                        }
-                                        preferencesManager.removePendingMetricHabit(habitId)
+                                    if (!metricCoordinator.recordMetricValues(habitId, values, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt, prompt.factPrompt)) return@launch
+                                    if (neverAskAgain) {
+                                        metricCoordinator.setNeverAskAgain(habitId, true, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt, prompt.factPrompt)
                                     }
-
-                                    val updateIntent = Intent(TimerService.ACTION_WIDGET_UPDATE).apply {
-                                        putExtra(TimerService.EXTRA_HABIT_ID, habitId)
-                                        setPackage(packageName)
-                                    }
-                                    sendBroadcast(updateIntent)
                                     finish()
                                 } catch (error: Exception) {
-                                    Log.e(TAG, "Failed to record linked metrics", error)
-                                    Toast.makeText(
-                                        this@MetricPromptActivity,
-                                        getString(com.dayforge.R.string.metric_error_record_failed, error.message.orEmpty()),
-                                        Toast.LENGTH_LONG
-                                    ).show()
+                                    if (error is CancellationException) throw error
+                                    report(error)
                                 }
                             }
                         },
                         onSkip = { neverAskAgain ->
                             lifecycleScope.launch {
-                                withContext(Dispatchers.IO) {
+                                try {
                                     if (neverAskAgain) {
-                                        preferencesManager.setNeverAskAgain(habitId, true)
+                                        metricCoordinator.setNeverAskAgain(habitId, true, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt, prompt.factPrompt)
                                     }
-                                    preferencesManager.removePendingMetricHabit(habitId)
+                                    metricCoordinator.skipPrompt(habitId, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt, prompt.factPrompt)
+                                    if (prompt.timerPrompt == null && prompt.factPrompt == null && prompt.oneTimePrompt == null)
+                                        preferencesManager.removePendingMetricHabit(habitId)
+                                    finish()
+                                } catch (error: Exception) {
+                                    if (error is CancellationException) throw error
+                                    report(error)
                                 }
-                                finish()
                             }
                         },
-                        onDismiss = { finish() }
+                        onDismiss = { lifecycleScope.launch { metricCoordinator.closePrompt(); finish() } }
                     )
                 }
             }
         }
+    }
+
+    private fun report(error: Exception) {
+        Log.e(TAG, "Failed to update linked metric prompt", error)
+        Toast.makeText(this, getString(com.dayforge.R.string.metric_error_record_failed, error.message.orEmpty()),
+            Toast.LENGTH_LONG).show()
     }
 
     companion object {
@@ -147,12 +157,16 @@ class MetricPromptActivity : ComponentActivity() {
         /**
          * Create intent to start this activity.
          */
-        fun createIntent(context: android.content.Context, habitId: Long, habitName: String): Intent {
+        fun createIntent(context: android.content.Context, habitId: Long, habitName: String,
+            timerAuthority: com.dayforge.domain.model.TimerActionAuthority? = null,
+            factClaim: com.dayforge.data.repository.WidgetFactClaim? = null): Intent {
             return Intent(context, MetricPromptActivity::class.java).apply {
                 putExtra(EXTRA_HABIT_ID, habitId)
                 putExtra(EXTRA_HABIT_NAME, habitName)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 addFlags(Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+                timerAuthority?.attach(this)
+                factClaim?.attach(this)
             }
         }
     }

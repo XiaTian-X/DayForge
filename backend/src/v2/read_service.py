@@ -35,6 +35,7 @@ from src.v2.models import (
 from src.v2.schemas import SyncBootstrapResponse, SyncChangeResponse, SyncPullResponse
 from src.v2.next_sync_contract import NextSyncBootstrapResponse, NextSyncPullResponse
 from src.v2.one_time_recovery import read_one_time_checkpoints
+from src.v2.count_recovery import require_count_history
 
 
 def _change_response(
@@ -170,6 +171,8 @@ async def bootstrap(
     device = await require_device(
         require_internal(user.id, "User.id"), device_public_id, session
     )
+    if next_protocol:
+        await require_count_history(session, require_internal(user.id, "User.id"))
     max_result: Result[tuple[int]] = await session.execute(
         select(func.coalesce(func.max(col(SyncChange.sequence)), 0)).where(
             col(SyncChange.recipient_user_id) == user.id

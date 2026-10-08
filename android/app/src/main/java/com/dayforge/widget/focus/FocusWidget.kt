@@ -43,7 +43,10 @@ import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.appwidget.cornerRadius
 import java.time.ZonedDateTime
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.CancellationException
 import com.dayforge.domain.service.TimerElapsedCalculator
+import com.dayforge.widget.timer.WidgetTimerPolicy
+import com.dayforge.widget.timer.WidgetTimerRefreshCallback
 
 /**
  * FocusWidget - displays top-priority habit based on time-based relevance.
@@ -71,6 +74,7 @@ class FocusWidget : GlanceAppWidget() {
         val PRIMARY_HABIT_TYPE_KEY = stringPreferencesKey("primaryHabitType")
         val PRIMARY_TARGET_VALUE_KEY = intPreferencesKey("primaryTargetValue")
         val PRIMARY_COMPLETED_TODAY_KEY = intPreferencesKey("primaryCompletedToday")
+        val PRIMARY_ACTUAL_COUNT_KEY = longPreferencesKey("primaryActualCount")
         val PRIMARY_IS_COMPLETED_KEY = booleanPreferencesKey("primaryIsCompleted")
         val PRIMARY_IS_ACTIVE_KEY = booleanPreferencesKey("primaryIsActive")
         val PRIMARY_BACKGROUND_COLOR_KEY = intPreferencesKey("primaryBackgroundColor")
@@ -107,6 +111,9 @@ class FocusWidget : GlanceAppWidget() {
         // State keys
         val HAS_HABITS_KEY = booleanPreferencesKey("hasHabits")
         val DATA_LOADED_KEY = booleanPreferencesKey("dataLoaded")
+        val READ_FAILED_KEY = booleanPreferencesKey("timerReadFailed")
+        val TIMER_ACTION_PROOF_KEY = stringPreferencesKey("timerActionProof")
+        val FACT_ACTION_PROOF_KEY = stringPreferencesKey("factActionProof")
 
         /**
          * Refresh all FocusWidget instances without requiring glanceId.
@@ -137,14 +144,10 @@ class FocusWidget : GlanceAppWidget() {
             // Create services manually (widgets don't use Hilt injection)
             // Reuse app's centralized status calculation logic
             val failureChecker = FailureChecker(database.completionDao(), database.timeLogDao())
-            val habitStatusCalculator = HabitStatusCalculator(
-                failureChecker,
-                database.completionDao(),
-                database.timeLogDao()
-            )
+            val habitStatusCalculator = com.dayforge.di.WidgetEntryPoint.calculator(appContext, database)
 
             // Get all active habits
-            val allActiveHabits = database.habitDao().getAllHabitsOnce().filter { it.isActive }
+            val allActiveHabits = database.habitDao().getVisibleHabitsOnce().filter { it.isActive && it.completionPolicy != "one_and_done" }
 
             // Calculate status for each habit using app logic
             val habitsWithStats = allActiveHabits.map { habit ->
@@ -169,6 +172,24 @@ class FocusWidget : GlanceAppWidget() {
 
             // Get active timer (if any) for real-time TIMER habit progress
             val activeTimeLog = database.timeLogDao().getActiveTimeLog()
+            val activeHabit = activeTimeLog?.let { log -> allActiveHabits.singleOrNull { it.id == log.habitId } }
+            val activeSnapshot = if (activeHabit?.appearance != null) {
+                try {
+                    com.dayforge.di.WidgetEntryPoint.from(appContext).timerWriter().widgetSnapshot(activeHabit)
+                        ?.takeIf { it.activeLog?.uuid == activeTimeLog.uuid }
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    Log.w(TAG, "Focus widget original timer policy unavailable", error)
+                    null
+                } ?: run {
+                    updateAppWidgetState(appContext, glanceId) { prefs ->
+                        prefs[DATA_LOADED_KEY] = false
+                        prefs[READ_FAILED_KEY] = true
+                    }
+                    return
+                }
+            } else null
+            val activePolicy = activeHabit?.let { WidgetTimerPolicy.read(it, activeTimeLog, activeSnapshot?.policy) }
 
             // Calculate priorities using HabitPriorityCalculator
             // 使用todayCount而非completedToday布尔值（支持COUNTING的Slot级别完成判定）
@@ -178,12 +199,17 @@ class FocusWidget : GlanceAppWidget() {
                 val baseCount = habitWithStats.todayCount
                 // 如果是TIMER习惯且有活跃计时器，加上实时elapsedSeconds
                 val activeElapsed = if (habit.habitType == HabitType.TIMER && activeTimeLog?.habitId == habit.id) {
-                    TimerElapsedCalculator.elapsedSeconds(activeTimeLog, appContext)
+                    requireNotNull(activePolicy).elapsed(TimerElapsedCalculator.elapsedSeconds(
+                        activeSnapshot?.activeLog ?: activeTimeLog, appContext))
                 } else 0
                 habit.id to (baseCount + activeElapsed)
             }
             val priorities = HabitPriorityCalculator.calculatePriorities(
-                eligibleHabits.map { it.habit },
+                eligibleHabits.map {
+                    if (it.habit.id == activeTimeLog?.habitId && activePolicy != null)
+                        it.windowHabit.copy(targetValue = activePolicy.targetMinutes, isCountdown = activePolicy.isCountdown)
+                    else it.windowHabit
+                },
                 currentTime,
                 completedCountMap,
                 pendingMetricHabits
@@ -197,12 +223,37 @@ class FocusWidget : GlanceAppWidget() {
 
             // Get stats for primary to avoid re-querying
             val primaryStats = primary?.let { habitsWithStats.find { it.habit.id == primary.habit.id } }
+            val primaryOriginal = primary?.let { item -> allActiveHabits.singleOrNull { it.id == item.habit.id } }
+            val primaryTimerSnapshot = if (primaryOriginal?.habitType == HabitType.TIMER && primaryOriginal.appearance != null) {
+                (activeSnapshot?.takeIf { it.habit.id == primaryOriginal.id }
+                    ?: com.dayforge.di.WidgetEntryPoint.from(appContext).timerWriter().widgetSnapshot(primaryOriginal))
+                    ?: error("TIMER_WIDGET_STALE_DISPLAY")
+            } else null
 
             val themes = DeviceThemeControllerEntryPoint.from(appContext).themeController()
+            val primaryFactSnapshot = if (primaryOriginal?.appearance != null &&
+                primaryOriginal.habitType in setOf(HabitType.CHECK_IN, HabitType.COUNTING)) {
+                com.dayforge.di.WidgetEntryPoint.from(appContext).factReader().read(primaryOriginal)
+            } else null
+            primaryFactSnapshot?.let { view ->
+                // Ranking/slot inputs and the command claim must describe the same read state.
+                // A sync fact can change without changing the habit's display-only fields.
+                val stats = requireNotNull(primaryStats)
+                check(view.completed == stats.completedToday && (view.count == null ||
+                    (view.count.todayQuantity == stats.actualTodayCount &&
+                        view.count.todayPolicy?.targetValue == stats.displayTargetValue &&
+                        view.count.todayPolicy?.isCountdown == stats.displayIsCountdown))) { "FACT_WIDGET_STALE_DISPLAY" }
+            }
             val widgetColorResolver = WidgetColorResolver(appContext, themes)
 
             updateAppWidgetState(appContext, glanceId) { prefs ->
                 prefs[DATA_LOADED_KEY] = true
+                prefs[READ_FAILED_KEY] = false
+                if (primaryTimerSnapshot != null) prefs[TIMER_ACTION_PROOF_KEY] =
+                    com.dayforge.widget.timer.WidgetTimerAction.from(primaryTimerSnapshot).encode()
+                else prefs.remove(TIMER_ACTION_PROOF_KEY)
+                if (primaryFactSnapshot != null) prefs[FACT_ACTION_PROOF_KEY] = primaryFactSnapshot.claim.encode()
+                else prefs.remove(FACT_ACTION_PROOF_KEY)
 
                 if (primary != null) {
                     prefs[HAS_HABITS_KEY] = true
@@ -213,7 +264,8 @@ class FocusWidget : GlanceAppWidget() {
                     prefs[PRIMARY_HABIT_NAME_KEY] = primaryHabit.name
                     prefs[PRIMARY_COLOR_HEX_KEY] = primaryHabit.colorHex
                     prefs[PRIMARY_HABIT_TYPE_KEY] = primaryHabit.habitType.name
-                    prefs[PRIMARY_TARGET_VALUE_KEY] = primaryHabit.targetValue
+                    val primaryTimerPolicy = activePolicy?.takeIf { activeTimeLog?.habitId == primaryHabit.id }
+                    prefs[PRIMARY_TARGET_VALUE_KEY] = primaryTimerPolicy?.targetMinutes ?: primaryHabit.targetValue
                     prefs[PRIMARY_IS_ACTIVE_KEY] = primaryHabit.isActive
                     prefs[PRIMARY_SLOT_INDEX_KEY] = primary.slotIndex ?: -1
                     prefs[PRIMARY_TOTAL_SLOTS_KEY] = primary.totalSlots ?: -1
@@ -244,17 +296,19 @@ class FocusWidget : GlanceAppWidget() {
                     val baseTodayCount = primaryStats?.todayCount ?: 0
                     val isTimerActive = primaryHabit.habitType == HabitType.TIMER && activeTimeLog?.habitId == primaryHabit.id
                     val activeElapsedSeconds = if (isTimerActive) {
-                        TimerElapsedCalculator.elapsedSeconds(activeTimeLog!!, appContext)
+                        requireNotNull(primaryTimerPolicy).elapsed(TimerElapsedCalculator.elapsedSeconds(
+                            activeSnapshot?.activeLog ?: activeTimeLog!!, appContext))
                     } else 0
                     val totalTodayCount = baseTodayCount + activeElapsedSeconds
 
                     prefs[PRIMARY_COMPLETED_TODAY_KEY] = totalTodayCount
+                    prefs[PRIMARY_ACTUAL_COUNT_KEY] = primaryStats?.actualTodayCount ?: totalTodayCount.toLong()
                     prefs[PRIMARY_TODAY_COUNT_KEY] = totalTodayCount  // 实际完成次数（含实时计时）
                     prefs[PRIMARY_IS_TIMER_ACTIVE_KEY] = isTimerActive
                     prefs[PRIMARY_TIMER_ELAPSED_KEY] = activeElapsedSeconds  // 正在计时的实时秒数
 
                     // COUNTING/TIMER习惯的isCountdown模式状态
-                    prefs[PRIMARY_IS_COUNTDOWN_KEY] = primaryHabit.isCountdown
+                    prefs[PRIMARY_IS_COUNTDOWN_KEY] = primaryTimerPolicy?.isCountdown ?: primaryHabit.isCountdown
 
                     // 状态标签数据（用于显示StatusLabels）
                     prefs[PRIMARY_HAS_FAILED_KEY] = primaryStats?.hasFailed ?: false
@@ -319,7 +373,12 @@ class FocusWidget : GlanceAppWidget() {
         try {
             refreshWidgetData(context, id)
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             Log.e(TAG, "Error loading initial data", e)
+            updateAppWidgetState(context, id) { prefs ->
+                prefs[DATA_LOADED_KEY] = false
+                prefs[READ_FAILED_KEY] = true
+            }
         }
 
         provideContent {
@@ -329,7 +388,13 @@ class FocusWidget : GlanceAppWidget() {
                 val dataLoaded = state[DATA_LOADED_KEY] ?: false
                 val hasHabits = state[HAS_HABITS_KEY] ?: false
 
-                if (!dataLoaded) {
+                if (state[READ_FAILED_KEY] == true) {
+                    WidgetEmptyStates.EmptyConfigState(
+                        context.getString(R.string.data_read_failed) + "\n" + context.getString(R.string.action_retry),
+                        GlanceModifier.clickable(actionRunCallback<WidgetTimerRefreshCallback>(
+                            actionParametersOf(ActionParameters.Key<String>("widget") to "focus")))
+                    )
+                } else if (!dataLoaded) {
                     WidgetEmptyStates.EmptyConfigState(context.getString(com.dayforge.R.string.common_loading))
                 } else if (!hasHabits) {
                     // Empty state (WIDGET-05)
@@ -379,6 +444,7 @@ class FocusWidget : GlanceAppWidget() {
         }
         val targetValue = state[PRIMARY_TARGET_VALUE_KEY] ?: 1
         val completedToday = state[PRIMARY_COMPLETED_TODAY_KEY] ?: 0
+        val actualCount = state[PRIMARY_ACTUAL_COUNT_KEY] ?: completedToday.toLong()
         val todayCount = state[PRIMARY_TODAY_COUNT_KEY] ?: 0  // 实际完成次数（含实时计时）
         val isCompleted = state[PRIMARY_IS_COMPLETED_KEY] ?: false
         val isActive = state[PRIMARY_IS_ACTIVE_KEY] ?: true
@@ -619,13 +685,13 @@ class FocusWidget : GlanceAppWidget() {
                     // COUNTING type: single check-in button + progress
                     // Unified default button styling matches CHECK_IN and TIMER types
                     val remaining = if (isCountdown) {
-                        (targetValue - completedToday).coerceAtLeast(0)
+                        (targetValue.toLong() - actualCount).coerceAtLeast(0L)
                     } else 0
-                    val showCompleted = if (isCountdown) remaining <= 0 else completedToday >= targetValue
+                    val showCompleted = if (isCountdown) remaining <= 0 else actualCount >= targetValue
                     val progressText = if (isCountdown) {
                         context.getString(com.dayforge.R.string.timer_countdown_remaining, remaining)
                     } else {
-                        context.getString(com.dayforge.R.string.timer_countup_progress, completedToday, targetValue)
+                        context.getString(com.dayforge.R.string.timer_countup_progress, actualCount, targetValue)
                     }
                     Row(
                         modifier = GlanceModifier.fillMaxWidth(),
@@ -645,12 +711,8 @@ class FocusWidget : GlanceAppWidget() {
                         }
                         Button(
                             text = context.getString(com.dayforge.R.string.action_check_in),
-                            onClick = actionRunCallback<com.dayforge.widget.checkin.CheckInActionCallback>(
-                                actionParametersOf(
-                                    ActionParameters.Key<Long>("habitId") to habitId,
-                                    ActionParameters.Key<String>("action") to if (isCountdown) "decrement" else "increment"
-                                )
-                            ),
+                            onClick = com.dayforge.widget.checkin.widgetFactAction(context, habitId,
+                                if (isCountdown) "decrement" else "increment", state[FACT_ACTION_PROOF_KEY]),
                             modifier = GlanceModifier.height(36.dp)
                         )
                         Spacer(modifier = GlanceModifier.width(8.dp))
@@ -668,13 +730,15 @@ class FocusWidget : GlanceAppWidget() {
                     HabitActionButtons.TimerStartButton(
                         habitId = habitId,
                         targetMinutes = targetValue,
-                        isTimerActive = isTimerActive
+                        isTimerActive = isTimerActive,
+                        actionProof = state[TIMER_ACTION_PROOF_KEY]
                     )
                 } else if (isCheckInAllowed) {
                     // CHECK_IN type or AfterWindow (allow makeup check-in)
                     HabitActionButtons.CheckInButton(
                         habitId = habitId,
-                        isCompleted = isCompleted
+                        isCompleted = isCompleted,
+                        actionProof = state[FACT_ACTION_PROOF_KEY]
                     )
                 } else if (matchType == "AfterWindow") {
                     // AfterWindow but not failed/completed and not in check-in window

@@ -54,6 +54,7 @@ import kotlinx.coroutines.withContext
     entities = [
         HabitEntity::class,
         CompletionEntity::class,
+        com.dayforge.data.local.entity.CountDayEntity::class,
         TimeLogEntity::class,
         MetricEntity::class,
         MetricLogEntity::class,
@@ -77,7 +78,7 @@ import kotlinx.coroutines.withContext
         NextSyncStateEntity::class,
         NextRejectionEntity::class
     ],
-    version = 12,
+    version = 13,
     exportSchema = true
 )
 @TypeConverters(HabitTypeConverter::class)
@@ -86,6 +87,8 @@ abstract class HabitDatabase : RoomDatabase() {
     abstract fun habitDao(): HabitDao
 
     abstract fun completionDao(): CompletionDao
+
+    abstract fun countDayDao(): com.dayforge.data.local.dao.CountDayDao
 
     abstract fun completionFollowUpDao(): CompletionFollowUpDao
 

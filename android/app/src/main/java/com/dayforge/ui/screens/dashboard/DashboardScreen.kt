@@ -58,6 +58,7 @@ fun DashboardScreen(
 ) {
     val habitsWithStats by viewModel.habitsWithStats.collectAsState()
     val isInitialized by viewModel.isInitialized.collectAsState()
+    val readError by viewModel.readError.collectAsState()
     val activeTimer by viewModel.activeTimerState.collectAsState()
     val linkedMetricsByHabit by viewModel.linkedMetricsByHabit.collectAsState()
     val postCheckInState by viewModel.postCheckInState.collectAsState()
@@ -221,6 +222,9 @@ fun DashboardScreen(
                     )
                 }
             }
+        } else if (readError) {
+            com.dayforge.ui.components.DataReadFailure(viewModel::retryRead,
+                Modifier.fillMaxSize().padding(padding))
         } else if (habitsWithStats.isEmpty()) {
             EmptyHabitList(
                 modifier = Modifier.padding(padding),
@@ -256,8 +260,8 @@ fun DashboardScreen(
                     onIncrement = { habitId -> viewModel.incrementCount(habitId) },
                     onDecrement = { habitId ->
                         // Find habit for countdown vs countup logic
-                        val habit = habitsWithStats.find { it.habit.id == habitId }?.habit
-                        if (habit?.isCountdown == true) {
+                        val stats = habitsWithStats.find { it.habit.id == habitId }
+                        if (stats?.displayIsCountdown == true) {
                             viewModel.incrementCount(habitId)  // Countdown: - button = increment (reduce remaining)
                         } else {
                             viewModel.decrementCount(habitId)  // Countup: - button = decrement
@@ -318,9 +322,11 @@ fun DashboardScreen(
                             currentStreak = habitWithStats.currentStreak,
                             bestStreak = habitWithStats.bestStreak,
                             activityRate = habitWithStats.activityRate,
-                            completed = habitWithStats.completedToday,
+                            completed = habitWithStats.completedForDisplay,
+                            actionsEnabled = habitWithStats.oneTimeStatus?.canChange ?: true,
                             undoAvailable = habitWithStats.lastCompletionId != null,
                             todayCount = habitWithStats.todayCount,
+                            countHistory = habitWithStats.countHistory,
                             onCheckIn = { value ->
                                 scope.launch {
                                     // Per TARGET-15: Use checkIn method for goal detection
@@ -338,7 +344,7 @@ fun DashboardScreen(
                             onDecrement = {
                                 // Countdown mode: - button = increment count (reduce remaining)
                                 // Countup mode: - button = decrement count
-                                if (habit.isCountdown) {
+                                if (habitWithStats.displayIsCountdown) {
                                     viewModel.incrementCount(habit.id)
                                 } else {
                                     viewModel.decrementCount(habit.id)
@@ -508,26 +514,43 @@ fun DashboardScreen(
             PostCheckInDialog(
                 habitName = state.habitName,
                 linkedMetrics = state.linkedMetrics,
+                promptIdentity = state.oneTimePrompt?.eventUuid,
+                missingTargets = state.oneTimePrompt?.entries?.filterNot { it.available }?.map { it.name }.orEmpty(),
+                onRefreshMetadata = if (state.oneTimePrompt != null) viewModel::refreshPostCheckInMetadata else null,
+                initialInputs = state.oneTimePrompt?.entries?.associate { it.metricId to (it.input to it.note) }.orEmpty(),
+                onDraftChange = { inputs -> state.oneTimePrompt?.let { viewModel.savePostCheckInDraft(it.eventUuid, inputs) } },
                 onRecord = { values, neverAskAgain ->
                     scope.launch {
-                        if (!viewModel.recordMetricValues(state.habitId, values)) return@launch
-                        if (neverAskAgain) {
-                            viewModel.setNeverAskAgain(state.habitId, true)
-                        }
-                        viewModel.dismissPostCheckInDialog()
-                        if (state.isTempTask) {
-                            viewModel.deleteTempTask(state.habitId)
+                        try {
+                            if (!viewModel.recordMetricValues(state.habitId, values, state.oneTimePrompt?.eventUuid, state.timerPrompt)) return@launch
+                            if (neverAskAgain) {
+                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt)
+                            }
+                            viewModel.dismissPostCheckInDialog()
+                            if (state.isTempTask) {
+                                viewModel.deleteTempTask(state.habitId)
+                            }
+                        } catch (error: Exception) {
+                            if (error is kotlinx.coroutines.CancellationException) throw error
+                            Toast.makeText(context, context.getString(R.string.metric_error_record_failed,
+                                error.message.orEmpty()), Toast.LENGTH_LONG).show()
                         }
                     }
                 },
                 onSkip = { neverAskAgain ->
                     scope.launch {
-                        if (neverAskAgain) {
-                            viewModel.setNeverAskAgain(state.habitId, true)
-                        }
-                        viewModel.dismissPostCheckInDialog()
-                        if (state.isTempTask) {
-                            viewModel.deleteTempTask(state.habitId)
+                        try {
+                            if (neverAskAgain) {
+                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt)
+                            }
+                            viewModel.skipPostCheckInDialog(state.habitId, state.oneTimePrompt?.eventUuid, state.timerPrompt)
+                            if (state.isTempTask) {
+                                viewModel.deleteTempTask(state.habitId)
+                            }
+                        } catch (error: Exception) {
+                            if (error is kotlinx.coroutines.CancellationException) throw error
+                            Toast.makeText(context, context.getString(R.string.metric_error_record_failed,
+                                error.message.orEmpty()), Toast.LENGTH_LONG).show()
                         }
                     }
                 },

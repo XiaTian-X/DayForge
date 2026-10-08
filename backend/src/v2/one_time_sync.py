@@ -16,6 +16,7 @@ from src.v2.one_time import (
     advance_one_time,
 )
 from src.v2.schemas import ActivityEventPayload
+from src.v2.count_policy import CountDayPolicy
 
 
 def validate_one_time_binding(
@@ -45,9 +46,25 @@ class NextActivityEventPayload(ActivityEventPayload):
     """Existing UTC/source rules plus explicit intent; DB policy is checked later."""
 
     one_time: OneTimeIntent | None = None
+    count_policy: CountDayPolicy | None = None
 
     @model_validator(mode="after")
     def valid_one_time_shape(self):
+        if self.count_policy is not None and (
+            self.event_type not in {"count_delta", "count_snapshot"}
+            or self.one_time is not None
+            or any(
+                value is not None
+                for value in (
+                    self.duration_seconds,
+                    self.duration_milliseconds,
+                    self.started_at,
+                    self.ended_at,
+                    self.reverts_event_uuid,
+                )
+            )
+        ):
+            raise ValueError("count policy requires an ordinary count fact")
         if self.one_time is not None:
             validate_one_time_binding(
                 entity_uuid=self.one_time.event_uuid,
