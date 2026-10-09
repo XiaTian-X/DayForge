@@ -19,6 +19,47 @@
 
 ## 验证层级
 
+### 三类小组件配置入口与账户绑定租约（2026-10-09，Issue #332）
+
+保留原 Activity/Manifest 入口、类型过滤、标题/目标值说明、列表/卡片布局和配置 Toast，
+移除三类 UI 的直接 DAO、脱离生命周期协程及重复配置实现，统一 ViewModel/工作流/仓库。
+读取前捕获账户范围；首次旧结果/错误不能借重试进入替换账户。绑定提交前复核 UUID/类型
+和当前已配置实例，检查 commit Boolean；原范围叠加本次内存租约后发布，typed 计时
+保留 writer 强锁。同账户后来的相同值配置也使旧发布/回滚失效。失败/取消条件撤回自身
+绑定并安排当前数据恢复，不写事实/来源/outbox；失败不返回 RESULT_OK，显式重试重读选择。
+
+`987fe3ac710048fa907d4e7816559d3f` 在构建中主动取消：发现两个测试清单类名不正确及
+新参数注解作用位置告警；join/确认子进程和测试包不存在后合批更正类名与 @param: 目标。
+`48c635d47dfe4d4b865600fc9d38aa54` build1m41s 成功，但新 SQL 夹具 arrayOf 交叉类型
+告警被预算拒绝，未执行行为；显式 arrayOf<Any?> 修正，未扩大告警预算。
+`bbac3614bc224de0a3f26278bb8ed3c4` 完整 14 类实际 67 项为 65 passed/2 failed，
+0 errors/skipped，connected4m45s/XML259.191s。两项为新增夹具：直接 spy Android 的
+SharedPreferencesImpl 导致内部锁为空，以及使用了错误的 habit_name 键；不删除断言。
+其他完整类包含计数轮次、显示发布、实际事实/生产入口、计时生命周期/强发布/读取/tick、
+打卡状态、刷新路由和清理恢复。此轮不是完整通过；原 XML 按工具旋转保留于下一轮 prior-results。
+
+改为委托真实 SharedPreferences/Editor 的接口包装：实际原 commit 后仅首个结果注入 false，
+第二次真实恢复提交，检查原值及真实整库证明。显示断言使用各组件自身的 HABIT_NAME_KEY。
+同时补首次加载旧来源错误的范围复核和真实 DAO 读取后的账户交错用例；无共享发布/计时
+读取器变更。最终独立完整 WidgetConfigurationRepositoryTest、WidgetConfigurationEntryTest、
+CheckInWidgetConfigActivityTest、WidgetDisplayPublicationTest、ProductionWorkflowInjectionTest
+5 类 24/24 passed，0 failures/errors/skipped，connected2m27s/XML123.353s；证据
+`1197691699c04657a611c36bcc55c580/targeted.json`。root51/build1m53s/lint/告警、实际
+发现/APK/XML/新覆盖输入及 testbed 清理通过；wrapper/Gradle 与两个测试包退出后才编辑文档。
+
+实际 Hilt/Room/令牌/mutex/绑定偏好/Glance/配置 Activity/ViewModel/Compose 读取与点击；
+三类完成和重复点击，host 失败后的显式重读/重试，账户变化关闭及页面关闭后的结构化
+取消/回滚均由真实生产入口验证，等待并 join ViewModel scope 后收尾。仅隔离 launcher
+发现、Glance ID 解析和 host 提交；持久化故障仅注入原提交返回值，不伪造本地业务权限。
+仓库验证来源晚到/旧错误、重复绑定复核、ID/UUID 替换、同值 ABA、取消与回滚的整库/outbox
+不变。不把合成 Glance ID 称为已安装 host，不将两轮拼接为最终 68 项或 Android 全量。
+
+配置旋转依赖 ViewModel 归属，但本轮未新增旋转/进程死亡恢复或实际磁盘失败验收，不能
+以页面关闭证明这些场景。绑定持久归属/跨进程日志、真实 launcher 多实例/像素、正式 v5/
+Worker/素材/配置联合、Android/后端 SQL 全量与人工/外网/NAS仍未完成，#344 未闭合。
+默认 v4，150s/1500s 不变；无 schema/HTTP/后端/依赖/既有手机平板布局变更，无正式 APK
+安装/清库/部署/Docker 操作；未重跑未变容量长链或一分钟服务。
+
 ### 计时显示、专注闹钟与账户清理生命周期（2026-10-09，Issue #332）
 
 Timer 在来源读取前捕获原账户显示范围，typed 正常发布在既有 writer 强锁内复核；

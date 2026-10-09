@@ -115,14 +115,20 @@ class TimerWidget : GlanceAppWidget() {
          */
         suspend fun refreshWidgetData(context: Context, glanceId: GlanceId, habitId: Long) {
             val appContext = context.applicationContext
-            val database = HabitDatabaseProvider.getInstance(appContext)
             val entry = com.dayforge.di.WidgetEntryPoint.from(appContext)
             val publication = entry.displayPublisher().capturePublication() ?: return
+            refreshWidgetDataInScope(appContext, glanceId, habitId, publication)
+        }
+
+        internal suspend fun refreshWidgetDataInScope(context: Context, glanceId: GlanceId, habitId: Long,
+            publication: com.dayforge.data.repository.WidgetDisplayPublisher.Publication): Boolean {
+            val appContext = context.applicationContext
+            val database = HabitDatabaseProvider.getInstance(appContext)
             var publishingDisplay = false
             try {
                 val visibleHabit = database.habitDao().getVisibleHabitById(habitId)
                 if (visibleHabit == null) {
-                    publication {
+                    return publication {
                         publishingDisplay = true
                         updateAppWidgetState(appContext, glanceId) { prefs ->
                             clearActionAndTickState(prefs)
@@ -132,7 +138,6 @@ class TimerWidget : GlanceAppWidget() {
                             prefs[READ_FAILED_KEY] = false
                         }
                     }
-                    return
                 }
                 if (visibleHabit.appearance != null) {
                     val published = com.dayforge.di.WidgetEntryPoint.from(appContext).timerWriter()
@@ -140,18 +145,19 @@ class TimerWidget : GlanceAppWidget() {
                             publishingDisplay = true
                             writeWidgetState(appContext, glanceId, habitId, snapshot.habit, snapshot)
                         }
-                    if (published) return
+                    if (published) return true
                     publication { publishingDisplay = true; writeReadFailure(appContext, glanceId, habitId) }
-                    return
+                    return false
                 }
                 // v4 sources are prepared outside the lock; typed healthy snapshots still
                 // keep NextTimerWriter's stronger lock through all reads and display IO.
                 val display = prepareWidgetState(appContext, glanceId, habitId, visibleHabit, null)
-                publication { publishingDisplay = true; display() }
+                return publication { publishingDisplay = true; display() }
             } catch (error: Exception) {
                 if (error is CancellationException || publishingDisplay) throw error
                 Log.w(TAG, "Timer widget original policy unavailable", error)
                 publication { writeReadFailure(appContext, glanceId, habitId) }
+                return false
             }
         }
 

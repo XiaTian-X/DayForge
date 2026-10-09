@@ -85,7 +85,15 @@ class CheckInWidget : GlanceAppWidget() {
          */
         suspend fun refreshWidgetData(context: Context, glanceId: GlanceId, habitId: Long) {
             val appContext = context.applicationContext
-            com.dayforge.di.WidgetEntryPoint.from(appContext).displayPublisher().renderPrepared(
+            val publication = com.dayforge.di.WidgetEntryPoint.from(appContext).displayPublisher()
+                .capturePublication() ?: return
+            refreshWidgetDataInScope(appContext, glanceId, habitId, publication)
+        }
+
+        internal suspend fun refreshWidgetDataInScope(context: Context, glanceId: GlanceId, habitId: Long,
+            publication: com.dayforge.data.repository.WidgetDisplayPublisher.Publication): Boolean {
+            val appContext = context.applicationContext
+            return publication.renderPrepared(
                 onReadFailure = { error ->
                     Log.w(TAG, "Check-in widget source unavailable", error)
                     updateAppWidgetState(appContext, glanceId) { prefs ->
