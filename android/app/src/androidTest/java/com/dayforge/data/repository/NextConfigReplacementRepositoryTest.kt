@@ -377,6 +377,78 @@ class NextConfigReplacementRepositoryTest : NextObjectEditorFixture() {
         storage.reopen(); assertEquals(steps.map { it.operationId }.toSet(), network(id).accepted!!.keys)
     }
 
+    @Test fun nonemptyOldHistoryPullRequiresActualParentTombstonesAndNeverResurrectsBusinessOnColdReopen() = runBlocking<Unit> {
+        val (source, originalHttp) = graph()
+        val old = db.habitDao().getAllHabitsOnce()
+        val check = old.single { it.habitType == HabitType.CHECK_IN && it.completionPolicy == "recurring" }
+        val counts = old.filter { it.habitType == HabitType.COUNTING }
+        assertEquals(setOf(false, true), counts.map { it.isCountdown }.toSet())
+        creatingHabits().logCompletion(app, check.id)
+        for (row in counts) creatingHabits().logCompletion(app, row.id, value = 1)
+        val metric = db.metricDao().getAllMetricsOnce().single()
+        creatingMetrics().recordValue(metric.id, 21.125, "Original metric history")
+        val work = db.syncOutboxDao().getAll()
+        assertEquals(4, work.size); drain(originalHttp)
+        val origins = work.associate { it.operationId to db.nextRequestDao().origin(NEXT_OPERATION, it.operationId)!! }
+        val receipts = work.associate { it.operationId to db.nextRequestDao().acceptance(NEXT_OPERATION, it.operationId)!! }
+        val wires = work.associate { it.operationId to transmission(NEXT_OPERATION, it.operationId).wireBytes.copyOf() }
+        val history = work.map { row -> row.wireEntityUuid to canonical.getValue(row.wireEntityUuid) }
+        val oldLink = db.habitMetricLinkDao().getAllLinksOnce().single()
+        val linkBody = canonical.getValue(oldLink.uuid)
+        val preview = service().previewReplacement(source)
+        assertTrue(preview.eligible); assertEquals(3L, preview.counts.checkAndCountRecords)
+        assertEquals(1L, preview.counts.metricRecords)
+        val id = service().confirmReplacement(preview); val saved = entry(id, source)
+        service().resume(id, source)
+        assertEquals(3, count("completions")); assertEquals(0, count("metric_logs"))
+        // Old completions survive local staging until the original deletion is truly ACKed.
+        storage.reopen(); drain(originalHttp); storage.reopen()
+        assertEquals("operations_accepted", state(id)); assertEquals(0, count("completions"))
+        assertEquals(0, count("count_days")); assertEquals(0, count("metric_logs"))
+        val current = db.habitDao().getAllHabitsOnce()
+        assertEquals(saved.plan.habits.map { it.uuid }.toSet(), current.map { it.uuid }.toSet())
+        assertTrue(current.none { row -> old.any { it.uuid == row.uuid } })
+        // Historical snapshots are genuine original HTTP ACK bodies. This extra observation
+        // is an explicitly remote historical fixture, not a newly fabricated local write/ACK.
+        val observed = history.single { it.second["metric_uuid"] != null }
+        val unseenId = id(951)
+        val unseen = JsonObject(observed.second + ("public_id" to JsonPrimitive(unseenId)))
+        val snapshots = history + (oldLink.uuid to linkBody) + (unseenId to unseen)
+        val changes = snapshots.mapIndexed { i, (uuid, body) ->
+            val type = when { body["activity_uuid"] != null && body["metric_uuid"] != null -> "activity_metric_link"
+                body["metric_uuid"] != null -> "metric_observation"
+                else -> "activity_event" }
+            SyncV2Change(i + 1L, type, uuid, "upsert", body.getValue("revision").jsonPrimitive.long, body,
+                body.getValue("updated_at").jsonPrimitive.content)
+        }
+        val (http, server) = channel { input -> if (input.path == "/api/v2/sync/changes")
+            MaterialSocketServer.Reply(json.encodeToString(NextSyncPullResponse(changes, changes.size.toLong(), false, time)).toByteArray())
+            else response(input) }
+        val parent = requireNotNull(db.syncOutboxDao().getState("metric", metric.uuid))
+        assertTrue(parent.deleted)
+        db.syncOutboxDao().deleteState("metric", metric.uuid)
+        val before = db.nextSyncStateDao().rows().single()
+        rejected { NextSyncRuntime(db, tokens, sessions, http, preferences).sync() }
+        storage.reopen(); assertEquals(before, db.nextSyncStateDao().rows().single())
+        assertNull(db.syncOutboxDao().getState("metric_observation", unseenId))
+        assertEquals(0, count("completions")); assertEquals(0, count("metric_logs"))
+        db.syncOutboxDao().upsertState(parent)
+        NextSyncRuntime(db, tokens, sessions, http, preferences).sync()
+        storage.reopen(); assertEquals(changes.size.toLong(), db.nextSyncStateDao().rows().single().cursor)
+        assertEquals(unseen.toString(), db.syncOutboxDao().getState("metric_observation", unseenId)!!.payloadJson)
+        assertEquals(0, count("completions")); assertEquals(0, count("metric_logs")); assertEquals(0, count("count_days"))
+        assertEquals(current, db.habitDao().getAllHabitsOnce())
+        assertTrue(db.syncOutboxDao().getState("activity_metric_link", oldLink.uuid)!!.deleted)
+        assertFalse(onceRepository().read(current.single { it.completionPolicy == "one_and_done" }.id).completed)
+        for (row in work) {
+            assertEquals(origins[row.operationId], db.nextRequestDao().origin(NEXT_OPERATION, row.operationId))
+            assertEquals(receipts[row.operationId], db.nextRequestDao().acceptance(NEXT_OPERATION, row.operationId))
+            assertArrayEquals(wires[row.operationId], transmission(NEXT_OPERATION, row.operationId).wireBytes)
+        }
+        assertEquals(2, server.requests.count { it.path == "/api/v2/sync/changes" })
+        assertTrue(server.requests.none { it.path.endsWith("/push") })
+    }
+
     @Test fun emptyIncomingConfigurationStillDeletesOldGraphButEmptyToEmptyCannotLeaveAnUnfinishableGroup() = runBlocking<Unit> {
         val (_, http) = graph(); val source = ConfigBundleOutput.create(ConfigFileFixture.empty()) { error("No blobs") }
         val id = confirm(source); service().resume(id, source)

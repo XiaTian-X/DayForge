@@ -19,6 +19,42 @@
 
 ## 验证层级
 
+### 配置替换的非空历史与生产路由验证（2026-10-10，Issue #160）
+
+本批仅新增回归用例，不修改业务实现、协议默认、数据库、依赖或已确认 UI。
+后端新增 test_v5_config_replacement 完整模块7项：JWT/API token 下各3项，以及独立
+Alembic SQLite、实际生产配置和 Uvicorn/TCP 的完整替换链1项。实际 sync 路由创建目标、
+打卡、正/倒计数、正/倒计时、一次性事项、指标/关联；计时只通过 start/pause/resume/stop
+完整命令生成一分钟结果。冻结六阶段原删除/创建身份，逐阶段接受及精确重放；新事项未完成，
+新 bootstrap 不继承历史，旧 append-only changes 仍保留原事实。另验证提前同名创建拒绝、
+拒绝结果原身份重放、已删除父节点的新事实拒绝，以及旧删除已成功后新创建最终 COMMIT
+故障仅回滚该请求、同一原创建身份恢复。真实 TCP 使用独立连接核对响应后的持久结果。
+
+首轮新模块为4 passed/3 failed，8.94s；两项误把既有 ENTITY_DELETED 期待为
+ACTIVITY_NOT_FOUND，另一项使用错误指标表名 metrics。修正为实际契约与 tracked_metrics，
+不改生产拒绝或存储。复验新模块及完整 test_v5_production_sync、test_http_commit_boundary、
+test_jwt_runtime_server，共125 passed，0 failed/skipped，101.93s；warning 插件为
+1 observed/1 allowed，没有放宽预算。Python3.12/uv frozen、全库 Ruff/format 与 mypy242文件通过。
+
+Android 在原 NextConfigReplacementRepositoryTest 增加一个合批非空历史用例，通过实际
+HabitRepository/MetricRepository 生成打卡、正/倒计数和指标记录，再经真实 loopback HTTP
+接受原请求。暂存后旧打卡/计数保留至原删除 ACK；冷重开后旧投影及 count_days 清除。
+实际 NextSyncRuntime 拉取原历史事实、旧关联和明确类型化的未见历史指标夹具；父对象
+已接受 tombstone 时只保留影子，不重建业务；删除该父证明时整页回滚且游标不推进，恢复
+原证明后冷重试成功。原 origin/acceptance/冻结字节保留，新身份无旧事实，新事项仍未完成。
+
+授权 MI6/API35 的 android-targeted 完整类18/18 passed，0失败/错误/跳过，
+`a2d87ccb6d6d4d619d5f3f6c6adb14bf/targeted.json`；build30s、connected19m46s/XML1159.552s。
+新非空历史用例69.301s，最长既有六阶段冷重放146.679s，仍接近150s边界；不据此声称最大图性能通过。
+实际发现/XML身份、APK一致性、新非空覆盖输入与两测试包清理通过，包装及 Gradle 退出后
+才编辑文档。原150s单项/1500s任务期限不变，只执行受影响完整类，不重复之前240项。
+
+这证明两端各自的生产路由/消费者与非空历史回归，不是 Android 直接连接真实后端的全消费者
+联合验收。Android 该新增用例未造计时结果，也未补旧事项完成历史；相应实际组合仍留给
+正式接入后的联合矩阵。全量门禁/覆盖校准、正式 SAF/恢复/存储错误 UI、显式主题安装选择、
+Worker/v5联合启用、最大图吞吐及人工/平板/外网/NAS/Docker未执行；没有正式 APK 安装、
+清库、部署或合并。后续优先接正式配置文件入口及恢复进度，不再以重复基础验证代替接入。
+
 ### 配置实际非空替换与原操作 ACK 屏障（2026-10-10，Issue #160）
 
 内部 confirmReplacement/resume 接原账户、物理 Room/DataStore、素材控制器、creator/producer
