@@ -48,6 +48,13 @@ internal data class AccountIconTransferMetadata(
     val assets: Map<String, IconAsset>, val packs: Map<Pair<String, Int>, IconPack>
 )
 
+internal data class ConfigIconUse(val reference: IconReference, val oneTime: Boolean)
+internal data class ConfigOwnedBlob(val assetId: String, val installation: IconInstallation)
+internal data class ConfigIconDependencies(
+    val selection: AccountIconSelection, val assets: List<IconAsset>, val roles: Map<String, String>,
+    val unresolvedRoles: List<String>, val blobs: Map<String, ConfigOwnedBlob>
+)
+
 /** Readiness is an advisory local receipt, not a fresh file proof or server acknowledgement. */
 internal data class AccountIconCatalog(
     val packs: List<IconPack>, val selection: AccountIconSelection, val readyVersions: Set<IconPackVersion>
@@ -118,6 +125,49 @@ internal class AccountIconRepository(
             listOfNotNull(asset.light, asset.dark).all { it.sha256 in state.ready }
         } }.map { IconPackVersion(it.packId, it.revision) }.toSet()
         AccountIconCatalog(Collections.unmodifiableList(packs), state.selection, Collections.unmodifiableSet(ready))
+    }
+
+    /** One owned metadata/receipt snapshot, not the display resolver's placeholder fallback. */
+    internal suspend fun configDependencies(context: AccountIconContext,
+        uses: List<ConfigIconUse>): ConfigIconDependencies = scoped(context) {
+        require(uses.size <= 2000)
+        val state = catalog(context.namespace)
+        val selected = state.selection.pack?.let { state.packs.getValue(it.packId to it.revision) }
+        val assets = linkedMapOf<String, IconAsset>()
+        val roles = sortedMapOf<String, String>()
+        val unresolved = sortedSetOf<String>()
+        val blobs = sortedMapOf<String, ConfigOwnedBlob>()
+        for (use in uses) {
+            val asset = when (val reference = use.reference) {
+                is IconReference.Role -> {
+                    require(iconAllowed(reference, use.oneTime)) { "ICON_PURPOSE_MISMATCH" }
+                    val assetId = selected?.roles?.get(reference.role)
+                    if (assetId == null) { unresolved.add(reference.role); null }
+                    else { roles[reference.role] = assetId; state.assets.getValue(assetId) }
+                }
+                is IconReference.Asset -> requireNotNull(state.assets[reference.assetId]) { "ICON_ASSET_NOT_OWNED" }
+            }
+            if (asset != null) {
+                require(iconAllowed(use.reference, use.oneTime, asset)) { "ICON_PURPOSE_MISMATCH" }
+                assets[asset.assetId] = asset
+                // Prove every referring asset before deduplicating bytes. A shared hash is not ownership.
+                for (blob in listOfNotNull(asset.light, asset.dark)) {
+                    val receipt = installation(state, asset.assetId, blob.sha256)
+                    check(receipt.validationProfile != null) { "ICON_NOT_READY" }
+                    val previous = blobs[blob.sha256]
+                    check(previous == null || previous.installation == receipt) { "ICON_INSTALL_CHANGED" }
+                    if (previous == null || asset.assetId < previous.assetId)
+                        blobs[blob.sha256] = ConfigOwnedBlob(asset.assetId, receipt)
+                }
+            }
+        }
+        check(assets.size <= 128 && unresolved.size <= 256) { "CONFIG_ICON_DEPENDENCY_LIMIT" }
+        check(blobs.values.sumOf { it.installation.reservation.blob.byteLength.toLong() } <= 67_108_864L) {
+            "CONFIG_ICON_DEPENDENCY_LIMIT"
+        }
+        ConfigIconDependencies(state.selection, Collections.unmodifiableList(assets.values.sortedBy { it.assetId }),
+            Collections.unmodifiableMap(roles), Collections.unmodifiableList(unresolved.toList()),
+            Collections.unmodifiableMap(blobs))
     }
 
     /** Short queue transaction only: no I/O/network, nested account locking or preference writes. */
