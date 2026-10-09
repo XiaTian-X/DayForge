@@ -43,8 +43,16 @@ internal class ValidatedConfigBundle private constructor(
             val context = currentCoroutineContext()
             val checkpoint = { context.ensureActive() }
             checkpoint()
-            val bytes = configArchive { openSource().use { freezeIconArchive(it, checkpoint) } }
-            val zip = configArchive { IconPackZip(bytes, checkpoint, CONFIG_MANIFEST_LIMIT) }
+            val bytes = openSource().use { freezeConfigArchive(it, checkpoint) }
+            parse(bytes, checkpoint)
+        }
+
+        /** Same full native validation for bounded provider reads and locally generated archives. */
+        internal fun parse(bytes: ByteArray, checkpoint: () -> Unit = {}): ValidatedConfigBundle {
+            checkpoint()
+            if (bytes.size > ICON_ARCHIVE_LIMIT) throw ConfigBundleInputException("CONFIG_ARCHIVE_LIMIT")
+            val frozen = bytes.copyOf()
+            val zip = configArchive { IconPackZip(frozen, checkpoint, CONFIG_MANIFEST_LIMIT) }
             val rawManifest = configArchive { zip.read("manifest.json", CONFIG_MANIFEST_LIMIT, checkpoint) }
             val manifest = freezeConfig(decodeConfigManifest(rawManifest, checkpoint))
             val blobs = manifest.iconPack?.assets.orEmpty().flatMap { listOfNotNull(it.light, it.dark) }
@@ -60,17 +68,20 @@ internal class ValidatedConfigBundle private constructor(
                 try { checkpoint() } finally { bitmap.recycle() }
             }
             checkpoint()
-            ValidatedConfigBundle(manifest, bytes, zip, blobs)
+            return ValidatedConfigBundle(manifest, frozen, zip, blobs)
         }
     }
 }
+
+internal fun freezeConfigArchive(source: InputStream, checkpoint: () -> Unit): ByteArray =
+    configArchive { freezeIconArchive(source, checkpoint) }
 
 private inline fun <T> configArchive(block: () -> T): T = try { block() }
 catch (error: IconPackInputException) {
     throw ConfigBundleInputException("CONFIG_" + error.code.removePrefix("PACK_"))
 }
 
-private fun decodeConfigManifest(bytes: ByteArray, checkpoint: () -> Unit): ConfigBundle {
+internal fun decodeConfigManifest(bytes: ByteArray, checkpoint: () -> Unit): ConfigBundle {
     try {
         val text = strictAppearanceJson(bytes, CONFIG_MANIFEST_LIMIT, checkpoint) {
             throw ConfigBundleInputException("CONFIG_MANIFEST_$it")
