@@ -19,6 +19,49 @@
 
 ## 验证层级
 
+### 配置持久确认与空副本真实导入（2026-10-09，Issue #160）
+
+NextConfigImportRepository/Store 接真实账户、素材控制器、原 creator/producer 与 Room 16：
+预览只读，确认先保存映射，随后安装真实文件，再原子提交业务、原创建请求与本地收据；
+冷重开查询 prepared 身份、重选同一冻结 ZIP 精确恢复/取消。仅 empty_replica，不实现非空
+替换或正式设置页，不改变默认 v4/HTTP、后端、依赖或已确认手机/平板 UI。
+
+Room15→16 两张空表；schema1–15未改写，全部30个旧实体与schema15逐项相等。追加schema16
+identity `267d74a4ef2cc6e97696a0035789dc9d`，32实体。旧升级夹具只更新最终版本/identity 和
+新增表的 DDL 比较范围，冻结源、完整旧行、失败回滚断言保留。新4项完整迁移类验证真实15源、
+冷重开、旧字节/DDL、空表、占表/身份拒绝、最终校验失败后整体回滚及精确重试。
+
+首轮 `10403741f0374d198dbb95fdb9007fe8` 构建失败，未执行行为：新测试辅助函数与父夹具
+重名；新 ApplicationContext 参数也有注解目标警告。实际 wrapper/Gradle/两测试包退出后，
+合批重命名及显式 @param，并补取消/冷启动查询用例，不调整警告预算。
+随后22完整类176项：175 passed、1 failed、0 errors/skipped，证据
+`878dfdf26a0c471ba587ee3c6141c50f`，build2m45s、connected6m38s/XML373.915s。
+完整矩阵为所有旧/新增迁移类、HabitDatabaseBaselineTest、RoomUpgradeCompatibilityTest、
+NextConfigImportRepositoryTest12、ProtocolNextActivationBarrierTest16、NextObjectCreationTest、
+NextRoundOperationStoreTest、NextCoreRequestStoreTest。其余21完整类164项通过。
+
+唯一失败在新最终COMMIT故障后的验证读取：Android原生故障写连接仍有未提交事务，夹具
+漏掉既有故障矩阵要求的先关闭/冷重开，不能借旧写连接或WAL读证明持久回滚。
+生产源码未变；完整退出后仅修正新夹具的关闭/重开顺序，并加强首个异常必须为实际
+SQLiteConstraintException。完整 NextConfigImportRepositoryTest12/12通过，0失败/错误/跳过，
+证据 `0a3c157f71584c678cd128805e99ee63/targeted.json`，build21s、connected2m08s/XML104.609s。
+原176项失败XML保留该次prior-results，不拼接为176项最终门禁或Android全量。
+
+真实账户/Room/文件证明确认前无分配写入、持久后再安装、发现prepared、重复确认拒绝、
+稳定新对象/素材/创建操作、实际主键关联、未完成事项/无事实/无计时结果、不自动选包/主题；
+文件、业务、晚期原来源及最终COMMIT故障不冒报成功，冷重开保持原映射与真实已安装素材。
+实际暂停文件read证明不持有账户/业务锁；取消等待真实IO收尾，日志可发现并精确恢复。
+只读/旧预览/另一账户或设备拒绝、同账户重新认证显式恢复、源变化/坏块/gap/原来源损坏拒绝，
+真实400目标映射跨64KiB分块重开，不将其称为最大业务容量证明。完整旧协议11入口包括
+只有prepared、损坏头或孤儿块时仍拒绝，隔离账户清理包含两表。
+挑战测试通过原真实检查点存储建立已接受空档位及原round producer，保存初始来源，
+不伪造远端birth/ACK，也不是实际后端bootstrap联合。显式取消仅删prepared，不清理素材。
+
+root51/build/lint/警告、发现/APK/XML/非空新覆盖输入及两包清理通过。仅所选完整矩阵；
+未重复未变长计时/最大素材类、全局覆盖校准、Android/后端SQL全量、正式UI/Widget host、
+人工/平板/外网/NAS或Docker；150s/1500s不变。正式非空替换/删除ACK屏障、来源恢复交互、
+存储故障提示、主题安装、设置入口及v5联合仍待完成。无正式APK安装/清除、清库、部署或合并。
+
 ### 配置新身份构造与真实素材复制（2026-10-09，Issue #160）
 
 NextConfigImportPlan 接冻结 v2 输入与目标绑定分配，完整构造新业务/素材/主题及创建操作身份。

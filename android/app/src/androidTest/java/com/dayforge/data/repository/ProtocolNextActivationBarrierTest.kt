@@ -34,7 +34,7 @@ class ProtocolNextActivationBarrierTest : SyncPersistenceFixture() {
     }
 
     private suspend fun orphanedCausalMetadata(statement: String, table: String) {
-        assertEquals(14, database.openHelper.writableDatabase.version) // Materialize the lazy file before closing it.
+        assertEquals(16, database.openHelper.writableDatabase.version) // Materialize the lazy file before closing it.
         database.close()
         val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
         check(context.packageName == "com.dayforge.testbed")
@@ -61,6 +61,34 @@ class ProtocolNextActivationBarrierTest : SyncPersistenceFixture() {
     @Test fun orphanedCausalRetirementIsNotAnAckAndBlocksAllElevenLegacyWrites() = runBlocking {
         orphanedCausalMetadata("INSERT INTO next_structural_supersessions VALUES('orphan','replacement',1,2,'bad','bad','bad','bad-json','bad','parent','bad','bad','account','server','epoch','device','sync_operation')",
             "next_structural_supersessions")
+    }
+
+    @Test fun preparedAndMalformedConfigurationJournalBlockAllLegacyWritesWithoutAnOriginAndClearIncludesThem() = runBlocking<Unit> {
+        val sql = database.openHelper.writableDatabase
+        sql.execSQL("INSERT INTO next_config_imports VALUES('import','account','server','epoch','device','bad','bad','empty_replica','prepared',NULL)")
+        sql.execSQL("INSERT INTO next_config_import_payloads VALUES('import','identities',0,X'007FFF')")
+        reopen(); assertAllLegacyWritesRefused()
+        assertTrue(database.syncOutboxDao().hasProtocolNextRequests())
+        assertFalse(database.nextRequestDao().hasAny())
+        database.clearAllData(); reopen()
+        assertFalse(database.syncOutboxDao().hasProtocolNextRequests())
+        database.openHelper.writableDatabase.execSQL("INSERT INTO next_config_imports VALUES('damaged','bad','bad','bad','bad','bad','bad','bad','bad',NULL)")
+        assertAllLegacyWritesRefused()
+    }
+
+    @Test fun orphanedConfigurationPayloadAloneBlocksEveryLegacyWrite() = runBlocking<Unit> {
+        database.openHelper.writableDatabase
+        database.close()
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        android.database.sqlite.SQLiteDatabase.openDatabase(context.getDatabasePath("habit_database").path, null,
+            android.database.sqlite.SQLiteDatabase.OPEN_READWRITE).use {
+            it.setForeignKeyConstraintsEnabled(false)
+            it.execSQL("INSERT INTO next_config_import_payloads VALUES('orphan','identities',0,X'007FFF')")
+        }
+        reopen(); assertAllLegacyWritesRefused()
+        assertTrue(database.syncOutboxDao().hasProtocolNextRequests())
+        database.clearAllData(); reopen()
+        assertFalse(database.syncOutboxDao().hasProtocolNextRequests())
     }
     @Test fun orphanedMalformedAcceptanceBlocksEveryLegacyMutationAfterReopen() = runBlocking {
         val row = NextAcceptanceEntity("unknown-kind", "orphan", "bad", "bad", "bad", "bad-json")
