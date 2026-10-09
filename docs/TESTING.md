@@ -19,6 +19,34 @@
 
 ## 验证层级
 
+### 计时小组件账户限定发布（2026-10-09，Issue #332）
+
+NextTimerWriter 的 typed 显示发布保留同一账户协调锁至 renderer 返回，但在显示 I/O 前
+结束 Room 只读事务。真实计时/原开始规则/当前轮历史读取复用原审计，不缓存写权限或
+补造完成、来源和同步队列；回调不得重入账户锁或写业务数据。账户清理不能穿过此次发布，
+旧排队请求、陈旧对象和损坏原来源拒绝；取消/显示异常释放锁。此范围仅为 TimerWidget
+的 typed 发布，不宣称其他消费者或 launcher 像素生命周期的账户隔离全部完成。
+
+首次命令误选 WidgetTimerActionTest 的包路径，`66d8ac9572a144c28ef3acf49ee8e648`
+在行为发现/执行前取消并 join，确认子进程/testbed 不存在后更正命令；不称该构建通过。
+更正后的完整 6 类实际 67/67 passed，connected 9m53s，独立证据
+`d06b1a757d764b2590ef0214db9f9825/targeted.json`。其后静态审查发现新发布 catch 把主题/
+显示异常误当作来源读取失败；修正为 renderer 开始后的异常向既有有界刷新重试传播，
+只有来源失败写 READ_FAILED 并清除动作声明，不回退 v4。真实 Hilt/Glance 消费者通过
+损坏隔离 testbed 的主题偏好验证异常传播、原展示和整库证明不变、锁释放及原选择恢复；
+不新增测试专用生产分支，不修改正式偏好或主题文件。
+
+最终源码完整 `WidgetTimerPublicationTest`、`WidgetTimerReadTest`、`NextTimerWriterTest`、
+`ProductionWorkflowInjectionTest`、`WidgetRefresherTest`、`WidgetRefreshWorkerTest` 6 类实际
+30/30 passed，0 failures/errors/skipped，connected 1m33s（XML suite 67.425s），独立证据
+`032d53a29c5f47dc800866ef75244054/targeted.json`。根工具 51、build 1m51s/lint/告警、
+APK/发现/XML/新覆盖输入与 testbed 清理通过；实际子进程与两个测试包不存在后才改文档。
+最终 catch 只影响显示错误分流，未再改共享 reader/writer，故复测发布及相邻刷新重试链，
+不重复未变的重启 39 项、容量或一分钟服务；此前 67 项不是最终源码完整矩阵通过。
+未改 150s/1500s 期限或业务断言，不称全量/后端 SQL/正式 UI/人工验收通过。
+秒级 tick 与完整审计分离、Focus 等其余发布边界和正式 v5 联合仍未完成；默认 v4，
+无 schema/HTTP/后端/依赖/手机平板布局变化，无正式 APK 安装、清库、部署或 Docker 测试。
+
 ### 测试 APK 打包失败诊断（2026-10-09，Issue #332）
 
 共享读取 #351 的精确提交 `9c22a2de3512aa511af403dff51d72ea0cb2434b`，托管运行
@@ -32,7 +60,10 @@ repository/secret policy 通过、backend 跳过，不重复盲重跑或以 #351
 up-to-date），日志 `672fc01fffd14cb4881a75cd6974a7da/build.log`；没有清理重建或复现
 托管打包错误，不能称干净构建或故障修复。此纯诊断配置批未安装/执行真机用例，未沿用
 前批行为结果为本批通过。包装进程终态、Gradle 子进程与两个 testbed 包不存在后才改文档。
-托管精确提交的后续构建仍待验证；秒级组件优化、正式 v5 联合和全量/人工门禁未完成。
+精确提交 `78fe087d649ab1295370f6bc0610ad5d4a2f8595` 的托管运行 `37888370200`
+attempt 1 已 completed/success：Android build/lint/warning 与 repository/secret policy
+通过，backend 未变跳过。打包失败未复现，配置不是已证明的根因修复；#352 失败记录
+不改写，也不等于真机行为/联合全量/人工通过。秒级组件优化与正式 v5 联合仍未完成。
 
 ### 午夜旧显示缓存与新模型只读统计（2026-10-09，Issue #332）
 

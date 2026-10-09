@@ -60,34 +60,50 @@ class NextTimerWriter @Inject constructor(
     /** Read-only production widget consumer. Null means stale/missing display, not legacy fallback. */
     suspend fun widgetSnapshot(expectedHabit: HabitEntity): WidgetTimerReadSnapshot? = readSnapshot(expectedHabit, true)
 
+    /**
+     * Publish a typed widget's display while still owning its account session. The Room read
+     * transaction ends before renderer I/O; account cleanup cannot interleave with publication.
+     * The callback must not re-enter this non-reentrant coordinator or perform business writes.
+     */
+    suspend fun renderWidgetSnapshot(expectedHabit: HabitEntity,
+        render: suspend (WidgetTimerReadSnapshot) -> Unit): Boolean = sessions.exclusive {
+        val snapshot = database.withTransaction { readSnapshotInTransaction(expectedHabit, true) }
+            ?: return@exclusive false
+        render(snapshot)
+        true
+    }
+
     /** List statistics and their action ticket must share the same displayed head and account. */
     suspend fun statusSnapshot(expectedHabit: HabitEntity): WidgetTimerReadSnapshot? = readSnapshot(expectedHabit, false)
 
     private suspend fun readSnapshot(expectedHabit: HabitEntity, includeStartGuard: Boolean): WidgetTimerReadSnapshot? = sessions.exclusive {
-        database.withTransaction {
-            val habit = database.habitDao().getVisibleHabitById(expectedHabit.id) ?: return@withTransaction null
-            if (habit.appearance == null || habit.uuid != expectedHabit.uuid ||
-                NextStructureMapper.writePlan(habit) != NextStructureMapper.writePlan(expectedHabit)) return@withTransaction null
-            val authority = captureInReadTransaction(habit) ?: return@withTransaction null
-            val access = requireNotNull(tokens.localCoreWriteAccess())
-            check(access.session == authority.session() && access.capturedDeviceId == authority.deviceId)
-            val log = database.timeLogDao().getActiveTimeLogForHabit(habit.id)
-            check(log?.uuid == authority.sessionUuid && log?.timerNextCommandSequence == authority.nextSequence)
-            val policy = log?.let { NextTimerPolicyStore(database).policy(access, it.uuid) }
-            val startGuard = if (log == null && includeStartGuard) {
-                val incumbentLog = database.timeLogDao().getActiveTimeLog()
-                val incumbent = incumbentLog?.let {
-                    val row = requireNotNull(database.habitDao().getVisibleHabitById(it.habitId))
-                    check(row.appearance != null) { "TIMER_WIDGET_MIXED_PROTOCOL" }
-                    NextTimerPolicyStore(database).policy(access, it.uuid)
-                    requireNotNull(captureInReadTransaction(row))
-                }
-                TimerStartGuard(incumbentLog?.habitId, incumbent)
-            } else null
-            check(tokens.localCoreWriteAccess() == access) { "TIMER_WIDGET_STALE_ACCOUNT" }
-            val history = timerHistoryReader.readInTransaction(habit, com.dayforge.util.DateTimeUtils.today())
-            WidgetTimerReadSnapshot(habit, log, policy, authority, startGuard, history)
-        }
+        database.withTransaction { readSnapshotInTransaction(expectedHabit, includeStartGuard) }
+    }
+
+    private suspend fun readSnapshotInTransaction(expectedHabit: HabitEntity, includeStartGuard: Boolean): WidgetTimerReadSnapshot? {
+        check(database.inTransaction()) { "TIMER_WIDGET_TRANSACTION_REQUIRED" }
+        val habit = database.habitDao().getVisibleHabitById(expectedHabit.id) ?: return null
+        if (habit.appearance == null || habit.uuid != expectedHabit.uuid ||
+            NextStructureMapper.writePlan(habit) != NextStructureMapper.writePlan(expectedHabit)) return null
+        val authority = captureInReadTransaction(habit) ?: return null
+        val access = requireNotNull(tokens.localCoreWriteAccess())
+        check(access.session == authority.session() && access.capturedDeviceId == authority.deviceId)
+        val log = database.timeLogDao().getActiveTimeLogForHabit(habit.id)
+        check(log?.uuid == authority.sessionUuid && log?.timerNextCommandSequence == authority.nextSequence)
+        val policy = log?.let { NextTimerPolicyStore(database).policy(access, it.uuid) }
+        val startGuard = if (log == null && includeStartGuard) {
+            val incumbentLog = database.timeLogDao().getActiveTimeLog()
+            val incumbent = incumbentLog?.let {
+                val row = requireNotNull(database.habitDao().getVisibleHabitById(it.habitId))
+                check(row.appearance != null) { "TIMER_WIDGET_MIXED_PROTOCOL" }
+                NextTimerPolicyStore(database).policy(access, it.uuid)
+                requireNotNull(captureInReadTransaction(row))
+            }
+            TimerStartGuard(incumbentLog?.habitId, incumbent)
+        } else null
+        check(tokens.localCoreWriteAccess() == access) { "TIMER_WIDGET_STALE_ACCOUNT" }
+        val history = timerHistoryReader.readInTransaction(habit, com.dayforge.util.DateTimeUtils.today())
+        return WidgetTimerReadSnapshot(habit, log, policy, authority, startGuard, history)
     }
 
     /** Caller already holds the non-reentrant account mutex and the Room read transaction. */
