@@ -28,6 +28,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.debounce
 
 /** Real account-bound template read. No business, outbox, preference, import or selection writes. */
 @Singleton
@@ -39,6 +42,21 @@ internal class NextConfigExportRepository @Inject constructor(
     private val icons: AccountIconController,
     private val themes: DeviceThemeController
 ) {
+    /** Evidence selects a transport, never grants authority or activates the next protocol. */
+    suspend fun usesNextReplica(): Boolean = withContext(Dispatchers.IO) { sessions.exclusive {
+        database.withTransaction {
+            database.syncOutboxDao().hasProtocolNextRecovery() || database.syncOutboxDao().hasProtocolNextRequests() ||
+                database.openHelper.readableDatabase.query("SELECT 1 FROM habits WHERE appearance IS NOT NULL " +
+                    "UNION ALL SELECT 1 FROM metrics WHERE appearance IS NOT NULL LIMIT 1").use { it.moveToFirst() }
+        }
+    } }
+
+    @OptIn(kotlinx.coroutines.FlowPreview::class)
+    fun changes() = combine(tokens.iconAccessChanges, database.invalidationTracker.createFlow(
+        "next_config_imports", "next_acceptances", "next_sync_state", "next_request_origins", "habits", "metrics").debounce(250)) {
+        access, _ -> access
+    }.map { Unit }
+
     private data class Snapshot(
         val habits: List<HabitEntity>, val metrics: List<MetricEntity>, val links: List<HabitMetricLinkEntity>,
         val states: Map<String, OneTimeState>

@@ -46,6 +46,28 @@ class ConfigImportServiceTest {
     }
 
     @Test
+    fun next_checkpoint_or_damaged_import_journal_blocks_legacy_empty_replacement_without_changing_any_rows() = runBlocking {
+        val row = HabitEntity(name = "Existing legacy habit", habitType = HabitType.CHECK_IN,
+            iconResId = 1, colorHex = "#2196F3", schedule = HabitSchedule.Daily)
+        database.habitDao().insert(row)
+        val before = database.habitDao().getAllHabitsOnce(); val outbox = database.syncOutboxDao().getAll()
+        val json = Json.encodeToString(ConfigExportDto())
+        fun id(n: Int) = "cc310000-0000-4000-8000-${n.toString(16).padStart(12, '0')}"
+        database.nextSyncStateDao().insert(com.dayforge.data.local.entity.NextSyncStateEntity(
+            id(1), id(2), id(3), id(4), 1, 0, "a".repeat(64), "b".repeat(64)))
+        assertTrue(service.importConfig(json).isFailure)
+        assertEquals(before, database.habitDao().getAllHabitsOnce()); assertEquals(outbox, database.syncOutboxDao().getAll())
+        database.openHelper.writableDatabase.execSQL("DELETE FROM next_sync_state")
+        database.openHelper.writableDatabase.execSQL("INSERT INTO next_config_imports VALUES(" +
+            "'damaged','bad','bad','bad','bad','bad','bad','bad','bad',NULL)")
+        assertTrue(service.importConfig(json).isFailure)
+        assertEquals(before, database.habitDao().getAllHabitsOnce()); assertEquals(outbox, database.syncOutboxDao().getAll())
+        database.openHelper.readableDatabase.query("SELECT COUNT(*) FROM next_config_imports").use {
+            assertTrue(it.moveToFirst()); assertEquals(1, it.getInt(0))
+        }
+    }
+
+    @Test
     fun invalid_link_leaves_configuration_and_generated_outbox_unchanged() = runBlocking {
         database.habitDao().insert(
             HabitEntity(

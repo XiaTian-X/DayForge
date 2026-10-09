@@ -93,6 +93,8 @@ class SettingsViewModel @Inject constructor(
     val importProgress = configWorkflow.importProgress
     val importConfirmData = configWorkflow.importConfirmData
     val importResult = configWorkflow.importResult
+    internal val configFileState = configWorkflow.v2?.state ?: MutableStateFlow(
+        ConfigV2UiState(profile = ConfigFileProfile.LEGACY)).asStateFlow()
 
     // Last sync time from SyncManager
     val lastSyncTime: StateFlow<Long?> = syncManager.getLastSyncTime()
@@ -153,6 +155,7 @@ class SettingsViewModel @Inject constructor(
     private var manualSyncJob: Job? = null
 
     init {
+        viewModelScope.launch { configWorkflow.v2?.observe() }
         viewModelScope.launch { themeEditor.restore() }
         viewModelScope.launch {
             themeState.collect { if (it is DeviceThemeLoadState.Ready) appearanceWorkflow.refreshLibrary(force = false) }
@@ -408,8 +411,21 @@ class SettingsViewModel @Inject constructor(
      * @return JSON string or null on failure
      */
     suspend fun exportConfigToJson(): String? {
-        return configWorkflow.exportConfigToJson()
+        if (configWorkflow.v2?.allowLegacy() == false) return null
+        val content = configWorkflow.exportConfigToJson()
+        return if (configWorkflow.v2?.allowLegacy() == false) null else content
     }
+
+    internal suspend fun beginConfigExport() = configWorkflow.v2?.beginExport() == true
+    internal suspend fun beginConfigImport(recover: Boolean = false) = configWorkflow.v2?.beginImport(recover) == true
+    internal fun writeConfigExport(uri: Uri?) { viewModelScope.launch { configWorkflow.v2?.writeExport(uri) } }
+    internal fun readConfigImport(uri: Uri?) { viewModelScope.launch { configWorkflow.v2?.readImport(uri) } }
+    internal fun confirmConfigImport() { viewModelScope.launch { configWorkflow.v2?.confirmImport() } }
+    internal fun abandonConfigImport() { viewModelScope.launch { configWorkflow.v2?.abandonPrepared() } }
+    internal fun dismissConfigPreview() { viewModelScope.launch { configWorkflow.v2?.dismissPreview() } }
+    internal fun dismissConfigMessage() { viewModelScope.launch { configWorkflow.v2?.dismissMessage() } }
+    internal fun configPickerFailed() { viewModelScope.launch { configWorkflow.v2?.pickerFailed() } }
+    internal fun refreshConfigState() { viewModelScope.launch { configWorkflow.v2?.refresh() } }
 
     /**
      * Dismisses the export result dialog.
@@ -424,8 +440,10 @@ class SettingsViewModel @Inject constructor(
      */
     fun prepareImport(uri: Uri) {
         viewModelScope.launch {
+            if (configWorkflow.v2?.allowLegacy() == false) return@launch
             if (showActiveTimerWarningIfNeeded()) return@launch
             configWorkflow.prepareImport(uri)
+            if (configWorkflow.v2?.allowLegacy() == false) configWorkflow.cancelImport()
         }
     }
 
@@ -434,6 +452,9 @@ class SettingsViewModel @Inject constructor(
      */
     fun confirmImport() {
         viewModelScope.launch {
+            if (configWorkflow.v2?.allowLegacy() == false) {
+                configWorkflow.cancelImport(); return@launch
+            }
             configWorkflow.confirmImport()
         }
     }

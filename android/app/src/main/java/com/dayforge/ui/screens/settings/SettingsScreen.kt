@@ -72,6 +72,7 @@ fun SettingsScreen(
     val importProgress by viewModel.importProgress.collectAsState()
     val importConfirmData by viewModel.importConfirmData.collectAsState()
     val importResult by viewModel.importResult.collectAsState()
+    val configFileState by viewModel.configFileState.collectAsState()
 
     var showLogoutDialog by remember { mutableStateOf(false) }
 
@@ -162,6 +163,25 @@ fun SettingsScreen(
             }
         }
     }
+
+    val configV2ImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) {
+        viewModel.readConfigImport(it)
+    }
+    val configV2ExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) {
+        viewModel.writeConfigExport(it)
+    }
+    val launchConfigImport: (Boolean) -> Unit = { recover -> coroutineScope.launch {
+        if (viewModel.beginConfigImport(recover)) {
+            try { configV2ImportLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")) }
+            catch (_: Exception) { viewModel.configPickerFailed() }
+        }
+    } }
+    val launchConfigExport = { coroutineScope.launch {
+        if (viewModel.beginConfigExport()) {
+            try { configV2ExportLauncher.launch("dayforge-config-${java.time.LocalDate.now()}.zip") }
+            catch (_: Exception) { viewModel.configPickerFailed() }
+        }
+    } }
 
     // File picker for theme import
     val themeImportLauncher = rememberLauncherForActivityResult(
@@ -273,13 +293,26 @@ fun SettingsScreen(
 
             item {
                 ConfigManagementCard(
-                    exportProgress = exportProgress,
+                    exportProgress = exportProgress || configFileState.busy,
                     importProgress = importProgress,
                     onExportClick = {
-                        val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
-                        configExportLauncher.launch("habits-config-${dateFormat.format(java.util.Date())}.json")
+                        if (configFileState.profile == ConfigFileProfile.NEXT) launchConfigExport()
+                        else if (configFileState.profile == ConfigFileProfile.LEGACY) {
+                            val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+                            configExportLauncher.launch("habits-config-${dateFormat.format(java.util.Date())}.json")
+                        }
                     },
-                    onImportClick = { importLauncher.launch(arrayOf("application/json")) }
+                    onImportClick = {
+                        if (configFileState.profile == ConfigFileProfile.NEXT) launchConfigImport(false)
+                        else if (configFileState.profile == ConfigFileProfile.LEGACY) importLauncher.launch(arrayOf("application/json"))
+                    },
+                    exportEnabled = configFileState.profile in setOf(ConfigFileProfile.LEGACY, ConfigFileProfile.NEXT) &&
+                        !configFileState.pickerPending && configFileState.preview == null,
+                    importEnabled = (configFileState.profile == ConfigFileProfile.LEGACY || configFileState.canImport) &&
+                        !configFileState.pickerPending && configFileState.preview == null &&
+                        (configFileState.progress == null || configFileState.progress?.phase == com.dayforge.data.repository.ConfigImportPhase.OPERATIONS_ACCEPTED),
+                    showLegacyHint = configFileState.profile == ConfigFileProfile.LEGACY,
+                    footer = { ConfigV2Status(configFileState, { launchConfigImport(true) }, viewModel::refreshConfigState) }
                 )
             }
 
@@ -587,6 +620,8 @@ fun SettingsScreen(
     }
 
     // Export Progress Dialog
+    ConfigV2Dialogs(configFileState, viewModel::confirmConfigImport, viewModel::dismissConfigPreview,
+        viewModel::abandonConfigImport, viewModel::dismissConfigMessage)
     if (exportProgress) {
         ExportProgressDialog()
     }

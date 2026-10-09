@@ -69,6 +69,25 @@ internal class NextConfigImportBarrier(private val database: HabitDatabase) {
         if (entry.accepted != null) require(proofs(entry, access) == entry.accepted) { "CONFIG_IMPORT_ACCEPTANCES_CHANGED" }
     }
 
+    /** Read-only UI progress: prove each present receipt; absence is not acceptance. */
+    suspend fun acceptedCount(entry: NextConfigImportStore.NetworkEntry, access: LocalSyncAccess): Int {
+        check(database.inTransaction())
+        requireTarget(entry, access)
+        val sql = database.openHelper.writableDatabase
+        val causal = NextStructuralCausalStore(database)
+        val accepted = buildMap {
+            for (step in entry.plan.steps) {
+                currentCoroutineContext().ensureActive()
+                if (NextRequestSql.rowHash(sql, "next_acceptances", "kind=? AND requestId=?",
+                        arrayOf(NEXT_OPERATION, step.operationId)) == null) continue
+                val (operation, hash) = causal.acceptedOperationProof(step.operationId, access)
+                step.requireOperation(operation); put(step.operationId, hash)
+            }
+        }
+        if (entry.accepted != null) require(accepted == entry.accepted) { "CONFIG_IMPORT_ACCEPTANCES_CHANGED" }
+        return accepted.size
+    }
+
     /** Last real ACK and the group completion receipt share the SAME original ACK transaction. */
     suspend fun finishIfAccepted(access: LocalSyncAccess) {
         check(database.inTransaction())

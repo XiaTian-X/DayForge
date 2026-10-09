@@ -100,6 +100,13 @@ class ConfigImportService @Inject constructor(
      * The caller's Room database transaction ensures atomic rollback on failure.
      */
     private suspend fun executeImport(config: ConfigExportDto) {
+        // Old callbacks/direct service callers must not clear next-protocol data. Permission
+        // refresh is not this boundary; prove absence inside the SAME replacement transaction.
+        val outbox = database.syncOutboxDao()
+        if (outbox.hasProtocolNextRecovery() || outbox.hasProtocolNextRequests() || outbox.hasOneTimeIntents() ||
+            database.openHelper.readableDatabase.query("SELECT 1 FROM habits WHERE appearance IS NOT NULL " +
+                "UNION ALL SELECT 1 FROM metrics WHERE appearance IS NOT NULL LIMIT 1").use { it.moveToFirst() })
+            throw com.dayforge.data.repository.ProtocolNextDataRequiresUpgradeException()
         // 1. Clear existing data (in dependency reverse order)
         linkDao.deleteAll()
         habitDao.deleteAll()

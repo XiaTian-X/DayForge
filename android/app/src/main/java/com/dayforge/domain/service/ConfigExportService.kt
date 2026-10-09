@@ -47,6 +47,8 @@ class ConfigExportService @Inject constructor(
             // 1. Query all entities
             val habits = habitDao.getVisibleHabitsOnce()
             val metrics = metricDao.getAllMetricsOnce()
+            if (habits.any { it.appearance != null } || metrics.any { it.appearance != null })
+                throw com.dayforge.data.repository.ProtocolNextDataRequiresUpgradeException()
             val visibleHabitIds = habits.map { it.id }.toSet()
             val links = linkDao.getAllActiveLinks().filter { it.habitId in visibleHabitIds }
 
