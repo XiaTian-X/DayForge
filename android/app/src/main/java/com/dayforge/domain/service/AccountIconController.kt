@@ -145,6 +145,12 @@ class AccountIconController internal constructor(
         withContext(Dispatchers.IO) { block(runtime.value) }
     internal fun registerConsumer(cache: AccountIconMemory.Cache) = tokens.registerIconCache(cache)
     internal suspend fun capture() = io { it.metadata.capture() }
+    internal suspend fun prepareConfigExport(context: AccountIconContext, uses: List<ConfigIconUse>,
+        manifest: (com.dayforge.domain.model.IconPack?, List<String>) -> com.dayforge.domain.model.ConfigBundle) =
+        io { AccountConfigExport(it.metadata, it.store).prepare(context, uses, manifest) }
+    internal suspend fun <T> publishConfigExport(preview: AccountConfigExportPreview,
+        block: (ValidatedConfigBundle) -> T): T =
+        io { AccountConfigExport(it.metadata, it.store).publish(preview, block) }
     internal suspend fun transferJobs(context: AccountIconContext) = io { it.transfers.jobs(context) }
     internal suspend fun synchronize(http: AccountIconHttp): IconMaterialOutcome = withContext(Dispatchers.IO) {
         // Incomplete/unknown authority never initializes the material DB/runtime or sends HTTP.

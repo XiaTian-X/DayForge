@@ -19,6 +19,33 @@
 
 ## 验证层级
 
+### 配置导出的账户素材依赖与真实文件链（2026-10-09，Issue #160）
+
+新增 AccountConfigExport、账户素材库的一次事务依赖快照及控制器内部准备/短发布接口。
+范围是素材所有权、当前角色映射/固定引用、真实私有文件与冻结 v2 输出，不读取业务数据库，
+不改变现有设置页、schema、HTTP、后端、依赖、默认 v4 或 UI。
+
+初次 `353b6f63e3ff486a82c8046483911f80` 在构建期间主动取消：审查发现两个新夹具缩小
+对象范围后保留未使用 unresolved 角色，不符合原契约。取消拥有的 Python 进程、等待
+wrapper/实际子进程和两个 testbed 包退出后才合批修正；未执行行为，不作为成功证据。
+最终完整五类 AccountConfigExportTest、AccountIconRepositoryTest、AccountIconStoreTest、
+AccountIconSelectionTest、ConfigBundleOutputTest 共90/90 passed、0 failures/errors/skipped，
+证据 `e4f66c93ef934112927cb200eff06d41/targeted.json`，build2m02s、connected2m09s。
+root51、构建/lint/警告、APK/发现/XML/新覆盖输入与两个测试包清理门禁通过。
+
+11 项新增用例使用真实 Room/DataStore、认证/设备/副本、选包和安装收据、Android 私有文件及
+PNG/SVG/ZIP 校验；只在真实系统读调用处加计数或有界暂停，不用模拟仓库替代所有权证明。
+验证固定素材来自选包之外、精确使用闭包/明暗字节、hash 去重但每个资产身份都须授权、
+缺角色不读取占位图、未就绪/丢失/损坏拒绝、事项用途与清单变化拒绝、不可变快照及预算，
+账户/重新认证/设备/权限/副本的晚到结果、只读离线导出/同代次刷新、实际读期间登录或选包
+交错、取消等待真实读与释放租约；持久素材表不变、冷重开回读一致。没有网络请求或自动下载。
+没有新增最大完整 ZIP/128 素材端到端容量证明，不重复未变长计时/容量或全量矩阵。
+
+日常定向结果不是 Android 全量、后端 SQL、正式 Hilt 设置页/系统提供者/桌面/平板或人工验收。
+业务 Room 快照、当前事项默认筛选/显式模板、稳定新身份与安装/替换日志、恢复/因果同步、
+v5/Worker/素材/图标/六组件联合及全量验收仍待完成。150s/1500s 不改；无正式 APK 安装、
+清库、部署、Docker 或自动合并，不宣称 #160 完成。
+
 ### 新版配置的映射、归档生成与文件传输（2026-10-09，Issue #160）
 
 合批实现 NextConfigMapper → ConfigBundleOutput → ConfigBundleDocuments，复用完整只读 v2
