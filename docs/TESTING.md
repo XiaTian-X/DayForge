@@ -19,6 +19,43 @@
 
 ## 验证层级
 
+### 小组件独立页面的完整主题宿主（2026-10-09，Issue #160）
+
+三类真实配置入口和目标/指标/重新激活/计时切换/放弃五类弹窗使用共享完整主题，保留
+原有字号、布局和操作。普通配置窗口复用显式 DayForgeWindow 的背景/系统栏/safeDrawing，
+透明桥接不绘制全屏背景或修改 Activity 系统栏。配置卡片复用原 CardColorResolver。
+指标与计时切换初始化 effect 在主题显示门禁之外，不因主题重试重新抓取状态。
+失败恢复 UI 不调用业务确认、放弃或录入回调，不伪造可用默认主题。
+
+首轮 `dc48ec65ce0f46b3b0fc5e4cbee1c563` 完整 9 类实际 54 项为 53 passed/1 failed，
+0 errors/skipped，connected8m12s/XML466.972s，build2m2s/lint/告警通过。唯一失败为新增
+实际配置颜色用例：已提交控制器快照不等于 Activity collector/绘制帧已消费，直接采样得到
+先前浅色。其余完整类包括 WidgetFactEntryTest、CardColorResolverTest、TimerServicePersistenceTest、
+ThemePresentationTest、DayForgeWindowTest、ThemeRecoveryPresentationTest、DeviceWidgetThemeTest、
+WidgetActivityThemeTest；真实目标确认及计时切换/放弃和原完整一分钟计时断言实际执行通过。
+首轮整批不是通过，原 XML 由下一轮工具旋转保留在 prior-results。
+
+确认测试注入与生产入口是同一个主题控制器，等待实际卡片呈现预期颜色，再保留全部背景、
+文字像素和整库/outbox/绑定不变断言；未使用固定休眠或扩大原 5s 等待。生产行为未因该失败
+更改，只整理两处 effect 的缩进。最终独立完整 WidgetConfigurationEntryTest、WidgetActivityThemeTest、
+ThemePresentationTest 3 类 12/12 passed，0 failures/errors/skipped，connected1m26s/XML60.352s；
+证据 `0941db88a34e45b4ba301c0986c74188/targeted.json`。root51/build1m29s/lint/告警、
+APK/实际发现/XML/新覆盖输入与两个 testbed 清理通过；wrapper/Gradle 及测试包退出后再编辑文档。
+不重复未变的长计时/容量矩阵，不拼接为 54 项最终整批成功或 Android 全量。
+
+新共享宿主使用真实临时目录/DataStore/主题文件/进程控制器及 Compose，验证冷加载浅色/OLED、
+SYSTEM 明暗与卡片样式、字号保留、Loading/Failed 无正常内容、私有错误脱敏和明确恢复动作，
+以及透明宿主窗口 flags/decor 背景不被修改。三类真实配置 Activity 验证 OLED/两种卡片样式及
+文字像素、真实损坏保存选择后的阻止操作和明确修复；同时保留已有配置成功/重复点击/失败
+重试/账户切换/取消回滚。仅隔离 launcher 发现/ID 解析/host 提交，不替换真实业务或权限。
+
+透明宿主 flags/decor 断言不证明已安装桌面像素；五类弹窗未全部新增端到端交互用例，
+指标/重新激活业务成熟度、Focus 无 UI 配置生命周期、进程死亡绑定恢复、图标素材消费者、
+正式 v5/Worker/配置联合、Android/后端 SQL 全量（含 #344）和人工/平板/外网/NAS仍未完成。
+默认 v4；150s/1500s 不变，无 schema/HTTP/后端/依赖/主界面布局变化，无正式 APK 安装、
+清库、部署或 Docker 操作。相关 Android 系统栏依据为
+[官方 Compose 系统栏文档](https://developer.android.com/develop/ui/compose/system/system-bars)。
+
 ### 三类小组件配置入口与账户绑定租约（2026-10-09，Issue #332）
 
 保留原 Activity/Manifest 入口、类型过滤、标题/目标值说明、列表/卡片布局和配置 Toast，

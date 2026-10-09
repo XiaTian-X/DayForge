@@ -6,6 +6,9 @@ import android.content.Context
 import android.content.Intent
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
+import androidx.compose.ui.graphics.toPixelMap
+import androidx.compose.ui.graphics.toArgb
+import androidx.datastore.preferences.core.edit
 import androidx.glance.GlanceId
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.state.getAppWidgetState
@@ -27,6 +30,13 @@ import com.dayforge.data.repository.nextRestartDatabaseProof
 import com.dayforge.domain.model.IconReference
 import com.dayforge.domain.model.ObjectAppearance
 import com.dayforge.domain.service.AccountSessionCoordinator
+import com.dayforge.domain.service.DeviceThemeController
+import com.dayforge.domain.service.CardColorResolver
+import com.dayforge.domain.appearance.*
+import com.dayforge.data.appearance.BuiltInTheme
+import com.dayforge.data.appearance.DeviceThemeLoadState
+import com.dayforge.domain.model.CardColorStyle
+import com.dayforge.ui.theme.toComposeColors
 import com.dayforge.widget.IsolatedWidgetRefreshRule
 import com.dayforge.widget.checkin.CheckInWidget
 import com.dayforge.widget.checkin.CheckInWidgetConfigActivity
@@ -40,6 +50,7 @@ import io.mockk.*
 import java.io.IOException
 import javax.inject.Inject
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.first
 import org.junit.*
 import org.junit.Assert.*
 import org.junit.runner.RunWith
@@ -57,6 +68,8 @@ class WidgetConfigurationEntryTest {
     @Inject lateinit var creator: NextObjectCreator
     @Inject lateinit var tokens: TokenManager
     @Inject lateinit var sessions: AccountSessionCoordinator
+    @Inject lateinit var themes: DeviceThemeController
+    private var originalTheme: DeviceThemeSelection? = null
     private val app get() = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
     private val platform = mockk<AppWidgetManager>()
     private val ids = mutableMapOf<Int, GlanceId>()
@@ -70,6 +83,7 @@ class WidgetConfigurationEntryTest {
         appearance = ObjectAppearance(IconReference.Role("habit.custom"), "#123456", "theme"), creationAuthority = creator.capture())
     @Before fun setup() = runBlocking<Unit> {
         hilt.inject()
+        originalTheme = withTimeout(5000) { themes.current() }.saved.selection
         sessions.exclusive { tokens.clearTokens(); tokens.saveLoginSession("synthetic-widget", "synthetic-refresh", "member", id(1), false) }
         val real = GlanceAppWidgetManager(app)
         for (n in 0..2) {
@@ -93,6 +107,11 @@ class WidgetConfigurationEntryTest {
         ids.values.forEach { updateAppWidgetState(app, it) { state -> state.clear() } }
         names.forEach { assertTrue(app.getSharedPreferences(it, Context.MODE_PRIVATE).edit().clear().commit()) }
         if (::tokens.isInitialized) sessions.exclusive { tokens.clearTokens() }
+        originalTheme?.let { choice ->
+            val current = themes.current().saved
+            val restored = themes.select(current.revision, choice)
+            withTimeout(5000) { themes.state.first { it is DeviceThemeLoadState.Ready && it.theme.saved == restored.saved } }
+        }
     }
     private fun launch(n: Int): ActivityScenario<WidgetConfigurationActivity> {
         val component = when (n) { 0 -> CheckInWidgetConfigActivity::class.java; 1 -> CountingWidgetConfigActivity::class.java; else -> TimerWidgetConfigActivity::class.java }
@@ -189,4 +208,66 @@ class WidgetConfigurationEntryTest {
             assertEquals(88L, prefs(2).getLong("habit_id_74303", -1)); assertEquals(before, proof())
         }
     }
+
+    @Test fun allThreeActualSelectorsUseSavedOledAndBothCardStylesWithoutChangingFacts() = runBlocking<Unit> {
+        assertSame(themes, com.dayforge.di.DeviceThemeControllerEntryPoint.from(app).themeController())
+        val types = listOf(HabitType.CHECK_IN, HabitType.COUNTING, HabitType.TIMER)
+        val rows = types.map { create(it) }; val before = proof()
+        for (n in 0..2) launch(n).use {
+            val text = "Entry configuration ${types[n]}"; waitForText(text)
+            for (style in DeviceCardStyle.entries) {
+                val current = themes.current().saved
+                val loaded = themes.select(current.revision, current.selection.copy(mode = DeviceThemeMode.DARK,
+                    dark = ThemeVersionRef(BuiltInTheme.OLED.themeId, 1), cardStyle = style))
+                withTimeout(5000) { themes.state.first { it is DeviceThemeLoadState.Ready && it.theme.saved == loaded.saved } }
+                val resolved = loaded.resolve(false).toComposeColors()
+                val colors = CardColorResolver.resolveCardColors(if (style == DeviceCardStyle.FOLLOW_THEME)
+                    CardColorStyle.FOLLOW_THEME else CardColorStyle.PERSONALIZED, "#123456",
+                    resolved.primaryContainer.toArgb(), resolved.onPrimaryContainer.toArgb(), resolved.onPrimary.toArgb())
+                // A committed controller snapshot is not proof that the Activity collector and
+                // frame have consumed it. Await the actual rendered card, not arbitrary sleep.
+                compose.waitUntil(5000) {
+                    val pixels = compose.onNodeWithTag("widget-configuration-card-${rows[n]}").captureToImage().toPixelMap()
+                    pixels[1, pixels.height / 2].toArgb() == colors.backgroundColor.toArgb()
+                }
+                val card = compose.onNodeWithTag("widget-configuration-card-${rows[n]}").captureToImage().toPixelMap()
+                assertEquals(colors.backgroundColor.toArgb(), card[1, card.height / 2].toArgb())
+                val screen = compose.onRoot().captureToImage().toPixelMap()
+                assertEquals(0xff000000.toInt(), screen[screen.width / 2, screen.height - 2].toArgb())
+                val label = compose.onNodeWithText(text).captureToImage().toPixelMap()
+                assertTrue((0 until label.width).any { x -> (0 until label.height).any { y -> label[x, y].toArgb() == colors.textColor.toArgb() } })
+            }
+            assertEquals(-1L, prefs(n).getLong("habit_id_${74301 + n}", -1))
+        }
+        assertEquals(before, proof())
+        coVerify(exactly = 0) { anyConstructed<CheckInWidget>().update(any(), any()) }
+        coVerify(exactly = 0) { anyConstructed<CountingWidget>().update(any(), any()) }
+        coVerify(exactly = 0) { anyConstructed<TimerWidget>().update(any(), any()) }
+    }
+
+    @Test fun actualBrokenSavedThemeBlocksSelectionAndExplicitRepairRestoresTheSamePage() = runBlocking<Unit> {
+        create(HabitType.CHECK_IN); val before = proof()
+        val store = com.dayforge.data.local.DataStoreProvider.get(app)
+        val key = androidx.datastore.preferences.core.stringPreferencesKey("appearance_theme_selection_v1")
+        val saved = requireNotNull(store.data.first()[key])
+        launch(0).use {
+            val text = "Entry configuration CHECK_IN"; waitForText(text)
+            try {
+                store.edit { it[key] = "damaged configuration theme" }
+                withTimeout(5000) { themes.state.first { it is DeviceThemeLoadState.Failed } }
+                waitForText(app.getString(R.string.theme_load_failed))
+                compose.onNodeWithText(text).assertDoesNotExist()
+                compose.onNodeWithText(app.getString(R.string.action_retry)).performClick()
+                waitForText(app.getString(R.string.theme_load_failed))
+                assertEquals(-1L, prefs(0).getLong("habit_id_74301", -1))
+                assertEquals(before, proof())
+            } finally {
+                store.edit { it[key] = saved }; themes.retry()
+                withTimeout(5000) { themes.state.first { it is DeviceThemeLoadState.Ready } }
+            }
+            waitForText(text)
+            assertEquals(-1L, prefs(0).getLong("habit_id_74301", -1)); assertEquals(before, proof())
+        }
+    }
+
 }

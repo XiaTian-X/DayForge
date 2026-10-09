@@ -234,8 +234,19 @@ TimerWidget 的 `provideGlance` 只消费显示状态，不再次读取历史。
 的 primary 一定浅。透明自定义颜色先合成到窗口背景，透明窗口背景以黑色兜底。
 
 主页导航栏使用 Material3 默认容器色，无底栏页面使用窗口背景。Android 10+ 保留平台的三键导航
-对比度保护；旧系统使用该导航背景作为保护色。应用内弹窗仍由各自的 Compose Dialog 窗口管理，
-小组件独立 Activity 不经过此主窗口宿主，不能把主窗口测试当作其验收。
+对比度保护；旧系统使用该导航背景作为保护色。应用内弹窗仍由各自的 Compose Dialog 窗口管理。
+三类小组件选择配置 Activity 使用同一 `DayForgeWindow` 处理全屏背景与 safeDrawing，导航栏取
+实际窗口背景；不能把主窗口测试单独当作配置页面的验收。
+
+`WidgetActivityTheme` 为三类配置页和目标确认、指标提示、重新激活、计时切换、放弃确认五类
+独立弹窗读取同一个进程级 `DeviceThemeController`。保存的完整浅深快照、SYSTEM/OLED 和卡片
+样式直接消费，不依赖 MainActivity 初始化或重新生成颜色；保留独立页面原有字号、间距和操作。
+配置卡片使用现有 `CardColorResolver`，不能将个人背景与无关主题的 onPrimary 硬配。
+透明弹窗宿主不绘制全屏背景、不接管其 Activity 系统栏；其 Dialog 仍拥有自己的窗口。
+主题 Loading/Failed 阻止正常内容显示，失败恢复只提供重试、打开 MainActivity 的既有主题修复
+入口或关闭，不调用确认/放弃/录入回调。指标初始化和计时切换来源校验保持在主题显示门禁之外，
+不能因主题重试重新启动这些 Compose effect。这不是业务状态机或提示持久化规则的重构。
+六类桌面实际像素、多实例及素材恢复仍须独立联合验收；无 UI 的 Focus 配置刷新未在此轮改造。
 
 主窗口声明 adjustResize，并先消费 IME 边距；外层 Scaffold 处理剩余 safeDrawing（含状态栏、
 导航栏、刘海及窗口标题栏）。导航内容必须同时应用和消费外层 padding，内层 Scaffold/TopAppBar

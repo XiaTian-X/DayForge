@@ -14,6 +14,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.dayforge.R
+import com.dayforge.widget.base.WidgetActivityTheme
 import com.dayforge.data.repository.NextTimerWriter
 import com.dayforge.domain.service.TimerServiceController
 import dagger.hilt.android.AndroidEntryPoint
@@ -53,25 +54,26 @@ class TimerConfirmationActivity : ComponentActivity() {
         }
 
         setContent {
-            MaterialTheme {
-                var currentHabitName by remember { mutableStateOf<String?>(null) }
-                var newHabitName by remember { mutableStateOf<String?>(null) }
-                var ready by remember { mutableStateOf(false) }
+            var currentHabitName by remember { mutableStateOf<String?>(null) }
+            var newHabitName by remember { mutableStateOf<String?>(null) }
+            var ready by remember { mutableStateOf(false) }
 
-                LaunchedEffect(Unit) {
-                    try {
-                        val display = if (claim != null) writer.requireWidgetStart(habitId, claim.authority, requireNotNull(claim.startGuard))
-                            else writer.legacyWidgetSwitchDisplay(habitId)
-                        currentHabitName = display.incumbentName
-                        newHabitName = display.requestedName
-                        ready = true
-                    } catch (error: Exception) {
-                        if (error is CancellationException) throw error
-                        android.util.Log.w("TimerConfirmation", "Stale switch confirmation", error)
-                        finish()
-                    }
+            LaunchedEffect(Unit) {
+                try {
+                    val display = if (claim != null) writer.requireWidgetStart(habitId, claim.authority, requireNotNull(claim.startGuard))
+                        else writer.legacyWidgetSwitchDisplay(habitId)
+                    currentHabitName = display.incumbentName
+                    newHabitName = display.requestedName
+                    ready = true
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    android.util.Log.w("TimerConfirmation", "Stale switch confirmation", error)
+                    finish()
                 }
+            }
 
+            // Theme reload cannot recapture a different timer switch display or restart this effect.
+            WidgetActivityTheme(this) {
                 // Transparent background with centered dialog
                 Box(
                     modifier = Modifier.fillMaxSize(),

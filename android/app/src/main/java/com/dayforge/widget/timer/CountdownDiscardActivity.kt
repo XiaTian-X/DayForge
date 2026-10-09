@@ -15,6 +15,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.dayforge.R
+import com.dayforge.widget.base.WidgetActivityTheme
 import com.dayforge.domain.service.TimerServiceController
 import dagger.hilt.android.AndroidEntryPoint
 
@@ -55,7 +56,7 @@ class CountdownDiscardActivity : ComponentActivity() {
         }
 
         setContent {
-            MaterialTheme {
+            WidgetActivityTheme(this) {
                 val context = LocalContext.current
                 // Transparent background with centered dialog
                 Box(

@@ -14,16 +14,19 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import androidx.core.graphics.toColorInt
+import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import com.dayforge.R
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.di.WidgetEntryPoint
 import com.dayforge.domain.service.WidgetConfigurationKind
+import com.dayforge.domain.service.CardColorResolver
+import com.dayforge.ui.theme.LocalDeviceCardStyle
+import com.dayforge.widget.base.WidgetActivityTheme
 import kotlinx.coroutines.launch
 
 /** Shared lifecycle, not a new layout. Each existing entrypoint keeps its own type/title/target. */
@@ -51,7 +54,7 @@ abstract class WidgetConfigurationActivity : ComponentActivity() {
             }
         }
         setContent {
-            MaterialTheme {
+            WidgetActivityTheme(this, translucent = false) {
                 val state by model.state.collectAsState()
                 ConfigurationScreen(kind, state, model::choose, model::retry, ::finish)
             }
@@ -91,19 +94,21 @@ private fun ConfigurationScreen(kind: WidgetConfigurationKind, state: WidgetConf
             }
             else -> LazyColumn {
                 items(state.habits, key = { it.id }) { habit ->
-                    Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                    val colors = CardColorResolver.resolveCardColors(LocalDeviceCardStyle.current, habit.colorHex,
+                        MaterialTheme.colorScheme.primaryContainer.toArgb(), MaterialTheme.colorScheme.onPrimaryContainer.toArgb(),
+                        MaterialTheme.colorScheme.onPrimary.toArgb())
+                    Card(Modifier.fillMaxWidth().padding(vertical = 4.dp).testTag("widget-configuration-card-${habit.id}")
                         .clickable(enabled = !state.saving && !state.finished && !state.expired) { choose(habit) },
-                        colors = CardDefaults.cardColors(containerColor = try { Color(habit.colorHex.toColorInt()) }
-                            catch (_: IllegalArgumentException) { MaterialTheme.colorScheme.primary })) {
+                        colors = CardDefaults.cardColors(containerColor = colors.backgroundColor)) {
                         if (kind == WidgetConfigurationKind.CHECK_IN) {
                             Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text(habit.name, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onPrimary)
+                                Text(habit.name, style = MaterialTheme.typography.titleMedium, color = colors.textColor)
                             }
                         } else Column(Modifier.padding(16.dp)) {
-                            Text(habit.name, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onPrimary)
+                            Text(habit.name, style = MaterialTheme.typography.titleMedium, color = colors.textColor)
                             Text(stringResource(if (kind == WidgetConfigurationKind.TIMER) R.string.widget_target_minutes
                                 else R.string.widget_target_count, habit.targetValue),
-                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimary)
+                                style = MaterialTheme.typography.bodySmall, color = colors.secondaryTextColor)
                         }
                     }
                 }
