@@ -14,6 +14,7 @@ interface WidgetEntryPoint {
     fun timerWriter(): com.dayforge.data.repository.NextTimerWriter
     fun factReader(): com.dayforge.data.repository.WidgetFactReader
     fun activityRateRefresher(): com.dayforge.data.repository.LegacyActivityRateRefresher
+    fun displayPublisher(): com.dayforge.data.repository.WidgetDisplayPublisher
 
     companion object {
         fun from(context: android.content.Context): WidgetEntryPoint = dagger.hilt.android.EntryPointAccessors

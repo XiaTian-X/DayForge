@@ -7,6 +7,8 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.state.getAppWidgetState
+import androidx.datastore.preferences.core.edit
+import androidx.room.withTransaction
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -26,12 +28,14 @@ import com.dayforge.widget.checkin.WidgetFactActionActivity
 import com.dayforge.widget.checkin.actionIntent
 import com.dayforge.widget.counting.CountingWidget
 import com.dayforge.widget.focus.FocusWidget
+import io.mockk.*
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import javax.inject.Inject
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.flow.first
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -52,6 +56,7 @@ class WidgetFactEntryTest {
     @Inject lateinit var tokens: TokenManager
     @Inject lateinit var sessions: AccountSessionCoordinator
     @Inject lateinit var reader: WidgetFactReader
+    @Inject lateinit var publisher: WidgetDisplayPublisher
     private val app get() = InstrumentationRegistry.getInstrumentation().targetContext
     private val db get() = storage.database
     private fun id(n: Int) = "ad310000-0000-4000-8000-${n.toString(16).padStart(12, '0')}"
@@ -120,6 +125,16 @@ class WidgetFactEntryTest {
 
     @Test fun realWidgetActivityCompletesAndRejectsStaleClickWithoutAnotherToggle() = runBlocking<Unit> {
         val task = create(once = true)
+        val widgetId = glanceId()
+        suspend fun assertTaskDisplay(completed: Boolean) {
+            CheckInWidget.refreshWidgetData(app, widgetId, task)
+            val state = CheckInWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, widgetId)
+            assertEquals(completed, state[CheckInWidget.IS_COMPLETED_KEY])
+            assertEquals(habits.getOneTimeStatus(task).canChange, state[CheckInWidget.IS_CHECKIN_ALLOWED_KEY])
+            assertEquals(false, state[CheckInWidget.READ_FAILED_KEY])
+            assertEquals(task, WidgetFactClaim.decode(requireNotNull(state[CheckInWidget.ACTION_PROOF_KEY])).habitId)
+        }
+        assertTaskDisplay(false)
         val before = claim(task)
         suspend fun launch(claim: WidgetFactClaim) {
             ActivityScenario.launch<WidgetFactActionActivity>(claim.actionIntent(app, "toggle")).use { scenario ->
@@ -128,14 +143,123 @@ class WidgetFactEntryTest {
         }
         launch(before)
         assertTrue(habits.getOneTimeStatus(task).completed)
+        assertTaskDisplay(true)
         val queued = db.syncOutboxDao().getAll()
         launch(before)
         assertEquals(queued, db.syncOutboxDao().getAll())
         assertEquals(1, db.completionDao().getByHabitOnce(task).size)
         launch(claim(task))
         assertFalse(habits.getOneTimeStatus(task).completed)
+        assertTaskDisplay(false)
         assertEquals(2, db.completionDao().getByHabitOnce(task).size)
         assertNotNull(habits.getHabitById(task))
+    }
+
+    @Test fun realFactConsumersHideCorruptSourcesAndExplicitRetryReloadsBeforeRendering() = runBlocking<Unit> {
+        assertSame(publisher, com.dayforge.di.WidgetEntryPoint.from(app).displayPublisher())
+        val check = create()
+        val count = create(HabitType.COUNTING)
+        habits.logCompletion(app, check); habits.logCompletion(app, count)
+        val checkId = glanceId(); val countId = glanceId(); val focusId = glanceId()
+        suspend fun refresh() {
+            CheckInWidget.refreshWidgetData(app, checkId, check)
+            CountingWidget.refreshWidgetData(app, countId, count)
+            FocusWidget.refreshWidgetData(app, focusId)
+        }
+        suspend fun assertDisplay(failed: Boolean) {
+            val checkState = CheckInWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, checkId)
+            val countState = CountingWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, countId)
+            val focusState = FocusWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, focusId)
+            assertEquals(failed, checkState[CheckInWidget.READ_FAILED_KEY])
+            assertEquals(failed, countState[CountingWidget.READ_FAILED_KEY])
+            assertEquals(failed, focusState[FocusWidget.READ_FAILED_KEY])
+            if (failed) {
+                assertEquals(false, checkState[CheckInWidget.DATA_LOADED_KEY])
+                assertEquals(false, countState[CountingWidget.DATA_LOADED_KEY])
+                assertEquals(false, focusState[FocusWidget.DATA_LOADED_KEY])
+                assertNull(checkState[CheckInWidget.ACTION_PROOF_KEY]); assertNull(countState[CountingWidget.ACTION_PROOF_KEY])
+                assertNull(focusState[FocusWidget.FACT_ACTION_PROOF_KEY]); assertNull(focusState[FocusWidget.TIMER_ACTION_PROOF_KEY])
+            } else {
+                assertEquals(true, checkState[CheckInWidget.IS_COMPLETED_KEY])
+                assertEquals(1L, countState[CountingWidget.ACTUAL_COUNT_KEY])
+                assertEquals(2, countState[CountingWidget.TARGET_VALUE_KEY])
+                assertEquals(true, countState[CountingWidget.IS_COUNTDOWN_KEY])
+                assertEquals(count, focusState[FocusWidget.PRIMARY_HABIT_ID_KEY])
+                assertNotNull(checkState[CheckInWidget.ACTION_PROOF_KEY]); assertNotNull(countState[CountingWidget.ACTION_PROOF_KEY])
+                assertEquals(countState[CountingWidget.ACTION_PROOF_KEY], focusState[FocusWidget.FACT_ACTION_PROOF_KEY])
+            }
+        }
+        refresh(); assertDisplay(false)
+        db.openHelper.writableDatabase.execSQL("UPDATE completions SET value=CAST(value AS BLOB)")
+        val corrupted = db.withTransaction { nextRestartDatabaseProof(db) }
+        refresh(); assertDisplay(true)
+        assertEquals(corrupted, db.withTransaction { nextRestartDatabaseProof(db) })
+        db.openHelper.writableDatabase.execSQL("UPDATE completions SET value=1")
+        val healthy = db.withTransaction { nextRestartDatabaseProof(db) }
+        // Only host submission is isolated: callback, Hilt reader, Room, theme and Glance
+        // DataStore are real. Synthetic Glance IDs are not installed launcher instances.
+        mockkConstructor(CheckInWidget::class, CountingWidget::class, FocusWidget::class)
+        try {
+            coEvery { anyConstructed<CheckInWidget>().update(app, checkId) } coAnswers {
+                assertEquals(false, CheckInWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, checkId)[CheckInWidget.READ_FAILED_KEY])
+            }
+            coEvery { anyConstructed<CountingWidget>().update(app, countId) } coAnswers {
+                assertEquals(false, CountingWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, countId)[CountingWidget.READ_FAILED_KEY])
+            }
+            coEvery { anyConstructed<FocusWidget>().update(app, focusId) } coAnswers {
+                assertEquals(false, FocusWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, focusId)[FocusWidget.READ_FAILED_KEY])
+            }
+            val retry = com.dayforge.widget.timer.WidgetTimerRefreshCallback()
+            for ((type, id) in listOf("checkin" to checkId, "counting" to countId, "focus" to focusId)) {
+                retry.onAction(app, id, androidx.glance.action.actionParametersOf(
+                    androidx.glance.action.ActionParameters.Key<String>("widget") to type))
+            }
+            assertDisplay(false)
+            coVerify(exactly = 1) { anyConstructed<CheckInWidget>().update(app, checkId) }
+            coVerify(exactly = 1) { anyConstructed<CountingWidget>().update(app, countId) }
+            coVerify(exactly = 1) { anyConstructed<FocusWidget>().update(app, focusId) }
+        } finally { unmockkConstructor(CheckInWidget::class, CountingWidget::class, FocusWidget::class) }
+        assertEquals(healthy, db.withTransaction { nextRestartDatabaseProof(db) })
+    }
+
+    @Test fun actualFactAndFocusThemeFailuresPropagateWithoutChangingDisplayOrBusiness() = runBlocking<Unit> {
+        val check = create(); val count = create(HabitType.COUNTING)
+        val checkId = glanceId(); val countId = glanceId(); val focusId = glanceId()
+        CheckInWidget.refreshWidgetData(app, checkId, check)
+        CountingWidget.refreshWidgetData(app, countId, count)
+        FocusWidget.refreshWidgetData(app, focusId)
+        val checkState = CheckInWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, checkId)
+        val countState = CountingWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, countId)
+        val focusState = FocusWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, focusId)
+        val before = db.withTransaction { nextRestartDatabaseProof(db) }
+        val store = com.dayforge.data.local.DataStoreProvider.get(app)
+        val key = androidx.datastore.preferences.core.stringPreferencesKey("appearance_theme_selection_v1")
+        val selection = requireNotNull(store.data.first()[key])
+        val themes = com.dayforge.di.DeviceThemeControllerEntryPoint.from(app).themeController()
+        val original = themes.current()
+        try {
+            store.edit { it[key] = "damaged fact publication theme" }
+            withTimeout(5000) { themes.state.first { it is com.dayforge.data.appearance.DeviceThemeLoadState.Failed } }
+            for (refresh in listOf<suspend () -> Unit>(
+                { CheckInWidget.refreshWidgetData(app, checkId, check) },
+                { CountingWidget.refreshWidgetData(app, countId, count) },
+                { FocusWidget.refreshWidgetData(app, focusId) }
+            )) {
+                assertTrue(runCatching { refresh() }.exceptionOrNull() is com.dayforge.data.appearance.ThemeSelectionException)
+                withTimeout(5000) { sessions.exclusive { assertEquals(id(1), tokens.authenticationSnapshot()!!.session.userId) } }
+            }
+            assertEquals(checkState, CheckInWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, checkId))
+            assertEquals(countState, CountingWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, countId))
+            assertEquals(focusState, FocusWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, focusId))
+            assertEquals(before, db.withTransaction { nextRestartDatabaseProof(db) })
+        } finally {
+            store.edit { it[key] = selection }; themes.retry()
+            withTimeout(5000) { themes.state.first { it is com.dayforge.data.appearance.DeviceThemeLoadState.Ready && it.theme.saved == original.saved } }
+        }
+        CheckInWidget.refreshWidgetData(app, checkId, check)
+        CountingWidget.refreshWidgetData(app, countId, count)
+        FocusWidget.refreshWidgetData(app, focusId)
+        assertEquals(before, db.withTransaction { nextRestartDatabaseProof(db) })
     }
 
     @Test fun realGoalConfirmationUsesBoundFactAndClosesWhenAccountChanges() = runBlocking<Unit> {

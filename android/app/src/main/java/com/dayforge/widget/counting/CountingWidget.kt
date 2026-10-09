@@ -15,7 +15,6 @@ import androidx.glance.action.actionParametersOf
 import androidx.glance.appwidget.*
 import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.cornerRadius
-import androidx.glance.appwidget.state.getAppWidgetState
 import androidx.glance.appwidget.state.updateAppWidgetState
 import androidx.glance.layout.*
 import androidx.glance.text.FontWeight
@@ -24,16 +23,11 @@ import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import com.dayforge.R
 import com.dayforge.data.local.HabitDatabaseProvider
-import com.dayforge.domain.service.ScheduleValidator
-import com.dayforge.util.DateTimeUtils
-import com.dayforge.widget.WidgetFailureChecker
 import com.dayforge.widget.base.StatusLabels
 import com.dayforge.widget.base.WidgetColorResolver
 import com.dayforge.widget.base.WidgetEmptyStates
-import com.dayforge.widget.checkin.CheckInActionCallback
 import com.dayforge.widget.checkin.ReactivationActivity
 import com.dayforge.di.DeviceThemeControllerEntryPoint
-import kotlinx.coroutines.CancellationException
 
 import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.action.clickable
@@ -85,24 +79,47 @@ class CountingWidget : GlanceAppWidget() {
 
         suspend fun refreshWidgetData(context: Context, glanceId: GlanceId, habitId: Long) {
             val appContext = context.applicationContext
+            com.dayforge.di.WidgetEntryPoint.from(appContext).displayPublisher().renderPrepared(
+                onReadFailure = { error ->
+                    Log.w(TAG, "Counting widget source unavailable", error)
+                    updateAppWidgetState(appContext, glanceId) { prefs ->
+                        prefs[READ_FAILED_KEY] = true
+                        prefs[DATA_LOADED_KEY] = false
+                        prefs.remove(ACTION_PROOF_KEY)
+                    }
+                }
+            ) { prepareWidgetData(appContext, glanceId, habitId) }
+        }
+
+        private suspend fun prepareWidgetData(context: Context, glanceId: GlanceId, habitId: Long): suspend () -> Unit {
+            val appContext = context.applicationContext
             val database = HabitDatabaseProvider.getInstance(appContext)
             val habit = database.habitDao().getVisibleHabitById(habitId)
 
             if (habit == null) {
                 Log.w(TAG, "refreshWidgetData: habit $habitId not found")
-                updateAppWidgetState(appContext, glanceId) { prefs ->
-                    prefs[HABIT_ID_KEY] = habitId
-                    prefs[IS_DELETED_KEY] = true
-                    prefs[DATA_LOADED_KEY] = true
-                    prefs[READ_FAILED_KEY] = false
-                    prefs.remove(ACTION_PROOF_KEY)
+                return suspend {
+                    updateAppWidgetState(appContext, glanceId) { prefs ->
+                        prefs[HABIT_ID_KEY] = habitId
+                        prefs[IS_DELETED_KEY] = true
+                        prefs[DATA_LOADED_KEY] = true
+                        prefs[READ_FAILED_KEY] = false
+                        prefs.remove(ACTION_PROOF_KEY)
+                    }
                 }
-                return
             }
 
             val stats = com.dayforge.di.WidgetEntryPoint.calculator(appContext, database).calculate(habit)
             val typed = if (habit.appearance != null) com.dayforge.di.WidgetEntryPoint.from(appContext)
                 .factReader().read(habit) else null
+            typed?.let { view ->
+                val count = requireNotNull(view.count)
+                check(view.completed == stats.completedToday &&
+                    (habit.targetCycles == null || view.targetProgress == stats.targetProgress) &&
+                    view.hasFailed == stats.hasFailed && count.todayQuantity == stats.actualTodayCount &&
+                    count.todayPolicy?.targetValue == stats.displayTargetValue &&
+                    count.todayPolicy?.isCountdown == stats.displayIsCountdown) { "FACT_WIDGET_STALE_DISPLAY" }
+            }
             val completedToday = typed?.count?.todayQuantity?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt() ?: stats.todayCount
             val isCompleted = typed?.completed ?: stats.completedToday
 
@@ -117,66 +134,50 @@ class CountingWidget : GlanceAppWidget() {
             // Failed status check
             val hasFailed = stats.hasFailed
 
-            // Pre-compute widget colors using WidgetColorResolver
-            // Per WIDGET-COLOR-01, WIDGET-COLOR-06: Colors must be pre-calculated before rendering
-            val themes = DeviceThemeControllerEntryPoint.from(appContext).themeController()
-            val widgetColorResolver = WidgetColorResolver(appContext, themes)
-            val resolvedColors = widgetColorResolver.resolveWidgetColors(habit.colorHex)
+            return suspend {
+                // Pre-compute widget colors using WidgetColorResolver
+                // Per WIDGET-COLOR-01, WIDGET-COLOR-06: Colors must be pre-calculated before rendering
+                val themes = DeviceThemeControllerEntryPoint.from(appContext).themeController()
+                val widgetColorResolver = WidgetColorResolver(appContext, themes)
+                val resolvedColors = widgetColorResolver.resolveWidgetColors(habit.colorHex)
 
-            updateAppWidgetState(appContext, glanceId) { prefs ->
-                if (typed != null) prefs[ACTION_PROOF_KEY] = typed.claim.encode() else prefs.remove(ACTION_PROOF_KEY)
-                prefs[READ_FAILED_KEY] = false
-                prefs[HABIT_ID_KEY] = habitId
-                prefs[HABIT_NAME_KEY] = habit.name
-                prefs[COLOR_HEX_KEY] = habit.colorHex
-                prefs[TARGET_VALUE_KEY] = typed?.count?.todayPolicy?.targetValue ?: stats.displayTargetValue
-                prefs[COMPLETED_TODAY_KEY] = completedToday
-                prefs[ACTUAL_COUNT_KEY] = typed?.count?.todayQuantity ?: stats.actualTodayCount
-                prefs[COUNT_RULE_KNOWN_KEY] = stats.countRuleKnown
-                prefs[IS_COMPLETED_KEY] = isCompleted
-                prefs[IS_ACTIVE_KEY] = habit.isActive
-                prefs[IS_COUNTDOWN_KEY] = typed?.count?.todayPolicy?.isCountdown ?: stats.displayIsCountdown
-                prefs[IS_DELETED_KEY] = false
-                prefs[DATA_LOADED_KEY] = true
-                // Write status fields
-                prefs[IS_CHECKIN_ALLOWED_KEY] = isCheckInAllowed
-                prefs[NEXT_CHECKIN_DATE_KEY] = nextCheckInDate
-                prefs[HAS_FAILED_KEY] = hasFailed
-                prefs[IS_GOAL_REACHED_KEY] = isGoalReached
-                prefs[TARGET_PROGRESS_KEY] = targetProgress
-                prefs[TARGET_CYCLES_KEY] = habit.targetCycles ?: 0
-                // Pre-computed colors (Int ARGB for Glance state)
-                prefs[BACKGROUND_COLOR_KEY] = resolvedColors.backgroundColorArgb
-                prefs[TEXT_COLOR_KEY] = resolvedColors.textColorArgb
+                updateAppWidgetState(appContext, glanceId) { prefs ->
+                    if (typed != null) prefs[ACTION_PROOF_KEY] = typed.claim.encode() else prefs.remove(ACTION_PROOF_KEY)
+                    prefs[READ_FAILED_KEY] = false
+                    prefs[HABIT_ID_KEY] = habitId
+                    prefs[HABIT_NAME_KEY] = habit.name
+                    prefs[COLOR_HEX_KEY] = habit.colorHex
+                    prefs[TARGET_VALUE_KEY] = typed?.count?.todayPolicy?.targetValue ?: stats.displayTargetValue
+                    prefs[COMPLETED_TODAY_KEY] = completedToday
+                    prefs[ACTUAL_COUNT_KEY] = typed?.count?.todayQuantity ?: stats.actualTodayCount
+                    prefs[COUNT_RULE_KNOWN_KEY] = stats.countRuleKnown
+                    prefs[IS_COMPLETED_KEY] = isCompleted
+                    prefs[IS_ACTIVE_KEY] = habit.isActive
+                    prefs[IS_COUNTDOWN_KEY] = typed?.count?.todayPolicy?.isCountdown ?: stats.displayIsCountdown
+                    prefs[IS_DELETED_KEY] = false
+                    prefs[DATA_LOADED_KEY] = true
+                    // Write status fields
+                    prefs[IS_CHECKIN_ALLOWED_KEY] = isCheckInAllowed
+                    prefs[NEXT_CHECKIN_DATE_KEY] = nextCheckInDate
+                    prefs[HAS_FAILED_KEY] = hasFailed
+                    prefs[IS_GOAL_REACHED_KEY] = isGoalReached
+                    prefs[TARGET_PROGRESS_KEY] = targetProgress
+                    prefs[TARGET_CYCLES_KEY] = habit.targetCycles ?: 0
+                    // Pre-computed colors (Int ARGB for Glance state)
+                    prefs[BACKGROUND_COLOR_KEY] = resolvedColors.backgroundColorArgb
+                    prefs[TEXT_COLOR_KEY] = resolvedColors.textColorArgb
+                }
+                Log.d(TAG, "refreshWidgetData: wrote state for habit '${habit.name}', count=$completedToday, bgColor=${resolvedColors.backgroundColorArgb}")
             }
-            Log.d(TAG, "refreshWidgetData: wrote state for habit '${habit.name}', count=$completedToday, bgColor=${resolvedColors.backgroundColorArgb}")
         }
     }
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         Log.d(TAG, "provideGlance called for id=$id")
 
-        try {
-            val appWidgetId = androidx.glance.appwidget.GlanceAppWidgetManager(context).getAppWidgetId(id)
-            val state = getAppWidgetState<Preferences>(context, id)
-            val habitId = state[HABIT_ID_KEY] ?: -1L
-
-            updateAppWidgetState(context, id) { prefs ->
-                prefs[APP_WIDGET_ID_KEY] = appWidgetId
-            }
-
-            if (habitId != -1L) {
-                refreshWidgetData(context, id, habitId)
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e(TAG, "Error loading initial data", e)
-            updateAppWidgetState(context, id) { prefs ->
-                prefs[READ_FAILED_KEY] = true
-                prefs[DATA_LOADED_KEY] = false
-                prefs.remove(ACTION_PROOF_KEY)
-            }
+        val appWidgetId = GlanceAppWidgetManager(context).getAppWidgetId(id)
+        updateAppWidgetState(context, id) { prefs ->
+            prefs[APP_WIDGET_ID_KEY] = appWidgetId
         }
 
         provideContent {
