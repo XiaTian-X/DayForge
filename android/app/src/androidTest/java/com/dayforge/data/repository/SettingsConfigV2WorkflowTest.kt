@@ -27,6 +27,15 @@ import com.dayforge.ui.screens.settings.*
 import io.mockk.every
 import io.mockk.mockk
 import java.io.File
+import java.io.FileDescriptor
+import java.io.IOException
+import com.dayforge.domain.appearance.ThemeVersionRef
+import com.dayforge.domain.model.ThemeDefinition
+import com.dayforge.domain.model.ObjectAppearance
+import com.dayforge.domain.model.IconReference
+import com.dayforge.data.model.HabitType
+import com.dayforge.data.model.HabitSchedule
+import com.dayforge.data.model.FailMode
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
@@ -73,7 +82,7 @@ class SettingsConfigV2WorkflowTest : NextObjectEditorFixture() {
         NextObjectCreator(db, tokens, sessions, icons), app)
     private fun exporter() = NextConfigExportRepository(db, tokens, sessions, preferences, icons, themes)
     private fun workflow(documents: ConfigBundleDocuments = documents()) =
-        SettingsConfigV2Workflow(tokens, exporter(), importer(), documents)
+        SettingsConfigV2Workflow(tokens, exporter(), importer(), documents, themes)
     private fun documents() = ConfigBundleDocuments({ uri, _ ->
         assertEquals(inputUri, uri); reads++
         AssetFileDescriptor(ParcelFileDescriptor.open(input, ParcelFileDescriptor.MODE_READ_ONLY), 0, input.length())
@@ -82,9 +91,9 @@ class SettingsConfigV2WorkflowTest : NextObjectEditorFixture() {
         ParcelFileDescriptor.open(output, ParcelFileDescriptor.MODE_CREATE or ParcelFileDescriptor.MODE_TRUNCATE or
             ParcelFileDescriptor.MODE_WRITE_ONLY)
     })
-    private suspend fun source(name: String = "Daily check"): ValidatedConfigBundle {
+    private suspend fun source(name: String = "Daily check", sourceThemes: List<ThemeDefinition>? = null): ValidatedConfigBundle {
         val full = ConfigFileFixture.manifest()
-        val bundle = full.copy(nodes = listOf(full.nodes[1].copy(name = name, parentKey = null),
+        val bundle = full.copy(themes = sourceThemes ?: full.themes, nodes = listOf(full.nodes[1].copy(name = name, parentKey = null),
             full.nodes.last().copy(parentKey = null)), iconPack = null,
             unresolvedRoles = listOf("habit.water", "metric.weight", "task.default"))
         return ConfigBundleOutput.create(bundle) { error("No asset dependency") }
@@ -144,6 +153,8 @@ class SettingsConfigV2WorkflowTest : NextObjectEditorFixture() {
     @Test fun formalExportFreezesBeforePickerAndWritesRealValidatedArchiveWithoutReadingProvider() = runBlocking<Unit> {
         val flow = workflow(); mount(flow)
         settingsClick(R.string.settings_export_config)
+        compose.waitUntil(5000) { flow.state.value.exportChoices != null }
+        compose.onNodeWithTag("config-export-confirm").performClick()
         compose.waitUntil(5000) { request != null }
         assertTrue(request!!.second is ActivityResultContracts.CreateDocument)
         assertTrue((pickerInput as String).endsWith(".zip")); assertFalse(output.exists())
@@ -154,6 +165,156 @@ class SettingsConfigV2WorkflowTest : NextObjectEditorFixture() {
         val frozen = ValidatedConfigBundle.parse(output.readBytes()).manifest
         assertTrue(frozen.nodes.any { it.name == habit.name }); assertFalse(frozen.nodes.any { it.name.startsWith("Changed") })
         assertEquals("Changed while picker was open", db.habitDao().getHabitById(habit.id)!!.name)
+        assertEquals(0, count("next_config_imports"))
+    }
+
+    @Test fun formalChoicesExportOnlySelectedCompletedTemplateAndExactSameNameThemeVersionFromFrozenDefinitions() = runBlocking<Unit> {
+        val repo = onceHabits(onceRepository())
+        suspend fun completed(name: String): Long {
+            val id = repo.createHabit(name, "", HabitType.CHECK_IN, 0, "#123456", HabitSchedule.Once(),
+                failMode = FailMode.LOOSE,
+                appearance = ObjectAppearance(IconReference.Role("task.reading"), "#123456", "theme"),
+                completionPolicy = "one_and_done", creationAuthority = creator.capture())
+            withContext(Dispatchers.Main) { repo.logCompletion(app, id) }
+            return id
+        }
+        val first = completed("Selected completed item"); val second = completed("Excluded completed item")
+        val firstRow = db.habitDao().getHabitById(first)!!
+        val secondRow = db.habitDao().getHabitById(second)!!
+        val original = ConfigFileFixture.manifest().themes.single()
+        val newer = original.copy(revision = 2)
+        for (theme in listOf(original, newer)) themes.install(ValidatedTheme.parse(
+            kotlinx.serialization.json.Json.encodeToString(theme).toByteArray()))
+        val selection = themes.current().saved
+        val flow = workflow(); mount(flow); settingsClick(R.string.settings_export_config)
+        compose.waitUntil(5000) { flow.state.value.exportChoices != null }
+        assertTrue(flow.state.value.selectedItems.isEmpty()); assertTrue(flow.state.value.selectedThemes.isEmpty())
+        assertEquals(setOf(firstRow.uuid, secondRow.uuid), flow.state.value.exportChoices!!.items.map { it.first }.toSet())
+        val itemTag = "config-template-${firstRow.uuid}"; val themeTag = "config-theme-${newer.themeId}:2"
+        compose.onNodeWithTag("config-export-list").performScrollToNode(hasTestTag(itemTag))
+        compose.onNodeWithTag(itemTag).performClick()
+        compose.waitUntil(5000) { firstRow.uuid in flow.state.value.selectedItems }
+        compose.onNodeWithTag("config-export-list").performScrollToNode(hasTestTag(themeTag))
+        compose.onNodeWithTag(themeTag).performClick()
+        compose.waitUntil(5000) { ThemeVersionRef(newer.themeId, 2) in flow.state.value.selectedThemes }
+        // The choice view is a capture, not an invitation to mix later definitions or a third version.
+        producer().write(local()) { db.habitDao().update(firstRow.copy(name = "Renamed after capture")) }
+        themes.install(ValidatedTheme.parse(kotlinx.serialization.json.Json.encodeToString(newer.copy(revision = 3)).toByteArray()))
+        val before = db.syncOutboxDao().getAll()
+        compose.onNodeWithTag("config-export-confirm").performClick(); deliver(outputUri)
+        compose.waitUntil(10000) { flow.state.value.message == ConfigFileMessage.EXPORTED }
+        val bundle = ValidatedConfigBundle.parse(output.readBytes()).manifest
+        assertTrue(bundle.nodes.any { it.name == firstRow.name }); assertFalse(bundle.nodes.any { it.name == secondRow.name })
+        assertFalse(bundle.nodes.any { it.name.startsWith("Renamed") }); assertEquals(listOf(newer), bundle.themes)
+        assertEquals(before, db.syncOutboxDao().getAll()); assertEquals(selection, themes.current().saved)
+        assertTrue(onceRepository().read(first).completed); assertTrue(onceRepository().read(second).completed)
+        assertEquals(1, writes); assertEquals(0, reads)
+    }
+
+    @Test fun selectedThemesKeepSavedNewIdentitiesThroughRealBusinessFailureColdRecoveryAndIdempotentRetry() = runBlocking<Unit> {
+        emptyReplica(); val source = source(); val originalTheme = source.manifest.themes.single()
+        val selection = themes.current().saved; val originalCatalog = themes.catalog()!!
+        val first = workflow(); input.writeBytes(source.exportBytes()); mount(first)
+        settingsClick(R.string.settings_import_config); deliver(inputUri)
+        compose.waitUntil(10000) { first.state.value.preview != null }
+        val themeTag = "config-theme-${originalTheme.themeId}:${originalTheme.revision}"
+        compose.onNodeWithTag(themeTag).performScrollTo().performClick()
+        compose.waitUntil(5000) { ThemeVersionRef(originalTheme.themeId, originalTheme.revision) in first.state.value.selectedThemes }
+        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER config_theme_business_fault BEFORE INSERT ON metrics " +
+            "BEGIN SELECT RAISE(ABORT,'real business failure after theme install'); END")
+        compose.onNodeWithTag("config-file-confirm").performClick()
+        compose.waitUntil(10000) { first.state.value.message == ConfigFileMessage.FAILED && !first.state.value.busy &&
+            first.state.value.progress?.phase == ConfigImportPhase.PREPARED }
+        val id = first.state.value.progress!!.importId; val saved = entry(id, source); val installed = saved.plan.themes.single()
+        assertFalse(saved.committed); assertEquals(0, count("habits")); assertEquals(0, count("sync_outbox"))
+        assertNotEquals(originalTheme.themeId, installed.themeId); assertEquals(1, installed.revision)
+        assertEquals(originalTheme.light, installed.light); assertEquals(originalTheme.dark, installed.dark)
+        val ref = ThemeVersionRef(installed.themeId, 1)
+        assertEquals(installed, themes.export(ref).definition)
+        compose.waitUntil(5000) { requireNotNull(model).themeChoices.value.any { it.ref == ref && it.available } }
+        assertEquals(originalCatalog.slots.size + 1, themes.catalog()!!.slots.size); assertEquals(selection, themes.current().saved)
+        val installedCatalog = themes.catalog()!!
+        db.openHelper.writableDatabase.execSQL("DROP TRIGGER config_theme_business_fault")
+        withContext(Dispatchers.Main) { requireNotNull(model).viewModelScope.coroutineContext[Job]!!.cancelAndJoin() }
+        model = null
+        storage.reopen(); themes.close()
+        themes = DeviceThemeController(DeviceThemeRepository(dataStore, ThemeFileRepository(directory), BuiltInThemes(app.assets)),
+            CoroutineScope(SupervisorJob() + Dispatchers.IO)); themes.current()
+        val cold = workflow(); cold.refresh(); assertTrue(cold.beginImport(true))
+        input.writeBytes(source.exportBytes()); cold.readImport(inputUri)
+        assertTrue(cold.state.value.selectedThemes.isEmpty()) // recovery never silently reenables optional installs
+        cold.selectTheme(ThemeVersionRef(originalTheme.themeId, originalTheme.revision), true); cold.confirmImport()
+        assertEquals(ConfigFileMessage.LOCAL_COMMITTED, cold.state.value.message)
+        assertEquals(saved.plan.identities, entry(id, source).plan.identities)
+        assertEquals(installedCatalog, themes.catalog()); assertEquals(installed, themes.export(ref).definition)
+        assertEquals(selection, themes.current().saved); assertEquals(2, count("habits")); assertEquals(0, count("next_acceptances"))
+    }
+
+    @Test fun optionalThemeFileFailureKeepsRealPartialCatalogAndPreparedGroupWithoutBusinessWritesAndExplicitCancelRetainsIt() = runBlocking<Unit> {
+        emptyReplica()
+        val original = ConfigFileFixture.manifest().themes.single()
+        val second = original.copy(themeId = id(720), name = "Second config theme")
+        val source = source(sourceThemes = listOf(original, second))
+        val selection = themes.current().saved
+        themes.close()
+        themes = DeviceThemeController(DeviceThemeRepository(dataStore, ThemeFileRepository(directory, object : ThemeFileIo() {
+            override fun write(fd: FileDescriptor, bytes: ByteArray, offset: Int, length: Int): Int {
+                if (ValidatedTheme.parse(bytes).definition.name == second.name) throw IOException("actual theme write failure")
+                return super.write(fd, bytes, offset, length)
+            }
+        }), BuiltInThemes(app.assets)), CoroutineScope(SupervisorJob() + Dispatchers.IO)); themes.current()
+        val flow = workflow(); preview(flow, source)
+        flow.selectTheme(ThemeVersionRef(original.themeId, original.revision), true)
+        flow.selectTheme(ThemeVersionRef(second.themeId, second.revision), true)
+        flow.confirmImport(); assertEquals(ConfigFileMessage.FAILED, flow.state.value.message)
+        val id = flow.state.value.progress!!.importId; val saved = entry(id, source)
+        val firstRef = ThemeVersionRef(saved.plan.themes[0].themeId, 1)
+        val secondRef = ThemeVersionRef(saved.plan.themes[1].themeId, 1)
+        assertEquals(saved.plan.themes[0], themes.export(firstRef).definition)
+        assertEquals(ThemeInstallPhase.INSTALLING, themes.catalog()!!.slots.single { it.ref == secondRef }.phase)
+        assertFalse(saved.committed); assertEquals(0, count("habits")); assertEquals(0, count("sync_outbox"))
+        assertEquals(selection, themes.current().saved)
+        flow.refresh(); assertTrue(flow.beginImport(true)); input.writeBytes(source.exportBytes()); flow.readImport(inputUri)
+        flow.abandonPrepared(); assertEquals(ConfigFileMessage.ABANDONED, flow.state.value.message)
+        assertEquals(0, count("next_config_imports")); assertEquals(0, count("habits"))
+        assertEquals(saved.plan.themes[0], themes.export(firstRef).definition)
+        assertEquals(ThemeInstallPhase.INSTALLING, themes.catalog()!!.slots.single { it.ref == secondRef }.phase)
+        assertEquals(selection, themes.current().saved)
+    }
+
+    @Test fun exportChoicesCancelOrReauthenticationNeverLaunchesImplicitNewSnapshotAndForeignThemeSelectionCannotInstall() = runBlocking<Unit> {
+        val flow = workflow(); flow.refresh(); flow.openExportChoices()
+        assertNotNull(flow.state.value.exportChoices); flow.dismissPreview()
+        assertFalse(flow.beginExport(requireSelection = true)); assertEquals(0, writes)
+        flow.refresh(); flow.openExportChoices()
+        tokens.saveLoginSession("synthetic-export-new", "synthetic-refresh", "member", id(1), false); register()
+        flow.refresh(); assertNull(flow.state.value.exportChoices); assertFalse(flow.beginExport(requireSelection = true))
+        emptyReplica(); val source = source(); val importer = importer()
+        val id = importer.confirmReplacement(importer.previewReplacement(source))
+        val context = icons.capture(); val before = themes.catalog()
+        assertEquals("CONFIG_THEME_NOT_AVAILABLE", runCatching { importer.prepareThemeInstall(id, source,
+            setOf(ThemeVersionRef(id(999), 1)), context) }.exceptionOrNull()?.message)
+        tokens.saveLoginSession("synthetic-theme-new", "synthetic-refresh", "member", id(1), false); register()
+        assertTrue(runCatching { importer.prepareThemeInstall(id, source,
+            setOf(ThemeVersionRef(source.manifest.themes.single().themeId, 1)), context) }.isFailure)
+        assertEquals(before, themes.catalog()); assertFalse(entry(id, source).committed); assertEquals(0, count("habits"))
+    }
+
+    @Test fun actualThemeChoiceLimitAllowsSixteenAndRejectsSeventeenWithoutTruncatingOrChangingSelection() = runBlocking<Unit> {
+        val original = ConfigFileFixture.manifest().themes.single()
+        val definitions = (1..17).map { original.copy(themeId = id(730 + it), name = "Theme choice $it") }
+        for (theme in definitions) themes.install(ValidatedTheme.parse(kotlinx.serialization.json.Json.encodeToString(theme).toByteArray()))
+        val before = themes.catalog(); val selection = themes.current().saved
+        val flow = workflow(); flow.refresh(); flow.openExportChoices()
+        for (theme in definitions) flow.selectTheme(ThemeVersionRef(theme.themeId, theme.revision), true)
+        assertEquals(16, flow.state.value.selectedThemes.size)
+        assertFalse(ThemeVersionRef(definitions.last().themeId, definitions.last().revision) in flow.state.value.selectedThemes)
+        val options = exporter().options()
+        assertEquals("CONFIG_THEME_NOT_AVAILABLE", runCatching { exporter().prepare(options, emptySet(),
+            definitions.map { ThemeVersionRef(it.themeId, it.revision) }.toSet()) }.exceptionOrNull()?.message)
+        assertTrue(flow.beginExport(requireSelection = true)); flow.writeExport(outputUri)
+        assertEquals(definitions.take(16), ValidatedConfigBundle.parse(output.readBytes()).manifest.themes)
+        assertEquals(before, themes.catalog()); assertEquals(selection, themes.current().saved)
         assertEquals(0, count("next_config_imports"))
     }
 

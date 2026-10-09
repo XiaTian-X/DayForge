@@ -416,11 +416,19 @@ class SettingsViewModel @Inject constructor(
         return if (configWorkflow.v2?.allowLegacy() == false) null else content
     }
 
-    internal suspend fun beginConfigExport() = configWorkflow.v2?.beginExport() == true
+    internal suspend fun beginConfigExport() = configWorkflow.v2?.beginExport(requireSelection = true) == true
+    internal fun openConfigExportChoices() { viewModelScope.launch { configWorkflow.v2?.openExportChoices() } }
+    internal fun selectConfigItem(id: String, checked: Boolean) { viewModelScope.launch { configWorkflow.v2?.selectItem(id, checked) } }
+    internal fun selectConfigTheme(ref: com.dayforge.domain.appearance.ThemeVersionRef, checked: Boolean) {
+        viewModelScope.launch { configWorkflow.v2?.selectTheme(ref, checked) }
+    }
     internal suspend fun beginConfigImport(recover: Boolean = false) = configWorkflow.v2?.beginImport(recover) == true
     internal fun writeConfigExport(uri: Uri?) { viewModelScope.launch { configWorkflow.v2?.writeExport(uri) } }
     internal fun readConfigImport(uri: Uri?) { viewModelScope.launch { configWorkflow.v2?.readImport(uri) } }
-    internal fun confirmConfigImport() { viewModelScope.launch { configWorkflow.v2?.confirmImport() } }
+    internal fun confirmConfigImport() { viewModelScope.launch {
+        configWorkflow.v2?.confirmImport()
+        appearanceWorkflow.refreshLibrary(force = true)
+    } }
     internal fun abandonConfigImport() { viewModelScope.launch { configWorkflow.v2?.abandonPrepared() } }
     internal fun dismissConfigPreview() { viewModelScope.launch { configWorkflow.v2?.dismissPreview() } }
     internal fun dismissConfigMessage() { viewModelScope.launch { configWorkflow.v2?.dismissMessage() } }

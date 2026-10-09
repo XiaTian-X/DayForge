@@ -1,6 +1,10 @@
 package com.dayforge.ui.screens.settings
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -9,6 +13,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.core.graphics.toColorInt
+import com.dayforge.domain.appearance.ThemeVersionRef
+import com.dayforge.domain.model.ThemeDefinition
 import com.dayforge.R
 import com.dayforge.data.repository.ConfigImportPhase
 import com.dayforge.data.repository.ConfigReplacementBlocker
@@ -30,7 +39,7 @@ internal fun ConfigV2Status(state: ConfigV2UiState, recover: () -> Unit, refresh
                 if (progress.phase != ConfigImportPhase.PREPARED) Text(stringResource(R.string.config_file_receipts,
                     progress.accepted, progress.total))
                 if (progress.phase == ConfigImportPhase.PREPARED) TextButton(onClick = recover,
-                    enabled = !state.busy && !state.pickerPending && state.preview == null,
+                    enabled = !state.busy && !state.pickerPending && state.preview == null && state.exportChoices == null,
                     modifier = Modifier.testTag("config-file-recover")) { Text(stringResource(R.string.config_file_recover)) }
             }
         }
@@ -40,7 +49,32 @@ internal fun ConfigV2Status(state: ConfigV2UiState, recover: () -> Unit, refresh
 
 @Composable
 internal fun ConfigV2Dialogs(state: ConfigV2UiState, confirm: () -> Unit, dismiss: () -> Unit,
-    abandon: () -> Unit, dismissMessage: () -> Unit) {
+    abandon: () -> Unit, dismissMessage: () -> Unit, export: () -> Unit,
+    selectItem: (String, Boolean) -> Unit, selectTheme: (ThemeVersionRef, Boolean) -> Unit) {
+    state.exportChoices?.let { choices ->
+        AlertDialog(onDismissRequest = { if (!state.busy) dismiss() },
+            modifier = Modifier.testTag("config-export-choices"),
+            title = { Text(stringResource(R.string.config_file_export_choices)) },
+            text = { LazyColumn(Modifier.heightIn(max = 360.dp).testTag("config-export-list"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                item { Text(stringResource(R.string.config_file_export_selection_hint)) }
+                if (choices.items.isNotEmpty()) item { Text(stringResource(R.string.config_file_completed_templates)) }
+                items(choices.items, key = { "item:${it.first}" }) { (id, name) ->
+                    Row(Modifier.fillMaxWidth().testTag("config-template-$id").toggleable(
+                        value = id in state.selectedItems, enabled = !state.busy, role = Role.Checkbox,
+                        onValueChange = { selectItem(id, it) })) {
+                        Checkbox(checked = id in state.selectedItems, onCheckedChange = null)
+                        Text(name, Modifier.padding(vertical = 12.dp).weight(1f))
+                    }
+                }
+                item { Text(stringResource(R.string.config_file_theme_choices)) }
+                items(choices.themes, key = { "theme:${it.themeId}:${it.revision}" }) { theme ->
+                    ConfigThemeChoice(theme, state, selectTheme)
+                }
+            } },
+            confirmButton = { TextButton(onClick = export, enabled = !state.busy,
+                modifier = Modifier.testTag("config-export-confirm")) { Text(stringResource(R.string.settings_export_config)) } },
+            dismissButton = { TextButton(onClick = dismiss, enabled = !state.busy) { Text(stringResource(R.string.action_cancel)) } })
+    }
     state.preview?.let { preview ->
         AlertDialog(onDismissRequest = { if (!state.busy) dismiss() },
             modifier = Modifier.testTag("config-file-preview"),
@@ -50,7 +84,10 @@ internal fun ConfigV2Dialogs(state: ConfigV2UiState, confirm: () -> Unit, dismis
                 Text(stringResource(R.string.config_file_incoming, preview.nodes, preview.metrics, preview.links, preview.assets))
                 Text(stringResource(R.string.config_file_no_history))
                 if (preview.unresolvedRoles > 0) Text(stringResource(R.string.config_file_unresolved, preview.unresolvedRoles))
-                if (preview.themes > 0) Text(stringResource(R.string.config_file_themes_not_installed, preview.themes))
+                if (preview.themes > 0) {
+                    Text(stringResource(R.string.config_file_theme_install_hint))
+                    for (theme in preview.themeChoices) ConfigThemeChoice(theme, state, selectTheme)
+                }
                 preview.removed?.let { old ->
                     Text(stringResource(R.string.config_file_removed, old.goals, old.habits, old.items, old.metrics, old.links),
                         color = MaterialTheme.colorScheme.error)
@@ -74,7 +111,7 @@ internal fun ConfigV2Dialogs(state: ConfigV2UiState, confirm: () -> Unit, dismis
                 modifier = Modifier.testTag("config-file-confirm")) { Text(stringResource(R.string.action_confirm)) } },
             dismissButton = { TextButton(onClick = dismiss, enabled = !state.busy) { Text(stringResource(R.string.action_cancel)) } })
     }
-    if (state.busy && state.preview == null) ImportProgressDialog()
+    if (state.busy && state.preview == null && state.exportChoices == null) ImportProgressDialog()
     state.message?.let { message ->
         AlertDialog(onDismissRequest = dismissMessage, modifier = Modifier.testTag("config-file-result"),
             title = { Text(stringResource(if (message == ConfigFileMessage.FAILED) R.string.config_file_error else R.string.settings_config_section)) },
@@ -84,5 +121,29 @@ internal fun ConfigV2Dialogs(state: ConfigV2UiState, confirm: () -> Unit, dismis
                 ConfigFileMessage.ABANDONED -> R.string.config_file_abandoned
                 ConfigFileMessage.FAILED -> R.string.config_file_failed
             })) }, confirmButton = { TextButton(onClick = dismissMessage) { Text(stringResource(R.string.action_confirm)) } })
+    }
+}
+
+/** Explicit choice with both frozen palettes; names alone never identify a version. */
+@Composable
+private fun ConfigThemeChoice(theme: ThemeDefinition, state: ConfigV2UiState,
+    select: (ThemeVersionRef, Boolean) -> Unit) {
+    val ref = ThemeVersionRef(theme.themeId, theme.revision)
+    val checked = ref in state.selectedThemes
+    Column(Modifier.fillMaxWidth().testTag("config-theme-${ref.themeId}:${ref.revision}").toggleable(
+        value = checked, enabled = !state.busy && (checked || state.selectedThemes.size < 16),
+        role = Role.Checkbox, onValueChange = { select(ref, it) })) {
+        Row {
+            Checkbox(checked = checked, onCheckedChange = null)
+            Text("${theme.name} · v${theme.revision}", Modifier.padding(vertical = 12.dp).weight(1f))
+        }
+        for ((label, palette) in listOf(R.string.settings_light_theme to theme.light, R.string.settings_dark_theme to theme.dark)) {
+            Text(stringResource(label), style = MaterialTheme.typography.labelSmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                for (role in listOf("primary", "secondary", "tertiary", "surface", "background")) {
+                    Box(Modifier.size(24.dp).background(Color(palette.material.getValue(role).toColorInt()), MaterialTheme.shapes.extraSmall))
+                }
+            }
+        }
     }
 }

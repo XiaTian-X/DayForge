@@ -18,6 +18,8 @@ import com.dayforge.data.model.HabitType
 import com.dayforge.domain.appearance.ThemeVersionRef
 import com.dayforge.domain.model.OneTimeState
 import com.dayforge.domain.model.isContractUuid
+import com.dayforge.domain.model.ThemeDefinition
+import com.dayforge.data.appearance.ThemeCatalogContent
 import com.dayforge.domain.service.AccountIconController
 import com.dayforge.domain.service.AccountSessionCoordinator
 import com.dayforge.domain.service.DeviceThemeController
@@ -57,10 +59,44 @@ internal class NextConfigExportRepository @Inject constructor(
         access, _ -> access
     }.map { Unit }
 
-    private data class Snapshot(
+    internal data class Snapshot(
         val habits: List<HabitEntity>, val metrics: List<MetricEntity>, val links: List<HabitMetricLinkEntity>,
         val states: Map<String, OneTimeState>
     )
+
+    internal class Options internal constructor(val context: AccountIconContext,
+        internal val snapshot: Snapshot, val themes: List<ThemeDefinition>) {
+        val completedItems = Collections.unmodifiableList(snapshot.habits.filter {
+            snapshot.states[it.uuid]?.completionEventUuid != null
+        }.map { it.uuid to it.name })
+    }
+
+    /** Frozen business/definition choices; no identities, history or preference writes. */
+    suspend fun options(): Options = withContext(Dispatchers.IO) {
+        val context = icons.capture()
+        val snapshot = sessions.exclusive { database.withTransaction {
+            check(tokens.localIconAccess() == context.access) { "CONFIG_SESSION_CHANGED" }
+            capture(context, requireNotNull(tokens.localSyncAccess()), emptySet(), includeCompleted = true)
+        } }
+        val definitions = themes.library().items.mapNotNull { (it.content as? ThemeCatalogContent.Available)?.definition }
+        check(tokens.localIconAccess() == context.access) { "CONFIG_SESSION_CHANGED" }
+        Options(context, snapshot, Collections.unmodifiableList(definitions))
+    }
+
+    /** Selection only narrows the original capture. It never rereads later business or themes. */
+    suspend fun prepare(options: Options, completedItems: Set<String>, themeRefs: Set<ThemeVersionRef>): AccountConfigExportPreview =
+        withContext(Dispatchers.IO) {
+            val selected = completedItems.toSet(); val selectedThemes = themeRefs.toSet()
+            require(selected.all { id -> options.completedItems.any { it.first == id } }) { "CONFIG_TEMPLATE_NOT_AVAILABLE" }
+            require(selectedThemes.size <= 16 && selectedThemes.all { ref ->
+                options.themes.any { it.themeId == ref.themeId && it.revision == ref.revision }
+            }) { "CONFIG_THEME_NOT_AVAILABLE" }
+            val original = options.snapshot
+            val nodes = original.habits.filter { it.uuid in selected || original.states[it.uuid]?.completionEventUuid == null }
+            val ids = nodes.map { it.uuid }.toSet()
+            val filtered = Snapshot(nodes, original.metrics, original.links.filter { it.habitUuid in ids }, original.states.filterKeys { it in ids })
+            freeze(options.context, filtered, selected, options.themes.filter { ThemeVersionRef(it.themeId, it.revision) in selectedThemes })
+        }
 
     suspend fun prepare(completedItemTemplateIds: Set<String> = emptySet(),
         themeRefs: List<ThemeVersionRef> = emptyList()): AccountConfigExportPreview = withContext(Dispatchers.IO) {
@@ -80,10 +116,16 @@ internal class NextConfigExportRepository @Inject constructor(
         }
         // Neither account lock nor business Room transaction spans theme/image/provider I/O.
         val definitions = requestedThemes.map { themes.export(it).definition }
+        freeze(context, snapshot, selected, definitions)
+    }
+
+    private suspend fun freeze(context: AccountIconContext, snapshot: Snapshot, selected: Set<String>,
+        definitions: List<ThemeDefinition>): AccountConfigExportPreview {
+        require(snapshot.habits.size <= 1000 && snapshot.metrics.size <= 1000 && snapshot.links.size <= 5000) { "CONFIG_OBJECT_LIMIT" }
         val uses = snapshot.habits.map { ConfigIconUse(requireNotNull(it.appearance).icon,
             it.completionPolicy == "one_and_done") } +
             snapshot.metrics.map { ConfigIconUse(requireNotNull(it.appearance).icon, false) }
-        icons.prepareConfigExport(context, uses) { pack, missing ->
+        return icons.prepareConfigExport(context, uses) { pack, missing ->
             NextConfigMapper.bundle(snapshot.habits, snapshot.metrics, snapshot.links, pack, missing,
                 definitions, selected, snapshot.states)
         }
@@ -94,7 +136,7 @@ internal class NextConfigExportRepository @Inject constructor(
         icons.publishConfigExport(preview, block)
 
     private suspend fun capture(context: AccountIconContext, access: LocalSyncAccess,
-        selected: Set<String>): Snapshot {
+        selected: Set<String>, includeCompleted: Boolean = false): Snapshot {
         check(database.inTransaction() && access.session == context.access.session && access.deviceId == context.access.deviceId &&
             access.capabilityRevision == context.access.capabilityRevision) { "CONFIG_SESSION_CHANGED" }
         val sql = database.openHelper.writableDatabase
@@ -117,7 +159,7 @@ internal class NextConfigExportRepository @Inject constructor(
             currentCoroutineContext().ensureActive()
             row.uuid to intents.readInTransaction(row.uuid, access.session).queue.optimisticState
         }
-        val habits = visible.filter { it.uuid in selected || states[it.uuid]?.completionEventUuid == null }.map { row ->
+        val habits = visible.filter { includeCompleted || it.uuid in selected || states[it.uuid]?.completionEventUuid == null }.map { row ->
             val schedule = row.schedule
             if (schedule is HabitSchedule.Weekly) row.copy(schedule = schedule.copy(
                 daysOfWeek = Collections.unmodifiableList(schedule.daysOfWeek.toList()))) else row
@@ -135,8 +177,9 @@ internal class NextConfigExportRepository @Inject constructor(
             }
             row.habitUuid in habitIds && row.metricUuid in metricIds
         }
-        require(habits.size <= 1000 && metrics.size <= 1000 && links.size <= 5000) { "CONFIG_OBJECT_LIMIT" }
-        return Snapshot(habits, metrics, links, states.filterKeys { it in habitIds })
+        if (!includeCompleted) require(habits.size <= 1000 && metrics.size <= 1000 && links.size <= 5000) { "CONFIG_OBJECT_LIMIT" }
+        return Snapshot(Collections.unmodifiableList(habits), Collections.unmodifiableList(metrics),
+            Collections.unmodifiableList(links), Collections.unmodifiableMap(states.filterKeys { it in habitIds }))
     }
 
     /** Retained v5 delete rows are invisible before ACK; legacy work is never relabelled or consumed. */

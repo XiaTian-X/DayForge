@@ -4,6 +4,10 @@ import android.content.Context
 import androidx.room.withTransaction
 import com.dayforge.data.appearance.AccountIconContext
 import com.dayforge.data.appearance.ValidatedConfigBundle
+import com.dayforge.data.appearance.ValidatedTheme
+import com.dayforge.domain.appearance.ThemeVersionRef
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import com.dayforge.data.export.ConfigImportTarget
 import com.dayforge.data.export.NextConfigImportPlan
 import com.dayforge.data.local.HabitDatabase
@@ -21,6 +25,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 internal class NextConfigImportPreview internal constructor(internal val context: AccountIconContext,
     internal val source: ValidatedConfigBundle)
@@ -125,6 +131,31 @@ internal class NextConfigImportRepository @Inject constructor(
         val context = icons.capture()
         val entry = guarded(context) { journal.read(context, importId, source) }
         NextConfigRecoveryPreview(importId, NextConfigImportPreview(context, source), entry.committed, entry.network != null)
+    }
+
+    /** Authorize an explicit local-theme handoff from the ORIGINAL saved mapping, before I/O.
+     * Each call is rechecked by the UI owner; catalog install is separately journalled/idempotent.
+     * Optional installs are retained on business failure/cancel; never automatically selected.
+     */
+    suspend fun prepareThemeInstall(importId: String, source: ValidatedConfigBundle,
+        selected: Set<ThemeVersionRef>, expectedContext: AccountIconContext): List<ValidatedTheme> = withContext(Dispatchers.IO) {
+        val refs = selected.toSet()
+        require(refs.size <= 16 && refs.all { ref -> source.manifest.themes.any {
+            it.themeId == ref.themeId && it.revision == ref.revision
+        } }) { "CONFIG_THEME_NOT_AVAILABLE" }
+        guarded(expectedContext) {
+            val entry = journal.read(expectedContext, importId, source)
+            check(!entry.committed) { "CONFIG_IMPORT_ALREADY_COMMITTED" }
+            requirePrepared(expectedContext, entry)
+            source.manifest.themes.mapIndexedNotNull { index, original ->
+                currentCoroutineContext().ensureActive()
+                if (ThemeVersionRef(original.themeId, original.revision) !in refs) null
+                else {
+                    val coroutine = currentCoroutineContext()
+                    ValidatedTheme.parse(Json.encodeToString(entry.plan.themes[index]).toByteArray(Charsets.UTF_8)) { coroutine.ensureActive() }
+                }
+            }
+        }
     }
 
     /** Cold recovery explicitly resupplies the same validated frozen file; never adopts new bytes. */

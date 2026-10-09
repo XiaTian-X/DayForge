@@ -1158,7 +1158,11 @@
     <string name="config_file_recovery_title">Recover original import</string>
     <string name="config_file_incoming">Import totals — Goals/habits/items: %1$d; metrics: %2$d; links: %3$d; icon assets: %4$d.</string>
     <string name="config_file_no_history">New identities, no history. Imported one-time items start unfinished. Icons are installed, not selected as the current style.</string>
-    <string name="config_file_themes_not_installed">Included theme count: %1$d. This import does not install or apply them; use the separate theme importer.</string>
+    <string name="config_file_export_choices">Choose configuration contents</string>
+    <string name="config_file_export_selection_hint">Definitions are frozen now. History is never included. Completed items are excluded unless individually selected as unfinished templates.</string>
+    <string name="config_file_completed_templates">Completed items — export as unfinished templates</string>
+    <string name="config_file_theme_choices">Optional theme versions (maximum 16)</string>
+    <string name="config_file_theme_install_hint">Optionally select themes to install under new identities. They are not applied. Installed themes remain if business import fails or is abandoned; reselect choices during recovery.</string>
     <string name="config_file_unresolved">Unresolved icon role count: %1$d. References are retained and use placeholders until a style supplies them.</string>
     <string name="config_file_removed">Replace totals — Goals: %1$d; habits: %2$d; items: %3$d; metrics: %4$d; links: %5$d.</string>
     <string name="config_file_removed_history">Discard record totals — Check/count: %1$d; timer sessions: %2$d; metric records: %3$d.</string>
@@ -1170,9 +1174,9 @@
     <string name="config_file_block_replica">Complete the first replica sync before replacing configuration.</string>
     <string name="config_file_block_structure">Sync the current configuration before replacing it.</string>
     <string name="config_file_block_capacity">The replacement exceeds the current queue capacity.</string>
-    <string name="config_file_abandon">Abandon uncommitted import (installed assets remain)</string>
+    <string name="config_file_abandon">Abandon uncommitted import (installed icons and themes remain)</string>
     <string name="config_file_exported">The frozen configuration archive was written successfully.</string>
     <string name="config_file_local_committed">Local configuration committed. Server confirmations and material transfers are not yet guaranteed; check configuration status and sync.</string>
-    <string name="config_file_abandoned">The uncommitted import was abandoned. Existing data and already installed assets were retained.</string>
+    <string name="config_file_abandoned">The uncommitted import was abandoned. Existing data and already installed icons and themes were retained.</string>
     <string name="config_file_failed">Operation not completed. Verify the file, account and sync readiness. If an import is prepared, reselect its original file to recover; do not create a second import.</string>
 </resources>

@@ -296,7 +296,7 @@ fun SettingsScreen(
                     exportProgress = exportProgress || configFileState.busy,
                     importProgress = importProgress,
                     onExportClick = {
-                        if (configFileState.profile == ConfigFileProfile.NEXT) launchConfigExport()
+                        if (configFileState.profile == ConfigFileProfile.NEXT) viewModel.openConfigExportChoices()
                         else if (configFileState.profile == ConfigFileProfile.LEGACY) {
                             val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
                             configExportLauncher.launch("habits-config-${dateFormat.format(java.util.Date())}.json")
@@ -307,9 +307,9 @@ fun SettingsScreen(
                         else if (configFileState.profile == ConfigFileProfile.LEGACY) importLauncher.launch(arrayOf("application/json"))
                     },
                     exportEnabled = configFileState.profile in setOf(ConfigFileProfile.LEGACY, ConfigFileProfile.NEXT) &&
-                        !configFileState.pickerPending && configFileState.preview == null,
+                        !configFileState.pickerPending && configFileState.preview == null && configFileState.exportChoices == null,
                     importEnabled = (configFileState.profile == ConfigFileProfile.LEGACY || configFileState.canImport) &&
-                        !configFileState.pickerPending && configFileState.preview == null &&
+                        !configFileState.pickerPending && configFileState.preview == null && configFileState.exportChoices == null &&
                         (configFileState.progress == null || configFileState.progress?.phase == com.dayforge.data.repository.ConfigImportPhase.OPERATIONS_ACCEPTED),
                     showLegacyHint = configFileState.profile == ConfigFileProfile.LEGACY,
                     footer = { ConfigV2Status(configFileState, { launchConfigImport(true) }, viewModel::refreshConfigState) }
@@ -621,7 +621,8 @@ fun SettingsScreen(
 
     // Export Progress Dialog
     ConfigV2Dialogs(configFileState, viewModel::confirmConfigImport, viewModel::dismissConfigPreview,
-        viewModel::abandonConfigImport, viewModel::dismissConfigMessage)
+        viewModel::abandonConfigImport, viewModel::dismissConfigMessage,
+        { launchConfigExport() }, viewModel::selectConfigItem, viewModel::selectConfigTheme)
     if (exportProgress) {
         ExportProgressDialog()
     }
