@@ -469,8 +469,16 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         return proof.operation to requireNotNull(proof.result.entity)
     }
 
+    /** Replacement groups bind ORIGINAL IDs, never a inferred shadow or a rebased successor. */
+    internal suspend fun acceptedOperationProof(id: String, access: LocalSyncAccess): Pair<SyncV2Operation, String> {
+        check(database.inTransaction())
+        require(resolve(id, access) == id) { "CONFIG_IMPORT_OPERATION_CHANGED" }
+        val proof = accepted(id, access, metricDeleteReceipt = true)
+        return proof.operation to proof.hash
+    }
+
     /** Full receipt proof, not a mutable shadow or inferred absence. */
-    private suspend fun accepted(id: String, access: LocalSyncAccess): Accepted {
+    private suspend fun accepted(id: String, access: LocalSyncAccess, metricDeleteReceipt: Boolean = false): Accepted {
         val origin = original(id)
         validateContext(origin, null, access)
         NextRestartBindingStore(database).requireReady(access, origin)
@@ -484,7 +492,13 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
             transmission.serverInstanceId == access.session.serverInstanceId && transmission.syncEpoch == access.session.syncEpoch &&
             transmission.deviceId == access.deviceId && transmission.wireHash == nextRequestHash(transmission.wireBytes))
         val envelope = envelope(transmission.wireBytes, transmission.wireHash)
-        val operation = intent(origin)
+        // Metrics have no structural delete ancestry. Only the replacement receipt consumer
+        // accepts that exact original operation here; ordinary dependency/rebase rules stay
+        // unchanged. It still passes the SAME frozen envelope and typed result proof below.
+        val operation = if (metricDeleteReceipt) decodeNextOperationIntent(origin.intentJson).also {
+            require(it.operationId == origin.requestId && (ordinary(it) ||
+                it.entityType == "metric" && it.action == "delete"))
+        } else intent(origin)
         require(envelope.deviceId == transmission.deviceId && envelope.operations == listOf(operation))
         validateNextOperationEnvelope(origin.intentJson, transmission.wireBytes, transmission.deviceId)
         if (roundOperationIntent(origin.intentJson) != null) NextChallengeStore(database).activeInTransaction(access)

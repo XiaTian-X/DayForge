@@ -37,7 +37,7 @@ internal class NextConfigReplacementPreview internal constructor(
 internal class NextConfigReplacementInspector(private val database: HabitDatabase) {
     private val sql get() = database.openHelper.writableDatabase
 
-    suspend fun capture(original: NextConfigImportPreview): NextConfigReplacementPreview {
+    suspend fun capture(original: NextConfigImportPreview, preparedImportId: String? = null): NextConfigReplacementPreview {
         check(database.inTransaction())
         NextRequestSql.requireOutboxEnabled(sql)
         val habits = database.habitDao().getAllHabitsOnce()
@@ -117,7 +117,7 @@ internal class NextConfigReplacementInspector(private val database: HabitDatabas
             habits.count { it.habitType != HabitType.GOAL && it.completionPolicy != "one_and_done" }.toLong(),
             habits.count { it.completionPolicy == "one_and_done" }.toLong(), metrics.size.toLong(), links.size.toLong(),
             count("completions"), count("timelogs"), count("metric_logs"))
-        return NextConfigReplacementPreview(original, counts, blockers, fingerprint())
+        return NextConfigReplacementPreview(original, counts, blockers, fingerprint(preparedImportId))
     }
 
     private fun exists(table: String, where: String = "1=1") =
@@ -130,7 +130,7 @@ internal class NextConfigReplacementInspector(private val database: HabitDatabas
     /** Hash actual SQLite values/types, including facts and retained journals; never Room coercions.
      * Pages keep arbitrary history out of a single CursorWindow. This proof is only in memory.
      */
-    private suspend fun fingerprint(): String {
+    private suspend fun fingerprint(preparedImportId: String?): String {
         val caller = currentCoroutineContext()
         val digest = MessageDigest.getInstance("SHA-256")
         fun bytes(value: ByteArray) {
@@ -149,14 +149,25 @@ internal class NextConfigReplacementInspector(private val database: HabitDatabas
             } }
             require(columns.isNotEmpty() && columns.all { it.matches(Regex("[A-Za-z_][A-Za-z_0-9]*")) })
             val length = columns.joinToString("+") { "COALESCE(length(CAST(`$it` AS BLOB)),0)" }
+            // Only this independently validated prepared journal was added after confirmation.
+            // Do not exclude other imports, old receipts, facts or any business value.
+            val excluded = preparedImportId != null && table in setOf("next_config_imports", "next_config_import_payloads")
             var last: Long? = null
             while (true) {
                 caller.ensureActive()
                 val boundary = last
                 // Bound individual damaged rows BEFORE Android materializes TEXT/BLOB.
-                val ids = sql.query("SELECT rowid,($length) FROM `$table` " +
-                    (if (boundary == null) "" else "WHERE rowid>? ") + "ORDER BY rowid LIMIT 128",
-                    if (boundary == null) emptyArray<Any>() else arrayOf<Any>(boundary)).use { c -> buildList {
+                val predicates = buildList {
+                    if (boundary != null) add("rowid>?")
+                    if (excluded) add("importId!=?")
+                }
+                val arguments = buildList<Any> {
+                    if (boundary != null) add(boundary)
+                    if (excluded) add(requireNotNull(preparedImportId))
+                }.toTypedArray()
+                val where = if (predicates.isEmpty()) "" else "WHERE ${predicates.joinToString(" AND ")} "
+                val ids = sql.query("SELECT rowid,($length) FROM `$table` $where ORDER BY rowid LIMIT 128",
+                    arguments).use { c -> buildList {
                     var bytes = 0L
                     while (c.moveToNext()) {
                         caller.ensureActive()
@@ -171,9 +182,8 @@ internal class NextConfigReplacementInspector(private val database: HabitDatabas
                     }
                 } }
                 if (ids.isEmpty()) break
-                sql.query("SELECT * FROM `$table` WHERE " + (if (boundary == null) "" else "rowid>? AND ") +
-                    "rowid<=? ORDER BY rowid", if (boundary == null) arrayOf<Any>(ids.last()) else
-                    arrayOf<Any>(boundary, ids.last())).use { c ->
+                sql.query("SELECT * FROM `$table` WHERE ${(predicates + "rowid<=?").joinToString(" AND ")} ORDER BY rowid",
+                    arguments + ids.last()).use { c ->
                     require(c.columnCount == columns.size)
                     var rows = 0
                     while (c.moveToNext()) {

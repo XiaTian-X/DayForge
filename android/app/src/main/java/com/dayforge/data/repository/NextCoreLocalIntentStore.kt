@@ -234,7 +234,7 @@ internal class NextCoreLocalIntentStore(
 
     private companion object { const val SIZE_DEVICE = "00000000-0000-4000-8000-000000000000" }
 
-    private suspend fun operation(row: SyncOutboxEntity): SyncV2Operation {
+    internal suspend fun operation(row: SyncOutboxEntity): SyncV2Operation {
         require(isContractUuid(row.entityUuid) && row.action in setOf("upsert", "delete"))
         val type = when (row.recordType) {
             "habit" -> "plan_node"; "metric" -> "metric"; "completion" -> "activity_event"

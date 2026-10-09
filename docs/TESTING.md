@@ -19,6 +19,59 @@
 
 ## 验证层级
 
+### 配置实际非空替换与原操作 ACK 屏障（2026-10-10，Issue #160）
+
+内部 confirmReplacement/resume 接原账户、物理 Room/DataStore、素材控制器、creator/producer
+和逐项真实 HTTP/ACK。确认先保存旧删除 ID/revision/hash 与新身份及六阶段计划；本地业务、
+原来源与收据同事务，真实 ACK 放行后续阶段/原组完成。Room16、后端/协议线格式、依赖、
+默认 v4 和 Gemini 手机/平板 UI 不变，正式设置/恢复交互仍未开放。
+
+执行均为授权 MI6/API35 的 android-targeted 完整类，150s/1500s 不变。真实失败分开记录：
+
+- 首轮16完整类240项为227通过/13失败，0 errors/skipped；
+  `3fbb3523919943aaa1e7c16427ff6458`，build2m32s、connected17m40s/XML1033.665s。
+  13项在新增替换类：同名夹具把计划 title 误写为 name，以及目标夹具误用计数 target10；
+  不是已通过替换链。其余15完整类227项通过，覆盖导入/导出/预检、Core、计数、事项、删除、
+  轮次目标/事项/操作/计时、因果、计时发送/开始顺序和启用屏障。
+- 修正夹具并补 HTTP/原组绑定/调度/提交故障后，3完整类38项为25通过/13失败，
+  `2c79dbd974484cceaf74a2b60bd37e0d`，build1m45s、connected6m56s/XML394.642s。
+  两个既有 Runtime 类22项通过；新类3通过/13失败。12项是新生产接入错误：通用请求 SQL
+  白名单不包含导入表；另1项暴露事务内读取日志前缺少副本预核查。改为严格有界日志头指纹，
+  不扩大全局表白名单；事务内先核对实际账户/副本，再读取或写入日志。
+- 上述修正后的3完整类41项为29通过/12失败，
+  `ee158307cae14abd86181dd59297b55d`，build1m23s、connected11m19s/XML656.076s。
+  导入12与预检13完整通过；新类4通过/12失败，均为新屏障误用不允许指标删除的结构祖先解析。
+  仅为替换收据证明支持原指标删除，祖先/rebase 准入不改，保留完整 envelope/typed ACK 校验。
+- 扩展并补有效 hash/无效指标 tombstone 反例后，3完整类89项为88通过/1失败，
+  `68eec99ac497499d89aeddaa65b94036`，build1m44s、connected22m58s/XML1353.796s。
+  NextCoreRequestStoreTest47、NextStructuralCausalStoreTest25完整通过；新增替换类16通过/1失败。
+  唯一失败是新调度夹具监听 /sync/pull，但实际读取为 /sync/changes；没有修改生产路径。
+
+每批均先确认 wrapper/Gradle 与两测试包退出，才编辑源码；未为小修重复240项或未改计时/素材
+全量。最后仅修正新夹具路径及对应断言，完整 NextConfigReplacementRepositoryTest17/17通过，
+0失败/错误/跳过；`04a8f07fbff34e4289add8660940da3c/targeted.json`，build19s、
+connected18m28s/XML1083.834s。前批 XML 保留在最终 prior-results；这些分批证据不能拼成
+89/106项最终成功或 Android 全量门禁。六阶段冷重放用例最终146.613s，前批150.495s含
+生命周期开销；配置的 runner150000ms 未改，耗时接近边界，不代表最大图性能已验证。
+
+新17项验证原删除身份先于文件、冷恢复精确新对象/关联主键/事项未完成且不自动换包、直接
+发送不能绕过六阶段、HTTP响应丢失同冻结字节重试、原组晚回调/后续组缓存重放、队列消失/
+影子/dead letter不是ACK、确认后新事实拒绝覆盖、文件/业务/晚来源/最终COMMIT失败、prepared
+取消保留已声明素材、ZIP/块损坏、重新认证/只读/设备/副本拒绝、HTTP期间及ACK事务内前驱
+证据变化、有效hash配无效指标删除、最后ACK/终态日志同事务回滚、真实Runtime删除/创建/
+changes拉取、空到空结束和已接受挑战档位的子删除frontier/新初始创建。
+COMMIT故障先关闭实际故障连接、冷重开再读取持久结果，不用旧写连接/WAL冒充回滚。
+
+HTTP为实际loopback Socket/NextSyncHttp与原ACK消费者，服务端响应是明确类型化夹具，不是
+真实后端SQL联合；挑战测试调用实际bootstrap合并消费者，不声称fixture是后端HTTP bootstrap。
+原有非空历史组合与服务器长期旧事实拉取、正式SAF/恢复/存储错误UI、主题安装选择、Worker/
+全消费者v5联合、最大图吞吐仍待验证。10000只为原来源审计准入，network2MiB超限在确认写入
+前拒绝，不声称最大文件都能在一个替换事务内导入。
+
+最终root51/build/lint/告警、APK一致性/实际发现/XML/新非空覆盖输入及测试包清理门禁通过。
+全局覆盖校准、Android/后端SQL全量、正式UI/桌面/平板/人工/外网/NAS/Docker未执行；无正式
+APK安装/清除、清库、部署或合并。#160保持未完成，下一批接正式设置/文件恢复及显式主题选择。
+
 ### 配置非空替换的只读预检与过期复核（2026-10-09，Issue #160）
 
 NextConfigImportRepository 新增 previewReplacement/recheckReplacement，经原账户协调锁、
