@@ -19,6 +19,32 @@
 
 ## 验证层级
 
+### 小组件 provider 与遗弃配置入口清理（2026-10-09，Issue #160）
+
+核对全部 provider XML、Manifest 和调用方：专注从未链接 FocusWidgetConfigActivity，
+没有其他实际调用方。删除该源文件及独立导出声明，不新增替代配置流程；保留六类 Receiver、
+三类选择配置、自动排序/时间窗口、刷新队列、界面与周期配置。
+
+初次 `b4c102b1404241e585a5a9be0937bca4` 在构建阶段主动取消：新增元数据夹具错误地
+假定全部周期相同，核对实际 XML 后按专注30分钟/其余24小时修正；未执行行为、不改产品周期。
+取消拥有的 Python 包装进程并 join，确认子进程及两个 testbed 包不存在后才改夹具。
+最终独立完整 WidgetEntryMetadataTest、WidgetRefresherTargetsTest、WidgetRefreshSchedulerTest、
+WidgetRefreshWorkerTest、FocusWindowReceiverTest、WidgetSummaryReceiverTest 6 类15/15 passed，
+0 failures/errors/skipped；证据 `dac23a1ac00c423f817dc693a3af934f/targeted.json`。
+root51/build1m4s/lint/告警、APK/发现/XML/新覆盖输入与 testbed 清理通过。
+
+元数据测试读取真机已安装 testbed 的真实 AppWidgetManager/PackageManager：六类 provider
+与更新 Receiver 均存在/启用，三类选择配置组件可用，三个自动组件 configure 为空，原刷新周期
+与加载布局有效；已移除的旧组件不存在，配置 intent 只解析三类真实选择页。不用源文本或
+mock provider 替代此证明。相邻矩阵继续验证六类加载/显示次序与专注闹钟路由、无绑定实例、
+失败隔离、空载荷 APPEND_OR_REPLACE、有界重试及窗口广播路由；这些测试对平台/消费者边界
+有明确隔离，不证明真实已绑定桌面绘制。生产来源、账户权限、业务事实或 outbox 没有改动。
+
+不重复未变的配置 UI/主题/长计时/容量矩阵，不称 Android 全量或正式联合验收。
+默认 v4；150s/1500s 不变，无 schema/HTTP/后端/依赖/布局变化。实际桌面多实例/像素、
+账户素材/图标消费者、持久绑定与进程死亡恢复、正式 v5/Worker/配置联合、Android/后端 SQL
+全量（含 #344）、人工/平板/外网/NAS仍未完成；无正式 APK 安装、清库、部署或 Docker 操作。
+
 ### 小组件独立页面的完整主题宿主（2026-10-09，Issue #160）
 
 三类真实配置入口和目标/指标/重新激活/计时切换/放弃五类弹窗使用共享完整主题，保留
