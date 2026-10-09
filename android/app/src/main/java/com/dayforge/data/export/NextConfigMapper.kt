@@ -16,6 +16,7 @@ import com.dayforge.domain.model.ConfigMetric
 import com.dayforge.domain.model.ConfigNode
 import com.dayforge.domain.model.ConfigSchedule
 import com.dayforge.domain.model.IconPack
+import com.dayforge.domain.model.OneTimeState
 import com.dayforge.domain.model.ThemeDefinition
 import com.dayforge.domain.model.isContractUuid
 
@@ -23,17 +24,22 @@ import com.dayforge.domain.model.isContractUuid
  * Maps an explicit v5 snapshot only. Does not infer old rows, load history or persist anything.
  * Local keys are generated independently of UUIDs; import must assign new account identities.
  * The repository caller owns account authorization, one consistent Room snapshot and asset closure,
- * including current pending once-state filtering. Known completed rows additionally require exact
- * explicit template selection here; the mapper cannot silently include them in a default export.
+ * including current pending once-state filtering. The optional complete projection map must come
+ * from that validated snapshot, not guessed row headers. Standalone callers use confirmed state.
  */
 internal object NextConfigMapper {
     fun bundle(habits: List<HabitEntity>, metrics: List<MetricEntity>, links: List<HabitMetricLinkEntity>,
         iconPack: IconPack?, unresolvedRoles: List<String>, themes: List<ThemeDefinition>,
-        completedItemTemplateIds: Set<String> = emptySet()): ConfigBundle {
+        completedItemTemplateIds: Set<String> = emptySet(),
+        currentOneTimeStates: Map<String, OneTimeState>? = null): ConfigBundle {
         require(habits.size <= 1000 && metrics.size <= 1000 && links.size <= 5000)
         require((habits.map { it.uuid } + metrics.map { it.uuid } + links.map { it.uuid }).all(::isContractUuid))
         require(completedItemTemplateIds.all { id -> habits.any { it.uuid == id && it.completionPolicy == "one_and_done" } })
-        require(habits.none { it.completionPolicy == "one_and_done" && it.oneTimeConfirmedCompletionEventUuid != null &&
+        val onceIds = habits.filter { it.completionPolicy == "one_and_done" }.map { it.uuid }.toSet()
+        require(currentOneTimeStates == null || currentOneTimeStates.keys == onceIds) { "CONFIG_ONCE_SNAPSHOT_INCOMPLETE" }
+        require(habits.none { it.completionPolicy == "one_and_done" &&
+            (if (currentOneTimeStates == null) it.oneTimeConfirmedCompletionEventUuid
+                else currentOneTimeStates.getValue(it.uuid).completionEventUuid) != null &&
             it.uuid !in completedItemTemplateIds }) { "CONFIG_COMPLETED_ITEM_NOT_SELECTED" }
         require(habits.map { it.uuid }.distinct().size == habits.size &&
             metrics.map { it.uuid }.distinct().size == metrics.size && links.map { it.uuid }.distinct().size == links.size)

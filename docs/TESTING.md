@@ -19,6 +19,35 @@
 
 ## 验证层级
 
+### 配置导出的业务事务快照与当前事项（2026-10-09，Issue #160）
+
+新增内部 NextConfigExportRepository：真实账户/Room 快照 → 原事项队列投影 → typed 映射
+→ 账户素材字节 → 冻结 v2 包。只读业务路径，无迁移、后端、HTTP、依赖、默认 v4 或 UI 改动。
+设置页旧 schemaVersion=1 尚未替换，不宣称正式入口、导入恢复或新协议联合完成。
+
+初次 `9ad3da031fef4c66985be38fe83de590` 在构建后被原编译警告门禁拒绝：两个新损坏
+存储夹具的混合 SQL 参数数组触发 Kotlin 交叉类型推断警告。未执行行为，原日志保留。
+等待实际 wrapper/Gradle 和测试包均退出后，仅将两处数组显式声明为 `Array<Any>`；
+不扩大警告预算或改生产源码。随后完整九类81/81 passed，0 failures/errors/skipped，
+证据 `2f7475ca74144ef7af4df252b2c11631/targeted.json`，build16s、connected3m42s。
+完整类：NextConfigExportRepositoryTest(13)、NextConfigMapperTest(7)、AccountConfigExportTest(11)、
+ConfigBundleOutputTest(7)、OneTimeLocalIntentStoreTest(13)、OneTimeWorkflowTest(8)、
+NextPlanDeletionWorkflowTest(7)、NextRoundOneTimeStoreTest(9)、ThemeConfigContractTest(6)。
+root51、构建/lint/警告、APK/发现/XML/非空新覆盖输入和两个 testbed 包清理门禁通过。
+
+真实 Room/DataStore/认证、创建/编辑/保留删除、离线事项完成/撤销链及原 HTTP ACK 消费者
+验证默认完成排除、显式模板、确认头与当前投影差异、冷重开、同名新身份和关联排除；
+完整父子/目标/计数/计时定义、指标聚合及非活动关联不丢失。损坏链接、旧行、跨副本游标、
+原 SQL 类型、删除来源与挑战检查点明确拒绝，比较全部业务持久表证明无修复/队列消费。
+挑战用例通过实际共享检查点存储建立合法空侧表，不冒称真实服务器 bootstrap 联合验收。
+真实图标文件 read 的有界暂停证明业务编辑不被 I/O 锁阻塞、捕获点定义不混入后来的编辑，
+登录晚到、只读授权、同代次刷新、取消 join/租约释放保持。主题须显式选择且不自动应用。
+
+仅所选完整矩阵，不执行全局覆盖校准、不称 Android 全量或后端 SQL/人工通过。
+未重复未变长计时/容量，不改150s/1500s；无正式 APK 安装/清除、部署或 Docker。
+稳定导入新身份、安装/替换日志、依赖同步、正式设置页及 v5/Worker/全部消费者联合，
+完整自动化及用户/桌面/平板/外网/NAS 验收仍待完成。
+
 ### 配置导出的账户素材依赖与真实文件链（2026-10-09，Issue #160）
 
 新增 AccountConfigExport、账户素材库的一次事务依赖快照及控制器内部准备/短发布接口。

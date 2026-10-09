@@ -136,6 +136,22 @@ class NextConfigMapperTest {
         assertThrows(IllegalArgumentException::class.java) { bundle(emptyList(), listOf(metric().copy(appearance = null))) }
     }
 
+    @Test fun completeCurrentOnceMapControlsTemplateGuardWithoutOverwritingConfirmedHeaders() {
+        val confirmed = habit(1, HabitType.CHECK_IN, HabitSchedule.Once(null)).copy(oneTimeConfirmedVersion = 1,
+            oneTimeConfirmedHeadEventUuid = uuid(70), oneTimeConfirmedCompletionEventUuid = uuid(70))
+        fun mapped(states: Map<String, com.dayforge.domain.model.OneTimeState>) = NextConfigMapper.bundle(listOf(confirmed),
+            emptyList(), emptyList(), null, listOf("task.custom"), emptyList(), currentOneTimeStates = states)
+        assertEquals("CONFIG_COMPLETED_ITEM_NOT_SELECTED", assertThrows(IllegalArgumentException::class.java) {
+            mapped(mapOf(confirmed.uuid to com.dayforge.domain.model.OneTimeState(1, uuid(70), uuid(70))))
+        }.message)
+        assertEquals("one_and_done", mapped(mapOf(confirmed.uuid to com.dayforge.domain.model.OneTimeState(2, uuid(71), null)))
+            .nodes.single().activity!!.completionPolicy)
+        assertNotNull(confirmed.oneTimeConfirmedCompletionEventUuid)
+        for (states in listOf(emptyMap(), mapOf(uuid(99) to com.dayforge.domain.model.OneTimeState(0, null, null)))) {
+            assertEquals("CONFIG_ONCE_SNAPSHOT_INCOMPLETE", assertThrows(IllegalArgumentException::class.java) { mapped(states) }.message)
+        }
+    }
+
     @Test fun badIdentitiesParentKindsLinkIdsAndDuplicateEndpointsFailInsteadOfDroppingRows() {
         val row = habit(1); val goal = habit(2, HabitType.GOAL); val metric = metric()
         for (rows in listOf(listOf(row, row), listOf(row.copy(id = 0)), listOf(row, goal.copy(uuid = row.uuid)),
