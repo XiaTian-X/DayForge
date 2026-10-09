@@ -256,7 +256,7 @@ fun HabitDetailScreen(
                         } else if (streakStats != null) {
                             // Unlimited habit: show StreakIndicator with activity rate
                             StreakIndicator(
-                                activityRate = habit?.activityRate ?: 100
+                                activityRate = state.activityRate
                             )
                         } else {
                             Text(

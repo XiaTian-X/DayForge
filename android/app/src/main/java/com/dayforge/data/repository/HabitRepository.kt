@@ -42,7 +42,8 @@ class HabitRepository @Inject constructor(
     private val countHistoryReader: CountHistoryReader? = null,
     private val widgetFactReader: WidgetFactReader? = null,
     private val checkHistoryReader: CheckHistoryReader? = null,
-    private val timerHistoryReader: TimerHistoryReader? = null
+    private val timerHistoryReader: TimerHistoryReader? = null,
+    private val recurringHabitReader: RecurringHabitReader? = null
 ) {
     val allHabits: Flow<List<HabitEntity>> = habitDao.getAllHabits()
 
@@ -61,6 +62,9 @@ class HabitRepository @Inject constructor(
 
     suspend fun getTimerHistory(habit: HabitEntity): com.dayforge.domain.model.TimerHistory =
         requireNotNull(timerHistoryReader) { "TIMER_READER_REQUIRED" }.read(habit)
+
+    suspend fun getRecurringSnapshot(habit: HabitEntity): RecurringHabitSnapshot =
+        requireNotNull(recurringHabitReader) { "RECURRING_READER_REQUIRED" }.read(habit)
 
     suspend fun getOneTimeStatus(id: Long, expectedUuid: String? = null): OneTimeStatus = requireNotNull(oneTimeRepository) {
         "ONE_TIME_REPOSITORY_REQUIRED"

@@ -63,6 +63,7 @@ data class HabitDetailUiState(
     val oneTimeStatus: com.dayforge.domain.model.OneTimeStatus? = null,
     val writeAuthority: com.dayforge.data.repository.ObjectEditAuthority? = null,
     val countHistory: com.dayforge.domain.model.CountHistory? = null,
+    val activityRate: Int = 100,
     val targetProgress: Int = 0,  // Distinct days completed for habits with targetCycles
     val isLoading: Boolean = true,
     val errorMessage: String? = null,
@@ -122,13 +123,12 @@ class HabitDetailViewModel @Inject constructor(
             ) { habit, allCompletions, notificationEnabled ->
                 try {
                 val habitCompletions = allCompletions.filter { it.habitId == habitId }
-                val countHistory =
-                    habit?.takeIf { it.habitType == HabitType.COUNTING && it.appearance != null }
-                        ?.let { habitRepository.getCountHistory(it) }
-                val checkHistory = habit?.takeIf { it.habitType == HabitType.CHECK_IN && it.appearance != null &&
-                    it.completionPolicy == "recurring" }?.let { habitRepository.getCheckHistory(it) }
-                val timerHistory = habit?.takeIf { it.habitType == HabitType.TIMER && it.appearance != null }
-                    ?.let { habitRepository.getTimerHistory(it) }
+                val recurringSnapshot = habit?.takeIf { it.appearance != null && it.completionPolicy == "recurring" &&
+                    it.habitType in setOf(HabitType.COUNTING, HabitType.CHECK_IN, HabitType.TIMER) }
+                    ?.let { habitRepository.getRecurringSnapshot(it) }
+                val countHistory = recurringSnapshot?.countHistory
+                val checkHistory = recurringSnapshot?.checkHistory
+                val timerHistory = recurringSnapshot?.timerHistory
 
                 // Calculate targetProgress for habits with targetCycles
                 // Per TARGET-06: TIMER habits use timelogs, other types use completions
@@ -154,12 +154,13 @@ class HabitDetailViewModel @Inject constructor(
                     LoadResult(habit, StreakStats(StreakCalculator.currentFromBusinessDates(qualified, countHistory.today),
                         StreakCalculator.bestFromBusinessDates(qualified), qualified.maxOrNull()?.toDisplayMillis()),
                         countHistory.completions, emptyList(), targetProgress, emptyList(), notificationEnabled,
-                        countHistory = countHistory)
+                        countHistory = countHistory, recurringSnapshot = recurringSnapshot)
                 } else if (checkHistory != null) {
                     val qualified = checkHistory.qualifiedDates
                     LoadResult(habit, StreakStats(StreakCalculator.currentFromBusinessDates(qualified, checkHistory.today),
                         StreakCalculator.bestFromBusinessDates(qualified), qualified.maxOrNull()?.toDisplayMillis()),
-                        checkHistory.completions, emptyList(), targetProgress, emptyList(), notificationEnabled)
+                        checkHistory.completions, emptyList(), targetProgress, emptyList(), notificationEnabled,
+                        recurringSnapshot = recurringSnapshot)
                 } else if (timerHistory != null) {
                     val qualified = timerHistory.qualifiedDates
                     // Date-only display rows, never persisted or exposed as writable timer results.
@@ -167,7 +168,8 @@ class HabitDetailViewModel @Inject constructor(
                         value = 1, recordedLocalDate = date.toString()) }
                     LoadResult(habit, StreakStats(StreakCalculator.currentFromBusinessDates(qualified, timerHistory.today),
                         StreakCalculator.bestFromBusinessDates(qualified), qualified.maxOrNull()?.toDisplayMillis()),
-                        display, timerHistory.logs, targetProgress, emptyList(), notificationEnabled)
+                        display, timerHistory.logs, targetProgress, emptyList(), notificationEnabled,
+                        recurringSnapshot = recurringSnapshot)
                 } else if (habit?.habitType == HabitType.TIMER) {
                     val timeLogs = timeLogDao.getAllTimeLogsForHabit(habitId)
                     val targetSeconds = habit.targetValue * 60
@@ -218,7 +220,8 @@ class HabitDetailViewModel @Inject constructor(
                     errorMessage = error.message ?: "HABIT_READ_UNAVAILABLE"))
             }.collect { result ->
                 val captured = try {
-                    result.habit?.takeIf { it.appearance != null && it.completionPolicy == "recurring" }
+                    result.recurringSnapshot?.let { com.dayforge.data.repository.ObjectEditSnapshot(it.habit, it.authority) }
+                        ?: result.habit?.takeIf { it.appearance != null && it.completionPolicy == "recurring" }
                         ?.let { habitRepository.getHabitForEditing(it.id) }
                 } catch (error: Exception) {
                     if (error is kotlinx.coroutines.CancellationException) throw error
@@ -238,6 +241,7 @@ class HabitDetailViewModel @Inject constructor(
                     notificationEnabled = result.notificationEnabled,  // Per NOTIFY-04: From combined flow
                     oneTimeStatus = result.oneTimeStatus,
                     countHistory = result.countHistory,
+                    activityRate = result.recurringSnapshot?.activityRate ?: result.habit?.activityRate ?: 100,
                     errorMessage = result.errorMessage,
                     readError = result.errorMessage != null,
                     lastCompletionId = if (result.oneTimeStatus != null) result.oneTimeStatus.completionId
@@ -405,7 +409,8 @@ class HabitDetailViewModel @Inject constructor(
         val notificationEnabled: Boolean,  // Per NOTIFY-04: Included to avoid nested collect
         val oneTimeStatus: com.dayforge.domain.model.OneTimeStatus? = null,
         val countHistory: com.dayforge.domain.model.CountHistory? = null,
-        val errorMessage: String? = null
+        val errorMessage: String? = null,
+        val recurringSnapshot: com.dayforge.data.repository.RecurringHabitSnapshot? = null
     )
 
     fun logCompletion(value: Int = 1) {

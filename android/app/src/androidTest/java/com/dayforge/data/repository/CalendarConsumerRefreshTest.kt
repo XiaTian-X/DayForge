@@ -68,6 +68,14 @@ class CalendarConsumerRefreshTest : NextObjectEditorFixture() {
             detail.uiState.first { !it.isLoading && it.countHistory?.todayQuantity == 6L }
             assertFalse(dashboard.readError.value); assertFalse(nested.readError.value); assertFalse(profile.readError.value)
             assertFalse(detail.uiState.value.readError)
+            val row = requireNotNull(detail.uiState.value.habit)
+            val expectedRate = ActivityRateCalculator.calculate(row.schedule, row.createdAt,
+                listOf(com.dayforge.util.DateTimeUtils.today()))
+            assertEquals(expectedRate, detail.uiState.value.activityRate)
+            val main = dashboard.habitsWithStats.value.single { it.habit.id == habit.id }
+            val child = nested.topLevelHabitsWithChildren.value.flatMap { it.children }.single { it.habit.id == habit.id }
+            assertEquals(expectedRate, main.activityRate); assertEquals(expectedRate, child.activityRate)
+            assertFalse(main.completedToday); assertFalse(child.completedToday) // participation does not qualify six of ten
         }
     }
     private suspend fun Models.failed() = withTimeout(5000) {
