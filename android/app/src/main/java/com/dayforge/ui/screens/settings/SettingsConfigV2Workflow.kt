@@ -7,6 +7,9 @@ import com.dayforge.data.appearance.ConfigBundleDocuments
 import com.dayforge.data.local.LocalIconAccess
 import com.dayforge.data.local.TokenManager
 import com.dayforge.data.repository.*
+import com.dayforge.domain.appearance.ThemeVersionRef
+import com.dayforge.domain.model.ThemeDefinition
+import com.dayforge.domain.service.DeviceThemeController
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
@@ -22,22 +25,26 @@ internal enum class ConfigFileProfile { LOADING, LEGACY, NEXT, UNAVAILABLE }
 internal enum class ConfigFileMessage { EXPORTED, LOCAL_COMMITTED, ABANDONED, FAILED }
 internal data class ConfigV2PreviewSummary(val nodes: Int, val metrics: Int, val links: Int,
     val themes: Int, val assets: Int, val unresolvedRoles: Int, val removed: ConfigReplacementCounts?,
-    val blockers: Set<ConfigReplacementBlocker>, val recovery: Boolean, val canAbandon: Boolean)
+    val blockers: Set<ConfigReplacementBlocker>, val recovery: Boolean, val canAbandon: Boolean,
+    val themeChoices: List<ThemeDefinition> = emptyList())
+internal data class ConfigExportChoices(val items: List<Pair<String, String>>, val themes: List<ThemeDefinition>)
 internal data class ConfigV2UiState(val profile: ConfigFileProfile = ConfigFileProfile.LOADING,
     val busy: Boolean = false, val pickerPending: Boolean = false, val canImport: Boolean = false,
     val progress: NextConfigImportProgress? = null, val preview: ConfigV2PreviewSummary? = null,
-    val message: ConfigFileMessage? = null)
+    val message: ConfigFileMessage? = null, val exportChoices: ConfigExportChoices? = null,
+    val selectedItems: Set<String> = emptySet(), val selectedThemes: Set<ThemeVersionRef> = emptySet())
 
 /** Settings owner only. Repositories own authority, transactions, original IDs and real ACKs.
  * No URI survives preview, no automatic retry/activation, no provider I/O under an account lock.
  */
 class SettingsConfigV2Workflow internal constructor(
     private val tokens: TokenManager, private val exports: NextConfigExportRepository,
-    private val imports: NextConfigImportRepository, private val documents: ConfigBundleDocuments
+    private val imports: NextConfigImportRepository, private val documents: ConfigBundleDocuments,
+    private val themes: DeviceThemeController? = null
 ) {
     @Inject internal constructor(@ApplicationContext context: Context, tokens: TokenManager,
-        exports: NextConfigExportRepository, imports: NextConfigImportRepository) :
-        this(tokens, exports, imports, ConfigBundleDocuments(context.contentResolver))
+        exports: NextConfigExportRepository, imports: NextConfigImportRepository, themes: DeviceThemeController) :
+        this(tokens, exports, imports, ConfigBundleDocuments(context.contentResolver), themes)
 
     private val mutex = Mutex()
     private val mutable = MutableStateFlow(ConfigV2UiState())
@@ -45,6 +52,7 @@ class SettingsConfigV2Workflow internal constructor(
     private var owner: LocalIconAccess? = null
     private var initialized = false
     private var export: AccountConfigExportPreview? = null
+    private var exportOptions: NextConfigExportRepository.Options? = null
     private var picker: Pair<LocalIconAccess, String?>? = null
     private var replacement: NextConfigReplacementPreview? = null
     private var recovery: NextConfigRecoveryPreview? = null
@@ -53,7 +61,7 @@ class SettingsConfigV2Workflow internal constructor(
     internal suspend fun observe() { exports.changes().conflate().catch { error ->
         if (error is CancellationException) throw error
         mutex.withLock {
-            export = null; picker = null; replacement = null; recovery = null
+            export = null; exportOptions = null; picker = null; replacement = null; recovery = null
             mutable.value = ConfigV2UiState(profile = ConfigFileProfile.UNAVAILABLE,
                 pickerPending = mutable.value.pickerPending)
         }
@@ -72,7 +80,7 @@ class SettingsConfigV2Workflow internal constructor(
         try {
             val current = tokens.localIconAccess()
             if (!initialized || current != owner) {
-                owner = current; initialized = true; export = null; picker = null
+                owner = current; initialized = true; export = null; exportOptions = null; picker = null
                 replacement = null; recovery = null; knownImportId = null
                 // Drain an already launched picker before allowing another launch on the same
                 // registry key. Its late URI must not consume a new account's prepared intent.
@@ -90,9 +98,9 @@ class SettingsConfigV2Workflow internal constructor(
                 progress = progress)
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) {
-            export = null; picker = null; replacement = null; recovery = null
+            export = null; exportOptions = null; picker = null; replacement = null; recovery = null
             mutable.value = mutable.value.copy(profile = ConfigFileProfile.UNAVAILABLE, canImport = false,
-                preview = null, progress = null)
+                preview = null, progress = null, exportChoices = null, selectedItems = emptySet(), selectedThemes = emptySet())
         }
     }
 
@@ -103,14 +111,48 @@ class SettingsConfigV2Workflow internal constructor(
         check(exports.usesNextReplica()) { "CONFIG_REPLICA_CHANGED" }
     }
 
+    internal suspend fun openExportChoices() = mutex.withLock {
+        action {
+            check(!mutable.value.pickerPending && mutable.value.preview == null && exportOptions == null)
+            requireOwner()
+            val options = exports.options()
+            requireOwner(options.context.access)
+            exportOptions = options
+            mutable.value = mutable.value.copy(exportChoices = ConfigExportChoices(options.completedItems, options.themes),
+                selectedItems = emptySet(), selectedThemes = emptySet())
+        }
+    }
+
+    internal suspend fun selectItem(id: String, checked: Boolean) = mutex.withLock {
+        if (mutable.value.busy) return@withLock
+        val options = exportOptions ?: return@withLock
+        if (options.completedItems.none { it.first == id }) return@withLock
+        mutable.value = mutable.value.copy(selectedItems = if (checked) mutable.value.selectedItems + id else mutable.value.selectedItems - id)
+    }
+
+    internal suspend fun selectTheme(ref: ThemeVersionRef, checked: Boolean) = mutex.withLock {
+        if (mutable.value.busy) return@withLock
+        val candidates = mutable.value.exportChoices?.themes ?: mutable.value.preview?.themeChoices ?: return@withLock
+        if (candidates.none { it.themeId == ref.themeId && it.revision == ref.revision }) return@withLock
+        val selected = if (checked) mutable.value.selectedThemes + ref else mutable.value.selectedThemes - ref
+        if (selected.size <= 16) mutable.value = mutable.value.copy(selectedThemes = selected)
+    }
+
     /** Freeze the complete archive BEFORE opening CreateDocument, never at its later callback. */
-    internal suspend fun beginExport(): Boolean = mutex.withLock {
+    internal suspend fun beginExport(requireSelection: Boolean = false): Boolean = mutex.withLock {
         action {
             check(!mutable.value.pickerPending && mutable.value.preview == null)
             requireOwner()
-            val frozen = exports.prepare()
+            val options = exportOptions
+            check(!requireSelection || options != null) { "CONFIG_EXPORT_SELECTION_EXPIRED" }
+            val frozen = if (options == null) exports.prepare() else {
+                requireOwner(options.context.access)
+                exports.prepare(options, mutable.value.selectedItems, mutable.value.selectedThemes)
+            }
             requireOwner(frozen.context.access)
-            export = frozen; mutable.value = mutable.value.copy(pickerPending = true)
+            export = frozen; exportOptions = null
+            mutable.value = mutable.value.copy(pickerPending = true, exportChoices = null,
+                selectedItems = emptySet(), selectedThemes = emptySet())
         }
     }
 
@@ -132,7 +174,7 @@ class SettingsConfigV2Workflow internal constructor(
 
     internal suspend fun beginImport(recover: Boolean = false): Boolean = mutex.withLock {
         action {
-            check(!mutable.value.pickerPending && mutable.value.preview == null)
+            check(!mutable.value.pickerPending && mutable.value.preview == null && exportOptions == null)
             requireOwner(); check(requireNotNull(owner).canDeclare)
             val progress = imports.progress(knownImportId)
             val id = if (recover) requireNotNull(progress).also {
@@ -163,7 +205,7 @@ class SettingsConfigV2Workflow internal constructor(
                 ConfigV2PreviewSummary(source.manifest.nodes.size, source.manifest.metrics.size,
                     source.manifest.links.size, source.manifest.themes.size,
                     source.manifest.iconPack?.assets?.size ?: 0, source.manifest.unresolvedRoles.size,
-                    preview.counts, preview.blockers, false, false)
+                    preview.counts, preview.blockers, false, false, source.manifest.themes)
             } else {
                 val preview = imports.previewRecovery(id, source)
                 check(preview.original.context.access == intent.first)
@@ -171,10 +213,10 @@ class SettingsConfigV2Workflow internal constructor(
                 ConfigV2PreviewSummary(source.manifest.nodes.size, source.manifest.metrics.size,
                     source.manifest.links.size, source.manifest.themes.size,
                     source.manifest.iconPack?.assets?.size ?: 0, source.manifest.unresolvedRoles.size,
-                    null, emptySet(), true, !preview.committed)
+                    null, emptySet(), true, !preview.committed, source.manifest.themes)
             }
             requireOwner(intent.first)
-            mutable.value = mutable.value.copy(preview = summary)
+            mutable.value = mutable.value.copy(preview = summary, selectedItems = emptySet(), selectedThemes = emptySet())
         }
     }
 
@@ -186,6 +228,19 @@ class SettingsConfigV2Workflow internal constructor(
             requireOwner(original.context.access)
             val id = restore?.importId ?: imports.confirmReplacement(requireNotNull(old))
             knownImportId = id.takeIf { restore?.networkTracked != false } // actual durable prepare, before material I/O
+            val selected = mutable.value.selectedThemes
+            if (selected.isNotEmpty()) {
+                val controller = requireNotNull(themes)
+                // All choices are validated before any install. Reauthorize each separate
+                // irreversible local catalog handoff; do not hold account/Room locks during I/O.
+                imports.prepareThemeInstall(id, original.source, selected, original.context)
+                for (ref in selected) {
+                    val definition = imports.prepareThemeInstall(id, original.source, setOf(ref), original.context).single()
+                    requireOwner(original.context.access)
+                    controller.install(definition)
+                    requireOwner(original.context.access)
+                }
+            }
             replacement = null; recovery = null; mutable.value = mutable.value.copy(preview = null)
             imports.resume(id, original.source, original.context)
             requireOwner(original.context.access)
@@ -210,7 +265,9 @@ class SettingsConfigV2Workflow internal constructor(
     }
 
     internal suspend fun dismissPreview() = mutex.withLock {
-        replacement = null; recovery = null; mutable.value = mutable.value.copy(preview = null)
+        replacement = null; recovery = null; exportOptions = null
+        mutable.value = mutable.value.copy(preview = null, exportChoices = null,
+            selectedItems = emptySet(), selectedThemes = emptySet())
     }
     internal suspend fun dismissMessage() = mutex.withLock { mutable.value = mutable.value.copy(message = null) }
     internal suspend fun pickerFailed() = mutex.withLock {
@@ -223,8 +280,9 @@ class SettingsConfigV2Workflow internal constructor(
         return try { block(); true }
         catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) {
-            replacement = null; recovery = null
-            mutable.value = mutable.value.copy(preview = null, message = ConfigFileMessage.FAILED)
+            replacement = null; recovery = null; exportOptions = null
+            mutable.value = mutable.value.copy(preview = null, exportChoices = null,
+                selectedItems = emptySet(), selectedThemes = emptySet(), message = ConfigFileMessage.FAILED)
             false
         } finally { mutable.value = mutable.value.copy(busy = false) }
     }

@@ -1158,7 +1158,11 @@
     <string name="config_file_recovery_title">恢复原导入</string>
     <string name="config_file_incoming">导入：目标/习惯/事项 %1$d 个，指标 %2$d 个，关联 %3$d 个，图标素材 %4$d 个。</string>
     <string name="config_file_no_history">使用新身份，不携带历史；一次性事项初始未完成。图标会安装，但不自动切换当前风格。</string>
-    <string name="config_file_themes_not_installed">配置包包含 %1$d 个主题。本次不安装或应用它们；主题请通过独立主题入口导入。</string>
+    <string name="config_file_export_choices">选择配置包内容</string>
+    <string name="config_file_export_selection_hint">配置定义已冻结，不携带历史。已完成事项默认排除；逐项勾选后仅作为未完成模板导出。</string>
+    <string name="config_file_completed_templates">已完成事项：作为未完成模板导出</string>
+    <string name="config_file_theme_choices">可选主题版本（最多16个）</string>
+    <string name="config_file_theme_install_hint">可选择以新身份安装的主题，但不会自动应用。业务导入失败或放弃时保留已安装主题；恢复时请重新选择。</string>
     <string name="config_file_unresolved">有 %1$d 个图标角色尚无素材映射。会保留原引用，在选择提供这些角色的风格前使用占位显示。</string>
     <string name="config_file_removed">替换：目标 %1$d 个，习惯 %2$d 个，事项 %3$d 个，指标 %4$d 个，关联 %5$d 个。</string>
     <string name="config_file_removed_history">丢弃：打卡/计数记录 %1$d 条，计时会话 %2$d 条，指标记录 %3$d 条。</string>
@@ -1170,9 +1174,9 @@
     <string name="config_file_block_replica">替换前请先完成副本首次同步。</string>
     <string name="config_file_block_structure">请先同步当前配置。</string>
     <string name="config_file_block_capacity">替换超出当前待同步队列容量。</string>
-    <string name="config_file_abandon">放弃未提交导入（保留已安装素材）</string>
+    <string name="config_file_abandon">放弃未提交导入（保留已安装图标和主题）</string>
     <string name="config_file_exported">冻结的配置包已成功写入文件。</string>
     <string name="config_file_local_committed">本地配置已提交，但尚不保证服务端确认或素材传输完成。请查看配置状态并同步。</string>
-    <string name="config_file_abandoned">已放弃尚未提交的导入，原数据和已安装素材均保留。</string>
+    <string name="config_file_abandoned">已放弃尚未提交的导入，原数据、已安装图标和主题均保留。</string>
     <string name="config_file_failed">操作未完成。请检查文件、账户和同步就绪状态。如已有准备中的导入，请重选其原文件恢复，不要创建第二份导入。</string>
 </resources>
