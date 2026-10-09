@@ -42,19 +42,23 @@ class NextObjectEditor @Inject constructor(
     private val producer = NextCoreLocalIntentStore(database, tokens, sessions)
 
     internal suspend fun habit(id: Long): ObjectEditSnapshot<HabitEntity> = sessions.exclusive {
+        database.withTransaction { habitInTransaction(id) }
+    }
+
+    /** Read participant only: caller owns the account lock and Room snapshot. */
+    internal suspend fun habitInTransaction(id: Long): ObjectEditSnapshot<HabitEntity> {
+        check(database.inTransaction()) { "OBJECT_EDIT_TRANSACTION_REQUIRED" }
         val access = tokens.localCoreWriteAccess()
-        database.withTransaction {
-            val row = database.habitDao().getVisibleHabitById(id)
-            val ticket = row?.takeIf { it.appearance != null }?.let {
-                val rounds = producer.captureDisplayedRoundsInTransaction()
-                ObjectEditAuthority(requireNotNull(access) { "OBJECT_EDIT_ACCESS_DENIED" }.session,
-                    it.uuid, "plan_node", NextStructureMapper.writePlan(it), rounds,
-                    if (rounds != null && it.habitType == com.dayforge.data.model.HabitType.GOAL)
-                        database.habitDao().getChildrenByParentUuidOnce(it.uuid).map { child -> child.uuid }.sorted() else null)
-            }
-            check(tokens.localCoreWriteAccess() == access) { "OBJECT_EDIT_SESSION_CHANGED" }
-            ObjectEditSnapshot(row, ticket)
+        val row = database.habitDao().getVisibleHabitById(id)
+        val ticket = row?.takeIf { it.appearance != null }?.let {
+            val rounds = producer.captureDisplayedRoundsInTransaction()
+            ObjectEditAuthority(requireNotNull(access) { "OBJECT_EDIT_ACCESS_DENIED" }.session,
+                it.uuid, "plan_node", NextStructureMapper.writePlan(it), rounds,
+                if (rounds != null && it.habitType == com.dayforge.data.model.HabitType.GOAL)
+                    database.habitDao().getChildrenByParentUuidOnce(it.uuid).map { child -> child.uuid }.sorted() else null)
         }
+        check(tokens.localCoreWriteAccess() == access) { "OBJECT_EDIT_SESSION_CHANGED" }
+        return ObjectEditSnapshot(row, ticket)
     }
 
     internal suspend fun metric(id: Long): ObjectEditSnapshot<MetricEntity> = sessions.exclusive {

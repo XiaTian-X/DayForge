@@ -1,6 +1,7 @@
 package com.dayforge.domain.service
 
 import com.dayforge.data.local.dao.CompletionDao
+import com.dayforge.data.local.businessDate
 import com.dayforge.data.local.dao.TimeLogDao
 import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.HabitEntity
@@ -65,7 +66,8 @@ class HabitStatusCalculator @Inject constructor(
                 history.completions.filter { it.recordedLocalDate == history.today.toString() }.maxByOrNull { it.id }?.id,
                 StreakCalculator.currentFromBusinessDates(history.qualifiedDates, history.today),
                 StreakCalculator.bestFromBusinessDates(history.qualifiedDates),
-                activityRate = habit.activityRate, isCheckInAllowed = allowed && history.todayPolicy != null,
+                activityRate = ActivityRateCalculator.calculate(habit.schedule, habit.createdAt,
+                    history.completions.map { it.businessDate }), isCheckInAllowed = allowed && history.todayPolicy != null,
                 nextCheckInDate = if (allowed) null else ScheduleValidator.getNextCheckInDate(habit.schedule, habit.createdAt),
                 targetProgress = if (habit.targetCycles == null) 0 else history.qualifiedDates.size,
                 hasFailed = FailureCheckerUtils.countHasFailed(habit, history), countHistory = history)

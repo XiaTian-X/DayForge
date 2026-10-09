@@ -211,7 +211,8 @@ class NextRestartWorkflowTest : NextObjectEditorFixture() {
         db.completionDao(), db.timeLogDao(), checkHistoryReader = checks())
     private fun checkWidgets() = WidgetFactReader(db, tokens, sessions, preferences, CountHistoryReader(db, tokens, sessions), checks())
     private fun checkRepository() = HabitRepository(db.habitDao(), db.completionDao(), db.timeLogDao(), db,
-        nextObjectEditor = editor, nextObjectCreator = creator, checkHistoryReader = checks(), widgetFactReader = checkWidgets())
+        nextObjectEditor = editor, nextObjectCreator = creator, checkHistoryReader = checks(), widgetFactReader = checkWidgets(),
+        recurringHabitReader = RecurringHabitReader(db, tokens, sessions, editor))
     private fun checkService() = com.dayforge.domain.service.CheckInService(checkRepository(), db.completionDao(), db.timeLogDao())
     private suspend fun checkFact(n: Int, date: java.time.LocalDate): CompletionEntity {
         val row = current(); val zone = java.time.ZoneId.systemDefault()
@@ -428,6 +429,10 @@ class NextRestartWorkflowTest : NextObjectEditorFixture() {
         timerStart(1110, todayStart - 60_000); timerFinish(1110, 120_000)
         val view = timers().read(current(), today)
         assertEquals(ref.head, view.roundHead); assertEquals(60L, view.todaySeconds)
+        val shared = creatingHabits().getRecurringSnapshot(current())
+        assertEquals(view, shared.timerHistory)
+        assertEquals(ref.head, requireNotNull(shared.authority.rounds).pendingRestarts.getValue(habit.uuid).head)
+        assertEquals(current(), shared.habit)
         assertEquals(setOf(today.minusDays(1), today), view.qualifiedDates)
         assertEquals(120_000L, view.completedMillis.values.sum()); assertEquals(1, view.logs.size)
         val status = timerCalculator().calculate(current(), timeLogs = raw)
@@ -440,6 +445,15 @@ class NextRestartWorkflowTest : NextObjectEditorFixture() {
         runtime(http).syncRounds()
         val accepted = timers().read(current(), today)
         assertEquals(view.completedMillis, accepted.completedMillis); assertEquals(view.roundHead, accepted.roundHead)
+        // Cold restore recreates ALL business readers against the reopened Room instance.
+        // The fixture's pre-close editor must not participate in the new database transaction.
+        val coldEditor = NextObjectEditor(db, tokens, sessions, icons)
+        val settledSnapshot = RecurringHabitReader(db, tokens, sessions, coldEditor).read(current())
+        assertEquals(accepted, settledSnapshot.timerHistory)
+        val settledScope = requireNotNull(settledSnapshot.authority.rounds)
+        assertFalse(settledScope.pendingRestarts.containsKey(habit.uuid))
+        assertEquals(ref.head, json.decodeFromString<ChallengeMetadata>(settledScope.metadataJson)
+            .checkpoints.single { it.head.activityUuid == habit.uuid }.head)
         assertEquals(0, count("timer_command_outbox")); assertEquals(2, count("timelogs"))
         assertTrue(births.any { it.entityType == "activity_event" && it.entityUuid == id(1110) && it.head == ref.head })
     }
@@ -487,9 +501,10 @@ class NextRestartWorkflowTest : NextObjectEditorFixture() {
                 it.completions.mapTo(hashSetOf()) { c -> c.recordedLocalDate } == setOf(today.minusDays(1).toString(), today.toString()) }
         }
         val retained = db.timeLogDao().getAllTimeLogsForHabit(habit.id)
-        propose(http)
+        val restart = propose(http)
         kotlinx.coroutines.withTimeout(5000) { detail.uiState.first {
-            !it.isLoading && !it.readError && it.targetProgress == 0 && it.completions.isEmpty() && it.timeLogs.isEmpty()
+            !it.isLoading && !it.readError && it.targetProgress == 0 && it.completions.isEmpty() && it.timeLogs.isEmpty() &&
+                it.writeAuthority?.rounds?.pendingRestarts?.get(habit.uuid)?.head == restart.head
         } }
         assertEquals(retained, db.timeLogDao().getAllTimeLogsForHabit(habit.id))
         assertEquals(2, count("timelog_day_allocations"))

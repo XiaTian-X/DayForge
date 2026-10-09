@@ -19,6 +19,31 @@
 
 ## 验证层级
 
+### 当前轮详情共享读取与活跃度（2026-10-09，Issue #332）
+
+RecurringHabitReader 将原计划、统计与动作票据放在同一账户/Room 快照，派生活跃度独立于
+计划行；计数部分参与不成为达标，详情及列表/目标子项不读累计计数活跃度缓存。
+首轮构建观察到新快照 data class 的非公开构造器/生成 copy 可见性告警，在行为发现/执行
+之前取消并 join `7fa30315f2ca41c28b8dd5c214cad1d0`，确认子进程/testbed 清理后再编辑。
+该运行不称通过或实际告警预算拒绝；改为不需要 copy 的普通只读快照类，不抑制告警。
+首轮完整 8 类实际执行 79 项，77 passed、2 failed、0 skipped，connected 10m07s，证据
+`aa8e2898d8b640f19f4adbceb09af6f7/failed-results`（保留本次原 XML/logcat），没有成功清单。
+其中冷重开测试的新共享 reader 误复用旧 Room 实例的 editor，原事务检查正确拒绝；
+另一测试的手动 repository 装配漏传新 reader，详情报 `RECURRING_READER_REQUIRED` 后原 5 秒
+等待失败。生产 Hilt 装配与新 reader 测试通过不替代整批结果。收尾确认子进程/testbed 清理后，
+只纠正这两处夹具依赖：冷重开重建同实例 reader/editor，手动 repository 补真实 reader。
+保留事务检查、全部断言与原等待期限，并在既有真实 Hilt 用例中直接验证新共享读取。
+最终完整 8 类 `RecurringHabitReaderTest`、`CalendarConsumerRefreshTest`、`NextRestartWorkflowTest`、
+`NextObjectEditorTest`、`NextCountDayWorkflowTest`、`ProductionWorkflowInjectionTest`、
+`HabitDetailViewModelTest`、`HabitDetailViewModelNotificationTest` 实际 79/79 passed，
+0 failures/errors/skipped，connected 10m12s，XML suite 587.022s，独立证据
+`10be0d6d5619441c83d09fc65a1b9435/targeted.json`。根工具 51 项、构建/lint/告警、
+APK/发现/XML/新覆盖输入及 testbed 清理通过；进程终态后才更新文档。旧失败/取消不拼接通过。
+验证包括真实依赖注入、当前轮跨日/冷 ACK、原事实保留、部分计数不达标、陈旧计划与账户
+拒绝，以及实际列表/目标子项/详情的日期、时区与错误重试通知。没有新增重复的长链用例。
+未重复运行未变的 10001 条容量或真实一分钟服务，不称全量 Android/后端 SQL/人工通过。
+午夜缓存、计时组件 tick 与正式 v5 联合仍未完成；默认 v4，无正式 APK/清库/部署操作。
+
 ### 计时当前轮读取与原完整会话证明（2026-10-09，Issue #332）
 
 首轮 21 个完整受影响类发现并执行 202 项，200 passed、2 failed、0 errors/skipped，

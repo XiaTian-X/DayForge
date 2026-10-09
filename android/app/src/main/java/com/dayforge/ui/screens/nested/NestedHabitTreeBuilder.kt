@@ -1,6 +1,7 @@
 package com.dayforge.ui.screens.nested
 
 import com.dayforge.data.local.dao.CompletionDao
+import com.dayforge.data.local.businessDate
 import com.dayforge.data.local.dao.HabitDao
 import com.dayforge.data.local.dao.TimeLogDao
 import com.dayforge.data.local.entity.CompletionEntity
@@ -101,7 +102,9 @@ class NestedHabitTreeBuilder @Inject constructor(
                 history.todayQuantity.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
                 history.completions.filter { it.recordedLocalDate == history.today.toString() }.maxByOrNull { it.id }?.id,
                 StreakCalculator.currentFromBusinessDates(history.qualifiedDates, history.today),
-                StreakCalculator.bestFromBusinessDates(history.qualifiedDates), activityRate = child.activityRate,
+                StreakCalculator.bestFromBusinessDates(history.qualifiedDates),
+                activityRate = com.dayforge.domain.service.ActivityRateCalculator.calculate(child.schedule, child.createdAt,
+                    history.completions.map { it.businessDate }),
                 isCheckInAllowed = allowed && history.todayPolicy != null,
                 nextCheckInDate = if (allowed) null else ScheduleValidator.getNextCheckInDate(child.schedule, child.createdAt),
                 targetProgress = if (child.targetCycles == null) 0 else history.qualifiedDates.size,
