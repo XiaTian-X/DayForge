@@ -91,6 +91,9 @@ internal class AccountIconRuntime(
 
     suspend fun install(preview: AccountIconPackPreview) = materialOwner.withLock { imports.confirm(preview) }
 
+    suspend fun installConfiguration(context: AccountIconContext, plan: com.dayforge.data.export.NextConfigImportPlan) =
+        materialOwner.withLock { imports.confirmConfiguration(context, plan) }
+
     /** One captured session/route and sole owner, including the real file recovery and all phases. */
     suspend fun synchronize(context: AccountIconContext, http: AccountIconHttp): IconMaterialOutcome = materialOwner.withLock {
         withTimeoutOrNull(maximumRoundMillis) {
@@ -221,6 +224,13 @@ class AccountIconController internal constructor(
         // Includes file-phase failure/cancellation after durable queue commit; never emits per tick/page.
         materialWakeups.tryEmit(Unit)
     }
+    internal suspend fun installConfiguration(context: AccountIconContext, plan: com.dayforge.data.export.NextConfigImportPlan) = try {
+        io {
+            val receipt = it.installConfiguration(context, plan)
+            it.metadata.authorized(context) { refreshReferences(context.namespace) }
+            receipt
+        }
+    } finally { materialWakeups.tryEmit(Unit) }
     internal suspend fun select(context: AccountIconContext, expected: Long, version: IconPackVersion?) =
         io { it.store.select(context, expected, version) }
     internal fun image(): IconImageHandle = IconImageHandle().also(::registerConsumer)
