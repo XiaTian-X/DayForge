@@ -57,7 +57,7 @@ class PlanMetadataMigrationTest {
     }
     private fun structure(db: SupportSQLiteDatabase) = rows(db,
         "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' " +
-            "AND name NOT LIKE 'room_%' AND name NOT IN ('android_metadata','habits','sync_habits_update') AND tbl_name NOT IN ('next_restart_materializations','next_restart_plan_proofs','next_challenge_state','next_challenge_rounds','next_challenge_births','count_days','next_sync_state','next_rejections','next_structural_dependencies','next_structural_supersessions','next_recovery_state','next_request_origins','next_transmissions','next_acceptances') ORDER BY type,name")
+            "AND name NOT LIKE 'room_%' AND name NOT IN ('android_metadata','habits','sync_habits_update') AND tbl_name NOT IN ('next_config_imports','next_config_import_payloads','next_restart_materializations','next_restart_plan_proofs','next_challenge_state','next_challenge_rounds','next_challenge_births','count_days','next_sync_state','next_rejections','next_structural_dependencies','next_structural_supersessions','next_recovery_state','next_request_origins','next_transmissions','next_acceptances') ORDER BY type,name")
     private fun insert(db: SupportSQLiteDatabase, table: String, values: Map<String, Any>) {
         val content = ContentValues()
         entities.first { it.getValue("tableName").jsonPrimitive.content == table }.getValue("fields").jsonArray.forEach {
@@ -114,7 +114,7 @@ class PlanMetadataMigrationTest {
         repeat(2) {
             val db = open()
             val sql = db.openHelper.writableDatabase
-            assertEquals(15, sql.version)
+            assertEquals(16, sql.version)
             assertEquals(before, snapshot(sql))
             assertEquals(ddl, structure(sql))
             val current = rows(sql, "PRAGMA table_info(habits)")
@@ -143,7 +143,7 @@ class PlanMetadataMigrationTest {
             }
             raw.execSQL("ALTER TABLE unavailable_transmissions RENAME TO one_time_transmissions")
         }
-        assertEquals(15, open().openHelper.writableDatabase.version)
+        assertEquals(16, open().openHelper.writableDatabase.version)
     }
     @Test fun forgedVersionSixIdentityCannotEraseOrModifyFrozenRows() {
         seed { it.execSQL("UPDATE room_master_table SET identity_hash='unknown' WHERE id=42") }

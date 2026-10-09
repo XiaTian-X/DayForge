@@ -54,7 +54,7 @@ class NextRestartMigrationTest {
         table to rows(db, "SELECT $columns FROM `$table` ORDER BY rowid")
     }
     private fun ddl(db: SupportSQLiteDatabase) = rows(db, "SELECT type,name,tbl_name,sql FROM sqlite_master " +
-        "WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('next_restart_materializations','next_restart_plan_proofs') ORDER BY type,name")
+        "WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('next_config_imports','next_config_import_payloads','next_restart_materializations','next_restart_plan_proofs') ORDER BY type,name")
     private fun seed(block: (SupportSQLiteDatabase) -> Unit = {}) {
         FrameworkSQLiteOpenHelperFactory().create(SupportSQLiteOpenHelper.Configuration.builder(context)
             .name("habit_database").callback(object : SupportSQLiteOpenHelper.Callback(14) {
@@ -86,7 +86,7 @@ class NextRestartMigrationTest {
         assertEquals(28, entities.size)
         repeat(2) {
             val db = open()
-            assertEquals(15, db.version); assertEquals(before, snapshot(db)); assertEquals(structure, ddl(db))
+            assertEquals(16, db.version); assertEquals(before, snapshot(db)); assertEquals(structure, ddl(db))
             for (table in listOf("next_restart_materializations", "next_restart_plan_proofs")) assertTrue(rows(db, "SELECT * FROM $table").isEmpty())
             assertTrue(rows(db, "PRAGMA foreign_key_check").isEmpty())
             assertEquals(listOf(listOf("3:ok")), rows(db, "PRAGMA integrity_check"))
@@ -110,7 +110,7 @@ class NextRestartMigrationTest {
             raw.rawQuery("SELECT name FROM sqlite_master WHERE tbl_name LIKE 'next_restart_%'", null).use { assertFalse(it.moveToFirst()) }
             raw.execSQL("ALTER TABLE unavailable_transmissions RENAME TO one_time_transmissions")
         }
-        assertEquals(15, open().version)
+        assertEquals(16, open().version)
     }
     @Test fun fakeVersion14IdentityCannotAcquirePrivateProofTables() {
         seed { it.execSQL("UPDATE room_master_table SET identity_hash='unproven' WHERE id=42") }

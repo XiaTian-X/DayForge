@@ -78,14 +78,16 @@ class HabitDatabaseBaselineTest {
             "next_challenge_rounds",
             "next_challenge_births",
             "next_restart_materializations",
-            "next_restart_plan_proofs"
+            "next_restart_plan_proofs",
+            "next_config_imports",
+            "next_config_import_payloads"
         )
 
-        assertEquals(15, sqlite.version)
+        assertEquals(16, sqlite.version)
         assertTrue(tables.containsAll(expectedTables))
         sqlite.query("SELECT identity_hash FROM room_master_table WHERE id=42").use { cursor ->
             assertTrue(cursor.moveToFirst())
-            assertEquals("397822d3b6f86f9d2b73a636c05287d9", cursor.getString(0))
+            assertEquals(currentHabitIdentity(), cursor.getString(0))
         }
         sqlite.query("SELECT suppressOutbox FROM sync_control WHERE id = 1").use { cursor ->
             assertTrue(cursor.moveToFirst())
