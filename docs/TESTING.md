@@ -2257,6 +2257,29 @@ progress，产生NPE。确认 wrapper/Gradle及两测试包退出后，仅加强
 未重复未变长计时/最大素材测试；全量覆盖校准、v5 Worker/全消费者联合、旧路径最终移除、
 最大图吞吐、正式APK/系统提供者/手机和平板人工/外网/NAS及本机Docker未执行。#160仍未完成。
 
+### 业务自动同步取消与错误分类（#160，2026-10-10）
+
+AutoSyncWorker 原样传播结构化取消，保留当前 v4 执行及 HTTP 策略；为新协议联合接线增加
+明确重试/人工处理/坏响应和 HTTP status/code 分类，不把所有 IOException 都视作断网。
+默认协议、注册、队列 ID/原字节、数据库 schema、UI、调度名称/频率/网络条件及期限不变。
+
+新增完整 AutoSyncWorkerTest14项，在隔离真机运行真实 Worker 适配层和认证 DataStore，检查
+未登录/未绑定不执行、成功单次调用、直接取消原异常身份、实际运行协程取消、依赖初始化
+失败、v4 原策略、401 凭据保留/清除、新协议暂时/永久及坏响应分类。三项真实 loopback HTTP
+使用显式测试桥将旧仓库依赖接到生产 NextSyncRuntime：403 和无效响应不能确认原工作，
+断流进入退避，冷重开后请求身份/来源/字节保持不变，cursor/最后成功时间不提前发布。
+该桥不是正式 Worker v5 分派，也不代表 WorkManager 系统 REPLACE 或厂商后台验收。
+
+首轮构建因新夹具误用 RequestBody 而非 Retrofit 要求的 ResponseBody 失败，行为测试未开始；
+证据 `cae3b48784ae433387f5cbe71ca29be4`，build1分51秒。确认 wrapper/Gradle/两测试包退出后
+仅修正夹具类型，生产源码不变，重新执行同一组完整类，不把失败记为通过。
+最终四完整类34/34通过，失败/错误/跳过均0：AutoSyncWorkerTest14、
+AutoSyncCoordinatorNetworkTest2、SyncManagerTest6、NextSyncRuntimeTest12。证据
+`8dedfc4af1c540dda67de3f1d3bc41d4`，build27秒、connected1分35秒；根51项、构建/lint/告警
+门禁及真实APK/discovery/XML/新非空覆盖输入核验、两个隔离测试包及拥有进程收尾通过。
+150秒单例/25分钟整批、发现集合、断言及基线不变；未执行全量 Android/覆盖率校准、
+真实后端联合、正式APK安装/人工、外网/NAS/本机Docker或默认v5启用，#160仍未完成。
+
 ### 测试迁移后的独立复审（Issue #149）
 
 计时服务测试必须从命令调用前后的真实单调时钟获得有效时长上下界，排除暂停/重建时间。
