@@ -19,6 +19,29 @@
 
 ## 验证层级
 
+### 午夜旧显示缓存与新模型只读统计（2026-10-09，Issue #332）
+
+午夜任务仅通过账户协调器/Room 事务刷新旧模型缓存，保留原活跃度算法。新模型及部分
+初始化行不写累计缓存；无本地归属/退出后不动保留数据。WidgetUpdateWorker 的默认构造
+仍由 WorkManager 使用真实 Hilt 入口，测试构造仅注入刷新边界，不替代生产账户/事务证明。
+合批覆盖真实数据库原行/来源/队列保持、晚期写失败与冷重开回滚、账户失效、取消收尾、
+实际 Hilt 接线及先提交再入队、失败不入队和有界重试。
+完整 `LegacyActivityRateRefresherTest`、`WidgetUpdateWorkerTest`、`ProductionWorkflowInjectionTest`、
+`WidgetRefreshWorkerTest`、`WidgetRefresherTargetsTest`、`CalendarConsumerRefreshTest`、
+`RecurringHabitReaderTest` 7 类实际 26/26 passed，0 failures/errors/skipped，connected 1m40s
+（XML suite 73.363s），独立证据 `bf82f2d08e2a4797984ed5f8abb6084b/targeted.json`。
+根工具 51 项、build 3m10s、lint/告警、APK/发现/XML/新覆盖输入及 testbed 清理通过，
+进程终态且子进程/两个测试包不存在后才改文档。原完整业务断言和 150s/1500s 期限未改。
+只验证实际受影响缓存、账户/事务与相邻消费者，不重复容量/重启长链或一分钟服务，
+不拼接前批或声称 Android 全量/后端/人工通过。
+调度周期与UI布局不变；不承诺后台准点执行，不触碰捕获时区/业务日期或计时完成条件。
+计时组件 tick 分离、正式 v5/Worker 联合、全量及人工验收仍未完成。
+
+前批详情共享快照提交 `9c22a2de3512aa511af403dff51d72ea0cb2434b` 的托管 CI
+`37886056705` 首次在 `packageDeviceTestAndroidTest` 失败，原输出没有底层原因；
+repository/secret policy 通过，backend 未变跳过。仅对同一提交的失败作业开启一次 runner
+debug 诊断重跑（attempt 2），不修改源码或期限、不把未复现预先归因为环境，也不称 CI 已通过。
+
 ### 当前轮详情共享读取与活跃度（2026-10-09，Issue #332）
 
 RecurringHabitReader 将原计划、统计与动作票据放在同一账户/Room 快照，派生活跃度独立于

@@ -132,6 +132,10 @@ class ProductionWorkflowInjectionTest {
         assertEquals(NextStructureMapper.writePlan(current), recurring.authority.original)
         assertTrue(requireNotNull(recurring.countHistory).completions.isEmpty())
         assertEquals(beforeRead, db.syncOutboxDao().getAll())
+        val beforeMidnight = db.habitDao().getAllHabitsOnce()
+        com.dayforge.di.WidgetEntryPoint.from(app).activityRateRefresher().refresh()
+        assertEquals(beforeMidnight, db.habitDao().getAllHabitsOnce()) // typed plans are not cache targets
+        assertEquals(beforeRead, db.syncOutboxDao().getAll())
         val root = requireNotNull(db.habitDao().getHabitByUuid(goal.id))
         habits.deleteHabitOrphanChildren(root, app, habits.getHabitForEditing(root.id).authority)
         assertNull(habits.getHabitById(root.id)); assertNull(habits.getHabitById(row.id)!!.parentHabitId)
