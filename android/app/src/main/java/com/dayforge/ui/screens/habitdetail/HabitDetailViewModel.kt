@@ -127,12 +127,15 @@ class HabitDetailViewModel @Inject constructor(
                         ?.let { habitRepository.getCountHistory(it) }
                 val checkHistory = habit?.takeIf { it.habitType == HabitType.CHECK_IN && it.appearance != null &&
                     it.completionPolicy == "recurring" }?.let { habitRepository.getCheckHistory(it) }
+                val timerHistory = habit?.takeIf { it.habitType == HabitType.TIMER && it.appearance != null }
+                    ?.let { habitRepository.getTimerHistory(it) }
 
                 // Calculate targetProgress for habits with targetCycles
                 // Per TARGET-06: TIMER habits use timelogs, other types use completions
                 val targetProgress = if (habit?.targetCycles != null) {
                     if (countHistory != null) countHistory.qualifiedDates.size
                     else if (checkHistory != null) checkHistory.qualifiedDates.size
+                    else if (timerHistory != null) timerHistory.qualifiedDates.size
                     else if (habit.habitType == HabitType.TIMER) {
                         timeLogDao.getDistinctDayCount(habitId)
                     } else {
@@ -157,6 +160,14 @@ class HabitDetailViewModel @Inject constructor(
                     LoadResult(habit, StreakStats(StreakCalculator.currentFromBusinessDates(qualified, checkHistory.today),
                         StreakCalculator.bestFromBusinessDates(qualified), qualified.maxOrNull()?.toDisplayMillis()),
                         checkHistory.completions, emptyList(), targetProgress, emptyList(), notificationEnabled)
+                } else if (timerHistory != null) {
+                    val qualified = timerHistory.qualifiedDates
+                    // Date-only display rows, never persisted or exposed as writable timer results.
+                    val display = qualified.map { date -> CompletionEntity(habitId = habitId, date = date.toDisplayMillis(),
+                        value = 1, recordedLocalDate = date.toString()) }
+                    LoadResult(habit, StreakStats(StreakCalculator.currentFromBusinessDates(qualified, timerHistory.today),
+                        StreakCalculator.bestFromBusinessDates(qualified), qualified.maxOrNull()?.toDisplayMillis()),
+                        display, timerHistory.logs, targetProgress, emptyList(), notificationEnabled)
                 } else if (habit?.habitType == HabitType.TIMER) {
                     val timeLogs = timeLogDao.getAllTimeLogsForHabit(habitId)
                     val targetSeconds = habit.targetValue * 60
@@ -458,6 +469,8 @@ class HabitDetailViewModel @Inject constructor(
             habitRepository.getCountHistory(habit).qualifiedDates.size
         } else if (habit.habitType == HabitType.CHECK_IN && habit.appearance != null && habit.completionPolicy == "recurring") {
             habitRepository.getCheckHistory(habit).qualifiedDates.size
+        } else if (habit.habitType == HabitType.TIMER && habit.appearance != null) {
+            habitRepository.getTimerHistory(habit).qualifiedDates.size
         } else if (habit.habitType == HabitType.TIMER) {
             timeLogDao.getDistinctDayCount(habit.id)
         } else {

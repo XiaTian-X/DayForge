@@ -113,7 +113,7 @@ internal object NextRequestSql {
         require(table in tables && column in setOf("requestId", "operationId", "originalId", "id") &&
             ids.size in 1..128 && ids.distinct().size == ids.size &&
             ids.all { if (column == "id") it is Long && it > 0 else it is String && com.dayforge.domain.model.isContractUuid(it) } &&
-            (kind == null || kind == NEXT_OPERATION && column == "requestId"))
+            (kind == null || kind in setOf(NEXT_OPERATION, NEXT_TIMER) && column == "requestId"))
         val caller = currentCoroutineContext()
         caller.ensureActive()
         val where = (if (kind == null) "" else "kind=? AND ") + "`$column` IN (${ids.joinToString(",") { "?" }})"

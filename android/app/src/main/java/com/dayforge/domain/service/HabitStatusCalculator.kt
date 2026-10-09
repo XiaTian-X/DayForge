@@ -84,6 +84,23 @@ class HabitStatusCalculator @Inject constructor(
                 targetProgress = if (habit.targetCycles == null) 0 else history.qualifiedDates.size,
                 hasFailed = FailureCheckerUtils.checkHasFailed(habit, history))
         }
+        if (habit.habitType == HabitType.TIMER && habit.appearance != null) {
+            val snapshot = requireNotNull(timerWriter).statusSnapshot(habit)
+            // A stale display is not permission to publish lifetime progress; wait for its row Flow.
+            if (snapshot == null) return HabitWithStats(habit, false, 0, null, 0, 0, isCheckInAllowed = false)
+            val history = snapshot.history
+            val allowed = ScheduleValidator.isCheckInAllowedToday(habit.schedule, habit.createdAt)
+            return HabitWithStats(habit, history.completedToday,
+                history.todaySeconds.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), null,
+                StreakCalculator.currentFromBusinessDates(history.qualifiedDates, history.today),
+                StreakCalculator.bestFromBusinessDates(history.qualifiedDates),
+                activityRate = ActivityRateCalculator.calculate(habit.schedule, habit.createdAt, history.qualifiedDates.toList()),
+                isCheckInAllowed = allowed,
+                nextCheckInDate = if (allowed) null else ScheduleValidator.getNextCheckInDate(habit.schedule, habit.createdAt),
+                targetProgress = if (habit.targetCycles == null) 0 else history.qualifiedDates.size,
+                hasFailed = FailureCheckerUtils.timerFailure(habit, history) == StrictFailureState.FAILED,
+                timerAuthority = snapshot.authority)
+        }
         // Fetch data if not provided
         val habitCompletions = completions?.filter { it.habitId == habit.id }
             ?: completionDao.getCompletionsByHabit(habit.id).first()

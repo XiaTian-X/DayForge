@@ -109,6 +109,7 @@ class TimerService : Service() {
     lateinit var autoSyncCoordinator: AutoSyncCoordinator
 
     @Inject lateinit var timerWriter: NextTimerWriter
+    @Inject lateinit var timerHistoryReader: com.dayforge.data.repository.TimerHistoryReader
 
     // Coroutine scope for database operations
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -371,12 +372,12 @@ class TimerService : Service() {
 
         val todayStart = DateTimeUtils.startOfDayMillis()
         val todayEnd = DateTimeUtils.startOfNextDayMillis(todayStart)
-        val completedSecondsToday = timeLogDao.getCompletedDurationSecondsForDate(
+        val completedSecondsToday: Long = if (requestedHabit.appearance != null) timerHistoryReader.read(requestedHabit).todaySeconds else timeLogDao.getCompletedDurationSecondsForDate(
             requestedHabitId,
             java.time.LocalDate.now().toString(),
             todayStart,
             todayEnd
-        )
+        ).toLong()
         val targetSeconds = requestedHabit.targetValue * 60
         if (targetSeconds > 0 && completedSecondsToday >= targetSeconds) {
             Log.d(TAG, "handleStart: habit $requestedHabitId already completed today")
@@ -812,7 +813,7 @@ class TimerService : Service() {
                 val habit = habitDao.getHabitById(stoppedHabitId)
                 if (habit?.targetCycles != null) {
                     val dailyTargetSeconds = habit.targetValue * 60
-                    val progress = timeLogDao.getTargetMetDayCount(
+                    val progress = if (habit.appearance != null) timerHistoryReader.read(habit).qualifiedDates.size else timeLogDao.getTargetMetDayCount(
                         stoppedHabitId,
                         dailyTargetSeconds
                     )

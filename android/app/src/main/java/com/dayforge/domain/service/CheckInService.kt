@@ -50,6 +50,11 @@ class CheckInService @Inject constructor(
     private suspend fun getDistinctDayCountForTarget(habit: com.dayforge.data.local.entity.HabitEntity): Int {
         return when (habit.habitType) {
             com.dayforge.data.model.HabitType.TIMER -> {
+                if (habit.appearance != null) {
+                    val current = requireNotNull(habitRepository.getHabitById(habit.id)) { "TIMER_NOT_FOUND" }
+                    check(current.uuid == habit.uuid) { "TIMER_ACTIVITY_CHANGED" }
+                    return habitRepository.getTimerHistory(current).qualifiedDates.size
+                }
                 // TIMER: count days where duration >= targetSeconds
                 val targetSeconds = habit.targetValue * 60
                 timeLogDao.getTargetMetDayCount(habit.id, targetSeconds)

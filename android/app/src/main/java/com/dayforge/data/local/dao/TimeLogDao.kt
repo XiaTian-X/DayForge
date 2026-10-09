@@ -9,11 +9,25 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface TimeLogDao {
+    /** Evidence invalidation only; a new round or receipt need not modify duration rows. */
+    @Query("""SELECT (SELECT COUNT(*) FROM timelogs) + (SELECT COUNT(*) FROM timer_segments) +
+        (SELECT COUNT(*) FROM timelog_day_allocations) + (SELECT COUNT(*) FROM timer_command_outbox) +
+        (SELECT COUNT(*) FROM habits) + (SELECT COUNT(*) FROM next_sync_state) +
+        (SELECT COUNT(*) FROM next_challenge_state) + (SELECT COUNT(*) FROM next_challenge_rounds) +
+        (SELECT COUNT(*) FROM next_challenge_births) + (SELECT COUNT(*) FROM next_request_origins) +
+        (SELECT COUNT(*) FROM next_transmissions) + (SELECT COUNT(*) FROM next_acceptances) +
+        (SELECT COUNT(*) FROM next_restart_materializations) + (SELECT COUNT(*) FROM next_restart_plan_proofs) +
+        (SELECT COUNT(*) FROM sync_outbox) + (SELECT COUNT(*) FROM sync_entity_state)""")
+    fun observeReadEvidenceChanges(): Flow<Long>
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertTimerCommand(command: TimerCommandEntity): Long
 
     @Query("SELECT * FROM timer_command_outbox WHERE id=:id")
     suspend fun getTimerCommand(id: Long): TimerCommandEntity?
+
+    @Query("SELECT * FROM timer_command_outbox WHERE id IN (:ids)")
+    suspend fun getTimerCommands(ids: List<Long>): List<TimerCommandEntity>
 
     @Query("SELECT * FROM timer_command_outbox WHERE deadLetteredAt IS NULL ORDER BY id LIMIT :limit")
     suspend fun getPendingTimerCommands(limit: Int = 100): List<TimerCommandEntity>
