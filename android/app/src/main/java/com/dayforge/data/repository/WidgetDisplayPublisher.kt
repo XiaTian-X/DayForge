@@ -27,6 +27,15 @@ class WidgetDisplayPublisher @Inject constructor(
         private val current: suspend () -> Boolean
     ) {
         suspend operator fun invoke(display: suspend () -> Unit): Boolean = guardedPublish(display)
+        suspend fun renderPrepared(onReadFailure: suspend (Exception) -> Unit,
+            prepare: suspend () -> (suspend () -> Unit)): Boolean {
+            val display = try { prepare() } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                invoke { onReadFailure(error) }
+                return false
+            }
+            return invoke(display)
+        }
         /** Only a writer ALREADY holding the shared account lock may use this read-only check. */
         suspend fun isCurrentWhileAccountLocked(): Boolean = current()
     }
@@ -51,14 +60,7 @@ class WidgetDisplayPublisher @Inject constructor(
         prepare: suspend () -> (suspend () -> Unit)
     ): Boolean {
         val publication = capturePublication() ?: return false
-        val display = try {
-            prepare()
-        } catch (error: Exception) {
-            if (error is CancellationException) throw error
-            publication { onReadFailure(error) }
-            return false
-        }
-        return publication(display)
+        return publication.renderPrepared(onReadFailure, prepare)
     }
 
     /**

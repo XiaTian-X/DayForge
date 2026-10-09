@@ -498,6 +498,7 @@
     <string name="widget_empty_counting_hint">请先在应用中创建计数型习惯</string>
     <string name="widget_empty_timer_hint">请先在应用中创建计时型习惯</string>
     <string name="widget_configuring">正在配置：%1$s</string>
+    <string name="widget_configuration_error">小组件配置失败，请重试或取消。</string>
     <string name="widget_target_minutes">目标：%1$d 分钟</string>
     <string name="widget_target_count">目标：%1$d</string>
 
