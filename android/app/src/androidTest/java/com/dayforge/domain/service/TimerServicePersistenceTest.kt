@@ -143,6 +143,7 @@ class TimerServicePersistenceTest {
         awaitCommands(1)
         val startAfter = SystemClock.elapsedRealtime()
         val started = requireNotNull(database.timeLogDao().getActiveTimeLog())
+        awaitState { widgetRefresh.requestCount == 1 }
         assertEquals(habitId, started.habitId)
         assertEquals(java.time.ZoneId.systemDefault().id, started.timerTimezone)
         // Real elapsed time: no system clock changes or fabricated completed timer rows.
@@ -154,6 +155,9 @@ class TimerServicePersistenceTest {
         val paused = requireNotNull(database.timeLogDao().getById(started.id))
         assertTrue(paused.isPaused)
         assertTrue(paused.timerActiveElapsedMillis in (pauseBefore - startAfter)..(pauseAfter - startBefore))
+        // A committed command is observable before the service's post-commit invalidation.
+        // Join that boundary before deliberately destroying its owning service scope.
+        awaitState { widgetRefresh.requestCount == 2 }
         stopService()
         send(null)
         val pausedTitle = context.getString(R.string.timer_notification_title_paused)
@@ -164,6 +168,7 @@ class TimerServicePersistenceTest {
         }
         // A real pause makes accidental inclusion of paused/recreation time observable.
         delay(5_000)
+        assertEquals(3, widgetRefresh.requestCount)
         val restored = requireNotNull(database.timeLogDao().getById(started.id))
         assertTrue(restored.isPaused)
         assertEquals(paused.timerActiveElapsedMillis, restored.timerActiveElapsedMillis)
@@ -172,6 +177,7 @@ class TimerServicePersistenceTest {
         awaitCommands(3)
         val resumeAfter = SystemClock.elapsedRealtime()
         assertFalse(database.timeLogDao().getById(started.id)!!.isPaused)
+        awaitState { widgetRefresh.requestCount == 4 }
         delay(1_100)
         val stopBefore = SystemClock.elapsedRealtime()
         send(TimerService.ACTION_STOP)
@@ -219,7 +225,8 @@ class TimerServicePersistenceTest {
         instrumentation.waitForIdleSync()
         awaitServiceStopped()
         assertEquals(commands, database.timeLogDao().getPendingTimerCommands())
-        assertEquals(1, widgetRefresh.requestCount)
+        // Start, pause, cold recovery, resume and stop invalidate once each; elapsed ticks do not.
+        assertEquals(5, widgetRefresh.requestCount)
     }
 
     @Test fun countdownSurvivesParentSyncAndAutomaticallyQueuesOneStop() = runBlocking {
@@ -245,7 +252,8 @@ class TimerServicePersistenceTest {
         val completed = requireNotNull(database.timeLogDao().getById(started.id))
         assertEquals(60, completed.durationSeconds)
         assertEquals(60_000L, completed.timerActiveElapsedMillis)
-        assertEquals(1, widgetRefresh.requestCount)
+        // Start and completed stop invalidate once each, never each of the real minute's ticks.
+        assertEquals(2, widgetRefresh.requestCount)
         assertNotNull(completed.endTime)
         assertNull(database.timeLogDao().getActiveTimeLog())
         val commands = database.timeLogDao().getPendingTimerCommands()

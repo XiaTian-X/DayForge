@@ -227,7 +227,29 @@ class ProductionWorkflowInjectionTest {
             assertHealthy()
             val queued = db.timeLogDao().getPendingTimerCommands()
             val active = db.timeLogDao().getActiveTimeLog()
+            val beforeTick = com.dayforge.widget.timer.TimerWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, timerId)
+            val tickBusiness = db.withTransaction { nextRestartDatabaseProof(db) }
+            assertTrue(com.dayforge.widget.timer.TimerWidget.refreshElapsedWidgetData(app, timerId, rowId))
+            val afterTick = com.dayforge.widget.timer.TimerWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, timerId)
+            val elapsedKeys = listOf(com.dayforge.widget.timer.TimerWidget.ELAPSED_SECONDS_KEY,
+                com.dayforge.widget.timer.TimerWidget.ACCUMULATED_SECONDS_KEY,
+                com.dayforge.widget.timer.TimerWidget.REMAINING_SECONDS_KEY,
+                com.dayforge.widget.timer.TimerWidget.IS_COMPLETED_KEY)
+            fun withoutElapsed(values: androidx.datastore.preferences.core.Preferences) = values.asMap().filterKeys { it !in elapsedKeys }
+            assertEquals(withoutElapsed(beforeTick), withoutElapsed(afterTick))
+            assertEquals(tickBusiness, db.withTransaction { nextRestartDatabaseProof(db) })
+            val capturedDate = requireNotNull(afterTick[com.dayforge.widget.timer.TimerWidget.TICK_DATE_KEY])
+            androidx.glance.appwidget.state.updateAppWidgetState(app, timerId) { it[com.dayforge.widget.timer.TimerWidget.TICK_DATE_KEY] = "2000-01-01" }
+            val oldDate = com.dayforge.widget.timer.TimerWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, timerId)
+            assertFalse(com.dayforge.widget.timer.TimerWidget.refreshElapsedWidgetData(app, timerId, rowId))
+            assertEquals(oldDate, com.dayforge.widget.timer.TimerWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, timerId))
+            androidx.glance.appwidget.state.updateAppWidgetState(app, timerId) { it[com.dayforge.widget.timer.TimerWidget.TICK_DATE_KEY] = capturedDate }
+            val capturedZone = requireNotNull(afterTick[com.dayforge.widget.timer.TimerWidget.TICK_ZONE_KEY])
+            androidx.glance.appwidget.state.updateAppWidgetState(app, timerId) { it[com.dayforge.widget.timer.TimerWidget.TICK_ZONE_KEY] = "Invalid/cached-zone" }
+            assertFalse(com.dayforge.widget.timer.TimerWidget.refreshElapsedWidgetData(app, timerId, rowId))
+            androidx.glance.appwidget.state.updateAppWidgetState(app, timerId) { it[com.dayforge.widget.timer.TimerWidget.TICK_ZONE_KEY] = capturedZone }
             db.openHelper.writableDatabase.execSQL("UPDATE timer_command_outbox SET occurredAt=occurredAt+1 WHERE commandId=?", arrayOf(id(81)))
+            assertFalse(com.dayforge.widget.timer.TimerWidget.refreshElapsedWidgetData(app, timerId, rowId))
             refresh()
             val timer = com.dayforge.widget.timer.TimerWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, timerId)
             val focus = com.dayforge.widget.focus.FocusWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, focusId)
