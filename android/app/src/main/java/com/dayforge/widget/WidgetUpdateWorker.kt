@@ -7,31 +7,31 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
-import com.dayforge.data.local.HabitDatabaseProvider
-import com.dayforge.data.local.businessDate
-import com.dayforge.domain.service.ActivityRateCalculator
 import androidx.work.await
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.flow.first
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
 
 /**
  * WorkManager worker that updates all widgets at midnight.
  * Ensures widgets show fresh "today" state after day boundary.
- * Also refreshes activity rates for all habits.
+ * Refreshes only the legacy activity cache; typed consumers read current-round derived rates.
  *
  * Scheduled in Application.onCreate() - survives reboots via WorkManager.
  */
-class WidgetUpdateWorker(
+class WidgetUpdateWorker internal constructor(
     context: Context,
-    params: WorkerParameters
+    params: WorkerParameters,
+    private val refreshActivityRates: suspend () -> Unit
 ) : CoroutineWorker(context, params) {
+    constructor(context: Context, params: WorkerParameters) : this(context, params, {
+        com.dayforge.di.WidgetEntryPoint.from(context.applicationContext).activityRateRefresher().refresh()
+    })
 
     override suspend fun doWork(): Result = try {
         val appContext = applicationContext
 
-        // Refresh activity rates for all habits (handles day boundary)
+        // Commit the account-coordinated legacy cache before enqueueing fresh widget reads.
         refreshActivityRates()
 
         // Use the same serial queue as data changes, including counting and timer widgets.
@@ -45,27 +45,6 @@ class WidgetUpdateWorker(
     } catch (error: Exception) {
         Log.e("WidgetUpdateWorker", "Midnight refresh failed", error)
         if (runAttemptCount < 2) Result.retry() else Result.failure()
-    }
-
-    /**
-     * Refreshes activity rates for all habits.
-     * Called at midnight to update rates based on sliding window.
-     */
-    private suspend fun refreshActivityRates() {
-        val database = HabitDatabaseProvider.getInstance(applicationContext)
-        val habitDao = database.habitDao()
-        val completionDao = database.completionDao()
-        val habits = habitDao.getVisibleHabitsOnce()
-
-        for (habit in habits) {
-            val completions = completionDao.getCompletionsByHabit(habit.id).first()
-            val newRate = ActivityRateCalculator.calculate(
-                schedule = habit.schedule,
-                createdAt = habit.createdAt,
-                completions = completions.map { it.businessDate }
-            )
-            habitDao.updateActivityRate(habit.id, newRate)
-        }
     }
 
     companion object {
