@@ -13,8 +13,10 @@ internal class NextPlanDeletionStore(private val database: HabitDatabase) {
     private val habits = database.habitDao()
     private val outbox = database.syncOutboxDao()
 
-    suspend fun stage(habit: HabitEntity, childPolicy: String?, childUuids: List<String> = emptyList()) {
+    suspend fun stage(habit: HabitEntity, childPolicy: String?, childUuids: List<String> = emptyList(),
+        operationId: String = UUID.randomUUID().toString()) {
         check(database.inTransaction())
+        require(isContractUuid(operationId) && operationId != habit.uuid)
         require(habit.appearance != null && habit.planMetadata != null)
         require((habit.habitType == HabitType.GOAL) == (childPolicy != null))
         require(childPolicy == null || childPolicy in setOf("cascade_children", "detach_children"))
@@ -43,7 +45,7 @@ internal class NextPlanDeletionStore(private val database: HabitDatabase) {
                     entityUuid = link.uuid, wireEntityUuid = link.uuid, action = "delete", referenceUuid = habit.uuid))
             }
         }
-        outbox.insert(SyncOutboxEntity(operationId = UUID.randomUUID().toString(), recordType = "habit",
+        outbox.insert(SyncOutboxEntity(operationId = operationId, recordType = "habit",
             entityUuid = habit.uuid, wireEntityUuid = habit.uuid, action = "delete", referenceUuid = reference))
     }
 

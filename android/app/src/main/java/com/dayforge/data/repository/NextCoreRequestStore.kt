@@ -18,7 +18,8 @@ import kotlinx.serialization.json.jsonObject
 
 /** A strictly bound HTTP result, NOT an acknowledgement/queue-consumption/cursor commit. */
 internal data class NextCoreDelivery<T>(val access: LocalSyncAccess, val requestId: String, val result: T,
-    val transmissionProof: String, val challengeMetadata: ChallengeMetadata? = null)
+    val transmissionProof: String, val challengeMetadata: ChallengeMetadata? = null,
+    val configImportProof: String? = null)
 
 internal enum class NextOperationAcceptance { COMMITTED, REPLAYED }
 
@@ -45,7 +46,7 @@ internal class NextCoreRequestStore(
             val round = if (prepared.challengeProfile) channel.roundPushFrozen(prepared.row.wireBytes) else null
             val response = if (round == null) channel.pushFrozen(prepared.row.wireBytes) else NextSyncPushResponse(round.results)
             requireStillCurrent(access, prepared, memo)
-            NextCoreDelivery(access, prepared.row.requestId, response, prepared.proof, round?.metadata())
+            NextCoreDelivery(access, prepared.row.requestId, response, prepared.proof, round?.metadata(), prepared.importProof)
         }
     }
 
@@ -80,7 +81,8 @@ internal class NextCoreRequestStore(
         validate(origin, transmission, access)
     }
 
-    private data class Prepared(val row: NextTransmissionEntity, val proof: String, val challengeProfile: Boolean = false)
+    private data class Prepared(val row: NextTransmissionEntity, val proof: String, val challengeProfile: Boolean = false,
+        val importProof: String? = null)
 
     /** Exact ordinary count ACK, not queue absence or a pulled shadow. No account lock is reacquired. */
     internal suspend fun requireAcceptedCountInTransaction(access: LocalSyncAccess, id: String) {
@@ -197,7 +199,8 @@ internal class NextCoreRequestStore(
                     val original = requireNotNull(database.nextRequestDao().origin(NEXT_OPERATION, actualId))
                     val metadata = if (roundOperationIntent(original.intentJson) == null) null
                         else NextChallengeStore(database).activeInTransaction(access).second
-                    NextCoreDelivery(access, actualId, NextSyncPushResponse(listOf(result)), proof, metadata)
+                    NextCoreDelivery(access, actualId, NextSyncPushResponse(listOf(result)), proof, metadata,
+                        NextConfigImportBarrier(database).requireReady(decodeNextOperationIntent(original.intentJson), access, replay = true))
                 }
             }
         }
@@ -239,6 +242,10 @@ internal class NextCoreRequestStore(
             } else rounds.activeInTransaction(access)
             validate(rawOrigin, transmission, access)
             val operation = validateNextOperationEnvelope(rawOrigin.intentJson, transmission.wireBytes, requireNotNull(access.deviceId))
+            val imports = NextConfigImportBarrier(database)
+            val replay = NextRequestSql.rowHash(sql, "next_acceptances", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, id)) != null
+            val importProof = imports.requireReady(operation, access, delivery.configImportProof, replay)
+            check(importProof == delivery.configImportProof) { "CONFIG_IMPORT_ACCEPTANCES_CHANGED" }
             val mergedMetadata = if (roundOrigin == null) null else {
                 val metadata = requireNotNull(delivery.challengeMetadata) { "SYNC_CHALLENGE_ACK_REQUIRED" }
                 val frozen = decodeFrozenSyncRequest(encodeSyncRequest(ChallengeMetadata.serializer(), metadata), ChallengeMetadata.serializer())
@@ -335,6 +342,8 @@ internal class NextCoreRequestStore(
             if (roundOrigin != null) check(NextGoalChildFrontierStore(database).requireAccepted(roundOrigin, access) == goalFrontierProof)
             require(causal.resolve(id, access) == id)
             require(NextRestartBindingStore(database).requireReady(access, rawOrigin) == restartProof) { "SYNC_RESTART_PLAN_PROOF_CHANGED" }
+            check(imports.requireReady(operation, access, importProof, replay) == importProof) { "CONFIG_IMPORT_ACCEPTANCES_CHANGED" }
+            imports.finishIfAccepted(access)
             NextRequestSql.requireOutboxEnabled(sql)
             if (currentCheckpoint != null) {
                 val actual = rounds.activeInTransaction(access)
@@ -439,6 +448,8 @@ internal class NextCoreRequestStore(
             if (challengeProfile) NextChallengeStore(database).activeInTransaction(access)
             else NextChallengeStore(database).requirePlainInTransaction()
             val restartProof = NextRestartBindingStore(database).requireReady(access, original)
+            val imports = NextConfigImportBarrier(database)
+            val importProof = if (kind == NEXT_OPERATION) imports.requireReady(decodeNextOperationIntent(original.intentJson), access) else null
             val causal = if (kind == NEXT_OPERATION) NextStructuralCausalStore(database, requireNotNull(memo)) else null
             val id = causal?.prepare(requestedId, access) ?: requestedId
             val origin = origin(access, kind, id)
@@ -496,11 +507,14 @@ internal class NextCoreRequestStore(
             if (goalSource != null) check(NextGoalChildFrontierStore(database).requireAccepted(goalSource, access) == goalProof)
             if (causal != null) require(causal.resolve(requestedId, access) == id)
             require(NextRestartBindingStore(database).requireReady(access, original) == restartProof) { "SYNC_RESTART_PLAN_PROOF_CHANGED" }
+            if (kind == NEXT_OPERATION) check(imports.requireReady(decodeNextOperationIntent(original.intentJson), access, importProof) == importProof) {
+                "CONFIG_IMPORT_ACCEPTANCES_CHANGED"
+            }
             NextRequestSql.requireOutboxEnabled(sql)
             authorize(access)
             require((if (kind == NEXT_OPERATION) roundOperationIntent(origin.intentJson) != null
                 else roundTimerIntent(origin.intentJson) != null) == challengeProfile)
-            Prepared(stored, proof, challengeProfile)
+            Prepared(stored, proof, challengeProfile, importProof)
         }
     }
 
@@ -515,6 +529,8 @@ internal class NextCoreRequestStore(
                 "kind=? AND requestId=?", arrayOf(row.kind, row.requestId))
             if (proof != prepared.proof) rejectNextRequest(NextRequestException.Reason.SOURCE_CHANGED)
             validate(origin, requireNotNull(database.nextRequestDao().transmission(row.kind, row.requestId)), access)
+            if (row.kind == NEXT_OPERATION) check(NextConfigImportBarrier(database).requireReady(
+                decodeNextOperationIntent(origin.intentJson), access, prepared.importProof) == prepared.importProof) { "CONFIG_IMPORT_ACCEPTANCES_CHANGED" }
             if (row.kind == NEXT_OPERATION) roundOperationIntent(origin.intentJson)?.let {
                 NextGoalChildFrontierStore(database).requireAccepted(it, access)
             }

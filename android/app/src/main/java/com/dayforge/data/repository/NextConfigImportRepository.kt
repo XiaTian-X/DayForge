@@ -8,6 +8,8 @@ import com.dayforge.data.export.ConfigImportTarget
 import com.dayforge.data.export.NextConfigImportPlan
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.TokenManager
+import com.dayforge.data.local.entity.SyncOutboxEntity
+import com.dayforge.data.model.HabitType
 import com.dayforge.domain.model.IconReference
 import com.dayforge.domain.model.isContractUuid
 import com.dayforge.domain.service.AccountIconController
@@ -27,8 +29,8 @@ internal class NextConfigImportPreview internal constructor(internal val context
 internal data class NextConfigImportReceipt(val importId: String, val nodes: Int, val metrics: Int, val links: Int)
 
 /**
- * Durable empty-replica import. It deliberately refuses nonempty replacement until deletion/ACK
- * coordination is connected. No clearAllTables, URI reread, cross-database transaction or theme apply.
+ * Durable explicit import. Replacement stages NEW deletes and waits for exact predecessor ACKs.
+ * No clearAllTables, URI reread, cross-database transaction or theme apply.
  * Formal settings still use the old path; injecting this service cannot activate protocol v5.
  */
 @Singleton
@@ -65,6 +67,22 @@ internal class NextConfigImportRepository @Inject constructor(
         }
     }
 
+    /** Explicit destructive confirmation; save BOTH new identities and old delete IDs before I/O. */
+    suspend fun confirmReplacement(preview: NextConfigReplacementPreview): String = withContext(Dispatchers.IO) {
+        guarded(preview.original.context) {
+            journal.requireNoOtherPending(); journal.requireNoActiveReplacement()
+            val current = NextConfigReplacementInspector(database).capture(preview.original)
+            check(current.fingerprint == preview.fingerprint && current.counts == preview.counts &&
+                current.blockers == preview.blockers) { "CONFIG_REPLACEMENT_PREVIEW_CHANGED" }
+            check(current.eligible) { "CONFIG_REPLACEMENT_NOT_READY" }
+            val plan = NextConfigImportPlan(preview.original.source, NextConfigImportPlan.allocate(preview.original.source,
+                ConfigImportTarget.from(preview.original.context), Instant.now()))
+            val network = ConfigNetworkPlan.capture(database, plan, current.fingerprint)
+            journal.prepareReplacement(plan, network)
+            plan.importId
+        }
+    }
+
     /** Confirmation allocates once and commits the original mapping before any material file work. */
     suspend fun confirm(preview: NextConfigImportPreview): String = withContext(Dispatchers.IO) {
         guarded(preview.context) {
@@ -88,7 +106,12 @@ internal class NextConfigImportRepository @Inject constructor(
         val context = icons.capture()
         val entry = guarded(context) {
             journal.read(context, importId, source).also {
-                if (!it.committed) { requireEmptyReplica(); journal.requireNoOtherPending(importId) }
+                if (!it.committed) requirePrepared(context, it)
+                else if (it.network != null) {
+                    val barrier = NextConfigImportBarrier(database)
+                    barrier.finishIfAccepted(requireNotNull(tokens.localSyncAccess()))
+                    barrier.requireTerminalIfMarked(journal.network(importId), requireNotNull(tokens.localSyncAccess()))
+                }
             }
         }
         val plan = entry.plan
@@ -104,29 +127,82 @@ internal class NextConfigImportRepository @Inject constructor(
             val original = journal.read(context, importId, source)
             require(original.plan.identities == plan.identities) { "CONFIG_IMPORT_JOURNAL_CHANGED" }
             if (!original.committed) {
-                requireEmptyReplica(); journal.requireNoOtherPending(importId)
+                requirePrepared(context, original)
+                if (original.network != null) stageReplacement(original.network)
                 val metricIds = plan.metrics.associate { it.uuid to database.metricDao().insert(it) }
                 val habitIds = plan.habits.associate { it.uuid to database.habitDao().insert(it) }
                 for (link in plan.links(habitIds, metricIds)) database.habitMetricLinkDao().insert(link)
                 val sql = database.openHelper.writableDatabase
                 val fresh = database.syncOutboxDao().getAll()
-                require(fresh.size == plan.creationOperationIds.size &&
-                    fresh.map { it.entityUuid }.toSet() == plan.creationOperationIds.keys &&
-                    fresh.all { it.action == "upsert" }) { "CONFIG_IMPORT_CREATED_WORK_CHANGED" }
+                val expected = original.network?.steps?.associate { it.entityUuid to it.operationId } ?: plan.creationOperationIds
+                require(fresh.size == expected.size && fresh.map { it.entityUuid }.toSet() == expected.keys &&
+                    fresh.all { it.action == if (it.entityUuid in plan.creationOperationIds) "upsert" else "delete" }) {
+                    "CONFIG_IMPORT_CREATED_WORK_CHANGED"
+                }
                 val sources = fresh.associate { row ->
-                    val operationId = plan.creationOperationIds.getValue(row.entityUuid)
-                    sql.execSQL("UPDATE sync_outbox SET operationId=? WHERE id=?", arrayOf<Any>(operationId, row.id))
+                    val operationId = expected.getValue(row.entityUuid)
+                    if (row.action == "upsert")
+                        sql.execSQL("UPDATE sync_outbox SET operationId=? WHERE id=?", arrayOf<Any>(operationId, row.id))
+                    else require(row.operationId == operationId)
                     val saved = requireNotNull(database.syncOutboxDao().getById(row.id))
+                    original.network?.steps?.single { it.operationId == operationId }?.requireOperation(
+                        NextCoreLocalIntentStore(database, tokens, sessions).operation(saved))
                     operationId to ConfigImportedSource(saved.id, NextRequestSql.sourceHash(saved))
                 }
                 // This receipt, business rows and original outbox/origins commit or roll back together.
-                journal.committed(plan, sources)
+                if (original.network == null) journal.committed(plan, sources)
+                else journal.committedReplacement(original.network, sources)
             }
             requireAccess(context)
             receipt(plan) to !original.committed
         }
+        if (entry.network != null) guarded(context) {
+            NextConfigImportBarrier(database).finishIfAccepted(requireNotNull(tokens.localSyncAccess()))
+        }
         if (result.second) WidgetRefreshScheduler.request(appContext)
         result.first
+    }
+
+    private suspend fun requirePrepared(context: AccountIconContext, entry: NextConfigImportStore.Entry) {
+        journal.requireNoOtherPending(entry.plan.importId)
+        if (entry.network == null) requireEmptyReplica()
+        else {
+            journal.requireNoActiveReplacement()
+            val current = NextConfigReplacementInspector(database).capture(
+                NextConfigImportPreview(context, entry.plan.source), entry.plan.importId)
+            check(current.fingerprint == entry.network.fingerprint) { "CONFIG_REPLACEMENT_PREVIEW_CHANGED" }
+            check(current.eligible) { "CONFIG_REPLACEMENT_NOT_READY" }
+        }
+    }
+
+    /** Same original producer TX as all new creates; old plan/fact rows stay until real delete ACK. */
+    private suspend fun stageReplacement(network: ConfigNetworkPlan) {
+        check(database.inTransaction())
+        val sql = database.openHelper.writableDatabase
+        val old = database.habitDao().getAllHabitsOnce().associateBy { it.uuid }
+        val links = database.habitMetricLinkDao().getAllLinksOnce().associateBy { it.uuid }
+        val metrics = database.metricDao().getAllMetricsOnce().associateBy { it.uuid }
+        NextRequestSql.requireOutboxEnabled(sql)
+        // Explicit destructive replacement discards old metric/link projections, not their source
+        // journals/shadows. Suppression avoids inventing a second set of cascade-delete requests.
+        sql.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
+        for (link in links.values) database.habitMetricLinkDao().delete(link)
+        for (metric in metrics.values) database.metricDao().delete(metric)
+        sql.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
+        for (step in network.steps.filter { it.action == "delete" }) {
+            when (step.entityType) {
+                "plan_node" -> {
+                    val row = old.getValue(step.entityUuid)
+                    val goal = row.habitType == HabitType.GOAL
+                    NextPlanDeletionStore(database).stage(row, if (goal) "cascade_children" else null,
+                        if (goal) old.values.filter { it.parentHabitId == row.uuid }.map { it.uuid }.sorted() else emptyList(),
+                        step.operationId)
+                }
+                else -> database.syncOutboxDao().insert(SyncOutboxEntity(operationId = step.operationId,
+                    recordType = if (step.entityType == "metric") "metric" else "link", entityUuid = step.entityUuid,
+                    wireEntityUuid = step.entityUuid, action = "delete", referenceUuid = links[step.entityUuid]?.habitUuid))
+            }
+        }
     }
 
     /** Explicitly abandon only a prepared local import. Already declared material is retained. */
@@ -144,6 +220,7 @@ internal class NextConfigImportRepository @Inject constructor(
     private suspend fun <T> guarded(context: AccountIconContext, block: suspend () -> T): T = sessions.exclusive {
         requireAccess(context)
         database.withTransaction {
+            requireAccess(context)
             val result = block(); requireAccess(context); result
         }
     }
