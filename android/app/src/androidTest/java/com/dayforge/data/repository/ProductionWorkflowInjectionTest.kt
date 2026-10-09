@@ -173,7 +173,7 @@ class ProductionWorkflowInjectionTest {
         assertTrue(db.syncOutboxDao().getAll().all { db.nextRequestDao().origin(NEXT_OPERATION, it.operationId) == null })
     }
 
-    @Test fun realTimerAndFocusWidgetsReadOriginalPolicyAndWithholdCorruptDisplay() = runBlocking<Unit> {
+    @Test fun realTimerFocusAndSummaryWidgetsReadOriginalPolicyAndWithholdCorruptDisplay() = runBlocking<Unit> {
         assertSame(timerWriter, com.dayforge.di.WidgetEntryPoint.from(app).timerWriter())
         val now = java.time.ZonedDateTime.now()
         val rowId = habits.createHabit("Hilt frozen widget timer", "", HabitType.TIMER, 0, "#123456", HabitSchedule.Daily,
@@ -201,9 +201,13 @@ class ProductionWorkflowInjectionTest {
             android.appwidget.AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId)))
         val timerId = glanceId((System.nanoTime() and 0x1fffffff).toInt() + 1)
         val focusId = glanceId((System.nanoTime() and 0x1fffffff).toInt() + 0x20000000)
+        val progressId = glanceId((System.nanoTime() and 0x1fffffff).toInt() + 1)
+        val motivationId = glanceId((System.nanoTime() and 0x1fffffff).toInt() + 1)
         suspend fun refresh() {
             com.dayforge.widget.timer.TimerWidget.refreshWidgetData(app, timerId, rowId)
             com.dayforge.widget.focus.FocusWidget.refreshWidgetData(app, focusId)
+            com.dayforge.widget.progress.ProgressWidget.refreshWidgetData(app, progressId)
+            com.dayforge.widget.motivation.MotivationWidget.refreshWidgetData(app, motivationId)
         }
         suspend fun assertHealthy() {
             val timer = com.dayforge.widget.timer.TimerWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, timerId)
@@ -221,6 +225,18 @@ class ProductionWorkflowInjectionTest {
             assertEquals(timerAction, focusAction)
             assertEquals(id(80), timerAction.authority.sessionUuid)
             assertNull(timerAction.startGuard)
+            // An active timer contributes no completed result, even after a plan edit.
+            val progress = com.dayforge.widget.progress.ProgressWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, progressId)
+            val motivation = com.dayforge.widget.motivation.MotivationWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, motivationId)
+            assertEquals(false, progress[com.dayforge.widget.progress.ProgressWidget.READ_FAILED_KEY])
+            assertEquals(true, progress[com.dayforge.widget.progress.ProgressWidget.DATA_LOADED_KEY])
+            assertEquals(0, progress[com.dayforge.widget.progress.ProgressWidget.COMPLETED_COUNT_KEY])
+            assertEquals(1, progress[com.dayforge.widget.progress.ProgressWidget.TOTAL_COUNT_KEY])
+            assertEquals(false, motivation[com.dayforge.widget.motivation.MotivationWidget.READ_FAILED_KEY])
+            assertEquals(true, motivation[com.dayforge.widget.motivation.MotivationWidget.DATA_LOADED_KEY])
+            assertEquals(0, motivation[com.dayforge.widget.motivation.MotivationWidget.BEST_STREAK_KEY])
+            assertEquals(0, motivation[com.dayforge.widget.motivation.MotivationWidget.COMPLETED_TODAY_KEY])
+            assertEquals(1, motivation[com.dayforge.widget.motivation.MotivationWidget.TOTAL_HABITS_KEY])
         }
         try {
             refresh()
@@ -258,6 +274,12 @@ class ProductionWorkflowInjectionTest {
             assertNull(timer[com.dayforge.widget.timer.TimerWidget.ACTION_PROOF_KEY])
             assertEquals(true, focus[com.dayforge.widget.focus.FocusWidget.READ_FAILED_KEY])
             assertEquals(false, focus[com.dayforge.widget.focus.FocusWidget.DATA_LOADED_KEY])
+            val progress = com.dayforge.widget.progress.ProgressWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, progressId)
+            val motivation = com.dayforge.widget.motivation.MotivationWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, motivationId)
+            assertEquals(true, progress[com.dayforge.widget.progress.ProgressWidget.READ_FAILED_KEY])
+            assertEquals(false, progress[com.dayforge.widget.progress.ProgressWidget.DATA_LOADED_KEY])
+            assertEquals(true, motivation[com.dayforge.widget.motivation.MotivationWidget.READ_FAILED_KEY])
+            assertEquals(false, motivation[com.dayforge.widget.motivation.MotivationWidget.DATA_LOADED_KEY])
             assertEquals(active, db.timeLogDao().getActiveTimeLog())
             db.openHelper.writableDatabase.execSQL("UPDATE timer_command_outbox SET occurredAt=? WHERE commandId=?", arrayOf<Any>(startAt, id(81)))
             refresh()

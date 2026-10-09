@@ -19,6 +19,42 @@
 
 ## 验证层级
 
+### 进度/激励的账户发布与只读恢复（2026-10-09，Issue #332）
+
+两类总览接入 WidgetDisplayPublisher：保留逐习惯真实读取和原资格过滤，显示提交前复核
+账户范围；旧结果及旧来源错误不能覆盖替换账户的展示。来源失败隐藏旧总览并提供明确
+只读重试，正常加载恢复标记；provideGlance 被动消费，平台更新只入队，移除独立协程。
+激励在同次准备中复用 typed 状态，保留旧计数记录日/旧计时达标日连续规则和正常布局。
+不宣称整份总览为同一 Room 快照，不缓存写权限或生成业务/同步数据。
+
+首次 `f1403436a0584b4faf47edee46d18fb0` 在构建阶段因新接收器测试缺少
+ExperimentalGlanceApi opt-in 退出，行为未执行。修正实验接口 opt-in 与实际 application
+Context 匹配后，完整 12 类发现/执行 59 项，58 passed、1 failed、0 errors/skipped，
+connected3m50s（XML206.070s），证据 `09a83cb832074ecd8976eefb63d87eac/targeted.log`；
+其 XML 被下一轮按原工具旋转至 `aff486c848e4456fb4bdf27d9c2c4459/prior-results`。
+唯一失败为新增一次性事项夹具错误采用默认严格模式，原契约要求宽松模式，未放宽契约。
+11 个相邻类全部通过；本轮不是完整通过，不删除失败记录或拼接成全量。
+
+仅修正夹具 failMode，生产源码未变；最终按风险重跑完整 WidgetSummaryEntryTest、
+WidgetDisplayPublicationTest、ProgressWidgetTest 三类，16/16 passed、0 failures/errors/skipped，
+connected1m08s，证据 `aff486c848e4456fb4bdf27d9c2c4459/targeted.json`。root51、
+build20s/lint/warning、APK/发现/XML/新覆盖输入及 testbed 清理通过，真实 wrapper/Gradle
+与两个测试包不存在后才编辑文档。此前 12 类还包含 ProductionWorkflowInjectionTest、
+WidgetFactEntryTest、CountRoundConsumerTest、OneTimeWorkflowTest、WidgetSummaryReceiverTest、
+WidgetRefresherTargetsTest、WidgetRefresherTest、WidgetRefreshWorkerTest、WidgetRefreshSchedulerTest。
+
+真实 Hilt/Room/Glance 验证原计数日规则、事项/目标排除、空库零进度、旧连续口径、坏 SQLite
+类型隐藏统计及明确恢复先加载再提交；实际生产计时读取验证运行中不产生完成进度、原策略
+编辑和来源损坏恢复。账户竞态仅在真实 calculator/Room 读取后注入等待/错误，原 publisher、
+令牌切换与 Glance 状态真实；重试仅隔离 host 提交。平台接收器测试实际 override 入队，
+仅给 superclass 工作提供真机内拥有/取消/join 的暂停调度器，不安装/绘制合成 host 实例。
+
+不重复未变容量/重启长链或一分钟服务，不调整150s/1500s期限。最终16项不称59项最终
+完整门禁或 Android 全量。计时错误/删除发布、账户清理失败/闹钟竞态、已安装 launcher
+多实例/像素、正式v5/Worker/素材/配置联合与Android/后端SQL全量、人工/外网/NAS仍待完成，
+#344后端全量取消尚未闭合；默认v4，无schema/HTTP/后端/依赖/既有手机平板UI变更，
+无正式APK安装/清库/部署/Docker操作。
+
 ### 打卡/计数/专注显示的账户发布边界（2026-10-09，Issue #332）
 
 WidgetDisplayPublisher 捕获原账户/副本/设备/权限与同步内存标记，准备阶段调用原账户/Room
