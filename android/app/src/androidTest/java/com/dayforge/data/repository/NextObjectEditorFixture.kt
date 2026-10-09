@@ -41,7 +41,8 @@ abstract class NextObjectEditorFixture : NextCoreRequestFixture() {
     internal fun editingMetrics() = MetricRepository(db, db.metricDao(), db.metricLogDao(), db.habitDao(),
         db.habitMetricLinkDao(), nextObjectEditor = editor)
     internal fun creatingHabits() = HabitRepository(db.habitDao(), db.completionDao(), db.timeLogDao(), db,
-        nextObjectEditor = editor, nextObjectCreator = creator, countHistoryReader = CountHistoryReader(db, tokens, sessions))
+        nextObjectEditor = editor, nextObjectCreator = creator, countHistoryReader = CountHistoryReader(db, tokens, sessions),
+        checkHistoryReader = CheckHistoryReader(db, tokens, sessions))
     internal fun creatingMetrics() = MetricRepository(db, db.metricDao(), db.metricLogDao(), db.habitDao(),
         db.habitMetricLinkDao(), nextObjectEditor = editor, nextObjectCreator = creator)
     internal fun onceRepository() = OneTimeRepository(db, tokens, sessions, preferences)

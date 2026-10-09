@@ -125,11 +125,14 @@ class HabitDetailViewModel @Inject constructor(
                 val countHistory =
                     habit?.takeIf { it.habitType == HabitType.COUNTING && it.appearance != null }
                         ?.let { habitRepository.getCountHistory(it) }
+                val checkHistory = habit?.takeIf { it.habitType == HabitType.CHECK_IN && it.appearance != null &&
+                    it.completionPolicy == "recurring" }?.let { habitRepository.getCheckHistory(it) }
 
                 // Calculate targetProgress for habits with targetCycles
                 // Per TARGET-06: TIMER habits use timelogs, other types use completions
                 val targetProgress = if (habit?.targetCycles != null) {
                     if (countHistory != null) countHistory.qualifiedDates.size
+                    else if (checkHistory != null) checkHistory.qualifiedDates.size
                     else if (habit.habitType == HabitType.TIMER) {
                         timeLogDao.getDistinctDayCount(habitId)
                     } else {
@@ -149,6 +152,11 @@ class HabitDetailViewModel @Inject constructor(
                         StreakCalculator.bestFromBusinessDates(qualified), qualified.maxOrNull()?.toDisplayMillis()),
                         countHistory.completions, emptyList(), targetProgress, emptyList(), notificationEnabled,
                         countHistory = countHistory)
+                } else if (checkHistory != null) {
+                    val qualified = checkHistory.qualifiedDates
+                    LoadResult(habit, StreakStats(StreakCalculator.currentFromBusinessDates(qualified, checkHistory.today),
+                        StreakCalculator.bestFromBusinessDates(qualified), qualified.maxOrNull()?.toDisplayMillis()),
+                        checkHistory.completions, emptyList(), targetProgress, emptyList(), notificationEnabled)
                 } else if (habit?.habitType == HabitType.TIMER) {
                     val timeLogs = timeLogDao.getAllTimeLogsForHabit(habitId)
                     val targetSeconds = habit.targetValue * 60
@@ -448,6 +456,8 @@ class HabitDetailViewModel @Inject constructor(
         // Check progress - Per TARGET-06: TIMER uses timelogs, others use completions
         val progress = if (habit.habitType == HabitType.COUNTING && habit.appearance != null) {
             habitRepository.getCountHistory(habit).qualifiedDates.size
+        } else if (habit.habitType == HabitType.CHECK_IN && habit.appearance != null && habit.completionPolicy == "recurring") {
+            habitRepository.getCheckHistory(habit).qualifiedDates.size
         } else if (habit.habitType == HabitType.TIMER) {
             timeLogDao.getDistinctDayCount(habit.id)
         } else {

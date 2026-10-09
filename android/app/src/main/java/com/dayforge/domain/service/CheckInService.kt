@@ -61,6 +61,12 @@ class CheckInService @Inject constructor(
             }
             else -> {
                 // CHECK_IN: any completion counts
+                if (habit.habitType == com.dayforge.data.model.HabitType.CHECK_IN && habit.appearance != null) {
+                    // The write may reactivate or update activityRate. Never reuse its pre-write row.
+                    val current = requireNotNull(habitRepository.getHabitById(habit.id)) { "CHECK_NOT_FOUND" }
+                    check(current.uuid == habit.uuid) { "CHECK_ACTIVITY_CHANGED" }
+                    return habitRepository.getCheckHistory(current).qualifiedDates.size
+                }
                 completionDao.getDistinctDayCount(habit.id)
             }
         }
@@ -106,7 +112,7 @@ class CheckInService @Inject constructor(
             val completionId = habitRepository.getTodayCompletionId(habitId)
             if (completionId != null) {
                 habitRepository.undoCompletion(context, completionId)
-                completed = false
+                completed = habitRepository.getTodayCompletionCount(habitId) > 0
                 isUndo = true
             } else {
                 completed = true // Edge case: no completion ID found

@@ -35,7 +35,8 @@ class HabitStatusCalculator @Inject constructor(
     private val timeLogDao: TimeLogDao,
     private val oneTimeRepository: com.dayforge.data.repository.OneTimeRepository? = null,
     private val timerWriter: com.dayforge.data.repository.NextTimerWriter? = null,
-    private val countHistoryReader: com.dayforge.data.repository.CountHistoryReader? = null
+    private val countHistoryReader: com.dayforge.data.repository.CountHistoryReader? = null,
+    private val checkHistoryReader: com.dayforge.data.repository.CheckHistoryReader? = null
 ) {
     /**
      * Calculate complete status for a habit.
@@ -68,6 +69,20 @@ class HabitStatusCalculator @Inject constructor(
                 nextCheckInDate = if (allowed) null else ScheduleValidator.getNextCheckInDate(habit.schedule, habit.createdAt),
                 targetProgress = if (habit.targetCycles == null) 0 else history.qualifiedDates.size,
                 hasFailed = FailureCheckerUtils.countHasFailed(habit, history), countHistory = history)
+        }
+        if (habit.habitType == HabitType.CHECK_IN && habit.appearance != null) {
+            val history = requireNotNull(checkHistoryReader) { "CHECK_READER_REQUIRED" }.read(habit)
+            val allowed = ScheduleValidator.isCheckInAllowedToday(habit.schedule, habit.createdAt)
+            return HabitWithStats(habit, history.completedToday,
+                history.todayQuantity.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                history.todayCompletions.maxByOrNull { it.id }?.id,
+                StreakCalculator.currentFromBusinessDates(history.qualifiedDates, history.today),
+                StreakCalculator.bestFromBusinessDates(history.qualifiedDates),
+                activityRate = ActivityRateCalculator.calculate(habit.schedule, habit.createdAt,
+                    history.qualifiedDates.toList()), isCheckInAllowed = allowed,
+                nextCheckInDate = if (allowed) null else ScheduleValidator.getNextCheckInDate(habit.schedule, habit.createdAt),
+                targetProgress = if (habit.targetCycles == null) 0 else history.qualifiedDates.size,
+                hasFailed = FailureCheckerUtils.checkHasFailed(habit, history))
         }
         // Fetch data if not provided
         val habitCompletions = completions?.filter { it.habitId == habit.id }

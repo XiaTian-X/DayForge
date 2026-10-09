@@ -40,16 +40,22 @@ class HabitRepository @Inject constructor(
     private val nextObjectCreator: NextObjectCreator? = null,
     private val oneTimeRepository: OneTimeRepository? = null,
     private val countHistoryReader: CountHistoryReader? = null,
-    private val widgetFactReader: WidgetFactReader? = null
+    private val widgetFactReader: WidgetFactReader? = null,
+    private val checkHistoryReader: CheckHistoryReader? = null
 ) {
     val allHabits: Flow<List<HabitEntity>> = habitDao.getAllHabits()
 
     val oneTimeChanges: Flow<Unit> = oneTimeRepository?.changes ?: kotlinx.coroutines.flow.flowOf(Unit)
 
-    val countChanges: Flow<Unit> = countHistoryReader?.changes ?: kotlinx.coroutines.flow.flowOf(Unit)
+    val countChanges: Flow<Unit> = kotlinx.coroutines.flow.combine(
+        countHistoryReader?.changes ?: kotlinx.coroutines.flow.flowOf(Unit),
+        checkHistoryReader?.changes ?: kotlinx.coroutines.flow.flowOf(Unit)) { _, _ -> Unit }
 
     suspend fun getCountHistory(habit: HabitEntity): com.dayforge.domain.model.CountHistory =
         requireNotNull(countHistoryReader) { "COUNT_READER_REQUIRED" }.read(habit)
+
+    suspend fun getCheckHistory(habit: HabitEntity): com.dayforge.domain.model.CheckHistory =
+        requireNotNull(checkHistoryReader) { "CHECK_READER_REQUIRED" }.read(habit)
 
     suspend fun getOneTimeStatus(id: Long, expectedUuid: String? = null): OneTimeStatus = requireNotNull(oneTimeRepository) {
         "ONE_TIME_REPOSITORY_REQUIRED"
@@ -114,7 +120,7 @@ class HabitRepository @Inject constructor(
         val expected = requireNotNull(before.value)
         mutate(expected, before.authority) { habit ->
             val view = reader.requireInTransaction(claim)
-            val progress = view.count?.qualifiedDates?.size ?: completionDao.getDistinctDayCount(habit.id)
+            val progress = view.targetProgress
             check(habit.completionPolicy == "recurring" && habit.targetCycles != null && progress >= habit.targetCycles) {
                 "FACT_WIDGET_GOAL_CHANGED"
             }
@@ -707,6 +713,8 @@ class HabitRepository @Inject constructor(
         val habit = habitDao.getHabitById(habitId)
         if (habit?.habitType == HabitType.COUNTING && habit.appearance != null)
             return getCountHistory(habit).todayQuantity.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        if (habit?.habitType == HabitType.CHECK_IN && habit.appearance != null && habit.completionPolicy == "recurring")
+            return getCheckHistory(habit).todayQuantity.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
         val today = DateTimeUtils.today()
         val tomorrow = today.plusDays(1)
         val completions = completionDao.getCompletionsInRange(habitId, today, tomorrow)
@@ -728,6 +736,11 @@ class HabitRepository @Inject constructor(
                 }
                 if (habit?.habitType == HabitType.COUNTING && habit.appearance != null) {
                     val history = getCountHistory(habit)
+                    return@map StreakStats(StreakCalculator.currentFromBusinessDates(history.qualifiedDates, history.today),
+                        StreakCalculator.bestFromBusinessDates(history.qualifiedDates), history.qualifiedDates.maxOrNull()?.toDisplayMillis())
+                }
+                if (habit?.habitType == HabitType.CHECK_IN && habit.appearance != null) {
+                    val history = getCheckHistory(habit)
                     return@map StreakStats(StreakCalculator.currentFromBusinessDates(history.qualifiedDates, history.today),
                         StreakCalculator.bestFromBusinessDates(history.qualifiedDates), history.qualifiedDates.maxOrNull()?.toDisplayMillis())
                 }
@@ -765,6 +778,8 @@ class HabitRepository @Inject constructor(
             val history = getCountHistory(habit)
             return history.completions.filter { it.recordedLocalDate == history.today.toString() }.maxByOrNull { it.id }?.id
         }
+        if (habit?.habitType == HabitType.CHECK_IN && habit.appearance != null && habit.completionPolicy == "recurring")
+            return getCheckHistory(habit).todayCompletions.maxByOrNull { it.id }?.id
         val today = DateTimeUtils.today()
         val tomorrow = today.plusDays(1)
         return completionDao.getTodayCompletionId(habitId, today, tomorrow)
