@@ -19,6 +19,38 @@
 
 ## 验证层级
 
+### 新版配置的映射、归档生成与文件传输（2026-10-09，Issue #160）
+
+合批实现 NextConfigMapper → ConfigBundleOutput → ConfigBundleDocuments，复用完整只读 v2
+输入校验；无账户/Room/协议/迁移或当前设置页改动。旧 JSON 工作流尚未替换，内部文件链
+不能当作正式配置功能或联合启用完成。
+
+初次 c9a6f209782148b39ab72299dffb822b 在测试编译发现缺失序列化扩展导入，主动取消拥有的
+wrapper 并 join；4b85462ad572445ca78eebb6d0683e28 构建通过，但发现阶段因新表达式用例
+非 Unit 返回而失败，均未执行行为。修正后完整七类 aba9d68c6fb3480fb3c6e709ee6311c2
+执行 66 项：64 passed、2 failed、0 errors/skipped（build1m27s、connected54s/XML25.74s）。
+两个失败均为映射夹具：溢出的精确异常应为 ArithmeticException，完成事项的完成事件必须
+等于头事件。生产源码不改；完整映射类复测 9a49440ef9e347ff88b6e560c6bd2f56 为5/6，
+发现测试辅助方法对 null 外观提前 !!，未让该错误真正进入生产验证；改为只为非 null 引用
+收集角色，保留生产失败断言。最终完整 NextConfigMapperTest 六项6/6，0失败/跳过，
+证据 c387bf514af84b0cb73338492321fb76/targeted.json（build16s、connected23s/XML2.595s），
+构建/lint/警告、发现/APK/XML/
+新覆盖输入及测试包清理通过。先前六个未改完整类60项通过；不拼为66项最终完整运行或全量。
+
+实际真机原生验证清单全部字段、秒/分钟转换、IANA/日锚点、父子/UUID/主键一致性、三种
+指标聚合、已完成事项显式模板选择、旧/无法表达结构拒绝与历史排除。共享原始 fixture 和
+平台 ZIP reader/writer 检查完整明暗 PNG/SVG 字节、去重闭包、深度不可变及重放；变更/损坏
+元数据在读取字节前拒绝，真实图片错误、原 I/O 和取消不返回部分包。8/32 MiB 输出缓冲的
+等于/超限为实际分配写入检查，不称完整最大图标包端到端容量证明。
+实际文件 section/描述符/pipe 验证 offset/length、一次打开、来源后变与冻结写出、截短/无效
+内容、读取消/超时、阻塞写超时及关闭故障；边界使用函数提供真实 FD，不冒充完整系统选择器。
+原完整 ConfigBundleArchiveTest、ThemeDocumentsTest、NextStructureMapperTest 和
+ThemeConfigContractTest 相邻矩阵保留。没有改150s/1500s或已有断言，不重跑未变长计时/容量。
+
+账户一致快照、待同步事项筛选、完整素材授权、稳定新身份/替换事务/恢复和因果同步、正式
+设置页与v5/Worker联合、Android/后端SQL全量、#344以及人工/平板/外网/NAS仍未完成。
+默认v4，不合并、安装正式APK、清库、部署或操作Docker。
+
 ### 小组件 provider 与遗弃配置入口清理（2026-10-09，Issue #160）
 
 核对全部 provider XML、Manifest 和调用方：专注从未链接 FocusWidgetConfigActivity，
