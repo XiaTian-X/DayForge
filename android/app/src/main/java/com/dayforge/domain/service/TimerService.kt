@@ -70,9 +70,6 @@ class TimerService : Service() {
         const val EXTRA_TARGET_MINUTES = "targetMinutes"
         const val EXTRA_IS_COUNTDOWN = "isCountdown"
 
-        // Widget update broadcast
-        const val ACTION_WIDGET_UPDATE = "com.dayforge.TIMER_WIDGET_UPDATE"
-
         // Notification
         const val NOTIFICATION_ID = 1001
         const val TARGET_NOTIFICATION_ID = 1002
@@ -113,6 +110,7 @@ class TimerService : Service() {
 
     // Coroutine scope for database operations
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val widgetTicker by lazy { com.dayforge.widget.timer.TimerWidgetTicker(this, serviceScope) }
     private val commandMutex = Mutex()
     private var tickerJob: Job? = null  // Periodic check for target notification
 
@@ -195,6 +193,7 @@ class TimerService : Service() {
      */
     private fun startTicker() {
         tickerJob?.cancel()
+        notifyWidgetUpdate()
         tickerJob = serviceScope.launch {
             while (isActive) {
                 delay(1000)  // Check every second
@@ -202,8 +201,8 @@ class TimerService : Service() {
                     // Update notification with current elapsed time
                     updateNotification()
 
-                    // Broadcast widget update for real-time display (D-14)
-                    notifyWidgetUpdate()
+                    // Conflated display work is owned by this foreground service.
+                    widgetTicker.tick(habitId)
 
                     // Countdown mode: check for auto-complete at zero
                     // Per TIMER-06: countdown stops at zero, cannot exceed target
@@ -287,12 +286,7 @@ class TimerService : Service() {
         }
     }
 
-    /**
-     * Broadcasts widget update for real-time timer display.
-     * Called every second by the ticker while timer is running.
-     * Per D-14: widget refreshes every second while timer is running.
-     * Per D-16: broadcasts stop when timer stops (ticker is cancelled).
-     */
+    /** Full invalidation after a committed timer transition, never once per second. */
     private fun notifyWidgetUpdate() {
         notifyWidgetUpdate(habitId)
     }
@@ -300,11 +294,7 @@ class TimerService : Service() {
     private fun notifyWidgetUpdate(updatedHabitId: Long) {
         if (updatedHabitId == 0L) return
 
-        val intent = Intent(ACTION_WIDGET_UPDATE).apply {
-            putExtra(EXTRA_HABIT_ID, updatedHabitId)
-            setPackage(packageName)
-        }
-        sendBroadcast(intent)
+        WidgetRefreshScheduler.request(this)
     }
 
     /**
@@ -831,14 +821,6 @@ class TimerService : Service() {
                 }
             }
 
-            // Broadcast widget update after database is updated
-            if (stoppedHabitId != 0L) {
-                val intent = Intent(ACTION_WIDGET_UPDATE).apply {
-                    putExtra(EXTRA_HABIT_ID, stoppedHabitId)
-                    setPackage(packageName)
-                }
-                sendBroadcast(intent)
-            }
             // Notify all widgets to update (Progress, Motivation, etc.)
             WidgetRefreshScheduler.request(this@TimerService)
             }
@@ -889,14 +871,7 @@ class TimerService : Service() {
             autoSyncCoordinator.enqueueNow()
         }
 
-        // Broadcast widget update
-        if (stoppedHabitId != 0L) {
-            val intent = Intent(ACTION_WIDGET_UPDATE).apply {
-                putExtra(EXTRA_HABIT_ID, stoppedHabitId)
-                setPackage(packageName)
-            }
-            sendBroadcast(intent)
-        }
+        notifyWidgetUpdate(stoppedHabitId)
 
         clearState()
         stopServiceAndClearNotification()

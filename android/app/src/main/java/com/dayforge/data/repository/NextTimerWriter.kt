@@ -27,7 +27,8 @@ data class WidgetTimerReadSnapshot internal constructor(
     val policy: TimerStartPolicy?,
     val authority: TimerActionAuthority,
     val startGuard: TimerStartGuard?,
-    val history: com.dayforge.domain.model.TimerHistory
+    val history: com.dayforge.domain.model.TimerHistory,
+    val activeLogHash: String?
 )
 
 data class WidgetTimerSwitchDisplay(val incumbentName: String?, val requestedName: String)
@@ -76,6 +77,30 @@ class NextTimerWriter @Inject constructor(
     /** List statistics and their action ticket must share the same displayed head and account. */
     suspend fun statusSnapshot(expectedHabit: HabitEntity): WidgetTimerReadSnapshot? = readSnapshot(expectedHabit, false)
 
+    /** Display-only invalidation hints, not write authorization or a replacement action claim. */
+    suspend fun renderWidgetTick(habitId: Long, displayedPlan: String, displayedLogHash: String,
+        displayedAuthority: TimerActionAuthority,
+        render: suspend (TimeLogEntity, TimerStartPolicy) -> Unit): Boolean = sessions.exclusive {
+        val current = database.withTransaction {
+            val habit = database.habitDao().getVisibleHabitById(habitId) ?: return@withTransaction null
+            if (habit.appearance == null || NextStructureMapper.writePlan(habit).toString() != displayedPlan)
+                return@withTransaction null
+            if (captureInReadTransaction(habit) != displayedAuthority) return@withTransaction null
+            val log = database.timeLogDao().getActiveTimeLogForHabit(habitId) ?: return@withTransaction null
+            if (log.uuid != displayedAuthority.sessionUuid || log.timerNextCommandSequence != displayedAuthority.nextSequence ||
+                widgetTimerRowFingerprint(database, log.id) != displayedLogHash)
+                return@withTransaction null
+            val access = requireNotNull(tokens.localCoreWriteAccess())
+            check(access.session == displayedAuthority.session() && access.capturedDeviceId == displayedAuthority.deviceId)
+            val policy = NextTimerPolicyStore(database).policy(access, log.uuid)
+            check(tokens.localCoreWriteAccess() == access) { "TIMER_WIDGET_STALE_ACCOUNT" }
+            log to policy
+        } ?: return@exclusive false
+        // Keep the account lock, but end Room before display IO. No retained-history reread here.
+        render(current.first, current.second)
+        true
+    }
+
     private suspend fun readSnapshot(expectedHabit: HabitEntity, includeStartGuard: Boolean): WidgetTimerReadSnapshot? = sessions.exclusive {
         database.withTransaction { readSnapshotInTransaction(expectedHabit, includeStartGuard) }
     }
@@ -103,7 +128,10 @@ class NextTimerWriter @Inject constructor(
         } else null
         check(tokens.localCoreWriteAccess() == access) { "TIMER_WIDGET_STALE_ACCOUNT" }
         val history = timerHistoryReader.readInTransaction(habit, com.dayforge.util.DateTimeUtils.today())
-        return WidgetTimerReadSnapshot(habit, log, policy, authority, startGuard, history)
+        val logHash = log?.let {
+            requireNotNull(widgetTimerRowFingerprint(database, it.id))
+        }
+        return WidgetTimerReadSnapshot(habit, log, policy, authority, startGuard, history, logHash)
     }
 
     /** Caller already holds the non-reentrant account mutex and the Room read transaction. */

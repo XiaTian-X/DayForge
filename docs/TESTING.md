@@ -19,6 +19,49 @@
 
 ## 验证层级
 
+### 计时小组件秒级显示与完整审计分离（2026-10-09，Issue #332）
+
+TimerService 使用其 serviceScope 拥有的单消费者与 CONFLATED 队列；积压 tick 只保留最新
+习惯，销毁/取消停止消费者，不再每秒广播或在 receiver 启动独立协程。typed tick 保留
+原操作声明，复核账户/开始来源、原计划/活动行原 SQLite 指纹、显示日与设备时区，只改
+秒数等显示字段，不写原事实/来源/outbox，不重新审计全部保留历史。指纹不复用或放宽
+请求日志表白名单/hash 字节。完整加载由配置、平台更新、业务失效和显式重试负责；
+provideGlance 不重复加载。缺缓存/状态变化请求一次普通完整刷新，恢复或习惯变化重置；
+显示异常保留有界恢复，取消不安排恢复。v4 保留原加载器，布局/完成/时区规则不改。
+
+首轮 `b93881529e8c42abb6d72ebdf0204c90` 发现 56 项，34/56、14 failed 时取消并清理；
+主要真实实现错误是把 timelogs 交给仅允许请求日志表的 hash 函数，另有旧刷新次数断言及
+切换确认 5s 等待失败。不称该轮通过或把等待失败直接归因于 hash。修正独立原行指纹及
+原精确次数后，`f41a6fc18bcf4ce885f2744dda9daafd` 在 38/56、2 failed 时取消，保留日志，
+确认本次 wrapper/Gradle 与两个 testbed 包不存在：Android spy 将同一次挂起读取恢复的
+空参数记录计作 6 次；测试验证真实非空入口 1 次，完整读取后清空观察，严格要求后续
+三次 tick 零次历史读取。服务夹具原先看到暂停 COMMIT 即销毁 serviceScope，可取消
+post-commit 刷新；现在先等待精确刷新边界，再销毁，分阶段确认 1/2/3/4 与最终 5 次。
+倒计时开始/stop 精确 2 次，全部原单调计时/命令/分段/分摊/冷重开/重复 stop 断言不变。
+多实例异常隔离保留首个错误后继续，不对同一异常对象执行自抑制。
+
+最终完整 `WidgetTimerTickReadTest`、`TimerWidgetTickerTest`、`WidgetTimerPublicationTest`、
+`WidgetTimerReadTest`、`NextTimerWriterTest`、`ProductionWorkflowInjectionTest`、
+`WidgetTimerActionTest`、`TimerServicePersistenceTest`、`LinkedMetricCoordinatorTest`、
+`WidgetRefresherTargetsTest`、`WidgetRefreshWorkerTest`、`WidgetRefresherTest` 12 类实际
+56/56 passed、0 failures/errors/skipped，connected 7m38s（XML suite 431.799s），独立证据
+`1eedcbdb62244f9a87770925a06f6f3e/targeted.json`。根工具 51、build1m39s/lint/告警、
+APK/发现/XML/新覆盖输入和 testbed 收尾通过，真实进程与两个测试包不存在后才编辑文档。
+8 个完整真实服务用例均通过：切换确认 17.968s、原一分钟自动完成 62.847s，较长原规则/
+编辑/恢复用例 79.716s。初轮等待失败未复现，不宣称已证明消除所有间歇性 UI 等待问题。
+实际 Hilt/Glance 消费者验证健康 tick 只改四个显示字段、原声明/整库不变、旧显示日/时区
+拒绝及开始来源损坏不回退；真实 Room 冷重开验证原规则和原始整数变化、账户切换及取消。
+单消费者测试在真机插桩中用协程调度器验证积压合并、生命周期取消及有界失败/缓存恢复。
+这些不是 launcher 多实例/像素/电量性能或人工验收。
+
+150 秒仍是单项挂起保护，25 分钟是批次容量，不是产品性能标准；原期限和断言未放宽。
+不重复未变容量/重启长链，也不把取消片段拼接成全量。schema/HTTP/后端/依赖/手机平板
+UI 不变，默认 v4，无正式 APK 安装、清库、部署或 Docker 操作。Focus 等其余发布边界、
+正式 v5/Worker/素材/配置/六组件联合、Android/后端 SQL 全量与人工/外网/NAS仍未完成。
+前批 #354 精确 e153f8c03a747cb5a061bb99b461bf8f822342d5 的 CI37891324004 attempt1
+已 completed/success（Android build/lint/warning、repository/secret policy，backend 未变
+跳过），不代替本批精确提交 CI 或联合门禁。
+
 ### 计时小组件账户限定发布（2026-10-09，Issue #332）
 
 NextTimerWriter 的 typed 显示发布保留同一账户协调锁至 renderer 返回，但在显示 I/O 前

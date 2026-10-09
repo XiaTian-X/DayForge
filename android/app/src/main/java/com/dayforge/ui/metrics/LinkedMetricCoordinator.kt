@@ -1,7 +1,6 @@
 package com.dayforge.ui.metrics
 
 import android.content.Context
-import android.content.Intent
 import android.util.Log
 import android.widget.Toast
 import com.dayforge.R
@@ -17,7 +16,6 @@ import com.dayforge.data.repository.ObjectEditSnapshot
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.MetricEntity
 import com.dayforge.domain.model.TimerActionAuthority
-import com.dayforge.domain.service.TimerService
 import com.dayforge.ui.components.LinkedMetricInfo
 import com.dayforge.ui.components.MetricValueInput
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -291,10 +289,7 @@ class LinkedMetricCoordinator @Inject constructor(
                 }
                 preferencesManager.removePendingMetricHabit(habitId)
             }
-            context.sendBroadcast(Intent(TimerService.ACTION_WIDGET_UPDATE).apply {
-                putExtra(TimerService.EXTRA_HABIT_ID, habitId)
-                setPackage(context.packageName)
-            })
+            com.dayforge.widget.WidgetRefreshScheduler.request(context)
             true
         } catch (error: Exception) {
             if (error is CancellationException) throw error

@@ -71,6 +71,11 @@ class TimerWidget : GlanceAppWidget() {
         val ACCUMULATED_SECONDS_KEY = intPreferencesKey("accumulatedSeconds")
         val TIMER_STATE_KEY = stringPreferencesKey("timerState")  // "RUNNING", "PAUSED", "NOT_RUNNING"
         val ELAPSED_SECONDS_KEY = intPreferencesKey("elapsedSeconds")
+        internal val TICK_PLAN_KEY = stringPreferencesKey("timerTickPlan")
+        internal val TICK_LOG_HASH_KEY = stringPreferencesKey("timerTickLogHash")
+        internal val TICK_DATE_KEY = stringPreferencesKey("timerTickDate")
+        internal val TICK_ZONE_KEY = stringPreferencesKey("timerTickZone")
+        internal val TICK_COMPLETED_SECONDS_KEY = intPreferencesKey("timerTickCompletedSeconds")
         val IS_COMPLETED_KEY = booleanPreferencesKey("isCompleted")
         val DATA_LOADED_KEY = booleanPreferencesKey("dataLoaded")
         val READ_FAILED_KEY = booleanPreferencesKey("timerReadFailed")
@@ -148,6 +153,63 @@ class TimerWidget : GlanceAppWidget() {
             }
             // Still-supported v4 path; typed publication never falls back here.
             writeWidgetState(appContext, glanceId, habitId, visibleHabit, null)
+        }
+
+        /** False requests a normal full refresh; ticks never synthesize a new action claim. */
+        internal suspend fun refreshElapsedWidgetData(context: Context, glanceId: GlanceId, habitId: Long): Boolean {
+            val appContext = context.applicationContext
+            val previous = TimerWidget().getAppWidgetState<Preferences>(appContext, glanceId)
+            if (previous[HABIT_ID_KEY] != habitId || previous[DATA_LOADED_KEY] != true ||
+                previous[READ_FAILED_KEY] == true || previous[IS_DELETED_KEY] == true) return false
+            val database = HabitDatabaseProvider.getInstance(appContext)
+            val habit = database.habitDao().getVisibleHabitById(habitId) ?: return false
+            // v4 has no retained-proof audit; keep its original loader and display semantics.
+            if (habit.appearance == null) {
+                refreshWidgetData(appContext, glanceId, habitId)
+                return true
+            }
+            if (previous[TICK_DATE_KEY] != DateTimeUtils.today().toString() ||
+                previous[TICK_ZONE_KEY] != java.time.ZoneId.systemDefault().id) return false
+            val plan = previous[TICK_PLAN_KEY] ?: return false
+            val logHash = previous[TICK_LOG_HASH_KEY] ?: return false
+            val completed = previous[TICK_COMPLETED_SECONDS_KEY] ?: return false
+            val proof = previous[ACTION_PROOF_KEY] ?: return false
+            var publishingDisplay = false
+            var written = false
+            try {
+                val claim = WidgetTimerAction.decode(proof)
+                if (claim.habitId != habitId || claim.authority.sessionUuid == null) return false
+                com.dayforge.di.WidgetEntryPoint.from(appContext).timerWriter()
+                    .renderWidgetTick(habitId, plan, logHash, claim.authority) { log, original ->
+                        publishingDisplay = true
+                        val policy = WidgetTimerPolicy.read(habit, log, original)
+                        val elapsed = policy.elapsed(TimerElapsedCalculator.elapsedSeconds(log, appContext))
+                        val accumulated = Math.addExact(completed, elapsed)
+                        updateAppWidgetState(appContext, glanceId) { prefs ->
+                            // Do not overwrite a full refresh published while awaiting the account lock.
+                            if (prefs.toPreferences() == previous &&
+                                previous[TICK_DATE_KEY] == DateTimeUtils.today().toString() &&
+                                previous[TICK_ZONE_KEY] == java.time.ZoneId.systemDefault().id) {
+                                prefs[ELAPSED_SECONDS_KEY] = elapsed
+                                prefs[ACCUMULATED_SECONDS_KEY] = accumulated
+                                prefs[REMAINING_SECONDS_KEY] = policy.remaining(log, completed, elapsed)
+                                prefs[IS_COMPLETED_KEY] = accumulated >= policy.targetSeconds
+                                written = true
+                            }
+                        }
+                    }
+            } catch (error: Exception) {
+                if (error is CancellationException || publishingDisplay) throw error
+                Log.w(TAG, "Timer tick original unavailable", error)
+                updateAppWidgetState(appContext, glanceId) { prefs ->
+                    if (prefs.toPreferences() == previous) {
+                        prefs[DATA_LOADED_KEY] = false
+                        prefs[READ_FAILED_KEY] = true
+                        prefs.remove(ACTION_PROOF_KEY)
+                    }
+                }
+            }
+            return written
         }
 
         private suspend fun writeWidgetState(context: Context, glanceId: GlanceId, habitId: Long,
@@ -258,6 +320,16 @@ class TimerWidget : GlanceAppWidget() {
                 prefs[READ_FAILED_KEY] = false
                 if (snapshot != null) prefs[ACTION_PROOF_KEY] = WidgetTimerAction.from(snapshot).encode()
                 else prefs.remove(ACTION_PROOF_KEY)
+                if (snapshot != null) {
+                    prefs[TICK_PLAN_KEY] = com.dayforge.data.repository.NextStructureMapper.writePlan(habit).toString()
+                    snapshot.activeLogHash?.let { prefs[TICK_LOG_HASH_KEY] = it } ?: prefs.remove(TICK_LOG_HASH_KEY)
+                    prefs[TICK_DATE_KEY] = snapshot.history.today.toString()
+                    prefs[TICK_ZONE_KEY] = java.time.ZoneId.systemDefault().id
+                    prefs[TICK_COMPLETED_SECONDS_KEY] = accumulatedFromCompleted
+                } else {
+                    prefs.remove(TICK_PLAN_KEY); prefs.remove(TICK_LOG_HASH_KEY)
+                    prefs.remove(TICK_DATE_KEY); prefs.remove(TICK_ZONE_KEY); prefs.remove(TICK_COMPLETED_SECONDS_KEY)
+                }
                 // 写入新增状态
                 prefs[IS_CHECKIN_ALLOWED_KEY] = isCheckInAllowed
                 prefs[NEXT_CHECKIN_DATE_KEY] = nextCheckInDate
@@ -283,16 +355,11 @@ class TimerWidget : GlanceAppWidget() {
 
         try {
             val appWidgetId = androidx.glance.appwidget.GlanceAppWidgetManager(context).getAppWidgetId(id)
-            val state = getAppWidgetState<Preferences>(context, id)
-            val habitId = state[HABIT_ID_KEY] ?: -1L
-
             updateAppWidgetState(context, id) { prefs ->
                 prefs[APP_WIDGET_ID_KEY] = appWidgetId
             }
 
-            if (habitId != -1L) {
-                refreshWidgetData(context, id, habitId)
-            }
+            // Passive renderer: config/worker/retry own full reads, ticks own elapsed display only.
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
