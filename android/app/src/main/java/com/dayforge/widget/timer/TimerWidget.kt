@@ -123,28 +123,39 @@ class TimerWidget : GlanceAppWidget() {
                 return
             }
 
-            val timeLogDao = database.timeLogDao()
-
-            // Query active timer for this habit
-            // v5 policy, row and session must come from one account-coordinated Room snapshot.
-            // A missing/corrupt original is not permission to display the newly edited target.
-            val snapshot = if (visibleHabit.appearance != null) {
+            if (visibleHabit.appearance != null) {
+                var publishingDisplay = false
                 try {
-                    com.dayforge.di.WidgetEntryPoint.from(appContext).timerWriter().widgetSnapshot(visibleHabit)
+                    val published = com.dayforge.di.WidgetEntryPoint.from(appContext).timerWriter()
+                        .renderWidgetSnapshot(visibleHabit) { snapshot ->
+                            publishingDisplay = true
+                            writeWidgetState(appContext, glanceId, habitId, snapshot.habit, snapshot)
+                        }
+                    if (published) return
                 } catch (error: Exception) {
-                    if (error is CancellationException) throw error
+                    // Presentation IO must still reach the refresh worker's bounded retry.
+                    // Only source/read failures become the explicit read-failed display.
+                    if (error is CancellationException || publishingDisplay) throw error
                     Log.w(TAG, "Timer widget original policy unavailable", error)
-                    null
-                } ?: run {
-                    updateAppWidgetState(appContext, glanceId) { prefs ->
-                        prefs[DATA_LOADED_KEY] = false
-                        prefs[READ_FAILED_KEY] = true
-                        prefs[IS_DELETED_KEY] = false
-                    }
-                    return
                 }
-            } else null
-            val habit = snapshot?.habit ?: visibleHabit
+                updateAppWidgetState(appContext, glanceId) { prefs ->
+                    prefs[DATA_LOADED_KEY] = false
+                    prefs[READ_FAILED_KEY] = true
+                    prefs[IS_DELETED_KEY] = false
+                    prefs.remove(ACTION_PROOF_KEY)
+                }
+                return
+            }
+            // Still-supported v4 path; typed publication never falls back here.
+            writeWidgetState(appContext, glanceId, habitId, visibleHabit, null)
+        }
+
+        private suspend fun writeWidgetState(context: Context, glanceId: GlanceId, habitId: Long,
+            habit: com.dayforge.data.local.entity.HabitEntity,
+            snapshot: com.dayforge.data.repository.WidgetTimerReadSnapshot?) {
+            val appContext = context.applicationContext
+            val database = HabitDatabaseProvider.getInstance(appContext)
+            val timeLogDao = database.timeLogDao()
             val activeTimer = snapshot?.activeLog ?: if (snapshot == null) timeLogDao.getActiveTimeLogForHabit(habitId) else null
             val policy = WidgetTimerPolicy.read(habit, activeTimer, snapshot?.policy)
             val targetMinutes = policy.targetMinutes

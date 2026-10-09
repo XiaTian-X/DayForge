@@ -3,6 +3,8 @@ package com.dayforge.data.repository
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.glance.appwidget.state.getAppWidgetState
+import androidx.datastore.preferences.core.edit
+import androidx.room.withTransaction
 import com.dayforge.data.local.PhysicalDatabaseRule
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
@@ -231,6 +233,7 @@ class ProductionWorkflowInjectionTest {
             val focus = com.dayforge.widget.focus.FocusWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, focusId)
             assertEquals(true, timer[com.dayforge.widget.timer.TimerWidget.READ_FAILED_KEY])
             assertEquals(false, timer[com.dayforge.widget.timer.TimerWidget.DATA_LOADED_KEY])
+            assertNull(timer[com.dayforge.widget.timer.TimerWidget.ACTION_PROOF_KEY])
             assertEquals(true, focus[com.dayforge.widget.focus.FocusWidget.READ_FAILED_KEY])
             assertEquals(false, focus[com.dayforge.widget.focus.FocusWidget.DATA_LOADED_KEY])
             assertEquals(active, db.timeLogDao().getActiveTimeLog())
@@ -238,6 +241,38 @@ class ProductionWorkflowInjectionTest {
             refresh()
             assertHealthy()
             assertEquals(queued, db.timeLogDao().getPendingTimerCommands())
+
+            // Exercise the real consumer's presentation failure, not just the writer callback.
+            // Restore only this exact testbed preference and wait for the shared controller.
+            val display = com.dayforge.widget.timer.TimerWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, timerId)
+            val business = db.withTransaction { nextRestartDatabaseProof(db) }
+            val store = com.dayforge.data.local.DataStoreProvider.get(app)
+            val selectionKey = androidx.datastore.preferences.core.stringPreferencesKey("appearance_theme_selection_v1")
+            val selection = requireNotNull(store.data.first()[selectionKey])
+            val themes = com.dayforge.di.DeviceThemeControllerEntryPoint.from(app).themeController()
+            val originalTheme = themes.current()
+            try {
+                store.edit { it[selectionKey] = "damaged timer publication theme" }
+                kotlinx.coroutines.withTimeout(5000) {
+                    themes.state.first { it is com.dayforge.data.appearance.DeviceThemeLoadState.Failed }
+                }
+                val failure = runCatching {
+                    com.dayforge.widget.timer.TimerWidget.refreshWidgetData(app, timerId, rowId)
+                }.exceptionOrNull()
+                assertTrue("Presentation failure must propagate for bounded refresh retry", failure is com.dayforge.data.appearance.ThemeSelectionException)
+                assertEquals(display, com.dayforge.widget.timer.TimerWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, timerId))
+                assertEquals(business, db.withTransaction { nextRestartDatabaseProof(db) })
+                kotlinx.coroutines.withTimeout(5000) { sessions.exclusive { assertEquals(id(1), tokens.authenticationSnapshot()!!.session.userId) } }
+            } finally {
+                store.edit { it[selectionKey] = selection }
+                themes.retry()
+                kotlinx.coroutines.withTimeout(5000) {
+                    themes.state.first { it is com.dayforge.data.appearance.DeviceThemeLoadState.Ready && it.theme.saved == originalTheme.saved }
+                }
+            }
+            refresh()
+            assertHealthy()
+            assertEquals(business, db.withTransaction { nextRestartDatabaseProof(db) })
         } finally { com.dayforge.widget.FocusWidgetAlarmScheduler.cancelScheduledRefresh(app) }
     }
 }
