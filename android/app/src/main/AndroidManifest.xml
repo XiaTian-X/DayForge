@@ -215,14 +215,6 @@
         </receiver>
 
         <!-- FocusWidget - priority-based habit display -->
-        <activity
-            android:name=".widget.focus.FocusWidgetConfigActivity"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
-            </intent-filter>
-        </activity>
-
         <receiver
             android:name=".widget.focus.FocusWidgetReceiver"
             android:exported="true">
