@@ -45,6 +45,26 @@ internal class NextConfigImportRepository @Inject constructor(
         NextConfigImportPreview(context, source)
     }
 
+    /** Destructive counts/readiness only; does not enable replacement or grant a write ticket. */
+    suspend fun previewReplacement(source: ValidatedConfigBundle): NextConfigReplacementPreview = withContext(Dispatchers.IO) {
+        val context = icons.capture()
+        guarded(context) {
+            journal.requireNoOtherPending()
+            NextConfigReplacementInspector(database).capture(NextConfigImportPreview(context, source))
+        }
+    }
+
+    /** UI must discard/reopen a changed preview; an old source URI is never read again here. */
+    suspend fun recheckReplacement(preview: NextConfigReplacementPreview) = withContext(Dispatchers.IO) {
+        guarded(preview.original.context) {
+            journal.requireNoOtherPending()
+            val current = NextConfigReplacementInspector(database).capture(preview.original)
+            check(current.fingerprint == preview.fingerprint && current.counts == preview.counts &&
+                current.blockers == preview.blockers) { "CONFIG_REPLACEMENT_PREVIEW_CHANGED" }
+            check(current.eligible) { "CONFIG_REPLACEMENT_NOT_READY" }
+        }
+    }
+
     /** Confirmation allocates once and commits the original mapping before any material file work. */
     suspend fun confirm(preview: NextConfigImportPreview): String = withContext(Dispatchers.IO) {
         guarded(preview.context) {

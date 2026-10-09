@@ -19,6 +19,44 @@
 
 ## 验证层级
 
+### 配置非空替换的只读预检与过期复核（2026-10-09，Issue #160）
+
+NextConfigImportRepository 新增 previewReplacement/recheckReplacement，经原账户协调锁、
+Room 和实际认证/副本/权限检查读取破坏性替换数量、阻碍及完整本地值/类型指纹。
+未启用非空 confirm；无 Room schema、默认 v4、HTTP/后端、依赖或已确认 UI 改动。
+预检不会分配身份、安装文件、写业务/日志/outbox/偏好或请求小组件刷新；影子及预检
+不是旧对象删除的真实 ACK，不能据 eligible 接管/清空副本。
+
+首轮完整8类135项为134 passed、1 failed、0 errors/skipped，证据
+`ac970ae4596a469da3dab51ee55f8bdc`，build2m10s、connected6m19s/XML356.226s。
+唯一失败为新增指标编辑夹具未提供现有真实编辑票据，正确遭 OBJECT_EDIT_TICKET_REQUIRED
+拒绝；不放宽生产编辑授权。其余7完整类124项通过：NextConfigImportRepositoryTest、
+NextConfigExportRepositoryTest、NextStructureMapperTest、NextPlanDeletionWorkflowTest、
+NextCoreRequestStoreTest、ProtocolNextActivationBarrierTest、OneTimeLocalIntentStoreTest。
+
+实际 wrapper/Gradle 及两测试包退出后，修正新夹具使用原 getMetricForEditing 票据；
+合批审查新预检：仅 unresolved/未知冲突状态阻止，resolved 收据保留；分页首边界不再
+使用 Long.MIN_VALUE 哨兵，避免遗漏该合法 SQLite 隐式 rowid，补对应值变化测试。
+改动只在新预检及其用例，不改旧导入/导出/删除/发送实现，故完整复验新增类，不重跑
+不调用该新路径的124项。最终 NextConfigReplacementPreviewTest13/13 passed，0失败/错误/
+跳过，`1e3161c9bbda44dda68141ec2b889e06/targeted.json`，build1m34s、connected2m14s/XML111.272s。
+首轮失败XML保留在最终 prior-results；不得拼为137项最终成功或 Android 全量。
+
+真实 Room、DataStore、原创建/编辑/事实 producer、实际 loopback HTTP 及原 ACK 消费者
+验证非空目标/习惯/事项/指标/关联数量、只读全表不变、冷重开、缺检查点/未确认结构、
+待同步及 dead letter、运行计时、pending/saved 指标输入、resolved/unresolved 冲突、
+事实变更及130条历史跨页同数量值变化、重新认证/只读/设备/副本拒绝、旧对象/坏关联/
+原 SQL 类型/影子 hash 和过大保留行拒绝，无修复或清库。检查点/冲突状态为明确隔离
+存储夹具，不冒称真实后端 bootstrap/冲突联合。修改最低 rowid 的保留收据后，指纹
+必须变化；这只证明值/类型绑定，不证明该损坏收据本身有效。队列10000边界/溢出是
+标量准入检查，不声称完整最大配置替换容量。正式 confirm 对非空副本仍明确拒绝。
+
+root51/build/lint/告警、APK/实际发现/XML/新非空覆盖输入及两测试包清理门禁通过；
+全局覆盖校准、Android/后端 SQL 全量、正式设置/系统提供者、桌面/平板/人工/外网/
+NAS/Docker 未执行。未重复未变长计时/最大素材，不改150s/1500s，不安装正式APK、
+清库、部署或合并。稳定删除映射、原子替换/真实ACK屏障、正式恢复交互/主题安装/
+设置页及v5联合仍未完成，#160继续进行。
+
 ### 配置持久确认与空副本真实导入（2026-10-09，Issue #160）
 
 NextConfigImportRepository/Store 接真实账户、素材控制器、原 creator/producer 与 Room 16：
