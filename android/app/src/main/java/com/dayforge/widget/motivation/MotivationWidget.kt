@@ -67,7 +67,7 @@ class MotivationWidget : GlanceAppWidget() {
                     }
                     HabitType.CHECK_IN,
                     HabitType.COUNTING -> {
-                        if (habit.habitType == HabitType.COUNTING && habit.appearance != null) {
+                        if (habit.appearance != null) {
                             habitStatusCalculator.calculate(habit).bestStreak
                         } else {
                         val completions = completionDao.getCompletionsByHabit(habit.id).first()

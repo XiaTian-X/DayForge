@@ -90,7 +90,8 @@ data class WidgetFactSnapshot internal constructor(
     val claim: WidgetFactClaim,
     val count: CountHistory?,
     val completed: Boolean,
-    val targetProgress: Int
+    val targetProgress: Int,
+    val hasFailed: Boolean = false
 )
 
 class WidgetGoalDisplay internal constructor(val habit: HabitEntity, val progress: Int, val target: Int)
@@ -102,7 +103,8 @@ class WidgetFactReader @Inject constructor(
     private val tokens: TokenManager,
     private val sessions: AccountSessionCoordinator,
     private val preferences: PreferencesManager,
-    private val counts: CountHistoryReader
+    private val counts: CountHistoryReader,
+    private val checks: CheckHistoryReader = CheckHistoryReader(database, tokens, sessions)
 ) {
     private val once = OneTimeLocalIntentStore(database, tokens, sessions, preferences)
     internal val accessChanges = combine(tokens.factAccessChanges, tokens.iconAccessChanges) { _, _ ->
@@ -155,7 +157,7 @@ class WidgetFactReader @Inject constructor(
     suspend fun goalDisplay(claim: WidgetFactClaim): WidgetGoalDisplay = sessions.exclusive {
         database.withTransaction {
             val view = requireInTransaction(claim)
-            val progress = view.count?.qualifiedDates?.size ?: database.completionDao().getDistinctDayCount(view.habit.id)
+            val progress = view.targetProgress
             val target = requireNotNull(view.habit.targetCycles)
             check(view.habit.completionPolicy == "recurring" && progress >= target) { "FACT_WIDGET_GOAL_CHANGED" }
             WidgetGoalDisplay(view.habit, progress, target)
@@ -195,7 +197,9 @@ class WidgetFactReader @Inject constructor(
             view.queue.optimisticState
         } else null
         val history = if (habit.habitType == HabitType.COUNTING) counts.readInTransaction(habit, date) else null
-        val facts = if (oneTime != null) emptyList() else history?.completions?.filter { it.recordedLocalDate == date.toString() }
+        val checkHistory = if (oneTime == null && habit.habitType == HabitType.CHECK_IN) checks.readInTransaction(habit, date) else null
+        val facts = if (oneTime != null) emptyList() else checkHistory?.todayCompletions
+            ?: history?.completions?.filter { it.recordedLocalDate == date.toString() }
             ?: database.completionDao().getCompletionsInRange(habit.id, date, date.plusDays(1))
         check(facts.all { it.habitUuid == habit.uuid && it.oneTimeAction == null }) { "FACT_WIDGET_FACT_INVALID" }
         val latest = facts.maxByOrNull { it.id }?.uuid
@@ -203,16 +207,14 @@ class WidgetFactReader @Inject constructor(
             access.session.serverInstanceId, access.session.syncEpoch, access.capturedDeviceId, habit.id, habit.uuid,
             NextStructureMapper.writePlan(habit), date.toString(), zone.id, oneTime?.completionEventUuid ?: latest,
             oneTime, history?.todayPolicy?.toJson(), if (rounds == null) 0 else 1,
-            history?.roundHead ?: if (rounds == null || oneTime != null) null else {
-                val metadata = Json.decodeFromString<com.dayforge.data.api.dto.ChallengeMetadata>(rounds.metadataJson)
-                metadata.checkpoints.singleOrNull { it.head.activityUuid == habit.uuid }?.head
-                    ?: requireNotNull(rounds.pendingInitials[habit.uuid]) { "FACT_WIDGET_ROUND_REQUIRED" }.head
-            })
+            history?.roundHead ?: checkHistory?.roundHead)
         check(history == null || history.todayPolicy != null) { "COUNT_RULE_UNKNOWN" }
         check(tokens.localCoreWriteAccess() == access) { "FACT_WIDGET_STALE_ACCOUNT" }
-        val progress = if (oneTime != null) 0 else history?.qualifiedDates?.size
+        val progress = if (oneTime != null) 0 else history?.qualifiedDates?.size ?: checkHistory?.qualifiedDates?.size
             ?: database.completionDao().getDistinctDayCount(habit.id)
         return WidgetFactSnapshot(habit, claim, history, oneTime?.let { it.completionEventUuid != null }
-            ?: history?.completedToday ?: facts.isNotEmpty(), progress)
+            ?: history?.completedToday ?: checkHistory?.completedToday ?: facts.isNotEmpty(), progress,
+            history?.let { com.dayforge.domain.service.FailureCheckerUtils.countHasFailed(habit, it) }
+                ?: checkHistory?.let { com.dayforge.domain.service.FailureCheckerUtils.checkHasFailed(habit, it) } ?: false)
     }
 }

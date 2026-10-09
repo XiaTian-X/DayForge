@@ -21,14 +21,14 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-internal data class CountFactOriginal(val row: NextRequestOriginEntity, val payload: JsonObject,
+internal data class RecurringCompletionOriginal(val row: NextRequestOriginEntity, val payload: JsonObject,
     val rounds: NextRoundOperationIntent?)
 
-/** Read-only evidence for effective quantities, not a repair or a replacement for retained wire bytes. */
-internal class CountFactEvidence(private val database: HabitDatabase) {
+/** Read-only ordinary fact evidence; no repair or replacement for retained original/wire bytes. */
+internal class RecurringCompletionFactEvidence(private val database: HabitDatabase) {
     private val sql get() = database.openHelper.writableDatabase
 
-    suspend fun verify(habit: HabitEntity, facts: List<CompletionEntity>, policies: Map<LocalDate, CountDayPolicy>, account: String): Map<String, CountFactOriginal> {
+    suspend fun verify(habit: HabitEntity, facts: List<CompletionEntity>, policies: Map<LocalDate, CountDayPolicy>, account: String): Map<String, RecurringCompletionOriginal> {
         check(database.inTransaction())
         val originals = originals(habit, facts.mapTo(hashSetOf()) { it.uuid }, account)
         val reverted = acceptedReverts(habit)
@@ -50,7 +50,8 @@ internal class CountFactEvidence(private val database: HabitDatabase) {
                 val policy = NextCommonFactMapper.countPolicy(original)
                 // A tracking-mode edit does not erase old check-ins or relabel them as known counts.
                 val wasCheckIn = original["event_type"] == JsonPrimitive("check_in")
-                val expected = SyncV2Mapper.completion(fact, if (wasCheckIn) habit.copy(habitType = HabitType.CHECK_IN) else habit)
+                val expected = SyncV2Mapper.completion(fact, habit.copy(habitType =
+                    if (wasCheckIn) HabitType.CHECK_IN else HabitType.COUNTING))
                 check(JsonObject(original.filterKeys { it != "count_policy" }) == expected &&
                     policy == (if (wasCheckIn) null else policies[fact.businessDate]) && (!wasCheckIn || fact.value == 1)) { "COUNT_FACT_INVALID" }
                 val instant = Instant.ofEpochMilli(requireNotNull(fact.actualCompletedAt) { "COUNT_FACT_INVALID" })
@@ -93,9 +94,9 @@ internal class CountFactEvidence(private val database: HabitDatabase) {
         return targets
     }
 
-    private suspend fun originals(habit: HabitEntity, needed: Set<String>, account: String): Map<String, CountFactOriginal> {
+    private suspend fun originals(habit: HabitEntity, needed: Set<String>, account: String): Map<String, RecurringCompletionOriginal> {
         if (needed.isEmpty()) return emptyMap()
-        val found = hashMapOf<String, CountFactOriginal>()
+        val found = hashMapOf<String, RecurringCompletionOriginal>()
         // One streamed pass per activity, not one lifetime scan per fact. Batches only bound allocation,
         // never the number of days/events a user may retain; no JSON1 dependency on older Android SQLite.
         sql.query("SELECT requestId FROM next_request_origins WHERE kind=? AND intentJson LIKE ? AND intentJson LIKE ?",
@@ -112,7 +113,7 @@ internal class CountFactEvidence(private val database: HabitDatabase) {
     }
 
     private suspend fun originalBatch(ids: List<String>, habit: HabitEntity, needed: Set<String>, account: String,
-        found: MutableMap<String, CountFactOriginal>) {
+        found: MutableMap<String, RecurringCompletionOriginal>) {
         val hashes = NextRequestSql.boundedRowHashes(sql, "next_request_origins", "requestId", ids, NEXT_OPERATION)
         val rows = if (hashes == null) emptyMap() else database.nextRequestDao().origins(NEXT_OPERATION, ids).associateBy { it.requestId }
         for (id in ids) {
@@ -129,7 +130,7 @@ internal class CountFactEvidence(private val database: HabitDatabase) {
                 operation.payload["activity_uuid"] != JsonPrimitive(habit.uuid) || operation.payload["event_type"] !in quantityTypes) continue
             check(origin.accountId == account) { "COUNT_SESSION_CHANGED" }
             if (operation.entityUuid in needed) check(found.put(operation.entityUuid,
-                CountFactOriginal(origin, operation.payload, rounds)) == null) { "COUNT_FACT_INVALID" }
+                RecurringCompletionOriginal(origin, operation.payload, rounds)) == null) { "COUNT_FACT_INVALID" }
         }
     }
 

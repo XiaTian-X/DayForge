@@ -124,13 +124,13 @@ class CheckInWidget : GlanceAppWidget() {
 
             // Target progress - any completion counts (CHECK_IN only)
             val targetProgress = if (habit.targetCycles != null) {
-                database.completionDao().getDistinctDayCount(habitId)
+                typed?.targetProgress ?: database.completionDao().getDistinctDayCount(habitId)
             } else 0
             // 目标完成：进度达标且习惯已被停用（用户点击了"确认完成"）
             val isGoalReached = habit.targetCycles != null && targetProgress >= habit.targetCycles && !habit.isActive
 
             // 失败状态判定
-            val hasFailed = WidgetFailureChecker.checkFailure(habit, database)
+            val hasFailed = typed?.hasFailed ?: WidgetFailureChecker.checkFailure(habit, database)
 
             // Pre-compute widget colors using WidgetColorResolver
             // Per WIDGET-COLOR-01, WIDGET-COLOR-06: Colors must be pre-calculated before rendering

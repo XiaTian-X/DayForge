@@ -21,7 +21,8 @@ import javax.inject.Singleton
 class FailureChecker @Inject constructor(
     private val completionDao: CompletionDao,
     private val timeLogDao: TimeLogDao,
-    private val countHistoryReader: com.dayforge.data.repository.CountHistoryReader? = null
+    private val countHistoryReader: com.dayforge.data.repository.CountHistoryReader? = null,
+    private val checkHistoryReader: com.dayforge.data.repository.CheckHistoryReader? = null
 ) {
 
     /**
@@ -35,6 +36,8 @@ class FailureChecker @Inject constructor(
         if (!FailureCheckerUtils.shouldCheckFailure(habit)) return false
         if (habit.habitType == com.dayforge.data.model.HabitType.COUNTING && habit.appearance != null)
             return FailureCheckerUtils.countHasFailed(habit, requireNotNull(countHistoryReader) { "COUNT_READER_REQUIRED" }.read(habit))
+        if (habit.habitType == com.dayforge.data.model.HabitType.CHECK_IN && habit.appearance != null && habit.completionPolicy == "recurring")
+            return FailureCheckerUtils.checkHasFailed(habit, requireNotNull(checkHistoryReader) { "CHECK_READER_REQUIRED" }.read(habit))
 
         // No completions yet = cycle hasn't started
         if (firstCompletionDate == null) return false

@@ -8,6 +8,7 @@ import com.dayforge.data.appearance.MaterialSocketServer
 import com.dayforge.data.local.entity.*
 import com.dayforge.domain.model.*
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import org.junit.Assert.*
@@ -61,10 +62,11 @@ class NextRestartWorkflowTest : NextObjectEditorFixture() {
         val snapshot = editor.habit(habit.id)
         return restart(http).restart(requireNotNull(snapshot.value), requireNotNull(snapshot.authority))
     }
-    private suspend fun initialize(timer: Boolean = false, check: Boolean = false): NextSyncHttp {
+    private suspend fun initialize(timer: Boolean = false, check: Boolean = false, strict: Boolean = false): NextSyncHttp {
         if (timer || check) {
             habit = habit.copy(habitType = if (timer) com.dayforge.data.model.HabitType.TIMER else com.dayforge.data.model.HabitType.CHECK_IN,
                 targetValue = 1, isActive = true,
+                failMode = if (strict) com.dayforge.data.model.FailMode.STRICT else habit.failMode,
                 planMetadata = requireNotNull(habit.planMetadata).copy(targetUnit = if (timer) "second" else null))
             serverPlan = habit
             db.withTransaction {
@@ -181,6 +183,164 @@ class NextRestartWorkflowTest : NextObjectEditorFixture() {
         return original.copy(id = saved)
     }
     private suspend fun countHistory() = CountHistoryReader(db, tokens, sessions).read(current(), java.time.LocalDate.parse("2026-10-06"))
+    private fun checks() = CheckHistoryReader(db, tokens, sessions)
+    private fun checkCalculator() = com.dayforge.domain.service.HabitStatusCalculator(
+        com.dayforge.domain.service.FailureChecker(db.completionDao(), db.timeLogDao(), checkHistoryReader = checks()),
+        db.completionDao(), db.timeLogDao(), checkHistoryReader = checks())
+    private fun checkWidgets() = WidgetFactReader(db, tokens, sessions, preferences, CountHistoryReader(db, tokens, sessions), checks())
+    private fun checkRepository() = HabitRepository(db.habitDao(), db.completionDao(), db.timeLogDao(), db,
+        nextObjectEditor = editor, nextObjectCreator = creator, checkHistoryReader = checks(), widgetFactReader = checkWidgets())
+    private fun checkService() = com.dayforge.domain.service.CheckInService(checkRepository(), db.completionDao(), db.timeLogDao())
+    private suspend fun checkFact(n: Int, date: java.time.LocalDate): CompletionEntity {
+        val row = current(); val zone = java.time.ZoneId.systemDefault()
+        val original = CompletionEntity(habitId = row.id, habitUuid = row.uuid, uuid = id(n), value = 1,
+            date = date.atStartOfDay(zone).toInstant().toEpochMilli(),
+            actualCompletedAt = date.atTime(12, 0).atZone(zone).toInstant().toEpochMilli(),
+            recordedTimezone = zone.id, recordedLocalDate = date.toString())
+        val saved = producer().writeRounds(producer().captureRounds()) { db.completionDao().insert(original) }
+        return original.copy(id = saved)
+    }
+
+    @Test fun checkToggleUsesOnlyCurrentRoundAndUndoRetainsOldFactsAcrossColdSync() = runBlocking<Unit> {
+        val http = initialize(check = true)
+        assertTrue(checkService().toggleCheckIn(app, habit.id).let { it as com.dayforge.data.model.CheckInResult.Success }.completed)
+        val initial = db.completionDao().getByHabitOnce(habit.id).single()
+        val first = propose(http)
+        assertNull(checkRepository().getTodayCompletionId(habit.id)); assertEquals(0, checkRepository().getTodayCompletionCount(habit.id))
+        val added = checkService().toggleCheckIn(app, habit.id) as com.dayforge.data.model.CheckInResult.Success
+        assertTrue(added.completed); assertEquals(1, added.progress)
+        val firstFact = checks().read(current()).completions.single()
+        val second = propose(http)
+        assertTrue(checkService().toggleCheckIn(app, habit.id).let { it as com.dayforge.data.model.CheckInResult.Success }.completed)
+        assertEquals(second.head, checks().read(current()).roundHead)
+        val undone = checkService().toggleCheckIn(app, habit.id) as com.dayforge.data.model.CheckInResult.Success
+        assertFalse(undone.completed); assertEquals(0, undone.progress); assertFalse(undone.goalReached)
+        assertEquals(setOf(initial.uuid, firstFact.uuid), db.completionDao().getByHabitOnce(habit.id).mapTo(hashSetOf()) { it.uuid })
+        storage.reopen(); runtime(http).syncRounds()
+        val view = checks().read(current())
+        assertEquals(second.head, view.roundHead); assertFalse(view.completedToday); assertNull(view.firstDate)
+        assertTrue(view.qualifiedDates.isEmpty()); assertEquals(0, count("sync_outbox"))
+        assertTrue(births.any { it.entityUuid == firstFact.uuid && it.head == first.head })
+    }
+
+    @Test fun checkStatusWidgetProgressAndStaleClickUseRealPendingHeadNotAllPrefetchedFacts() = runBlocking<Unit> {
+        val http = initialize(check = true, strict = true); val today = com.dayforge.util.DateTimeUtils.today()
+        checkFact(990, today.minusDays(2)); checkFact(991, today)
+        val old = current(); val raw = db.completionDao().getByHabitOnce(habit.id)
+        val oldClaim = checkWidgets().read(old).claim
+        assertTrue(checkCalculator().calculate(old).completedToday)
+        assertTrue(checkCalculator().calculate(old).hasFailed)
+        val ref = propose(http); val newRow = current()
+        val status = checkCalculator().calculate(newRow, completions = raw)
+        assertFalse(status.completedToday); assertFalse(status.hasFailed); assertEquals(0, status.targetProgress)
+        assertEquals(0, status.bestStreak); assertNull(status.lastCompletionId)
+        val empty = checkWidgets().read(newRow)
+        assertEquals(ref.head, empty.claim.roundHead); assertFalse(empty.completed); assertEquals(0, empty.targetProgress)
+        val before = durable(); assertEquals("FACT_WIDGET_ROUND_CHANGED", rejected {
+            checkService().widgetAction(app, oldClaim, "toggle") }.message); assertEquals(before, durable())
+        assertTrue(checkService().widgetAction(app, empty.claim, "toggle").completed)
+        assertEquals(1, checkCalculator().calculate(current()).targetProgress)
+        assertEquals(1, checkWidgets().read(current()).targetProgress)
+        storage.reopen(); assertEquals(ref.head, checks().read(current()).roundHead)
+    }
+
+    @Test fun hiddenCheckFactCorruptionAndMissingBirthFailReadOnlyWithoutRepairingHistory() = runBlocking<Unit> {
+        val http = initialize(check = true)
+        val original = checkFact(992, com.dayforge.util.DateTimeUtils.today())
+        runtime(http).syncRounds(); val ref = propose(http)
+        assertTrue(checks().read(current()).completions.isEmpty())
+        db.openHelper.writableDatabase.execSQL("UPDATE completions SET value=CAST(value AS BLOB) WHERE uuid=?", arrayOf(original.uuid))
+        val damaged = durable(); rejected { checks().read(current()) }; assertEquals(damaged, durable())
+        db.openHelper.writableDatabase.execSQL("UPDATE completions SET value=1 WHERE uuid=?", arrayOf(original.uuid))
+        db.openHelper.writableDatabase.execSQL("DELETE FROM next_challenge_births WHERE entityUuid=?", arrayOf(original.uuid))
+        val missing = durable(); rejected { checks().read(current()) }; assertEquals(missing, durable())
+        assertNotNull(db.nextRequestDao().origin(NEXT_OPERATION, ref.operationId))
+    }
+
+    @Test fun checkHistoricalUndoAfterSecondRestartCannotBecomeTodaysToggleOrEraseNewRound() = runBlocking<Unit> {
+        val http = initialize(check = true); val first = propose(http)
+        val previous = checkFact(993, com.dayforge.util.DateTimeUtils.today())
+        val second = propose(http); checkFact(994, com.dayforge.util.DateTimeUtils.today())
+        checkRepository().undoCompletion(app, previous.id, authority = editor.habit(habit.id).authority)
+        val history = checks().read(current())
+        assertEquals(second.head, history.roundHead); assertEquals(id(994), history.todayCompletions.single().uuid)
+        val revert = db.nextRequestDao().origin(NEXT_OPERATION, db.syncOutboxDao().getAll().single {
+            it.recordType == "completion" && it.action == "delete" && it.entityUuid == previous.uuid }.operationId)!!
+        assertEquals(first.head, roundOperationIntent(revert.intentJson)!!.context.head)
+        storage.reopen(); runtime(http).syncRounds()
+        assertEquals(id(994), checks().read(current()).completions.single().uuid)
+    }
+
+    @Test fun checkCurrentRoundUpdatesDashboardNestedProfileAndDetailCalendarWithoutNewFactPulse() = runBlocking<Unit> {
+        val http = initialize(check = true)
+        val repo = checkRepository(); val metrics = creatingMetrics()
+        val goal = com.dayforge.data.model.HabitDraft(id = id(995), name = "Check container",
+            habitType = com.dayforge.data.model.HabitType.GOAL,
+            appearance = ObjectAppearance(IconReference.Role("goal.custom"), "#123456", "theme"))
+        creatingHabits().createGoal(goal, emptyList(), creationAuthority = creator.capture())
+        val edit = editor.habit(habit.id)
+        editingHabits().updateHabit(edit.value!!.copy(parentHabitId = goal.id), editAuthority = edit.authority)
+        checkService().toggleCheckIn(app, habit.id)
+        val writer = NextTimerWriter(db, tokens, sessions)
+        val failure = com.dayforge.domain.service.FailureChecker(db.completionDao(), db.timeLogDao(), checkHistoryReader = checks())
+        val status = com.dayforge.domain.service.HabitStatusCalculator(failure, db.completionDao(), db.timeLogDao(),
+            timerWriter = writer, checkHistoryReader = checks())
+        val complete = com.dayforge.domain.service.HabitCompletionCoordinator(app, checkService(), repo, metrics)
+        val linked = com.dayforge.ui.metrics.LinkedMetricCoordinator(app, preferences, metrics, repo)
+        val timers = com.dayforge.domain.service.HabitTimerCoordinator(
+            com.dayforge.domain.service.TimerManager(app, db.habitDao(), db.timeLogDao(), writer),
+            com.dayforge.domain.service.ActiveTimerStateProvider(db.timeLogDao(), repo, app, writer))
+        val models = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+            listOf(
+                own(com.dayforge.ui.screens.dashboard.DashboardViewModel(app, repo, complete,
+                    com.dayforge.domain.service.HabitDeletionCoordinator(app, repo),
+                    com.dayforge.ui.screens.dashboard.DashboardHabitListBuilder(status),
+                    com.dayforge.ui.screens.dashboard.DashboardTimeWindowTicker(repo, preferences),
+                    com.dayforge.domain.service.HabitLifecycleCoordinator(app, repo), timers, db.timeLogDao(),
+                    db.habitDao(), preferences, db.completionDao(), metrics, linked,
+                    com.dayforge.domain.service.MetricOverviewProvider(metrics))),
+                own(com.dayforge.ui.screens.nested.NestedViewModel(app, db.habitDao(), db.timeLogDao(), repo,
+                    com.dayforge.ui.screens.nested.NestedHabitTreeBuilder(db.habitDao(), db.completionDao(), db.timeLogDao(),
+                        failure, timerWriter = writer, checkHistoryReader = checks()), complete,
+                    com.dayforge.domain.service.HabitDeletionCoordinator(app, repo), preferences, linked,
+                    com.dayforge.domain.service.HabitLifecycleCoordinator(app, repo), timers)),
+                own(com.dayforge.ui.screens.profile.ProfileViewModel(repo, db.timeLogDao(), status, preferences)),
+                own(com.dayforge.ui.screens.habitdetail.HabitDetailViewModel(app, repo, preferences, db.timeLogDao(),
+                    db.completionDao(), db.habitDao(), db.habitMetricLinkDao(), db.metricDao(), db.metricLogDao()))
+                    .also { it.loadHabit(habit.id) })
+        }
+        val dashboard = models[0] as com.dayforge.ui.screens.dashboard.DashboardViewModel
+        val nested = models[1] as com.dayforge.ui.screens.nested.NestedViewModel
+        val profile = models[2] as com.dayforge.ui.screens.profile.ProfileViewModel
+        val detail = models[3] as com.dayforge.ui.screens.habitdetail.HabitDetailViewModel
+        suspend fun shown(completed: Boolean) = kotlinx.coroutines.withTimeout(5000) {
+            dashboard.habitsWithStats.first { it.any { row -> row.habit.id == habit.id && row.completedToday == completed &&
+                row.targetProgress == if (completed) 1 else 0 } }
+            nested.topLevelHabitsWithChildren.first { it.flatMap { row -> row.children }.any { child ->
+                child.habit.id == habit.id && child.completedToday == completed && child.targetProgress == if (completed) 1 else 0 } }
+            profile.todayProgress.first { it == ((if (completed) 1 else 0) to 2) }
+            detail.uiState.first { !it.isLoading && !it.readError && it.habit?.id == habit.id &&
+                it.completions.isNotEmpty() == completed && it.targetProgress == if (completed) 1 else 0 }
+            assertFalse(dashboard.readError.value); assertFalse(nested.readError.value); assertFalse(profile.readError.value)
+        }
+        shown(true)
+        val raw = db.completionDao().getByHabitOnce(habit.id)
+        propose(http); shown(false)
+        assertEquals(raw, db.completionDao().getByHabitOnce(habit.id))
+        checkService().toggleCheckIn(app, habit.id); shown(true)
+        assertEquals(2, db.completionDao().getByHabitOnce(habit.id).size)
+    }
+
+    @Test fun checkUndoOneOfSeveralCurrentFactsReportsActualRemainingCompletion() = runBlocking<Unit> {
+        val http = initialize(check = true); propose(http)
+        val today = com.dayforge.util.DateTimeUtils.today()
+        val retained = checkFact(998, today); checkFact(999, today)
+        val result = checkService().toggleCheckIn(app, habit.id) as com.dayforge.data.model.CheckInResult.Success
+        assertTrue(result.completed); assertEquals(1, result.progress); assertFalse(result.goalReached)
+        assertEquals(retained.uuid, checks().read(current()).todayCompletions.single().uuid)
+        val last = checkService().toggleCheckIn(app, habit.id) as com.dayforge.data.model.CheckInResult.Success
+        assertFalse(last.completed); assertEquals(0, last.progress)
+    }
     private suspend fun edit(name: String) {
         val snapshot = editor.habit(habit.id)
         editingHabits().updateHabit(snapshot.value!!.copy(name = name), editAuthority = snapshot.authority)
