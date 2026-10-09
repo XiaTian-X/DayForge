@@ -3,6 +3,7 @@ package com.dayforge.widget.checkin
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -41,14 +42,13 @@ class GoalCompletionActivity : ComponentActivity() {
     @Inject
     lateinit var habitRepository: HabitRepository
     private var actionPending = false
+    private data class DialogDisplay(val name: String, val progress: Int, val target: Int)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         val habitId = intent.getLongExtra(EXTRA_HABIT_ID, -1L)
-        val habitName = intent.getStringExtra(EXTRA_HABIT_NAME) ?: "Habit"
         val progress = intent.getIntExtra(EXTRA_PROGRESS, 0)
-        val target = intent.getIntExtra(EXTRA_TARGET, 0)
         val claim = try { WidgetFactClaim.read(intent) } catch (error: Exception) { finish(); return }
         if (claim != null && claim.habitId != habitId) { finish(); return }
 
@@ -62,38 +62,38 @@ class GoalCompletionActivity : ComponentActivity() {
             }
         }
 
+        val display = mutableStateOf<DialogDisplay?>(null)
         setContent {
             MaterialTheme {
-                var ready by remember { mutableStateOf(false) }
-                var displayedName by remember { mutableStateOf(habitName) }
-                var displayedTarget by remember { mutableIntStateOf(target) }
-                var displayedProgress by remember { mutableIntStateOf(progress) }
-                LaunchedEffect(claim) {
-                    try {
-                        val display = claim?.let { factReader.goalDisplay(it) }
-                        val habit = display?.habit
-                            ?: requireNotNull(habitRepository.getHabitById(habitId)).also {
-                                check(it.appearance == null) { "FACT_WIDGET_CLAIM_REQUIRED" }
-                            }
-                        displayedName = habit.name
-                        displayedTarget = requireNotNull(habit.targetCycles)
-                        if (display != null) displayedProgress = display.progress
-                        ready = true
-                    } catch (error: Exception) {
-                        if (error is CancellationException) throw error
-                        Toast.makeText(applicationContext, getString(R.string.goal_completion_update_error), Toast.LENGTH_LONG).show()
-                        finish()
-                    }
-                }
-                if (ready) {
+                display.value?.let { value ->
                     GoalCompletionDialog(
-                        habitName = displayedName,
-                        progress = displayedProgress,
-                        target = displayedTarget,
+                        habitName = value.name,
+                        progress = value.progress,
+                        target = value.target,
                         onConfirm = { submitGoal(habitId, claim, true) },
                         onDismiss = { submitGoal(habitId, claim, false) }
                     )
                 }
+            }
+        }
+        // Activity owns the read, not Compose's frame/effect continuation. In particular,
+        // test frame interceptors must not redirect Room's transaction thread. Cancellation
+        // remains structured; publish one complete display on Main after source validation.
+        lifecycleScope.launch {
+            try {
+                val value = withContext(Dispatchers.IO) {
+                    val view = claim?.let { factReader.goalDisplay(it) }
+                    val habit = view?.habit ?: requireNotNull(habitRepository.getHabitById(habitId)).also {
+                        check(it.appearance == null) { "FACT_WIDGET_CLAIM_REQUIRED" }
+                    }
+                    DialogDisplay(habit.name, view?.progress ?: progress, requireNotNull(habit.targetCycles))
+                }
+                display.value = value
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                Log.w("GoalCompletion", "Goal display source unavailable", error)
+                Toast.makeText(applicationContext, getString(R.string.goal_completion_update_error), Toast.LENGTH_LONG).show()
+                finish()
             }
         }
     }

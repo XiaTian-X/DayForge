@@ -22,6 +22,14 @@ class WidgetDisplayPublisher @Inject constructor(
     private val sessions: AccountSessionCoordinator
 ) {
     private class Scope(val stamp: Any, val access: LocalCoreWriteAccess?)
+    internal class Publication(
+        private val guardedPublish: suspend (suspend () -> Unit) -> Boolean,
+        private val current: suspend () -> Boolean
+    ) {
+        suspend operator fun invoke(display: suspend () -> Unit): Boolean = guardedPublish(display)
+        /** Only a writer ALREADY holding the shared account lock may use this read-only check. */
+        suspend fun isCurrentWhileAccountLocked(): Boolean = current()
+    }
     @Volatile private var blocked = false
     @Volatile private var stamp = Any()
     private val invalidator = object : AccountIconMemory.Cache {
@@ -42,26 +50,40 @@ class WidgetDisplayPublisher @Inject constructor(
         onReadFailure: suspend (Exception) -> Unit,
         prepare: suspend () -> (suspend () -> Unit)
     ): Boolean {
-        val scope = sessions.exclusive {
-            val captured = stamp
-            val access = tokens.localCoreWriteAccess()
-            if (blocked || captured !== stamp) null else Scope(captured, access)
-        } ?: return false
+        val publication = capturePublication() ?: return false
         val display = try {
             prepare()
         } catch (error: Exception) {
             if (error is CancellationException) throw error
-            publish(scope) { onReadFailure(error) }
+            publication { onReadFailure(error) }
             return false
         }
-        return publish(scope, display)
+        return publication(display)
+    }
+
+    /**
+     * Ephemeral display-only capability captured BEFORE any source read. Used where healthy
+     * typed publication already owns a stronger writer boundary, or a display and its alarm
+     * need the same original scope. Never invoke inside an already-held account lock.
+     */
+    internal suspend fun capturePublication(): Publication? {
+        val scope = sessions.exclusive {
+            val captured = stamp
+            val access = tokens.localCoreWriteAccess()
+            if (blocked || captured !== stamp) null else Scope(captured, access)
+        } ?: return null
+        return Publication({ display -> publish(scope, display) }, { isCurrent(scope) })
     }
 
     private suspend fun publish(scope: Scope, display: suspend () -> Unit): Boolean = sessions.exclusive {
-        val access = tokens.localCoreWriteAccess()
-        if (blocked || scope.stamp !== stamp || access != scope.access) return@exclusive false
+        if (!isCurrent(scope)) return@exclusive false
         currentCoroutineContext().ensureActive()
         display()
         true
+    }
+
+    private suspend fun isCurrent(scope: Scope): Boolean {
+        val access = tokens.localCoreWriteAccess()
+        return !blocked && scope.stamp === stamp && access == scope.access
     }
 }

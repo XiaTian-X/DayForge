@@ -19,6 +19,49 @@
 
 ## 验证层级
 
+### 计时显示、专注闹钟与账户清理生命周期（2026-10-09，Issue #332）
+
+Timer 在来源读取前捕获原账户显示范围，typed 正常发布在既有 writer 强锁内复核；
+真实竞态发现未运行旧习惯可借新账户生成开始声明，现已拒绝。删除/v4/来源错误及 tick
+错误使用原范围发布，删除/错误清除全部动作和 tick 标记。Focus 来源准备不重入发布锁，
+平台安排/取消复用原显示范围；无窗口仍保留具有有效原来源的活动计时分钟刷新。
+清理按类型/实例隔离 host 故障、传播取消并请求当前数据恢复；实际未绑定 Glance 状态先清空。
+目标确认由 Activity 生命周期在 IO 读取、Main 发布完整显示，Compose 不再拥有 Room 读取。
+
+初轮 `92b2def165d94b63956081d0d046e58e` 缺 CancellationException 导入、
+`9de109b440f64130b5da9495929021bb` 的 UseKtx lint 均止于构建，未执行行为。
+后者保留平台 commit Boolean 检查，使用局部说明的 SuppressLint，不扩大告警预算。
+`857d9265569f485c9b6f469b6486cd11` 17 类 65 项为 46 passed/19 failed，
+其中新增夹具 mock 对象恢复旧已关闭 provider 引发串联失败；改用既有真实 setInstanceForTesting
+并在规则关库前还原。另一个目标确认用例暴露 Compose/Room 续体线程问题，未忽略。
+`a12c0cf174084409b7680b5b60556417` 13 类 54 项为 51 passed/3 failed；
+`4b01c25a5a474131a98866f132d7b5e8` 4 类 16 项为 14 passed/2 failed；
+修正新夹具旧对象 completionPolicy 和重名唯一约束，不放宽业务规则。
+`265b1c5b84db4e4ba2ac263460bed442` 2 类 9 项为 7 passed/2 failed，包含上述
+真实未运行计时账户竞态和目标确认；追加原范围复核，IO 移至 Compose effect 内仍不足。
+
+`3a87147a5e6f43f2bb1ea3bfa5044a09` 完整 13 类 54 项为 53 passed/1 failed，
+connected3m56s；TimerLifecycle、AlarmLifecycle、CleanupRecovery、DisplayPublication、
+TimerPublication、TimerTickRead、TimerRead、TimerAction、SummaryEntry、RefresherTargets、
+AccountLocalStateCleaner、ProductionWorkflowInjection 12 类通过，唯一目标确认仍失败。
+失败原 XML 保留于下一轮 `e5ec9b4cb1e54f73812635b03bb28bc8/prior-results`，
+不称此轮完整通过。将生产来源读取改由 Activity lifecycleScope 拥有后，最终独立完整
+WidgetFactEntryTest、ProductionWorkflowInjectionTest 两类 11/11 passed、
+0 failures/errors/skipped，connected2m19s（XML117.760s），证据
+`e5ec9b4cb1e54f73812635b03bb28bc8/targeted.json`。root51、build1m47s、lint/警告、
+实际发现/APK/XML/新覆盖输入及 testbed 清理通过；wrapper/Gradle 和测试包退出后才编辑。
+最终源码仅删除两个未使用的 intent 缓存读取，不变显示、输入契约或业务断言。
+
+新增用例使用真实 Hilt/Room/令牌、原读取、共享账户 mutex 和 Glance 状态；仅在真实 DAO/
+计数读取后注入等待或失败。清理恢复仅隔离平台发现及 host 提交；闹钟仅替代 AlarmManager
+提交。不把合成 Glance ID 当已安装 launcher，不把部分结果拼接为最终 54 项/Android 全量。
+目标确认使用现有 Compose 1.7.6 的 StandardTestDispatcher，等待无初始 root 时继续轮询，
+原 5s 条件、实际点击、过期拒绝、提醒取消、账户关闭及整库/outbox 断言保留。
+150s/1500s 不变，不重复未改容量长链/一分钟服务，无依赖/schema/HTTP/后端/布局变更。
+绑定落盘失败跨进程恢复、配置入口竞态、真实 launcher 多实例/像素、正式 v5/Worker/素材/
+配置联合、Android/后端 SQL 全量及人工/外网/NAS 仍未完成，#344 未闭合；默认 v4，
+无正式 APK 安装/清库/部署/Docker 操作。
+
 ### 进度/激励的账户发布与只读恢复（2026-10-09，Issue #332）
 
 两类总览接入 WidgetDisplayPublisher：保留逐习惯真实读取和原资格过滤，显示提交前复核

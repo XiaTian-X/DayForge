@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.glance.GlanceId
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetManager
+import androidx.glance.appwidget.state.updateAppWidgetState
 import com.dayforge.widget.checkin.CheckInWidget
 import com.dayforge.widget.counting.CountingWidget
 import com.dayforge.widget.focus.FocusWidget
@@ -74,6 +75,13 @@ internal class WidgetRefresher(
                 // Unconfigured widgets still render their setup state. Deleted habits go
                 // through the existing loader, which writes the deleted-state marker.
                 if (habitId != -1L) load(id, habitId)
+                else {
+                    // An account clear can remove bindings but fail to clear a launcher
+                    // instance. Retry its CURRENT unconfigured state, not cached old data.
+                    com.dayforge.di.WidgetEntryPoint.from(context).displayPublisher().renderPrepared(
+                        onReadFailure = { throw it }
+                    ) { suspend { updateAppWidgetState(context, id) { it.clear() } } }
+                }
             }
 
             return listOf(

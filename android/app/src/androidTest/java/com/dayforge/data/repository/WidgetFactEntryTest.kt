@@ -36,6 +36,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.StandardTestDispatcher
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -45,12 +46,15 @@ import org.junit.runner.RunWith
 
 /** Actual Hilt/Glance state, foreground Activity and Compose confirmation on physical testbed. */
 @HiltAndroidTest
+@OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
 @RunWith(AndroidJUnit4::class)
 class WidgetFactEntryTest {
     @get:Rule(order = 0) val widgets = IsolatedWidgetRefreshRule()
     @get:Rule(order = 1) val storage = PhysicalDatabaseRule()
     @get:Rule(order = 2) val hilt = HiltAndroidRule(this)
-    @get:Rule(order = 3) val compose = createEmptyComposeRule()
+    // The v1 default is UnconfinedTestDispatcher: a Room continuation can recompose
+    // Dialog on arch_disk_io. Queue recomposition on the rule-owned frame scheduler.
+    @get:Rule(order = 3) val compose = createEmptyComposeRule(effectContext = StandardTestDispatcher())
     @Inject lateinit var habits: HabitRepository
     @Inject lateinit var creator: NextObjectCreator
     @Inject lateinit var tokens: TokenManager
@@ -274,7 +278,7 @@ class WidgetFactEntryTest {
         fun intent(claim: WidgetFactClaim) = GoalCompletionActivity.createIntent(app, rowId, row.name, 1, 1, claim)
         ActivityScenario.launch<GoalCompletionActivity>(intent(before)).use { scenario ->
             val confirm = app.getString(R.string.action_confirm_complete)
-            compose.waitUntil(5_000) { compose.onAllNodes(androidx.compose.ui.test.hasText(confirm)).fetchSemanticsNodes().isNotEmpty() }
+            compose.waitUntil(5_000) { compose.onAllNodes(androidx.compose.ui.test.hasText(confirm)).fetchSemanticsNodes(atLeastOneRootRequired = false).isNotEmpty() }
             val ticket = habits.getHabitForEditing(rowId)
             habits.updateHabit(ticket.value!!.copy(name = "Changed goal-plan display"), editAuthority = ticket.authority)
             val queues = db.syncOutboxDao().getAll()
@@ -286,7 +290,7 @@ class WidgetFactEntryTest {
         assertNotNull(reminder())
         ActivityScenario.launch<GoalCompletionActivity>(intent(claim(rowId))).use { scenario ->
             val confirm = app.getString(R.string.action_confirm_complete)
-            compose.waitUntil(5_000) { compose.onAllNodes(androidx.compose.ui.test.hasText(confirm)).fetchSemanticsNodes().isNotEmpty() }
+            compose.waitUntil(5_000) { compose.onAllNodes(androidx.compose.ui.test.hasText(confirm)).fetchSemanticsNodes(atLeastOneRootRequired = false).isNotEmpty() }
             compose.onNodeWithText(confirm).performClick()
             await { scenario.state == androidx.lifecycle.Lifecycle.State.DESTROYED }
         }
@@ -298,7 +302,7 @@ class WidgetFactEntryTest {
         val queues = db.syncOutboxDao().getAll()
         ActivityScenario.launch<GoalCompletionActivity>(intent(current)).use { scenario ->
             val confirm = app.getString(R.string.action_confirm_complete)
-            compose.waitUntil(5_000) { compose.onAllNodes(androidx.compose.ui.test.hasText(confirm)).fetchSemanticsNodes().isNotEmpty() }
+            compose.waitUntil(5_000) { compose.onAllNodes(androidx.compose.ui.test.hasText(confirm)).fetchSemanticsNodes(atLeastOneRootRequired = false).isNotEmpty() }
             sessions.exclusive { tokens.saveLoginSession("synthetic-other", "synthetic-refresh", "other", id(2), false) }
             await { scenario.state == androidx.lifecycle.Lifecycle.State.DESTROYED }
         }
