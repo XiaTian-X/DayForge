@@ -19,7 +19,11 @@ internal fun ConfigManagementCard(
     exportProgress: Boolean,
     importProgress: Boolean,
     onExportClick: () -> Unit,
-    onImportClick: () -> Unit
+    onImportClick: () -> Unit,
+    exportEnabled: Boolean = true,
+    importEnabled: Boolean = true,
+    showLegacyHint: Boolean = true,
+    footer: @Composable () -> Unit = {}
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -36,7 +40,7 @@ internal fun ConfigManagementCard(
             // Export button
             Button(
                 onClick = onExportClick,
-                enabled = !exportProgress && !importProgress,
+                enabled = exportEnabled && !exportProgress && !importProgress,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(48.dp)
@@ -63,7 +67,7 @@ internal fun ConfigManagementCard(
             // Import button
             OutlinedButton(
                 onClick = onImportClick,
-                enabled = !exportProgress && !importProgress,
+                enabled = importEnabled && !exportProgress && !importProgress,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(48.dp)
@@ -87,11 +91,12 @@ internal fun ConfigManagementCard(
             }
 
             // Hint text
-            Text(
+            if (showLegacyHint) Text(
                 text = stringResource(R.string.config_export_hint),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            footer()
         }
     }
 }

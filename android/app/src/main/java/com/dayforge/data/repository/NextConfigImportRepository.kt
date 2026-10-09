@@ -28,10 +28,16 @@ internal class NextConfigImportPreview internal constructor(internal val context
 /** Local commit only: individual network operations and material transfers still need real ACKs. */
 internal data class NextConfigImportReceipt(val importId: String, val nodes: Int, val metrics: Int, val links: Int)
 
+internal enum class ConfigImportPhase { PREPARED, LOCAL_COMMITTED, OPERATIONS_ACCEPTED }
+internal data class NextConfigImportProgress(val importId: String, val phase: ConfigImportPhase,
+    val accepted: Int = 0, val total: Int = 0)
+internal class NextConfigRecoveryPreview internal constructor(val importId: String,
+    val original: NextConfigImportPreview, val committed: Boolean, val networkTracked: Boolean)
+
 /**
  * Durable explicit import. Replacement stages NEW deletes and waits for exact predecessor ACKs.
  * No clearAllTables, URI reread, cross-database transaction or theme apply.
- * Formal settings still use the old path; injecting this service cannot activate protocol v5.
+ * Settings dispatch by persisted protocol evidence; injecting this service cannot activate v5.
  */
 @Singleton
 internal class NextConfigImportRepository @Inject constructor(
@@ -100,10 +106,33 @@ internal class NextConfigImportRepository @Inject constructor(
         guarded(context) { journal.pending(context) }
     }
 
+    /** Only the unique prepared/active group or the caller's exact last group; no history adoption. */
+    suspend fun progress(knownImportId: String? = null): NextConfigImportProgress? = withContext(Dispatchers.IO) {
+        val context = icons.capture()
+        guarded(context) {
+            val pending = journal.pending(context)
+            journal.requireNoOtherPending(pending)
+            pending?.let { return@guarded NextConfigImportProgress(it, ConfigImportPhase.PREPARED) }
+            val entry = journal.activeNetwork() ?: knownImportId?.let { journal.network(it) } ?: return@guarded null
+            val accepted = NextConfigImportBarrier(database).acceptedCount(entry, requireNotNull(tokens.localSyncAccess()))
+            NextConfigImportProgress(entry.plan.importId, if (entry.accepted == null) ConfigImportPhase.LOCAL_COMMITTED
+                else ConfigImportPhase.OPERATIONS_ACCEPTED, accepted, entry.plan.steps.size)
+        }
+    }
+
+    /** Resupplied file is checked against the saved identity/hash BEFORE offering recovery/cancel. */
+    suspend fun previewRecovery(importId: String, source: ValidatedConfigBundle): NextConfigRecoveryPreview = withContext(Dispatchers.IO) {
+        val context = icons.capture()
+        val entry = guarded(context) { journal.read(context, importId, source) }
+        NextConfigRecoveryPreview(importId, NextConfigImportPreview(context, source), entry.committed, entry.network != null)
+    }
+
     /** Cold recovery explicitly resupplies the same validated frozen file; never adopts new bytes. */
-    suspend fun resume(importId: String, source: ValidatedConfigBundle): NextConfigImportReceipt = withContext(Dispatchers.IO) {
+    suspend fun resume(importId: String, source: ValidatedConfigBundle,
+        expectedContext: AccountIconContext? = null): NextConfigImportReceipt = withContext(Dispatchers.IO) {
         require(isContractUuid(importId))
         val context = icons.capture()
+        check(expectedContext == null || context.access == expectedContext.access) { "CONFIG_IMPORT_SESSION_CHANGED" }
         val entry = guarded(context) {
             journal.read(context, importId, source).also {
                 if (!it.committed) requirePrepared(context, it)
@@ -206,8 +235,10 @@ internal class NextConfigImportRepository @Inject constructor(
     }
 
     /** Explicitly abandon only a prepared local import. Already declared material is retained. */
-    suspend fun cancelPrepared(importId: String, source: ValidatedConfigBundle) = withContext(Dispatchers.IO) {
+    suspend fun cancelPrepared(importId: String, source: ValidatedConfigBundle,
+        expectedContext: AccountIconContext? = null) = withContext(Dispatchers.IO) {
         val context = icons.capture()
+        check(expectedContext == null || context.access == expectedContext.access) { "CONFIG_IMPORT_SESSION_CHANGED" }
         guarded(context) {
             val entry = journal.read(context, importId, source)
             check(!entry.committed) { "CONFIG_IMPORT_ALREADY_COMMITTED" }

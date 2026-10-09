@@ -41,7 +41,9 @@ class SettingsConfigWorkflow @Inject constructor(
     private val completionDao: CompletionDao,
     private val metricLogDao: MetricLogDao,
     private val configExportService: ConfigExportService,
-    private val configImportService: ConfigImportService
+    private val configImportService: ConfigImportService,
+    // Hilt supplies the production owner; legacy-profile fixtures may use the existing constructor.
+    internal val v2: SettingsConfigV2Workflow? = null
 ) {
     private val _exportProgress = MutableStateFlow(false)
     val exportProgress: StateFlow<Boolean> = _exportProgress.asStateFlow()

@@ -2188,6 +2188,44 @@ Room/outbox，并检查数据库重开、取消/确认删除和回调次数。�
 原业务/outbox 同生、重复点击不追加第二批以及账户切换后拒绝旧弹窗。
 这些完整类的定向结果只证明所选链路，不代表厂商桌面 PendingIntent、所有组件外观或正式协议联合验收。
 
+### v2 配置设置入口与旧入口隔离（#160，2026-10-10）
+
+实际 MI 6 / Android 15 真机运行仓库 `android-targeted`，不运行模拟器、JVM 或 Robolectric。
+`SettingsConfigV2WorkflowTest` 从实际 SettingsScreen/ViewModel 点击系统文件契约入口，使用
+生产 Room、原 producer/导入日志、账户素材库、真实文件描述符及 loopback HTTP 接受链。
+系统选择器交付和 provider open 为边界替身，结果通过原 ActivityResultContract.parseResult；
+不是人工系统提供者、正式 APK 或真实 Android→后端联合验收。
+
+新增11项覆盖：选择文件前冻结导出、一次读入后来源变化、确认只报告本地提交且新事项未完成、
+真实写入失败/冷重开/错误文件恢复沿用原身份、明确放弃 prepared、预览后副本变化与同账户
+重新认证、旧选择器排空与真实 pipe 取消/关闭、只读及孤儿日志防回退、真实损坏偏好不清库、
+部分及最终实际 HTTP 收据损坏不报成功，以及旧服务/迟到 JSON 回调不得清空或裁剪新副本。
+旧 `ConfigImportServiceTest` 新增检查点/损坏日志阻止空替换，原6项导入回归保留。
+
+本批记录不同源码快照，不拼接为全量结果：
+
+- 最初构建失败：`20b74408bc2c407aa566f068b4ee1c43` 的次构造器注解目标错误；
+  `c1a6524fac574d7e84bc5db8a4fcefb8` 的4项英文计数文案 lint；均未执行行为测试。
+- `3687b6f20af44f7ba1b948c4bee29338`：31项中28通过、3失败。两个夹具错误为冷重开后
+  仍引用旧 creator、重复插入检查点；生产缺陷为成功消息早于刷新后的进度发布。分别修正
+  真实夹具与入口发布顺序后，`85b3f72b60c3493aaf519a3a2b1f3e44` 同4完整类31/31通过。
+- `59d2742e07e746ab9d8a9447a95bc7e2`：NextConfigImportRepositoryTest（12）、
+  NextConfigExportRepositoryTest（13）、当时 SettingsConfigV2WorkflowTest（10），35/35通过；
+  构建1分39秒、connected 3分30秒。之后这两个仓库实现未变。
+- 增补旧 API 防护时，`2640f32b56b141728caabc290b6dccff` 构建因测试缺少 serialization
+  扩展 import 失败，未执行行为测试；补 import 和独立等待回调后，最终证据
+  `5348514256af452ab236678e56674f85`：SettingsConfigV2WorkflowTest（11）、
+  ConfigImportServiceTest（7）、SettingsViewModelTest（13）、SettingsThemeIntegrationTest（4）
+  四完整类35/35通过，失败/错误/跳过均0；构建1分10秒、connected 2分20秒，XML 116.699秒。
+
+每次成功均由仓库 wrapper 校验新 APK、真实 discovery、原始 XML 和新覆盖率文件；清理
+testbed 两个包及拥有的进程。`ConfigBundleDocumentsTest` 的5项在前述31项矩阵已通过，
+此后该文件层源码未变，未为新增旧 API 防护重复运行。根检查51项通过；lint 无新增问题，
+未修改基线、单例150秒/整批25分钟期限、断言、发现集合或执行过滤。
+未执行全量 Android/覆盖率校准、默认 v5 启用、真实服务器联合、正式 APK 安装、系统文件
+提供者与手机/平板人工、外网/NAS 或本机 Docker 验收。主题安装/导出选择及完成事项模板选择
+仍待接入，不以这些定向结果宣布 #160 完成。
+
 ### 测试迁移后的独立复审（Issue #149）
 
 计时服务测试必须从命令调用前后的真实单调时钟获得有效时长上下界，排除暂停/重建时间。
