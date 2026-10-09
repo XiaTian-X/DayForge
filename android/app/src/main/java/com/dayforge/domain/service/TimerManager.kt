@@ -21,7 +21,8 @@ class TimerManager @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val habitDao: HabitDao,
     private val timeLogDao: TimeLogDao,
-    private val timerWriter: NextTimerWriter? = null
+    private val timerWriter: NextTimerWriter? = null,
+    private val timerHistoryReader: com.dayforge.data.repository.TimerHistoryReader? = null
 ) {
     /** Restores foreground execution for a persisted running or paused timer. */
     suspend fun recoverRunningTimer() {
@@ -46,9 +47,11 @@ class TimerManager @Inject constructor(
         timerWriter?.requireAction(habitId, authority)
         val todayStart = DateTimeUtils.startOfDayMillis()
         val todayEnd = DateTimeUtils.startOfNextDayMillis(todayStart)
-        val completedSeconds = timeLogDao.getCompletedDurationSecondsForDate(
+        val habit = habitDao.getHabitById(habitId) ?: return
+        val completedSeconds: Long = if (habit.appearance != null) requireNotNull(timerHistoryReader) { "TIMER_READER_REQUIRED" }
+            .read(habit).todaySeconds else timeLogDao.getCompletedDurationSecondsForDate(
             habitId, java.time.LocalDate.now().toString(), todayStart, todayEnd
-        )
+        ).toLong()
         val targetSeconds = targetMinutes * 60
 
         if (targetSeconds > 0 && completedSeconds >= targetSeconds) {

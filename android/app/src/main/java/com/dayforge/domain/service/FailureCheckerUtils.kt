@@ -14,6 +14,22 @@ import java.time.ZoneId
  * Extracted from FailureChecker and WidgetFailureChecker to reduce duplication.
  */
 object FailureCheckerUtils {
+    fun timerFailure(habit: HabitEntity, history: com.dayforge.domain.model.TimerHistory): StrictFailureState {
+        if (!shouldCheckFailure(habit) || !isStrictMode(habit)) return StrictFailureState.NOT_FAILED
+        var date = history.firstDate ?: return StrictFailureState.NOT_FAILED
+        var pending = false
+        val qualified = history.qualifiedDates
+        while (date < history.today) {
+            if (ScheduleValidator.isCheckInAllowedOnDate(habit.schedule, habit.createdAt, date) &&
+                date !in qualified) {
+                if (UnsettledTimerFailure.maySettle(history.failureDay(date), date, history.targetSeconds)) pending = true
+                else return StrictFailureState.FAILED
+            }
+            date = date.plusDays(1)
+        }
+        return if (pending) StrictFailureState.AWAITING_TIMER_SETTLEMENT else StrictFailureState.NOT_FAILED
+    }
+
     fun checkHasFailed(habit: HabitEntity, history: com.dayforge.domain.model.CheckHistory): Boolean {
         if (!shouldCheckFailure(habit) || !isStrictMode(habit)) return false
         var date = history.firstDate ?: return false

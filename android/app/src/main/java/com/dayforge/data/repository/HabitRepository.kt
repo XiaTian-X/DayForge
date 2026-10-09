@@ -41,7 +41,8 @@ class HabitRepository @Inject constructor(
     private val oneTimeRepository: OneTimeRepository? = null,
     private val countHistoryReader: CountHistoryReader? = null,
     private val widgetFactReader: WidgetFactReader? = null,
-    private val checkHistoryReader: CheckHistoryReader? = null
+    private val checkHistoryReader: CheckHistoryReader? = null,
+    private val timerHistoryReader: TimerHistoryReader? = null
 ) {
     val allHabits: Flow<List<HabitEntity>> = habitDao.getAllHabits()
 
@@ -49,13 +50,17 @@ class HabitRepository @Inject constructor(
 
     val countChanges: Flow<Unit> = kotlinx.coroutines.flow.combine(
         countHistoryReader?.changes ?: kotlinx.coroutines.flow.flowOf(Unit),
-        checkHistoryReader?.changes ?: kotlinx.coroutines.flow.flowOf(Unit)) { _, _ -> Unit }
+        checkHistoryReader?.changes ?: kotlinx.coroutines.flow.flowOf(Unit),
+        timerHistoryReader?.changes ?: kotlinx.coroutines.flow.flowOf(Unit)) { _, _, _ -> Unit }
 
     suspend fun getCountHistory(habit: HabitEntity): com.dayforge.domain.model.CountHistory =
         requireNotNull(countHistoryReader) { "COUNT_READER_REQUIRED" }.read(habit)
 
     suspend fun getCheckHistory(habit: HabitEntity): com.dayforge.domain.model.CheckHistory =
         requireNotNull(checkHistoryReader) { "CHECK_READER_REQUIRED" }.read(habit)
+
+    suspend fun getTimerHistory(habit: HabitEntity): com.dayforge.domain.model.TimerHistory =
+        requireNotNull(timerHistoryReader) { "TIMER_READER_REQUIRED" }.read(habit)
 
     suspend fun getOneTimeStatus(id: Long, expectedUuid: String? = null): OneTimeStatus = requireNotNull(oneTimeRepository) {
         "ONE_TIME_REPOSITORY_REQUIRED"
@@ -741,6 +746,11 @@ class HabitRepository @Inject constructor(
                 }
                 if (habit?.habitType == HabitType.CHECK_IN && habit.appearance != null) {
                     val history = getCheckHistory(habit)
+                    return@map StreakStats(StreakCalculator.currentFromBusinessDates(history.qualifiedDates, history.today),
+                        StreakCalculator.bestFromBusinessDates(history.qualifiedDates), history.qualifiedDates.maxOrNull()?.toDisplayMillis())
+                }
+                if (habit?.habitType == HabitType.TIMER && habit.appearance != null) {
+                    val history = getTimerHistory(habit)
                     return@map StreakStats(StreakCalculator.currentFromBusinessDates(history.qualifiedDates, history.today),
                         StreakCalculator.bestFromBusinessDates(history.qualifiedDates), history.qualifiedDates.maxOrNull()?.toDisplayMillis())
                 }

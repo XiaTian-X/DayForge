@@ -180,7 +180,7 @@ class TimerWidget : GlanceAppWidget() {
             val tomorrow = DateTimeUtils.startOfNextDayMillis(today)
 
             // Add current session elapsed time to accumulated if timer is running/paused
-            val accumulatedFromCompleted = timeLogDao.getCompletedDurationSecondsForDate(
+            val accumulatedFromCompleted = snapshot?.history?.todaySeconds?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt() ?: timeLogDao.getCompletedDurationSecondsForDate(
                 habitId, java.time.LocalDate.now().toString(), today, tomorrow
             )
             val accumulatedSeconds = if (timerState != "NOT_RUNNING") {
@@ -211,13 +211,15 @@ class TimerWidget : GlanceAppWidget() {
 
             // Target progress - count days where timer target was met
             val targetProgress = if (habit.targetCycles != null) {
-                timeLogDao.getTargetMetDayCount(habit.id, targetSeconds)
+                snapshot?.history?.qualifiedDates?.size ?: timeLogDao.getTargetMetDayCount(habit.id, targetSeconds)
             } else 0
             // 目标完成：进度达标且习惯已被停用（用户点击了"确认完成"）
             val isGoalReached = habit.targetCycles != null && targetProgress >= habit.targetCycles && !habit.isActive
 
             // 失败状态判定
-            val hasFailed = WidgetFailureChecker.checkFailure(habit, database)
+            val hasFailed = snapshot?.history?.let {
+                com.dayforge.domain.service.FailureCheckerUtils.timerFailure(habit, it) == com.dayforge.domain.service.StrictFailureState.FAILED
+            } ?: WidgetFailureChecker.checkFailure(habit, database)
 
             // Pre-compute widget colors using WidgetColorResolver
             // Per WIDGET-COLOR-01, WIDGET-COLOR-06: Colors must be pre-calculated before rendering

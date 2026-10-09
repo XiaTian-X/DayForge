@@ -150,8 +150,16 @@ class FocusWidget : GlanceAppWidget() {
             val allActiveHabits = database.habitDao().getVisibleHabitsOnce().filter { it.isActive && it.completionPolicy != "one_and_done" }
 
             // Calculate status for each habit using app logic
-            val habitsWithStats = allActiveHabits.map { habit ->
-                habitStatusCalculator.calculate(habit)
+            val habitsWithStats = try {
+                allActiveHabits.map { habit -> habitStatusCalculator.calculate(habit) }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                Log.w(TAG, "Focus widget statistics proof unavailable", error)
+                updateAppWidgetState(appContext, glanceId) { prefs ->
+                    prefs[DATA_LOADED_KEY] = false
+                    prefs[READ_FAILED_KEY] = true
+                }
+                return
             }
 
             // Filter eligible habits:

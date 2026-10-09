@@ -26,7 +26,8 @@ data class WidgetTimerReadSnapshot internal constructor(
     val activeLog: TimeLogEntity?,
     val policy: TimerStartPolicy?,
     val authority: TimerActionAuthority,
-    val startGuard: TimerStartGuard?
+    val startGuard: TimerStartGuard?,
+    val history: com.dayforge.domain.model.TimerHistory
 )
 
 data class WidgetTimerSwitchDisplay(val incumbentName: String?, val requestedName: String)
@@ -36,7 +37,8 @@ data class WidgetTimerSwitchDisplay(val incumbentName: String?, val requestedNam
 class NextTimerWriter @Inject constructor(
     private val database: HabitDatabase,
     private val tokens: TokenManager,
-    private val sessions: AccountSessionCoordinator
+    private val sessions: AccountSessionCoordinator,
+    private val timerHistoryReader: TimerHistoryReader = TimerHistoryReader(database, tokens, sessions)
 ) {
     private val producer = NextCoreLocalIntentStore(database, tokens, sessions)
     internal val accessChanges = combine(tokens.factAccessChanges, tokens.iconAccessChanges) { _, _ ->
@@ -56,7 +58,12 @@ class NextTimerWriter @Inject constructor(
     }
 
     /** Read-only production widget consumer. Null means stale/missing display, not legacy fallback. */
-    suspend fun widgetSnapshot(expectedHabit: HabitEntity): WidgetTimerReadSnapshot? = sessions.exclusive {
+    suspend fun widgetSnapshot(expectedHabit: HabitEntity): WidgetTimerReadSnapshot? = readSnapshot(expectedHabit, true)
+
+    /** List statistics and their action ticket must share the same displayed head and account. */
+    suspend fun statusSnapshot(expectedHabit: HabitEntity): WidgetTimerReadSnapshot? = readSnapshot(expectedHabit, false)
+
+    private suspend fun readSnapshot(expectedHabit: HabitEntity, includeStartGuard: Boolean): WidgetTimerReadSnapshot? = sessions.exclusive {
         database.withTransaction {
             val habit = database.habitDao().getVisibleHabitById(expectedHabit.id) ?: return@withTransaction null
             if (habit.appearance == null || habit.uuid != expectedHabit.uuid ||
@@ -67,7 +74,7 @@ class NextTimerWriter @Inject constructor(
             val log = database.timeLogDao().getActiveTimeLogForHabit(habit.id)
             check(log?.uuid == authority.sessionUuid && log?.timerNextCommandSequence == authority.nextSequence)
             val policy = log?.let { NextTimerPolicyStore(database).policy(access, it.uuid) }
-            val startGuard = if (log == null) {
+            val startGuard = if (log == null && includeStartGuard) {
                 val incumbentLog = database.timeLogDao().getActiveTimeLog()
                 val incumbent = incumbentLog?.let {
                     val row = requireNotNull(database.habitDao().getVisibleHabitById(it.habitId))
@@ -78,7 +85,8 @@ class NextTimerWriter @Inject constructor(
                 TimerStartGuard(incumbentLog?.habitId, incumbent)
             } else null
             check(tokens.localCoreWriteAccess() == access) { "TIMER_WIDGET_STALE_ACCOUNT" }
-            WidgetTimerReadSnapshot(habit, log, policy, authority, startGuard)
+            val history = timerHistoryReader.readInTransaction(habit, com.dayforge.util.DateTimeUtils.today())
+            WidgetTimerReadSnapshot(habit, log, policy, authority, startGuard, history)
         }
     }
 

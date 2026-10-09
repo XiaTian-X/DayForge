@@ -32,6 +32,7 @@ class NextRestartWorkflowTest : NextObjectEditorFixture() {
     private var protocol = 5
     private val births = mutableListOf<ChallengeBirth>()
     private val policies = mutableMapOf<String, TimerStartPolicy>()
+    private val timerStarts = mutableMapOf<String, TimerCommandRequest>()
     private val eventResults = mutableMapOf<String, NextSyncOperationResult>()
     private val timerWires = mutableListOf<ByteArray>()
     private lateinit var serverPlan: HabitEntity
@@ -87,14 +88,35 @@ class NextRestartWorkflowTest : NextObjectEditorFixture() {
                 timerWires += input.body.copyOf()
                 val body = json.decodeFromString<RoundTimerCommandBatchRequest>(input.body.toString(Charsets.UTF_8))
                 val command = body.commands.single()
-                command.startPolicy?.let { policies[command.sessionId] = it }
+                command.startPolicy?.let { policies[command.sessionId] = it; timerStarts[command.sessionId] = command }
                 val policy = policies.getValue(command.sessionId)
                 if (births.none { it.entityUuid == command.sessionId }) births += ChallengeBirth("timer_session", command.sessionId, body.contexts.single().head!!)
-                val state = if (command.commandType == "cancel") "cancelled" else "running"
+                val state = when (command.commandType) { "cancel" -> "cancelled"; "stop" -> "completed"; "pause" -> "paused"; else -> "running" }
+                val originalStart = timerStarts.getValue(command.sessionId)
                 val session = TimerSessionResponse(command.sessionId, habit.uuid, state, id(4), 1, command.sequence,
-                    command.sequence + 1, time, command.occurredAt, endedAt = command.occurredAt.takeIf { state == "cancelled" },
-                    timezone = "Asia/Shanghai", isCountdown = policy.isCountdown, targetSeconds = policy.targetSeconds,
-                    maxDurationSeconds = policy.maxDurationSeconds, activeElapsedMs = command.activeElapsedMs ?: 0)
+                    command.sequence + 1, originalStart.occurredAt, command.occurredAt, endedAt = command.occurredAt.takeIf { state in setOf("cancelled", "completed") },
+                    timezone = requireNotNull(originalStart.timezone), isCountdown = policy.isCountdown, targetSeconds = policy.targetSeconds,
+                    maxDurationSeconds = policy.maxDurationSeconds, activeElapsedMs = command.activeElapsedMs ?: 0,
+                    completedEventId = command.sessionId.takeIf { state == "completed" })
+                if (state == "completed" && births.none { it.entityType == "activity_event" && it.entityUuid == command.sessionId }) {
+                    births += ChallengeBirth("activity_event", command.sessionId, body.contexts.single().head!!)
+                    val localLog = runBlocking { requireNotNull(db.timeLogDao().getTimeLogByUuid(command.sessionId)) }
+                    val day = java.time.Instant.parse(originalStart.occurredAt).atZone(java.time.ZoneId.of(session.timezone)).toLocalDate()
+                    val allocations = runBlocking { db.timeLogDao().getDayAllocations(command.sessionId) }
+                    val payload = buildJsonObject {
+                        put("public_id", command.sessionId); put("revision", 1); put("created_at", command.occurredAt); put("updated_at", command.occurredAt); put("deleted_at", JsonNull)
+                        put("activity_uuid", habit.uuid); put("event_type", "duration_session"); put("value", JsonNull)
+                        put("duration_seconds", localLog.durationSeconds); put("duration_milliseconds", localLog.timerActiveElapsedMillis)
+                        put("started_at", originalStart.occurredAt); put("ended_at", command.occurredAt); put("reverts_event_uuid", JsonNull)
+                        put("occurred_at", command.occurredAt); put("local_date", day.toString()); put("timezone", session.timezone)
+                        put("note", ""); put("source_type", "app"); put("source_device_id", id(4)); put("external_event_id", command.sessionId)
+                        put("metadata", buildJsonObject { put("timer_session_id", command.sessionId) }); put("received_at", command.occurredAt)
+                        put("day_allocations", JsonArray(allocations.map { a -> buildJsonObject {
+                            put("local_date", a.localDate); put("timezone", a.timezone); put("duration_milliseconds", a.durationMillis)
+                        } }))
+                    }
+                    changes += SyncV2Change(++cursor, "activity_event", command.sessionId, "upsert", 1, payload, command.occurredAt, id(4))
+                }
                 val meta = metadata()
                 MaterialSocketServer.Reply(json.encodeToString(RoundTimerCommandBatchResponse(listOf(TimerCommandResult(command.commandId,
                     command.sessionId, "applied", session = session)), time, 1, meta.checkpoints, meta.births)).toByteArray())
@@ -360,6 +382,146 @@ class NextRestartWorkflowTest : NextObjectEditorFixture() {
                 TimerCommandEntity(commandId = id(872), sessionUuid = id(870), sequence = 2, commandType = "cancel",
                     occurredAt = millis + 1000, expectedControlGeneration = 1, activeElapsedMillis = 1000))
         }
+    }
+
+    private fun timers() = TimerHistoryReader(db, tokens, sessions)
+    private suspend fun timerStart(n: Int, start: Long, zone: String = "UTC"): TimeLogEntity {
+        val writer = NextTimerWriter(db, tokens, sessions)
+        writer.write(habit.id, writer.capture(habit.id)) {
+            val day = java.time.Instant.ofEpochMilli(start).atZone(java.time.ZoneId.of(zone)).toLocalDate()
+            db.timeLogDao().insertSyncedTimer(TimeLogEntity(habitId = habit.id, uuid = id(n), startTime = start, endTime = null,
+                durationSeconds = 0, date = day.atStartOfDay(java.time.ZoneId.of(zone)).toInstant().toEpochMilli(),
+                timerNextCommandSequence = 2, timerControlGeneration = 1, timerLastCommandAt = start, timerTimezone = zone),
+                TimerCommandEntity(commandId = id(n + 1), sessionUuid = id(n), sequence = 1, commandType = "start",
+                    occurredAt = start, expectedControlGeneration = 0, activityUuid = habit.uuid, timezone = zone),
+                TimerSegmentEntity(sessionUuid = id(n), sequence = 1, startedAt = start))
+        }
+        return requireNotNull(db.timeLogDao().getTimeLogByUuid(id(n)))
+    }
+    private suspend fun timerFinish(n: Int, elapsed: Long) {
+        val log = requireNotNull(db.timeLogDao().getTimeLogByUuid(id(n)))
+        val end = log.startTime + elapsed
+        val writer = NextTimerWriter(db, tokens, sessions)
+        writer.write(habit.id, writer.capture(habit.id)) {
+            db.timeLogDao().finishTimerAndQueue(log.id, end, (elapsed / 1000).toInt(), 0, 3, elapsed,
+                TimerCommandEntity(commandId = id(n + 2), sessionUuid = log.uuid, sequence = 2, commandType = "stop",
+                    occurredAt = end, expectedControlGeneration = 1, activeElapsedMillis = elapsed), false)
+            db.timeLogDao().replaceDayAllocations(log.uuid, com.dayforge.domain.service.DurationDayAllocator.allocate(log.uuid,
+                habit.id, log.timerTimezone!!, db.timeLogDao().getTimerSegments(log.uuid), elapsed))
+        }
+    }
+    private fun timerCalculator() = com.dayforge.domain.service.HabitStatusCalculator(
+        com.dayforge.domain.service.FailureChecker(db.completionDao(), db.timeLogDao(), timerHistoryReader = timers()),
+        db.completionDao(), db.timeLogDao(), timerWriter = NextTimerWriter(db, tokens, sessions))
+
+    @Test fun timerCurrentRoundSplitsCompletedDaysAndColdAckNeverRevivesOldPrefetchedProgress() = runBlocking<Unit> {
+        val http = initialize(timer = true)
+        val today = com.dayforge.util.DateTimeUtils.today()
+        val todayStart = today.atStartOfDay(java.time.ZoneId.of("UTC")).toInstant().toEpochMilli()
+        timerStart(1100, todayStart + 3_600_000); timerFinish(1100, 60_000)
+        assertEquals(1, timerCalculator().calculate(current()).targetProgress)
+        val raw = db.timeLogDao().getAllTimeLogsForHabit(habit.id)
+        val ref = propose(http)
+        val empty = timerCalculator().calculate(current(), timeLogs = raw)
+        assertFalse(empty.completedToday); assertEquals(0, empty.targetProgress); assertEquals(0, empty.bestStreak)
+        assertEquals(raw, db.timeLogDao().getAllTimeLogsForHabit(habit.id))
+        timerStart(1110, todayStart - 60_000); timerFinish(1110, 120_000)
+        val view = timers().read(current(), today)
+        assertEquals(ref.head, view.roundHead); assertEquals(60L, view.todaySeconds)
+        assertEquals(setOf(today.minusDays(1), today), view.qualifiedDates)
+        assertEquals(120_000L, view.completedMillis.values.sum()); assertEquals(1, view.logs.size)
+        val status = timerCalculator().calculate(current(), timeLogs = raw)
+        assertTrue(status.completedToday); assertEquals(2, status.targetProgress); assertEquals(2, status.bestStreak)
+        val widget = NextTimerWriter(db, tokens, sessions).widgetSnapshot(current())!!
+        assertEquals(ref.head, widget.history.roundHead); assertEquals(view, widget.history)
+        val display = NextTimerWriter(db, tokens, sessions).statusSnapshot(current())!!
+        assertEquals(display.history.roundHead, display.authority.challengeHead); assertEquals(view, display.history)
+        storage.reopen(); assertEquals(view, timers().read(current(), today))
+        runtime(http).syncRounds()
+        val accepted = timers().read(current(), today)
+        assertEquals(view.completedMillis, accepted.completedMillis); assertEquals(view.roundHead, accepted.roundHead)
+        assertEquals(0, count("timer_command_outbox")); assertEquals(2, count("timelogs"))
+        assertTrue(births.any { it.entityType == "activity_event" && it.entityUuid == id(1110) && it.head == ref.head })
+    }
+
+    @Test fun hiddenTimerAllocationsAndMissingAcceptedBirthFailReadOnlyAfterRestart() = runBlocking<Unit> {
+        val http = initialize(timer = true)
+        timerStart(1120, millis); timerFinish(1120, 60_000)
+        propose(http)
+        assertTrue(timers().read(current()).completedMillis.isEmpty())
+        db.openHelper.writableDatabase.execSQL("UPDATE timelog_day_allocations SET durationMillis=CAST(durationMillis AS BLOB) WHERE sessionUuid=?", arrayOf(id(1120)))
+        val bad = durable(); rejected { timers().read(current()) }; assertEquals(bad, durable())
+        db.openHelper.writableDatabase.execSQL("UPDATE timelog_day_allocations SET durationMillis=60000 WHERE sessionUuid=?", arrayOf(id(1120)))
+        runtime(http).syncRounds()
+        assertTrue(timers().read(current()).completedMillis.isEmpty())
+        db.openHelper.writableDatabase.execSQL("DELETE FROM next_challenge_births WHERE entityType='activity_event' AND entityUuid=?", arrayOf(id(1120)))
+        val missing = durable(); rejected { timers().read(current()) }; assertEquals(missing, durable())
+    }
+
+    @Test fun zeroTimerTargetIsRejectedAtomicallyWithoutInventingCompletion() = runBlocking<Unit> {
+        initialize(timer = true)
+        val snapshot = editor.habit(habit.id)
+        val before = durable()
+        assertTrue(rejected {
+            editingHabits().updateHabit(snapshot.value!!.copy(targetValue = 0), editAuthority = snapshot.authority)
+        } is IllegalArgumentException)
+        assertEquals(before, durable()); assertEquals(snapshot.value, current())
+        val view = timers().read(current())
+        assertTrue(view.completedMillis.isEmpty()); assertTrue(view.qualifiedDates.isEmpty()); assertFalse(view.completedToday)
+        assertEquals(0, count("timelogs")); assertEquals(0, count("timer_command_outbox"))
+    }
+
+    @Test fun timerDetailCalendarRefreshesOnPendingHeadWithoutDeletingCompletedHistory() = runBlocking<Unit> {
+        val http = initialize(timer = true)
+        val today = com.dayforge.util.DateTimeUtils.today()
+        val boundary = today.atStartOfDay(java.time.ZoneId.of("UTC")).toInstant().toEpochMilli()
+        timerStart(1160, boundary - 60_000); timerFinish(1160, 120_000)
+        val repo = creatingHabits()
+        val detail = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+            own(com.dayforge.ui.screens.habitdetail.HabitDetailViewModel(app, repo, preferences, db.timeLogDao(),
+                db.completionDao(), db.habitDao(), db.habitMetricLinkDao(), db.metricDao(), db.metricLogDao()))
+                .also { it.loadHabit(habit.id) }
+        }
+        kotlinx.coroutines.withTimeout(5000) {
+            detail.uiState.first { !it.isLoading && !it.readError && it.targetProgress == 2 &&
+                it.completions.mapTo(hashSetOf()) { c -> c.recordedLocalDate } == setOf(today.minusDays(1).toString(), today.toString()) }
+        }
+        val retained = db.timeLogDao().getAllTimeLogsForHabit(habit.id)
+        propose(http)
+        kotlinx.coroutines.withTimeout(5000) { detail.uiState.first {
+            !it.isLoading && !it.readError && it.targetProgress == 0 && it.completions.isEmpty() && it.timeLogs.isEmpty()
+        } }
+        assertEquals(retained, db.timeLogDao().getAllTimeLogsForHabit(habit.id))
+        assertEquals(2, count("timelog_day_allocations"))
+    }
+
+    @Test fun timerUnsettledCurrentRoundDoesNotCompleteOrHideOtherGapsAndPauseContributesNothing() = runBlocking<Unit> {
+        initialize(timer = true, strict = true)
+        val today = com.dayforge.util.DateTimeUtils.today()
+        val boundary = today.atStartOfDay(java.time.ZoneId.of("UTC")).toInstant().toEpochMilli()
+        timerStart(1130, boundary - 2 * 86_400_000L); timerFinish(1130, 60_000)
+        val active = timerStart(1140, boundary - 120_000)
+        val before = durable()
+        val pending = timers().read(current(), today)
+        assertEquals(com.dayforge.domain.service.StrictFailureState.AWAITING_TIMER_SETTLEMENT,
+            com.dayforge.domain.service.FailureCheckerUtils.timerFailure(current(), pending))
+        assertFalse(pending.completedToday); assertEquals(setOf(today.minusDays(2)), pending.qualifiedDates)
+        assertEquals(before, durable()); assertTrue(db.timeLogDao().getDayAllocations(active.uuid).isEmpty())
+        val later = timers().read(current(), today.plusDays(2))
+        assertEquals(com.dayforge.domain.service.StrictFailureState.FAILED,
+            com.dayforge.domain.service.FailureCheckerUtils.timerFailure(current(), later)) // a later definite day also wins
+        val writer = NextTimerWriter(db, tokens, sessions)
+        writer.write(habit.id, writer.capture(habit.id)) {
+            db.timeLogDao().updatePauseAndQueue(active.id, true, active.startTime + 30_000, 0, 3,
+                active.startTime + 30_000, 30_000, null, null,
+                TimerCommandEntity(commandId = id(1142), sessionUuid = active.uuid, sequence = 2, commandType = "pause",
+                    occurredAt = active.startTime + 30_000, expectedControlGeneration = 1, activeElapsedMillis = 30_000))
+        }
+        val paused = timers().read(current(), today)
+        assertEquals(com.dayforge.domain.service.StrictFailureState.FAILED,
+            com.dayforge.domain.service.FailureCheckerUtils.timerFailure(current(), paused))
+        assertFalse(paused.completedToday); assertEquals(pending.completedMillis, paused.completedMillis)
+        storage.reopen(); assertEquals(paused, timers().read(current(), today))
     }
 
     @Test fun twoPendingRoundsReadOnlyTheirOwnCountsWithoutResettingSharedDayPolicyThenColdSync() = runBlocking {

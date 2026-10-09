@@ -121,6 +121,22 @@ class NestedHabitTreeBuilder @Inject constructor(
                 targetProgress = if (child.targetCycles == null) 0 else history.qualifiedDates.size,
                 hasFailed = com.dayforge.domain.service.FailureCheckerUtils.checkHasFailed(child, history))
         }
+        if (child.habitType == HabitType.TIMER && child.appearance != null) {
+            val snapshot = requireNotNull(timerWriter).statusSnapshot(child)
+                ?: return ChildHabitWithStats(child, false, 0, null, 0, 0, isCheckInAllowed = false)
+            val history = snapshot.history
+            val allowed = ScheduleValidator.isCheckInAllowedToday(child.schedule, child.createdAt)
+            return ChildHabitWithStats(child, history.completedToday,
+                history.todaySeconds.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), null,
+                StreakCalculator.currentFromBusinessDates(history.qualifiedDates, history.today),
+                StreakCalculator.bestFromBusinessDates(history.qualifiedDates),
+                activityRate = com.dayforge.domain.service.ActivityRateCalculator.calculate(child.schedule, child.createdAt, history.qualifiedDates.toList()),
+                isCheckInAllowed = allowed,
+                nextCheckInDate = if (allowed) null else ScheduleValidator.getNextCheckInDate(child.schedule, child.createdAt),
+                targetProgress = if (child.targetCycles == null) 0 else history.qualifiedDates.size,
+                hasFailed = com.dayforge.domain.service.FailureCheckerUtils.timerFailure(child, history) == com.dayforge.domain.service.StrictFailureState.FAILED,
+                timerAuthority = snapshot.authority)
+        }
         val habitCompletions = completions.filter { it.habitId == child.id }
         val today = DateTimeUtils.today().toString()
         val todayCompletions = habitCompletions.filter { it.recordedLocalDate == today }

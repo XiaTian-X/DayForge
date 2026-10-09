@@ -22,7 +22,8 @@ class FailureChecker @Inject constructor(
     private val completionDao: CompletionDao,
     private val timeLogDao: TimeLogDao,
     private val countHistoryReader: com.dayforge.data.repository.CountHistoryReader? = null,
-    private val checkHistoryReader: com.dayforge.data.repository.CheckHistoryReader? = null
+    private val checkHistoryReader: com.dayforge.data.repository.CheckHistoryReader? = null,
+    private val timerHistoryReader: com.dayforge.data.repository.TimerHistoryReader? = null
 ) {
 
     /**
@@ -38,6 +39,8 @@ class FailureChecker @Inject constructor(
             return FailureCheckerUtils.countHasFailed(habit, requireNotNull(countHistoryReader) { "COUNT_READER_REQUIRED" }.read(habit))
         if (habit.habitType == com.dayforge.data.model.HabitType.CHECK_IN && habit.appearance != null && habit.completionPolicy == "recurring")
             return FailureCheckerUtils.checkHasFailed(habit, requireNotNull(checkHistoryReader) { "CHECK_READER_REQUIRED" }.read(habit))
+        if (habit.habitType == com.dayforge.data.model.HabitType.TIMER && habit.appearance != null)
+            return FailureCheckerUtils.timerFailure(habit, requireNotNull(timerHistoryReader) { "TIMER_READER_REQUIRED" }.read(habit)) == StrictFailureState.FAILED
 
         // No completions yet = cycle hasn't started
         if (firstCompletionDate == null) return false

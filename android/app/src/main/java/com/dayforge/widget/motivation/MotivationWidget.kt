@@ -55,6 +55,9 @@ class MotivationWidget : GlanceAppWidget() {
             for (habit in habits) {
                 val streak = when (habit.habitType) {
                     HabitType.TIMER -> {
+                        if (habit.appearance != null) {
+                            habitStatusCalculator.calculate(habit).bestStreak
+                        } else {
                         // For TIMER habits, calculate streak from TimeLogEntity
                         val timeLogs = timeLogDao.getAllTimeLogsForHabit(habit.id)
                         val targetSeconds = habit.targetValue * 60
@@ -64,6 +67,7 @@ class MotivationWidget : GlanceAppWidget() {
                             .keys
                             .toList()
                         StreakCalculator.calculateBestStreakFromDates(completedDates)
+                        }
                     }
                     HabitType.CHECK_IN,
                     HabitType.COUNTING -> {
