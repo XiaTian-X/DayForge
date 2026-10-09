@@ -67,7 +67,12 @@ class NextTimerWriter @Inject constructor(
      * The callback must not re-enter this non-reentrant coordinator or perform business writes.
      */
     suspend fun renderWidgetSnapshot(expectedHabit: HabitEntity,
+        beforeRead: suspend () -> Boolean = { true },
         render: suspend (WidgetTimerReadSnapshot) -> Unit): Boolean = sessions.exclusive {
+        // An inactive habit has no original timer owner to reject a queued old lookup.
+        // The caller's pre-source display scope must be checked under THIS strong lock.
+        // Predicate must not reenter repositories/this lock or perform business writes.
+        if (!beforeRead()) return@exclusive false
         val snapshot = database.withTransaction { readSnapshotInTransaction(expectedHabit, true) }
             ?: return@exclusive false
         render(snapshot)

@@ -1,6 +1,7 @@
 package com.dayforge.widget.focus
 
 import com.dayforge.widget.base.DeviceWidgetTheme
+import kotlinx.coroutines.CancellationException
 import android.content.Context
 import android.util.Log
 import androidx.compose.runtime.Composable
@@ -134,9 +135,13 @@ class FocusWidget : GlanceAppWidget() {
          */
         suspend fun refreshWidgetData(context: Context, glanceId: GlanceId) {
             val appContext = context.applicationContext
-            var hasActiveTimer = false
-            val published = com.dayforge.di.WidgetEntryPoint.from(appContext).displayPublisher().renderPrepared(
-                onReadFailure = { error ->
+            val publication = com.dayforge.di.WidgetEntryPoint.from(appContext).displayPublisher()
+                .capturePublication() ?: return
+            val prepared = try {
+                prepareWidgetData(appContext, glanceId)
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                publication {
                     Log.w(TAG, "Focus widget source unavailable", error)
                     updateAppWidgetState(appContext, glanceId) { prefs ->
                         prefs[DATA_LOADED_KEY] = false
@@ -145,15 +150,13 @@ class FocusWidget : GlanceAppWidget() {
                         prefs.remove(FACT_ACTION_PROOF_KEY)
                     }
                 }
-            ) {
-                val prepared = prepareWidgetData(appContext, glanceId)
-                hasActiveTimer = prepared.hasActiveTimer
-                prepared.display
+                return
             }
+            val published = publication(prepared.display)
             // Alarm reconciliation reads repositories; it must not reenter the publication lock.
             if (published) {
-                if (hasActiveTimer) FocusWidgetAlarmScheduler.scheduleNextRefreshForActiveTimer(appContext)
-                else FocusWidgetAlarmScheduler.scheduleNextRefresh(appContext)
+                if (prepared.hasActiveTimer) FocusWidgetAlarmScheduler.scheduleNextRefreshForActiveTimer(appContext, publication::invoke)
+                else FocusWidgetAlarmScheduler.scheduleNextRefresh(appContext, publication::invoke)
             }
         }
 

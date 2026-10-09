@@ -116,48 +116,66 @@ class TimerWidget : GlanceAppWidget() {
         suspend fun refreshWidgetData(context: Context, glanceId: GlanceId, habitId: Long) {
             val appContext = context.applicationContext
             val database = HabitDatabaseProvider.getInstance(appContext)
-            val visibleHabit = database.habitDao().getVisibleHabitById(habitId)
-
-            if (visibleHabit == null) {
-                Log.w(TAG, "refreshWidgetData: habit $habitId not found")
-                updateAppWidgetState(appContext, glanceId) { prefs ->
-                    prefs[HABIT_ID_KEY] = habitId
-                    prefs[IS_DELETED_KEY] = true
-                    prefs[DATA_LOADED_KEY] = true
+            val entry = com.dayforge.di.WidgetEntryPoint.from(appContext)
+            val publication = entry.displayPublisher().capturePublication() ?: return
+            var publishingDisplay = false
+            try {
+                val visibleHabit = database.habitDao().getVisibleHabitById(habitId)
+                if (visibleHabit == null) {
+                    publication {
+                        publishingDisplay = true
+                        updateAppWidgetState(appContext, glanceId) { prefs ->
+                            clearActionAndTickState(prefs)
+                            prefs[HABIT_ID_KEY] = habitId
+                            prefs[IS_DELETED_KEY] = true
+                            prefs[DATA_LOADED_KEY] = true
+                            prefs[READ_FAILED_KEY] = false
+                        }
+                    }
+                    return
                 }
-                return
-            }
-
-            if (visibleHabit.appearance != null) {
-                var publishingDisplay = false
-                try {
+                if (visibleHabit.appearance != null) {
                     val published = com.dayforge.di.WidgetEntryPoint.from(appContext).timerWriter()
-                        .renderWidgetSnapshot(visibleHabit) { snapshot ->
+                        .renderWidgetSnapshot(visibleHabit, publication::isCurrentWhileAccountLocked) { snapshot ->
                             publishingDisplay = true
                             writeWidgetState(appContext, glanceId, habitId, snapshot.habit, snapshot)
                         }
                     if (published) return
-                } catch (error: Exception) {
-                    // Presentation IO must still reach the refresh worker's bounded retry.
-                    // Only source/read failures become the explicit read-failed display.
-                    if (error is CancellationException || publishingDisplay) throw error
-                    Log.w(TAG, "Timer widget original policy unavailable", error)
+                    publication { publishingDisplay = true; writeReadFailure(appContext, glanceId, habitId) }
+                    return
                 }
-                updateAppWidgetState(appContext, glanceId) { prefs ->
-                    prefs[DATA_LOADED_KEY] = false
-                    prefs[READ_FAILED_KEY] = true
-                    prefs[IS_DELETED_KEY] = false
-                    prefs.remove(ACTION_PROOF_KEY)
-                }
-                return
+                // v4 sources are prepared outside the lock; typed healthy snapshots still
+                // keep NextTimerWriter's stronger lock through all reads and display IO.
+                val display = prepareWidgetState(appContext, glanceId, habitId, visibleHabit, null)
+                publication { publishingDisplay = true; display() }
+            } catch (error: Exception) {
+                if (error is CancellationException || publishingDisplay) throw error
+                Log.w(TAG, "Timer widget original policy unavailable", error)
+                publication { writeReadFailure(appContext, glanceId, habitId) }
             }
-            // Still-supported v4 path; typed publication never falls back here.
-            writeWidgetState(appContext, glanceId, habitId, visibleHabit, null)
+        }
+
+        private fun clearActionAndTickState(prefs: MutablePreferences) {
+            prefs.remove(ACTION_PROOF_KEY)
+            prefs.remove(TICK_PLAN_KEY); prefs.remove(TICK_LOG_HASH_KEY)
+            prefs.remove(TICK_DATE_KEY); prefs.remove(TICK_ZONE_KEY); prefs.remove(TICK_COMPLETED_SECONDS_KEY)
+        }
+
+        private suspend fun writeReadFailure(context: Context, glanceId: GlanceId, habitId: Long) {
+            updateAppWidgetState(context, glanceId) { prefs ->
+                clearActionAndTickState(prefs)
+                prefs[HABIT_ID_KEY] = habitId
+                prefs[DATA_LOADED_KEY] = false
+                prefs[READ_FAILED_KEY] = true
+                prefs[IS_DELETED_KEY] = false
+            }
         }
 
         /** False requests a normal full refresh; ticks never synthesize a new action claim. */
         internal suspend fun refreshElapsedWidgetData(context: Context, glanceId: GlanceId, habitId: Long): Boolean {
             val appContext = context.applicationContext
+            val publication = com.dayforge.di.WidgetEntryPoint.from(appContext).displayPublisher()
+                .capturePublication() ?: return false
             val previous = TimerWidget().getAppWidgetState<Preferences>(appContext, glanceId)
             if (previous[HABIT_ID_KEY] != habitId || previous[DATA_LOADED_KEY] != true ||
                 previous[READ_FAILED_KEY] == true || previous[IS_DELETED_KEY] == true) return false
@@ -201,11 +219,13 @@ class TimerWidget : GlanceAppWidget() {
             } catch (error: Exception) {
                 if (error is CancellationException || publishingDisplay) throw error
                 Log.w(TAG, "Timer tick original unavailable", error)
-                updateAppWidgetState(appContext, glanceId) { prefs ->
-                    if (prefs.toPreferences() == previous) {
-                        prefs[DATA_LOADED_KEY] = false
-                        prefs[READ_FAILED_KEY] = true
-                        prefs.remove(ACTION_PROOF_KEY)
+                publication {
+                    updateAppWidgetState(appContext, glanceId) { prefs ->
+                        if (prefs.toPreferences() == previous) {
+                            prefs[DATA_LOADED_KEY] = false
+                            prefs[READ_FAILED_KEY] = true
+                            clearActionAndTickState(prefs)
+                        }
                     }
                 }
             }
@@ -215,6 +235,12 @@ class TimerWidget : GlanceAppWidget() {
         private suspend fun writeWidgetState(context: Context, glanceId: GlanceId, habitId: Long,
             habit: com.dayforge.data.local.entity.HabitEntity,
             snapshot: com.dayforge.data.repository.WidgetTimerReadSnapshot?) {
+            prepareWidgetState(context, glanceId, habitId, habit, snapshot)()
+        }
+
+        private suspend fun prepareWidgetState(context: Context, glanceId: GlanceId, habitId: Long,
+            habit: com.dayforge.data.local.entity.HabitEntity,
+            snapshot: com.dayforge.data.repository.WidgetTimerReadSnapshot?): suspend () -> Unit {
             val appContext = context.applicationContext
             val database = HabitDatabaseProvider.getInstance(appContext)
             val timeLogDao = database.timeLogDao()
@@ -296,57 +322,59 @@ class TimerWidget : GlanceAppWidget() {
 
             // Pre-compute widget colors using WidgetColorResolver
             // Per WIDGET-COLOR-01, WIDGET-COLOR-06: Colors must be pre-calculated before rendering
-            val themes = DeviceThemeControllerEntryPoint.from(appContext).themeController()
-            val widgetColorResolver = WidgetColorResolver(appContext, themes)
-            val resolvedColors = widgetColorResolver.resolveWidgetColors(habit.colorHex)
+            return suspend {
+                val themes = DeviceThemeControllerEntryPoint.from(appContext).themeController()
+                val widgetColorResolver = WidgetColorResolver(appContext, themes)
+                val resolvedColors = widgetColorResolver.resolveWidgetColors(habit.colorHex)
 
-            // Write all values to Glance state
-            updateAppWidgetState(appContext, glanceId) { prefs ->
-                prefs[HABIT_ID_KEY] = habitId
-                // 倒计时习惯添加标签
-                prefs[HABIT_NAME_KEY] = habit.name
-                prefs[COLOR_HEX_KEY] = habit.colorHex
-                prefs[TARGET_MINUTES_KEY] = targetMinutes
-                prefs[ACCUMULATED_SECONDS_KEY] = accumulatedSeconds
-                prefs[TIMER_STATE_KEY] = timerState
-                prefs[ELAPSED_SECONDS_KEY] = elapsedSeconds
-                prefs[IS_COMPLETED_KEY] = isCompleted
-                prefs[IS_ACTIVE_KEY] = habit.isActive
-                prefs[IS_COUNTDOWN_KEY] = isCountdown
-                prefs[REMAINING_SECONDS_KEY] = remainingSeconds
-                prefs[SHOW_METRIC_PROMPT_KEY] = showMetricPrompt
-                prefs[IS_DELETED_KEY] = false
-                prefs[DATA_LOADED_KEY] = true
-                prefs[READ_FAILED_KEY] = false
-                if (snapshot != null) prefs[ACTION_PROOF_KEY] = WidgetTimerAction.from(snapshot).encode()
-                else prefs.remove(ACTION_PROOF_KEY)
-                if (snapshot != null) {
-                    prefs[TICK_PLAN_KEY] = com.dayforge.data.repository.NextStructureMapper.writePlan(habit).toString()
-                    snapshot.activeLogHash?.let { prefs[TICK_LOG_HASH_KEY] = it } ?: prefs.remove(TICK_LOG_HASH_KEY)
-                    prefs[TICK_DATE_KEY] = snapshot.history.today.toString()
-                    prefs[TICK_ZONE_KEY] = java.time.ZoneId.systemDefault().id
-                    prefs[TICK_COMPLETED_SECONDS_KEY] = accumulatedFromCompleted
-                } else {
-                    prefs.remove(TICK_PLAN_KEY); prefs.remove(TICK_LOG_HASH_KEY)
-                    prefs.remove(TICK_DATE_KEY); prefs.remove(TICK_ZONE_KEY); prefs.remove(TICK_COMPLETED_SECONDS_KEY)
+                // Write all values to Glance state
+                updateAppWidgetState(appContext, glanceId) { prefs ->
+                    prefs[HABIT_ID_KEY] = habitId
+                    // 倒计时习惯添加标签
+                    prefs[HABIT_NAME_KEY] = habit.name
+                    prefs[COLOR_HEX_KEY] = habit.colorHex
+                    prefs[TARGET_MINUTES_KEY] = targetMinutes
+                    prefs[ACCUMULATED_SECONDS_KEY] = accumulatedSeconds
+                    prefs[TIMER_STATE_KEY] = timerState
+                    prefs[ELAPSED_SECONDS_KEY] = elapsedSeconds
+                    prefs[IS_COMPLETED_KEY] = isCompleted
+                    prefs[IS_ACTIVE_KEY] = habit.isActive
+                    prefs[IS_COUNTDOWN_KEY] = isCountdown
+                    prefs[REMAINING_SECONDS_KEY] = remainingSeconds
+                    prefs[SHOW_METRIC_PROMPT_KEY] = showMetricPrompt
+                    prefs[IS_DELETED_KEY] = false
+                    prefs[DATA_LOADED_KEY] = true
+                    prefs[READ_FAILED_KEY] = false
+                    if (snapshot != null) prefs[ACTION_PROOF_KEY] = WidgetTimerAction.from(snapshot).encode()
+                    else prefs.remove(ACTION_PROOF_KEY)
+                    if (snapshot != null) {
+                        prefs[TICK_PLAN_KEY] = com.dayforge.data.repository.NextStructureMapper.writePlan(habit).toString()
+                        snapshot.activeLogHash?.let { prefs[TICK_LOG_HASH_KEY] = it } ?: prefs.remove(TICK_LOG_HASH_KEY)
+                        prefs[TICK_DATE_KEY] = snapshot.history.today.toString()
+                        prefs[TICK_ZONE_KEY] = java.time.ZoneId.systemDefault().id
+                        prefs[TICK_COMPLETED_SECONDS_KEY] = accumulatedFromCompleted
+                    } else {
+                        prefs.remove(TICK_PLAN_KEY); prefs.remove(TICK_LOG_HASH_KEY)
+                        prefs.remove(TICK_DATE_KEY); prefs.remove(TICK_ZONE_KEY); prefs.remove(TICK_COMPLETED_SECONDS_KEY)
+                    }
+                    // 写入新增状态
+                    prefs[IS_CHECKIN_ALLOWED_KEY] = isCheckInAllowed
+                    prefs[NEXT_CHECKIN_DATE_KEY] = nextCheckInDate
+                    prefs[HAS_FAILED_KEY] = hasFailed
+                    prefs[IS_GOAL_REACHED_KEY] = isGoalReached
+                    prefs[TARGET_PROGRESS_KEY] = targetProgress
+                    prefs[TARGET_CYCLES_KEY] = habit.targetCycles ?: 0
+                    // Pre-computed colors (Int ARGB for Glance state)
+                    prefs[BACKGROUND_COLOR_KEY] = resolvedColors.backgroundColorArgb
+                    prefs[TEXT_COLOR_KEY] = resolvedColors.textColorArgb
                 }
-                // 写入新增状态
-                prefs[IS_CHECKIN_ALLOWED_KEY] = isCheckInAllowed
-                prefs[NEXT_CHECKIN_DATE_KEY] = nextCheckInDate
-                prefs[HAS_FAILED_KEY] = hasFailed
-                prefs[IS_GOAL_REACHED_KEY] = isGoalReached
-                prefs[TARGET_PROGRESS_KEY] = targetProgress
-                prefs[TARGET_CYCLES_KEY] = habit.targetCycles ?: 0
-                // Pre-computed colors (Int ARGB for Glance state)
-                prefs[BACKGROUND_COLOR_KEY] = resolvedColors.backgroundColorArgb
-                prefs[TEXT_COLOR_KEY] = resolvedColors.textColorArgb
-            }
 
-            Log.d(
-                TAG, "refreshWidgetData: wrote state for habit '${habit.name}', " +
-                "timerState=$timerState, elapsed=$elapsedSeconds, accumulated=$accumulatedSeconds, " +
-                "isCompleted=$isCompleted, showMetricPrompt=$showMetricPrompt, bgColor=${resolvedColors.backgroundColorArgb}"
-            )
+                Log.d(
+                    TAG, "refreshWidgetData: wrote state for habit '${habit.name}', " +
+                    "timerState=$timerState, elapsed=$elapsedSeconds, accumulated=$accumulatedSeconds, " +
+                    "isCompleted=$isCompleted, showMetricPrompt=$showMetricPrompt, bgColor=${resolvedColors.backgroundColorArgb}"
+                )
+            }
         }
     }
 

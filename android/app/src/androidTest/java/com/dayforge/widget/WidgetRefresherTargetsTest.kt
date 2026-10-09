@@ -12,6 +12,8 @@ import com.dayforge.widget.motivation.MotivationWidget
 import com.dayforge.widget.progress.ProgressWidget
 import com.dayforge.widget.timer.TimerWidget
 import io.mockk.*
+import com.dayforge.di.WidgetEntryPoint
+import com.dayforge.data.repository.WidgetDisplayPublisher
 import java.io.IOException
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -25,9 +27,15 @@ import org.junit.runner.RunWith
 class WidgetRefresherTargetsTest {
     private lateinit var context: Context
     private val id = mockk<GlanceId>()
+    private val publisher = mockk<WidgetDisplayPublisher>()
 
     @Before fun setup() {
         context = ApplicationProvider.getApplicationContext()
+        mockkObject(WidgetEntryPoint.Companion)
+        val entry = mockk<WidgetEntryPoint>()
+        every { WidgetEntryPoint.from(context) } returns entry
+        every { entry.displayPublisher() } returns publisher
+        coEvery { publisher.renderPrepared(any(), any()) } returns false
         mockkConstructor(GlanceAppWidgetManager::class, CheckInWidget::class, CountingWidget::class,
             TimerWidget::class, ProgressWidget::class, MotivationWidget::class, FocusWidget::class)
         mockkObject(CheckInWidget.Companion, CountingWidget.Companion, TimerWidget.Companion,
@@ -53,6 +61,7 @@ class WidgetRefresherTargetsTest {
     }
 
     @After fun teardown() {
+        unmockkObject(WidgetEntryPoint.Companion)
         listOf(CheckInWidget.PREFS_NAME, CountingWidget.PREFS_NAME, TimerWidget.PREFS_NAME).forEach { name ->
             assertTrue(context.getSharedPreferences(name, Context.MODE_PRIVATE).edit().remove("habit_id_10").commit())
         }
