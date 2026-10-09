@@ -19,6 +19,21 @@
 
 ## 验证层级
 
+### 测试 APK 打包失败诊断（2026-10-09，Issue #332）
+
+共享读取 #351 的精确提交 `9c22a2de3512aa511af403dff51d72ea0cb2434b`，托管运行
+`37886056705` attempt 2 已 completed/success：Android build/lint/warning 与 repository/
+secret policy 通过，backend 未变跳过。首次打包失败未复现，底层原因仍未证明。
+午夜刷新 #352 的精确提交 `737d50fc60d1a17177740a963fea032213d0e40c`，运行
+`37887144771` attempt 1 同样在 `packageDeviceTestAndroidTest` 失败且缺少底层原因；
+repository/secret policy 通过、backend 跳过，不重复盲重跑或以 #351 成功替代此门禁。
+单独在项目 Gradle 配置开启失败异常栈；不改源码语义、锁定依赖、告警、150s/1500s 期限
+或任务选择。本地 `android-build` 实际 root 51、build/lint/告警通过（build 1m12s，121 项
+up-to-date），日志 `672fc01fffd14cb4881a75cd6974a7da/build.log`；没有清理重建或复现
+托管打包错误，不能称干净构建或故障修复。此纯诊断配置批未安装/执行真机用例，未沿用
+前批行为结果为本批通过。包装进程终态、Gradle 子进程与两个 testbed 包不存在后才改文档。
+托管精确提交的后续构建仍待验证；秒级组件优化、正式 v5 联合和全量/人工门禁未完成。
+
 ### 午夜旧显示缓存与新模型只读统计（2026-10-09，Issue #332）
 
 午夜任务仅通过账户协调器/Room 事务刷新旧模型缓存，保留原活跃度算法。新模型及部分
@@ -40,7 +55,7 @@
 前批详情共享快照提交 `9c22a2de3512aa511af403dff51d72ea0cb2434b` 的托管 CI
 `37886056705` 首次在 `packageDeviceTestAndroidTest` 失败，原输出没有底层原因；
 repository/secret policy 通过，backend 未变跳过。仅对同一提交的失败作业开启一次 runner
-debug 诊断重跑（attempt 2），不修改源码或期限、不把未复现预先归因为环境，也不称 CI 已通过。
+debug 诊断重跑（attempt 2），不修改源码或期限；后续终态见上节，不把未复现归因为环境。
 
 ### 当前轮详情共享读取与活跃度（2026-10-09，Issue #332）
 
