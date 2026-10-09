@@ -158,7 +158,7 @@ internal class NextCoreLocalIntentStore(
                         requestId = row.commandId; permission = "timer.control"
                         val originalCommand = timerRequest(row)
                         val intent = if (row.commandType == "start")
-                            NextTimerPolicyStore(database).capture(originalCommand, access)
+                            NextTimerPolicyStore(database).capture(originalCommand, access, scope?.pendingRestarts?.get(originalCommand.activityUuid))
                             else NextTimerIntent(originalCommand)
                         val command = intent.command
                         val activity = row.activityUuid ?: database.timeLogDao().getTimeLogByUuid(row.sessionUuid)?.let {

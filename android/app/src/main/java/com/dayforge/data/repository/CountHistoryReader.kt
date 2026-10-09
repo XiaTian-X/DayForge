@@ -107,7 +107,8 @@ class CountHistoryReader @Inject constructor(
         if (scope == null) return null to facts
         val metadata = kotlinx.serialization.json.Json.decodeFromString<com.dayforge.data.api.dto.ChallengeMetadata>(scope.metadataJson)
         val checkpoint = metadata.checkpoints.singleOrNull { it.head.activityUuid == habit.uuid }
-        val head = checkpoint?.head ?: requireNotNull(scope.pendingInitials[habit.uuid]) { "COUNT_ROUND_REQUIRED" }.head
+        val head = scope.pendingRestarts[habit.uuid]?.head ?: checkpoint?.head ?:
+            requireNotNull(scope.pendingInitials[habit.uuid]) { "COUNT_ROUND_REQUIRED" }.head
         val known = checkpoint?.records?.mapTo(hashSetOf()) { it.head }.orEmpty() +
             listOfNotNull(scope.pendingInitials[habit.uuid]?.head)
         val births = metadata.births.filter { it.entityType == "activity_event" }.associateBy { it.entityUuid }
@@ -118,13 +119,17 @@ class CountHistoryReader @Inject constructor(
             val original = originals[fact.uuid]?.row
             val source = originals[fact.uuid]?.rounds
             val accepted = births[fact.uuid]?.head
+            val pendingHead = if (accepted == null) source?.restartFrontier?.let { ref ->
+                NextRestartBindingStore(database).captured(scope.access, ref, requireNotNull(original).queueId - 1)
+                ref.head
+            } else null
             accepted?.let { require(it.activityUuid == habit.uuid && it in known) { "COUNT_ROUND_INVALID" } }
             source?.let {
                 val origin = requireNotNull(original)
                 require(origin.accountId == scope.access.session.authentication.userId &&
                     it.operation.entityUuid == fact.uuid &&
                     it.operation.operationId == origin.requestId && it.context.head?.activityUuid == habit.uuid &&
-                    it.context.head in known) { "COUNT_ROUND_INVALID" }
+                    (it.context.head in known || it.context.head == pendingHead)) { "COUNT_ROUND_INVALID" }
                 accepted?.let { birth -> require(birth == it.context.head) { "COUNT_ROUND_INVALID" } }
             }
             val birth = accepted ?: run {

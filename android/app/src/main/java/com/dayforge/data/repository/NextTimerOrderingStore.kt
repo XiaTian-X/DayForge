@@ -24,8 +24,10 @@ internal class NextTimerOrderingStore(
         val policy = intent.command.startPolicy ?: return // Pre-existing foundation proof, not new UI start.
         policy.validate()
         require(intent.capturedDeviceId == null || intent.capturedDeviceId == access.deviceId)
-        intent.planPredecessorId?.let { id ->
-            val plan = NextStructuralCausalStore(database).acceptedPlan(id, access)
+        val restart = roundTimerIntent(origin.intentJson)?.restartFrontier
+        val plan = intent.planPredecessorId?.let { NextStructuralCausalStore(database).acceptedPlan(it, access) }
+            ?: restart?.let { NextRestartBindingStore(database).ready(access, it).first }
+        plan?.let {
             require(plan["public_id"] == JsonPrimitive(intent.command.activityUuid))
             val activity = plan.getValue("activity").jsonObject
             val target = activity.getValue("target_value").jsonPrimitive.content.toBigDecimal().intValueExact()

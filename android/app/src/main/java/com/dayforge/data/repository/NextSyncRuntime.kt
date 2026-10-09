@@ -74,6 +74,27 @@ internal class NextSyncRuntime @Inject constructor(
                 state = merge.page(access, state, page)
             } while (page.hasMore)
         }
+        // A prior call can COMMIT the real restart ACK then lose its Plan catch-up response.
+        // Recover that actual log before uploading dependents, within the same page budget.
+        if (challengeProfile && sessions.exclusive {
+                authorize(access)
+                database.withTransaction {
+                    NextChallengeStore(database).activeInTransaction(access)
+                    val ids = database.openHelper.writableDatabase.query("SELECT m.operationId FROM next_restart_materializations m " +
+                        "INNER JOIN next_acceptances a ON a.kind='sync_operation' AND a.requestId=m.operationId " +
+                        "LEFT JOIN next_restart_plan_proofs p ON p.operationId=m.operationId WHERE p.operationId IS NULL LIMIT 10001").use { raw ->
+                        buildList { while (raw.moveToNext()) {
+                            require(raw.getType(0) == android.database.Cursor.FIELD_TYPE_STRING); add(raw.getString(0))
+                        } }
+                    }
+                    require(ids.size <= 10_000)
+                    for (id in ids) {
+                        val store = NextRestartStore(database)
+                        store.accepted(access, store.original(access, id).reference)
+                    }
+                    ids.isNotEmpty()
+                }
+            }) catchUpRounds()
         val blocked = linkedSetOf<String>()
         val waiting = linkedSetOf<String>()
         var permanentBlock = false
