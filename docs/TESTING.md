@@ -19,6 +19,34 @@
 
 ## 验证层级
 
+### 配置新身份构造与真实素材复制（2026-10-09，Issue #160）
+
+NextConfigImportPlan 接冻结 v2 输入与目标绑定分配，完整构造新业务/素材/主题及创建操作身份。
+AccountIconImport/唯一素材所有者/控制器复用实际安装和传输日志；不新增业务导入日志、替换
+事务或正式设置页，不改变默认 v4、Room schema、HTTP、后端、依赖或既有手机/平板 UI。
+
+首轮完整七类72项：71 passed、1 failed、0 errors/skipped，证据
+`ac93134b0a9d4e829e7cef97fa09aa66`，build2m33s、connected3m19s/XML173.764s。
+失败仅为新只读夹具预期 ICON_ACCESS_DENIED，而原授权层正确返回 ICON_DECLARATION_DENIED。
+其余六个完整类37项通过：新计划7、真实构造2、NextConfigMapper7、ConfigBundleOutput7、
+ThemeConfigContract6、NextObjectCreation8。生产源码此后未改；实际 wrapper/Gradle/测试包退出
+后仅修正该断言，按风险单独复验完整 AccountIconImportTest35/35 passed，0失败/错误/跳过。
+证据 `c65307a3a3894433b136184058de9fd3/targeted.json`，build18s、connected2m40s/XML136.041s；
+root51/build/lint/警告、APK/发现/XML/非空新覆盖输入与两包清理通过。失败 XML 保留于该次
+prior-results，不将两次结果拼为72项最终完整门禁或 Android 全量。
+
+实际原生 ZIP/PNG/SVG 验证完整模式/目标窗口/锚点/指标/关联、新身份及引用替换、角色/颜色/
+用途/主题色板保留、严格分配 JSON、源变化和坏映射拒绝、时区独立及不可变集合。
+真实账户库/文件验证全部明暗字节、新授权身份、只读/旧会话/目标变更拒绝、失败与精确重试、
+素材冷重开和选包不变。新业务构造使用真实控制器、原 creator/producer、Room/outbox/
+原来源事务，验证保存的创建操作 ID、业务回滚、保持已安装素材、业务重开及事项未完成。
+这是构造接入证明，测试 participant 不冒充持久导入服务；分配序列化回读不是业务日志或
+整个进程死亡恢复。没有自动安装/应用主题或测试正式替换/新协议联合。
+完整受影响素材导入类保留最大128素材实际文件用例和全部异常断言，不改150s/1500s。
+未执行其他未变长计时、全局覆盖校准、Android/后端SQL全量或人工/平板/外网/NAS。
+稳定业务导入日志、替换及依赖恢复、正式设置页和联合启用仍待完成；无正式APK安装/清除、
+清库、部署、Docker或自动合并。
+
 ### 配置导出的业务事务快照与当前事项（2026-10-09，Issue #160）
 
 新增内部 NextConfigExportRepository：真实账户/Room 快照 → 原事项队列投影 → typed 映射
