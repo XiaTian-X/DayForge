@@ -7,7 +7,7 @@ import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.material3.MaterialTheme
+import com.dayforge.widget.base.WidgetActivityTheme
 import androidx.compose.runtime.*
 import com.dayforge.R
 import com.dayforge.data.repository.HabitRepository
@@ -64,7 +64,7 @@ class GoalCompletionActivity : ComponentActivity() {
 
         val display = mutableStateOf<DialogDisplay?>(null)
         setContent {
-            MaterialTheme {
+            WidgetActivityTheme(this) {
                 display.value?.let { value ->
                     GoalCompletionDialog(
                         habitName = value.name,

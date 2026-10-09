@@ -16,6 +16,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.dayforge.R
+import com.dayforge.widget.base.WidgetActivityTheme
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.repository.HabitRepository
 import dagger.hilt.android.AndroidEntryPoint
@@ -57,7 +58,7 @@ class ReactivationActivity : ComponentActivity() {
         }
 
         setContent {
-            MaterialTheme {
+            WidgetActivityTheme(this) {
                 // Transparent background with centered dialog
                 Box(
                     modifier = Modifier.fillMaxSize(),

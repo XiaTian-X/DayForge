@@ -7,7 +7,7 @@ import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.material3.MaterialTheme
+import com.dayforge.widget.base.WidgetActivityTheme
 import androidx.compose.runtime.*
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.ui.metrics.LinkedMetricCoordinator
@@ -51,35 +51,36 @@ class MetricPromptActivity : ComponentActivity() {
         }
 
         setContent {
-            MaterialTheme {
-                val state by metricCoordinator.postCheckInState.collectAsState()
-                var hadPrompt by remember { mutableStateOf(false) }
-                LaunchedEffect(state) {
-                    if (state != null) {
-                        hadPrompt = true
-                        if (state?.habitId != habitId) finish()
-                    } else if (hadPrompt) finish()
-                }
+            val state by metricCoordinator.postCheckInState.collectAsState()
+            var hadPrompt by remember { mutableStateOf(false) }
+            LaunchedEffect(state) {
+                if (state != null) {
+                    hadPrompt = true
+                    if (state?.habitId != habitId) finish()
+                } else if (hadPrompt) finish()
+            }
 
-                LaunchedEffect(habitId) {
-                    try {
-                        if (factClaim != null) {
-                            check(factClaim.habitId == habitId)
-                            metricCoordinator.showWidgetFactPrompt(factClaim)
-                        } else if (timerAuthority?.sessionUuid != null) metricCoordinator.showPromptAfterTimerStop(habitId, timerAuthority)
-                        else if (timerAuthority != null) metricCoordinator.showPendingTimerWidgetPrompt(habitId, timerAuthority)
-                        else {
-                            check(habits.getHabitById(habitId)?.appearance == null) { "FACT_WIDGET_CLAIM_REQUIRED" }
-                            metricCoordinator.showPromptIfNeeded(habitId, habitName)
-                        }
-                        if (metricCoordinator.postCheckInState.value == null) finish()
-                    } catch (error: Exception) {
-                        if (error is CancellationException) throw error
-                        report(error)
-                        finish()
+            LaunchedEffect(habitId) {
+                try {
+                    if (factClaim != null) {
+                        check(factClaim.habitId == habitId)
+                        metricCoordinator.showWidgetFactPrompt(factClaim)
+                    } else if (timerAuthority?.sessionUuid != null) metricCoordinator.showPromptAfterTimerStop(habitId, timerAuthority)
+                    else if (timerAuthority != null) metricCoordinator.showPendingTimerWidgetPrompt(habitId, timerAuthority)
+                    else {
+                        check(habits.getHabitById(habitId)?.appearance == null) { "FACT_WIDGET_CLAIM_REQUIRED" }
+                        metricCoordinator.showPromptIfNeeded(habitId, habitName)
                     }
+                    if (metricCoordinator.postCheckInState.value == null) finish()
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    report(error)
+                    finish()
                 }
+            }
 
+            // Effects stay outside the palette gate: retrying a theme cannot reopen/reset a prompt.
+            WidgetActivityTheme(this) {
                 state?.takeIf { it.habitId == habitId }?.let { prompt ->
                     // PostCheckInDialog is already an AlertDialog, no need to wrap in Dialog
                     PostCheckInDialog(
