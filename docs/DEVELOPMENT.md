@@ -26,6 +26,11 @@ chore(deps): upgrade FastAPI compatibility group
 
 提交作者使用仓库级配置。AI 参与情况记录在 PR 描述中，默认不追加大量共同作者 trailer。
 
+Android 构建在项目级 `gradle.properties` 使用 `org.gradle.logging.stacktrace=all` 保留失败异常栈，
+沿用普通日志级别，不默认打开 info/debug 或上传 Build Scan。异常栈仅增强定位证据，不改变
+构建任务、告警预算、测试范围或期限；缺少底层原因的打包失败不能凭重跑成功认定已修复。
+配置依据：[Gradle 异常栈日志](https://docs.gradle.org/current/userguide/logging.html#sec:stacktraces)。
+
 ## 依赖升级
 
 - Android 版本以 `gradle/libs.versions.toml` 和 Gradle Wrapper 为准。
