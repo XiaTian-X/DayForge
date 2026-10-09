@@ -29,14 +29,24 @@ internal class NextRoundOperationCapture(
     private val freshHeads = mutableMapOf<String, ChallengeRoundHead>()
     private val capturedInitialSources = mutableSetOf<String>()
     private val goalFrontiers = mutableListOf<NextRoundOperationIntent>()
+    private val capturedRestarts = mutableSetOf<NextRestartReference>()
 
     private suspend fun current(activity: String): ChallengeRoundHead {
         freshHeads[activity]?.let { return it }
-        if (activity in pendingRestarts) rejectNextRequest(NextRequestException.Reason.CAUSAL_PREDECESSOR_PENDING)
+        pendingRestarts[activity]?.let { pending ->
+            require(scope.pendingRestarts[activity] == pending) { "SYNC_CHALLENGE_STALE_ACTION" }
+            NextRestartBindingStore(database).captured(scope.access, pending)
+            capturedRestarts += pending
+            touched += activity
+            return pending.head
+        }
         val actual = before.checkpoints.singleOrNull { it.head.activityUuid == activity }?.head
         val expected = scope.pendingRestarts[activity]?.head ?: shown.checkpoints.singleOrNull { it.head.activityUuid == activity }?.head
             ?: scope.pendingInitials[activity]?.head
-        scope.pendingRestarts[activity]?.let { NextRestartStore(database).acceptedPlan(scope.access, it) }
+        scope.pendingRestarts[activity]?.let {
+            NextRestartBindingStore(database).ready(scope.access, it)
+            capturedRestarts += it
+        }
         if (actual != null) {
             require(expected == actual) { "SYNC_CHALLENGE_STALE_ACTION" }
             val latest = before.checkpoints.single { it.head == actual }.records.single { it.head == actual }
@@ -101,12 +111,14 @@ internal class NextRoundOperationCapture(
         return NextRoundOperationIntent(1, operation, ChallengeSourceContext(operation.operationId, head),
             requireNotNull(scope.access.deviceId), initialCreation = operation.entityType == "plan_node" &&
                 operation.action == "upsert" && freshHeads.containsKey(operation.entityUuid) && existing.none { it.uuid == operation.entityUuid } &&
-                capturedInitialSources.add(operation.entityUuid), goalChildFrontier = frontier)
+                capturedInitialSources.add(operation.entityUuid), goalChildFrontier = frontier,
+            restartFrontier = head?.activityUuid?.let { scope.pendingRestarts[it] })
             .also { if (frontier != null) goalFrontiers += it }
     }
 
     suspend fun captureTimer(intent: NextTimerIntent): NextRoundTimerIntent {
         val command = intent.command
+        var restart: NextRestartReference? = null
         val head = if (command.commandType == "start") {
             val local = requireNotNull(database.timeLogDao().getTimeLogByUuid(command.sessionId)) { "SYNC_CHALLENGE_TIMER_LOCAL_START_REQUIRED" }
             require(database.habitDao().getHabitById(local.habitId)?.uuid == command.activityUuid &&
@@ -114,7 +126,7 @@ internal class NextRoundOperationCapture(
                 local.timerTimezone == command.timezone)
             val segment = database.timeLogDao().getTimerSegments(command.sessionId).firstOrNull()
             require(segment?.sequence == 1 && segment.startedAt == local.startTime) { "SYNC_CHALLENGE_TIMER_LOCAL_START_REQUIRED" }
-            current(requireNotNull(command.activityUuid))
+            current(requireNotNull(command.activityUuid)).also { restart = scope.pendingRestarts[it.activityUuid] }
         } else {
             // Successors retain the actual local immutable start's birth, even if today's head moved.
             // Remote-recovered sessions need a separate authenticated policy/origin proof, not a
@@ -122,6 +134,8 @@ internal class NextRoundOperationCapture(
             val starts = NextTimerPolicyStore(database).starts(sessionUuid = command.sessionId)
             val (origin, start) = starts.single { it.second.command.sessionId == command.sessionId }
             val round = requireNotNull(roundTimerIntent(origin.intentJson)) { "SYNC_CHALLENGE_TIMER_START_REQUIRED" }
+            restart = round.restartFrontier
+            restart?.let { NextRestartBindingStore(database).captured(scope.access, it, start.planQueueWatermark); capturedRestarts += it }
             require(origin.accountId == scope.access.session.authentication.userId &&
                 origin.serverInstanceId == scope.access.session.serverInstanceId && origin.syncEpoch == scope.access.session.syncEpoch &&
                 round.capturedDeviceId == scope.access.deviceId && round.timer == start &&
@@ -129,14 +143,14 @@ internal class NextRoundOperationCapture(
             require(NextTimerPolicyStore(database).policy(com.dayforge.data.local.LocalCoreWriteAccess(
                 scope.access.session, scope.access.capabilities, scope.access.deviceId), command.sessionId) == start.command.startPolicy)
             requireNotNull(round.context.head).also { birth ->
-                require(known(birth))
+                require(known(birth) || restart?.head == birth)
                 if (database.nextRequestDao().acceptance(NEXT_TIMER, origin.requestId) != null)
                     require(before.requireBirth("timer_session", command.sessionId, birth.activityUuid).head == birth)
                 before.births.singleOrNull { it.entityType == "timer_session" && it.entityUuid == command.sessionId }
                     ?.let { require(it.head == birth) }
             }
         }
-        return NextRoundTimerIntent(1, intent, ChallengeSourceContext(command.commandId, head), requireNotNull(scope.access.deviceId))
+        return NextRoundTimerIntent(1, intent, ChallengeSourceContext(command.commandId, head), requireNotNull(scope.access.deviceId), restart)
     }
 
     /** Undo of an unaccepted local fact inherits its immutable NEW source, never current appearance. */
@@ -161,7 +175,11 @@ internal class NextRoundOperationCapture(
                 NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(row.queueId)) == row.sourceHash &&
                 database.nextRequestDao().acceptance(NEXT_OPERATION, id) == null)
             requireNotNull(source.context.head).also { head ->
-                require(head.activityUuid == activity && known(head))
+                source.restartFrontier?.let {
+                    NextRestartBindingStore(database).captured(scope.access, it, row.queueId - 1)
+                    capturedRestarts += it
+                }
+                require(head.activityUuid == activity && (known(head) || source.restartFrontier?.head == head))
             }
         }
         return matches.single()
@@ -184,8 +202,9 @@ internal class NextRoundOperationCapture(
         }
         require(NextRestartStore(database).pending(scope.access, after,
             NextRoundPendingInitialStore(database).read(scope.access, after)) == pendingRestarts) { "SYNC_RESTART_SOURCE_CHANGED" }
+        for (reference in capturedRestarts) NextRestartBindingStore(database).captured(scope.access, reference)
         for (activity in touched) {
-            val actual = before.checkpoints.singleOrNull { it.head.activityUuid == activity }?.head
+            val actual = pendingRestarts[activity]?.head ?: before.checkpoints.singleOrNull { it.head.activityUuid == activity }?.head
             if (actual != null) require((scope.pendingRestarts[activity]?.head ?: shown.checkpoints.singleOrNull { it.head.activityUuid == activity }?.head
                 ?: scope.pendingInitials[activity]?.head) == actual)
             else pendingInitials[activity]?.let { pending ->

@@ -41,7 +41,8 @@ internal fun timerPolicy(habit: HabitEntity): TimerStartPolicy {
 
 /** Existing immutable start origin survives ACK and cancel, unlike the disposable local timer row. */
 internal class NextTimerPolicyStore(private val database: HabitDatabase) {
-    suspend fun capture(command: TimerCommandRequest, access: LocalCoreWriteAccess): NextTimerIntent {
+    suspend fun capture(command: TimerCommandRequest, access: LocalCoreWriteAccess,
+        restart: NextRestartReference? = null): NextTimerIntent {
         check(database.inTransaction())
         val habit = requireNotNull(database.habitDao().getHabitByUuid(requireNotNull(command.activityUuid)))
         if (habit.appearance == null) return NextTimerIntent(command) // Explicit foundation/legacy path only.
@@ -49,7 +50,13 @@ internal class NextTimerPolicyStore(private val database: HabitDatabase) {
         val policy = timerPolicy(habit)
         val causal = NextStructuralCausalStore(database)
         val pending = database.syncOutboxDao().getEntityIntents("habit", habit.uuid)
-        val predecessor = pending.maxByOrNull { causal.logicalOrder(it) }
+        val restartOrder = restart?.let {
+            val sql = database.openHelper.writableDatabase
+            require(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, it.operationId)) == it.originHash)
+            requireNotNull(database.nextRequestDao().origin(NEXT_OPERATION, it.operationId)).queueId
+        }
+        val predecessor = pending.filter { restartOrder == null || causal.logicalOrder(it) > restartOrder }
+            .maxByOrNull { causal.logicalOrder(it) }
         predecessor?.let {
             require(it.action == "upsert")
             val origin = requireNotNull(database.nextRequestDao().origin(NEXT_OPERATION, it.operationId))

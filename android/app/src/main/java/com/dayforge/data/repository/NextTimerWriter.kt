@@ -99,7 +99,8 @@ class NextTimerWriter @Inject constructor(
     /** Active controls retain the original local start, not a newer current challenge head. */
     private suspend fun displayedHead(habit: HabitEntity, log: TimeLogEntity?, scope: NextRoundWriteScope): ChallengeRoundHead {
         val metadata = Json.decodeFromString(ChallengeMetadata.serializer(), scope.metadataJson)
-        if (log == null) return metadata.checkpoints.singleOrNull { it.head.activityUuid == habit.uuid }?.head
+        if (log == null) return scope.pendingRestarts[habit.uuid]?.head ?:
+            metadata.checkpoints.singleOrNull { it.head.activityUuid == habit.uuid }?.head
             ?: scope.pendingInitials[habit.uuid]?.head ?: error("SYNC_CHALLENGE_HEAD_REQUIRED")
         val access = requireNotNull(tokens.localCoreWriteAccess())
         NextTimerPolicyStore(database).policy(access, log.uuid)
@@ -108,9 +109,10 @@ class NextTimerWriter @Inject constructor(
         require(source.timer == start && source.capturedDeviceId == scope.access.deviceId &&
             origin.accountId == scope.access.session.authentication.userId && origin.serverInstanceId == scope.access.session.serverInstanceId &&
             origin.syncEpoch == scope.access.session.syncEpoch)
+        source.restartFrontier?.let { NextRestartBindingStore(database).captured(scope.access, it, start.planQueueWatermark) }
         return requireNotNull(source.context.head).also { head ->
             require(head.activityUuid == habit.uuid && (metadata.checkpoints.any { it.records.any { row -> row.head == head } } ||
-                scope.pendingInitials[habit.uuid]?.head == head))
+                scope.pendingInitials[habit.uuid]?.head == head || source.restartFrontier?.head == head))
             metadata.births.singleOrNull { it.entityType == "timer_session" && it.entityUuid == log.uuid }?.let { require(it.head == head) }
         }
     }

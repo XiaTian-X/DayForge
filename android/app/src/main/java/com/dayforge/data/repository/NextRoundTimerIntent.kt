@@ -11,17 +11,21 @@ import kotlinx.serialization.json.*
 
 /** NEW timer source only. The original start policy/frontier and command are not reinterpreted. */
 @Serializable
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 internal data class NextRoundTimerIntent(
     @Serializable(with = ContractIntegerSerializer::class)
     @SerialName("challenge_contract") val challengeContract: Int,
     val timer: NextTimerIntent,
     val context: ChallengeSourceContext,
-    @SerialName("captured_device_id") val capturedDeviceId: String
+    @SerialName("captured_device_id") val capturedDeviceId: String,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    @SerialName("restart_frontier") val restartFrontier: NextRestartReference? = null
 ) {
     init {
         require(challengeContract == 1 && isContractUuid(capturedDeviceId) && !context.legacyInitial)
         require(context.sourceUuid == timer.command.commandId && context.head != null && context.affectedHeads.isEmpty())
         require(timer.capturedDeviceId == null || timer.capturedDeviceId == capturedDeviceId)
+        restartFrontier?.let { require(it.head == context.head) }
         if (timer.command.commandType == "start") {
             require(timer.command.activityUuid == context.head.activityUuid && timer.command.startPolicy != null &&
                 timer.capturedDeviceId == capturedDeviceId && timer.planQueueWatermark != null)

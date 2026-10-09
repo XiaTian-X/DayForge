@@ -128,6 +128,7 @@ internal class NextCoreRequestStore(
             }
             val sources = listOf("sync_outbox", "timer_command_outbox").associateWith { NextRequestSql.sources(sql, it) }
             val journal = requireNotNull(database.nextRequestDao().transmission(kind, id))
+            val restartProof = NextRestartBindingStore(database).requireReady(access, captured)
             validate(captured, journal, access)
             val originHash = requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(kind, id)))
             val transmissionHash = requireNotNull(NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", arrayOf(kind, id)))
@@ -171,6 +172,7 @@ internal class NextCoreRequestStore(
                 NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(kind, id)) == originHash)
             check(sources == listOf("sync_outbox", "timer_command_outbox").associateWith { NextRequestSql.sources(sql, it) })
             if (goalSource != null) check(NextGoalChildFrontierStore(database).requireAccepted(goalSource, access) == goalProof)
+            require(NextRestartBindingStore(database).requireReady(access, captured) == restartProof) { "SYNC_RESTART_PLAN_PROOF_CHANGED" }
             if (checkpoint != null) {
                 val current = rounds.activeInTransaction(access)
                 check(current.first == checkpoint.first && current.second == merged) { "SYNC_CHALLENGE_ACK_CHANGED" }
@@ -225,6 +227,7 @@ internal class NextCoreRequestStore(
                 ?: rejectNextRequest(NextRequestException.Reason.OLD_INTENT)
             if (transmissionHash != delivery.transmissionProof) rejectNextRequest(NextRequestException.Reason.SOURCE_CHANGED)
             val rawOrigin = requireNotNull(dao.origin(NEXT_OPERATION, id))
+            val restartProof = NextRestartBindingStore(database).requireReady(access, rawOrigin)
             val transmission = requireNotNull(dao.transmission(NEXT_OPERATION, id))
             val rounds = NextChallengeStore(database)
             val roundOrigin = roundOperationIntent(rawOrigin.intentJson)
@@ -331,6 +334,7 @@ internal class NextCoreRequestStore(
             NextCountDayStore(database).verify(countDays)
             if (roundOrigin != null) check(NextGoalChildFrontierStore(database).requireAccepted(roundOrigin, access) == goalFrontierProof)
             require(causal.resolve(id, access) == id)
+            require(NextRestartBindingStore(database).requireReady(access, rawOrigin) == restartProof) { "SYNC_RESTART_PLAN_PROOF_CHANGED" }
             NextRequestSql.requireOutboxEnabled(sql)
             if (currentCheckpoint != null) {
                 val actual = rounds.activeInTransaction(access)
@@ -434,6 +438,7 @@ internal class NextCoreRequestStore(
                 else roundTimerIntent(original.intentJson) != null
             if (challengeProfile) NextChallengeStore(database).activeInTransaction(access)
             else NextChallengeStore(database).requirePlainInTransaction()
+            val restartProof = NextRestartBindingStore(database).requireReady(access, original)
             val causal = if (kind == NEXT_OPERATION) NextStructuralCausalStore(database, requireNotNull(memo)) else null
             val id = causal?.prepare(requestedId, access) ?: requestedId
             val origin = origin(access, kind, id)
@@ -490,6 +495,7 @@ internal class NextCoreRequestStore(
             check(origin(access, kind, id) == origin)
             if (goalSource != null) check(NextGoalChildFrontierStore(database).requireAccepted(goalSource, access) == goalProof)
             if (causal != null) require(causal.resolve(requestedId, access) == id)
+            require(NextRestartBindingStore(database).requireReady(access, original) == restartProof) { "SYNC_RESTART_PLAN_PROOF_CHANGED" }
             NextRequestSql.requireOutboxEnabled(sql)
             authorize(access)
             require((if (kind == NEXT_OPERATION) roundOperationIntent(origin.intentJson) != null
@@ -564,6 +570,7 @@ internal class NextCoreRequestStore(
             row.serverInstanceId != access.session.serverInstanceId || row.syncEpoch != access.session.syncEpoch || row.deviceId != access.deviceId)
             rejectNextRequest(NextRequestException.Reason.TRANSMISSION_CONTEXT_CHANGED)
         if (nextRequestHash(row.wireBytes) != row.wireHash) rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
+        NextRestartBindingStore(database).requireReady(access, origin)
         if (row.kind == NEXT_OPERATION) {
             validateNextOperationEnvelope(origin.intentJson, row.wireBytes, row.deviceId)
             if (roundOperationIntent(origin.intentJson) != null) NextChallengeStore(database).activeInTransaction(access)

@@ -38,6 +38,44 @@ internal object NextStructuralRebase {
     private val linkPaths = listOf("coefficient", "show_in_activity_detail", "prompt_on_complete", "is_active")
     private val decimals = setOf("activity.target_value", "target_value", "target_value_upper", "coefficient")
 
+    /** A restart changes the Plan via its own contract and contiguous log, not a synthetic Plan ACK. */
+    fun mergeRestartPlan(baseline: JsonObject, successor: SyncV2Operation, canonical: JsonObject,
+        revision: Long, replacementId: String): SyncV2Operation {
+        require(successor.entityType == "plan_node" && successor.action in setOf("upsert", "delete") &&
+            revision > 0 && isContractUuid(replacementId) && replacementId != successor.operationId)
+        NextStructureMapper.validatePlanWrite(baseline, successor.entityUuid)
+        require(baseline["node_kind"] == JsonPrimitive("activity"))
+        val actual = NextStructureMapper.readPlan(canonical, successor.entityUuid, revision)
+        require(actual.completionPolicy == "recurring" && actual.isActive &&
+            baseline["node_kind"] == canonical["node_kind"] &&
+            Instant.parse(baseline.getValue("created_at").jsonPrimitive.content) ==
+                Instant.parse(canonical.getValue("created_at").jsonPrimitive.content))
+        if (successor.action == "delete") {
+            require(successor.payload.isEmpty())
+            return successor.copy(operationId = replacementId, baseRevision = revision)
+        }
+        NextStructureMapper.validatePlanWrite(successor.payload, successor.entityUuid)
+        require(baseline.keys == successor.payload.keys && canonical.keys.containsAll(baseline.keys) &&
+            baseline["node_kind"] == successor.payload["node_kind"] &&
+            Instant.parse(baseline.getValue("created_at").jsonPrimitive.content) ==
+                Instant.parse(successor.payload.getValue("created_at").jsonPrimitive.content))
+        var merged = JsonObject(canonical.filterKeys { it in baseline.keys })
+        NextStructureMapper.validatePlanWrite(merged, successor.entityUuid)
+        val conflicts = planPaths.filter { path ->
+            val before = value(baseline, path)
+            val local = value(successor.payload, path)
+            val server = value(merged, path)
+            !same(path, before, local) && !same(path, before, server) && !same(path, local, server)
+        }.sorted()
+        if (conflicts.isNotEmpty()) throw NextStructuralCausalConflict(conflicts)
+        for (path in planPaths) {
+            val local = value(successor.payload, path)
+            if (!same(path, value(baseline, path), local)) merged = set(merged, path.split('.'), requireNotNull(local))
+        }
+        NextStructureMapper.validatePlanWrite(merged, successor.entityUuid)
+        return successor.copy(operationId = replacementId, baseRevision = revision, payload = merged)
+    }
+
     fun merge(predecessor: SyncV2Operation, successor: SyncV2Operation,
         confirmed: NextSyncOperationResult, replacementId: String,
         submittedPredecessor: SyncV2Operation = predecessor): SyncV2Operation {

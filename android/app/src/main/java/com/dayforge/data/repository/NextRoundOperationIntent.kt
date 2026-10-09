@@ -14,6 +14,7 @@ import kotlinx.serialization.json.*
 
 /** NEW immutable local source only. Never added to an old origin or frozen envelope. */
 @Serializable
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 internal data class NextRoundOperationIntent(
     @Serializable(with = ContractIntegerSerializer::class)
     @SerialName("challenge_contract") val challengeContract: Int,
@@ -22,13 +23,25 @@ internal data class NextRoundOperationIntent(
     @SerialName("captured_device_id") val capturedDeviceId: String,
     @Serializable(with = ContractBooleanSerializer::class)
     @SerialName("initial_creation") val initialCreation: Boolean = false,
-    @SerialName("goal_child_frontier") val goalChildFrontier: List<NextGoalChildFrontier>? = null
+    @SerialName("goal_child_frontier") val goalChildFrontier: List<NextGoalChildFrontier>? = null,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    @SerialName("restart_frontier") val restartFrontier: NextRestartReference? = null,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    @SerialName("restart_plan_proof_hash") val restartPlanProofHash: String? = null
 ) {
     init {
         require(challengeContract == 1 && isContractUuid(capturedDeviceId))
         require(context.sourceUuid == operation.operationId && !context.legacyInitial)
         RoundSyncPushRequest(1, capturedDeviceId, listOf(operation), listOf(context))
         validateNextSyncOperation(operation)
+        restartFrontier?.let { ref ->
+            require(!initialCreation && goalChildFrontier == null && context.head?.activityUuid == ref.head.activityUuid)
+            require(operation.entityType in setOf("plan_node", "activity_event"))
+            if (operation.entityType == "plan_node" || operation.payload["event_type"] != JsonPrimitive("revert"))
+                require(context.head == ref.head)
+        }
+        restartPlanProofHash?.let { require(restartFrontier != null && operation.entityType == "plan_node" &&
+            it.matches(Regex("[0-9a-f]{64}"))) }
         if (initialCreation) require(operation.entityType == "plan_node" && operation.action == "upsert" &&
             operation.baseRevision == null && operation.payload["activity"]?.jsonObject?.get("completion_policy") == JsonPrimitive("recurring") &&
             context.head == initialChallengeRoundHead(operation.entityUuid) && context.affectedHeads.isEmpty())

@@ -81,6 +81,7 @@ internal class NextTimerRequestStore(
             val transmissionHash = hash("next_transmissions", id) ?: rejectNextRequest(NextRequestException.Reason.OLD_INTENT)
             if (transmissionHash != transmissionProof) rejectNextRequest(NextRequestException.Reason.SOURCE_CHANGED)
             val origin = requireNotNull(dao.origin(NEXT_TIMER, id))
+            val restartProof = NextRestartBindingStore(database).requireReady(access, origin)
             val transmission = requireNotNull(dao.transmission(NEXT_TIMER, id))
             val rounds = NextChallengeStore(database)
             val roundOrigin = roundTimerIntent(origin.intentJson)
@@ -101,6 +102,7 @@ internal class NextTimerRequestStore(
                 rounds.acknowledgeInTransaction(access, frozen)
             }
             suspend fun verifyRounds() {
+                require(NextRestartBindingStore(database).requireReady(access, origin) == restartProof) { "SYNC_RESTART_PLAN_PROOF_CHANGED" }
                 if (checkpoint != null) {
                     val actual = rounds.activeInTransaction(access)
                     check(actual.first == checkpoint.first && actual.second == merged) { "SYNC_CHALLENGE_ACK_CHANGED" }
