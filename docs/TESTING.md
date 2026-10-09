@@ -19,6 +19,34 @@
 
 ## 验证层级
 
+### 打卡/计数/专注显示的账户发布边界（2026-10-09，Issue #332）
+
+WidgetDisplayPublisher 捕获原账户/副本/设备/权限与同步内存标记，准备阶段调用原账户/Room
+读取器，发布阶段复核后在账户锁内、Room 外写主题/Glance；不把不可重入锁套在整条读取链。
+旧准备结果和旧读取错误在账户替换后丢弃，匿名登录再退出 ABA 同样失效。来源错误隐藏操作并
+清除声明；主题/显示错误与取消继续向刷新链传播。CheckIn/Counting/Focus 保留原事项
+canChange、计数日规则和 Focus 时间窗口/两个候选排序，不声称全候选是单一 Room 快照。
+三类 provideGlance 被动渲染，配置/动作/明确重试先显式加载；平台更新与 Focus 闹钟只入队
+持久化刷新，移除两类平台接收器和窗口闹钟的脱离协程。闹钟重排在发布锁外，避免日规则读取重入。
+
+完整 `WidgetDisplayPublicationTest`、`WidgetFactEntryTest`、`WidgetFactActionTest`、
+`ProductionWorkflowInjectionTest`、`OneTimeWorkflowTest`、`CountRoundConsumerTest`、
+`CheckInWidgetStateTest`、`CheckInWidgetConfigActivityTest`、`WidgetRefresherTargetsTest`、
+`WidgetRefresherTest`、`WidgetRefreshWorkerTest`、`WidgetRefreshSchedulerTest`、
+`FocusWindowReceiverTest` 13 类实际 64/64 passed、0 failures/errors/skipped，connected
+4m07s（XML suite 219.015s），证据 `d1af1066404c44d3ba7b488ebdaa680b/targeted.json`。
+根工具 51、build2m14s/lint/告警、发现/APK/XML/新覆盖输入与 testbed 清理均通过，实际
+wrapper/Gradle 和两个 testbed 包不存在后才编辑文档。本轮一次合批，无失败片段拼接。
+新增真实 mutex/Room/DataStore 竞争、原读取重入、账户替换/ABA/注册变化、显示清理顺序、
+来源/renderer 错误分离与两阶段取消；真实 Hilt/Glance 验证事项完成/撤销、坏 SQLite 类型
+隐藏操作、明确重试先恢复再渲染，以及三类主题失败不改原显示/整库。重试仅隔离 host 提交，
+callback/Hilt/Room/主题/Glance DataStore 均真实，不把合成 Glance ID 当已安装 launcher 实例。
+
+不重复未变容量/重启长链或一分钟服务，不扩大 150s/1500s 期限，不称 Android 全量、
+后端 SQL/正式 UI/launcher 多实例/像素/电量性能或人工通过。Progress/Motivation 整体
+发布、清理失败及全部消费者/v5/Worker/素材/配置联合仍待完成；#344 后端全量取消尚未闭合。
+schema、HTTP、后端、依赖和既有手机/平板布局不变，默认 v4，无正式 APK/清库/部署/Docker 操作。
+
 ### 计时小组件秒级显示与完整审计分离（2026-10-09，Issue #332）
 
 TimerService 使用其 serviceScope 拥有的单消费者与 CONFLATED 队列；积压 tick 只保留最新
