@@ -50,12 +50,12 @@ class CiCapacityTest(unittest.TestCase):
 
     def test_physical_shard_capacity_is_explicit_and_user_approved(self):
         self.assertEqual(3, SHARDS)
-        self.assertEqual(1500, SHARD_TIMEOUT_SECONDS)
+        self.assertEqual(2700, SHARD_TIMEOUT_SECONDS)
         runner = (ROOT / "tools/run_android_tests.py").read_text()
         self.assertRegex(runner, r"\n\s+SHARD_TIMEOUT_SECONDS,\n")
         self.assert_native_task_capacity((ROOT / "android/app/build.gradle.kts").read_text())
         testing = (ROOT / "docs/TESTING.md").read_text()
-        self.assertIn("每批 Android 测试任务/包装进程上限 25 分钟", testing)
+        self.assertIn("每批 Android 测试任务/包装进程上限 45 分钟", testing)
         self.assertIn("真机测试单项上限 150 秒", testing)
 
     def assert_native_task_capacity(self, gradle):
@@ -72,11 +72,12 @@ class CiCapacityTest(unittest.TestCase):
     def test_native_task_guard_rejects_stale_or_mismatched_limits(self):
         gradle = (ROOT / "android/app/build.gradle.kts").read_text()
         for broken in (
-            gradle.replace("Duration.ofSeconds(1500)", "Duration.ofSeconds(900)"),
-            gradle.replace("Duration.ofSeconds(1500)", "Duration.ofSeconds(1200)"),
-            gradle.replace("Duration.ofSeconds(1500)", "Duration.ofMinutes(15)"),
+            gradle.replace("Duration.ofSeconds(2700)", "Duration.ofSeconds(900)"),
+            gradle.replace("Duration.ofSeconds(2700)", "Duration.ofSeconds(1200)"),
+            gradle.replace("Duration.ofSeconds(2700)", "Duration.ofSeconds(1500)"),
+            gradle.replace("Duration.ofSeconds(2700)", "Duration.ofMinutes(45)"),
             gradle.replace("connectedDeviceTestAndroidTest", "connectedDebugAndroidTest"),
-            gradle.replace("timeout.set(Duration.ofSeconds(1500))", ""),
+            gradle.replace("timeout.set(Duration.ofSeconds(2700))", ""),
             gradle.replace('= "150000"', '= "180000"'),
             gradle + "\ntimeout.set(Duration.ofSeconds(900))\n",
         ):
