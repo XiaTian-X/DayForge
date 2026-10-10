@@ -22,6 +22,9 @@ interface NextSyncStateDao {
     @Query("SELECT * FROM next_rejections ORDER BY kind,requestId")
     suspend fun rejections(): List<NextRejectionEntity>
 
+    @Query("SELECT * FROM next_rejections WHERE kind=:kind AND requestId=:requestId")
+    suspend fun rejection(kind: String, requestId: String): NextRejectionEntity?
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertRejection(row: NextRejectionEntity)
 }

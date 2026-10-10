@@ -539,94 +539,18 @@ internal class NextCoreRequestStore(
     }
 
     private suspend fun origin(access: LocalSyncAccess, kind: String, id: String,
-        requirePermission: Boolean = true): NextRequestOriginEntity {
-        val sql = database.openHelper.writableDatabase
-        if (NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(kind, id)) == null)
-            rejectNextRequest(NextRequestException.Reason.OLD_INTENT)
-        val row = requireNotNull(database.nextRequestDao().origin(kind, id))
-        if (row.kind != kind || row.requestId != id || row.protocol != 5 || row.queueId <= 0 ||
-            row.sourceHash.length != 64 || row.sourceHash.any { it !in "0123456789abcdef" } ||
-            (row.serverInstanceId == null) != (row.syncEpoch == null))
-            rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
-        if (row.accountId != access.session.authentication.userId ||
-            (row.serverInstanceId != null && (row.serverInstanceId != access.session.serverInstanceId || row.syncEpoch != access.session.syncEpoch)))
-            rejectNextRequest(NextRequestException.Reason.TRANSMISSION_CONTEXT_CHANGED)
-        val table = NextRequestSql.table(kind)
-        if (NextRequestSql.rowHash(sql, table, "id=?", arrayOf(row.queueId)) != row.sourceHash)
-            rejectNextRequest(NextRequestException.Reason.SOURCE_CHANGED)
-        val permission = if (kind == NEXT_OPERATION) {
-            val queue = requireNotNull(database.syncOutboxDao().getById(row.queueId))
-            val operation = decodeNextOperationIntent(row.intentJson)
-            require(queue.operationId == id && operation.operationId == id && isContractUuid(operation.entityUuid))
-            val type = when (queue.recordType) {
-                "habit" -> "plan_node"; "metric" -> "metric"; "completion" -> "activity_event"
-                "metric_log" -> "metric_observation"; "link" -> "activity_metric_link"
-                else -> rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
-            }
-            require(operation.entityType == type)
-            if (queue.recordType == "completion" && queue.action == "delete") {
-                require(operation.action == "upsert" && operation.entityUuid != queue.entityUuid &&
-                    operation.payload["reverts_event_uuid"] == kotlinx.serialization.json.JsonPrimitive(queue.entityUuid))
-            } else require(operation.action == queue.action && operation.entityUuid == queue.entityUuid)
-            if (queue.recordType in setOf("completion", "metric_log")) "facts.append" else "structure.write"
-        } else {
-            val queue = requireNotNull(database.timeLogDao().getTimerCommand(row.queueId))
-            val command = decodeNextTimerIntent(row.intentJson).command
-            require(queue.commandId == id && timerRequest(queue) == command.copy(startPolicy = null))
-            command.startPolicy?.let { require(command.commandType == "start"); it.validate() }
-            "timer.control"
-        }
-        if (requirePermission && permission !in access.capabilities) rejectNextRequest(NextRequestException.Reason.PERMISSION_DENIED)
-        return row
-    }
+        requirePermission: Boolean = true): NextRequestOriginEntity =
+        NextOriginalRequestProofStore(database).liveOrigin(access, kind, id, requirePermission)
 
     /** SELECT-only consumer; sender authorization is unchanged, including after permission loss. */
-    internal suspend fun inspectOrigin(access: LocalSyncAccess, kind: String, id: String): NextRequestOriginEntity {
-        check(database.inTransaction())
-        val source = origin(access, kind, id, requirePermission = false)
-        val captured = if (kind == NEXT_OPERATION) requireNotNull(roundOperationIntent(source.intentJson)).capturedDeviceId
-            else requireNotNull(roundTimerIntent(source.intentJson)).capturedDeviceId
-        require(captured == access.deviceId && source.serverInstanceId == access.session.serverInstanceId &&
-            source.syncEpoch == access.session.syncEpoch)
-        return source
-    }
+    internal suspend fun inspectOrigin(access: LocalSyncAccess, kind: String, id: String): NextRequestOriginEntity =
+        NextOriginalRequestProofStore(database).inspectionOrigin(access, kind, id)
 
     internal suspend fun inspectRejection(access: LocalSyncAccess,
         row: com.dayforge.data.local.entity.NextRejectionEntity): com.dayforge.data.model.NextSyncProblem {
-        val source = inspectOrigin(access, row.kind, row.requestId)
-        val sql = database.openHelper.writableDatabase
-        val args = arrayOf<Any>(row.kind, row.requestId)
-        require(row.originHash == NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", args) &&
-            row.transmissionHash == NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", args) &&
-            row.resultHash == nextRequestHash(row.resultJson.toByteArray(Charsets.UTF_8)) &&
-            NextRequestSql.rowHash(sql, "next_acceptances", "kind=? AND requestId=?", args) == null)
-        val transmitted = requireNotNull(database.nextRequestDao().transmission(row.kind, row.requestId))
-        validate(source, transmitted, access)
-        val metadata = NextChallengeStore(database).activeInTransaction(access).second
-        return if (row.kind == NEXT_OPERATION) {
-            val operation = validateNextOperationEnvelope(source.intentJson, transmitted.wireBytes, requireNotNull(access.deviceId))
-            val result = decodeFrozenSyncRequest(row.resultJson.toByteArray(Charsets.UTF_8), NextSyncOperationResult.serializer())
-            validateTaskResultBinding(operation, result)
-            validateRoundResultBinding(decodeFrozenSyncRequest(transmitted.wireBytes, RoundSyncPushRequest.serializer()),
-                RoundSyncPushResponse(listOf(result), 1, metadata.checkpoints, metadata.births))
-            requirePermanentProblem(result.status, result.errorCode)
-            com.dayforge.data.model.NextSyncProblem(row.kind, row.requestId, operation.entityType,
-                operation.entityUuid, requireNotNull(result.errorCode), result.conflictingFields)
-        } else {
-            val command = validateNextTimerEnvelope(source.intentJson, transmitted.wireBytes, requireNotNull(access.deviceId))
-            val result = decodeFrozenSyncRequest(row.resultJson.toByteArray(Charsets.UTF_8), TimerCommandResult.serializer())
-            require(result.commandId == command.commandId && result.sessionId == command.sessionId)
-            requirePermanentProblem(result.status, result.errorCode)
-            result.session?.let { timer ->
-                require(timer.sessionId == command.sessionId)
-                val birth = metadata.requireBirth("timer_session", timer.sessionId, timer.activityUuid)
-                timer.completedEventId?.let {
-                    require(metadata.requireBirth("activity_event", it, timer.activityUuid).head == birth.head)
-                }
-            }
-            com.dayforge.data.model.NextSyncProblem(row.kind, row.requestId, "timer_session", command.sessionId,
-                requireNotNull(result.errorCode))
-        }
+        val proof = NextOriginalRequestProofStore(database).rejection(access, row.kind, row.requestId)
+        require(database.nextSyncStateDao().rejection(row.kind, row.requestId) == row && proof.isPermanent)
+        return proof.problem
     }
 
     internal suspend fun inspectPending(access: LocalSyncAccess, kind: String, id: String) {
@@ -662,22 +586,8 @@ internal class NextCoreRequestStore(
         }
     }
 
-    private suspend fun validate(origin: NextRequestOriginEntity, row: NextTransmissionEntity, access: LocalSyncAccess) {
-        if (row.kind != origin.kind || row.requestId != origin.requestId || row.queueId != origin.queueId || row.protocol != 5)
-            rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
-        if (row.accountId != origin.accountId || row.accountId != access.session.authentication.userId ||
-            row.serverInstanceId != access.session.serverInstanceId || row.syncEpoch != access.session.syncEpoch || row.deviceId != access.deviceId)
-            rejectNextRequest(NextRequestException.Reason.TRANSMISSION_CONTEXT_CHANGED)
-        if (nextRequestHash(row.wireBytes) != row.wireHash) rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
-        NextRestartBindingStore(database).requireReady(access, origin)
-        if (row.kind == NEXT_OPERATION) {
-            validateNextOperationEnvelope(origin.intentJson, row.wireBytes, row.deviceId)
-            if (roundOperationIntent(origin.intentJson) != null) NextChallengeStore(database).activeInTransaction(access)
-        } else {
-            validateNextTimerEnvelope(origin.intentJson, row.wireBytes, row.deviceId)
-            if (roundTimerIntent(origin.intentJson) != null) NextChallengeStore(database).activeInTransaction(access)
-        }
-    }
+    private suspend fun validate(origin: NextRequestOriginEntity, row: NextTransmissionEntity, access: LocalSyncAccess) =
+        NextOriginalRequestProofStore(database).journal(origin, row, access)
 
     private suspend fun authorize(access: LocalSyncAccess) {
         if (tokens.syncAuthenticationSnapshot(access) == null) rejectNextRequest(NextRequestException.Reason.STALE_ACCESS)

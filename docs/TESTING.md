@@ -880,6 +880,34 @@ APK/发现/XML/新非空覆盖输入及两包清理通过；150s/1500s 不变，
 继续接完整恢复链后，按 D-020 的相应矩阵及关键接入联合/全量门禁验证，不重跑未变内部用例
 凑进度，也不能据本次定向结果放宽完成条件。
 
+2026-10-10 原请求共享证明/拒绝初始创建修复：授权 MI6/API35，18 个完整受影响类
+首轮 282 项，281 passed/1 failure/0 error/skipped，`9d5d3da204bd4faabe48ffa3beee527d`；
+build 2m57s、connected 24m04s、XML 1420.4s。唯一失败是新 HTTP 夹具把 changed_at
+写成旧时间、与实际 ACK 实体 updated_at 不一致，生产下载校验正确拒绝；不是全批通过。
+32 层完整因果用例 115.549s 通过，未触发 150s 上限。已通过且未受随后夹具修改影响的
+17 完整类：NextBusinessWorkflow8、NextCoreRequestStore47、NextCountDayWorkflow9、
+NextObjectCreation12、NextObjectEditor9、NextOrdinaryResultStore12、NextPlanDeletionWorkflow7、
+NextRestartWorkflow39、NextRoundOneTimeStore9、NextRoundOperationStore21、
+NextRoundSyncRuntime10、NextRoundTimerStore13、NextRoundWriterWorkflow13、
+NextStructuralCausalStore25、NextSyncRuntime12、NextTimerRequestStore11、SyncProblemReader16
+（均为相应 Test 类，共 273 项），不重跑未变类或将分批结果写成全量。
+
+确认进程与两测试包退出后，仅修正新响应的完整时间绑定并保留非预期异常原因，完整
+NextRejectedInitialWorkflowTest 复验 9/9，0 failure/error/skipped，
+`2fff364740cc48649125a69634e14eb4/targeted.json`；build 22s、connected 1m27s、XML 65.25s；
+首轮原 XML 保留在该次 prior-results。真实 Room/DataStore/HTTP 验证原生产创建和永久拒绝、
+冷重开、失败习惯不能获得动作出生票据、独立编辑两次同步并保留全部原字节/失败且无成功
+时间；另覆盖完整暂时错误、真正响应丢失、未发送来源证明、SQL 错类型/损坏原日志/依赖/
+结果、账户/设备/epoch/伪检查点、只读离线与摘要变化及部分放弃成员拒绝发送/迟到 ACK。
+根 51、构建/lint/原告警预算、实际 APK/发现/XML/新非空覆盖输入和两包清理通过；
+150s/1500s 不变，全局覆盖校准未执行。首轮批次已接近 25 分钟，后续相同风险矩阵
+应按已测完整类耗时分批，而不是延长期限、方法过滤或删断言。
+原请求证明/Core/初始读取/DAO 的 blob 分别 `df969419277ac0a0bd70ed26904cd64738dacf5e`、
+`a82c9e9ba2f6bf573358a2cb3e101cb8ce3efc09`、`e323133e23bbb67da1c7051417c292aa12028cdc`、
+`79db5b0d58feedaa0b126c22ff2257fce5902705`；新测试 `e00e3982b143fab6c6a7e4bd7a93458f999b8e4d`。
+本批不是完整实际依赖图/退休终态/投影确认交付；按钮未开放，无正式 APK 安装/清除、
+新 PR/精确提交 CI、后端联合、阶段全量或手机/平板/外网/NAS/Docker 人工验收。
+
 日常定向真机入口按完整类选择，不接受方法、包、通配符或外部参数注入：
 
 ```bash
