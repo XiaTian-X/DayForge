@@ -893,6 +893,14 @@ warning 提升为 error。Kotlin、javac 与 Android 资源编译警告由
 `./tools/verify android` 会拒绝未知警告和数量增长。编译任务可能命中缓存，因此只有干净、
 完整重编译后观察到的减少才可以用于下调预算；主机 SDK/命令行工具不匹配之类的环境提示
 不属于代码警告预算。
+
+编译容量与测试容量分开验证。项目显式 Kotlin 堆为 3 GiB、Gradle 堆仍为 2 GiB；
+由 PR #373 精确 head 的 CI38012840531 attempt1 在 compileDeviceTestKotlin 报
+GC overhead / OOMErrorException（build5分45秒）触发，不调整原测试/构建期限。
+纯编译配置变化先核对实际属性、根检查及精确 head 的远端 android-build 冷编译；
+不因堆参数变化重跑未改业务矩阵，不沿用先前真机/全量结果声称当前行为已验收。
+CI 的 build/lint/告警结果与测试结果分开记录，原失败继续保留；一次成功不证明不存在
+编译器泄漏或所有容量问题。后续受影响业务、联合/阶段收尾仍执行既定门禁。
 `AndroidGradlePluginVersion` 和 `GradleDependency` 依赖实时仓库元数据，同一提交在不同缓存中
 会产生不同结果，因此不进入 lint 门禁；锁定版本的升级必须通过独立的工具链/依赖审查 PR，
 不能据此忽略编译、运行时弃用或其他静态分析问题。

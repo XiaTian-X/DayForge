@@ -31,6 +31,14 @@ Android 构建在项目级 `gradle.properties` 使用 `org.gradle.logging.stackt
 构建任务、告警预算、测试范围或期限；缺少底层原因的打包失败不能凭重跑成功认定已修复。
 配置依据：[Gradle 异常栈日志](https://docs.gradle.org/current/userguide/logging.html#sec:stacktraces)。
 
+Android 的 Kotlin 编译堆在同一项目配置中显式设为 3 GiB，Gradle 堆仍为 2 GiB。
+这是针对托管构建 `compileDeviceTestKotlin` 实际 GC overhead / OOM 的独立容量修正，
+不是工具链升级、App/NAS 运行内存要求或测试期限调整。构建主机还须为 Gradle、编译器、
+元空间、lint 与操作系统留出资源，不能把两个最大堆的和当作总内存上限。
+修改后以实际冷编译和精确提交 CI 为准，不把 UP-TO-DATE/旧绿色或成功重跑当作永久修复。
+不改变编译策略、K2/KSP/Hilt 版本、缓存、任务、告警预算或 instrumentation 参数。
+配置依据：[Kotlin 编译堆](https://kotlinlang.org/docs/gradle-compilation-and-caches.html#kotlin-daemon-jvmargs-property)。
+
 ## 依赖升级
 
 - Android 版本以 `gradle/libs.versions.toml` 和 Gradle Wrapper 为准。
