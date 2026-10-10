@@ -939,6 +939,34 @@ NextRoundOperationStoreTest21、SyncProblemReaderTest16，120/120，0 failure/er
 没有正式包安装/清除、恢复按钮、队列退休、投影确认、新 PR/精确提交 CI、后端联合、
 阶段全量或手机/平板/外网/NAS/Docker 人工验收；默认 v4、Room/schema、后端和既有 UI 不变。
 
+2026-10-10 原跨队列捕获前沿：首轮完整 NextRecoveryCapturedFrontierTest8、
+NextCountDayWorkflowTest9、NextRoundTimerStoreTest13、NextRoundGoalDeletionTest14、
+NextRecoveryStructuralLineageTest14，共 58 项，50 passed/8 failure/0 error/skipped，
+`5eb4c847b6634408988075e186fba51a`；build 1m28s、connected 5m34s、XML 308.012s。
+8 项失败均在新夹具初始化：从计数习惯复制目标却保留 targetValue=10，原领域规范化要求
+目标为 1，生产投影校验正确拒绝。4 个未变相邻类的完整 50 项通过，不重跑或拼接为全量。
+
+确认进程和两包退出后仅修正新目标夹具的字段，不改生产源码或断言；最终完整新类
+8/8，0 failure/error/skipped，`bb64ba1ed8e24410b7b2f02089e6ad0c/targeted.json`；
+build 18s、connected 1m07s、XML 46.073s。首轮完整 XML 保存为该次 prior-results。
+实际生产 round producer/typed editor、Room/DataStore 验证首次计数的原配置和后续
+首条请求依赖、目标增大不改原日规则、计时原开始政策/水位不随后续编辑变化、暂停的
+实际会话/序号而非伪 ACK、已脱离目标的原子项依赖、SQL 错类型/日规则损坏、账户/
+设备/epoch 拒绝、失去权限仍可只读，以及真实 HTTP 丢失后保持未知状态和冻结字节。
+实际本地重启→新轮编辑验证捕获引用保持未确认，不制造接受或丢掉原重启队列；各条
+读取及冷重开均保持业务/队列/偏好，不调用 HTTP/prepare 或创建审计。
+
+更早 `d1ae73ec635f441bba40f3550d7eeb87` 的 build 1m47s 虽成功，但新夹具 SQL
+异构数组推断产生 1 条新增 Kotlin 告警，被原预算门禁拒绝，没有行为通过证据。
+显式声明数组类型后再运行原完整 5 类；未放宽告警预算、150s/1500s 期限或删除断言。
+根 51、构建/lint/原告警预算、实际 APK/发现/XML/新非空覆盖输入及两包清理通过，
+不做全局覆盖校准。最终新生产/测试 blob 分别
+`1a062addd72d9a31bcf040de7c4b8448cc1d64b2`、`072100c3a2d8040be81d1696fc8e8a32503b1aa5`。
+没有全类别图/会话序列索引、事项 CAS/导入、退休/投影确认、容量/备份恢复、正式 UI、
+新 PR/精确提交 CI、后端联合、阶段全量或手机/平板/外网/NAS/Docker 人工验收。
+结构受控替代后的首次离线计数及跨队列顺序仍待实际索引组合验证，不由本批简单前驱
+用例替代。没有正式包安装/清除；默认 v4、Room/schema、后端和既有 UI 保持不变。
+
 日常定向真机入口按完整类选择，不接受方法、包、通配符或外部参数注入：
 
 ```bash
