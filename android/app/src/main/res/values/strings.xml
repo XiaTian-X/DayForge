@@ -1179,4 +1179,12 @@
     <string name="config_file_local_committed">Local configuration committed. Server confirmations and material transfers are not yet guaranteed; check configuration status and sync.</string>
     <string name="config_file_abandoned">The uncommitted import was abandoned. Existing data and already installed icons and themes were retained.</string>
     <string name="config_file_failed">Operation not completed. Verify the file, account and sync readiness. If an import is prepared, reselect its original file to recover; do not create a second import.</string>
+    <string name="sync_problems_loading">Reading sync problems…</string>
+    <string name="sync_problems_unavailable">Sync problem details cannot be verified for this account. No recovery action has been taken.</string>
+    <string name="sync_problems_read_only">These requests are preserved. Network retry does not resolve permanent rejection; legacy recovery actions are not available for this protocol.</string>
+    <string name="sync_problem_dependency">Waiting for an earlier request to be accepted. Synchronize again after its issue is resolved.</string>
+    <string name="sync_problem_start_changed">The accepted target changed before this activity started. Its original start rules and data are preserved.</string>
+    <string name="sync_problem_permission">This device no longer has permission to send this request.</string>
+    <string name="sync_problem_structure_conflict">The local change overlaps an accepted structural change.</string>
+    <string name="sync_problem_rejected">The server permanently rejected this request. The original request and local data are preserved.</string>
 </resources>

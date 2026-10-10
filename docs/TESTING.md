@@ -811,6 +811,15 @@ APK/发现/XML/新覆盖输入及 testbed 清理通过。迁移旧 schema 1–14
 
 ### Android 改动
 
+同步问题展示的日常矩阵为完整 `SyncProblemReaderTest`、`SettingsViewModelTest`、
+`SyncProblemsDialogTest`，以及受影响的 `NextCoreRequestStoreTest`、
+`NextStructuralCausalStoreTest`、`NextRestartWorkflowTest`、`NextRoundOneTimeStoreTest`、
+`NextRoundTimerStoreTest`、`BusinessSyncRepositoryTest`。验证真实账户/Room 的冷拒绝读取、
+全部表与偏好不变/不联网、普通待发送非问题、依赖/重叠/计时开始规则、权限变化、
+原始类型/结果哈希/孤立档位拒绝、同数量内容变化、取消和迟到发布，以及只读窗口不出现
+旧版恢复操作。这不是人工恢复操作、真实后端联合幂等、正式导航/手机平板人工验收，
+不代替 #160 收尾的全量门禁和人工验收。
+
 日常定向真机入口按完整类选择，不接受方法、包、通配符或外部参数注入：
 
 ```bash
@@ -2372,6 +2381,34 @@ ProtocolNextActivationBarrierTest16、SyncManagerTest10。真实 Room/DataStore 
 根51/build/lint/告警通过，原150秒单项/25分钟整批与基线不改，不拼成103/121项最终全量。
 完整 Android/覆盖校准、真实 FastAPI 联合、正式APK/导航/手机平板人工/外网/NAS/Docker及默认v5
 发布未执行。复验后只更新文档，不再改可执行实现或断言；精确提交 CI 另行核对。
+
+### v5 账户绑定的只读同步问题（Issue #160）
+
+正式设置计数/窗口使用同一快照，验证普通、计时、事项和重新挑战的原来源/冻结日志/结果，
+损坏状态不伪装为空，账户过渡清空展示并拒绝迟到发布。只读结构预览不生成持久替代，
+普通待发送不视为错误；真正的前置等待、开始规则变化、权限和重叠按原发送证明显示。
+v5 不暴露旧恢复按钮，v4 原操作保留；无 schema/HTTP/后端/默认 v4/依赖/既有布局变化。
+
+MI6/API35 首轮 `2c0460facbca431b902ff5bddfc47c43` 因新夹具的整库证明读取缺少 Room
+事务主动中止，不计通过。补齐夹具后完整九类191项 `7289c3c4e5214e21b1a66bf8d1f810ae`：
+186通过/5失败/0错误/跳过，connected20分13秒/XML1187.547秒。
+三处新仓库夹具失败分别为响应误改指标创建时间（两例）和故障注入被真实外键阻止；
+新 ViewModel 夹具未订阅重新配置的变化流。另一既有32层因果用例触及150秒上限，
+日志持续推进到28层，不能解释成挂起，也不是191项通过。原失败 XML 保留在后轮 prior-results。
+
+确认进程/测试包退出后合批修补夹具、加强同数量持续订阅及拒绝计时附件归属校验。
+同一 send/accept 内缓存纯 envelope 绑定：必须匹配完整原意图、设备和实际字节，仍受原
+256项/2MiB共享预算约束；不缓存 SQL、账户、权限或回执证明，原逐次审计保持。
+最终四完整类 NextCoreRequestStoreTest47、NextStructuralCausalStoreTest25、
+SyncProblemReaderTest16、SettingsViewModelTest22，110/110通过、0失败/错误/跳过，
+`0fc5d6db156d440bb757061fb883d5e1/targeted.json`；build2分18秒/connected6分34秒/
+XML372.341秒，32层用例121.072秒。该改善不证明最大图性能或所有容量问题消除。
+首轮其他完整类 BusinessSyncRepositoryTest17、NextRestartWorkflowTest39、
+NextRoundOneTimeStoreTest9、NextRoundTimerStoreTest13、SyncProblemsDialogTest4 已通过；
+未重复这些未修改的类，不拼成192项最终全量。根51/build/lint/告警及APK/发现/XML/覆盖输入/
+两包清理通过，150秒单项/25分钟整批与基线不变；最后复验后仅更新文档。
+人工恢复、实际 FastAPI 联合、全量/覆盖校准、正式导航及手机平板/外网/NAS/Docker验收
+仍未完成，无正式APK安装/清除、部署或合并；精确提交 CI 另行记录。
 
 ### 测试迁移后的独立复审（Issue #149）
 

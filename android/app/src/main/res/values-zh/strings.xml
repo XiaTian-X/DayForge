@@ -1179,4 +1179,12 @@
     <string name="config_file_local_committed">本地配置已提交，但尚不保证服务端确认或素材传输完成。请查看配置状态并同步。</string>
     <string name="config_file_abandoned">已放弃尚未提交的导入，原数据、已安装图标和主题均保留。</string>
     <string name="config_file_failed">操作未完成。请检查文件、账户和同步就绪状态。如已有准备中的导入，请重选其原文件恢复，不要创建第二份导入。</string>
+    <string name="sync_problems_loading">正在读取同步问题…</string>
+    <string name="sync_problems_unavailable">无法验证当前账户的同步问题详情，未执行任何恢复操作。</string>
+    <string name="sync_problems_read_only">原请求已保留。网络重试不会解决永久拒绝；本协议不提供旧版恢复操作。</string>
+    <string name="sync_problem_dependency">等待前置请求被接收。处理其问题后，可再次同步。</string>
+    <string name="sync_problem_start_changed">开始活动前，已接收的目标值发生变化。原始开始规则和数据已保留。</string>
+    <string name="sync_problem_permission">当前设备已无权发送此请求。</string>
+    <string name="sync_problem_structure_conflict">本地修改与已接收的结构修改发生重叠。</string>
+    <string name="sync_problem_rejected">服务器永久拒绝了此请求。原请求和本地数据已保留。</string>
 </resources>
