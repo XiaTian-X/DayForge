@@ -820,6 +820,28 @@ APK/发现/XML/新覆盖输入及 testbed 清理通过。迁移旧 schema 1–14
 旧版恢复操作。这不是人工恢复操作、真实后端联合幂等、正式导航/手机平板人工验收，
 不代替 #160 收尾的全量门禁和人工验收。
 
+人工恢复（D-020）实现后的最低矩阵不能沿用上述只读展示结果。除新增完整恢复/审计迁移类外，
+需按实际变更覆盖以下现有完整类组；相关修复合批后执行，按真实耗时组织多个定向批次，
+不拆方法、不降低断言、不把各批结果拼称全量。规划本身不表示下列测试已经执行：
+
+- 发送/因果/准入与普通结构：`NextCoreRequestStoreTest`、`NextStructuralCausalStoreTest`、
+  `ProtocolNextActivationBarrierTest`、`NextOrdinaryResultStoreTest`、`NextRoundOperationStoreTest`、
+  `NextPlanDeletionWorkflowTest`、`NextBusinessWorkflowTest`、`BusinessSyncRepositoryTest`。
+- 计时/计数/事项/轮次事实保护：`NextTimerRequestStoreTest`、`NextRoundTimerStoreTest`、
+  `NextCountDayWorkflowTest`、`OneTimeLocalIntentStoreTest`、`NextRoundOneTimeStoreTest`、
+  `NextRestartWorkflowTest`、`NextRoundWriterWorkflowTest`。
+- 恢复/导入/调度与正式问题入口：`NextSyncRuntimeTest`、`NextRoundSyncRuntimeTest`、
+  `NextConfigImportRepositoryTest`、`NextConfigReplacementPreviewTest`、`NextConfigReplacementRepositoryTest`、
+  `SyncProblemReaderTest`、`SettingsViewModelTest`、`SyncProblemsDialogTest`。
+
+检查完整原来源退休后仍可审计但不能发送/作为 ACK 前驱，拒绝初始创建不污染出生票据或
+阻断无关同步；受保护真实事实/计时/日规则和已接受数据不变。验证最终 COMMIT 回滚、
+旧预览/迟到 HTTP、确认提交后取消的冷重试不覆盖新编辑、外键/名称/策略锁和异常触发器、
+孤立/损坏/超限/分块审计、旧 v4 屏障、导入阶段真实 ACK，以及受支持的备份/账户清理。
+新增 Room 版本还需对应新完整迁移类和受影响旧升级类，不改变旧 schema 或推断历史放弃。
+确认按钮是正式跨模块接入点：除定向完整矩阵外，仍须阶段联合/全量及手机/平板人工门禁；
+根文档检查、构建/lint、脚本 HTTP 或旧 CI 不证明人工恢复可用。
+
 日常定向真机入口按完整类选择，不接受方法、包、通配符或外部参数注入：
 
 ```bash
