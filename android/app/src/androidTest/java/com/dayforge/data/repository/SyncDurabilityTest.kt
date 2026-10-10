@@ -18,6 +18,33 @@ import org.junit.runner.RunWith
 /** Real client persistence and wire encoding. Scripted transport is not server idempotency evidence. */
 @RunWith(AndroidJUnit4::class)
 class SyncDurabilityTest : SyncPersistenceFixture() {
+    @Test fun user_v4_retry_checks_account_and_exact_protocol_before_reactivating_rejected_work() = runBlocking<Unit> {
+        insertGoal("Rejected")
+        val original = tokens.authenticationSnapshot()!!.session
+        val pending = database.syncOutboxDao().getAll().single()
+        database.syncOutboxDao().markDeadLetter(pending.id, "INVALID_PAYLOAD", "Needs correction", 1)
+        val rejected = database.syncOutboxDao().getDeadLetters().single()
+        for (version in listOf(5, 6)) {
+            identityProtocol = version
+            assertTrue(runCatching { repository.retrySyncForAuthentication(original, {}) }.exceptionOrNull() is SyncProtocolException)
+            assertEquals(listOf(rejected), database.syncOutboxDao().getDeadLetters())
+            assertEquals(0, database.syncOutboxDao().count())
+        }
+        paths.clear(); tokens.saveLoginSession("new", "new-refresh", "again", original.userId, false)
+        assertEquals("SYNC_ACCOUNT_CHANGED", runCatching { repository.retrySyncForAuthentication(original, {}) }.exceptionOrNull()!!.message)
+        assertTrue(paths.isEmpty()); assertEquals(listOf(rejected), database.syncOutboxDao().getDeadLetters())
+    }
+
+    @Test fun user_v4_retry_retains_original_reactivation_and_upload_policy_after_verified_identity() = runBlocking<Unit> {
+        insertGoal("Rejected")
+        val source = database.syncOutboxDao().getAll().single()
+        database.syncOutboxDao().markDeadLetter(source.id, "INVALID_PAYLOAD", "Needs correction", 1)
+        repository.retrySyncForAuthentication(tokens.authenticationSnapshot()!!.session, {})
+        assertTrue(database.syncOutboxDao().getDeadLetters().isEmpty())
+        assertEquals(0, database.syncOutboxDao().count()); assertEquals(1, pushes.size)
+        assertNotEquals(source.operationId, operation(pushes.single()).getValue("operation_id").jsonPrimitive.content)
+        reopen(); assertEquals("Rejected", database.habitDao().getHabitByUuid(source.entityUuid)!!.name)
+    }
     @Test fun guarded_v4_device_controls_revalidate_exact_protocol_without_upload_or_cursor_change() = runBlocking<Unit> {
         val original = tokens.authenticationSnapshot()!!.session
         assertTrue(repository.changeDeviceForAuthentication(original, null).isPrimaryEditor)

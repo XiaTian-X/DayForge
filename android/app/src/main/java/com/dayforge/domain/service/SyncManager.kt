@@ -32,11 +32,20 @@ class SyncManager @Inject constructor(
      * @return Result.success if sync completed, Result.failure if an error occurred
      */
     suspend fun sync(progressCallback: (SyncProgress) -> Unit = {}): Result<Unit> {
+        return synchronize(progressCallback, retryRejected = false)
+    }
+
+    suspend fun retrySync(progressCallback: (SyncProgress) -> Unit = {}): Result<Unit> {
+        return synchronize(progressCallback, retryRejected = true)
+    }
+
+    private suspend fun synchronize(progressCallback: (SyncProgress) -> Unit, retryRejected: Boolean): Result<Unit> {
         return try {
-            businessSyncRepository.sync(progress = { progress ->
+            val report: (SyncProgress) -> Unit = { progress ->
                 _syncProgress.value = progress
                 progressCallback(progress)
-            })
+            }
+            if (retryRejected) businessSyncRepository.retrySync(report) else businessSyncRepository.sync(progress = report)
 
             _syncProgress.value = SyncProgress.Success
             progressCallback(SyncProgress.Success)
@@ -79,11 +88,6 @@ class SyncManager @Inject constructor(
      */
     suspend fun hasLocalData(): Boolean =
         syncRepository.hasPendingChanges()
-
-    /** Move quarantined operations back to the active queue before a user retry. */
-    suspend fun retryRejectedChanges() {
-        syncRepository.retryAllDeadLetters()
-    }
 
     fun observeRejectedChanges(): Flow<List<SyncOutboxEntity>> =
         syncRepository.observeDeadLetters()

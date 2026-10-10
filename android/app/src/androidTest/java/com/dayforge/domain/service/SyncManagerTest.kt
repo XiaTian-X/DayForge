@@ -62,6 +62,25 @@ class SyncManagerTest {
         manager = SyncManager(repository, business)
     }
 
+    @Test fun user_retry_uses_shared_policy_and_preserves_progress_failure_classification_and_cancellation() = runTest {
+        coEvery { business.retrySync(any()) } answers {
+            firstArg<(SyncProgress) -> Unit>()(SyncProgress.UploadingChanges(1, 1))
+        }
+        val progress = mutableListOf<SyncProgress>()
+        assertTrue(manager.retrySync { progress += it }.isSuccess)
+        assertEquals(listOf(SyncProgress.UploadingChanges(1, 1), SyncProgress.Success), progress)
+        coVerify(exactly = 0) { repository.retryAllDeadLetters() }
+        coVerify(exactly = 0) { business.sync(any(), any()) }
+        coEvery { business.retrySync(any()) } throws com.dayforge.data.api.NextSyncHttpFailure(403, "DENIED")
+        assertTrue(manager.retrySync().isFailure)
+        assertEquals(false, (manager.syncProgress.first() as SyncProgress.Error).isNetworkFailure)
+        manager.resetProgress()
+        coEvery { business.retrySync(any()) } throws CancellationException("screen left")
+        var cancelled = false
+        try { manager.retrySync() } catch (_: CancellationException) { cancelled = true }
+        assertTrue(cancelled); assertEquals(SyncProgress.Idle, manager.syncProgress.first())
+    }
+
     @Test
     fun sync_delegates_exclusively_to_shared_business_repository() = runTest {
         coEvery { business.sync(any(), any()) } answers {
