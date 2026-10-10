@@ -98,7 +98,10 @@ class MetricRepository @Inject constructor(
         return if (creationAuthority != null) requireNotNull(nextObjectCreator).metric(metric, creationAuthority, ::commit)
             else {
                 require(metric.appearance == null || nextObjectCreator == null) { "OBJECT_CREATE_TICKET_REQUIRED" }
-                database.withTransaction { commit(metric) }
+                database.withTransaction {
+                    if (nextObjectCreator != null) NextProtocolAdmission.requireLegacyCreation(database)
+                    commit(metric)
+                }
             }
     }
 

@@ -6,7 +6,7 @@ import androidx.work.WorkerParameters
 import com.dayforge.data.local.TokenManager
 import com.dayforge.data.api.NextSyncHttpFailure
 import com.dayforge.data.api.NextSyncReplyInvalid
-import com.dayforge.data.repository.IncrementalSyncRepository
+import com.dayforge.data.repository.BusinessSyncRepository
 import com.dayforge.data.repository.NextSyncAttention
 import com.dayforge.data.repository.NextSyncRetryRequired
 import com.dayforge.data.repository.ServerIdentityMismatchException
@@ -45,7 +45,7 @@ class AutoSyncWorker internal constructor(
         }
 
         return try {
-            dependencies.syncRepository().sync()
+            dependencies.businessSyncRepository().sync()
             Result.success()
         } catch (cancelled: CancellationException) {
             // REPLACE and WorkManager stoppages cancel the structured owner. Never
@@ -90,7 +90,7 @@ class AutoSyncWorker internal constructor(
     @EntryPoint
     @InstallIn(SingletonComponent::class)
     interface AutoSyncWorkerEntryPoint {
-        fun syncRepository(): IncrementalSyncRepository
+        fun businessSyncRepository(): BusinessSyncRepository
         fun tokenManager(): TokenManager
     }
 

@@ -2280,6 +2280,38 @@ AutoSyncCoordinatorNetworkTest2、SyncManagerTest6、NextSyncRuntimeTest12。证
 150秒单例/25分钟整批、发现集合、断言及基线不变；未执行全量 Android/覆盖率校准、
 真实后端联合、正式APK安装/人工、外网/NAS/本机Docker或默认v5启用，#160仍未完成。
 
+### 正式注册、共享同步分派与新建导航（Issue #160 / D-019）
+
+2026-10-10 将手动/Worker 正式入口接至共享版本分派，v5 只进入挑战完整档位；服务器
+advertised/minimum 默认 v4 未提升，不自动转换或清理数据。四个新建路由先等待实际创建
+凭据，再显示既有页面；目标子项复用父凭据，旧表单晚提交在业务事务内拒绝。
+
+定向矩阵在 MI6/API35 实际授权真机执行。首批 11 完整类161/161，失败/错误/跳过0，证据
+`13f7198ece194a9f911aaef702d6c31a`；build1分28秒、connected5分54秒、XML325.295秒。
+包含 BusinessSyncRepositoryTest12、TokenManagerTest14、NextObjectCreationTest12、
+ObjectCreationEntryTest3、SyncDurabilityTest19、AutoSyncWorkerTest14、SyncManagerTest6、
+ProtocolNextActivationBarrierTest16、NextRoundSyncRuntimeTest10、NextSyncRuntimeTest12、NextSyncHttpTest43。
+真实 HTTP 发现/注册/挑战 bootstrap/pull、手动/Worker 分派、冷重开稳定安装身份、实际创建
+及原请求上传、取消、账户/副本/设备/能力变化、并发旧写入及最终 COMMIT 空基线检查均在范围内。
+Compose 准入组件及实际指标表单、目标 SavedState 重绑定亦验证，不代表完整 NavHost/Hilt/正式 APK 人工通过。
+
+之后仅修正已收到 HTTP/坏响应的手动提示分类，及空基线排除 SQLite 自身统计表；不重复
+11 类矩阵。受影响五完整类51/51通过，失败/错误/跳过0，证据
+`f700b5822114428395dd49e06d50c718`；build3分12秒、connected2分24秒、XML116.24秒。
+范围为 BusinessSyncRepositoryTest13、SyncManagerTest8、SettingsViewModelTest15、
+NextObjectCreationTest12、ObjectCreationEntryTest3，含真实 ANALYZE 元数据、HTTP403/422/坏
+注册响应、嵌套真实 I/O 与协议 cause、人工同步及同步后注销诊断/保留账户。不将两次重叠范围
+加总成212个独立用例，亦不拼接为最新提交的全量通过。
+
+原两次构建失败保留：`52639040d10a4d23a680748411b6f095` 为 Hilt 注入文件重复生成，build43秒，
+旧生成目录整体移至可恢复的 `android/build/df-160-generated-BikI06/app-build/` 后，干净构建
+通过生产 Hilt；后续同一生成状态的增量构建亦通过，不据此宣称 Hilt 工具链缺陷已永久修复。
+`0836ea81d3c341c988f62d975d6d39e5` 为新测试误导入成员 assertDoesNotExist，build5分39秒；
+仅移除错误 import，保留全部断言。两次行为测试均未开始，收尾后才改动或重建。
+根51项、最终构建/lint/告警门禁、实际APK/发现/XML/新非空覆盖输入与两测试包/拥有进程
+收尾通过，150秒单例/25分钟整批和 lint 基线不变。完整 Android/覆盖校准、实际 FastAPI 联合、
+正式 APK、手机/平板人工、外网/NAS/本机 Docker及默认 v5 发布未执行；#160仍未完成。
+
 ### 测试迁移后的独立复审（Issue #149）
 
 计时服务测试必须从命令调用前后的真实单调时钟获得有效时长上下界，排除暂停/重建时间。

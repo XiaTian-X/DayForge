@@ -24,8 +24,8 @@ internal class NextSyncAttention(val blockedRequests: Set<String>) : IllegalStat
 internal class NextSyncRetryRequired : IllegalStateException("SYNC_RETRY_REQUIRED")
 
 /**
- * Injectable complete v5 synchronization entry. No automatic protocol activation: the v4
- * scheduler stays untouched until all writers/consumers and the server switch together.
+ * Complete v5 runtime. The shared formal entry selects rounds only after explicit server
+ * v5 proof and registration; default server metadata remains v4 until coordinated release.
  * Only this runtime's mutex spans HTTP, never the account mutex or a Room transaction.
  */
 @Singleton
@@ -48,22 +48,27 @@ internal class NextSyncRuntime @Inject constructor(
     /** Captures authority once. Failure, unsupported v5, pending/conflicting work are never success. */
     suspend fun sync(progress: (SyncProgress) -> Unit = {}, afterSync: (suspend () -> Unit)? = null) = syncProfile(false, progress, afterSync)
 
-    /** Explicit complete profile coordinator; not the formal UI/Worker activation switch. */
+    /** Explicit internal coordinator; formal dispatch also supplies the captured registration. */
     suspend fun syncRounds(progress: (SyncProgress) -> Unit = {}, afterSync: (suspend () -> Unit)? = null) = syncProfile(true, progress, afterSync)
 
+    /** Formal registration and execution belong to the same original authority. */
+    suspend fun syncRoundsCaptured(expected: LocalSyncAccess, progress: (SyncProgress) -> Unit = {},
+        afterSync: (suspend () -> Unit)? = null) = syncProfile(true, progress, afterSync, expected)
+
     private suspend fun syncProfile(challengeProfile: Boolean, progress: (SyncProgress) -> Unit,
-        afterSync: (suspend () -> Unit)?) = mutex.withLock {
+        afterSync: (suspend () -> Unit)?, expected: LocalSyncAccess? = null) = mutex.withLock {
         val access = sessions.exclusive {
             val captured = requireNotNull(tokens.localSyncAccess())
+            check(expected == null || captured == expected) { "SYNC_ACCOUNT_CHANGED" }
             captured.copy(capabilities = captured.capabilities.toSet())
         }
         // A legacy/unknown queue cannot be converted to profile sources during bootstrap.
         if (challengeProfile && merge.state(access, true) == null) {
             requireNoChallengeUpload(access)
             progress(SyncProgress.Recovering)
-            val expected = merge.challengeBootstrapExpectation(access)
+            val baseline = merge.challengeBootstrapExpectation(access)
             val snapshot = http.session(access) { it.roundBootstrap() } ?: unsupported()
-            merge.bootstrap(access, expected, snapshot, cacheOnly = true)
+            merge.bootstrap(access, baseline, snapshot, cacheOnly = true, emptyBaseline = expected != null && baseline == null)
         } else merge.state(access, challengeProfile)
         var pages = 0
         suspend fun catchUpRounds() {

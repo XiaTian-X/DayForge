@@ -71,6 +71,28 @@ import java.io.File
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 class SettingsViewModelTest {
+    @Test fun v5_permission_and_invalid_reply_preserve_manual_diagnostics_not_network_message() =
+        runTest(testDispatcher.scheduler) {
+            for (error in listOf(com.dayforge.data.api.NextSyncHttpFailure(403, "DENIED"),
+                com.dayforge.data.api.NextSyncReplyInvalid())) {
+                coEvery { mockSyncManager.sync(any()) } returns Result.failure(error)
+                viewModel.sync(); testDispatcher.scheduler.runCurrent()
+                assertTrue(viewModel.showSyncError.value)
+                assertEquals(error.message, viewModel.syncErrorMessage.value)
+                viewModel.dismissSyncError()
+            }
+        }
+
+    @Test fun v5_http_failure_during_sync_logout_never_clears_account_or_claims_network_loss() = runTest {
+        tokenManager.saveTokens("access", "refresh", "member", "account", false)
+        val error = com.dayforge.data.api.NextSyncHttpFailure(422, "INVALID_PAYLOAD")
+        coEvery { mockSyncManager.syncAndThen(any()) } returns Result.failure(error)
+        var completed = false
+        viewModel.syncAndLogout { completed = true }
+        withContext(Dispatchers.Default) { withTimeout(5_000) { viewModel.showSyncError.first { it } } }
+        assertFalse(completed); assertEquals("access", tokenManager.accessToken.first())
+        assertEquals(context.getString(com.dayforge.R.string.error_sync_failed, error.message), viewModel.syncErrorMessage.value)
+    }
     @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
 
     private lateinit var viewModel: SettingsViewModel

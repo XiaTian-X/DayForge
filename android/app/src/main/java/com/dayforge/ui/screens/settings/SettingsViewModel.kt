@@ -31,7 +31,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import java.io.IOException
+import com.dayforge.domain.service.isSyncTransportFailure
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -250,7 +250,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     private fun showManualSyncIssue(error: Throwable) {
-        _syncErrorMessage.value = if (error.hasIOExceptionCause()) {
+        _syncErrorMessage.value = if (error.isSyncTransportFailure()) {
             context.getString(R.string.error_network_failed)
         } else {
             error.message ?: context.getString(R.string.sync_rejected_unknown_error)
@@ -327,7 +327,7 @@ class SettingsViewModel @Inject constructor(
             } else {
                 // Sync failed - show error, don't logout
                 val exception = result.exceptionOrNull()
-                _syncErrorMessage.value = if (exception.hasIOExceptionCause()) {
+                _syncErrorMessage.value = if (exception.isSyncTransportFailure()) {
                     context.getString(R.string.error_network_failed)
                 } else {
                     context.getString(
@@ -338,15 +338,6 @@ class SettingsViewModel @Inject constructor(
                 _showSyncError.value = true
             }
         }
-    }
-
-    private fun Throwable?.hasIOExceptionCause(): Boolean {
-        var current = this
-        while (current != null) {
-            if (current is IOException) return true
-            current = current.cause
-        }
-        return false
     }
 
     /**

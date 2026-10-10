@@ -18,6 +18,33 @@ import org.junit.runner.RunWith
 /** Real client persistence and wire encoding. Scripted transport is not server idempotency evidence. */
 @RunWith(AndroidJUnit4::class)
 class SyncDurabilityTest : SyncPersistenceFixture() {
+    @Test fun legacy_verification_rejects_v5_or_unknown_upgrade_without_register_or_upload() = runBlocking<Unit> {
+        for (version in listOf(5, 6)) {
+            identityProtocol = version
+            assertTrue(runCatching { repository.sync() }.exceptionOrNull() is SyncProtocolException)
+        }
+        assertTrue(paths.all { it == "/api/v2/system/identity" })
+        assertTrue(pushes.isEmpty()); assertTrue(cursors.isEmpty())
+    }
+    @Test fun shared_discovery_cannot_retarget_legacy_attempt_after_reauthentication() = runBlocking<Unit> {
+        val original = tokens.authenticationSnapshot()!!.session
+        tokens.saveLoginSession("new", "new-refresh", "again", original.userId, false)
+        var cleaned = false
+        try { repository.syncForAuthentication(original, {}, { cleaned = true }); fail("Stale attempt must stop") }
+        catch (error: IllegalStateException) { assertEquals("SYNC_ACCOUNT_CHANGED", error.message) }
+        assertFalse(cleaned); assertTrue(paths.isEmpty()); assertEquals("new", tokens.accessToken.first())
+    }
+
+    @Test fun matching_legacy_attempt_keeps_guarded_cleanup_after_real_sync() = runBlocking<Unit> {
+        val original = tokens.authenticationSnapshot()!!.session
+        var cleaned = false
+        repository.syncForAuthentication(original, {}, {
+            assertEquals(original, tokens.authenticationSnapshot()!!.session)
+            assertTrue(paths.contains("/api/v2/sync/changes"))
+            cleaned = true
+        })
+        assertTrue(cleaned)
+    }
     @Test fun bootstrap_persists_rows_and_cursor_without_echoing_server_data() = runBlocking {
         tokens.requireSyncBootstrap()
         val uuid = UUID.randomUUID().toString()

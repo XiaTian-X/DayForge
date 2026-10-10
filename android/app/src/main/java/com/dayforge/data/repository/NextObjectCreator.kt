@@ -47,9 +47,24 @@ class NextObjectCreator @Inject constructor(
     // Internal admission is reserved for coordinated v5 navigation. Merely injecting this service
     // does not change the current v4 protocol, register a device or classify existing test data.
     internal suspend fun capture(): ObjectCreationAuthority = sessions.exclusive {
+        captureLocked()
+    }
+
+    /** Formal navigation: legacy stays legacy; partial/plain v5 is never silently adopted. */
+    suspend fun captureForNavigation(): ObjectCreationAuthority? = sessions.exclusive {
+        database.withTransaction {
+            if (!NextProtocolAdmission.hasNextState(database)) return@withTransaction null
+            val access = requireNotNull(tokens.localSyncAccess()) { "OBJECT_CREATE_SYNC_REQUIRED" }
+            // Audit raw cursor types before any Room projection can coerce them.
+            NextProtocolAdmission.requireRoundsOrEmpty(database, access)
+            captureLocked().also { check(it.rounds != null) { "OBJECT_CREATE_CHALLENGE_SYNC_REQUIRED" } }
+        }
+    }
+
+    private suspend fun captureLocked(): ObjectCreationAuthority {
         val access = requireNotNull(tokens.localCoreWriteAccess()) { "OBJECT_CREATE_ACCESS_DENIED" }
         check(access.capabilities == null || "structure.write" in access.capabilities) { "OBJECT_CREATE_ACCESS_DENIED" }
-        database.withTransaction {
+        return database.withTransaction {
             val ticket = ObjectCreationAuthority(access.session, producer.captureDisplayedRoundsInTransaction())
             check(tokens.localCoreWriteAccess() == access) { "OBJECT_CREATE_SESSION_CHANGED" }
             ticket
