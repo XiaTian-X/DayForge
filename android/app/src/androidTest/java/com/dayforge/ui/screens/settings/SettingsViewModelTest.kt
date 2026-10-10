@@ -71,6 +71,21 @@ import java.io.File
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 class SettingsViewModelTest {
+    @Test fun cancelled_primary_device_action_does_not_publish_sync_error_dialog() = runTest(testDispatcher.scheduler) {
+        coEvery { mockSyncManager.makeCurrentDevicePrimary() } throws kotlinx.coroutines.CancellationException("screen left")
+        viewModel.makeCurrentDevicePrimary(); testDispatcher.scheduler.runCurrent()
+        assertFalse(viewModel.showSyncError.value); assertEquals("", viewModel.syncErrorMessage.value)
+        coVerify(exactly = 1) { mockSyncManager.makeCurrentDevicePrimary() }
+    }
+
+    @Test fun failed_primary_device_action_keeps_manual_diagnostic_without_starting_sync() = runTest(testDispatcher.scheduler) {
+        val error = com.dayforge.data.api.NextSyncHttpFailure(403, "DEVICE_REVOKED")
+        coEvery { mockSyncManager.makeCurrentDevicePrimary() } throws error
+        viewModel.makeCurrentDevicePrimary(); testDispatcher.scheduler.runCurrent()
+        assertTrue(viewModel.showSyncError.value); assertEquals(error.message, viewModel.syncErrorMessage.value)
+        coVerify(exactly = 0) { mockSyncManager.sync(any()) }
+    }
+
     @Test fun v5_permission_and_invalid_reply_preserve_manual_diagnostics_not_network_message() =
         runTest(testDispatcher.scheduler) {
             for (error in listOf(com.dayforge.data.api.NextSyncHttpFailure(403, "DENIED"),

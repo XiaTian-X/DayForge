@@ -118,6 +118,38 @@ internal class NextSyncHttp private constructor(
             return response
         }
 
+        suspend fun makePrimary(installation: String): DeviceResponse = managedDevice(
+            request("/api/v2/devices/${device()}/make-primary").post(ByteArray(0).toRequestBody(JSON_TYPE)),
+            installation, primary = true)
+
+        suspend fun updateEditing(installation: String, enabled: Boolean): DeviceResponse = managedDevice(
+            request("/api/v2/devices/${device()}/editing").patch(
+                encodeSyncRequest(DeviceEditingUpdate.serializer(), DeviceEditingUpdate(enabled)).toRequestBody(JSON_TYPE)),
+            installation, editing = enabled)
+
+        private suspend fun managedDevice(builder: Request.Builder, installation: String,
+            primary: Boolean = false, editing: Boolean? = null): DeviceResponse {
+            require(isContractUuid(installation))
+            val response = value(builder, DeviceResponse.serializer(), SMALL_REPLY,
+                setOf("device_class", "capability_revision", "capabilities", "is_primary_editor",
+                    "structural_edit_enabled", "last_seen_at"))
+            valid {
+                require(response.deviceId == device() && response.installationId == installation &&
+                    response.platform == "android" && response.deviceClass == "interactive" &&
+                    response.capabilityRevision >= requireNotNull(context.capabilityRevision))
+                require(response.capabilities.distinct().size == response.capabilities.size &&
+                    response.capabilities.all(String::isNotBlank) && "sync.read" in response.capabilities)
+                require(response.capabilityRevision != context.capabilityRevision ||
+                    response.capabilities.toSet() == context.capabilities)
+                require(("structure.write" in response.capabilities) ==
+                    (response.isPrimaryEditor || response.structuralEditEnabled))
+                require(!primary || response.isPrimaryEditor)
+                require(editing == null || response.structuralEditEnabled == editing)
+                Instant.parse(requireNotNull(response.lastSeenAt))
+            }
+            return response
+        }
+
         suspend fun push(body: NextSyncPushRequest): NextSyncPushResponse {
             require(body.deviceId == device())
             val frozen = freeze(NextSyncPushRequest.serializer(), body)

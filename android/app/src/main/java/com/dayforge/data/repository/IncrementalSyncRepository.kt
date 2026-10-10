@@ -226,6 +226,22 @@ class IncrementalSyncRepository(
                 .also { saveDeviceRegistration(it) }
         }
 
+    /** Revalidate exact v4 before registration; never retarget a subsequent login after discovery. */
+    internal suspend fun changeDeviceForAuthentication(
+        expected: com.dayforge.data.local.AuthenticationSession, editing: Boolean?
+    ): DeviceResponse = accountSessionCoordinator.exclusive {
+        check(tokenManager.authenticationSnapshot()?.session == expected) { "SYNC_ACCOUNT_CHANGED" }
+        requireV4LocalState()
+        val identity = api.identity()
+        if (identity.protocolVersion != MIN_PROTOCOL_VERSION || !identity.capabilities.containsAll(REQUIRED_CAPABILITIES))
+            throw SyncProtocolException("SYNC_PROTOCOL_V4_REQUIRED")
+        check(tokenManager.serverInstanceId.first()?.let { it == identity.serverInstanceId } != false &&
+            tokenManager.syncEpoch.first()?.let { it == identity.syncEpoch } != false) { "SYNC_REPLICA_CHANGED" }
+        val deviceId = ensureDevice()
+        (if (editing == null) api.makePrimaryDevice(deviceId)
+            else api.updateDeviceEditing(deviceId, DeviceEditingUpdate(editing))).also { saveDeviceRegistration(it) }
+    }
+
     /** Staged v5 data must never be coalesced, rebased or restored by the legacy engine. */
     private suspend fun requireV4LocalState() {
         if (habitDao.hasProtocolNextState() || metricDao.hasProtocolNextState() || completionDao.hasProtocolNextIntents() ||
