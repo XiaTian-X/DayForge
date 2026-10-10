@@ -52,6 +52,7 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.job
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -71,6 +72,47 @@ import java.io.File
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 class SettingsViewModelTest {
+    @Test fun nextProblemSnapshotPublishesAndUnreadableReadIsNotSilentlyEmpty() = runTest(testDispatcher.scheduler) {
+        val changes = MutableStateFlow(0)
+        every { mockSyncManager.problemChanges() } returns changes.map { Unit }
+        val problem = com.dayforge.data.model.NextSyncProblem("sync_operation", "request", "metric", "entity", "INVALID_PAYLOAD")
+        val ready = com.dayforge.data.model.SyncProblems.Next(listOf(problem))
+        coEvery { mockSyncManager.readProblems() } returns ready
+        replaceViewModel()
+        testDispatcher.scheduler.runCurrent()
+        assertEquals(ready, viewModel.syncProblems.value)
+        coEvery { mockSyncManager.readProblems() } throws IllegalStateException("synthetic corrupt private payload")
+        changes.value++; testDispatcher.scheduler.runCurrent()
+        assertEquals(com.dayforge.data.model.SyncProblems.Unavailable, viewModel.syncProblems.value)
+        assertEquals(1, viewModel.syncProblems.value.count)
+        assertFalse(viewModel.showSyncError.value)
+    }
+
+    @Test fun accountTransitionClearsProblemsSynchronouslyAndRejectsLatePriorRead() = runTest(testDispatcher.scheduler) {
+        val first = CompletableDeferred<Unit>()
+        val stale = com.dayforge.data.model.SyncProblems.Next(listOf(com.dayforge.data.model.NextSyncProblem(
+            "sync_operation", "old", "metric", "old-entity", "INVALID_PAYLOAD")))
+        coEvery { mockSyncManager.readProblems() } coAnswers {
+            withContext(kotlinx.coroutines.NonCancellable) { first.await() }; stale
+        }
+        testDispatcher.scheduler.runCurrent()
+        withContext(Dispatchers.IO) { tokenManager.saveLoginSession("new", "new-refresh", "member",
+            "aa310000-0000-4000-8000-000000000010", false) }
+        assertEquals(com.dayforge.data.model.SyncProblems.Checking, viewModel.syncProblems.value)
+        val fresh = com.dayforge.data.model.SyncProblems.Next(emptyList())
+        coEvery { mockSyncManager.readProblems() } returns fresh
+        first.complete(Unit); testDispatcher.scheduler.runCurrent()
+        assertEquals(fresh, viewModel.syncProblems.value)
+        assertFalse(viewModel.showSyncError.value)
+    }
+
+    @Test fun cancelledProblemReadDoesNotBecomeAnErrorOrLeakItsPayload() = runTest(testDispatcher.scheduler) {
+        coEvery { mockSyncManager.readProblems() } throws kotlinx.coroutines.CancellationException("leave")
+        testDispatcher.scheduler.runCurrent()
+        assertEquals(com.dayforge.data.model.SyncProblems.Checking, viewModel.syncProblems.value)
+        assertFalse(viewModel.showSyncError.value)
+    }
+
     @Test fun cancelled_primary_device_action_does_not_publish_sync_error_dialog() = runTest(testDispatcher.scheduler) {
         coEvery { mockSyncManager.makeCurrentDevicePrimary() } throws kotlinx.coroutines.CancellationException("screen left")
         viewModel.makeCurrentDevicePrimary(); testDispatcher.scheduler.runCurrent()
@@ -163,6 +205,9 @@ class SettingsViewModelTest {
         mockSyncManager = mockk(relaxed = true)
         syncProgressState = MutableStateFlow(SyncProgress.Idle)
         every { mockSyncManager.syncProgress } returns syncProgressState
+        every { mockSyncManager.problemChanges() } returns kotlinx.coroutines.flow.flowOf(Unit)
+        coEvery { mockSyncManager.readProblems() } returns com.dayforge.data.model.SyncProblems.Legacy(null,
+            emptyList(), emptyList(), emptyList())
 
         networkMonitor = mockk()
         every { networkMonitor.state } returns networkState

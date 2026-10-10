@@ -300,6 +300,23 @@ internal class NextOneTimeRequestStore(
         return NextOneTimeOutcome.Rejected(result)
     }
 
+    /** Reads the existing rejected proof; does not resend, adopt, consume or rewrite a fact. */
+    internal suspend fun inspectRejection(access: LocalSyncAccess, id: String): com.dayforge.data.model.NextSyncProblem {
+        check(database.inTransaction())
+        val result = (savedOutcome(access, id) as NextOneTimeOutcome.Rejected).result
+        requirePermanentProblem(result.status, result.errorCode)
+        return com.dayforge.data.model.NextSyncProblem(NEXT_OPERATION, id, "one_time_event", result.entityUuid,
+            requireNotNull(result.errorCode), result.conflictingFields)
+    }
+
+    internal suspend fun inspectPending(access: LocalSyncAccess, id: String) {
+        val source = evidence(access, id)
+        val round = requireNotNull(roundOperationIntent(source.origin.intentJson))
+        require(round.capturedDeviceId == access.deviceId)
+        if (source.transmission == null && "facts.append" !in access.capabilities)
+            rejectNextRequest(NextRequestException.Reason.PERMISSION_DENIED)
+    }
+
     private suspend fun verifySavedMetadata(access: LocalSyncAccess, evidence: Evidence, result: NextSyncOperationResult) {
         if (roundOperationIntent(evidence.origin.intentJson) == null) return
         val actual = NextChallengeStore(database).activeInTransaction(access).second

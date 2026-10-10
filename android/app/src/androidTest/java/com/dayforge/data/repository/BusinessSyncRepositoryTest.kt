@@ -329,6 +329,10 @@ class BusinessSyncRepositoryTest : NextObjectEditorFixture() {
         val original = db.nextRequestDao().origin(NEXT_OPERATION, row.operationId)
         val frozen = db.nextRequestDao().transmission(NEXT_OPERATION, row.operationId)!!.wireBytes
         val rejection = db.nextSyncStateDao().rejections().single()
+        val displayProof = db.withTransaction { nextRestartDatabaseProof(db) }
+        val problems = (service.readProblems() as com.dayforge.data.model.SyncProblems.Next).items
+        assertEquals(listOf(row.operationId), problems.map { it.requestId }); assertEquals("INVALID_PAYLOAD", problems.single().code)
+        assertEquals(displayProof, db.withTransaction { nextRestartDatabaseProof(db) })
         val lastSync = preferences.lastSyncTimestamp.first()
         storage.reopen()
         // Existing creator points to the prior Room instance; reconstruct the real creator after cold reopen.

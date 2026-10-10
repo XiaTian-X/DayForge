@@ -59,12 +59,15 @@ fun SettingsScreen(
     val showActiveTimerDialog by viewModel.showActiveTimerDialog.collectAsState()
     val activeTimerHabitName by viewModel.activeTimerHabitName.collectAsState()
     val activeTimerDuration by viewModel.activeTimerDuration.collectAsState()
-    val rejectedChanges by viewModel.rejectedChanges.collectAsState()
-    val syncConflicts by viewModel.syncConflicts.collectAsState()
-    val rejectedTimerCommands by viewModel.rejectedTimerCommands.collectAsState()
+    val syncProblems by viewModel.syncProblems.collectAsState()
+    val legacyProblems = syncProblems as? com.dayforge.data.model.SyncProblems.Legacy
+    val rejectedChanges = legacyProblems?.changes.orEmpty()
+    val syncConflicts = legacyProblems?.conflicts.orEmpty()
+    val rejectedTimerCommands = legacyProblems?.timers.orEmpty()
     var showRejectedChanges by remember { mutableStateOf(false) }
     var rejectedChangeToDiscard by remember { mutableStateOf<SyncOutboxEntity?>(null) }
     var rejectedTimerToCancel by remember { mutableStateOf<TimerCommandEntity?>(null) }
+    var rejectedActionSession by remember { mutableStateOf<com.dayforge.data.local.LocalDataSession?>(null) }
 
     // Export/Import state
     val exportProgress by viewModel.exportProgress.collectAsState()
@@ -208,16 +211,12 @@ fun SettingsScreen(
         progress.isRunning()
     }
 
-    LaunchedEffect(
-        showRejectedChanges,
-        rejectedChanges.isEmpty(),
-        syncConflicts.isEmpty(),
-        rejectedTimerCommands.isEmpty()
-    ) {
-        if (showRejectedChanges && rejectedChanges.isEmpty() &&
-            syncConflicts.isEmpty() && rejectedTimerCommands.isEmpty()
-        ) {
-            showRejectedChanges = false
+    LaunchedEffect(syncProblems) {
+        if (syncProblems.count == 0) showRejectedChanges = false
+        if (legacyProblems == null || legacyProblems.session != rejectedActionSession) {
+            rejectedChangeToDiscard = null
+            rejectedTimerToCancel = null
+            rejectedActionSession = null
         }
     }
 
@@ -266,7 +265,7 @@ fun SettingsScreen(
                     syncProgress = syncProgress,
                     canEditStructure = canEditStructure,
                     isPrimaryEditor = isPrimaryEditor,
-                    rejectedCount = rejectedChanges.size + syncConflicts.size + rejectedTimerCommands.size,
+                    rejectedCount = syncProblems.count,
                     onRejectedClick = { showRejectedChanges = true },
                     onSyncClick = { viewModel.sync() },
                     onMakePrimaryClick = { viewModel.makeCurrentDevicePrimary() }
@@ -984,22 +983,25 @@ fun SettingsScreen(
             changes = rejectedChanges,
             conflicts = syncConflicts,
             timerCommands = rejectedTimerCommands,
+            problems = syncProblems,
             onDismiss = { showRejectedChanges = false },
             onRetry = viewModel::retryRejectedChange,
             onRetryTimerCommand = viewModel::retryRejectedTimerCommand,
             onCancelTimerAndUseServer = {
                 showRejectedChanges = false
+                rejectedActionSession = legacyProblems?.session
                 rejectedTimerToCancel = it
             },
             onUseServer = viewModel::resolveConflictUseServer,
             onUseLocal = viewModel::resolveConflictUseLocal,
             onDiscard = {
                 showRejectedChanges = false
+                rejectedActionSession = legacyProblems?.session
                 rejectedChangeToDiscard = it
             }
         )
     }
-    rejectedChangeToDiscard?.let { change ->
+    rejectedChangeToDiscard?.takeIf { legacyProblems != null && legacyProblems.session == rejectedActionSession }?.let { change ->
         AlertDialog(
             onDismissRequest = { rejectedChangeToDiscard = null },
             title = { Text(stringResource(R.string.sync_rejected_discard_title)) },
@@ -1017,7 +1019,7 @@ fun SettingsScreen(
             }
         )
     }
-    rejectedTimerToCancel?.let { command ->
+    rejectedTimerToCancel?.takeIf { legacyProblems != null && legacyProblems.session == rejectedActionSession }?.let { command ->
         AlertDialog(
             onDismissRequest = { rejectedTimerToCancel = null },
             title = { Text(stringResource(R.string.sync_rejected_timer_cancel_title)) },

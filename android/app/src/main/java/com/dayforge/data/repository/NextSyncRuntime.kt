@@ -44,6 +44,10 @@ internal class NextSyncRuntime @Inject constructor(
     private val once = NextOneTimeRequestStore(database, tokens, sessions, http, onceFacts, core)
     private val merge = NextSyncMergeStore(database, tokens, sessions, onceFacts, timers)
     private val restart = NextChallengeRestartRepository(database, tokens, sessions, http)
+    private val problems = SyncProblemReader(database, tokens, sessions, core, once, restart)
+
+    internal fun problemChanges() = problems.changes()
+    internal suspend fun readProblems() = problems.read()
 
     /** Captures authority once. Failure, unsupported v5, pending/conflicting work are never success. */
     suspend fun sync(progress: (SyncProgress) -> Unit = {}, afterSync: (suspend () -> Unit)? = null) = syncProfile(false, progress, afterSync)

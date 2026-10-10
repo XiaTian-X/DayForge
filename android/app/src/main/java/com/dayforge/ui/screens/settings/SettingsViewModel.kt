@@ -28,6 +28,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -103,15 +105,21 @@ class SettingsViewModel @Inject constructor(
     val activeServerUrl: StateFlow<String?> = preferencesManager.activeServerUrl
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
-    val rejectedChanges: StateFlow<List<SyncOutboxEntity>> = syncManager.observeRejectedChanges()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    val syncConflicts: StateFlow<List<SyncConflictEntity>> = syncManager.observeConflicts()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    val rejectedTimerCommands: StateFlow<List<TimerCommandEntity>> =
-        syncManager.observeRejectedTimerCommands()
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    private val problemMonitor = Any()
+    private var problemBlocked = false
+    private var problemStamp = Any()
+    private val problemReload = MutableStateFlow(problemStamp)
+    private val mutableProblems = MutableStateFlow<com.dayforge.data.model.SyncProblems>(com.dayforge.data.model.SyncProblems.Checking)
+    internal val syncProblems = mutableProblems.asStateFlow()
+    // Strongly held; synchronous invalidation precedes any account/replica/permission transition.
+    private val problemInvalidator = object : com.dayforge.data.local.AccountIconMemory.Cache {
+        override fun authenticationTransition(blocked: Boolean) = synchronized(problemMonitor) {
+            problemBlocked = blocked
+            problemStamp = Any()
+            mutableProblems.value = com.dayforge.data.model.SyncProblems.Checking
+            problemReload.value = problemStamp
+        }
+    }
 
     // Login state - derived from access token presence
     val isLoggedIn: StateFlow<Boolean> = tokenManager.accessToken
@@ -155,6 +163,18 @@ class SettingsViewModel @Inject constructor(
     private var manualSyncJob: Job? = null
 
     init {
+        tokenManager.registerIconCache(problemInvalidator)
+        viewModelScope.launch {
+            combine(problemReload, syncManager.problemChanges()) { ticket, _ -> ticket }.collectLatest { ticket ->
+                if (!synchronized(problemMonitor) { !problemBlocked && problemStamp === ticket }) return@collectLatest
+                val result = try { syncManager.readProblems() }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { com.dayforge.data.model.SyncProblems.Unavailable }
+                synchronized(problemMonitor) {
+                    if (!problemBlocked && problemStamp === ticket) mutableProblems.value = result
+                }
+            }
+        }
         viewModelScope.launch { configWorkflow.v2?.observe() }
         viewModelScope.launch { themeEditor.restore() }
         viewModelScope.launch {

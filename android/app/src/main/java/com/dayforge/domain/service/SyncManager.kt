@@ -24,6 +24,8 @@ class SyncManager @Inject constructor(
 ) {
     private val _syncProgress = MutableStateFlow<SyncProgress>(SyncProgress.Idle)
     val syncProgress: Flow<SyncProgress> = _syncProgress.asStateFlow()
+    internal fun problemChanges() = businessSyncRepository.problemChanges()
+    internal suspend fun readProblems() = businessSyncRepository.readProblems()
 
     /**
      * Pushes pending V2 operations, then pulls and merges remote changes.

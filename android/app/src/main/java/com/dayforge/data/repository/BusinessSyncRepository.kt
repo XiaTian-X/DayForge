@@ -28,6 +28,8 @@ class BusinessSyncRepository @Inject internal constructor(
     private val next: NextSyncRuntime
 ) {
     private val mutex = Mutex()
+    internal fun problemChanges() = next.problemChanges()
+    internal suspend fun readProblems() = next.readProblems()
 
     /** Existing settings actions share sync serialization, but never hold the account lock over v5 HTTP. */
     suspend fun makeCurrentDevicePrimary(): DeviceResponse = changeDevice(null)

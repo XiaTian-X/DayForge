@@ -32,6 +32,8 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
     // Database state belongs to one short Room transaction, never a process/network cache.
     private val capturedHeads = mutableMapOf<Pair<String, String>, NextStructuralDependencyEntity?>()
     internal data class ParsedEnvelope(val bytes: ByteArray, val value: NextSyncPushRequest)
+    internal data class EnvelopeKey(val intent: String, val device: String, val hash: String)
+    internal data class ValidatedEnvelope(val bytes: ByteArray, val operation: SyncV2Operation)
     internal data class MergeKey(val before: String, val after: String, val submitted: String,
         val result: String, val replacementId: String)
 
@@ -45,6 +47,7 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         val parsedSources = mutableMapOf<String, SyncOutboxEntity>()
         val parsedEnvelopes = mutableMapOf<String, ParsedEnvelope>()
         val mergedIntents = mutableMapOf<MergeKey, SyncV2Operation>()
+        val validatedEnvelopes = mutableMapOf<EnvelopeKey, ValidatedEnvelope>()
         private var parsedBytes = 0
         private var parsedCount = 0
         fun retain(bytes: Int, save: () -> Unit) {
@@ -111,6 +114,25 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
             if (hash !in parsedEnvelopes) retainParsing(bytes.size) {
                 parsedEnvelopes[hash] = ParsedEnvelope(bytes.copyOf(), value)
             }
+        }
+    }
+
+    /** Pure binding only. Every live origin/journal/receipt/context audit still runs on each pass. */
+    private suspend fun validateEnvelope(origin: NextRequestOriginEntity, transmission: NextTransmissionEntity) {
+        currentCoroutineContext().ensureActive()
+        val key = EnvelopeKey(origin.intentJson, transmission.deviceId, transmission.wireHash)
+        memo.validatedEnvelopes[key]?.let { cached ->
+            if (cached.bytes.contentEquals(transmission.wireBytes)) {
+                require(cached.operation.operationId == origin.requestId)
+                return
+            }
+        }
+        val operation = validateNextOperationEnvelope(origin.intentJson, transmission.wireBytes, transmission.deviceId)
+        require(operation.operationId == origin.requestId)
+        val size = origin.intentJson.toByteArray(Charsets.UTF_8).size + transmission.wireBytes.size +
+            transmission.deviceId.toByteArray(Charsets.UTF_8).size + transmission.wireHash.length
+        memo.retain(size) {
+            memo.validatedEnvelopes[key] = ValidatedEnvelope(transmission.wireBytes.copyOf(), operation)
         }
     }
 
@@ -500,7 +522,7 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
                 it.entityType == "metric" && it.action == "delete"))
         } else intent(origin)
         require(envelope.deviceId == transmission.deviceId && envelope.operations == listOf(operation))
-        validateNextOperationEnvelope(origin.intentJson, transmission.wireBytes, transmission.deviceId)
+        validateEnvelope(origin, transmission)
         if (roundOperationIntent(origin.intentJson) != null) NextChallengeStore(database).activeInTransaction(access)
         val receipt = proof?.acceptances?.get(id) ?: requireNotNull(requests.acceptance(NEXT_OPERATION, id))
         require(receipt.kind == NEXT_OPERATION && receipt.requestId == id && receipt.originHash == originHash &&
@@ -644,7 +666,12 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
     }
 
     /** Called only after exact-v5 discovery. Unknown/sent originals are NEVER superseded. */
-    suspend fun prepare(id: String, access: LocalSyncAccess): String {
+    suspend fun prepare(id: String, access: LocalSyncAccess): String = prepare(id, access, inspectOnly = false)
+
+    /** Same planning proof as send, but never installs a replacement or retires its source. */
+    suspend fun inspect(id: String, access: LocalSyncAccess) { prepare(id, access, inspectOnly = true) }
+
+    private suspend fun prepare(id: String, access: LocalSyncAccess, inspectOnly: Boolean): String {
         check(database.inTransaction())
         val actual = resolve(id, access)
         if (actual != id || byReplacement(id) != null) return actual
@@ -675,6 +702,8 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         decodeNextOperationIntent(intentBytes.toString(Charsets.UTF_8))
         val envelope = encodeSyncRequest(NextSyncPushRequest.serializer(), NextSyncPushRequest(requireNotNull(access.deviceId), listOf(replacementOperation)))
         decodeFrozenSyncRequest(envelope, NextSyncPushRequest.serializer())
+        // The ephemeral UUID above only validates a possible merge, never a durable identity.
+        if (inspectOnly) return id
         val before = NextRequestSql.sources(sql, "sync_outbox")
         val timers = NextRequestSql.sources(sql, "timer_command_outbox")
         val watermark = NextRequestSql.watermark(sql, "sync_outbox")

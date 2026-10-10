@@ -823,6 +823,10 @@ class NextRestartWorkflowTest : NextObjectEditorFixture() {
         val original = db.nextRequestDao().origin(NEXT_OPERATION, ref.operationId)
         val wire = transmission(NEXT_OPERATION, ref.operationId).wireBytes.copyOf()
         val rejection = db.nextSyncStateDao().rejections().single()
+        val beforeDisplay = durable()
+        val displayed = (runtime(http).readProblems() as com.dayforge.data.model.SyncProblems.Next).items.single()
+        assertEquals(ref.operationId, displayed.requestId); assertEquals("challenge_restart", displayed.entityType)
+        assertEquals(rejectionCode, displayed.code); assertEquals(beforeDisplay, durable()); assertEquals(1, wires.size)
         storage.reopen()
         assertTrue(rejected { runtime(http).syncRounds() } is NextSyncAttention)
         // Cursor display may advance, but source, wire and rejection are unchanged.
@@ -830,6 +834,9 @@ class NextRestartWorkflowTest : NextObjectEditorFixture() {
         assertEquals(original, db.nextRequestDao().origin(NEXT_OPERATION, ref.operationId))
         assertArrayEquals(wire, transmission(NEXT_OPERATION, ref.operationId).wireBytes)
         assertEquals(rejection, db.nextSyncStateDao().rejections().single()); rejected { acceptedPlan(ref) }
+        val coldDisplay = durable()
+        assertEquals(listOf(displayed), (runtime(http).readProblems() as com.dayforge.data.model.SyncProblems.Next).items)
+        assertEquals(coldDisplay, durable()); assertEquals(1, wires.size)
     }
     @Test fun unsupportedDiscoveryDoesNotMaterializeOrSendProposal() = runBlocking {
         val http = initialize(); val ref = propose(http); protocol = 4

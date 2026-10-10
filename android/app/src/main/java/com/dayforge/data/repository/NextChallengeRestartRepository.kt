@@ -38,6 +38,29 @@ internal class NextChallengeRestartRepository @Inject constructor(
     private val sql get() = database.openHelper.writableDatabase
     private val requests get() = database.nextRequestDao()
 
+    /** Existing source/frontier/journal proofs only; never materializes a restart for display. */
+    internal suspend fun inspectPending(access: LocalSyncAccess, id: String) {
+        val original = store.original(access, id)
+        if ("structure.write" !in access.capabilities) rejectNextRequest(NextRequestException.Reason.PERMISSION_DENIED)
+        store.frontier(access, original, timers)
+    }
+
+    internal suspend fun inspectRejection(access: LocalSyncAccess, row: NextRejectionEntity): com.dayforge.data.model.NextSyncProblem {
+        val original = store.original(access, row.requestId)
+        val operation = store.requireMaterializedFrontier(access, original, timers)
+        val body = store.transmission(access, original, operation)
+        require(row.kind == NEXT_OPERATION && row.originHash == original.hash &&
+            row.transmissionHash == requestHash("next_transmissions", row.requestId) &&
+            row.resultHash == nextRequestHash(row.resultJson.toByteArray(Charsets.UTF_8)) &&
+            requestHash("next_acceptances", row.requestId) == null)
+        val result = decodeFrozenSyncRequest(row.resultJson.toByteArray(Charsets.UTF_8), NextSyncOperationResult.serializer())
+        val metadata = NextChallengeStore(database).activeInTransaction(access).second
+        validateRoundResultBinding(body, RoundSyncPushResponse(listOf(result), 1, metadata.checkpoints, metadata.births))
+        requirePermanentProblem(result.status, result.errorCode)
+        return com.dayforge.data.model.NextSyncProblem(NEXT_OPERATION, row.requestId, "challenge_restart",
+            original.value.head.activityUuid, requireNotNull(result.errorCode), result.conflictingFields)
+    }
+
     private suspend fun authorize(access: LocalSyncAccess) {
         require(tokens.localSyncAccess() == access && access.deviceId != null && tokens.syncAuthenticationSnapshot(access) != null) {
             "SYNC_RESTART_ACCESS_CHANGED"
