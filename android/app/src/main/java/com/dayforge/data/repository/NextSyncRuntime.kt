@@ -49,7 +49,37 @@ internal class NextSyncRuntime @Inject constructor(
     internal fun problemChanges() = problems.changes()
     internal suspend fun readProblems() = problems.read()
     internal suspend fun readRecoveryPreview(root: NextRecoveryKey) =
-        NextRecoveryDependencyReader(database, tokens, sessions, core, timers, once, restart).preview(root)
+        recoveryReader().preview(root)
+
+    private fun recoveryReader() = NextRecoveryDependencyReader(database, tokens, sessions, core, timers, once, restart)
+
+    /** Internal integration only: no settings/button entry until all terminal consumers are ready. */
+    internal suspend fun prepareRecoveryConfirmation(preview: NextRecoveryDependencyPreview, selected: Set<NextRecoveryKey>) = sessions.exclusive {
+        val authority = requireNotNull(tokens.localCoreWriteAccess())
+        val access = requireNotNull(tokens.localSyncAccess()).let { it.copy(capabilities = it.capabilities.toSet()) }
+        require(authority.session == access.session && tokens.syncAuthenticationSnapshot(access) != null) { "SYNC_RECOVERY_ACCESS_CHANGED" }
+        database.withTransaction {
+            val result = NextRecoveryConfirmationStore(database, recoveryReader()).prepare(access, preview, selected)
+            check(tokens.localCoreWriteAccess() == authority && tokens.localSyncAccess() == access &&
+                tokens.syncAuthenticationSnapshot(access) != null) { "SYNC_RECOVERY_ACCESS_CHANGED" }
+            result
+        }
+    }
+
+    /** Runtime serialization precedes account/Room locks. Formal BusinessSync coordination is not enabled yet. */
+    internal suspend fun confirmRecovery(ticket: NextRecoveryConfirmation) = mutex.withLock {
+        sessions.exclusive {
+            val authority = requireNotNull(tokens.localCoreWriteAccess())
+            val access = requireNotNull(tokens.localSyncAccess())
+            require(authority.session == access.session && tokens.syncAuthenticationSnapshot(access) != null) { "SYNC_RECOVERY_ACCESS_CHANGED" }
+            database.withTransaction {
+                val result = NextRecoveryConfirmationStore(database, recoveryReader()).confirm(access, ticket)
+                check(tokens.localCoreWriteAccess() == authority && tokens.localSyncAccess() == access &&
+                    tokens.syncAuthenticationSnapshot(access) != null) { "SYNC_RECOVERY_ACCESS_CHANGED" }
+                result
+            }
+        }
+    }
 
     /** Captures authority once. Failure, unsupported v5, pending/conflicting work are never success. */
     suspend fun sync(progress: (SyncProgress) -> Unit = {}, afterSync: (suspend () -> Unit)? = null) = syncProfile(false, progress, afterSync)

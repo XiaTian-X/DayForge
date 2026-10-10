@@ -9,9 +9,9 @@ import com.dayforge.data.local.entity.SyncOutboxEntity
 import com.dayforge.data.local.entity.HabitMetricLinkEntity
 import com.dayforge.domain.model.ChallengeRoundRecord
 import com.dayforge.domain.model.initialChallengeRoundHead
-import java.util.UUID
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.encodeToString
@@ -20,11 +20,12 @@ import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** Real producers/refusals and SQLite. The explicit fixture writer is NOT a confirmation API. */
+/** Real producers/refusals and SQLite; audits are created by the actual atomic transaction participant. */
 @RunWith(AndroidJUnit4::class)
 class NextRecoveryAuditStoreTest : NextObjectEditorFixture() {
     private val json = Json { encodeDefaults = true }
     private var failing = false
+    private lateinit var recoveryHttp: NextSyncHttp
     private val audit get() = NextRecoveryAuditStore(db)
     private val payloads get() = NextRecoveryPayloadStore(db)
     private val projections get() = NextRecoveryProjectionStore(db)
@@ -57,6 +58,7 @@ class NextRecoveryAuditStoreTest : NextObjectEditorFixture() {
         merge.bootstrap(access(), null, RoundSyncBootstrapResponse(listOf(canonical("plan_node", habit.uuid, NextStructureMapper.writePlan(habit)),
             canonical("plan_node", timerHabit.uuid, NextStructureMapper.writePlan(timerHabit)),
             canonical("metric", metric.uuid, NextStructureMapper.writeMetric(metric))), 20, time, emptyList(), 1, meta.checkpoints, meta.births))
+        recoveryHttp = http
         return http to server
     }
     private suspend fun edit(name: String): SyncOutboxEntity {
@@ -73,55 +75,25 @@ class NextRecoveryAuditStoreTest : NextObjectEditorFixture() {
     }
     private suspend fun preview(http: NextSyncHttp, root: String) = NextSyncRuntime(db, tokens, sessions, http, preferences)
         .readRecoveryPreview(NextRecoveryKey(NEXT_OPERATION, root))
-    private data class Saved(val id: String, val manifest: NextRecoveryAuditManifest, val drafts: List<NextRecoveryProjectionDraft>)
-
-    /** Explicit testbed terminal fixture, uses actual original rows and bound HTTP refusals. */
-    private suspend fun terminal(preview: NextRecoveryDependencyPreview): Saved = db.withTransaction {
-        assertTrue(preview.canConfirm)
-        val id = UUID.randomUUID().toString(); val checkpoint = audit.checkpoint(access())
-        val drafts = projections.plan(preview); val rows = audit.graphRows(preview.archive)
-        sql.execSQL("INSERT INTO next_recovery_audits VALUES(?,?,?,?,?,?,?,?,?,?,?)", arrayOf<Any>(id,
-            checkpoint.accountId, checkpoint.serverInstanceId, checkpoint.syncEpoch, checkpoint.deviceId,
-            preview.root.kind, preview.root.requestId, preview.graphHash, "a".repeat(64), "b".repeat(64), preview.affected.size))
-        val checkpointRef = payloads.write(id, "checkpoint", NextRecoveryAuditCodec.encode(checkpoint))
-        val requests = preview.affected.map { node ->
-            val origin = requireNotNull(db.nextRequestDao().origin(node.key.kind, node.key.requestId))
-            val source = requireNotNull(db.syncOutboxDao().getById(origin.queueId))
-            val ref = payloads.write(id, "source:${node.key.kind}:${node.key.requestId}", NextRecoverySourceSnapshot.encode(source, origin.sourceHash))
-            fun row(table: String) = rows.singleOrNull { it.table == table && it.key == node.key }?.hash
-            NextRecoveryAuditRequest(node.key, node.state, ref, origin.sourceHash, requireNotNull(row("next_request_origins")),
-                row("next_transmissions"), row("next_rejections"))
-        }
-        val projectionRefs = drafts.map { draft ->
-            val key = "${draft.before.entityType}:${draft.before.entityUuid}"
-            NextRecoveryAuditProjection(draft.before.entityType, draft.before.entityUuid,
-                payloads.write(id, "projection_before:$key", NextRecoveryAuditCodec.encode(draft.before)),
-                payloads.write(id, "projection_after:$key", NextRecoveryAuditCodec.encode(draft.after)),
-                payloads.write(id, "projection_base:$key", NextRecoveryAuditCodec.encode(draft.baseline)))
-        }
-        val manifest = NextRecoveryAuditManifest(1, preview.root, preview.archive, checkpointRef, requests, rows, projectionRefs)
-        val manifestRef = payloads.write(id, "manifest", NextRecoveryAuditCodec.encode(manifest))
-        sql.execSQL("UPDATE next_recovery_audits SET checkpointHash=?,manifestHash=? WHERE recoveryId=?", arrayOf(checkpointRef.hash, manifestRef.hash, id))
-        for (request in requests) {
-            sql.execSQL("INSERT INTO next_abandoned_requests VALUES(?,?,?,?,?,?,?,?,?)", arrayOf(request.key.kind, request.key.requestId, id,
-                request.state.name, request.sourceHash, request.source.hash, request.originHash, request.transmissionHash, request.rejectionHash))
-            sql.execSQL("DELETE FROM sync_outbox WHERE operationId=?", arrayOf(request.key.requestId))
-        }
-        sql.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
-        for (draft in drafts) {
-            assertEquals("metric", draft.after.entityType); assertNotNull(draft.after.localId)
-            val cells = draft.after.local.entries.toList()
-            sql.execSQL("UPDATE metrics SET ${cells.joinToString(",") { "`${it.key}`=?" }} WHERE id=?",
-                (cells.map { (_, value) -> when {
-                    value == JsonNull -> null
-                    value.jsonPrimitive.isString -> value.jsonPrimitive.content
-                    value.jsonPrimitive.longOrNull != null -> value.jsonPrimitive.long
-                    else -> value.jsonPrimitive.double
-                } } + draft.after.localId).toTypedArray<Any?>())
-        }
-        sql.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
-        assertEquals(manifest, audit.read(access(), id).manifest)
-        Saved(id, manifest, drafts)
+    private data class Saved(val ticket: NextRecoveryConfirmation, val manifest: NextRecoveryAuditManifest,
+        val drafts: List<NextRecoveryProjectionDraft>) { val id get() = ticket.recoveryId }
+    private fun confirmationStore(): NextRecoveryConfirmationStore {
+        val core = sender(recoveryHttp)
+        val timers = NextTimerRequestStore(db, tokens, sessions, core)
+        val local = OneTimeLocalIntentStore(db, tokens, sessions, preferences)
+        val facts = OneTimeAcceptedEventStore(db, tokens, sessions, local, timerRequests = timers)
+        val once = NextOneTimeRequestStore(db, tokens, sessions, recoveryHttp, facts, core)
+        return NextRecoveryConfirmationStore(db, NextRecoveryDependencyReader(db, tokens, sessions, core, timers, once,
+            NextChallengeRestartRepository(db, tokens, sessions, recoveryHttp)))
+    }
+    private suspend fun prepare(preview: NextRecoveryDependencyPreview, selected: Set<NextRecoveryKey> = preview.affected.map { it.key }.toSet()) =
+        NextSyncRuntime(db, tokens, sessions, recoveryHttp, preferences).prepareRecoveryConfirmation(preview, selected)
+    private suspend fun confirm(ticket: NextRecoveryConfirmation) =
+        NextSyncRuntime(db, tokens, sessions, recoveryHttp, preferences).confirmRecovery(ticket)
+    private suspend fun terminal(preview: NextRecoveryDependencyPreview): Saved {
+        val ticket = prepare(preview)
+        val proof = confirm(ticket)
+        return Saved(ticket, proof.manifest, ticket.drafts())
     }
     private suspend fun saved(): Pair<Saved, MaterialSocketServer> {
         val (http, server) = initialize(); val a = edit("A"); edit("B"); edit("C")
@@ -163,6 +135,9 @@ class NextRecoveryAuditStoreTest : NextObjectEditorFixture() {
             sql.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
         }
         assertEquals(saved.manifest, db.withTransaction { audit.read(access(), saved.id).manifest })
+        storage.reopen()
+        assertEquals(saved.manifest, confirm(saved.ticket).manifest)
+        assertEquals(1, count("next_recovery_audits")); assertEquals(3, count("next_abandoned_requests"))
         assertEquals("Later local display", db.metricDao().getMetricById(metric.id)!!.name)
         assertEquals(calls, server.requests.size); assertEquals(0, count("next_acceptances"))
     }
@@ -351,6 +326,12 @@ class NextRecoveryAuditStoreTest : NextObjectEditorFixture() {
         assertNull(db.syncOutboxDao().getState("metric", fresh.uuid)); assertNotNull(db.metricDao().getMetricById(localId))
         assertEquals(listOf(source.operationId), db.syncOutboxDao().getAll().map { it.operationId })
         assertEquals(0, count("next_acceptances")); assertEquals(calls, server.requests.size)
+        val saved = terminal(frozen)
+        assertNull(db.metricDao().getMetricById(localId)); assertNull(db.syncOutboxDao().getState("metric", fresh.uuid))
+        assertEquals(0, count("next_acceptances")); assertEquals(calls, server.requests.size)
+        storage.reopen()
+        assertEquals(source, db.withTransaction { audit.source(access(), saved.manifest.root) }!!.second)
+        assertEquals(saved.manifest, confirm(saved.ticket).manifest)
     }
     @Test fun newUnselectedEditStopsOldPlanRatherThanDroppingLaterWork() = runBlocking<Unit> {
         val (http, _) = initialize(); val a = edit("A"); val root = refuse(http, a.operationId)
@@ -374,5 +355,170 @@ class NextRecoveryAuditStoreTest : NextObjectEditorFixture() {
         job.join(); assertTrue(entered); assertTrue(job.isCancelled)
         rejected { db.withTransaction { audit.read(access(), id(999)) } }
         assertEquals(saved.manifest, db.withTransaction { audit.read(access(), saved.id).manifest })
+    }
+
+    @Test fun selectionMustExplicitlyIncludeEveryNeverSentSuccessor() = runBlocking<Unit> {
+        val (http, _) = initialize(); val a = edit("A"); edit("B")
+        val root = refuse(http, a.operationId); val frozen = preview(http, root)
+        val rows = db.syncOutboxDao().getAll()
+        rejected { prepare(frozen, setOf(frozen.root)) }
+        assertEquals(rows, db.syncOutboxDao().getAll()); assertEquals(0, count("next_recovery_audits"))
+    }
+
+    @Test fun actualUnknownHttpResultCannotBeConfirmedAsNeverSentOrRejected() = runBlocking<Unit> {
+        val (http, server) = initialize(); val a = edit("A")
+        assertNotNull(sender(http).sendOperation(access(), a.operationId))
+        val rows = db.syncOutboxDao().getAll(); val calls = server.requests.size
+        val unknown = preview(http, a.operationId)
+        assertEquals(NextRecoveryRequestState.UNKNOWN_RESULT, unknown.affected.single().state)
+        rejected { prepare(unknown) }
+        assertEquals(rows, db.syncOutboxDao().getAll()); assertEquals(0, count("next_abandoned_requests"))
+        assertEquals(0, count("next_acceptances")); assertEquals(calls, server.requests.size)
+    }
+
+    @Test fun changedGraphProjectionAndDevicePermissionsRejectTheWholeFrozenConfirmation() = runBlocking<Unit> {
+        val (http, _) = initialize(); val a = edit("A"); val root = refuse(http, a.operationId)
+        val ticket = prepare(preview(http, root)); edit("Later")
+        val rows = db.syncOutboxDao().getAll(); val metricBefore = db.metricDao().getMetricById(metric.id)
+        rejected { confirm(ticket) }
+        assertEquals(rows, db.syncOutboxDao().getAll()); assertEquals(metricBefore, db.metricDao().getMetricById(metric.id))
+        assertEquals(0, count("next_recovery_audits"))
+        val newTicket = prepare(preview(http, root))
+        register(permissions = setOf("sync.read"), revision = 2)
+        assertEquals("SYNC_RECOVERY_WRITE_PERMISSION_REQUIRED", rejected { confirm(newTicket) }.message)
+        assertEquals(rows, db.syncOutboxDao().getAll()); assertEquals(0, count("next_recovery_audits"))
+        register(device = id(900), revision = 3)
+        assertEquals("SYNC_CHALLENGE_CONTEXT_CHANGED", rejected { confirm(newTicket) }.message)
+        assertEquals(rows, db.syncOutboxDao().getAll()); assertEquals(0, count("next_acceptances"))
+    }
+
+    @Test fun changedPrivateProjectionWithSameGraphHashRequiresNewPreviewInsteadOfOverwriting() = runBlocking<Unit> {
+        val (http, _) = initialize(); val a = edit("A"); val root = refuse(http, a.operationId)
+        val ticket = prepare(preview(http, root)); val rows = db.syncOutboxDao().getAll()
+        db.withTransaction {
+            sql.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
+            sql.execSQL("UPDATE metrics SET iconResId=777 WHERE id=?", arrayOf(metric.id))
+            sql.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
+        }
+        assertEquals("SYNC_RECOVERY_PROJECTION_CHANGED", rejected { confirm(ticket) }.message)
+        assertEquals(777, db.metricDao().getMetricById(metric.id)!!.iconResId)
+        assertEquals(rows, db.syncOutboxDao().getAll()); assertEquals(0, count("next_recovery_audits"))
+    }
+
+    @Test fun lateProtectedStateMutationRollsBackAuditQueueAndProjectionThenSameTicketCanRetry() = runBlocking<Unit> {
+        val (http, server) = initialize(); val a = edit("A"); edit("B")
+        val ticket = prepare(preview(http, refuse(http, a.operationId)))
+        val rows = db.syncOutboxDao().getAll(); val before = db.metricDao().getMetricById(metric.id)
+        val cursor = db.nextSyncStateDao().rows(); val calls = server.requests.size
+        sql.execSQL("CREATE TRIGGER recovery_cursor_fault AFTER INSERT ON next_abandoned_requests BEGIN UPDATE next_sync_state SET cursor=cursor+1; END")
+        assertEquals("SYNC_RECOVERY_PROTECTED_STATE_CHANGED", rejected { confirm(ticket) }.message)
+        sql.execSQL("DROP TRIGGER recovery_cursor_fault")
+        assertEquals(rows, db.syncOutboxDao().getAll()); assertEquals(before, db.metricDao().getMetricById(metric.id))
+        assertEquals(cursor, db.nextSyncStateDao().rows()); assertEquals(0, count("next_recovery_audits"))
+        assertEquals(0, count("next_abandoned_requests")); assertEquals(0, count("next_recovery_audit_payloads"))
+        assertEquals(0, count("next_acceptances")); assertEquals(calls, server.requests.size)
+        storage.reopen(); assertEquals(ticket.recoveryId, confirm(ticket).recoveryId)
+        assertEquals(metric, db.metricDao().getMetricById(metric.id)); assertEquals(cursor, db.nextSyncStateDao().rows())
+    }
+
+    @Test fun actualFinalCommitFailureAndCancellationPreserveExactSourcesForColdSameTicketRetry() = runBlocking<Unit> {
+        val (http, _) = initialize(); val a = edit("A"); edit("B")
+        val ticket = prepare(preview(http, refuse(http, a.operationId)))
+        val rows = db.syncOutboxDao().getAll(); val before = db.metricDao().getMetricById(metric.id)
+        sql.execSQL("CREATE TABLE recovery_commit_parent(id INTEGER PRIMARY KEY)")
+        sql.execSQL("CREATE TABLE recovery_commit_guard(id INTEGER PRIMARY KEY,parent INTEGER,FOREIGN KEY(parent) REFERENCES recovery_commit_parent(id) DEFERRABLE INITIALLY DEFERRED)")
+        var applied = false
+        val error = rejected { sessions.exclusive { db.withTransaction {
+            sql.execSQL("INSERT INTO recovery_commit_guard VALUES(1,99)")
+            val result = confirmationStore().confirm(access(), ticket)
+            assertEquals(ticket.recoveryId, result.recoveryId); applied = true
+        } } }
+        assertTrue(applied); assertTrue(error is android.database.sqlite.SQLiteConstraintException)
+        // A deferred COMMIT fault can leave the framework writer's native transaction open.
+        // Close that actual writer before persistence assertions or another transaction; a WAL
+        // reader on the old handle is not proof of rollback. This is the same cold-fault contract
+        // used by the real config replacement and deletion ACK suites.
+        storage.reopen()
+        assertEquals(rows, db.syncOutboxDao().getAll()); assertEquals(before, db.metricDao().getMetricById(metric.id))
+        assertEquals(0, count("next_recovery_audits")); assertEquals(0, count("next_abandoned_requests"))
+        var entered = false
+        val job = launch { sessions.exclusive { db.withTransaction {
+            confirmationStore().confirm(access(), ticket); entered = true
+            currentCoroutineContext().cancel(); currentCoroutineContext().ensureActive()
+        } } }
+        job.join(); assertTrue(entered); assertTrue(job.isCancelled)
+        assertEquals(rows, db.syncOutboxDao().getAll()); assertEquals(before, db.metricDao().getMetricById(metric.id))
+        assertEquals(0, count("next_recovery_audits")); assertEquals(0, count("next_recovery_audit_payloads"))
+        storage.reopen(); assertEquals(ticket.recoveryId, confirm(ticket).recoveryId)
+        assertEquals(metric, db.metricDao().getMetricById(metric.id)); assertEquals(0, count("next_acceptances"))
+    }
+
+    @Test fun realRejectedRetainedLinkAndMetricDeletionRestoreOriginalVisibleIdentitiesTogether() = runBlocking<Unit> {
+        val (http, server) = initialize()
+        creatingMetrics().linkHabits(metric, setOf(habit.id))
+        sender(http).sendAndAcceptOperation(access(), db.syncOutboxDao().getAll().single().operationId)
+        val link = db.habitMetricLinkDao().getAllLinksForMetric(metric.id).single()
+        editingMetrics().unlinkHabit(link.id, link.uuid)
+        val root = refuse(http, db.syncOutboxDao().getAll().single().operationId)
+        val metricTicket = editor.metric(metric.id)
+        editingMetrics().deleteMetric(requireNotNull(metricTicket.value), metricTicket.authority)
+        val frozen = preview(http, root); assertEquals(2, frozen.affected.size)
+        val rows = db.syncOutboxDao().getAll(); val cursor = db.nextSyncStateDao().rows(); val calls = server.requests.size
+        val saved = terminal(frozen)
+        assertEquals(metric, db.metricDao().getVisibleMetricById(metric.id))
+        assertEquals(link, db.habitMetricLinkDao().getLinkByUuid(link.uuid))
+        assertEquals(listOf(link), db.habitMetricLinkDao().getVisibleLinksForHabit(habit.id))
+        assertTrue(db.syncOutboxDao().getAll().isEmpty()); assertEquals(1, count("next_acceptances"))
+        assertEquals(cursor, db.nextSyncStateDao().rows()); assertEquals(calls, server.requests.size)
+        storage.reopen(); assertEquals(saved.manifest, confirm(saved.ticket).manifest)
+        for (row in rows) assertEquals(row, db.withTransaction { audit.source(access(), NextRecoveryKey(NEXT_OPERATION, row.operationId)) }!!.second)
+    }
+
+    @Test fun rejectedPlanEditWithNeverSentDeleteRestoresOriginalLocalIdAndUntouchedRoundPolicy() = runBlocking<Unit> {
+        val (http, server) = initialize()
+        val editTicket = editor.habit(habit.id)
+        editingHabits().updateHabit(requireNotNull(editTicket.value).copy(name = "Edited count"), editAuthority = editTicket.authority)
+        val edit = db.syncOutboxDao().getAll().single()
+        val root = refuse(http, edit.operationId)
+        val deleteTicket = editor.habit(habit.id)
+        editingHabits().deleteHabit(requireNotNull(deleteTicket.value), authority = deleteTicket.authority)
+        assertNull(db.habitDao().getVisibleHabitById(habit.id))
+        val rows = db.syncOutboxDao().getAll()
+        val rounds = Triple(db.nextChallengeDao().rounds(), db.nextChallengeDao().births(), db.nextChallengeDao().states())
+        val cursor = db.nextSyncStateDao().rows(); val calls = server.requests.size
+        val frozen = preview(http, root); assertEquals(2, frozen.affected.size)
+        val saved = terminal(frozen)
+        assertEquals(habit, db.habitDao().getVisibleHabitById(habit.id))
+        assertEquals(timerHabit, db.habitDao().getHabitById(timerHabit.id))
+        assertEquals(rounds, Triple(db.nextChallengeDao().rounds(), db.nextChallengeDao().births(), db.nextChallengeDao().states()))
+        assertEquals(cursor, db.nextSyncStateDao().rows())
+        assertEquals(0, count("next_acceptances")); assertTrue(db.syncOutboxDao().getAll().isEmpty())
+        assertEquals(calls, server.requests.size)
+        storage.reopen(); assertEquals(saved.manifest, confirm(saved.ticket).manifest)
+        for (row in rows) assertEquals(row, db.withTransaction { audit.source(access(), NextRecoveryKey(NEXT_OPERATION, row.operationId)) }!!.second)
+    }
+
+    @Test fun exactProjectionApplicationRestoresAValidNamePermutationWithoutChangingUnselectedRows() = runBlocking<Unit> {
+        initialize()
+        db.withTransaction {
+            val originals = listOf(habit, timerHabit).map { projections.capture("plan_node", it.uuid) }
+            sql.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
+            sql.execSQL("UPDATE habits SET name='Temporary test name' WHERE id=?", arrayOf(habit.id))
+            sql.execSQL("UPDATE habits SET name=? WHERE id=?", arrayOf<Any>(habit.name, timerHabit.id))
+            sql.execSQL("UPDATE habits SET name=? WHERE id=?", arrayOf<Any>(timerHabit.name, habit.id))
+            sql.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
+            val queue = db.syncOutboxDao().getAll()
+            val drafts = originals.map { after ->
+                val state = requireNotNull(db.syncOutboxDao().getState("plan_node", after.entityUuid))
+                val baseline = NextRecoveryProjectionBaseline("plan_node", after.entityUuid,
+                    NextRequestSql.rowHash(sql, "sync_entity_state", "entityType=? AND entityUuid=?", arrayOf("plan_node", after.entityUuid)),
+                    state.revision, state.deleted, state.payloadJson, state.payloadHash, state.updatedAt)
+                NextRecoveryProjectionDraft(projections.capture("plan_node", after.entityUuid), after, baseline)
+            }
+            projections.apply(drafts)
+            assertEquals(habit, db.habitDao().getHabitById(habit.id)); assertEquals(timerHabit, db.habitDao().getHabitById(timerHabit.id))
+            assertEquals(metric, db.metricDao().getMetricById(metric.id)); assertEquals(queue, db.syncOutboxDao().getAll())
+            NextRequestSql.requireOutboxEnabled(sql)
+        }
     }
 }

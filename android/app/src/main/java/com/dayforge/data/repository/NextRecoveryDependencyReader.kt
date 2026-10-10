@@ -28,12 +28,19 @@ internal class NextRecoveryDependencyReader(private val database: HabitDatabase,
         database.withTransaction {
             NextProtocolAdmission.requireRoundsOrEmpty(database, access)
             val checkpoint = NextChallengeStore(database).activeInTransaction(access)
-            val result = Index(access).read(root)
+            val result = readInTransaction(access, root)
             check(NextChallengeStore(database).activeInTransaction(access) == checkpoint &&
                 tokens.localCoreWriteAccess() == authority && tokens.localSyncAccess() == access &&
                 tokens.syncAuthenticationSnapshot(access) != null) { "SYNC_RECOVERY_ACCESS_CHANGED" }
             result
         }
+    }
+
+    /** Transaction participant; never reacquire the non-reentrant account mutex. */
+    internal suspend fun readInTransaction(access: LocalSyncAccess, root: NextRecoveryKey): NextRecoveryDependencyPreview {
+        check(database.inTransaction())
+        NextProtocolAdmission.requireRoundsOrEmpty(database, access)
+        return Index(access).read(root)
     }
 
     /** Compact metadata only. Full payloads are validated one at a time, not retained in the graph. */
@@ -69,8 +76,8 @@ internal class NextRecoveryDependencyReader(private val database: HabitDatabase,
         suspend fun read(root: NextRecoveryKey): NextRecoveryDependencyPreview {
             check(database.inTransaction())
             NextRequestSql.requireOutboxEnabled(sql)
-            // No terminal writer is enabled yet. Even an orphan header is not permission to
-            // hide/retire requests; the full terminal consumer will replace this refusal later.
+            // Formal terminal consumers are not enabled yet. Even an orphan header is not
+            // permission to hide requests; the complete consumer will replace this barrier.
             sql.query("SELECT 1 FROM next_recovery_audits UNION ALL SELECT 1 FROM next_abandoned_requests " +
                 "UNION ALL SELECT 1 FROM next_recovery_audit_payloads LIMIT 1").use {
                 require(!it.moveToFirst()) { "SYNC_RECOVERY_TERMINAL_REQUIRED" }

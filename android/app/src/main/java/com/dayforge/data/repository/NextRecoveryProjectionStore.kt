@@ -16,7 +16,7 @@ import kotlinx.serialization.json.*
 internal data class NextRecoveryProjectionDraft(val before: NextRecoveryProjectionSnapshot,
     val after: NextRecoveryProjectionSnapshot, val baseline: NextRecoveryProjectionBaseline)
 
-/** Read-only structure projection planning. The future atomic writer must recheck these exact rows. */
+/** Planning and exact projection application; caller owns the complete recovery transaction. */
 internal class NextRecoveryProjectionStore(private val database: HabitDatabase) {
     private val sql get() = database.openHelper.writableDatabase
     private fun table(type: String) = when (type) {
@@ -187,6 +187,16 @@ internal class NextRecoveryProjectionStore(private val database: HabitDatabase) 
         require(visibleMetrics.map { it.name }.distinct().size == visibleMetrics.size) { "RECOVERY_PROJECTION_NAME_CONFLICT" }
         val parents = plans.associateBy { it.uuid }; val metricIds = metrics.associateBy { it.uuid }
         require(plans.all { it.parentHabitId == null || parents[it.parentHabitId]?.habitType == HabitType.GOAL }) { "RECOVERY_PROJECTION_PARENT_INVALID" }
+        // A valid parent kind alone does not prevent self-parenting or cycles among goals.
+        val settled = mutableSetOf<String>()
+        for (plan in plans) {
+            val path = mutableSetOf<String>(); var next: String? = plan.uuid
+            while (next != null && next !in settled) {
+                require(path.add(next)) { "RECOVERY_PROJECTION_PARENT_CYCLE" }
+                next = requireNotNull(parents[next]).parentHabitId
+            }
+            settled += path
+        }
         val links = database.habitMetricLinkDao().getAllLinksOnce().mapNotNull { old ->
             changes["activity_metric_link" to old.uuid]?.after?.let { if (it.localId == null) null else link(it.local) }
                 ?: old.takeIf { "activity_metric_link" to old.uuid !in changes }
@@ -194,6 +204,68 @@ internal class NextRecoveryProjectionStore(private val database: HabitDatabase) 
         require(links.all { parents[it.habitUuid]?.let { p -> p.id == it.habitId && p.habitType != HabitType.GOAL } == true &&
             metricIds[it.metricUuid]?.id == it.metricId }) { "RECOVERY_PROJECTION_LINK_INVALID" }
         require(links.map { it.habitId to it.metricId }.distinct().size == links.size)
+    }
+
+    /** No producers, IDs, facts, shadows or notifications. Any failure must roll back the caller's transaction. */
+    internal suspend fun apply(drafts: List<NextRecoveryProjectionDraft>) {
+        check(database.inTransaction()); NextRequestSql.requireOutboxEnabled(sql)
+        require(drafts.isNotEmpty() && drafts.map { it.before.entityType to it.before.entityUuid }.distinct().size == drafts.size)
+        for (draft in drafts) {
+            validatePair(draft.before, draft.after)
+            require(capture(draft.before.entityType, draft.before.entityUuid) == draft.before) { "RECOVERY_PROJECTION_CHANGED" }
+            require(NextRequestSql.rowHash(sql, "sync_entity_state", "entityType=? AND entityUuid=?",
+                arrayOf(draft.baseline.entityType, draft.baseline.entityUuid)) == draft.baseline.rowHash) { "RECOVERY_BASELINE_CHANGED" }
+            if (draft.after.localId == null) requireNoHistory(draft.before.entityType, draft.before.entityUuid, draft.before)
+        }
+        validateFinal(drafts)
+        val before = allRows()
+        val expected = before.toMutableMap()
+        for (draft in drafts) {
+            val key = draft.after.entityType to draft.after.entityUuid
+            if (draft.after.localId == null) expected.remove(key) else expected[key] = draft.after
+        }
+        sql.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
+        // Explicitly selected links first: FK cascades must not erase unselected relationships.
+        for (draft in drafts.filter { it.after.localId == null }.sortedBy { if (it.before.entityType == "activity_metric_link") 0 else 1 }) {
+            currentCoroutineContext().ensureActive()
+            draft.before.localId?.let { id ->
+                sql.execSQL("DELETE FROM ${table(draft.before.entityType)} WHERE id=? AND uuid=?", arrayOf<Any>(id, draft.before.entityUuid))
+            }
+        }
+        // The final names were checked together. Vacate selected names inside this suppressed,
+        // invisible transaction so legitimate name permutations do not trip the SQLite unique index.
+        val occupied = (before.values + drafts.map { it.after }).mapNotNull { it.local["name"]?.jsonPrimitive?.content }.toMutableSet()
+        for (draft in drafts.filter { it.after.entityType == "plan_node" && it.after.localId != null }) {
+            var temporary = "__dayforge_recovery_${draft.after.entityUuid}"
+            while (!occupied.add(temporary)) temporary += "_"
+            sql.execSQL("UPDATE habits SET name=? WHERE id=? AND uuid=?", arrayOf<Any>(temporary, requireNotNull(draft.after.localId), draft.after.entityUuid))
+        }
+        for (draft in drafts.filter { it.after.localId != null }) {
+            currentCoroutineContext().ensureActive()
+            val cells = draft.after.local.entries.toList()
+            val values = cells.map { (_, value) -> when {
+                value == JsonNull -> null
+                value.jsonPrimitive.isString -> value.jsonPrimitive.content
+                value.jsonPrimitive.longOrNull != null -> value.jsonPrimitive.long
+                else -> value.jsonPrimitive.double
+            } }
+            sql.execSQL("UPDATE ${table(draft.after.entityType)} SET ${cells.joinToString(",") { "`${it.key}`=?" }} WHERE id=? AND uuid=?",
+                (values + listOf<Any>(requireNotNull(draft.after.localId), draft.after.entityUuid)).toTypedArray<Any?>())
+        }
+        sql.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
+        NextRequestSql.requireOutboxEnabled(sql)
+        require(allRows() == expected) { "RECOVERY_PROJECTION_WRITE_CHANGED" }
+    }
+
+    private suspend fun allRows(): Map<Pair<String, String>, NextRecoveryProjectionSnapshot> {
+        val result = linkedMapOf<Pair<String, String>, NextRecoveryProjectionSnapshot>()
+        for (type in listOf("plan_node", "metric", "activity_metric_link")) {
+            val uuids = sql.query("SELECT uuid FROM ${table(type)} ORDER BY id").use { c -> buildList {
+                while (c.moveToNext()) { require(c.getType(0) == Cursor.FIELD_TYPE_STRING); add(c.getString(0)) }
+            } }
+            for (uuid in uuids) require(result.put(type to uuid, capture(type, uuid)) == null)
+        }
+        return result
     }
 
     private suspend fun requireNoHistory(type: String, uuid: String, before: NextRecoveryProjectionSnapshot) {

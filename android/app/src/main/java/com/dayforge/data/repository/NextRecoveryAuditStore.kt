@@ -19,7 +19,7 @@ internal data class NextRecoveryTerminalProof(val recoveryId: String, val manife
 
 /**
  * SELECT-only complete terminal reader. Caller owns authenticated account + Room transaction.
- * No retirement/confirmation writer is enabled. Membership or a matching digest alone is insufficient.
+ * Membership or a matching digest alone is insufficient. This reader never reapplies projections.
  */
 internal class NextRecoveryAuditStore(private val database: HabitDatabase) {
     private val sql get() = database.openHelper.writableDatabase
