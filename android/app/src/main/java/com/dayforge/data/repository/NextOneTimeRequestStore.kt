@@ -317,6 +317,31 @@ internal class NextOneTimeRequestStore(
             rejectNextRequest(NextRequestException.Reason.PERMISSION_DENIED)
     }
 
+    /** Shares the complete independent birth/journal/result proof, not sender readiness. */
+    internal suspend fun recoveryProof(access: LocalSyncAccess, id: String): NextRecoverySpecialProof {
+        check(database.inTransaction())
+        val sql = database.openHelper.writableDatabase
+        sql.query("SELECT 1 FROM next_abandoned_requests WHERE kind=? AND requestId=? LIMIT 1", arrayOf(NEXT_OPERATION, id)).use {
+            require(!it.moveToFirst()) { "SYNC_RECOVERY_TERMINAL_REQUIRED" }
+        }
+        require(hash("next_rejections", id) == null)
+        val saved = savedOutcome(access, id)
+        val source = evidence(access, id, consumed = saved is NextOneTimeOutcome.Accepted,
+            rejected = saved is NextOneTimeOutcome.Rejected)
+        require(source.origin.serverInstanceId == access.session.serverInstanceId && source.origin.syncEpoch == access.session.syncEpoch &&
+            requireNotNull(roundOperationIntent(source.origin.intentJson)).capturedDeviceId == access.deviceId)
+        val state = when (saved) {
+            is NextOneTimeOutcome.Accepted -> NextRecoveryRequestState.ACCEPTED
+            is NextOneTimeOutcome.Rejected -> if (saved.result.errorCode in setOf("MISSING_PREDECESSOR", "OPERATION_IN_PROGRESS"))
+                NextRecoveryRequestState.UNKNOWN_RESULT else NextRecoveryRequestState.PERMANENT_REJECTION
+            null -> if (source.transmission == null) NextRecoveryRequestState.NEVER_SENT else NextRecoveryRequestState.UNKNOWN_RESULT
+        }
+        val proof = listOf(source.hashes.origin, source.hashes.transmission ?: "none", source.hashes.submission,
+            source.hashes.binding ?: "none", hash("next_acceptances", id) ?: "none", state.name)
+        return NextRecoverySpecialProof(source.origin, state, nextRequestHash(proof.joinToString(";").toByteArray(Charsets.UTF_8)),
+            operation = source.prepared.operation)
+    }
+
     private suspend fun verifySavedMetadata(access: LocalSyncAccess, evidence: Evidence, result: NextSyncOperationResult) {
         if (roundOperationIntent(evidence.origin.intentJson) == null) return
         val actual = NextChallengeStore(database).activeInTransaction(access).second

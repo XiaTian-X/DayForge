@@ -137,4 +137,15 @@ class NextRecoveryDependencyGraphTest {
         val result = graph.preview(key(1))
         assertTrue(result.canConfirm); assertEquals(2, result.affected.size)
     }
+    @Test fun fullPendingCapacityStillFitsWithSeparateAliasesAndAcceptedProofNodes() = runBlocking {
+        val actual = (1..10_000).map { if (it == 1) root() else node(it) }
+        val aliases = (1..10_000).associate { key(it + 10_000) to key(it) }
+        val old = (10_001..20_000).map { node(it, NextRecoveryRequestState.SUPERSEDED) }
+        val accepted = (20_001..30_000).map { node(it, NextRecoveryRequestState.ACCEPTED) }
+        val edges = (1 until 10_000).map { edge(it + 10_000, it + 1) } +
+            (1..10_000).map { edge(it + 20_000, it) }
+        val preview = NextRecoveryDependencyGraph(actual + old + accepted, edges, aliases = aliases).preview(key(1))
+        assertTrue(preview.canConfirm); assertEquals(10_000, preview.affected.size)
+        assertTrue(preview.affected.none { it.state in setOf(NextRecoveryRequestState.ACCEPTED, NextRecoveryRequestState.SUPERSEDED) })
+    }
 }

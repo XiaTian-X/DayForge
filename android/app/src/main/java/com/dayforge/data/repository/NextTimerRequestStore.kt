@@ -219,6 +219,16 @@ internal class NextTimerRequestStore(
         return true
     }
 
+    /** Complete real receipt for a referenced session transition; no queue-absence inference. */
+    internal suspend fun recoveryAcceptedProof(access: LocalSyncAccess, id: String): NextRecoveryTimerAcceptedProof {
+        check(database.inTransaction())
+        val saved = receipt(access, id)
+        require(requireNotNull(roundTimerIntent(requireNotNull(database.nextRequestDao().origin(NEXT_TIMER, id)).intentJson))
+            .capturedDeviceId == access.deviceId)
+        return NextRecoveryTimerAcceptedProof(saved.command, requireNotNull(saved.result.session),
+            nextRequestHash(saved.proof.toByteArray(Charsets.UTF_8)))
+    }
+
     /** Restart waits for the complete real terminal receipt, not a missing queue/local end time. */
     internal suspend fun requireAcceptedTerminalInTransaction(access: LocalSyncAccess, id: String, session: String, sequence: Int): String {
         check(database.inTransaction())

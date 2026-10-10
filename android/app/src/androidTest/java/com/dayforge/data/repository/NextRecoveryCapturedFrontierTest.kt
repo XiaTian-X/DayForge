@@ -22,6 +22,7 @@ class NextRecoveryCapturedFrontierTest : NextObjectEditorFixture() {
     private lateinit var goal: HabitEntity
     private val json = Json { encodeDefaults = true }
     private var allowOperationReplies = false
+    private var rejectStructure = false
     private var normalizedTarget: Int? = null
     private val births = mutableListOf<ChallengeBirth>()
     private fun metadata() = ChallengeMetadata(1, listOf(habit, timerHabit).map {
@@ -33,6 +34,12 @@ class NextRecoveryCapturedFrontierTest : NextObjectEditorFixture() {
         if (!allowOperationReplies) return null
         val request = json.decodeFromString<RoundSyncPushRequest>(input.body.toString(Charsets.UTF_8))
         val operation = request.operations.single()
+        if (rejectStructure && operation.entityType == "metric") {
+            val meta = metadata()
+            return MaterialSocketServer.Reply(json.encodeToString(RoundSyncPushResponse(listOf(
+                NextSyncOperationResult(operation.operationId, operation.entityType, operation.entityUuid,
+                    "rejected", errorCode = "INVALID_PAYLOAD")), 1, meta.checkpoints, meta.births)).toByteArray())
+        }
         if (operation.entityType == "activity_event" && births.none { it.entityUuid == operation.entityUuid })
             births += ChallengeBirth("activity_event", operation.entityUuid, requireNotNull(request.contexts.single().head))
         val result = json.decodeFromString<NextSyncPushResponse>(successReply(input, (operation.baseRevision ?: 0) + 1) { body ->
@@ -74,6 +81,10 @@ class NextRecoveryCapturedFrontierTest : NextObjectEditorFixture() {
     private suspend fun read(key: NextRecoveryKey) = db.withTransaction { NextRecoveryCapturedFrontierStore(db).pending(access(), key) }
     private suspend fun read(row: SyncOutboxEntity) = read(NextRecoveryKey(NEXT_OPERATION, row.operationId))
     private suspend fun read(row: TimerCommandEntity) = read(NextRecoveryKey(NEXT_TIMER, row.commandId))
+    private suspend fun preview(http: NextSyncHttp, key: NextRecoveryKey) =
+        NextSyncRuntime(db, tokens, sessions, http, preferences).readRecoveryPreview(key)
+    private fun key(row: SyncOutboxEntity) = NextRecoveryKey(NEXT_OPERATION, row.operationId)
+    private fun key(row: TimerCommandEntity) = NextRecoveryKey(NEXT_TIMER, row.commandId)
     private suspend fun edit(activity: HabitEntity, name: String): SyncOutboxEntity {
         val draft = editor.habit(activity.id)
         editingHabits().updateHabit(requireNotNull(draft.value).copy(name = name), editAuthority = draft.authority)
@@ -120,6 +131,123 @@ class NextRecoveryCapturedFrontierTest : NextObjectEditorFixture() {
         reopen(); assertEquals(initial.evidenceHash, read(first).evidenceHash); assertEquals(later.evidenceHash, read(second).evidenceHash)
         assertEquals(rows, db.syncOutboxDao().getAll()); assertEquals(prefs, dataStore.data.first())
         assertEquals(0, server.requests.size); assertEquals(0, count("next_transmissions"))
+    }
+    @Test fun completeCountIndexJoinsBirthLaterPolicyAndSecondFactWithoutCycleOrWrites() = runBlocking<Unit> {
+        val (http, server) = initialize(); val plan = edit(habit, "Before count"); val first = count(2)
+        val later = edit(habit, "After count"); val second = count(1)
+        val draft = editor.metric(metric.id)
+        editingMetrics().updateMetric(requireNotNull(draft.value).copy(name = "Unrelated"), draft.authority)
+        val rows = db.syncOutboxDao().getAll(); val day = read(first).count; val prefs = dataStore.data.first()
+        val result = preview(http, key(plan))
+        assertEquals(setOf(key(plan), key(first), key(later), key(second)), result.affected.map { it.key }.toSet())
+        assertFalse(result.canConfirm)
+        assertEquals(2, result.affected.count { NextRecoveryProtection.COUNT_DAY in it.protections })
+        assertTrue(result.blockers.any { it.reason == NextRecoveryBlockReason.UNSUPPORTED_CATEGORY })
+        reopen(); assertEquals(result.graphHash, preview(http, key(plan)).graphHash)
+        assertEquals(rows, db.syncOutboxDao().getAll()); assertEquals(day, read(first).count)
+        assertEquals(prefs, dataStore.data.first()); assertEquals(0, server.requests.size)
+        assertEquals(0, count("next_transmissions")); assertEquals(0, count("next_recovery_audits"))
+    }
+    @Test fun actualTimerIndexJoinsStartPauseAndLaterPlanUsingSeparateQueueWatermarks() = runBlocking<Unit> {
+        val (http, server) = initialize(); val plan = edit(timerHabit, "Before start"); val first = start()
+        val log = requireNotNull(db.timeLogDao().getTimeLogByUuid(first.sessionUuid))
+        producer().writeRounds(producer().captureRounds()) {
+            db.timeLogDao().updatePauseAndQueue(log.id, true, millis + 30_000, 0, 3, millis + 30_000, 30_000, null, null,
+                TimerCommandEntity(commandId = id(22), sessionUuid = first.sessionUuid, sequence = 2, commandType = "pause",
+                    occurredAt = millis + 30_000, expectedControlGeneration = 1, activeElapsedMillis = 30_000))
+        }
+        val pause = db.timeLogDao().getPendingTimerCommands().last(); val later = edit(timerHabit, "After pause")
+        val commands = db.timeLogDao().getPendingTimerCommands(); val local = db.timeLogDao().getTimeLogByUuid(first.sessionUuid)
+        val result = preview(http, key(plan))
+        assertEquals(setOf(key(plan), key(first), key(pause), key(later)), result.affected.map { it.key }.toSet())
+        assertFalse(result.canConfirm); assertEquals(2, result.affected.count { it.category == NextRecoveryCategory.TIMER })
+        reopen(); assertEquals(result.graphHash, preview(http, key(plan)).graphHash)
+        assertEquals(commands, db.timeLogDao().getPendingTimerCommands()); assertEquals(local, db.timeLogDao().getTimeLogByUuid(first.sessionUuid))
+        assertEquals(0, server.requests.size); assertEquals(0, count("next_acceptances"))
+    }
+    @Test fun restartIndexKeepsOriginalPlanProposalAndNewRoundEditProtectedWithoutMaterializing() = runBlocking<Unit> {
+        val (http, server) = initialize(finite = true); val plan = edit(habit, "Before restart")
+        val draft = editor.habit(habit.id)
+        val ref = NextChallengeRestartRepository(db, tokens, sessions, http)
+            .restart(requireNotNull(draft.value), requireNotNull(draft.authority))
+        val later = edit(habit, "After restart")
+        val rows = db.syncOutboxDao().getAll(); val result = preview(http, key(plan))
+        assertEquals(setOf(key(plan), NextRecoveryKey(NEXT_OPERATION, ref.operationId), key(later)), result.affected.map { it.key }.toSet())
+        assertFalse(result.canConfirm); assertTrue(result.affected.any { it.category == NextRecoveryCategory.RESTART &&
+            NextRecoveryProtection.ROUND_STATE in it.protections })
+        reopen(); assertEquals(result.graphHash, preview(http, key(plan)).graphHash)
+        assertEquals(rows, db.syncOutboxDao().getAll()); assertEquals(0, count("next_restart_materializations"))
+        assertEquals(0, server.requests.size); assertEquals(0, count("next_acceptances"))
+    }
+    @Test fun unrelatedCorruptDayRefusesWholePreviewRatherThanPublishingATruncatedHealthyClosure() = runBlocking<Unit> {
+        val (http, server) = initialize(); val plan = edit(timerHabit, "Unrelated plan"); count(2)
+        val sql = db.openHelper.writableDatabase; sql.execSQL("UPDATE count_days SET targetValue=11")
+        rejected { preview(http, key(plan)) }; assertEquals(2, count("sync_outbox")); assertEquals(1, count("completions"))
+        assertEquals(0, server.requests.size); assertEquals(0, count("next_recovery_audits"))
+    }
+    @Test fun equalQueueCountCapabilityChangeInvalidatesPreviewWithoutErasingOrSendingOrigins() = runBlocking<Unit> {
+        val (http, server) = initialize(); val plan = edit(habit, "A"); val next = edit(habit, "B")
+        val before = preview(http, key(plan)); val rows = db.syncOutboxDao().getAll()
+        register(revision = 2); assertNotEquals(before.graphHash, preview(http, key(plan)).graphHash)
+        register(permissions = setOf("sync.read"), revision = 3)
+        val after = preview(http, key(plan)); assertNotEquals(before.graphHash, after.graphHash)
+        assertEquals(setOf(key(plan), key(next)), after.affected.map { it.key }.toSet())
+        assertEquals(rows, db.syncOutboxDao().getAll()); assertEquals(0, server.requests.size)
+    }
+    @Test fun acceptedObservationAfterRealRejectedMetricStillProtectsTheDefinitionWhenItsQueueHasGone() = runBlocking<Unit> {
+        val (http, server) = initialize(); val draft = editor.metric(metric.id)
+        editingMetrics().updateMetric(requireNotNull(draft.value).copy(name = "Pending definition"), draft.authority)
+        val plan = db.syncOutboxDao().getAll().single()
+        allowOperationReplies = true; rejectStructure = true
+        val failedDelivery = requireNotNull(sender(http).sendOperation(access(), plan.operationId))
+        sender(http).recordRejection(access(), NEXT_OPERATION, failedDelivery.requestId, failedDelivery.transmissionProof,
+            json.encodeToString(NextSyncOperationResult.serializer(), failedDelivery.result.results.single()), failedDelivery.challengeMetadata)
+        rejectStructure = false
+        producer().writeRounds(producer().captureRounds()) {
+            db.metricLogDao().insert(MetricLogEntity(metricId = metric.id, date = millis, value = 12.5, unit = "kg",
+                recordedTimezone = "Asia/Shanghai"))
+        }
+        val fact = db.syncOutboxDao().getAll().last()
+        assertEquals(NextOperationAcceptance.COMMITTED, sender(http).sendAndAcceptOperation(access(), fact.operationId))
+        assertNull(db.syncOutboxDao().getById(fact.id)); val calls = server.requests.size; val rows = db.syncOutboxDao().getAll()
+        val result = preview(http, key(plan))
+        assertFalse(result.canConfirm); assertEquals(setOf(key(plan), key(fact)), result.affected.map { it.key }.toSet())
+        assertTrue(result.blockers.contains(NextRecoveryBlocker(key(fact), NextRecoveryBlockReason.ACCEPTED_DATA)))
+        assertEquals(rows, db.syncOutboxDao().getAll()); assertEquals(calls, server.requests.size); assertEquals(1, count("metric_logs"))
+        db.openHelper.writableDatabase.execSQL("UPDATE next_acceptances SET resultHash='bad' WHERE requestId=?", arrayOf(fact.operationId))
+        rejected { preview(http, key(plan)) }; assertEquals(rows, db.syncOutboxDao().getAll()); assertEquals(1, count("metric_logs"))
+    }
+    @Test fun acceptedFirstCountIsProofOnlyForLaterStructureAndDamagedReceiptCannotDisappearFromTheIndex() = runBlocking<Unit> {
+        val (http, server) = initialize(); val plan = edit(habit, "Before birth"); val first = count(2)
+        allowOperationReplies = true
+        assertEquals(NextOperationAcceptance.COMMITTED, sender(http).sendAndAcceptOperation(access(), plan.operationId))
+        assertEquals(NextOperationAcceptance.COMMITTED, sender(http).sendAndAcceptOperation(access(), first.operationId))
+        val later = edit(habit, "After real birth")
+        val day = db.withTransaction { requireNotNull(NextCountDayStore(db).read(habit, "2026-10-06")) }
+        val calls = server.requests.size; val result = preview(http, key(later))
+        assertEquals(listOf(key(later)), result.affected.map { it.key })
+        assertFalse(result.blockers.any { it.reason == NextRecoveryBlockReason.ACCEPTED_DATA })
+        assertEquals(day, db.withTransaction { NextCountDayStore(db).read(habit, "2026-10-06") }); assertEquals(calls, server.requests.size)
+        db.openHelper.writableDatabase.execSQL("UPDATE next_acceptances SET resultHash='bad' WHERE requestId=?", arrayOf(first.operationId))
+        rejected { preview(http, key(later)) }; assertEquals(1, count("completions")); assertEquals(1, count("count_days"))
+    }
+    @Test fun orphanRecoveryHeaderBlocksPreviewUntilTheCompleteTerminalReaderIsImplemented() = runBlocking<Unit> {
+        val (http, server) = initialize(); val plan = edit(habit, "A")
+        db.openHelper.writableDatabase.execSQL("INSERT INTO next_recovery_audits VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            arrayOf<Any>(id(990), id(1), id(2), id(3), id(4), NEXT_OPERATION, plan.operationId,
+                "a".repeat(64), "b".repeat(64), "c".repeat(64), 1))
+        assertEquals("SYNC_RECOVERY_TERMINAL_REQUIRED", rejected { preview(http, key(plan)) }.message)
+        assertEquals(1, count("next_recovery_audits")); assertEquals(1, count("sync_outbox"))
+        assertEquals(0, count("next_acceptances")); assertEquals(0, server.requests.size)
+    }
+    @Test fun undoIndexRetainsRealCountTargetEvenAfterLocalCompletionIsDeleted() = runBlocking<Unit> {
+        val (http, server) = initialize(); val plan = edit(habit, "Before count"); val first = count(2)
+        val event = requireNotNull(db.completionDao().getCompletionByUuid(first.entityUuid))
+        producer().writeRounds(producer().captureRounds()) { db.completionDao().delete(event) }
+        val undo = db.syncOutboxDao().getAll().last(); val result = preview(http, key(plan))
+        assertEquals(setOf(key(plan), key(first), key(undo)), result.affected.map { it.key }.toSet())
+        assertFalse(result.canConfirm); assertEquals(0, count("completions")); assertEquals(1, count("count_days"))
+        assertEquals(3, count("sync_outbox")); assertEquals(0, server.requests.size)
     }
     @Test fun timerStartKeepsItsOriginalPolicyAndWatermarkDespiteLaterPlanEditAndColdReopen() = runBlocking<Unit> {
         val (_, server) = initialize(); val plan = edit(timerHabit, "Before start"); val command = start()

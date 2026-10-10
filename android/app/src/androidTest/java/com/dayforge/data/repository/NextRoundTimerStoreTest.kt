@@ -138,6 +138,56 @@ class NextRoundTimerStoreTest : NextCoreRequestFixture() {
     @Test fun forwardOfflineStartPauseResumeStopAckAndColdReplayPreserveFullLocalState() = runBlocking { fullChain(false) }
     @Test fun countdownOfflineStartPauseResumeStopKeepOriginalPolicyAndBirth() = runBlocking { fullChain(true) }
 
+    @Test fun recoveryIndexProvesAcceptedStartPrefixWithoutInventingItsAckOrChangingThePausedTimer() = runBlocking<Unit> {
+        val (http, server) = channel(::respond); initialize(http); val start = startRound()
+        assertEquals(NextOperationAcceptance.COMMITTED, timers(http).sendAndAccept(access(), start.commandId))
+        val log = requireNotNull(db.timeLogDao().getTimeLogByUuid(start.sessionUuid))
+        producer().writeRounds(producer().captureRounds()) {
+            db.timeLogDao().updatePauseAndQueue(log.id, true, millis + 30_000, 0, 3, millis + 30_000, 30_000, null, null,
+                TimerCommandEntity(commandId = id(22), sessionUuid = start.sessionUuid, sequence = 2, commandType = "pause",
+                    occurredAt = millis + 30_000, expectedControlGeneration = 1, activeElapsedMillis = 30_000))
+        }
+        val pause = db.timeLogDao().getPendingTimerCommands().single(); val before = db.timeLogDao().getTimeLogByUuid(start.sessionUuid)
+        val calls = server.requests.size
+        val result = NextSyncRuntime(db, tokens, sessions, http, preferences)
+            .readRecoveryPreview(NextRecoveryKey(NEXT_TIMER, pause.commandId))
+        assertEquals(listOf(pause.commandId), result.affected.map { it.key.requestId }); assertFalse(result.canConfirm)
+        assertFalse(result.blockers.any { it.reason == NextRecoveryBlockReason.ACCEPTED_DATA })
+        storage.reopen(); assertEquals(result.graphHash, NextSyncRuntime(db, tokens, sessions, http, preferences)
+            .readRecoveryPreview(NextRecoveryKey(NEXT_TIMER, pause.commandId)).graphHash)
+        assertEquals(before, db.timeLogDao().getTimeLogByUuid(start.sessionUuid)); assertEquals(calls, server.requests.size)
+        db.openHelper.writableDatabase.execSQL("UPDATE next_acceptances SET resultHash='bad' WHERE kind=? AND requestId=?",
+            arrayOf(NEXT_TIMER, start.commandId))
+        rejected { NextSyncRuntime(db, tokens, sessions, http, preferences).readRecoveryPreview(NextRecoveryKey(NEXT_TIMER, pause.commandId)) }
+        assertEquals(before, db.timeLogDao().getTimeLogByUuid(start.sessionUuid)); assertEquals(listOf(pause), db.timeLogDao().getPendingTimerCommands())
+    }
+
+    @Test fun recoveryIndexRejectsIndividuallyValidAcceptedResumeWhosePolicyDiffersFromActualPause() = runBlocking<Unit> {
+        val (http, server) = channel(::respond); initialize(http)
+        val rows = offlineChain(); assertEquals(4, timers(http).pushPending(access()))
+        producer().writeRounds(producer().captureRounds()) { db.habitDao().update(timerHabit.copy(name = "After completed timer")) }
+        val root = NextRecoveryKey(NEXT_OPERATION, db.syncOutboxDao().getAll().single().operationId)
+        val runtime = NextSyncRuntime(db, tokens, sessions, http, preferences)
+        val before = db.timeLogDao().getTimeLogByUuid(id(20)); val calls = server.requests.size
+        val preview = runtime.readRecoveryPreview(root)
+        assertTrue(preview.affected.none { it.key.kind == NEXT_TIMER })
+        val resume = rows.single { it.commandType == "resume" }
+        val receipt = requireNotNull(db.nextRequestDao().acceptance(NEXT_TIMER, resume.commandId))
+        val actual = json.decodeFromString<TimerCommandResult>(receipt.resultJson)
+        val damaged = actual.copy(session = requireNotNull(actual.session).copy(targetSeconds = 120))
+        val command = decodeNextTimerIntent(requireNotNull(db.nextRequestDao().origin(NEXT_TIMER, resume.commandId)).intentJson).command
+        // Hash integrity and a valid unary result cannot prove continuity with the real pause.
+        NextTimerResultMapper.validate(command, damaged, id(4))
+        val encoded = json.encodeToString(damaged)
+        db.openHelper.writableDatabase.execSQL("UPDATE next_acceptances SET resultJson=?,resultHash=? WHERE kind=? AND requestId=?",
+            arrayOf(encoded, nextRequestHash(encoded.toByteArray(Charsets.UTF_8)), NEXT_TIMER, resume.commandId))
+        storage.reopen()
+        rejected { NextSyncRuntime(db, tokens, sessions, http, preferences).readRecoveryPreview(root) }
+        assertEquals(before, db.timeLogDao().getTimeLogByUuid(id(20))); assertEquals(calls, server.requests.size)
+        assertTrue(db.timeLogDao().getPendingTimerCommands().isEmpty())
+        assertEquals(1, db.syncOutboxDao().getAll().size); assertEquals(0, count("next_recovery_audits"))
+    }
+
     @Test fun separatelyCreatedOfflineTimerKeepsFullLocalChainButWaitsForActualCreationAckBeforeCommandHttp() = runBlocking {
         val (http, server) = channel(::respond); initialize(http)
         val fresh = timerHabit.copy(id = 0, uuid = id(501), name = "New offline timer")

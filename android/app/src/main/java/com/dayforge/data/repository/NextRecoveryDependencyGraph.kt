@@ -19,6 +19,10 @@ internal enum class NextRecoveryDependencyReason {
     FIRST_COUNT_FACT, ENTITY_REFERENCE, REVERT_TARGET, ONE_TIME_CAS, RESTART_FRONTIER, IMPORT_PHASE
 }
 
+// Analysis-only resource budget. Pending work still uses the existing 10,000-request admission;
+// logical aliases and referenced accepted ancestors must not consume that business capacity.
+internal const val NEXT_RECOVERY_PROOF_NODE_LIMIT = 100_000
+
 /** The transaction reader, not this pure planner, must establish these classifications. */
 internal data class NextRecoveryNode(
     val key: NextRecoveryKey,
@@ -99,8 +103,9 @@ internal class NextRecoveryDependencyGraph(
     private val groupsByPredecessor = mutableMapOf<NextRecoveryKey, MutableSet<Int>>()
 
     init {
-        // Existing pending/ancestry capacity; not a new limit on all account history.
-        require(this.nodes.size in 1..10_000 && byKey.size == this.nodes.size)
+        require(this.nodes.size in 1..NEXT_RECOVERY_PROOF_NODE_LIMIT && byKey.size == this.nodes.size) {
+            "SYNC_RECOVERY_PROOF_LIMIT"
+        }
         require(this.dependencies.distinct().size == this.dependencies.size && this.groups.distinct().size == this.groups.size)
         for ((original, replacement) in this.aliases) {
             val old = requireNotNull(byKey[original]); val next = requireNotNull(byKey[replacement])

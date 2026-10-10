@@ -45,7 +45,8 @@ internal class NextChallengeRestartRepository @Inject constructor(
         store.frontier(access, original, timers)
     }
 
-    internal suspend fun inspectRejection(access: LocalSyncAccess, row: NextRejectionEntity): com.dayforge.data.model.NextSyncProblem {
+    internal suspend fun inspectRejection(access: LocalSyncAccess, row: NextRejectionEntity,
+        requirePermanent: Boolean = true): com.dayforge.data.model.NextSyncProblem {
         val original = store.original(access, row.requestId)
         val operation = store.requireMaterializedFrontier(access, original, timers)
         val body = store.transmission(access, original, operation)
@@ -56,9 +57,50 @@ internal class NextChallengeRestartRepository @Inject constructor(
         val result = decodeFrozenSyncRequest(row.resultJson.toByteArray(Charsets.UTF_8), NextSyncOperationResult.serializer())
         val metadata = NextChallengeStore(database).activeInTransaction(access).second
         validateRoundResultBinding(body, RoundSyncPushResponse(listOf(result), 1, metadata.checkpoints, metadata.births))
-        requirePermanentProblem(result.status, result.errorCode)
+        if (requirePermanent) requirePermanentProblem(result.status, result.errorCode)
+        else require(result.status in setOf("conflict", "rejected") && !result.errorCode.isNullOrBlank())
         return com.dayforge.data.model.NextSyncProblem(NEXT_OPERATION, row.requestId, "challenge_restart",
             original.value.head.activityUuid, requireNotNull(result.errorCode), result.conflictingFields)
+    }
+
+    /** A pending proposal may wait for frontiers; reading it never materializes or sends it. */
+    internal suspend fun recoveryProof(access: LocalSyncAccess, id: String): NextRecoverySpecialProof {
+        check(database.inTransaction())
+        sql.query("SELECT 1 FROM next_abandoned_requests WHERE kind=? AND requestId=? LIMIT 1", arrayOf(NEXT_OPERATION, id)).use {
+            require(!it.moveToFirst()) { "SYNC_RECOVERY_TERMINAL_REQUIRED" }
+        }
+        val original = store.original(access, id)
+        val materialized = NextRequestSql.rowHash(sql, "next_restart_materializations", "operationId=?", arrayOf(id))
+        val sent = requestHash("next_transmissions", id)
+        val receipt = requestHash("next_acceptances", id)
+        val failure = requestHash("next_rejections", id)
+        val state = when {
+            receipt != null -> {
+                require(failure == null)
+                store.requireMaterializedFrontier(access, original, timers)
+                store.accepted(access, original.reference)
+                NextRecoveryRequestState.ACCEPTED
+            }
+            failure != null -> {
+                val problem = inspectRejection(access, requireNotNull(database.nextSyncStateDao().rejection(NEXT_OPERATION, id)),
+                    requirePermanent = false)
+                if (problem.code in setOf("MISSING_PREDECESSOR", "OPERATION_IN_PROGRESS")) NextRecoveryRequestState.UNKNOWN_RESULT
+                else NextRecoveryRequestState.PERMANENT_REJECTION
+            }
+            sent != null -> {
+                val operation = store.requireMaterializedFrontier(access, original, timers)
+                store.transmission(access, original, operation)
+                NextRecoveryRequestState.UNKNOWN_RESULT
+            }
+            else -> {
+                // An already materialized request must still prove every real accepted frontier.
+                if (materialized != null) store.requireMaterializedFrontier(access, original, timers)
+                NextRecoveryRequestState.NEVER_SENT
+            }
+        }
+        return NextRecoverySpecialProof(original.row, state, nextRequestHash(listOf(original.hash,
+            materialized ?: "none", sent ?: "none", receipt ?: "none", failure ?: "none", state.name)
+            .joinToString(";").toByteArray(Charsets.UTF_8)), proposal = original.value)
     }
 
     private suspend fun authorize(access: LocalSyncAccess) {

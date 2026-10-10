@@ -493,6 +493,26 @@ class NextConfigReplacementRepositoryTest : NextObjectEditorFixture() {
         val goalDelete = steps.single { it.entityUuid == goal.uuid }
         val original = db.nextRequestDao().origin(NEXT_OPERATION, goalDelete.operationId)!!
         assertEquals(setOf(habit.uuid, timerHabit.uuid), roundOperationIntent(original.intentJson)!!.goalChildFrontier!!.map { it.childUuid }.toSet())
+        val first = db.syncOutboxDao().getAll().first()
+        val runtime = NextSyncRuntime(db, tokens, sessions, http, preferences)
+        val preview = runtime.readRecoveryPreview(NextRecoveryKey(NEXT_OPERATION, first.operationId))
+        assertFalse(preview.canConfirm)
+        assertTrue(preview.affected.all { it.category == NextRecoveryCategory.CONFIG_IMPORT &&
+            NextRecoveryProtection.IMPORT_GROUP in it.protections })
+        val phase = steps.single { it.operationId == first.operationId }.phase
+        assertTrue(preview.affected.map { it.key.requestId }.containsAll(steps.filter { it.phase > phase }.map { it.operationId }))
+        assertEquals(0, count("next_transmissions")); assertEquals("local_committed", state(id))
+        assertEquals(NextOperationAcceptance.COMMITTED, sender(http).sendAndAcceptOperation(access(), first.operationId))
+        val remaining = db.syncOutboxDao().getAll().first()
+        val partial = runtime.readRecoveryPreview(NextRecoveryKey(NEXT_OPERATION, remaining.operationId))
+        assertFalse(partial.canConfirm); assertTrue(partial.affected.none { it.key.requestId == first.operationId })
+        assertEquals("local_committed", state(id)); assertNull(network(id).accepted)
+        assertEquals(0, count("next_recovery_audits")); assertEquals(0, count("next_abandoned_requests"))
+        register(permissions = setOf("sync.read"), revision = 2)
+        val readOnly = runtime.readRecoveryPreview(NextRecoveryKey(NEXT_OPERATION, remaining.operationId))
+        assertEquals(partial.affected.map { it.key }, readOnly.affected.map { it.key })
+        assertFalse(readOnly.canConfirm); assertNotEquals(partial.graphHash, readOnly.graphHash)
+        register(revision = 3)
         blocked(http, goalDelete); drain(http)
         assertEquals("operations_accepted", state(id)); assertEquals(20L, merge.state(access(), true)!!.cursor)
         val plan = entry(id, source).plan

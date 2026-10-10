@@ -48,6 +48,8 @@ internal class NextSyncRuntime @Inject constructor(
 
     internal fun problemChanges() = problems.changes()
     internal suspend fun readProblems() = problems.read()
+    internal suspend fun readRecoveryPreview(root: NextRecoveryKey) =
+        NextRecoveryDependencyReader(database, tokens, sessions, core, timers, once, restart).preview(root)
 
     /** Captures authority once. Failure, unsupported v5, pending/conflicting work are never success. */
     suspend fun sync(progress: (SyncProgress) -> Unit = {}, afterSync: (suspend () -> Unit)? = null) = syncProfile(false, progress, afterSync)

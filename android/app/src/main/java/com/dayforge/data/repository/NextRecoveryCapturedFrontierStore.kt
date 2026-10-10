@@ -26,13 +26,22 @@ internal class NextRecoveryCapturedFrontiers(val key: NextRecoveryKey, val state
     val protections: Set<NextRecoveryProtection> = Collections.unmodifiableSet(protections.toSet())
 }
 
+/** Complete ancestry was audited in this SAME account/Room snapshot; compact suffix proof only. */
+internal data class NextRecoveryStructuralReference(val first: NextRecoveryStructuralLink, val evidenceHash: String) {
+    init { require(evidenceHash.matches(Regex("[0-9a-f]{64}"))) }
+}
+
 /**
  * SELECT-only original captured frontiers. Caller owns account + Room snapshot. This does not
  * claim a complete graph: current-head barriers, later structure vs birth watermarks, timer
  * sequences, entity/revert references, once CAS and import phases still require the global join.
  * Referenced structural chains are fully audited; a captured restart is NOT its acceptance.
  */
-internal class NextRecoveryCapturedFrontierStore(private val database: HabitDatabase) {
+internal class NextRecoveryCapturedFrontierStore(private val database: HabitDatabase,
+    private val structuralReference: suspend (String, LocalSyncAccess) -> NextRecoveryStructuralReference = { id, access ->
+        val chain = NextStructuralCausalStore(database).recoveryLineage(id, access)
+        NextRecoveryStructuralReference(chain.links.first(), chain.evidenceHash)
+    }) {
     private val sql get() = database.openHelper.writableDatabase
 
     suspend fun pending(access: LocalSyncAccess, key: NextRecoveryKey): NextRecoveryCapturedFrontiers {
@@ -54,8 +63,8 @@ internal class NextRecoveryCapturedFrontierStore(private val database: HabitData
                 nextRequestHash((pending.evidenceHash + ";" + proof).toByteArray(Charsets.UTF_8)))
         }
         suspend fun plan(id: String, activity: String, watermark: Long, reason: NextRecoveryDependencyReason) {
-            val chain = NextStructuralCausalStore(database).recoveryLineage(id, access)
-            val first = chain.links.first()
+            val chain = structuralReference(id, access)
+            val first = chain.first
             require(first.entityType == "plan_node" && first.entityUuid == activity && first.logicalQueueId <= watermark)
             val original = original(access, NextRecoveryKey(NEXT_OPERATION, first.logicalKey.requestId))
             require(requireNotNull(roundOperationIntent(original.intentJson)).operation.action == "upsert")
@@ -65,9 +74,9 @@ internal class NextRecoveryCapturedFrontierStore(private val database: HabitData
             val round = requireNotNull(roundOperationIntent(source.intentJson))
             val operation = round.operation
             if (operation.entityType in setOf("plan_node", "metric", "activity_metric_link")) {
-                val lineage = NextStructuralCausalStore(database).recoveryLineage(key.requestId, access)
-                require(lineage.actualRequestId == key.requestId)
-                order = lineage.links.first().logicalQueueId
+                val lineage = structuralReference(key.requestId, access)
+                require(lineage.first.actualKey == key)
+                order = lineage.first.logicalQueueId
                 evidence += lineage.evidenceHash
             } else {
                 require(operation.entityType in setOf("activity_event", "metric_observation"))
@@ -82,9 +91,8 @@ internal class NextRecoveryCapturedFrontierStore(private val database: HabitData
                 for (child in frontier) {
                     currentCoroutineContext().ensureActive()
                     store.validateCaptured(child, operation, access)
-                    val lineage = NextStructuralCausalStore(database).recoveryLineage(child.operationId, access)
-                    require(lineage.links.first().entityUuid == child.childUuid &&
-                        lineage.links.first().logicalQueueId < order)
+                    val lineage = structuralReference(child.operationId, access)
+                    require(lineage.first.entityUuid == child.childUuid && lineage.first.logicalQueueId < order)
                     edge(child.operationId, NEXT_OPERATION, NextRecoveryDependencyReason.GOAL_CHILD_FRONTIER,
                         child.originHash + ";" + child.dependencyHash + ";" + lineage.evidenceHash)
                 }

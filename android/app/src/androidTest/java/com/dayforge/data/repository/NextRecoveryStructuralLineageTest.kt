@@ -81,6 +81,33 @@ class NextRecoveryStructuralLineageTest : NextObjectEditorFixture() {
         storage.reopen(); editor = NextObjectEditor(db, tokens, sessions, icons); creator = NextObjectCreator(db, tokens, sessions, icons)
     }
 
+    @Test fun realRejectedStructurePreviewIncludesOnlyExplicitNeverSentSuccessorsAndIsReadOnly() = runBlocking<Unit> {
+        val (http, server) = initialize(); val a = edit("A"); val b = edit("B"); val c = edit("C")
+        val root = refuse(http, a.operationId)
+        val rows = db.syncOutboxDao().getAll(); val calls = server.requests.size
+        val runtime = NextSyncRuntime(db, tokens, sessions, http, preferences)
+        val result = runtime.readRecoveryPreview(NextRecoveryKey(NEXT_OPERATION, root))
+        assertTrue(result.canConfirm) // Pure disposition eligibility; no confirmation API is enabled.
+        assertEquals(setOf(a.operationId, b.operationId, c.operationId), result.affected.map { it.key.requestId }.toSet())
+        assertEquals(1, result.affected.count { it.state == NextRecoveryRequestState.PERMANENT_REJECTION })
+        assertEquals(2, result.affected.count { it.state == NextRecoveryRequestState.NEVER_SENT })
+        reopen(); assertEquals(result.graphHash, NextSyncRuntime(db, tokens, sessions, http, preferences)
+            .readRecoveryPreview(NextRecoveryKey(NEXT_OPERATION, root)).graphHash)
+        assertEquals(rows, db.syncOutboxDao().getAll()); assertEquals(calls, server.requests.size)
+        assertEquals(0, count("next_recovery_audits")); assertEquals(0, count("next_abandoned_requests"))
+    }
+    @Test fun rejectedActualAliasPreviewExcludesAcceptedAncestorAndDoesNotRetireLogicalOriginalAgain() = runBlocking<Unit> {
+        val (http, server) = initialize(); val a = edit("A"); val b = edit("B"); val c = edit("C")
+        assertEquals(NextOperationAcceptance.COMMITTED, sender(http).sendAndAcceptOperation(access(), a.operationId))
+        val root = refuse(http, b.operationId); assertNotEquals(b.operationId, root)
+        val rows = db.syncOutboxDao().getAll(); val calls = server.requests.size
+        val result = NextSyncRuntime(db, tokens, sessions, http, preferences).readRecoveryPreview(NextRecoveryKey(NEXT_OPERATION, root))
+        assertTrue(result.canConfirm); assertEquals(setOf(root, c.operationId), result.affected.map { it.key.requestId }.toSet())
+        assertTrue(result.affected.none { it.key.requestId in setOf(a.operationId, b.operationId) })
+        assertEquals(rows, db.syncOutboxDao().getAll()); assertEquals(calls, server.requests.size); assertEquals(1, count("next_acceptances"))
+        rejected { NextSyncRuntime(db, tokens, sessions, http, preferences).readRecoveryPreview(NextRecoveryKey(NEXT_OPERATION, b.operationId)) }
+    }
+
     @Test fun offlineOriginalChainRetainsExactEdgesAndNeverSentClassificationAcrossColdReopen() = runBlocking<Unit> {
         val (_, server) = initialize(); val a = edit("A"); val b = edit("B"); val c = edit("C")
         val before = lineage(c.operationId)

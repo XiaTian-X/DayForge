@@ -10,6 +10,7 @@ import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.model.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import java.util.concurrent.CountDownLatch
@@ -79,6 +80,29 @@ class NextRoundOneTimeStoreTest : NextCoreRequestFixture() {
     }
     private fun committed() = NextOneTimeOutcome.Accepted(NextOperationAcceptance.COMMITTED)
     private fun replayed() = NextOneTimeOutcome.Accepted(NextOperationAcceptance.REPLAYED)
+    @Test fun recoveryIndexKeepsIndependentCompleteUndoCompleteCasAndEveryRealFactProtected() = runBlocking<Unit> {
+        val (http, server) = channel { response(it) }; initialize(http)
+        val rows = List(3) { append(700 + it) }; val prefs = dataStore.data.first()
+        val result = NextSyncRuntime(db, tokens, sessions, http, preferences)
+            .readRecoveryPreview(NextRecoveryKey(NEXT_OPERATION, rows.first().operationId))
+        assertEquals(rows.map { it.operationId }.toSet(), result.affected.map { it.key.requestId }.toSet())
+        assertFalse(result.canConfirm); assertTrue(result.affected.all { it.category == NextRecoveryCategory.ONE_TIME &&
+            it.protections == setOf(NextRecoveryProtection.REAL_FACT, NextRecoveryProtection.ONE_TIME_STATE) })
+        storage.reopen(); assertEquals(result.graphHash, NextSyncRuntime(db, tokens, sessions, http, preferences)
+            .readRecoveryPreview(NextRecoveryKey(NEXT_OPERATION, rows.first().operationId)).graphHash)
+        assertEquals(rows, db.syncOutboxDao().getAll()); assertEquals(prefs, dataStore.data.first())
+        assertEquals(0, server.requests.size); assertEquals(0, count("next_transmissions")); assertEquals(3, count("completions"))
+    }
+    @Test fun recoveryIndexProvesAcceptedOnceHeadWithoutTreatingItsMissingQueueAsAcceptanceOrDisposal() = runBlocking<Unit> {
+        val (http, server) = channel { response(it) }; initialize(http); val first = append(710); val second = append(711); val third = append(712)
+        assertEquals(committed(), store(http).sendAndAccept(access(), first.operationId))
+        val calls = server.requests.size; val rows = db.syncOutboxDao().getAll()
+        val result = NextSyncRuntime(db, tokens, sessions, http, preferences).readRecoveryPreview(NextRecoveryKey(NEXT_OPERATION, second.operationId))
+        assertEquals(setOf(second.operationId, third.operationId), result.affected.map { it.key.requestId }.toSet()); assertFalse(result.canConfirm)
+        db.openHelper.writableDatabase.execSQL("UPDATE next_acceptances SET resultHash='bad' WHERE requestId=?", arrayOf(first.operationId))
+        rejected { NextSyncRuntime(db, tokens, sessions, http, preferences).readRecoveryPreview(NextRecoveryKey(NEXT_OPERATION, second.operationId)) }
+        assertEquals(rows, db.syncOutboxDao().getAll()); assertEquals(calls, server.requests.size); assertEquals(3, count("completions"))
+    }
     private suspend fun pending(row: SyncOutboxEntity) {
         assertEquals(row, db.syncOutboxDao().getById(row.id)); assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, row.operationId))
         assertEquals(20L, db.nextSyncStateDao().rows().single().cursor)

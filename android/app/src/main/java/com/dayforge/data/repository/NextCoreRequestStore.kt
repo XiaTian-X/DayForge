@@ -86,6 +86,12 @@ internal class NextCoreRequestStore(
 
     /** Exact ordinary count ACK, not queue absence or a pulled shadow. No account lock is reacquired. */
     internal suspend fun requireAcceptedCountInTransaction(access: LocalSyncAccess, id: String) {
+        val operation = recoveryAcceptedFactProof(access, id).first
+        require(operation.entityType == "activity_event" && "count_policy" in operation.payload)
+    }
+
+    /** Shared immutable-fact receipt proof for count ordering and read-only recovery references. */
+    internal suspend fun recoveryAcceptedFactProof(access: LocalSyncAccess, id: String): Pair<SyncV2Operation, String> {
         check(database.inTransaction())
         val sql = database.openHelper.writableDatabase
         val dao = database.nextRequestDao()
@@ -106,11 +112,21 @@ internal class NextCoreRequestStore(
             receipt.transmissionHash == transmissionHash && receipt.resultHash == nextRequestHash(receipt.resultJson.toByteArray(Charsets.UTF_8)))
         val result = decodeFrozenSyncRequest(receipt.resultJson.toByteArray(Charsets.UTF_8), NextSyncOperationResult.serializer())
         val operation = decodeNextOperationIntent(original.intentJson)
-        require(result.status == "applied" && operation.entityType == "activity_event" && "count_policy" in operation.payload)
+        require(result.status == "applied" && operation.entityType in setOf("activity_event", "metric_observation") &&
+            operation.payload["one_time"].let { it == null || it == kotlinx.serialization.json.JsonNull })
         NextOrdinaryResultMapper.validate(operation, result, requireNotNull(access.deviceId))
+        roundOperationIntent(original.intentJson)?.let { round ->
+            require(round.capturedDeviceId == access.deviceId && original.serverInstanceId == access.session.serverInstanceId &&
+                original.syncEpoch == access.session.syncEpoch)
+            val metadata = NextChallengeStore(database).activeInTransaction(access).second
+            validateRoundResultBinding(decodeFrozenSyncRequest(sent.wireBytes, RoundSyncPushRequest.serializer()),
+                RoundSyncPushResponse(listOf(result), 1, metadata.checkpoints, metadata.births))
+        }
         require(NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(original.queueId)) == null &&
             database.syncOutboxDao().getByOperationId(id) == null)
         check(NextRequestSql.rowHash(sql, "next_acceptances", "kind=? AND requestId=?", args) == receiptHash)
+        return operation to nextRequestHash(listOf(originHash, transmissionHash, receiptHash)
+            .joinToString(";").toByteArray(Charsets.UTF_8))
     }
 
     /** Bound explicit failure persisted separately; an unknown transport failure is not a rejection. */
