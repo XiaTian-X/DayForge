@@ -257,19 +257,22 @@ class TokenManager @Inject constructor(
     internal suspend fun localIconAccess(): LocalIconAccess? = iconAccess(dataStore.data.first())
 
     internal suspend fun localCoreWriteAccess(): LocalCoreWriteAccess? = withContext(Dispatchers.IO) {
-        val preferences = dataStore.data.first()
-        val authentication = snapshot(preferences)?.session ?: return@withContext null
+        coreWriteAccess(dataStore.data.first())
+    }
+
+    private fun coreWriteAccess(preferences: Preferences): LocalCoreWriteAccess? {
+        val authentication = snapshot(preferences)?.session ?: return null
         if (preferences[SYNC_ACCOUNT_ID_KEY] != authentication.userId ||
             !com.dayforge.domain.model.isContractUuid(authentication.userId) ||
-            !com.dayforge.domain.model.isContractUuid(authentication.generation)) return@withContext null
+            !com.dayforge.domain.model.isContractUuid(authentication.generation)) return null
         val server = preferences[SERVER_INSTANCE_ID_KEY]
         val epoch = preferences[SYNC_EPOCH_KEY]
         if ((server == null) != (epoch == null) ||
             (server != null && (!com.dayforge.domain.model.isContractUuid(server) ||
-                !com.dayforge.domain.model.isContractUuid(requireNotNull(epoch))))) return@withContext null
+                !com.dayforge.domain.model.isContractUuid(requireNotNull(epoch))))) return null
         val device = preferences[SYNC_DEVICE_ID_KEY]
-        if (device != null && !com.dayforge.domain.model.isContractUuid(device)) return@withContext null
-        LocalCoreWriteAccess(LocalDataSession(authentication, server, epoch),
+        if (device != null && !com.dayforge.domain.model.isContractUuid(device)) return null
+        return LocalCoreWriteAccess(LocalDataSession(authentication, server, epoch),
             if (preferences[DEVICE_CAPABILITIES_KNOWN_KEY] == true)
                 (preferences[DEVICE_CAPABILITIES_KEY] ?: emptySet()).toSet() else null, device)
     }
@@ -433,11 +436,38 @@ class TokenManager @Inject constructor(
     }
 
     suspend fun getOrCreateInstallationId(): String {
-        val existing = dataStore.data.first()[INSTALLATION_ID_KEY]
-        if (existing != null) return existing
-        val created = UUID.randomUUID().toString()
-        editPreferences { it[INSTALLATION_ID_KEY] = created }
-        return created
+        // Concurrent callers must return the same committed installation, not two UUIDs.
+        val saved = editPreferences { preferences ->
+            if (preferences[INSTALLATION_ID_KEY] == null) preferences[INSTALLATION_ID_KEY] = UUID.randomUUID().toString()
+        }
+        return requireNotNull(saved[INSTALLATION_ID_KEY])
+    }
+
+    /** One conditional persistence boundary; never publish a late registration into new authority. */
+    internal suspend fun saveNextRegistration(
+        expectedCore: LocalCoreWriteAccess, expectedSync: LocalSyncAccess?, installation: String,
+        server: String, epoch: String, device: String, capabilities: Set<String>,
+        primary: Boolean, revision: Int
+    ): LocalSyncAccess {
+        require(listOf(installation, server, epoch, device).all { com.dayforge.domain.model.isContractUuid(it) })
+        require(revision > 0 && "sync.read" in capabilities && capabilities.all(String::isNotBlank))
+        require(expectedCore.capturedDeviceId == null || expectedCore.capturedDeviceId == device) { "SYNC_DEVICE_CHANGED" }
+        val session = expectedCore.session.copy(serverInstanceId = server, syncEpoch = epoch)
+        require(expectedCore.session.serverInstanceId == null || expectedCore.session == session) { "SYNC_REPLICA_CHANGED" }
+        val result = LocalSyncAccess(session, device, revision, capabilities.toSet())
+        editPreferences { preferences ->
+            check(coreWriteAccess(preferences) == expectedCore && syncAccess(preferences) == expectedSync &&
+                preferences[INSTALLATION_ID_KEY] == installation) { "SYNC_REGISTRATION_AUTHORITY_CHANGED" }
+            preferences[SERVER_INSTANCE_ID_KEY] = server
+            preferences[SYNC_EPOCH_KEY] = epoch
+            preferences[SYNC_DEVICE_ID_KEY] = device
+            preferences[DEVICE_CAPABILITIES_KEY] = result.capabilities
+            preferences[DEVICE_CAPABILITIES_KNOWN_KEY] = true
+            preferences[DEVICE_PRIMARY_EDITOR_KEY] = primary
+            preferences[DEVICE_CAPABILITY_REVISION_KEY] = revision.toString()
+            preferences[DEVICE_CAPABILITIES_DEVICE_KEY] = device
+        }
+        return result
     }
 
     /** Reset device/cursor state when the authenticated account changes. */

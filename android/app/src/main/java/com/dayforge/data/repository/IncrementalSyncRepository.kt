@@ -66,6 +66,18 @@ class IncrementalSyncRepository(
     suspend fun sync(progressCallback: (SyncProgress) -> Unit = {}) =
         accountSessionCoordinator.exclusive { syncInternal(progressCallback) }
 
+    /** Discovery outside the account lock must not retarget this attempt after another login. */
+    internal suspend fun syncForAuthentication(
+        expected: com.dayforge.data.local.AuthenticationSession?,
+        progressCallback: (SyncProgress) -> Unit,
+        afterSync: (suspend () -> Unit)?
+    ) = accountSessionCoordinator.exclusive {
+        check(tokenManager.authenticationSnapshot()?.session == expected) { "SYNC_ACCOUNT_CHANGED" }
+        syncInternal(progressCallback)
+        afterSync?.invoke()
+        Unit
+    }
+
     suspend fun <T> syncAndThen(
         progressCallback: (SyncProgress) -> Unit = {},
         afterSync: suspend () -> T
@@ -272,7 +284,7 @@ class IncrementalSyncRepository(
         resolvedIdentity: com.dayforge.data.api.dto.ServerIdentityResponse?
     ): Boolean {
         val identity = resolvedIdentity ?: api.identity()
-        if (identity.protocolVersion < MIN_PROTOCOL_VERSION ||
+        if (identity.protocolVersion != MIN_PROTOCOL_VERSION ||
             !identity.capabilities.containsAll(REQUIRED_CAPABILITIES)
         ) {
             throw SyncProtocolException(

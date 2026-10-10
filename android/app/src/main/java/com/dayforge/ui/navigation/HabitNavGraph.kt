@@ -331,12 +331,13 @@ fun HabitNavGraph(
             )
         ) { backStackEntry ->
             val parentUuid = backStackEntry.arguments?.getString("parentUuid")
-            CreateHabitScreen(
-                parentUuid = parentUuid,
-                onNavigateBack = {
-                    navController.popBackStack()
-                }
-            )
+            ObjectCreationEntry(onBack = { navController.popBackStack() }) { authority ->
+                CreateHabitScreen(
+                    creationAuthority = authority,
+                    parentUuid = parentUuid,
+                    onNavigateBack = { navController.popBackStack() }
+                )
+            }
         }
 
         composable(
@@ -350,43 +351,51 @@ fun HabitNavGraph(
             )
         ) { backStackEntry ->
             val parentUuid = backStackEntry.arguments?.getString("parentUuid")
-            CreateTempTaskScreen(
-                parentUuid = parentUuid,
-                onNavigateBack = {
-                    navController.popBackStack()
-                }
-            )
+            ObjectCreationEntry(onBack = { navController.popBackStack() }) { authority ->
+                CreateTempTaskScreen(
+                    creationAuthority = authority,
+                    parentUuid = parentUuid,
+                    onNavigateBack = { navController.popBackStack() }
+                )
+            }
         }
 
         composable(Screen.CreateGoal.route) {
-            CreateGoalScreen(
-                onNavigateBack = {
-                    navController.popBackStack()
-                },
-                onCreateChildHabit = { _ ->
-                    navController.navigate(Screen.CreateGoalChild.route)
-                }
-            )
+            ObjectCreationEntry(onBack = { navController.popBackStack() }) { authority ->
+                CreateGoalScreen(
+                    creationAuthority = authority,
+                    onNavigateBack = { navController.popBackStack() },
+                    onCreateChildHabit = { _ -> navController.navigate(Screen.CreateGoalChild.route) }
+                )
+            }
         }
 
         composable(Screen.CreateGoalChild.route) { childEntry ->
             val goalEntry = remember(childEntry) { navController.getBackStackEntry(Screen.CreateGoal.route) }
             val goalViewModel: CreateGoalViewModel = hiltViewModel(goalEntry)
             val goalState by goalViewModel.uiState.collectAsStateWithLifecycle()
-            CreateHabitScreen(
-                parentUuid = goalState.parentUuid,
-                creationAuthority = goalState.creationAuthority,
-                onSaveDraft = goalViewModel::addChildHabit,
-                onNavigateBack = { navController.popBackStack() }
-            )
+            // After process death the parent form can be below this route and not composed.
+            // Recover its entry admission before exposing a child, never a new independent ticket.
+            ObjectCreationEntry(onBack = { navController.popBackStack() }, viewModel = hiltViewModel(goalEntry)) { authority ->
+                LaunchedEffect(authority) { authority?.let(goalViewModel::beginCreation) }
+                if (authority == null || goalState.creationAuthority === authority) {
+                    CreateHabitScreen(
+                        parentUuid = goalState.parentUuid,
+                        creationAuthority = goalState.creationAuthority,
+                        onSaveDraft = goalViewModel::addChildHabit,
+                        onNavigateBack = { navController.popBackStack() }
+                    )
+                } else ObjectCreationPending(goalState.errorMessage, onBack = { navController.popBackStack() })
+            }
         }
 
         composable(Screen.CreateMetric.route) {
-            CreateMetricScreen(
-                onNavigateBack = {
-                    navController.popBackStack()
-                }
-            )
+            ObjectCreationEntry(onBack = { navController.popBackStack() }) { authority ->
+                CreateMetricScreen(
+                    creationAuthority = authority,
+                    onNavigateBack = { navController.popBackStack() }
+                )
+            }
         }
 
         composable(

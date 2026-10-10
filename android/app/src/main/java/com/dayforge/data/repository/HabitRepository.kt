@@ -189,7 +189,10 @@ class HabitRepository @Inject constructor(
         }
         val id = if (creationAuthority != null) requireNotNull(nextObjectCreator).habits(listOf(habit), creationAuthority) {
             insertHabit(habit, selectedMetricIds)
-        } else database.withTransaction { insertHabit(habit, selectedMetricIds) }
+        } else database.withTransaction {
+            if (nextObjectCreator != null) NextProtocolAdmission.requireLegacyCreation(database)
+            insertHabit(habit, selectedMetricIds)
+        }
         // Side effects only after the complete business/original intent transaction commits.
         context?.let { notifyWidgetUpdate(it) }
         if (habit.bestTime != null && habit.habitType != HabitType.GOAL) {
@@ -270,7 +273,10 @@ class HabitRepository @Inject constructor(
             return listOf(insert(goal, null)) + children.map { insert(it, goal.id) }
         }
         val saved = if (creationAuthority != null) requireNotNull(nextObjectCreator).habits(rows, creationAuthority, ::commit)
-            else database.withTransaction { commit() }
+            else database.withTransaction {
+                if (nextObjectCreator != null) NextProtocolAdmission.requireLegacyCreation(database)
+                commit()
+            }
         // No externally visible side effects until the outer transaction commits.
         context?.let { appContext ->
             notifyWidgetUpdate(appContext)

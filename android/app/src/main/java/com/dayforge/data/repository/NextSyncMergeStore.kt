@@ -59,14 +59,14 @@ internal class NextSyncMergeStore(
     }
 
     suspend fun bootstrap(access: LocalSyncAccess, expected: NextSyncStateEntity?, response: RoundSyncBootstrapResponse,
-        cacheOnly: Boolean = false): NextSyncStateEntity {
+        cacheOnly: Boolean = false, emptyBaseline: Boolean = false): NextSyncStateEntity {
         val frozen = json.decodeFromString<RoundSyncBootstrapResponse>(json.encodeToString(response))
         return bootstrapPrepared(access, expected, NextSyncBootstrapResponse(frozen.changes.filter { it.entityType != "challenge_round" },
-            frozen.nextCursor, frozen.serverTime, frozen.oneTimeCheckpoints), syncPayloadHash(json.encodeToString(frozen)), frozen.metadata(), cacheOnly)
+            frozen.nextCursor, frozen.serverTime, frozen.oneTimeCheckpoints), syncPayloadHash(json.encodeToString(frozen)), frozen.metadata(), cacheOnly, emptyBaseline)
     }
 
     private suspend fun bootstrapPrepared(access: LocalSyncAccess, expected: NextSyncStateEntity?, frozen: NextSyncBootstrapResponse,
-        hash: String, metadata: ChallengeMetadata?, cacheOnly: Boolean = false): NextSyncStateEntity {
+        hash: String, metadata: ChallengeMetadata?, cacheOnly: Boolean = false, emptyBaseline: Boolean = false): NextSyncStateEntity {
         require(frozen.nextCursor >= 0)
         Instant.parse(frozen.serverTime)
         frozen.changes.forEach { change ->
@@ -82,6 +82,10 @@ internal class NextSyncMergeStore(
             database.withTransaction {
                 val current = readState(access)
                 val rounds = NextChallengeStore(database)
+                if (emptyBaseline) {
+                    check(expected == null && current == null) { "SYNC_CURSOR_CHANGED" }
+                    NextProtocolAdmission.requireRoundsOrEmpty(database, access)
+                }
                 if (cacheOnly) rounds.requireQuiescentInTransaction()
                 if (metadata == null) rounds.requirePlainInTransaction() else rounds.readInTransaction(access, current)
                 if (current == next) return@withTransaction current

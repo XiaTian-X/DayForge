@@ -19,17 +19,17 @@ import retrofit2.HttpException
 import retrofit2.Response
 
 /** Actual CoroutineWorker adapter, physical authenticated DataStore/Room and real HTTP.
- * The legacy dependency is explicitly bridged to the staged runtime in socket cases;
- * this does not enable next-protocol dispatch in the production worker.
+ * The shared entry is bridged to the runtime in adapter-only socket cases;
+ * actual production routing is covered separately by BusinessSyncRepositoryTest.
  */
 @RunWith(AndroidJUnit4::class)
 class AutoSyncWorkerTest : NextCoreRequestFixture() {
     private fun worker(synchronize: suspend () -> Unit): AutoSyncWorker {
-        val repository = mockk<IncrementalSyncRepository>()
-        coEvery { repository.sync(any()) } coAnswers { synchronize() }
+        val repository = mockk<BusinessSyncRepository>()
+        coEvery { repository.sync(any(), any()) } coAnswers { synchronize() }
         val dependencies = mockk<AutoSyncWorker.AutoSyncWorkerEntryPoint>()
         every { dependencies.tokenManager() } returns tokens
-        every { dependencies.syncRepository() } returns repository
+        every { dependencies.businessSyncRepository() } returns repository
         return AutoSyncWorker(app, mockk<WorkerParameters>(relaxed = true)) { dependencies }
     }
 

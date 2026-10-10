@@ -63,6 +63,7 @@ abstract class SyncPersistenceFixture {
     protected val paths = CopyOnWriteArrayList<String>()
     protected var server = "server-a"
     protected var epoch = "epoch-a"
+    protected var identityProtocol = 4
     protected var onPush: (JsonObject) -> String = { acknowledge(it) }
     protected var onPull: (Long) -> String = { page(emptyList(), it) }
     protected var onRefresh: (JsonObject) -> String = { throw IOException("Unexpected refresh") }
@@ -84,7 +85,7 @@ abstract class SyncPersistenceFixture {
             }
             val response = when (request.method to path) {
                 "POST" to "/api/auth/refresh" -> onRefresh(requireNotNull(body))
-                "GET" to "/api/v2/system/identity" -> """{"server_instance_id":"$server","sync_epoch":"$epoch","protocol_version":4,"capabilities":["sync_v2","device_capabilities"],"server_time":"2026-09-20T00:00:00Z"}"""
+                "GET" to "/api/v2/system/identity" -> """{"server_instance_id":"$server","sync_epoch":"$epoch","protocol_version":$identityProtocol,"capabilities":["sync_v2","device_capabilities"],"server_time":"2026-09-20T00:00:00Z"}"""
                 "POST" to "/api/v2/devices/register" -> """{"device_id":"device-a","installation_id":${body!!.getValue("installation_id")},"platform":"android","capabilities":["structure.write","facts.write"],"is_primary_editor":true}"""
                 "POST" to "/api/v2/sync/push" -> {
                     val requestBody = requireNotNull(body)

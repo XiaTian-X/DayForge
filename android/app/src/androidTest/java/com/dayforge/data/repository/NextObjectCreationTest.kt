@@ -1,5 +1,6 @@
 package com.dayforge.data.repository
 
+import androidx.room.withTransaction
 import androidx.lifecycle.SavedStateHandle
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.dayforge.data.model.*
@@ -16,6 +17,72 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class NextObjectCreationTest : NextObjectEditorFixture() {
+    private suspend fun activateNavigation() {
+        register()
+        val state = com.dayforge.data.local.entity.NextSyncStateEntity(id(1), id(2), id(3), id(4), 1, 0,
+            "a".repeat(64), "b".repeat(64), challengeContract = 1)
+        db.withTransaction {
+            NextChallengeStore(db).mergeInTransaction(access(), null, state,
+                com.dayforge.data.api.dto.ChallengeMetadata(1, emptyList(), emptyList()))
+            db.nextSyncStateDao().insert(state)
+        }
+    }
+
+    @Test fun formalNavigationRequiresActualChallengeCheckpointAndProducesAllRecurringModes() = runBlocking<Unit> {
+        db.clearAllData()
+        assertNull(creator.captureForNavigation()) // No unrequested registration/guessing in navigation.
+        activateNavigation()
+        val authority = requireNotNull(creator.captureForNavigation())
+        assertNotNull(authority.rounds)
+        for ((n, mode) in listOf(HabitType.CHECK_IN to false, HabitType.COUNTING to false,
+            HabitType.COUNTING to true, HabitType.TIMER to false, HabitType.TIMER to true).withIndex()) {
+            save(draft(150 + n, mode.first).copy(isCountdown = mode.second), authority)
+        }
+        assertEquals(5, count("habits")); assertEquals(5, count("next_request_origins"))
+        assertTrue(db.syncOutboxDao().getAll().all { roundOperationIntent(originalIntent(it).intentJson)?.initialCreation == true })
+        storage.reopen()
+        creator = NextObjectCreator(db, tokens, sessions, icons)
+        assertNotNull(creator.captureForNavigation()!!.rounds)
+    }
+
+    @Test fun formalNavigationRejectsPartialAndPlainV5InsteadOfRenderingLegacyCreateForm() = runBlocking<Unit> {
+        rejected { creator.captureForNavigation() } // Initialized shape alone is not activation proof.
+        db.clearAllData(); register()
+        db.nextSyncStateDao().insert(com.dayforge.data.local.entity.NextSyncStateEntity(id(1), id(2), id(3), id(4),
+            1, 0, "a".repeat(64), "b".repeat(64)))
+        rejected { creator.captureForNavigation() }
+        assertEquals(0, count("habits")); assertEquals(0, count("next_request_origins"))
+        assertEquals(0, db.nextSyncStateDao().rows().single().challengeContract)
+    }
+
+    @Test fun legacyHabitGoalAndMetricFormsOpenedBeforeBootstrapCannotInsertAfterActivation() = runBlocking<Unit> {
+        db.clearAllData(); assertNull(creator.captureForNavigation()); activateNavigation()
+        rejected { creatingHabits().createHabit("Late habit", "", HabitType.CHECK_IN, 0, "#123456", HabitSchedule.Daily) }
+        rejected { creatingHabits().createGoal(HabitDraft(name = "Late goal", habitType = HabitType.GOAL), emptyList()) }
+        rejected { creatingMetrics().createMetric(metric.copy(id = 0, appearance = null)) }
+        assertEquals(0, count("habits")); assertEquals(0, count("metrics")); assertEquals(0, count("sync_outbox"))
+        assertEquals(1, db.nextSyncStateDao().rows().single().challengeContract)
+    }
+
+    @Test fun restoredChallengeGoalRebindsParentTicketBeforeAcceptingChildDraftWithoutLegacyConversion() = runBlocking<Unit> {
+        db.clearAllData(); activateNavigation()
+        val ticket = creator.captureForNavigation()!!
+        val savedState = SavedStateHandle()
+        val goal = withContext(Dispatchers.Main) { own(CreateGoalViewModel(app, creatingHabits(), savedState)) }
+        withContext(Dispatchers.Main) {
+            goal.beginCreation(ticket); goal.updateName("Restored goal"); goal.addChildHabit(draft(169))
+        }
+        val snapshot: String = requireNotNull(savedState[CreateGoalViewModel.DRAFT_KEY])
+        val restored = withContext(Dispatchers.Main) { own(CreateGoalViewModel(app, creatingHabits(),
+            SavedStateHandle(mapOf(CreateGoalViewModel.DRAFT_KEY to snapshot)))) }
+        assertNull(restored.uiState.value.creationAuthority)
+        val rebound = creator.captureForNavigation()!!
+        withContext(Dispatchers.Main) { restored.beginCreation(rebound) }
+        assertSame(rebound, restored.uiState.value.creationAuthority)
+        assertEquals(goal.uiState.value.children, restored.uiState.value.children)
+        assertNull(restored.uiState.value.errorMessage)
+        assertEquals(0, count("habits")); assertEquals(0, count("next_request_origins"))
+    }
     private fun appearance(role: String) = ObjectAppearance(IconReference.Role(role), "#123456", "object")
     private fun draft(n: Int, type: HabitType = HabitType.CHECK_IN) = HabitDraft(id = id(n),
         name = "New $n", habitType = type, appearance = appearance(if (type == HabitType.GOAL) "goal.custom" else "habit.custom"),

@@ -5,7 +5,7 @@ import com.dayforge.data.local.entity.SyncOutboxEntity
 import com.dayforge.data.local.entity.SyncConflictEntity
 import com.dayforge.data.local.entity.TimerCommandEntity
 import com.dayforge.data.repository.IncrementalSyncRepository
-import java.io.IOException
+import com.dayforge.data.repository.BusinessSyncRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,11 +15,12 @@ import javax.inject.Singleton
 
 /**
  * Manages the synchronization flow between local database and server.
- * Exposes V2 incremental synchronization and durable-queue controls to the UI.
+ * Exposes the shared version dispatcher and existing v4 durable-queue controls to the UI.
  */
 @Singleton
 class SyncManager @Inject constructor(
-    private val syncRepository: IncrementalSyncRepository
+    private val syncRepository: IncrementalSyncRepository,
+    private val businessSyncRepository: BusinessSyncRepository
 ) {
     private val _syncProgress = MutableStateFlow<SyncProgress>(SyncProgress.Idle)
     val syncProgress: Flow<SyncProgress> = _syncProgress.asStateFlow()
@@ -32,10 +33,10 @@ class SyncManager @Inject constructor(
      */
     suspend fun sync(progressCallback: (SyncProgress) -> Unit = {}): Result<Unit> {
         return try {
-            syncRepository.sync { progress ->
+            businessSyncRepository.sync(progress = { progress ->
                 _syncProgress.value = progress
                 progressCallback(progress)
-            }
+            })
 
             _syncProgress.value = SyncProgress.Success
             progressCallback(SyncProgress.Success)
@@ -45,7 +46,7 @@ class SyncManager @Inject constructor(
         } catch (e: Exception) {
             val errorProgress = SyncProgress.Error(
                 message = e.message ?: "Unknown error",
-                isNetworkFailure = e.hasIOExceptionCause()
+                isNetworkFailure = e.isSyncTransportFailure()
             )
             _syncProgress.value = errorProgress
             progressCallback(errorProgress)
@@ -56,8 +57,8 @@ class SyncManager @Inject constructor(
     /** Runs cleanup while the sync/account lock is still held. */
     suspend fun syncAndThen(afterSync: suspend () -> Unit): Result<Unit> {
         return try {
-            syncRepository.syncAndThen(
-                progressCallback = { _syncProgress.value = it },
+            businessSyncRepository.sync(
+                progress = { _syncProgress.value = it },
                 afterSync = afterSync
             )
             _syncProgress.value = SyncProgress.Success
@@ -67,7 +68,7 @@ class SyncManager @Inject constructor(
         } catch (e: Exception) {
             _syncProgress.value = SyncProgress.Error(
                 message = e.message ?: "Unknown error",
-                isNetworkFailure = e.hasIOExceptionCause()
+                isNetworkFailure = e.isSyncTransportFailure()
             )
             Result.failure(e)
         }
@@ -144,12 +145,4 @@ class SyncManager @Inject constructor(
         _syncProgress.value = SyncProgress.Idle
     }
 
-    private fun Throwable.hasIOExceptionCause(): Boolean {
-        var current: Throwable? = this
-        while (current != null) {
-            if (current is IOException) return true
-            current = current.cause
-        }
-        return false
-    }
 }
