@@ -152,6 +152,8 @@ internal class NextRecoveryAuditStore(private val database: HabitDatabase) {
         val keys = manifest.graph.nodes.map { it.key }.toSet()
         require(rows.values.all { it.key in keys } && keys.all { "next_request_origins" to it in rows })
         val aliases = manifest.graph.aliases.associate { it.logical to it.actual }
+        val selected = manifest.requests.map { it.key }.toSet()
+        val replacements = aliases.values.toSet()
         for (node in manifest.graph.nodes.filter { it.category == NextRecoveryCategory.STRUCTURE }) {
             val key = node.key
             val origin = requireNotNull(database.nextRequestDao().origin(key.kind, key.requestId))
@@ -180,6 +182,14 @@ internal class NextRecoveryAuditStore(private val database: HabitDatabase) {
                         it.successor == (aliases[key] ?: key) && it.reason == NextRecoveryDependencyReason.STRUCTURAL_PREDECESSOR })
                 }
             } else require(key in aliases.values || operation.entityType == "metric" && operation.action == "delete")
+            // The graph also records unrelated pending work at confirmation time. Its immutable
+            // origin/dependency rows above remain bound, but an unselected, never-sent ORIGINAL
+            // may subsequently acquire its own legitimate replacement. Historical absence is
+            // not a permanent terminal for that request and never grants it an ACK/permission.
+            // Selected members, captured aliases and accepted/unknown predecessors stay strict;
+            // each new live replacement is audited independently by its actual sender/reader.
+            if (node.state == NextRecoveryRequestState.NEVER_SENT && key !in selected &&
+                key !in aliases && key !in replacements && rows["next_structural_supersessions" to key] == null) continue
             val replacement = database.nextStructuralCausalDao().supersession(key.requestId)
             require(rows["next_structural_supersessions" to key]?.hash == rowHash("next_structural_supersessions", key))
             if (replacement != null) {

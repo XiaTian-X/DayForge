@@ -10,8 +10,15 @@ import com.dayforge.data.api.dto.*
 import com.dayforge.data.appearance.MaterialSocketServer
 import com.dayforge.data.appearance.ConfigBundleOutput
 import com.dayforge.data.appearance.ConfigFileFixture
-import com.dayforge.data.local.entity.SyncOutboxEntity
-import com.dayforge.data.local.entity.HabitMetricLinkEntity
+import com.dayforge.data.local.entity.*
+import com.dayforge.data.model.HabitSchedule
+import com.dayforge.data.model.HabitType
+import com.dayforge.domain.model.IconReference
+import com.dayforge.domain.model.ObjectAppearance
+import com.dayforge.domain.model.OneTimeIntent
+import com.dayforge.domain.model.OneTimeState
+import com.dayforge.domain.model.OneTimeProjection
+import com.dayforge.domain.model.PendingOneTimeIntent
 import com.dayforge.domain.model.ChallengeRoundRecord
 import com.dayforge.domain.model.initialChallengeRoundHead
 import kotlinx.coroutines.cancel
@@ -43,6 +50,9 @@ class NextRecoveryAuditStoreTest : NextObjectEditorFixture() {
     private lateinit var rejectedDelivery: NextCoreDelivery<NextSyncPushResponse>
     private var pullFault: (() -> Unit)? = null
     private var registrationFault: (() -> Unit)? = null
+    private val returnedBirths = linkedMapOf<Pair<String, String>, ChallengeBirth>()
+    private val timerPolicies = mutableMapOf<String, TimerStartPolicy>()
+    private lateinit var protectedOnce: HabitEntity
     private val audit get() = NextRecoveryAuditStore(db)
     private val payloads get() = NextRecoveryPayloadStore(db)
     private val projections get() = NextRecoveryProjectionStore(db)
@@ -50,7 +60,7 @@ class NextRecoveryAuditStoreTest : NextObjectEditorFixture() {
     private fun metadata() = ChallengeMetadata(1, listOf(habit.uuid, timerHabit.uuid).map {
         val first = ChallengeRoundRecord(initialChallengeRoundHead(it), null, null, null)
         ChallengeCheckpoint(first.head, listOf(first))
-    }, emptyList())
+    }, returnedBirths.values.toList())
     private fun canonical(type: String, uuid: String, body: JsonObject) = SyncV2Change(0, type, uuid, "upsert", 1,
         JsonObject(body + mapOf("public_id" to JsonPrimitive(uuid), "revision" to JsonPrimitive(1),
             "created_at" to JsonPrimitive(time), "updated_at" to JsonPrimitive(time), "deleted_at" to JsonNull)), time)
@@ -70,25 +80,141 @@ class NextRecoveryAuditStoreTest : NextObjectEditorFixture() {
             return MaterialSocketServer.Reply(json.encodeToString(RoundSyncPullResponse(emptyList(), cursor,
                 false, time, 1, meta.checkpoints, meta.births)).toByteArray())
         }
+        if (input.path == "/api/v2/timers/rounds/commands") return timerResponse(input)
         assertEquals("/api/v2/sync/rounds/push", input.path)
-        val operation = json.decodeFromString<RoundSyncPushRequest>(input.body.toString(Charsets.UTF_8)).operations.single()
+        val request = json.decodeFromString<RoundSyncPushRequest>(input.body.toString(Charsets.UTF_8))
+        val operation = request.operations.single()
+        if (!failing && operation.entityType == "activity_event") request.contextFor(operation.operationId).head?.let {
+            returnedBirths["activity_event" to operation.entityUuid] = ChallengeBirth("activity_event", operation.entityUuid, it)
+        }
         val results = if (failing) listOf(NextSyncOperationResult(operation.operationId, operation.entityType,
             operation.entityUuid, "rejected", errorCode = "INVALID_PAYLOAD")) else json.decodeFromString<NextSyncPushResponse>(
             successReply(input, (operation.baseRevision ?: 0) + 1) { body ->
-                if (operation.entityUuid == metric.uuid) JsonObject(body + ("created_at" to JsonPrimitive(time))) else body
+                val once = body["one_time"] as? JsonObject
+                when {
+                    once != null -> JsonObject(body + ("one_time_state_after" to buildJsonObject {
+                        put("version", once.getValue("expected_version").jsonPrimitive.int + 1)
+                        put("head_event_uuid", once.getValue("event_uuid"))
+                        put("completion_event_uuid", if (once.getValue("action") == JsonPrimitive("complete"))
+                            once.getValue("event_uuid") else JsonNull)
+                    }))
+                    operation.entityUuid == metric.uuid -> JsonObject(body + ("created_at" to JsonPrimitive(time)))
+                    else -> body
+                }
             }.bytes.toString(Charsets.UTF_8)).results
         val meta = metadata()
         return MaterialSocketServer.Reply(json.encodeToString(RoundSyncPushResponse(results, 1, meta.checkpoints, meta.births)).toByteArray())
     }
-    private suspend fun initialize(): Pair<NextSyncHttp, MaterialSocketServer> {
+    private suspend fun initialize(withOnce: Boolean = false): Pair<NextSyncHttp, MaterialSocketServer> {
         register(); val (http, server) = channel(::respond)
         recoveryHttp = http
         val merge = mergeStore()
         val meta = metadata()
+        val extra = if (withOnce) {
+            val plan = habit.copy(id = 0, uuid = id(700), name = "Protected one-time item", habitType = HabitType.CHECK_IN,
+                schedule = HabitSchedule.Once(), targetValue = 1, completionPolicy = "one_and_done", oneTimeConfirmedVersion = 0,
+                appearance = ObjectAppearance(IconReference.Role("task.custom"), "#123456", "object"))
+            listOf(canonical("plan_node", plan.uuid, NextStructureMapper.writePlan(plan)))
+        } else emptyList()
         merge.bootstrap(access(), null, RoundSyncBootstrapResponse(listOf(canonical("plan_node", habit.uuid, NextStructureMapper.writePlan(habit)),
             canonical("plan_node", timerHabit.uuid, NextStructureMapper.writePlan(timerHabit)),
-            canonical("metric", metric.uuid, NextStructureMapper.writeMetric(metric))), 20, time, emptyList(), 1, meta.checkpoints, meta.births))
+            canonical("metric", metric.uuid, NextStructureMapper.writeMetric(metric))) + extra, 20, time,
+            if (withOnce) listOf(OneTimeProjection(id(700), OneTimeState(0, null, null))) else emptyList(),
+            1, meta.checkpoints, meta.births))
+        if (withOnce) protectedOnce = requireNotNull(db.habitDao().getHabitByUuid(id(700)))
         return http to server
+    }
+
+    private fun timerResponse(input: MaterialSocketServer.Input): MaterialSocketServer.Reply {
+        val request = json.decodeFromString<RoundTimerCommandBatchRequest>(input.body.toString(Charsets.UTF_8))
+        val command = request.commands.single()
+        val head = requireNotNull(request.contextFor(command.commandId).head)
+        assertEquals(initialChallengeRoundHead(timerHabit.uuid), head)
+        command.startPolicy?.let { timerPolicies[command.sessionId] = it }
+        val policy = requireNotNull(timerPolicies[command.sessionId])
+        val state = when (command.commandType) { "pause" -> "paused"; "stop" -> "completed"; "cancel" -> "cancelled"; else -> "running" }
+        val elapsed = when (command.commandType) { "start" -> 0L; "resume" -> 30_000L; else -> command.activeElapsedMs ?: 0L }
+        val session = TimerSessionResponse(command.sessionId, timerHabit.uuid, state, id(4), 1, command.sequence,
+            command.sequence + 1, time, command.occurredAt,
+            endedAt = command.occurredAt.takeIf { state in setOf("completed", "cancelled") }, timezone = "Asia/Shanghai",
+            isCountdown = policy.isCountdown, targetSeconds = policy.targetSeconds, maxDurationSeconds = policy.maxDurationSeconds,
+            activeElapsedMs = elapsed, completedEventId = command.sessionId.takeIf { state == "completed" })
+        returnedBirths["timer_session" to command.sessionId] = ChallengeBirth("timer_session", command.sessionId, head)
+        if (state == "completed") returnedBirths["activity_event" to command.sessionId] = ChallengeBirth("activity_event", command.sessionId, head)
+        val meta = metadata()
+        return MaterialSocketServer.Reply(json.encodeToString(RoundTimerCommandBatchResponse(listOf(
+            TimerCommandResult(command.commandId, command.sessionId, "applied", session = session)), time, 1,
+            meta.checkpoints, meta.births)).toByteArray())
+    }
+
+    private fun timers() = NextTimerRequestStore(db, tokens, sessions, sender(recoveryHttp))
+    private fun onceLocal() = OneTimeLocalIntentStore(db, tokens, sessions, preferences)
+    private fun onceRequests(): NextOneTimeRequestStore {
+        val timer = timers()
+        val facts = OneTimeAcceptedEventStore(db, tokens, sessions, onceLocal(), timerRequests = timer)
+        return NextOneTimeRequestStore(db, tokens, sessions, recoveryHttp, facts, sender(recoveryHttp))
+    }
+    private suspend fun protectedTimer(complete: Boolean = false): List<TimerCommandEntity> {
+        producer().writeRounds(producer().captureRounds()) {
+            db.timeLogDao().insertSyncedTimer(TimeLogEntity(habitId = timerHabit.id, startTime = millis, endTime = null,
+                durationSeconds = 0, date = millis, uuid = id(20), timerNextCommandSequence = 2,
+                timerControlGeneration = 1, timerLastCommandAt = millis, timerTimezone = "Asia/Shanghai"),
+                TimerCommandEntity(commandId = id(21), sessionUuid = id(20), sequence = 1, commandType = "start",
+                    occurredAt = millis, expectedControlGeneration = 0, activityUuid = timerHabit.uuid, timezone = "Asia/Shanghai"),
+                TimerSegmentEntity(sessionUuid = id(20), sequence = 1, startedAt = millis))
+        }
+        if (complete) {
+            val dao = db.timeLogDao(); val log = requireNotNull(dao.getTimeLogByUuid(id(20)))
+            producer().writeRounds(producer().captureRounds()) {
+                dao.updatePauseAndQueue(log.id, true, millis + 30_000, 0, 3, millis + 30_000, 30_000, null, null,
+                    TimerCommandEntity(commandId = id(22), sessionUuid = id(20), sequence = 2, commandType = "pause",
+                        occurredAt = millis + 30_000, expectedControlGeneration = 1, activeElapsedMillis = 30_000))
+            }
+            producer().writeRounds(producer().captureRounds()) {
+                dao.updatePauseAndQueue(log.id, false, null, 10_000, 4, millis + 40_000, 30_000, null, null,
+                    TimerCommandEntity(commandId = id(23), sessionUuid = id(20), sequence = 3, commandType = "resume",
+                        occurredAt = millis + 40_000, expectedControlGeneration = 1),
+                    TimerSegmentEntity(sessionUuid = id(20), sequence = 2, startedAt = millis + 40_000))
+            }
+            producer().writeRounds(producer().captureRounds()) {
+                dao.finishTimerAndQueue(log.id, millis + 70_000, 60, 10_000, 5, 60_000,
+                    TimerCommandEntity(commandId = id(24), sessionUuid = id(20), sequence = 4, commandType = "stop",
+                        occurredAt = millis + 70_000, expectedControlGeneration = 1, activeElapsedMillis = 60_000), false)
+            }
+        }
+        return db.timeLogDao().getPendingTimerCommands(Int.MAX_VALUE)
+    }
+    private suspend fun protectedOnce(n: Int): SyncOutboxEntity {
+        val state = onceLocal().read(protectedOnce.uuid).queue.optimisticState
+        val command = OneTimeLocalCommand(protectedOnce.uuid, PendingOneTimeIntent(id(n), OneTimeIntent(id(n + 1000),
+            if (state.completionEventUuid == null) "complete" else "undo", state.version, state.headEventUuid,
+            state.completionEventUuid)), millis + n, "Asia/Shanghai")
+        onceLocal().appendRounds(producer().captureRounds(), command)
+        return requireNotNull(db.syncOutboxDao().getByOperationId(id(n)))
+    }
+    private suspend fun recoverMetric(http: NextSyncHttp, prefix: String): Saved {
+        val a = edit("$prefix A"); edit("$prefix B")
+        return terminal(preview(http, refuse(http, a.operationId))).also { failing = false }
+    }
+    private suspend fun preservation(recoveryId: String = id(9000)) = db.withTransaction {
+        NextRecoveryPreservationStore(db).snapshot(recoveryId)
+    }
+    private suspend fun sourceProofs() = db.withTransaction {
+        NextRequestSql.sources(sql, "sync_outbox") to NextRequestSql.sources(sql, "timer_command_outbox")
+    }
+    private suspend fun acceptedHistory() {
+        producer().writeRounds(producer().captureRounds()) { metrics().recordValue(metric.id, 21.125, "original observation", millis) }
+        val observation = db.syncOutboxDao().getAll().single()
+        assertEquals(NextOperationAcceptance.COMMITTED, sender(recoveryHttp).sendAndAcceptOperation(access(), observation.operationId))
+        producer().writeRounds(producer().captureRounds()) {
+            val fact = CompletionEntity(habitId = habit.id, habitUuid = habit.uuid, uuid = id(210), value = 3,
+                date = millis, actualCompletedAt = millis, recordedTimezone = "Etc/UTC", recordedLocalDate = "2026-10-06")
+            NextCountDayStore(db).capture(habit, fact)
+            db.completionDao().insert(fact)
+        }
+        val countRow = db.syncOutboxDao().getAll().single()
+        assertEquals(NextOperationAcceptance.COMMITTED, sender(recoveryHttp).sendAndAcceptOperation(access(), countRow.operationId))
+        assertEquals(1, count("metric_logs")); assertEquals(1, count("count_days")); assertEquals(1, count("completions"))
     }
     private fun mergeStore(): NextSyncMergeStore {
         val timers = NextTimerRequestStore(db, tokens, sessions, sender(recoveryHttp))
@@ -154,6 +280,180 @@ class NextRecoveryAuditStoreTest : NextObjectEditorFixture() {
         sql.execSQL("UPDATE next_recovery_audits SET manifestHash=? WHERE recoveryId=?", arrayOf(ref.hash, saved.id))
     }
 
+    @Test fun ordinaryRecoveryPreservesRunningTimerOnceAndAcceptedHistoryAlongsideEarlierAudit() = runBlocking<Unit> {
+        val (http, server) = initialize(withOnce = true)
+        val earlier = recoverMetric(http, "Earlier")
+        acceptedHistory()
+        val timer = protectedTimer().single(); val once = protectedOnce(710)
+        val a = edit("Later A"); edit("Later B")
+        val ticket = prepare(preview(http, refuse(http, a.operationId)))
+        val preserved = preservation(ticket.recoveryId); val pending = sourceProofs(); val calls = server.requests.size
+        val localTimer = db.timeLogDao().getTimeLogByUuid(timer.sessionUuid)
+        val localOnce = onceLocal().read(protectedOnce.uuid)
+        val result = confirm(ticket)
+        assertEquals(preserved, preservation(ticket.recoveryId))
+        assertEquals(mapOf(once.id to NextRequestSql.sourceHash(once)), sourceProofs().first)
+        assertEquals(pending.second, sourceProofs().second)
+        assertEquals(localTimer, db.timeLogDao().getTimeLogByUuid(timer.sessionUuid))
+        assertEquals(localOnce, onceLocal().read(protectedOnce.uuid))
+        assertEquals(2, count("next_acceptances")); assertEquals(2, count("completions"))
+        assertEquals(earlier.manifest, db.withTransaction { audit.read(access(), earlier.id).manifest })
+        val runtime = NextSyncRuntime(db, tokens, sessions, http, preferences)
+        assertFalse(runtime.readRecoveryPreview(NextRecoveryKey(NEXT_TIMER, timer.commandId)).canConfirm)
+        assertFalse(runtime.readRecoveryPreview(NextRecoveryKey(NEXT_OPERATION, once.operationId)).canConfirm)
+        storage.reopen()
+        assertEquals(result.manifest, confirm(ticket).manifest)
+        assertEquals(preserved, preservation(ticket.recoveryId)); assertEquals(calls, server.requests.size)
+    }
+
+    @Test fun nonemptyTimerAndOnceDrainsRejectDamagedAuditThenCompleteNormallyWithOriginalHistory() = runBlocking<Unit> {
+        val (http, server) = initialize(withOnce = true)
+        val timerRows = protectedTimer(complete = true); val onceRows = List(3) { protectedOnce(720 + it) }
+        // Freeze the audit while these unrelated queues already exist, then let their actual
+        // journal/ACK/birth states advance. The terminal must not freeze the whole account.
+        val earlier = recoverMetric(http, "Earlier")
+        val before = preservation(); val pending = sourceProofs(); val calls = server.requests.size
+        val localTimer = db.timeLogDao().getTimeLogByUuid(id(20)); val segments = db.timeLogDao().getTimerSegments(id(20))
+        sql.execSQL("UPDATE next_recovery_audits SET selectedCount=selectedCount+1 WHERE recoveryId=?", arrayOf<Any>(earlier.id))
+        rejected { timers().pushPending(access()) }; rejected { onceRequests().pushPending(access()) }
+        assertEquals(pending, sourceProofs()); assertEquals(calls, server.requests.size)
+        assertEquals(localTimer, db.timeLogDao().getTimeLogByUuid(id(20))); assertEquals(3, count("completions"))
+        sql.execSQL("UPDATE next_recovery_audits SET selectedCount=? WHERE recoveryId=?",
+            arrayOf<Any>(earlier.manifest.requests.size, earlier.id))
+        assertEquals(before, preservation())
+        assertEquals(4, timers().pushPending(access())); assertEquals(3, onceRequests().pushPending(access()))
+        assertEquals(localTimer, db.timeLogDao().getTimeLogByUuid(id(20))); assertEquals(segments, db.timeLogDao().getTimerSegments(id(20)))
+        assertEquals(3, onceLocal().read(protectedOnce.uuid).confirmed.version)
+        assertEquals(id(1722), onceLocal().read(protectedOnce.uuid).confirmed.completionEventUuid)
+        assertEquals(3, count("completions")); assertEquals(7, count("next_acceptances"))
+        assertTrue(sourceProofs().first.isEmpty()); assertTrue(sourceProofs().second.isEmpty())
+        val afterCalls = server.requests.size
+        storage.reopen()
+        timerRows.forEach { assertEquals(NextOperationAcceptance.REPLAYED, timers().sendAndAccept(access(), it.commandId)) }
+        onceRows.forEach { assertEquals(NextOneTimeOutcome.Accepted(NextOperationAcceptance.REPLAYED),
+            onceRequests().sendAndAccept(access(), it.operationId)) }
+        assertEquals(afterCalls, server.requests.size)
+        assertEquals(earlier.manifest, db.withTransaction { audit.read(access(), earlier.id).manifest })
+        assertEquals(earlier.manifest, confirm(earlier.ticket).manifest)
+    }
+
+    @Test fun unrelatedNeverSentStructureCanFormItsOwnReplacementAfterAnotherRecoveryWasCommitted() = runBlocking<Unit> {
+        val (http, server) = initialize(withOnce = true)
+        val timer = protectedTimer().single(); val once = protectedOnce(725)
+        for (name in listOf("Unrelated count A", "Unrelated count B")) {
+            val ticket = editor.habit(habit.id)
+            editingHabits().updateHabit(requireNotNull(ticket.value).copy(name = name), editAuthority = ticket.authority)
+        }
+        val rows = db.syncOutboxDao().getEntityIntents("habit", habit.uuid)
+        assertEquals(2, rows.size)
+        val recovered = recoverMetric(http, "Independent metric")
+        assertTrue(recovered.manifest.graph.nodes.any { it.key.requestId == rows.last().operationId })
+        val localTimer = db.timeLogDao().getTimeLogByUuid(timer.sessionUuid)
+        val localOnce = onceLocal().read(protectedOnce.uuid)
+        rows.forEach { assertEquals(NextOperationAcceptance.COMMITTED,
+            sender(http).sendAndAcceptOperation(access(), it.operationId)) }
+        assertNotNull(db.nextStructuralCausalDao().supersession(rows.last().operationId))
+        assertEquals(recovered.manifest, db.withTransaction { audit.read(access(), recovered.id).manifest })
+        // Allowing NEW unrelated state must not weaken any immutable evidence actually saved.
+        rejectsMutation(recovered) {
+            sql.execSQL("UPDATE next_request_origins SET intentJson='{}' WHERE kind=? AND requestId=?",
+                arrayOf<Any>(NEXT_OPERATION, rows.last().operationId))
+        }
+        rejectsMutation(recovered) {
+            sql.execSQL("UPDATE next_structural_dependencies SET originHash='bad' WHERE operationId=?",
+                arrayOf<Any>(rows.last().operationId))
+        }
+        assertEquals(localTimer, db.timeLogDao().getTimeLogByUuid(timer.sessionUuid))
+        assertEquals(localOnce, onceLocal().read(protectedOnce.uuid))
+        assertEquals(listOf(once), db.syncOutboxDao().getAll())
+        assertEquals(2, count("next_acceptances")); assertEquals("Unrelated count B", db.habitDao().getHabitById(habit.id)!!.name)
+        val calls = server.requests.size
+        storage.reopen()
+        assertEquals(recovered.manifest, confirm(recovered.ticket).manifest)
+        rows.forEach { assertEquals(NextOperationAcceptance.REPLAYED, sender(http).sendAndAcceptOperation(access(), it.operationId)) }
+        assertEquals(calls, server.requests.size)
+        var completed = false
+        business(http).sync(afterSync = { completed = true })
+        assertTrue(completed)
+        assertNotNull(preferences.lastSyncTimestamp.first())
+        assertTrue(sourceProofs().first.isEmpty()); assertTrue(sourceProofs().second.isEmpty())
+        assertEquals(1, onceLocal().read(protectedOnce.uuid).confirmed.version)
+        assertEquals(localTimer, db.timeLogDao().getTimeLogByUuid(timer.sessionUuid))
+        assertEquals(4, count("next_acceptances"))
+        recovered.manifest.requests.forEach { assertNull(db.nextRequestDao().acceptance(it.key.kind, it.key.requestId)) }
+        assertEquals(recovered.manifest, db.withTransaction { audit.read(access(), recovered.id).manifest })
+    }
+
+    @Test fun lateTimerSegmentAndOnceFactMutationRollBackNewRecoveryWithoutDamagingEarlierAudit() = runBlocking<Unit> {
+        val (http, server) = initialize(withOnce = true); val earlier = recoverMetric(http, "Earlier")
+        protectedTimer(); protectedOnce(730)
+        val a = edit("Later A"); edit("Later B")
+        val ticket = prepare(preview(http, refuse(http, a.operationId)))
+        val before = preservation(ticket.recoveryId); val pending = sourceProofs(); val calls = server.requests.size
+        for ((mutation, reason) in listOf(
+            "UPDATE timer_segments SET startedAt=startedAt+1" to "SYNC_RECOVERY_PROTECTED_STATE_CHANGED",
+            // The real completion trigger first adds outbox work, so the exact queue guard
+            // rejects this mutation before the wider preserved-state comparison.
+            "UPDATE completions SET value=value+1" to "SYNC_RECOVERY_QUEUE_CHANGED",
+            "UPDATE completions SET createdAt=createdAt+1" to "SYNC_RECOVERY_PROTECTED_STATE_CHANGED")) {
+            sql.execSQL("CREATE TRIGGER recovery_protected_mixed AFTER INSERT ON next_abandoned_requests BEGIN $mutation; END")
+            assertEquals(reason, rejected { confirm(ticket) }.message)
+            storage.reopen()
+            assertEquals(before, preservation(ticket.recoveryId)); assertEquals(pending, sourceProofs())
+            assertEquals(earlier.manifest, db.withTransaction { audit.read(access(), earlier.id).manifest })
+            assertEquals(1, count("next_recovery_audits")); assertEquals(2, count("next_abandoned_requests"))
+            assertEquals(0, count("next_acceptances")); assertEquals(calls, server.requests.size)
+            sql.execSQL("DROP TRIGGER recovery_protected_mixed")
+        }
+        assertEquals(ticket.recoveryId, confirm(ticket).recoveryId)
+        assertEquals(before, preservation(ticket.recoveryId)); assertEquals(calls, server.requests.size)
+    }
+
+    @Test fun closedDatabaseBackupRestoresFullAuditPendingTimerOnceAndAcceptedHistoryWithoutRebinding() = runBlocking<Unit> {
+        val (http, server) = initialize(withOnce = true); val earlier = recoverMetric(http, "Earlier")
+        acceptedHistory(); protectedTimer(); protectedOnce(740)
+        val before = preservation(); val pending = sourceProofs(); val credentials = dataStore.data.first()
+        val captured = access(); val calls = server.requests.size
+        val image = storage.snapshotClosedDatabase()
+        sql.execSQL("UPDATE next_recovery_audits SET selectedCount=99 WHERE recoveryId=?", arrayOf<Any>(earlier.id))
+        rejected { db.withTransaction { audit.read(captured, earlier.id) } }
+        storage.restoreClosedDatabase(image)
+        assertEquals(credentials, dataStore.data.first()); assertEquals(captured, access())
+        assertEquals(before, preservation()); assertEquals(pending, sourceProofs())
+        assertEquals(earlier.manifest, db.withTransaction { audit.read(captured, earlier.id).manifest })
+        assertEquals(earlier.manifest, confirm(earlier.ticket).manifest)
+        assertEquals(1, count("timelogs")); assertEquals(1, count("timer_segments")); assertEquals(2, count("completions"))
+        assertEquals(1, count("metric_logs")); assertEquals(1, count("count_days")); assertEquals(2, count("next_acceptances"))
+        assertEquals(calls, server.requests.size)
+    }
+
+    @Test fun restoredDatabaseWithMissingSourceChunkOrWrongScopeCannotProduceAnyRecoveryProof() = runBlocking<Unit> {
+        val (http, server) = initialize(withOnce = true); val earlier = recoverMetric(http, "Earlier")
+        protectedTimer(); protectedOnce(750)
+        val intact = storage.snapshotClosedDatabase(); val pending = sourceProofs(); val calls = server.requests.size
+        val source = earlier.manifest.requests.first().source
+        sql.execSQL("DELETE FROM next_recovery_audit_payloads WHERE recoveryId=? AND payloadKey=? AND part=0",
+            arrayOf<Any>(earlier.id, source.key))
+        val damaged = storage.snapshotClosedDatabase()
+        storage.restoreClosedDatabase(intact)
+        assertEquals(earlier.manifest, db.withTransaction { audit.read(access(), earlier.id).manifest })
+        val captured = access()
+        val wrong = listOf(captured.copy(deviceId = id(999)),
+            captured.copy(session = captured.session.copy(serverInstanceId = id(999))),
+            captured.copy(session = captured.session.copy(syncEpoch = id(999))),
+            captured.copy(session = captured.session.copy(authentication = captured.session.authentication.copy(userId = id(999)))))
+        for (context in wrong) rejected { db.withTransaction { audit.read(context, earlier.id) } }
+        assertEquals(pending, sourceProofs()); assertEquals(0, count("next_acceptances"))
+        storage.restoreClosedDatabase(damaged)
+        rejected { db.withTransaction { audit.read(access(), earlier.id) } }
+        rejected { confirm(earlier.ticket) }
+        rejected { timers().pushPending(access()) }; rejected { onceRequests().pushPending(access()) }
+        assertEquals(pending, sourceProofs()); assertEquals(0, count("next_acceptances")); assertEquals(calls, server.requests.size)
+        storage.restoreClosedDatabase(intact)
+        assertEquals(earlier.manifest, confirm(earlier.ticket).manifest)
+        assertEquals(pending, sourceProofs()); assertEquals(calls, server.requests.size)
+    }
+
     @Test fun completeGroupColdReadKeepsOriginalSourcesWithoutAckOrCursorAdvance() = runBlocking<Unit> {
         val (http, server) = initialize(); val a = edit("A"); val b = edit("B"); val c = edit("C")
         val root = refuse(http, a.operationId); val originalRows = db.syncOutboxDao().getAll(); val cursor = db.nextSyncStateDao().rows()
@@ -169,8 +469,8 @@ class NextRecoveryAuditStoreTest : NextObjectEditorFixture() {
     }
     @Test fun readingOldAuditAfterNewLocalEditDoesNotReapplyOldProjection() = runBlocking<Unit> {
         val (saved, server) = saved(); val calls = server.requests.size
-        // Ordinary admission/causal consumer integration is a later part of D-020. Use a private
-        // testbed local change here to verify the terminal reader itself never restores old rows.
+        // Deliberately isolate a local display change: this reader/replay regression must prove
+        // that inspecting a terminal does not apply its old projection again.
         db.withTransaction {
             sql.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
             db.metricDao().update(requireNotNull(db.metricDao().getMetricById(metric.id)).copy(name = "Later local display"))
