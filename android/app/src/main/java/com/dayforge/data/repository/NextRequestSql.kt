@@ -41,11 +41,21 @@ internal object NextRequestSql {
             "attemptedAt" to row.attemptedAt, "attemptCount" to row.attemptCount.toLong(),
             "lastError" to row.lastError, "errorCode" to row.errorCode, "deadLetteredAt" to row.deadLetteredAt,
             "createdAt" to row.createdAt)
+        return savedRowHash("sync_outbox", values)
+    }
+
+    /** Exact raw shadow encoding, so a frozen baseline binds all seven original SQL cells. */
+    fun entityStateHash(row: com.dayforge.data.local.entity.SyncEntityStateEntity): String = savedRowHash("sync_entity_state",
+        linkedMapOf("entityType" to row.entityType, "entityUuid" to row.entityUuid, "revision" to row.revision,
+            "deleted" to if (row.deleted) 1L else 0L, "payloadJson" to row.payloadJson,
+            "payloadHash" to row.payloadHash, "updatedAt" to row.updatedAt))
+
+    private fun savedRowHash(table: String, values: Map<String, Any?>): String {
         val hash = MessageDigest.getInstance("SHA-256")
         fun bytes(value: ByteArray) {
             hash.update(ByteBuffer.allocate(4).putInt(value.size).array()); hash.update(value)
         }
-        bytes("sync_outbox".toByteArray(Charsets.UTF_8))
+        bytes(table.toByteArray(Charsets.UTF_8))
         values.forEach { (name, value) ->
             bytes(name.toByteArray(Charsets.UTF_8))
             hash.update(when (value) { null -> Cursor.FIELD_TYPE_NULL; is Long -> Cursor.FIELD_TYPE_INTEGER
@@ -65,14 +75,15 @@ internal object NextRequestSql {
         if (!enabled) rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
     }
 
-    private val ints = setOf("protocol", "attemptCount", "sequence", "expectedControlGeneration", "expectedRevision", "targetValue", "challengeContract")
+    private val ints = setOf("protocol", "attemptCount", "sequence", "expectedControlGeneration", "expectedRevision", "targetValue", "challengeContract", "selectedCount")
     private val longs = ints + setOf("id", "queueId", "baseRevision", "attemptedAt", "deadLetteredAt", "createdAt",
         "occurredAt", "activeElapsedMillis", "revision", "deleted", "updatedAt", "logicalOrder", "originalQueueId", "replacementQueueId", "generation", "cursor",
         "habitId", "isCountdown", "planQueueWatermark", "logSequence")
     private val tables = setOf("sync_outbox", "timer_command_outbox", "next_request_origins", "next_transmissions", "next_acceptances",
         "sync_entity_state", "next_structural_dependencies", "next_structural_supersessions",
         "local_fact_submissions", "one_time_transmissions", "next_sync_state", "next_rejections", "count_days",
-        "next_challenge_state", "next_challenge_rounds", "next_challenge_births", "next_restart_materializations", "next_restart_plan_proofs")
+        "next_challenge_state", "next_challenge_rounds", "next_challenge_births", "next_restart_materializations", "next_restart_plan_proofs",
+        "next_recovery_audits", "next_abandoned_requests")
     fun table(kind: String): String = when (kind) {
         NEXT_OPERATION -> "sync_outbox"
         NEXT_TIMER -> "timer_command_outbox"

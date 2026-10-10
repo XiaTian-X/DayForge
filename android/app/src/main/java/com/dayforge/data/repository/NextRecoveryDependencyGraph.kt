@@ -4,17 +4,19 @@ import com.dayforge.domain.model.isContractUuid
 import java.util.Collections
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.serialization.Serializable
 
 /** Identity only, never a queue index, entity identity, permission or acceptance proof. */
+@Serializable
 internal data class NextRecoveryKey(val kind: String, val requestId: String) {
     init { require(kind in setOf(NEXT_OPERATION, NEXT_TIMER) && isContractUuid(requestId)) }
     internal val sortKey get() = "$kind:$requestId"
 }
 
-internal enum class NextRecoveryRequestState { PERMANENT_REJECTION, NEVER_SENT, UNKNOWN_RESULT, ACCEPTED, SUPERSEDED, ABANDONED }
-internal enum class NextRecoveryCategory { STRUCTURE, TIMER, FACT, ONE_TIME, RESTART, CONFIG_IMPORT }
-internal enum class NextRecoveryProtection { REAL_FACT, ACTIVE_TIMER, COUNT_DAY, ONE_TIME_STATE, ROUND_STATE, IMPORT_GROUP }
-internal enum class NextRecoveryDependencyReason {
+@Serializable internal enum class NextRecoveryRequestState { PERMANENT_REJECTION, NEVER_SENT, UNKNOWN_RESULT, ACCEPTED, SUPERSEDED, ABANDONED }
+@Serializable internal enum class NextRecoveryCategory { STRUCTURE, TIMER, FACT, ONE_TIME, RESTART, CONFIG_IMPORT }
+@Serializable internal enum class NextRecoveryProtection { REAL_FACT, ACTIVE_TIMER, COUNT_DAY, ONE_TIME_STATE, ROUND_STATE, IMPORT_GROUP }
+@Serializable internal enum class NextRecoveryDependencyReason {
     STRUCTURAL_PREDECESSOR, GOAL_CHILD_FRONTIER, TIMER_SEQUENCE, TIMER_POLICY, COUNT_POLICY,
     FIRST_COUNT_FACT, ENTITY_REFERENCE, REVERT_TARGET, ONE_TIME_CAS, RESTART_FRONTIER, IMPORT_PHASE
 }
@@ -24,6 +26,7 @@ internal enum class NextRecoveryDependencyReason {
 internal const val NEXT_RECOVERY_PROOF_NODE_LIMIT = 100_000
 
 /** The transaction reader, not this pure planner, must establish these classifications. */
+@Serializable
 internal data class NextRecoveryNode(
     val key: NextRecoveryKey,
     val category: NextRecoveryCategory,
@@ -42,6 +45,7 @@ internal data class NextRecoveryNode(
     }
 }
 
+@Serializable
 internal data class NextRecoveryDependency(
     val predecessor: NextRecoveryKey,
     val successor: NextRecoveryKey,
@@ -52,6 +56,7 @@ internal data class NextRecoveryDependency(
 }
 
 /** A compact all-predecessors gate. Does not replace the reader's individual ACK audits. */
+@Serializable
 internal data class NextRecoveryDependencyGroup(
     val predecessors: List<NextRecoveryKey>,
     val successors: List<NextRecoveryKey>,
@@ -71,7 +76,7 @@ internal data class NextRecoveryBlocker(val key: NextRecoveryKey, val reason: Ne
 
 internal class NextRecoveryDependencyPreview internal constructor(
     val root: NextRecoveryKey, affected: List<NextRecoveryNode>, blockers: List<NextRecoveryBlocker>,
-    val graphHash: String
+    val graphHash: String, internal val archive: NextRecoveryGraphArchive
 ) {
     val affected: List<NextRecoveryNode> = Collections.unmodifiableList(affected.toList())
     val blockers: List<NextRecoveryBlocker> = Collections.unmodifiableList(blockers.toList())
@@ -209,9 +214,23 @@ internal class NextRecoveryDependencyGraph(
             }
             for (group in groups) { caller.ensureActive(); append("gate|"); append(groupKey(group)); append('\n') }
         }
-        return NextRecoveryDependencyPreview(root, members, blockers, nextRequestHash(fingerprint.toByteArray(Charsets.UTF_8)))
+        return NextRecoveryDependencyPreview(root, members, blockers, nextRequestHash(fingerprint.toByteArray(Charsets.UTF_8)),
+            NextRecoveryGraphArchive(nodes, dependencies, groups, aliases.entries.map { NextRecoveryAlias(it.key, it.value) }))
     }
 
     private fun groupKey(group: NextRecoveryDependencyGroup) = group.reason.name + "|" + group.evidenceHash + "|" +
         group.predecessors.joinToString(",") { it.sortKey } + "|" + group.successors.joinToString(",") { it.sortKey }
+}
+
+/** Complete frozen graph, not just affected IDs. Rebuilding it rechecks aliases, DAG and closure. */
+@Serializable
+internal data class NextRecoveryAlias(val logical: NextRecoveryKey, val actual: NextRecoveryKey)
+
+@Serializable
+internal data class NextRecoveryGraphArchive(val nodes: List<NextRecoveryNode>, val dependencies: List<NextRecoveryDependency>,
+    val groups: List<NextRecoveryDependencyGroup>, val aliases: List<NextRecoveryAlias>) {
+    suspend fun preview(root: NextRecoveryKey): NextRecoveryDependencyPreview {
+        require(aliases.map { it.logical }.distinct().size == aliases.size)
+        return NextRecoveryDependencyGraph(nodes, dependencies, groups, aliases.associate { it.logical to it.actual }).preview(root)
+    }
 }

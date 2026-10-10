@@ -26,7 +26,7 @@ private fun nextRecoveryPayloadLimit(key: String): Int = when {
     key == "manifest" -> 67_108_864 // Bounded descriptors/graph; never inline all source bodies here.
     key == "checkpoint" -> SYNC_REQUEST_LIMIT
     key.matches(Regex("source:sync_operation:[0-9a-f-]{36}")) && isContractUuid(key.substringAfterLast(':')) -> NEXT_RECOVERY_SOURCE_BYTES
-    key.matches(Regex("projection_(before|after):(plan_node|metric|activity_metric_link):[0-9a-f-]{36}")) &&
+    key.matches(Regex("projection_(before|after|base):(plan_node|metric|activity_metric_link):[0-9a-f-]{36}")) &&
         isContractUuid(key.substringAfterLast(':')) -> NEXT_RECOVERY_SOURCE_BYTES
     else -> error("RECOVERY_PAYLOAD_KEY_INVALID")
 }
@@ -101,22 +101,22 @@ internal class NextRecoveryPayloadStore(private val database: HabitDatabase) {
         currentCoroutineContext().ensureActive()
         val result = linkedSetOf<String>()
         sql.query("SELECT typeof(payloadKey),length(CAST(payloadKey AS BLOB)) FROM next_recovery_audit_payloads " +
-            "WHERE recoveryId=? GROUP BY payloadKey LIMIT 30003", arrayOf(recoveryId)).use { c ->
+            "WHERE recoveryId=? GROUP BY payloadKey LIMIT 40003", arrayOf(recoveryId)).use { c ->
             var count = 0
             while (c.moveToNext()) {
                 currentCoroutineContext().ensureActive()
-                require(++count <= 30_002 && c.getType(0) == Cursor.FIELD_TYPE_STRING && c.getString(0) == "text" &&
+                require(++count <= 40_002 && c.getType(0) == Cursor.FIELD_TYPE_STRING && c.getString(0) == "text" &&
                     c.getType(1) == Cursor.FIELD_TYPE_INTEGER && c.getLong(1) in 1L..128L)
             }
         }
         sql.query("SELECT DISTINCT payloadKey,length(CAST(payloadKey AS BLOB)) FROM next_recovery_audit_payloads " +
-            "WHERE recoveryId=? ORDER BY payloadKey LIMIT 30003", arrayOf(recoveryId)).use { c ->
+            "WHERE recoveryId=? ORDER BY payloadKey LIMIT 40003", arrayOf(recoveryId)).use { c ->
             while (c.moveToNext()) {
                 currentCoroutineContext().ensureActive()
                 require(c.getType(1) == Cursor.FIELD_TYPE_INTEGER && c.getLong(1) in 1L..128L)
                 require(c.getType(0) == Cursor.FIELD_TYPE_STRING)
                 val key = c.getString(0); nextRecoveryPayloadLimit(key)
-                require(result.add(key) && result.size <= 30_002)
+                require(result.add(key) && result.size <= 40_002)
             }
         }
         return result.toSet()

@@ -500,6 +500,24 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         return proof.operation to proof.hash
     }
 
+    /** Cold local audit is inspection only; it never grants the sender's write permission. */
+    internal suspend fun recoveryAcceptedOperationProof(id: String, access: LocalSyncAccess): Pair<SyncV2Operation, String> =
+        readOnlyProof(requirePermission = false) {
+            require(resolveInSnapshot(id, access) == id)
+            val receipt = accepted(id, access, metricDeleteReceipt = true)
+            receipt.operation to receipt.hash
+        }
+
+    /** Separate inspection path; only a caller's fully audited group supplies its retired source. */
+    internal suspend fun recoveryRetiredReplacementProof(originalId: String, access: LocalSyncAccess,
+        source: SyncOutboxEntity) = readOnlyProof(requirePermission = false) {
+        val row = requireNotNull(byOriginal(originalId))
+        require(source.operationId == row.replacementId && source.id == row.replacementQueueId)
+        requireNotNull(rowHash("next_abandoned_requests", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, row.replacementId)))
+        auditReplacement(row, access, null, source)
+        Unit
+    }
+
     /** Full receipt proof, not a mutable shadow or inferred absence. */
     private suspend fun accepted(id: String, access: LocalSyncAccess, metricDeleteReceipt: Boolean = false): Accepted {
         val origin = original(id)
@@ -551,7 +569,7 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
     }
 
     private suspend fun auditReplacement(row: NextStructuralSupersessionEntity, access: LocalSyncAccess,
-        acceptedByChild: Accepted?): Accepted? {
+        acceptedByChild: Accepted?, retiredSource: SyncOutboxEntity? = null): Accepted? {
         require(row.kind == NEXT_OPERATION && row.originalId != row.replacementId && isContractUuid(row.replacementId) &&
             row.accountId == access.session.authentication.userId && row.serverInstanceId == access.session.serverInstanceId &&
             row.syncEpoch == access.session.syncEpoch && row.deviceId == access.deviceId)
@@ -588,10 +606,15 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         require(replacement.sourceHash == NextRequestSql.sourceHash(newSource))
         val receiptHash = requestHash("next_acceptances", replacement.requestId)
         if (receiptHash != null) {
+            require(retiredSource == null)
             // The immediately visited child already needed this exact complete receipt. It is
             // still the same SELECT-only snapshot and access; do not audit it a second time.
             if (acceptedByChild == null) accepted(replacement.requestId, access)
             else require(acceptedByChild.operation.operationId == replacement.requestId && acceptedByChild.hash == receiptHash)
+        } else if (retiredSource != null) {
+            require(acceptedByChild == null && retiredSource == newSource &&
+                NextRequestSql.sourceHash(retiredSource) == replacement.sourceHash &&
+                rowHash("sync_outbox", "id=?", arrayOf(replacement.queueId)) == null && !hasSource(replacement.requestId))
         } else require(acceptedByChild == null &&
             rowHash("sync_outbox", "id=?", arrayOf(replacement.queueId)) == replacement.sourceHash &&
             outbox.getById(replacement.queueId) == newSource)
