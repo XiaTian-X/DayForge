@@ -83,9 +83,12 @@ import kotlinx.coroutines.withContext
         com.dayforge.data.local.entity.NextRestartMaterializationEntity::class,
         com.dayforge.data.local.entity.NextRestartPlanProofEntity::class,
         com.dayforge.data.local.entity.NextConfigImportEntity::class,
-        com.dayforge.data.local.entity.NextConfigImportPayloadEntity::class
+        com.dayforge.data.local.entity.NextConfigImportPayloadEntity::class,
+        com.dayforge.data.local.entity.NextRecoveryAuditEntity::class,
+        com.dayforge.data.local.entity.NextAbandonedRequestEntity::class,
+        com.dayforge.data.local.entity.NextRecoveryAuditPayloadEntity::class
     ],
-    version = 16,
+    version = 17,
     exportSchema = true
 )
 @TypeConverters(HabitTypeConverter::class)

@@ -28,7 +28,8 @@ internal class SyncProblemReader(
         "next_transmissions", "next_acceptances", "next_rejections", "one_time_transmissions",
         "local_fact_submissions", "next_structural_dependencies", "next_structural_supersessions",
         "next_challenge_state", "next_challenge_rounds", "next_challenge_births", "next_restart_materializations",
-        "next_restart_plan_proofs", "next_config_imports", "count_days", "habits", "metrics", "sync_entity_state")) {
+        "next_restart_plan_proofs", "next_config_imports", "next_recovery_audits", "next_abandoned_requests",
+        "next_recovery_audit_payloads", "count_days", "habits", "metrics", "sync_entity_state")) {
         _, _ -> Unit
     }.map { Unit }
 

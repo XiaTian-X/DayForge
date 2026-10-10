@@ -412,7 +412,8 @@ internal class NextSyncMergeStore(
         "metric_logs", "habit_metric_links", "sync_entity_state", "sync_outbox", "timer_command_outbox", "sync_conflicts",
         "local_fact_submissions", "completion_metric_prompts", "one_time_transmissions", "next_request_origins",
         "next_transmissions", "next_acceptances", "next_structural_dependencies", "next_structural_supersessions", "next_recovery_state", "next_rejections",
-        "next_challenge_state", "next_challenge_rounds", "next_challenge_births", "next_restart_materializations", "next_restart_plan_proofs")
+        "next_challenge_state", "next_challenge_rounds", "next_challenge_births", "next_restart_materializations", "next_restart_plan_proofs",
+        "next_recovery_audits", "next_abandoned_requests", "next_recovery_audit_payloads")
 
     private suspend fun cacheProof(tables: List<String> = cacheTables): String {
         val digest = MessageDigest.getInstance("SHA-256")

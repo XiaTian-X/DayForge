@@ -188,6 +188,36 @@ class NextChallengeRestoreTest : NextCoreRequestFixture() {
         assertEquals(21L, db.nextSyncStateDao().rows().single().cursor)
     }
 
+    @Test fun lateCursorTriggerCannotRewriteAnyRecoveryTableOrPromoteItToAnAcceptance() = runBlocking {
+        register()
+        val (http, _) = channel(); val store = merger(http); val previous = plainInitialized(http)
+        val source = editMetric("Pending original")
+        val before = store.bootstrap(access(), previous, snapshot())
+        val sql = db.openHelper.writableDatabase
+        val receipt = id(410)
+        val authority = access()
+        sql.execSQL("INSERT INTO next_recovery_audits VALUES(?,?,?,?,?,?,?,?,?,?,?)", arrayOf<Any>(receipt,
+            authority.session.authentication.userId, requireNotNull(authority.session.serverInstanceId),
+            requireNotNull(authority.session.syncEpoch), requireNotNull(authority.deviceId), NEXT_OPERATION, source.operationId,
+            "a".repeat(64), "b".repeat(64), "c".repeat(64), 1))
+        val changes = page(21, changes = listOf(roundChange()))
+        val actions = listOf("UPDATE next_recovery_audits SET graphHash='changed'",
+            "INSERT INTO next_abandoned_requests VALUES('sync_operation','${source.operationId}','$receipt','never_sent','bad','bad','bad',NULL,NULL)",
+            "INSERT INTO next_recovery_audit_payloads VALUES('$receipt','manifest',0,X'00')")
+        for (action in actions) {
+            sql.execSQL("CREATE TRIGGER damage_recovery_cursor AFTER UPDATE ON next_sync_state BEGIN $action; END")
+            rejected { store.page(access(), before, changes) }
+            assertEquals(before, store.state(access(), true)); assertEquals(metadata(), store.challengeMetadata(access()))
+            assertEquals(source, db.syncOutboxDao().getById(source.id))
+            assertEquals(0, count("next_abandoned_requests")); assertEquals(0, count("next_recovery_audit_payloads"))
+            assertEquals(0, count("next_acceptances"))
+            sql.query("SELECT graphHash FROM next_recovery_audits WHERE recoveryId=?", arrayOf(receipt)).use {
+                assertTrue(it.moveToFirst()); assertEquals("a".repeat(64), it.getString(0))
+            }
+            sql.execSQL("DROP TRIGGER damage_recovery_cursor")
+        }
+    }
+
     @Test fun roundInsertionTriggerCannotMutateOriginalJournalOrOtherBusinessRows() = runBlocking {
         register()
         val (http, _) = channel(); val store = merger(http); val previous = plainInitialized(http)

@@ -33,8 +33,8 @@ class ProtocolNextActivationBarrierTest : SyncPersistenceFixture() {
         assertTrue(database.nextSyncStateDao().rows().isEmpty()); assertTrue(database.nextSyncStateDao().rejections().isEmpty())
     }
 
-    private suspend fun orphanedCausalMetadata(statement: String, table: String) {
-        assertEquals(16, database.openHelper.writableDatabase.version) // Materialize the lazy file before closing it.
+    private suspend fun orphanedCausalMetadata(statement: String, table: String, requestPresent: Boolean = true) {
+        assertEquals(17, database.openHelper.writableDatabase.version) // Materialize the lazy file before closing it.
         database.close()
         val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
         check(context.packageName == "com.dayforge.testbed")
@@ -44,7 +44,7 @@ class ProtocolNextActivationBarrierTest : SyncPersistenceFixture() {
             raw.execSQL(statement)
         }
         reopen()
-        assertTrue(database.nextRequestDao().hasAny())
+        assertEquals(requestPresent, database.nextRequestDao().hasAny())
         assertTrue(database.syncOutboxDao().hasProtocolNextRequests())
         assertAllLegacyWritesRefused()
         database.openHelper.readableDatabase.query("SELECT COUNT(*) FROM $table").use { assertTrue(it.moveToFirst()); assertEquals(1, it.getInt(0)) }
@@ -61,6 +61,21 @@ class ProtocolNextActivationBarrierTest : SyncPersistenceFixture() {
     @Test fun orphanedCausalRetirementIsNotAnAckAndBlocksAllElevenLegacyWrites() = runBlocking {
         orphanedCausalMetadata("INSERT INTO next_structural_supersessions VALUES('orphan','replacement',1,2,'bad','bad','bad','bad-json','bad','parent','bad','bad','account','server','epoch','device','sync_operation')",
             "next_structural_supersessions")
+    }
+
+    @Test fun orphanedRecoveryHeaderAloneBlocksAllLegacyWritesAndAccountClearRemovesIt() = runBlocking {
+        orphanedCausalMetadata("INSERT INTO next_recovery_audits VALUES('orphan','account','server','epoch','device','sync_operation','root','bad','bad','bad',1)",
+            "next_recovery_audits", requestPresent = false)
+    }
+
+    @Test fun orphanedAbandonmentMembershipWithoutAnOriginIsNotAnAckOrPermissionToUseLegacy() = runBlocking {
+        orphanedCausalMetadata("INSERT INTO next_abandoned_requests VALUES('sync_operation','orphan','missing','never_sent','bad','bad','bad',NULL,NULL)",
+            "next_abandoned_requests", requestPresent = false)
+    }
+
+    @Test fun orphanedRecoveryPayloadAloneBlocksAllLegacyWritesAndIsClearedWithTheAccount() = runBlocking {
+        orphanedCausalMetadata("INSERT INTO next_recovery_audit_payloads VALUES('orphan','manifest',0,X'007FFF')",
+            "next_recovery_audit_payloads", requestPresent = false)
     }
 
     @Test fun preparedAndMalformedConfigurationJournalBlockAllLegacyWritesWithoutAnOriginAndClearIncludesThem() = runBlocking<Unit> {

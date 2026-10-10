@@ -854,6 +854,32 @@ APK/发现/XML/新覆盖输入及 testbed 清理通过。迁移旧 schema 1–14
 实际证据读取、审计/schema、投影恢复、确认和消费者尚未接入；现有恢复按钮未启用，
 未安装正式 APK/部署/清库/合并，未执行真实后端联合或人工/阶段全量验收。
 
+2026-10-10 审计持久化内部步骤：Room 16→17，schema 1–16 和旧迁移未改，新增三表；
+完整受影响迁移/基线/升级共 18 类，加 `NextRecoveryPayloadStoreTest`、
+`ProtocolNextActivationBarrierTest`、`NextCommonRestoreTest`、`NextStructureRestoreTest`、
+`NextChallengeRestoreTest`、`SyncProblemReaderTest`、`SettingsViewModelTest`，合计 25 类。
+授权 MI6/API35 的独立 `fc9ad60ee5b848f987117e57a215736c/targeted.json`：
+215/215，0 failure/error/skipped；connected 5m51s。根 51、构建/lint/原告警预算、实际
+APK/发现/XML/新非空覆盖输入及两包清理通过；150s/1500s 不变，不做全局覆盖校准。
+此前 `3626b56560264d9881ce042570d5603e` 因新 API opt-in/夹具数组类型告警停止于构建门禁，
+`7904ba3ccc9146a7b36ba1ec325ff73d` 因调用者写错设置测试包名停止于发现；两次均没有
+行为通过证据。修正声明/类型和选择实际完整类，不增加预算、不删测试、不拼接旧结果。
+
+实际验证包括全部 32 个旧实体行/DDL/冻结日志保留，新表初始为空，伪 schema 身份、
+占用第二/第三表和最终 Room 验证失败的事务回滚与冷重试；外键保留原来源、账户清理，
+三种孤立审计拒绝所有旧写入口，迟到游标触发器篡改任一新表回滚业务和游标。
+字节存储覆盖冷重开、缺/额外/损坏/错类型/超长块与键、重复/无父写、写触发器、取消、
+严格原 16 字段与整数/SQL 字节摘要，以及 2 MiB CursorWindow 以上的合法转义来源分块往返。
+生产迁移/payload/source blob 分别 `0217db2687fb9ea8bfe8a2b61555f31a12cf43d0`、
+`5aaa6671c7f5f094c84166ac84ddd7840dd95542`、`585166ec8929d08e89119b0b2a14f5c93ca92228`；
+新迁移/存储测试 blob `a1cce5257fdfea26ef8d24b25345f7295c535c6e`、
+`6917e9ac8835ea3cda4771a5daea5ef9844826fc`，schema17 blob
+`bfe324f104f4dcefba517e0f53df6686bf1de686`，identity `dba3a0b170547a938427cec11c066c9e`。
+本结果不是完整审计组/实际 SQL 图/投影确认及消费者恢复可用证据；按钮未开放，正式包未
+安装/清除，无新 PR/精确提交 CI、后端联合、阶段全量、业务备份恢复或人工/外网/NAS 验收。
+继续接完整恢复链后，按 D-020 的相应矩阵及关键接入联合/全量门禁验证，不重跑未变内部用例
+凑进度，也不能据本次定向结果放宽完成条件。
+
 日常定向真机入口按完整类选择，不接受方法、包、通配符或外部参数注入：
 
 ```bash
