@@ -42,11 +42,11 @@ class NextOrdinaryResultStoreTest : NextCoreRequestFixture() {
             when (type) {
                 // This low-level acceptance fixture deliberately exercises hard-deleted caches.
                 // Formal typed repository deletion retains rows until ACK and is covered by
-                // NextPlanDeletionWorkflowTest; do not nest its account lock inside producer.write.
+                // NextPlanDeletionWorkflowTest/NextMetricDeletionWorkflowTest; do not nest its account lock here.
                 "plan_node" -> db.habitDao().delete(requireNotNull(db.habitDao().getHabitByUuid(uuid)))
-                "metric" -> metrics().deleteMetric(requireNotNull(db.metricDao().getMetricByUuid(uuid)))
+                "metric" -> db.metricDao().delete(requireNotNull(db.metricDao().getMetricByUuid(uuid)))
                 "metric_observation" -> db.metricLogDao().delete(requireNotNull(db.metricLogDao().getLogByUuid(uuid)))
-                "activity_metric_link" -> metrics().unlinkHabit(requireNotNull(db.habitMetricLinkDao().getLinkByUuid(uuid)).id)
+                "activity_metric_link" -> db.habitMetricLinkDao().delete(requireNotNull(db.habitMetricLinkDao().getLinkByUuid(uuid)))
                 else -> error("Not deletable")
             }
         }

@@ -206,7 +206,7 @@ class HabitRepository @Inject constructor(
         require(habitDao.getHabitByUuid(habit.uuid) == null) { "OBJECT_CREATE_ID_REUSED" }
         val habitId = habitDao.insert(habit)
         selectedMetricIds.forEach { metricId ->
-                val metric = requireNotNull(database.metricDao().getMetricById(metricId)) {
+                val metric = requireNotNull(database.metricDao().getVisibleMetricById(metricId)) {
                     "Selected metric no longer exists: $metricId"
                 }
                 database.habitMetricLinkDao().insertOrIgnore(
@@ -368,13 +368,20 @@ class HabitRepository @Inject constructor(
         val existingLinks = linkDao.getAllLinksForHabit(habit.id)
         existingLinks
             .filter { it.metricId !in selectedMetricIds }
-            .forEach { linkDao.delete(it) }
+            .forEach {
+                if (habit.appearance != null) NextMetricDeletionStore(database).stageLink(it)
+                else linkDao.delete(it)
+            }
+
+        existingLinks.filter { it.metricId in selectedMetricIds }.forEach {
+            NextMetricDeletionStore(database).requireLinkWritable(it)
+        }
 
         val existingMetricIds = existingLinks.mapTo(mutableSetOf()) { it.metricId }
         selectedMetricIds
             .filterNot { it in existingMetricIds }
             .forEach { metricId ->
-                val metric = requireNotNull(database.metricDao().getMetricById(metricId)) {
+                val metric = requireNotNull(database.metricDao().getVisibleMetricById(metricId)) {
                     "Selected metric no longer exists: $metricId"
                 }
                 linkDao.insertOrIgnore(

@@ -79,6 +79,22 @@ class NextBusinessWorkflowTest : NextObjectEditorFixture() {
         assertNull(vm.uiState.value.errorMessage)
     }
 
+    @Test fun retainedMetricDeletionClearsActualDetailAuthorityAndOpenEditingDialogs() = runBlocking<Unit> {
+        val repo = creatingMetrics()
+        val vm = withContext(Dispatchers.Main) { own(MetricDetailViewModel(app, db.metricDao(), db.metricLogDao(),
+            db.habitMetricLinkDao(), db.habitDao(), repo, SavedStateHandle(mapOf("metricId" to metric.id)))) }
+        withTimeout(5000) { vm.uiState.first { !it.isLoading && it.writeAuthority != null } }
+        withContext(Dispatchers.Main) { vm.toggleValueInput(); vm.toggleDeleteConfirm() }
+        repo.deleteMetric(metric, repo.getMetricForEditing(metric.id).authority)
+        val state = withTimeout(5000) { vm.uiState.first { it.metric == null && it.errorMessage != null } }
+        assertNull(state.writeAuthority); assertFalse(state.showValueInput); assertFalse(state.showDeleteConfirm)
+        assertFalse(state.showLinkHabit); assertNull(state.showUnlinkConfirm); assertTrue(state.selectedHabitIds.isEmpty())
+        val rows = db.syncOutboxDao().getAll()
+        withContext(Dispatchers.Main) { vm.recordValue(7.0, "stale detail") }
+        assertEquals(rows, db.syncOutboxDao().getAll()); assertEquals(0, db.metricLogDao().countAll())
+        assertEquals(metric, db.metricDao().getMetricById(metric.id))
+    }
+
     @Test fun lateFactOriginFailureRollsBackCompletionReactivationAndAllNewQueueRows() = runBlocking<Unit> {
         val repo = creatingHabits()
         repo.updateIsActive(habit.id, false, app)
@@ -143,20 +159,24 @@ class NextBusinessWorkflowTest : NextObjectEditorFixture() {
         assertTrue(db.completionDao().getByHabitOnce(timerHabit.id).isEmpty())
     }
 
-    @Test fun metricDeleteCapturesItsCascadedObservationAndLinkTombstonesAtomically() = runBlocking<Unit> {
+    @Test fun metricDeleteRetainsObservationsAndLinksUntilTheirRealResultsAtomically() = runBlocking<Unit> {
         val repo = creatingMetrics()
         repo.recordValue(metric.id, 2.0, "history")
         repo.linkHabits(metric, setOf(habit.id))
         val prior = db.syncOutboxDao().getAll()
         repo.deleteMetric(metric, repo.getMetricForEditing(metric.id).authority)
-        assertNull(db.metricDao().getMetricById(metric.id)); assertEquals(0, db.metricLogDao().countAll())
-        assertTrue(db.habitMetricLinkDao().getAllLinksForHabit(habit.id).isEmpty())
+        assertEquals(metric, db.metricDao().getMetricById(metric.id)); assertEquals(1, db.metricLogDao().countAll())
+        assertNull(db.metricDao().getVisibleMetricById(metric.id))
+        assertEquals(1, db.habitMetricLinkDao().getAllLinksForHabit(habit.id).size)
+        assertTrue(db.habitMetricLinkDao().getVisibleLinksForHabit(habit.id).isEmpty())
         val rows = db.syncOutboxDao().getAll()
         assertTrue(rows.containsAll(prior))
-        assertEquals(setOf("metric", "metric_log", "link"), rows.filter { it.action == "delete" }.map { it.recordType }.toSet())
+        assertEquals(setOf("metric", "link"), rows.filter { it.action == "delete" }.map { it.recordType }.toSet())
+        assertFalse(rows.any { it.recordType == "metric_log" && it.action == "delete" })
         assertTrue(rows.all { originalIntent(it).protocol == 5 })
         reopenEditors()
-        assertNull(db.metricDao().getMetricById(metric.id)); assertEquals(rows, db.syncOutboxDao().getAll())
+        assertEquals(metric, db.metricDao().getMetricById(metric.id)); assertEquals(rows, db.syncOutboxDao().getAll())
+        assertNull(db.metricDao().getVisibleMetricById(metric.id)); assertEquals(1, db.metricLogDao().countAll())
     }
 
     @Test fun racingOrdinaryUndoKeepsItsNoOpSemanticsAndDoesNotCreateASecondRevert() = runBlocking<Unit> {

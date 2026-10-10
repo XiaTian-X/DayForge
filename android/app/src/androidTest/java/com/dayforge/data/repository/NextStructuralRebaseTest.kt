@@ -221,7 +221,7 @@ class NextStructuralRebaseTest {
         }
     }
 
-    @Test fun factsTimerOnceStatesMetricDeletesAndUnknownFieldsAreNeverAdoptedByStructuralRebasing() {
+    @Test fun factsTimerOnceStatesMalformedDeletesAndUnknownFieldsAreNeverAdoptedByStructuralRebasing() {
         val first = operation(metric())
         for (type in listOf("activity_event", "metric_observation", "timer_command", "unknown")) {
             val a = first.copy(entityType = type)
@@ -248,9 +248,9 @@ class NextStructuralRebaseTest {
         }
     }
 
-    @Test fun explicitPlanAndLinkDeletesUseOnlyTheirOwnBoundLivePredecessorAndKeepExactPolicy() {
-        for (body in listOf(plan(), goal(), link())) {
-            val type = if (body.containsKey("node_kind")) "plan_node" else "activity_metric_link"
+    @Test fun explicitStructureDeletesUseOnlyTheirOwnBoundLivePredecessorAndKeepExactPolicy() {
+        for (body in listOf(plan(), goal(), link(), metric())) {
+            val type = if (body.containsKey("node_kind")) "plan_node" else if ("activity_uuid" in body) "activity_metric_link" else "metric"
             val first = operation(body, type = type)
             val payload = if (body["node_kind"] == JsonPrimitive("goal"))
                 buildJsonObject { put("child_policy", "detach_children") } else buildJsonObject {}

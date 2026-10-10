@@ -396,22 +396,41 @@ class TimerServicePersistenceTest {
         metricCoordinator.showPromptAfterTimerStop(habitId, stopAuthority)
         val refreshed = requireNotNull(metricCoordinator.postCheckInState.value?.timerPrompt)
         val link = requireNotNull(database.habitMetricLinkDao().getLink(habitId, metricId))
-        metrics.unlinkHabit(link.id, link.uuid)
-        assertFalse(kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-            metricCoordinator.recordMetricValues(habitId, inputs, expectedTimerPrompt = refreshed)
-        })
-        assertTrue(database.metricLogDao().getAllLogsForMetric(metricId).isEmpty())
-        metrics.linkHabits(requireNotNull(database.metricDao().getMetricById(metricId)), setOf(habitId))
         assertTrue(metricCoordinator.recordMetricValues(habitId, inputs, expectedTimerPrompt = refreshed))
         assertTrue(metricCoordinator.recordMetricValues(habitId, inputs, expectedTimerPrompt = refreshed)) // exact UI retry, not another observation
         val metricLog = database.metricLogDao().getAllLogsForMetric(metricId).single()
         assertEquals("g", metricLog.unit); assertEquals(1.25, metricLog.value, 0.0)
         val recordQueue = database.syncOutboxDao().getAll().single { it.recordType == "metric_log" }
         assertNotNull(database.nextRequestDao().origin(com.dayforge.data.repository.NEXT_OPERATION, recordQueue.operationId))
+        // A fresh, unsubmitted prompt is a new write, unlike the successful exact retry above.
+        metricCoordinator.showPromptAfterTimerStop(habitId, stopAuthority)
+        val unsubmitted = requireNotNull(metricCoordinator.postCheckInState.value?.timerPrompt)
+        assertNotSame(refreshed, unsubmitted)
+        metrics.unlinkHabit(link.id, link.uuid)
+        val pendingDelete = database.syncOutboxDao().getAll()
+        assertEquals(link, database.habitMetricLinkDao().getLinkByUuid(link.uuid))
+        assertFalse(kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+            metricCoordinator.recordMetricValues(habitId, inputs, expectedTimerPrompt = unsubmitted)
+        })
+        assertTrue(runCatching {
+            metrics.linkHabits(requireNotNull(database.metricDao().getMetricById(metricId)), setOf(habitId))
+        }.exceptionOrNull() is IllegalStateException)
+        assertEquals(pendingDelete, database.syncOutboxDao().getAll())
+        assertEquals(listOf(metricLog), database.metricLogDao().getAllLogsForMetric(metricId))
+        // A NEW association is possible after its real delete ACK, covered by the complete
+        // NextMetricDeletionWorkflowTest HTTP chain; never cancel/erase this pending source.
+        // Verify ownership independently of the now-removed link, not merely another rejection.
+        var published = 0
+        timerWriter.publish(habitId, stopAuthority) { published++ }
+        assertEquals(1, published)
         sessions.exclusive { tokens.saveLoginSession("synthetic-other", "synthetic-refresh", "other",
             "ac350000-0000-4000-8000-000000000099", false) }
+        assertEquals("TIMER_FOLLOW_UP_STALE_ACCOUNT", runCatching {
+            timerWriter.publish(habitId, stopAuthority) { published++ }
+        }.exceptionOrNull()?.message)
+        assertEquals(1, published)
         assertFalse(kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-            metricCoordinator.recordMetricValues(habitId, inputs, expectedTimerPrompt = refreshed)
+            metricCoordinator.recordMetricValues(habitId, inputs, expectedTimerPrompt = unsubmitted)
         })
         assertEquals(listOf(metricLog), database.metricLogDao().getAllLogsForMetric(metricId))
     }

@@ -276,14 +276,14 @@ class HabitDetailViewModel @Inject constructor(
         val todayEnd = DateTimeUtils.startOfNextDayMillis(todayStart)
 
         // Get metric links for the goal habit itself
-        val ownLinks = habitMetricLinkDao.getAllLinksForHabit(habit.id)
+        val ownLinks = habitMetricLinkDao.getVisibleLinksForHabit(habit.id)
 
         // Get children and their metric links
         val children = habit.uuid.let { parentUuid ->
             habitDao.getChildrenByParentUuid(parentUuid).first()
         }
         val childLinks = children.flatMap { child ->
-            habitMetricLinkDao.getAllLinksForHabit(child.id)
+            habitMetricLinkDao.getVisibleLinksForHabit(child.id)
         }
 
         // Aggregate all links, deduplicate by metricId
@@ -293,7 +293,7 @@ class HabitDetailViewModel @Inject constructor(
 
         // Build MetricDisplayInfo for each unique metric
         allLinks.mapNotNull { link ->
-            val metric = metricDao.getMetricById(link.metricId)
+            val metric = metricDao.getVisibleMetricById(link.metricId)
             if (metric == null) return@mapNotNull null
 
             // Get today's logs

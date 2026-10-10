@@ -181,7 +181,7 @@ class EditHabitViewModel @Inject constructor(
                         val originalScheduleDays = if (entity.completionPolicy == "one_and_done") 0 else getScheduleDays(entity.schedule)
 
                         // Load existing metric links
-                        val existingLinks = habitMetricLinkDao.getAllLinksForHabit(entity.id)
+                        val existingLinks = habitMetricLinkDao.getVisibleLinksForHabit(entity.id)
                         val linkedMetricIds = existingLinks.map { it.metricId }.toSet()
                         // Room reads above suspend; recheck after them before replacing either draft or ticket.
                         if (preserveEdit()) return@collect

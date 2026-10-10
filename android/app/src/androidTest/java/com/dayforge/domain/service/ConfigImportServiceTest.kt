@@ -68,6 +68,23 @@ class ConfigImportServiceTest {
     }
 
     @Test
+    fun legacy_export_cannot_treat_hidden_typed_metric_as_empty_configuration() = runBlocking {
+        val id = database.metricDao().insert(MetricEntity(name = "Typed retained metric", unit = "kg",
+            iconResId = 1, colorHex = "#123456", appearance = com.dayforge.domain.model.ObjectAppearance(
+                com.dayforge.domain.model.IconReference.Role("metric.default"), "#123456", "theme")))
+        val before = database.metricDao().getMetricById(id); val queue = database.syncOutboxDao().getAll()
+        assertTrue(database.habitDao().getAllHabitsOnce().isEmpty())
+        // Display filtering may hide all metrics. The protocol gate must consult the raw DAO.
+        val hidden = object : com.dayforge.data.local.dao.MetricDao by database.metricDao() {
+            override suspend fun getVisibleMetricsOnce(): List<MetricEntity> = emptyList()
+        }
+        val result = ConfigExportService(database.habitDao(), hidden, database.habitMetricLinkDao()).exportConfigToJson()
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull()?.cause is com.dayforge.data.repository.ProtocolNextDataRequiresUpgradeException)
+        assertEquals(before, database.metricDao().getMetricById(id)); assertEquals(queue, database.syncOutboxDao().getAll())
+    }
+
+    @Test
     fun invalid_link_leaves_configuration_and_generated_outbox_unchanged() = runBlocking {
         database.habitDao().insert(
             HabitEntity(
@@ -257,6 +274,7 @@ class ConfigImportServiceTest {
         coEvery { guard.requireAllowed() } throws CancellationException("cancelled")
         val importer = ConfigImportService(database.habitDao(), database.metricDao(), database.habitMetricLinkDao(), database, guard)
         val dao = mockk<com.dayforge.data.local.dao.HabitDao>()
+        coEvery { dao.hasProtocolNextState() } returns false
         coEvery { dao.getVisibleHabitsOnce() } throws CancellationException("cancelled")
         val exporter = ConfigExportService(dao, database.metricDao(), database.habitMetricLinkDao())
         var cancelled = 0

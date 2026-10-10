@@ -127,6 +127,7 @@ internal class NextCoreLocalIntentStore(
                         val operation = operation(row)
                         if (operation.action == "upsert") {
                             val deleted = NextPlanDeletionStore(database)
+                            val metrics = NextMetricDeletionStore(database)
                             if (operation.entityType == "plan_node") {
                                 deleted.requireWritable(operation.entityUuid)
                                 operation.payload["parent_uuid"]?.takeUnless { it == JsonNull }?.jsonPrimitive?.content
@@ -134,6 +135,11 @@ internal class NextCoreLocalIntentStore(
                             } else if (operation.entityType in setOf("activity_event", "activity_metric_link")) {
                                 deleted.requireWritable(operation.payload.getValue("activity_uuid").jsonPrimitive.content)
                             }
+                            if (operation.entityType == "metric") metrics.requireWritable(operation.entityUuid)
+                            if (operation.entityType in setOf("metric_observation", "activity_metric_link"))
+                                metrics.requireWritable(operation.payload.getValue("metric_uuid").jsonPrimitive.content)
+                            if (operation.entityType == "activity_metric_link") metrics.requireLinkWritable(
+                                requireNotNull(database.habitMetricLinkDao().getLinkByUuid(operation.entityUuid)))
                         }
                         val countFrontier = NextCountDayStore(database).capturePlanFrontier(operation, id, access,
                             tokens::localSyncAccess)
@@ -260,7 +266,8 @@ internal class NextCoreLocalIntentStore(
             }
         } else if (row.action == "delete") {
             require(row.recordType in setOf("habit", "metric", "metric_log", "link"))
-            NextPlanDeletionStore.payload(row) ?: SyncV2Mapper.deletePayload(row.recordType, row.referenceUuid)
+            NextPlanDeletionStore.payload(row) ?: NextMetricDeletionStore.payload(row) ?:
+                SyncV2Mapper.deletePayload(row.recordType, row.referenceUuid)
         } else when (row.recordType) {
             "habit" -> NextStructureMapper.writePlan(requireNotNull(database.habitDao().getHabitByUuid(row.entityUuid)))
             "metric" -> NextStructureMapper.writeMetric(requireNotNull(database.metricDao().getMetricByUuid(row.entityUuid)))

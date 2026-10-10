@@ -339,6 +339,8 @@ internal class CompletionMetricPromptStore(
         if (habit == null || completion?.habitId != habit.id || completion.habitUuid != habit.uuid ||
             completion.oneTimeAction != "complete" || metric == null || link == null || !link.isActive ||
             link.habitId != habit.id || link.metricId != metric.id || link.habitUuid != habit.uuid || link.metricUuid != metric.uuid ||
+            database.metricDao().hasPendingNextDeletion(metric.uuid) ||
+            NextMetricDeletionStore(database).hasExplicitLinkDeletion(link.uuid) ||
             outbox.getState("plan_node", habit.uuid)?.deleted == true ||
             outbox.getState("metric", metric.uuid)?.deleted == true || outbox.getState("activity_metric_link", link.uuid)?.deleted == true
         ) fail(CompletionMetricPromptException.Reason.TARGET_MISSING)
@@ -371,9 +373,9 @@ internal class CompletionMetricPromptStore(
         /** Called only inside the completion transaction, after its fact/outbox were inserted. */
         suspend fun createInTransaction(database: HabitDatabase, habit: HabitEntity, eventUuid: String) {
             check(database.inTransaction())
-            val entries = database.habitMetricLinkDao().getAllLinksForHabit(habit.id)
+            val entries = database.habitMetricLinkDao().getVisibleLinksForHabit(habit.id)
                 .filter { it.isActive && it.promptOnComplete }.map { link ->
-                    val metric = checkNotNull(database.metricDao().getMetricById(link.metricId))
+                    val metric = checkNotNull(database.metricDao().getVisibleMetricById(link.metricId))
                     check(link.habitUuid == habit.uuid && link.metricUuid == metric.uuid)
                     check(listOf(link.uuid, metric.uuid).all(::isContractUuid))
                     CompletionMetricDraft(link.uuid, metric.uuid, metric.name, metric.unit, metric.decimalPlaces,

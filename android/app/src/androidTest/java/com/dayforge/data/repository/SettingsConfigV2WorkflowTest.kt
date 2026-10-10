@@ -25,6 +25,7 @@ import com.dayforge.data.model.SyncProgress
 import com.dayforge.domain.service.*
 import com.dayforge.ui.screens.settings.*
 import io.mockk.every
+import io.mockk.coEvery
 import io.mockk.mockk
 import java.io.File
 import java.io.FileDescriptor
@@ -114,6 +115,9 @@ class SettingsConfigV2WorkflowTest : NextObjectEditorFixture() {
     private suspend fun mount(flow: SettingsConfigV2Workflow) {
         val sync = mockk<SyncManager>()
         every { sync.syncProgress } returns MutableStateFlow(SyncProgress.Idle)
+        every { sync.problemChanges() } returns flowOf(Unit)
+        // Problem presentation is outside this archive workflow; do not invent an empty/ACK result.
+        coEvery { sync.readProblems() } returns com.dayforge.data.model.SyncProblems.Checking
         every { sync.getLastSyncTime() } returns flowOf(null)
         every { sync.canEditStructure() } returns flowOf(true)
         every { sync.isPrimaryEditor() } returns flowOf(false)

@@ -51,7 +51,7 @@ class MetricRepository @Inject constructor(
         metricLogDao.getLatestLog(metricId)
 
     suspend fun getMetricForEditing(id: Long): ObjectEditSnapshot<MetricEntity> =
-        nextObjectEditor?.metric(id) ?: ObjectEditSnapshot(metricDao.getMetricById(id), null)
+        nextObjectEditor?.metric(id) ?: ObjectEditSnapshot(metricDao.getVisibleMetricById(id), null)
 
     suspend fun getLogsInRange(
         metricId: Long,
@@ -78,7 +78,7 @@ class MetricRepository @Inject constructor(
             require(metricDao.getMetricByUuid(saved.uuid) == null) { "OBJECT_CREATE_ID_REUSED" }
             val metricId = metricDao.insert(saved)
             selectedHabitIds.forEach { habitId ->
-                val habit = requireNotNull(habitDao.getHabitById(habitId)) {
+                val habit = requireNotNull(habitDao.getVisibleHabitById(habitId)) {
                     "Selected habit no longer exists: $habitId"
                 }
                 linkDao.insertOrIgnore(
@@ -130,7 +130,10 @@ class MetricRepository @Inject constructor(
     }
 
     suspend fun deleteMetric(metric: MetricEntity, authority: ObjectEditAuthority? = null) {
-        mutate(listOf(metric), authority) { metricDao.delete(metric) }
+        mutate(listOf(metric), authority, deleting = true) {
+            if (metric.appearance != null) NextMetricDeletionStore(database).stageMetric(metric)
+            else metricDao.delete(metric)
+        }
     }
 
     suspend fun unlinkHabit(linkId: Long, expectedLinkUuid: String? = null, authority: ObjectEditAuthority? = null) {
@@ -139,17 +142,19 @@ class MetricRepository @Inject constructor(
         val metric = requireNotNull(metricDao.getMetricById(link.metricId))
         mutate(listOf(metric), authority) {
             check(linkDao.getById(linkId) == link) { "OBJECT_WRITE_LINK_CHANGED" }
-            linkDao.delete(link)
+            if (metric.appearance != null) NextMetricDeletionStore(database).stageLink(link)
+            else linkDao.delete(link)
         }
     }
 
     suspend fun linkHabits(metric: MetricEntity, habitIds: Set<Long>, authority: ObjectEditAuthority? = null) {
         mutate(listOf(metric), authority) {
             habitIds.forEach { habitId ->
-                val habit = requireNotNull(habitDao.getHabitById(habitId)) {
+                val habit = requireNotNull(habitDao.getVisibleHabitById(habitId)) {
                     "Selected habit no longer exists: $habitId"
                 }
                 check((habit.appearance == null) == (metric.appearance == null)) { "OBJECT_WRITE_MIXED_PROTOCOL" }
+                linkDao.getLink(habitId, metric.id)?.let { NextMetricDeletionStore(database).requireLinkWritable(it) }
                 linkDao.insertOrIgnore(
                     HabitMetricLinkEntity(
                         habitId = habitId,
@@ -210,6 +215,7 @@ class MetricRepository @Inject constructor(
                 check(habitDao.getVisibleHabitById(promptHabit.id)?.uuid == promptHabit.uuid) { "METRIC_PROMPT_ACTIVITY_CHANGED" }
                 targets.forEach { metric ->
                     val link = requireNotNull(linkDao.getLink(promptHabit.id, metric.id)) { "METRIC_PROMPT_LINK_CHANGED" }
+                    NextMetricDeletionStore(database).requireLinkWritable(link)
                     check(link.isActive && link.promptOnComplete && link.habitUuid == promptHabit.uuid && link.metricUuid == metric.uuid) {
                         "METRIC_PROMPT_LINK_CHANGED"
                     }
@@ -234,13 +240,16 @@ class MetricRepository @Inject constructor(
     }
 
     private suspend fun <T> mutate(metrics: List<MetricEntity>, authority: ObjectEditAuthority? = null,
-        structural: Boolean = true, commit: suspend () -> T): T {
+        structural: Boolean = true, deleting: Boolean = false, commit: suspend () -> T): T {
         if (metrics.any { it.appearance != null } && nextObjectEditor != null) {
-            return nextObjectEditor.mutateMetrics(metrics, authority, commit)
+            return nextObjectEditor.mutateMetrics(metrics, authority, deleting, commit)
         }
         check(authority == null) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
         if (structural) structuralEditGuard?.requireAllowed()
-        return database.withTransaction { commit() }
+        return database.withTransaction {
+            if (!deleting) metrics.forEach { NextMetricDeletionStore(database).requireWritable(it.uuid) }
+            commit()
+        }
     }
 
     private fun validateTargets(metric: MetricEntity) {

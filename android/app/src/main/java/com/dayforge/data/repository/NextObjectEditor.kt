@@ -64,7 +64,7 @@ class NextObjectEditor @Inject constructor(
     internal suspend fun metric(id: Long): ObjectEditSnapshot<MetricEntity> = sessions.exclusive {
         val access = tokens.localCoreWriteAccess()
         database.withTransaction {
-            val row = database.metricDao().getMetricById(id)
+            val row = database.metricDao().getVisibleMetricById(id)
             val ticket = row?.takeIf { it.appearance != null }?.let {
                 ObjectEditAuthority(requireNotNull(access) { "OBJECT_EDIT_ACCESS_DENIED" }.session,
                     it.uuid, "metric", NextStructureMapper.writeMetric(it), producer.captureDisplayedRoundsInTransaction())
@@ -108,6 +108,7 @@ class NextObjectEditor @Inject constructor(
         val before = requireNotNull(database.metricDao().getMetricById(edited.id)) { "OBJECT_EDIT_NOT_FOUND" }
         authorize(ticket, requireNotNull(edited.appearance), requireNotNull(before.appearance), false)
         return write(ticket) {
+            NextMetricDeletionStore(database).requireWritable(ticket.uuid)
             val current = requireNotNull(database.metricDao().getMetricById(edited.id)) { "OBJECT_EDIT_NOT_FOUND" }
             check(current.uuid == ticket.uuid && NextStructureMapper.writeMetric(current) == ticket.original) {
                 "OBJECT_EDIT_CHANGED_RELOAD_REQUIRED"
@@ -172,7 +173,7 @@ class NextObjectEditor @Inject constructor(
 
     /** Batch observations/links share one owner and transaction, including all their original intents. */
     internal suspend fun <T> mutateMetrics(expected: List<MetricEntity>, authority: ObjectEditAuthority? = null,
-        commit: suspend () -> T): T {
+        deleting: Boolean = false, commit: suspend () -> T): T {
         require(expected.isNotEmpty() && expected.all { it.appearance != null }) { "OBJECT_WRITE_MIXED_PROTOCOL" }
         val first = expected.first()
         val ticket = authority ?: requireNotNull(metric(first.id).authority) { "OBJECT_WRITE_TICKET_REQUIRED" }
@@ -180,6 +181,7 @@ class NextObjectEditor @Inject constructor(
             ticket.original == NextStructureMapper.writeMetric(first)) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
         return write(ticket) {
             expected.forEach { row ->
+                if (!deleting) NextMetricDeletionStore(database).requireWritable(row.uuid)
                 val current = requireNotNull(database.metricDao().getMetricById(row.id)) { "OBJECT_WRITE_NOT_FOUND" }
                 check(current.uuid == row.uuid && NextStructureMapper.writeMetric(current) == NextStructureMapper.writeMetric(row)) {
                     "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED"

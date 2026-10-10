@@ -217,7 +217,11 @@ class NextRecoveryStructuralLineageTest : NextObjectEditorFixture() {
     }
     @Test fun metricDeletionUsesItsActualSourceAndFullTombstoneReceiptWithoutInventedAncestry() = runBlocking<Unit> {
         val (http, _) = initialize(); val draft = editor.metric(metric.id)
-        editingMetrics().deleteMetric(requireNotNull(draft.value), draft.authority)
+        // Preserve the exact-original-only legacy/import physical-delete fixture. NEW formal
+        // retained deletes are covered by NextMetricDeletionWorkflowTest with real ancestry.
+        producer().writeRounds(requireNotNull(requireNotNull(draft.authority).rounds)) {
+            db.metricDao().delete(requireNotNull(draft.value))
+        }
         val row = db.syncOutboxDao().getAll().single()
         assertEquals("delete", row.action); assertNull(db.nextStructuralCausalDao().dependency(row.operationId))
         val pending = lineage(row.operationId).links.single()

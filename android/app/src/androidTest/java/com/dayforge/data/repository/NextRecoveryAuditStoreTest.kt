@@ -254,6 +254,60 @@ class NextRecoveryAuditStoreTest : NextObjectEditorFixture() {
         assertEquals(NextStructureMapper.writeMetric(metric), draft.after.body)
         assertEquals(queue, db.syncOutboxDao().getAll()); assertEquals(before, db.metricDao().getMetricById(metric.id)); assertEquals(calls, server.requests.size)
     }
+
+    @Test fun rejectedRetainedLinkPlansSameLocalIdAndStillBlocksItsMetricDeletion() = runBlocking<Unit> {
+        val (http, server) = initialize()
+        creatingMetrics().linkHabits(metric, setOf(habit.id))
+        val creation = db.syncOutboxDao().getAll().single()
+        sender(http).sendAndAcceptOperation(access(), creation.operationId)
+        val link = db.habitMetricLinkDao().getAllLinksForMetric(metric.id).single()
+        editingMetrics().unlinkHabit(link.id, link.uuid)
+        val deletion = db.syncOutboxDao().getAll().single()
+        val root = refuse(http, deletion.operationId)
+        val before = db.habitMetricLinkDao().getLinkByUuid(link.uuid)
+        val frozen = preview(http, root)
+        val draft = db.withTransaction { projections.plan(frozen) }.single()
+        assertEquals(link.id, draft.before.localId); assertEquals(link.id, draft.after.localId)
+        assertEquals(link.habitUuid, draft.after.local.getValue("habitUuid").jsonPrimitive.content)
+        assertEquals(link.metricUuid, draft.after.local.getValue("metricUuid").jsonPrimitive.content)
+        assertEquals(before, db.habitMetricLinkDao().getLinkByUuid(link.uuid))
+        // Leave the rejected link intact; do not bypass that real dependency by deleting its metric.
+        val metricTicket = editor.metric(metric.id)
+        editingMetrics().deleteMetric(requireNotNull(metricTicket.value), metricTicket.authority)
+        val metricDelete = db.syncOutboxDao().getAll().single { it.recordType == "metric" }
+        val pushes = server.requests.count { it.path.endsWith("/push") }
+        assertEquals(NextRequestException.Reason.CAUSAL_PREDECESSOR_PENDING,
+            (rejected { sender(http).sendOperation(access(), metricDelete.operationId) } as NextRequestException).reason)
+        assertEquals(pushes, server.requests.count { it.path.endsWith("/push") })
+        assertNull(db.nextRequestDao().transmission(NEXT_OPERATION, metricDelete.operationId))
+        assertNotNull(db.metricDao().getMetricById(metric.id))
+        assertNull(db.metricDao().getVisibleMetricById(metric.id))
+        assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, deletion.operationId))
+    }
+
+    @Test fun rejectedRetainedMetricDeleteKeepsFullBaselineAndLocalIdentityForColdPlanning() = runBlocking<Unit> {
+        val (http, server) = initialize(); val ticket = editor.metric(metric.id)
+        editingMetrics().deleteMetric(requireNotNull(ticket.value), ticket.authority)
+        val deletion = db.syncOutboxDao().getAll().single()
+        val root = refuse(http, deletion.operationId); storage.reopen()
+        val original = requireNotNull(db.metricDao().getMetricById(metric.id)); val calls = server.requests.size
+        val frozen = preview(http, root)
+        val drafts = db.withTransaction { NextRecoveryProjectionStore(db).plan(frozen) }
+        val draft = drafts.single()
+        assertEquals(metric.id, draft.before.localId); assertEquals(metric.id, draft.after.localId)
+        assertEquals(NextStructureMapper.writeMetric(metric), draft.after.body)
+        assertEquals(original.iconResId, draft.after.local.getValue("iconResId").jsonPrimitive.int)
+        assertEquals(original, db.metricDao().getMetricById(metric.id)); assertEquals(calls, server.requests.size)
+        assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, deletion.operationId))
+        assertNull(db.metricDao().getVisibleMetricById(metric.id))
+        editor = NextObjectEditor(db, tokens, sessions, icons)
+        creator = NextObjectCreator(db, tokens, sessions, icons)
+        creatingMetrics().createMetric(metric.copy(id = 0, uuid = id(881)), creationAuthority = creator.capture())
+        val later = preview(http, root)
+        assertEquals("RECOVERY_PROJECTION_NAME_CONFLICT",
+            rejected { db.withTransaction { NextRecoveryProjectionStore(db).plan(later) } }.message)
+        assertEquals(original, db.metricDao().getMetricById(metric.id))
+    }
     @Test fun codecRejectsOmittedFieldsDuplicateKeysWrongTypesUnknownFieldsAndMalformedUtf8() = runBlocking<Unit> {
         val (saved, _) = saved()
         val checkpoint = db.withTransaction { audit.checkpoint(access()) }

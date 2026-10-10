@@ -56,6 +56,7 @@ internal class NextPlanDeletionStore(private val database: HabitDatabase) {
     /** Also used by direct send/accept, not just runtime scheduling. Rejected work still blocks. */
     suspend fun requireReady(queue: SyncOutboxEntity) {
         check(database.inTransaction())
+        NextMetricDeletionStore(database).requireReady(queue)
         if (queue.recordType == "link" && queue.action == "delete") {
             val link = database.habitMetricLinkDao().getLinkByUuid(queue.entityUuid) ?: return
             val activity = habits.getHabitById(link.habitId) ?: return

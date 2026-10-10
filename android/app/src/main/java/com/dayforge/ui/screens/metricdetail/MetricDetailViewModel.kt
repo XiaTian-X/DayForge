@@ -79,7 +79,7 @@ data class HabitForLinking(
  *
  * Per D-14: Save to MetricLogEntity via onConfirm callback
  * Per D-15: View history, manage links
- * Per D-16: Delete with confirmation, cascade to logs and links
+ * Per D-16: Delete with confirmation through the protocol-specific repository lifecycle
  */
 @HiltViewModel
 class MetricDetailViewModel @Inject constructor(
@@ -114,6 +114,14 @@ class MetricDetailViewModel @Inject constructor(
             metricDao.observeMetricById(metricId).collect { metric ->
                 if (metric == null) {
                     _uiState.value = _uiState.value.copy(
+                        metric = null,
+                        writeAuthority = null,
+                        showValueInput = false,
+                        showDeleteConfirm = false,
+                        showUnlinkConfirm = null,
+                        showLinkHabit = false,
+                        availableHabits = emptyList(),
+                        selectedHabitIds = emptySet(),
                         isLoading = false,
                         errorMessage = context.getString(R.string.metric_error_not_found)
                     )
@@ -255,7 +263,7 @@ class MetricDetailViewModel @Inject constructor(
 
     /**
      * Delete this metric and all associated data.
-     * Room cascades and the durable v2 outbox make this operation offline-safe.
+     * Legacy cascades or retained v5 rows and their outbox are committed atomically.
      */
     fun deleteMetric() {
         val metric = _uiState.value.metric ?: return
@@ -263,7 +271,7 @@ class MetricDetailViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                // Offline-safe: Room cascades and the v2 outbox are committed together.
+                // The repository owns offline staging and exact-ACK retention.
                 metricRepository.deleteMetric(metric, authority)
                 _uiState.value = _uiState.value.copy(
                     isDeleted = true,

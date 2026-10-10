@@ -287,7 +287,7 @@ class EditMetricViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                val existingMetric = metricDao.getMetricById(metricId)
+                val existingMetric = metricDao.getVisibleMetricById(metricId)
                 if (existingMetric == null) {
                     _uiState.value = _uiState.value.copy(
                         isSaving = false,

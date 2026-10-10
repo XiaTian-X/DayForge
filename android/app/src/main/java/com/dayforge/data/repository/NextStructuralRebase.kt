@@ -83,7 +83,7 @@ internal object NextStructuralRebase {
         require(predecessor.operationId != successor.operationId && predecessor.entityType == successor.entityType &&
             predecessor.entityUuid == successor.entityUuid && predecessor.action == "upsert" &&
             (successor.action == "upsert" || successor.action == "delete" &&
-                successor.entityType in setOf("plan_node", "activity_metric_link")))
+                successor.entityType in setOf("plan_node", "metric", "activity_metric_link")))
         val paths = when (predecessor.entityType) {
             "plan_node" -> planPaths
             "metric" -> metricPaths
@@ -127,7 +127,7 @@ internal object NextStructuralRebase {
                         Instant.parse(canonical.getValue("created_at").jsonPrimitive.content) &&
                     Instant.parse(predecessor.payload.getValue("created_at").jsonPrimitive.content) ==
                         Instant.parse(submittedPredecessor.payload.getValue("created_at").jsonPrimitive.content))
-            } else for (key in listOf("activity_uuid", "metric_uuid")) {
+            } else if (predecessor.entityType == "activity_metric_link") for (key in listOf("activity_uuid", "metric_uuid")) {
                 require(predecessor.payload[key] == canonical[key] &&
                     predecessor.payload[key] == submittedPredecessor.payload[key])
             }

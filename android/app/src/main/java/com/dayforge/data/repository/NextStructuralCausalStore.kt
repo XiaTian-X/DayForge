@@ -297,7 +297,7 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
 
     private fun ordinary(operation: SyncV2Operation): Boolean =
         operation.action == "upsert" && operation.entityType in setOf("plan_node", "metric", "activity_metric_link") ||
-            operation.action == "delete" && operation.entityType in setOf("plan_node", "activity_metric_link")
+            operation.action == "delete" && operation.entityType in setOf("plan_node", "metric", "activity_metric_link")
 
     private suspend fun original(id: String): NextRequestOriginEntity {
         require(isContractUuid(id))
@@ -372,6 +372,7 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         require(row.id > 0 && isContractUuid(row.operationId) && isContractUuid(row.entityUuid) &&
             row.entityUuid == row.wireEntityUuid && (row.action == "upsert" ||
                 row.action == "delete" && (row.recordType == "link" ||
+                    row.recordType == "metric" && NextMetricDeletionStore.payload(row) != null ||
                     row.recordType == "habit" && NextPlanDeletionStore.payload(row) != null)) &&
             row.recordType in setOf("habit", "metric", "link") &&
             row.payloadJson == null && row.baseRevision == null && row.basePayloadJson == null && row.attemptedAt == null &&
@@ -379,7 +380,8 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         row.referenceUuid?.let {
             // Existing habit triggers store the type here, not a parent/record UUID.
             require(if (row.recordType == "habit") row.action == "delete" && NextPlanDeletionStore.payload(row) != null ||
-                it in HabitType.entries.map { type -> type.name } else isContractUuid(it))
+                it in HabitType.entries.map { type -> type.name } else
+                isContractUuid(it) || NextMetricDeletionStore.payload(row) != null)
         }
     }
 
@@ -409,6 +411,10 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         check(database.inTransaction())
         if (!ordinary(operation) || operation.entityType == "plan_node" && operation.action == "delete" && NextPlanDeletionStore.payload(
                 requireNotNull(outbox.getById(origin.queueId))) == null) return
+        // Existing import/physical metric deletes remain exact-original-only. Only NEW retained
+        // user deletes capture their actual pending edit/create ancestry; never adopt old work.
+        if (operation.entityType == "metric" && operation.action == "delete" &&
+            NextMetricDeletionStore.payload(requireNotNull(outbox.getById(origin.queueId))) == null) return
         require(rowHash("sync_outbox", "id=?", arrayOf(origin.queueId)) == origin.sourceHash)
         val source = requireNotNull(outbox.getById(origin.queueId))
         fresh(source)
@@ -533,9 +539,8 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
             transmission.serverInstanceId == access.session.serverInstanceId && transmission.syncEpoch == access.session.syncEpoch &&
             transmission.deviceId == access.deviceId && transmission.wireHash == nextRequestHash(transmission.wireBytes))
         val envelope = envelope(transmission.wireBytes, transmission.wireHash)
-        // Metrics have no structural delete ancestry. Only the replacement receipt consumer
-        // accepts that exact original operation here; ordinary dependency/rebase rules stay
-        // unchanged. It still passes the SAME frozen envelope and typed result proof below.
+        // Legacy import/physical metric deletes have no ancestry. Their exact original receipt
+        // and NEW retained deletes still pass the SAME frozen envelope and typed result proof.
         val operation = if (metricDeleteReceipt) decodeNextOperationIntent(origin.intentJson).also {
             require(it.operationId == origin.requestId && (ordinary(it) ||
                 it.entityType == "metric" && it.action == "delete"))
@@ -743,7 +748,7 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
                 supersessionHash, state, evidenceHash, acceptanceHash, resultHash)
         }
         val actual = resolveInSnapshot(id, access) { dep, origin, supersession -> capture(origin, dep, supersession) }
-        if (links.isEmpty()) capture(original(id), null, null) // Metric delete intentionally has no D-015 ancestry.
+        if (links.isEmpty()) capture(original(id), null, null) // Legacy metric delete has no ancestry.
         check(NextChallengeStore(database).activeInTransaction(access) == rounds)
         NextRecoveryStructuralLineage(actual, links, checkpointHash)
     }

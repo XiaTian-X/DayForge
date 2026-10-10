@@ -179,6 +179,12 @@ internal class NextRecoveryProjectionStore(private val database: HabitDatabase) 
                 ?: old.takeIf { "metric" to old.uuid !in changes }
         }
         require(plans.map { it.name }.distinct().size == plans.size) { "RECOVERY_PROJECTION_NAME_CONFLICT" }
+        // Pending deletes release visible metric names without changing raw retained rows.
+        // Restoring a selected metric must not silently introduce a visible duplicate.
+        val visibleMetrics = metrics.filter {
+            "metric" to it.uuid in changes || !database.metricDao().hasPendingNextDeletion(it.uuid)
+        }
+        require(visibleMetrics.map { it.name }.distinct().size == visibleMetrics.size) { "RECOVERY_PROJECTION_NAME_CONFLICT" }
         val parents = plans.associateBy { it.uuid }; val metricIds = metrics.associateBy { it.uuid }
         require(plans.all { it.parentHabitId == null || parents[it.parentHabitId]?.habitType == HabitType.GOAL }) { "RECOVERY_PROJECTION_PARENT_INVALID" }
         val links = database.habitMetricLinkDao().getAllLinksOnce().mapNotNull { old ->
