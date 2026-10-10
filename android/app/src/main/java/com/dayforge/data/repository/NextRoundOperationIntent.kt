@@ -27,13 +27,16 @@ internal data class NextRoundOperationIntent(
     @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
     @SerialName("restart_frontier") val restartFrontier: NextRestartReference? = null,
     @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
-    @SerialName("restart_plan_proof_hash") val restartPlanProofHash: String? = null
+    @SerialName("restart_plan_proof_hash") val restartPlanProofHash: String? = null,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    @SerialName("count_plan_frontier") val countPlanFrontier: NextCountPlanFrontier? = null
 ) {
     init {
         require(challengeContract == 1 && isContractUuid(capturedDeviceId))
         require(context.sourceUuid == operation.operationId && !context.legacyInitial)
         RoundSyncPushRequest(1, capturedDeviceId, listOf(operation), listOf(context))
         validateNextSyncOperation(operation)
+        countPlanFrontier?.requireOperation(operation)
         restartFrontier?.let { ref ->
             require(!initialCreation && goalChildFrontier == null && context.head?.activityUuid == ref.head.activityUuid)
             require(operation.entityType in setOf("plan_node", "activity_event"))
@@ -66,12 +69,25 @@ private suspend fun <T> decodeIntent(bytes: ByteArray, serializer: KSerializer<T
 
 internal suspend fun roundOperationIntent(body: String): NextRoundOperationIntent? {
     // Discriminator selects a STRICT decoder. Unknown/wrong tags never fall back to an old intent.
-    return if (Json.parseToJsonElement(body).jsonObject.containsKey("challenge_contract"))
-        decodeIntent(body.toByteArray(Charsets.UTF_8), NextRoundOperationIntent.serializer()) else null
+    val fields = Json.parseToJsonElement(body).jsonObject
+    return if (fields.containsKey("challenge_contract")) {
+        if (fields.containsKey("count_plan_frontier")) require(fields["count_plan_frontier"] is JsonObject)
+        decodeIntent(body.toByteArray(Charsets.UTF_8), NextRoundOperationIntent.serializer())
+    } else null
 }
 
 internal suspend fun decodeNextOperationIntent(body: String): SyncV2Operation =
-    roundOperationIntent(body)?.operation ?: decodeIntent(body.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
+    roundOperationIntent(body)?.operation ?: plainCountIntent(body)?.operation ?:
+        decodeIntent(body.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
+
+private suspend fun plainCountIntent(body: String): NextCountOperationIntent? =
+    if (Json.parseToJsonElement(body).jsonObject.containsKey("count_plan_frontier"))
+        decodeIntent(body.toByteArray(Charsets.UTF_8), NextCountOperationIntent.serializer()) else null
+
+internal suspend fun countPlanFrontier(body: String): NextCountPlanFrontier? {
+    val round = roundOperationIntent(body)
+    return if (round != null) round.countPlanFrontier else plainCountIntent(body)?.countPlanFrontier
+}
 
 internal suspend fun decodeNextOperationEnvelope(bytes: ByteArray): NextSyncPushRequest {
     return if (Json.parseToJsonElement(bytes.toString(Charsets.UTF_8)).jsonObject.containsKey("challenge_contract")) {
@@ -96,7 +112,9 @@ internal suspend fun validateNextOperationEnvelope(body: String, bytes: ByteArra
 
 internal suspend fun encodeNextOperationIntent(operation: SyncV2Operation, previous: String): ByteArray {
     val round = roundOperationIntent(previous)
-    return if (round == null) encodeSyncRequest(SyncV2Operation.serializer(), operation)
+    return if (round == null) plainCountIntent(previous)?.let {
+        encodeSyncRequest(NextCountOperationIntent.serializer(), it.copy(operation = operation))
+    } ?: encodeSyncRequest(SyncV2Operation.serializer(), operation)
     else encodeSyncRequest(NextRoundOperationIntent.serializer(), round.copy(operation = operation,
         context = round.context.copy(sourceUuid = operation.operationId)))
 }

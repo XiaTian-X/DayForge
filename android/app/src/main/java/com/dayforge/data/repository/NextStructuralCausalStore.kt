@@ -725,6 +725,32 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         NextRecoveryStructuralLineage(actual, links, checkpointHash)
     }
 
+    /** Capture only a fully audited, presently live controlled replacement, in this snapshot. */
+    internal suspend fun countPlanFrontier(actualId: String, countId: String, policy: com.dayforge.domain.model.CountDayPolicy,
+        access: LocalSyncAccess): NextCountPlanFrontier? = readOnlyProof(requirePermission = false) {
+        val replacement = byReplacement(actualId) ?: return@readOnlyProof null
+        require(resolveInSnapshot(actualId, access) == actualId)
+        val originals = NextOriginalRequestProofStore(database)
+        val actual = originals.liveOrigin(access, NEXT_OPERATION, actualId,
+            requirePermission = false)
+        require(actual.queueId == replacement.replacementQueueId)
+        if (requestHash("next_transmissions", actualId) != null)
+            originals.journal(actual, requireNotNull(requests.transmission(NEXT_OPERATION, actualId)), access)
+        val actualPlan = intent(actual)
+        val logicalPlan = intent(original(replacement.originalId))
+        require(actualPlan.entityType == "plan_node" && logicalPlan.entityType == "plan_node" &&
+            actualPlan.entityUuid == logicalPlan.entityUuid && actualPlan.action == "upsert" && logicalPlan.action == "upsert")
+        // Pending normalized intent is not necessarily the configuration still displayed locally.
+        // Freeze that exact rule; readiness must later compare the ACTUAL accepted configuration.
+        val policyId = if (NextCountDayStore.policyFromPlan(actualPlan.payload) == policy) actualId
+            else { require(NextCountDayStore.policyFromPlan(logicalPlan.payload) == policy); replacement.originalId }
+        NextCountPlanFrontier(countId, replacement.originalId, actualId, policyId,
+            requireNotNull(requestHash("next_request_origins", replacement.originalId)),
+            requireNotNull(hash("next_structural_dependencies", "operationId", replacement.originalId)),
+            requireNotNull(requestHash("next_request_origins", actualId)),
+            requireNotNull(hash("next_structural_supersessions", "originalId", replacement.originalId)))
+    }
+
     internal suspend fun logicalOrder(queue: SyncOutboxEntity): Long = readOnlyProof {
         if (hash("next_structural_dependencies", "operationId", queue.operationId) != null || byReplacement(queue.operationId) != null)
             logical(queue).logicalOrder else queue.id

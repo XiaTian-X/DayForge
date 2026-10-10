@@ -967,6 +967,41 @@ build 18s、connected 1m07s、XML 46.073s。首轮完整 XML 保存为该次 pri
 结构受控替代后的首次离线计数及跨队列顺序仍待实际索引组合验证，不由本批简单前驱
 用例替代。没有正式包安装/清除；默认 v4、Room/schema、后端和既有 UI 保持不变。
 
+2026-10-10 受控替代后的计数出生修复：授权 MI6/API35，先新增两条实际替代/首次计数
+回归，完整新类 10 项中 8 passed/2 failure，`e08e82b8ec014a5981b3926627891ada`；
+build 27s、connected 1m20s、XML 58.891s。两项均证实原 bind 将实际替代 ID 当作有独立
+D-015 依赖的身份，首次离线计数事务因缺记录回滚，不能作为通过证据。
+中间修复批 `4e20e32995ed475794b7fc53c008c3e7` 完整六类 115 项：112 passed/3 failure，
+build 2m45s、connected 6m29s、XML 365.297s。两项暴露中间方案错误要求规则等于未确认
+替代目标（本地仍显示原目标），另一项是新增夹具 date 未归一为业务日零点，生产完整
+投影校验正确拒绝。合批修正为出生时明确冻结规则来源、保留真实 ACK 不一致阻塞，并
+修正夹具日期，不放宽校验。随后 `88831a523dda4be7a73225745d189ffa` build 1m54s，
+执行到 39/117 时主动中止以移除补丁对每条普通操作多余的权限读取；确认进程和两包
+退出后改为仅实际替代的首条计数按需捕获权限。中止运行不计通过。
+
+最终同一生产/测试源码分两个独立定向批次，完整类无重复，均 0 failure/error/skipped：
+
+- NextCoreRequestStoreTest47、NextCountDayWorkflowTest11、NextRecoveryCapturedFrontierTest11、
+  NextRecoveryStructuralLineageTest14、NextRoundOperationStoreTest21、NextRoundWriterWorkflowTest13：
+  117/117，`86de954d73de400ca767d1bc9073249a/targeted.json`；build 1m44s、connected 6m58s、XML 394.215s。
+- CountConsumerWorkflowTest7、CountFactEvidenceTest5、CountRoundConsumerTest11、NextBusinessWorkflowTest8、
+  NextRoundGoalDeletionTest14、NextRoundTimerStoreTest13、NextRestartWorkflowTest39、NextStructuralCausalStoreTest25：
+  122/122，`6b99519af08945c08d74d3b487ec1c15/targeted.json`；build 7s、connected 18m17s、XML 1074.438s。
+
+生产编辑/首次计数、真实 HTTP 丢失与原字节重放、cold reopen、结构实际 ACK、day/数量展示、
+损坏替代/原来源与错类型/借用元数据拒绝验证：plain/round 均可在未知替代结果时本地保存；
+逻辑依赖正确，实际确认目标不同时保留原规则和事实、阻止发送而不产生传输或假 ACK。
+先出生再替代的旧来源保持无该字段，不追随新的规范化目标。元数据未进入实际 HTTP。
+32 层完整因果用例 121.211s 通过；原 150s 单项/1500s 批次、告警预算及断言不变。
+根51/build/lint、实际 APK/发现/XML/新非空覆盖输入和两包清理通过，未做全局覆盖校准。
+模型/日存储/producer/codec/因果存储 blob 依次为 `b72f254481989282093c3690cfe9da851dc73c48`、
+`921261612fba639ade686d70b3c5dadf8b60ce6a`、`d90216aa7391b02fb1f51ae065e64b16cc99a64d`、
+`e7524ef4ca0473ea7784298617d34e8d09c22386`、`de68e84209cf5255ae9934efd9d467e8ff483d63`；
+新测试 blob 为 `b8646282f7abcf88fc866fdd109c1d32710009a8`、`d9a006090a862babede4d3a01873fe24e8a3198d`。
+仅此后更新文档；这是两批 239 项定向验证，不是全项目/后端联合/精确提交 CI 或人工验收。
+完整索引/依赖闭包、退休/投影确认与正式恢复入口仍未实现；默认 v4、Room/schema、后端、
+已有 UI 和业务规则不变，无正式 APK 安装/清除、部署、新 PR 或合并。
+
 日常定向真机入口按完整类选择，不接受方法、包、通配符或外部参数注入：
 
 ```bash

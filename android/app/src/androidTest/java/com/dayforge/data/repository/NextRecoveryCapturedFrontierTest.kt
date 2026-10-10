@@ -10,6 +10,7 @@ import com.dayforge.data.model.*
 import com.dayforge.domain.model.*
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.first
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import org.junit.Assert.*
 import org.junit.Test
@@ -19,10 +20,30 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class NextRecoveryCapturedFrontierTest : NextObjectEditorFixture() {
     private lateinit var goal: HabitEntity
+    private val json = Json { encodeDefaults = true }
+    private var allowOperationReplies = false
+    private var normalizedTarget: Int? = null
+    private val births = mutableListOf<ChallengeBirth>()
     private fun metadata() = ChallengeMetadata(1, listOf(habit, timerHabit).map {
         val first = ChallengeRoundRecord(initialChallengeRoundHead(it.uuid), null, null, null)
         ChallengeCheckpoint(first.head, listOf(first))
-    }, emptyList())
+    }, births.toList())
+    private fun respond(input: MaterialSocketServer.Input): MaterialSocketServer.Reply? {
+        if (input.path.endsWith("/identity")) return reply(input)
+        if (!allowOperationReplies) return null
+        val request = json.decodeFromString<RoundSyncPushRequest>(input.body.toString(Charsets.UTF_8))
+        val operation = request.operations.single()
+        if (operation.entityType == "activity_event" && births.none { it.entityUuid == operation.entityUuid })
+            births += ChallengeBirth("activity_event", operation.entityUuid, requireNotNull(request.contexts.single().head))
+        val result = json.decodeFromString<NextSyncPushResponse>(successReply(input, (operation.baseRevision ?: 0) + 1) { body ->
+            val target = normalizedTarget
+            if (target != null && operation.entityType == "plan_node" && operation.entityUuid == habit.uuid)
+                JsonObject(body + ("activity" to JsonObject(body.getValue("activity").jsonObject + ("target_value" to JsonPrimitive(target)))))
+            else body
+        }.bytes.toString(Charsets.UTF_8))
+        val meta = metadata()
+        return MaterialSocketServer.Reply(json.encodeToString(RoundSyncPushResponse(result.results, 1, meta.checkpoints, meta.births)).toByteArray())
+    }
     private suspend fun initialize(finite: Boolean = false): Pair<NextSyncHttp, MaterialSocketServer> {
         register()
         db.withTransaction {
@@ -37,7 +58,7 @@ class NextRecoveryCapturedFrontierTest : NextObjectEditorFixture() {
             timerHabit = timerHabit.copy(parentHabitId = goal.uuid); db.habitDao().update(timerHabit)
             sql.execSQL("UPDATE sync_control SET suppressOutbox=0")
         }
-        val (http, server) = channel { input -> if (input.path.endsWith("/identity")) reply(input) else null }
+        val (http, server) = channel(::respond)
         val timers = NextTimerRequestStore(db, tokens, sessions, sender(http))
         val merge = NextSyncMergeStore(db, tokens, sessions, OneTimeAcceptedEventStore(db, tokens, sessions,
             OneTimeLocalIntentStore(db, tokens, sessions, preferences), timerRequests = timers), timers)
@@ -62,7 +83,9 @@ class NextRecoveryCapturedFrontierTest : NextObjectEditorFixture() {
         val current = requireNotNull(db.habitDao().getHabitById(habit.id))
         producer().writeRounds(producer().captureRounds()) {
             val fact = CompletionEntity(habitId = habit.id, habitUuid = habit.uuid, actualCompletedAt = millis,
-                date = millis, value = value, recordedTimezone = "Asia/Shanghai")
+                date = java.time.Instant.ofEpochMilli(millis).atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDate()
+                    .atStartOfDay(java.time.ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli(),
+                value = value, recordedTimezone = "Asia/Shanghai")
             NextCountDayStore(db).capture(current, fact); db.completionDao().insertForSync(fact)
         }
         return db.syncOutboxDao().getAll().last()
@@ -177,5 +200,86 @@ class NextRecoveryCapturedFrontierTest : NextObjectEditorFixture() {
         val rows = db.syncOutboxDao().getAll(); reopen()
         assertEquals(result.evidenceHash, read(row).evidenceHash); assertEquals(rows, db.syncOutboxDao().getAll())
         assertEquals(0, server.requests.size)
+    }
+    private suspend fun firstCountAfterReplacement(target: Int?) {
+        val (http, server) = initialize(); val a = edit(habit, "A"); val b = edit(habit, "B")
+        allowOperationReplies = true; normalizedTarget = target
+        assertEquals(NextOperationAcceptance.COMMITTED, sender(http).sendAndAcceptOperation(access(), a.operationId))
+        normalizedTarget = null; allowOperationReplies = false
+        rejected { sender(http).sendOperation(access(), b.operationId) }
+        val alias = requireNotNull(db.nextStructuralCausalDao().supersession(b.operationId))
+        assertNotEquals(b.operationId, alias.replacementId)
+        assertNull(db.nextStructuralCausalDao().dependency(alias.replacementId))
+        val frozen = transmission(NEXT_OPERATION, alias.replacementId).wireBytes.copyOf()
+        val first = count(2) // Must remain usable offline while the exact structural result is unknown.
+        val original = originalIntent(first)
+        val captured = requireNotNull(countPlanFrontier(original.intentJson))
+        assertEquals(b.operationId, captured.logicalId); assertEquals(alias.replacementId, captured.actualId)
+        assertEquals(if (target == null) alias.replacementId else b.operationId, captured.policySourceId)
+        val proof = read(first)
+        assertEquals(CountDayPolicy(10, false), requireNotNull(proof.count).policy)
+        assertEquals(NextRecoveryKey(NEXT_OPERATION, b.operationId), proof.dependencies.single().predecessor)
+        assertEquals(NextRequestException.Reason.CAUSAL_PREDECESSOR_PENDING,
+            (rejected { sender(http).sendOperation(access(), first.operationId) } as NextRequestException).reason)
+        reopen(); assertEquals(proof.evidenceHash, read(first).evidenceHash)
+        assertArrayEquals(frozen, transmission(NEXT_OPERATION, alias.replacementId).wireBytes)
+        if (target != null) {
+            val sql = db.openHelper.writableDatabase
+            for ((table, field, old) in listOf(Triple("next_structural_supersessions", "originalDependencyHash", alias.originalDependencyHash),
+                Triple("next_request_origins", "accountId", original.accountId))) {
+                val where = if (table == "next_request_origins") "kind=? AND requestId=?" else "replacementId=?"
+                val args = if (table == "next_request_origins") arrayOf(NEXT_OPERATION, alias.replacementId) else arrayOf(alias.replacementId)
+                sql.execSQL("UPDATE $table SET $field=? WHERE $where", arrayOf("damaged", *args))
+                rejected { read(first) }; rejected { count(1) }
+                assertEquals(1, count("completions")); assertEquals(1, count("count_days"))
+                sql.execSQL("UPDATE $table SET $field=? WHERE $where", arrayOf(old, *args))
+                assertEquals(proof.evidenceHash, read(first).evidenceHash)
+            }
+            val body = Json.parseToJsonElement(original.intentJson).jsonObject
+            for (bad in listOf(JsonNull, JsonPrimitive(true), JsonObject(body.getValue("count_plan_frontier").jsonObject +
+                ("requestId" to JsonPrimitive(id(998))))))
+                rejected { decodeNextOperationIntent(JsonObject(body + ("count_plan_frontier" to bad)).toString()) }
+        }
+        allowOperationReplies = true
+        assertEquals(NextOperationAcceptance.COMMITTED, sender(http).sendAndAcceptOperation(access(), alias.replacementId))
+        if (target == null) assertEquals(NextOperationAcceptance.COMMITTED, sender(http).sendAndAcceptOperation(access(), first.operationId))
+        else {
+            assertEquals(NextRequestException.Reason.COUNT_START_CONFIG_CHANGED,
+                (rejected { sender(http).sendAndAcceptOperation(access(), first.operationId) } as NextRequestException).reason)
+            assertNull(db.nextRequestDao().transmission(NEXT_OPERATION, first.operationId))
+        }
+        assertEquals(original, originalIntent(first))
+        val current = requireNotNull(db.habitDao().getHabitById(habit.id))
+        val history = CountHistoryReader(db, tokens, sessions).read(current, java.time.LocalDate.parse("2026-10-06"))
+        assertEquals(CountDayPolicy(10, false), history.todayPolicy); assertEquals(2L, history.todayQuantity)
+        assertTrue(server.requests.filter { it.path.endsWith("/push") }.all {
+            "count_plan_frontier" !in it.body.toString(Charsets.UTF_8)
+        })
+        assertEquals(1, count("completions")); assertEquals(1, count("count_days"))
+    }
+    @Test fun firstOfflineCountAfterUnknownStructuralReplacementPreservesLogicalAndActualProof() = runBlocking<Unit> {
+        firstCountAfterReplacement(null)
+    }
+    @Test fun firstOfflineCountAfterReplacementKeepsDisplayedRuleAndBlocksDifferentAcceptedTarget() = runBlocking<Unit> {
+        firstCountAfterReplacement(8)
+    }
+
+    @Test fun firstCountBornBeforeReplacementNeverAdoptsLaterAliasOrChangedTarget() = runBlocking<Unit> {
+        val (http, _) = initialize(); val a = edit(habit, "A"); val b = edit(habit, "B"); val first = count(2)
+        val original = originalIntent(first); assertNull(countPlanFrontier(original.intentJson))
+        val day = requireNotNull(read(first).count)
+        allowOperationReplies = true; normalizedTarget = 8
+        assertEquals(NextOperationAcceptance.COMMITTED, sender(http).sendAndAcceptOperation(access(), a.operationId))
+        normalizedTarget = null; allowOperationReplies = false
+        rejected { sender(http).sendOperation(access(), b.operationId) }
+        val alias = requireNotNull(db.nextStructuralCausalDao().supersession(b.operationId))
+        assertEquals(day, read(first).count); assertEquals(original, originalIntent(first))
+        reopen(); assertEquals(day, read(first).count); assertNull(countPlanFrontier(originalIntent(first).intentJson))
+        allowOperationReplies = true
+        assertEquals(NextOperationAcceptance.COMMITTED, sender(http).sendAndAcceptOperation(access(), alias.replacementId))
+        assertEquals(NextRequestException.Reason.COUNT_START_CONFIG_CHANGED,
+            (rejected { sender(http).sendOperation(access(), first.operationId) } as NextRequestException).reason)
+        assertEquals(day, read(first).count); assertEquals(original, originalIntent(first))
+        assertNull(db.nextRequestDao().transmission(NEXT_OPERATION, first.operationId))
     }
 }

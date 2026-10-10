@@ -18,6 +18,57 @@ import org.junit.runner.RunWith
 /** Real account preferences, file Room and loopback original-request/receipt boundary. */
 @RunWith(AndroidJUnit4::class)
 class NextCountDayWorkflowTest : NextCoreRequestFixture() {
+    private suspend fun plainFirstCountAfterReplacement(target: Int?) {
+        register()
+        producer().write(local()) { db.habitDao().update(habit.copy(name = "A")) }
+        val a = db.syncOutboxDao().getAll().single()
+        producer().write(local()) { db.habitDao().update(habit.copy(name = "B")) }
+        val b = db.syncOutboxDao().getAll().last()
+        var replyEnabled = true
+        val (http, server) = channel { input ->
+            if (input.path.endsWith("/identity")) reply(input)
+            else if (!replyEnabled) null
+            else successReply(input, (wireOperation(input)["base_revision"]?.jsonPrimitive?.longOrNull ?: 0) + 1) { body ->
+                if (target != null && wireOrIdentity(input) == a.operationId) JsonObject(body + ("activity" to
+                    JsonObject(body.getValue("activity").jsonObject + ("target_value" to JsonPrimitive(target))))) else body
+            }
+        }
+        val core = sender(http)
+        assertEquals(NextOperationAcceptance.COMMITTED, core.sendAndAcceptOperation(access(), a.operationId))
+        replyEnabled = false; rejected { core.sendOperation(access(), b.operationId) }
+        val alias = requireNotNull(db.nextStructuralCausalDao().supersession(b.operationId))
+        val frozen = transmission(NEXT_OPERATION, alias.replacementId).wireBytes.copyOf()
+        val first = countAt(2); val origin = originalIntent(first); val day = requireNotNull(rule())
+        assertNull(roundOperationIntent(origin.intentJson))
+        assertEquals(alias.replacementId, requireNotNull(countPlanFrontier(origin.intentJson)).actualId)
+        assertEquals(b.operationId, day.planPredecessorId); assertEquals(CountDayPolicy(10, false), day.policy)
+        assertEquals(NextRequestException.Reason.CAUSAL_PREDECESSOR_PENDING,
+            (rejected { core.sendOperation(access(), first.operationId) } as NextRequestException).reason)
+        storage.reopen(); assertEquals(day, rule()); assertEquals(origin, originalIntent(first))
+        assertArrayEquals(frozen, transmission(NEXT_OPERATION, alias.replacementId).wireBytes)
+        replyEnabled = true
+        val reopened = sender(http)
+        assertEquals(NextOperationAcceptance.COMMITTED, reopened.sendAndAcceptOperation(access(), alias.replacementId))
+        if (target == null) assertEquals(NextOperationAcceptance.COMMITTED, reopened.sendAndAcceptOperation(access(), first.operationId))
+        else {
+            assertEquals(NextRequestException.Reason.COUNT_START_CONFIG_CHANGED,
+                (rejected { reopened.sendOperation(access(), first.operationId) } as NextRequestException).reason)
+            assertNull(db.nextRequestDao().transmission(NEXT_OPERATION, first.operationId))
+        }
+        assertEquals(day, rule()); assertEquals(1, count("completions"))
+        val current = requireNotNull(db.habitDao().getHabitById(habit.id))
+        val history = CountHistoryReader(db, tokens, sessions).read(current, java.time.LocalDate.parse("2026-10-06"))
+        assertEquals(CountDayPolicy(10, false), history.todayPolicy); assertEquals(2L, history.todayQuantity)
+        assertTrue(server.requests.filter { it.path.endsWith("/push") }.all {
+            "count_plan_frontier" !in it.body.toString(Charsets.UTF_8) && "challenge_contract" !in it.body.toString(Charsets.UTF_8)
+        })
+    }
+    @Test fun plainFirstCountAfterReplacementPreservesRuleAndExactWireProfile() = runBlocking<Unit> {
+        plainFirstCountAfterReplacement(null)
+    }
+    @Test fun plainFirstCountKeepsDisplayedRuleAndBlocksDifferentAcceptedTarget() = runBlocking<Unit> {
+        plainFirstCountAfterReplacement(8)
+    }
     private suspend fun countAt(value: Int = 1, stamp: String = time, zone: String = "Asia/Shanghai"):
         com.dayforge.data.local.entity.SyncOutboxEntity {
         val current = requireNotNull(db.habitDao().getHabitById(habit.id))

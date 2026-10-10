@@ -5,6 +5,7 @@ import com.dayforge.data.api.dto.SyncV2Operation
 import com.dayforge.data.api.dto.SyncV2Change
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.LocalCoreWriteAccess
+import com.dayforge.data.local.LocalSyncAccess
 import com.dayforge.data.local.entity.*
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.model.CountDayPolicy
@@ -51,7 +52,8 @@ internal class NextCountDayStore(private val database: HabitDatabase) {
                     operation.payload["activity_uuid"] == JsonPrimitive(habit.uuid) &&
                     operation.payload["local_date"] == JsonPrimitive(date) &&
                     NextCommonFactMapper.countPolicy(operation.payload) == row.policy)
-                if (row.planPredecessorId == null) require(row.planPredecessorOriginHash == null && row.planPredecessorDependencyHash == null)
+                val frontier = countPlanFrontier(origin.intentJson)
+                if (row.planPredecessorId == null) require(row.planPredecessorOriginHash == null && row.planPredecessorDependencyHash == null && frontier == null)
                 else {
                     require(isContractUuid(row.planPredecessorId) &&
                         row.planPredecessorOriginHash == NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?",
@@ -61,8 +63,9 @@ internal class NextCountDayStore(private val database: HabitDatabase) {
                     val predecessor = requireNotNull(database.nextRequestDao().origin(NEXT_OPERATION, row.planPredecessorId))
                     require(predecessor.accountId == origin.accountId && predecessor.queueId <= row.planQueueWatermark)
                     val plan = decodeNextOperationIntent(predecessor.intentJson)
-                    require(plan.entityType == "plan_node" && plan.entityUuid == habit.uuid && plan.action == "upsert" &&
-                        policyFromPlan(plan.payload) == row.policy)
+                    require(plan.entityType == "plan_node" && plan.entityUuid == habit.uuid && plan.action == "upsert")
+                    if (frontier == null) require(policyFromPlan(plan.payload) == row.policy)
+                    else verifyPlanFrontier(frontier, origin, predecessor, row, habit)
                 }
             }
         }
@@ -136,17 +139,71 @@ internal class NextCountDayStore(private val database: HabitDatabase) {
         val current = requireNotNull(read(habit, date, allowUnbound = true))
         require(current.policy == NextCommonFactMapper.countPolicy(operation.payload))
         if (current.firstEventUuid != operation.entityUuid || current.originRequestId != null) return
-        val causal = NextStructuralCausalStore(database)
-        val pending = database.syncOutboxDao().getEntityIntents("habit", habit.uuid).filter { it.id < origin.queueId }
-        val predecessor = pending.map { it to causal.logicalOrder(it) }.maxByOrNull { it.second }?.first
-        require(predecessor == null || predecessor.action == "upsert")
+        val predecessor = pendingPlan(habit, origin.queueId)
+        val frontier = countPlanFrontier(origin.intentJson)
+        require(frontier == null || frontier.requestId == origin.requestId && frontier.actualId == predecessor?.operationId)
+        val predecessorId = frontier?.logicalId ?: predecessor?.operationId
         val day = current.copy(originRequestId = origin.requestId,
             originHash = requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, origin.requestId))),
-            planPredecessorId = predecessor?.operationId,
-            planPredecessorOriginHash = predecessor?.let { requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, it.operationId))) },
-            planPredecessorDependencyHash = predecessor?.let { requireNotNull(NextRequestSql.rowHash(sql, "next_structural_dependencies", "operationId=?", arrayOf(it.operationId))) },
+            planPredecessorId = predecessorId,
+            planPredecessorOriginHash = predecessorId?.let { requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, it))) },
+            planPredecessorDependencyHash = predecessorId?.let { requireNotNull(NextRequestSql.rowHash(sql, "next_structural_dependencies", "operationId=?", arrayOf(it))) },
             planQueueWatermark = origin.queueId - 1, capturedDeviceId = access.capturedDeviceId)
         check(dao.update(day) == 1 && read(habit, date) == day)
+    }
+
+    private suspend fun pendingPlan(habit: HabitEntity, queueId: Long): SyncOutboxEntity? {
+        val causal = NextStructuralCausalStore(database)
+        return database.syncOutboxDao().getEntityIntents("habit", habit.uuid).filter { it.id < queueId }
+            .map { it to causal.logicalOrder(it) }.maxByOrNull { it.second }?.first?.also {
+                require(it.action == "upsert")
+            }
+    }
+
+    /** Before persisting a NEW first fact, freeze the exact replacement that supplied its rule. */
+    suspend fun capturePlanFrontier(operation: SyncV2Operation, queueId: Long,
+        access: LocalCoreWriteAccess, syncAccess: suspend () -> LocalSyncAccess?): NextCountPlanFrontier? {
+        check(database.inTransaction())
+        if (operation.entityType != "activity_event" || "count_policy" !in operation.payload) return null
+        val habit = requireNotNull(database.habitDao().getHabitByUuid(operation.payload.getValue("activity_uuid").jsonPrimitive.content))
+        val day = requireNotNull(read(habit, operation.payload.getValue("local_date").jsonPrimitive.content, allowUnbound = true))
+        require(day.policy == NextCommonFactMapper.countPolicy(operation.payload))
+        if (day.firstEventUuid != operation.entityUuid || day.originRequestId != null) return null
+        val predecessor = pendingPlan(habit, queueId) ?: return null
+        if (NextRequestSql.rowHash(sql, "next_structural_supersessions", "replacementId=?",
+                arrayOf(predecessor.operationId)) == null) return null
+        val authenticated = requireNotNull(syncAccess())
+        require(authenticated.session == access.session && authenticated.deviceId == access.capturedDeviceId &&
+            authenticated.capabilities == access.capabilities)
+        return requireNotNull(NextStructuralCausalStore(database).countPlanFrontier(predecessor.operationId,
+            operation.operationId, day.policy, authenticated))
+    }
+
+    private suspend fun verifyPlanFrontier(frontier: NextCountPlanFrontier, origin: NextRequestOriginEntity,
+        logical: NextRequestOriginEntity, day: CountDayEntity, habit: HabitEntity) {
+        require(frontier.requestId == origin.requestId && frontier.logicalId == day.planPredecessorId &&
+            frontier.logicalOriginHash == day.planPredecessorOriginHash && frontier.dependencyHash == day.planPredecessorDependencyHash)
+        require(frontier.actualOriginHash == NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?",
+            arrayOf(NEXT_OPERATION, frontier.actualId)) && frontier.supersessionHash == NextRequestSql.rowHash(sql,
+            "next_structural_supersessions", "originalId=?", arrayOf(frontier.logicalId)))
+        val replacement = requireNotNull(database.nextStructuralCausalDao().supersession(frontier.logicalId))
+        val actual = requireNotNull(database.nextRequestDao().origin(NEXT_OPERATION, frontier.actualId))
+        require(replacement.originalId == logical.requestId && replacement.replacementId == actual.requestId &&
+            replacement.kind == NEXT_OPERATION && logical.protocol == 5 &&
+            replacement.originalQueueId == logical.queueId && replacement.replacementQueueId == actual.queueId &&
+            replacement.originalOriginHash == frontier.logicalOriginHash && replacement.originalDependencyHash == frontier.dependencyHash &&
+            replacement.replacementOriginHash == frontier.actualOriginHash && actual.protocol == 5 &&
+            actual.accountId == origin.accountId && actual.accountId == logical.accountId &&
+            actual.serverInstanceId == origin.serverInstanceId && actual.syncEpoch == origin.syncEpoch &&
+            replacement.accountId == origin.accountId && replacement.serverInstanceId == origin.serverInstanceId &&
+            replacement.syncEpoch == origin.syncEpoch && replacement.deviceId == day.capturedDeviceId &&
+            actual.queueId <= requireNotNull(day.planQueueWatermark))
+        val plan = decodeNextOperationIntent(actual.intentJson)
+        require(plan.operationId == actual.requestId && plan.entityType == "plan_node" && plan.entityUuid == habit.uuid &&
+            plan.action == "upsert")
+        val policyPlan = if (frontier.policySourceId == actual.requestId) plan else decodeNextOperationIntent(logical.intentJson)
+        require(policyFromPlan(policyPlan.payload) == day.policy)
+        roundOperationIntent(actual.intentJson)?.let { require(it.capturedDeviceId == day.capturedDeviceId) }
     }
 
     /** All immutable count evidence, including reverted facts, participates in one day rule. */

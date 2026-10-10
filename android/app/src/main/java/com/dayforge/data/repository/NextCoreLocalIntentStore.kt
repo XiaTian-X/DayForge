@@ -135,8 +135,12 @@ internal class NextCoreLocalIntentStore(
                                 deleted.requireWritable(operation.payload.getValue("activity_uuid").jsonPrimitive.content)
                             }
                         }
-                        val round = roundCapture?.capture(operation)
-                        bytes = if (round == null) encodeSyncRequest(SyncV2Operation.serializer(), operation)
+                        val countFrontier = NextCountDayStore(database).capturePlanFrontier(operation, id, access,
+                            tokens::localSyncAccess)
+                        val round = roundCapture?.capture(operation)?.copy(countPlanFrontier = countFrontier)
+                        bytes = if (round == null) countFrontier?.let {
+                            encodeSyncRequest(NextCountOperationIntent.serializer(), NextCountOperationIntent(operation, it))
+                        } ?: encodeSyncRequest(SyncV2Operation.serializer(), operation)
                             else encodeSyncRequest(NextRoundOperationIntent.serializer(), round)
                         decodeNextOperationIntent(bytes.toString(Charsets.UTF_8))
                         // Prove full-envelope limits while still able to roll back the local write.
