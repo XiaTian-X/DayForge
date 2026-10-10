@@ -137,7 +137,7 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
     }
 
     private data class ProofKey(val table: String, val where: String, val args: List<Any>)
-    private class ReadOnlyProof {
+    private class ReadOnlyProof(val requirePermission: Boolean) {
         val hashes = mutableMapOf<ProofKey, String?>()
         val origins = mutableMapOf<String, NextRequestOriginEntity>()
         val dependencies = mutableMapOf<String, NextStructuralDependencyEntity>()
@@ -157,9 +157,9 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
     private var proof: ReadOnlyProof? = null
 
     /** SELECT-only pass in one SQLite snapshot. Never retain proofs across any write/trigger. */
-    private suspend fun <T> readOnlyProof(block: suspend () -> T): T {
+    private suspend fun <T> readOnlyProof(requirePermission: Boolean = true, block: suspend () -> T): T {
         check(database.inTransaction() && proof == null)
-        proof = ReadOnlyProof()
+        proof = ReadOnlyProof(requirePermission)
         return try { block() } finally { proof = null }
     }
 
@@ -443,7 +443,8 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
             origin.serverInstanceId != null && (origin.serverInstanceId != access.session.serverInstanceId || origin.syncEpoch != access.session.syncEpoch) ||
             dep?.capturedDeviceId != null && dep.capturedDeviceId != access.deviceId)
             rejectNextRequest(NextRequestException.Reason.TRANSMISSION_CONTEXT_CHANGED)
-        if ("structure.write" !in access.capabilities) rejectNextRequest(NextRequestException.Reason.PERMISSION_DENIED)
+        if (proof?.requirePermission != false && "structure.write" !in access.capabilities)
+            rejectNextRequest(NextRequestException.Reason.PERMISSION_DENIED)
     }
 
     private data class Accepted(val operation: SyncV2Operation, val result: NextSyncOperationResult,
@@ -621,6 +622,12 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
 
     /** Iterative, bounded ancestry audit; never recursively parse a growing chain on the stack. */
     suspend fun resolve(id: String, access: LocalSyncAccess): String = readOnlyProof {
+        resolveInSnapshot(id, access)
+    }
+
+    private suspend fun resolveInSnapshot(id: String, access: LocalSyncAccess,
+        observe: (suspend (NextStructuralDependencyEntity, NextRequestOriginEntity,
+            NextStructuralSupersessionEntity?) -> Unit)? = null): String {
         require(isContractUuid(id))
         val fromOriginal = byOriginal(id)
         val fromReplacement = byReplacement(id)
@@ -644,9 +651,78 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
                 requireNotNull(hash("next_structural_supersessions", "originalId", current))
                 acceptedByChild = auditReplacement(supersession, access, acceptedByChild)
             } else acceptedByChild = null
+            observe?.invoke(dep, original(current), supersession)
             current = dep.predecessorId
         }
-        actual
+        return actual
+    }
+
+    /**
+     * Same complete logical/replacement audit as resolve, with original live or real ACK evidence.
+     * Caller owns account + Room snapshot. No prepare, temporary UUID, HTTP or business mutation.
+     * Facts/timers/import/CAS dependencies must still be joined by the full recovery reader.
+     */
+    internal suspend fun recoveryLineage(id: String, access: LocalSyncAccess): NextRecoveryStructuralLineage = readOnlyProof(requirePermission = false) {
+        val rounds = NextChallengeStore(database).activeInTransaction(access)
+        val knownHeads = rounds.second.checkpoints.flatMap { it.records }.map { it.head }.toSet()
+        val checkpointHash = nextRequestHash(listOf(
+            requireNotNull(rowHash("next_sync_state", "1=1", emptyArray())),
+            requireNotNull(rowHash("next_challenge_state", "1=1", emptyArray()))).joinToString(";").toByteArray(Charsets.UTF_8))
+        val links = mutableListOf<NextRecoveryStructuralLink>()
+        suspend fun capture(origin: NextRequestOriginEntity, dep: NextStructuralDependencyEntity?,
+            supersession: NextStructuralSupersessionEntity?) {
+            val logicalId = origin.requestId
+            val actualId = supersession?.replacementId ?: logicalId
+            val actualOrigin = if (actualId == logicalId) origin else original(actualId)
+            for (source in listOf(origin, actualOrigin).distinct()) {
+                val round = requireNotNull(roundOperationIntent(source.intentJson)) { "SYNC_RECOVERY_ROUND_SOURCE_REQUIRED" }
+                require(round.capturedDeviceId == access.deviceId && source.accountId == access.session.authentication.userId &&
+                    source.serverInstanceId == access.session.serverInstanceId && source.syncEpoch == access.session.syncEpoch)
+                require(!sql.query("SELECT 1 FROM next_abandoned_requests WHERE kind=? AND requestId=? LIMIT 1",
+                    arrayOf(NEXT_OPERATION, source.requestId)).use { it.moveToFirst() }) { "SYNC_RECOVERY_RETIRED_SOURCE" }
+                require(round.operation.entityType in setOf("plan_node", "metric", "activity_metric_link"))
+            }
+            val operation = decodeNextOperationIntent(actualOrigin.intentJson)
+            if (dep == null) require(supersession == null && operation.entityType == "metric" && operation.action == "delete") {
+                "SYNC_RECOVERY_STRUCTURAL_ANCESTRY_REQUIRED"
+            }
+            if (supersession != null) require(requestHash("next_rejections", logicalId) == null)
+            val acceptanceHash = requestHash("next_acceptances", actualId)
+            val resultHash: String?
+            val state: NextRecoveryRequestState
+            val actualProof: String
+            if (acceptanceHash != null) {
+                require(requestHash("next_rejections", actualId) == null) { "SYNC_RECOVERY_CONTRADICTORY_RESULT" }
+                val receipt = accepted(actualId, access, metricDeleteReceipt = true)
+                require(receipt.hash == acceptanceHash)
+                // A normalized structure receipt alone does not prove its original round survived.
+                // Include historical heads, not just current heads; pending initial births are different.
+                val acceptedRound = requireNotNull(roundOperationIntent(actualOrigin.intentJson))
+                require((listOfNotNull(acceptedRound.context.head) + acceptedRound.context.affectedHeads)
+                    .all { it in knownHeads }) { "SYNC_RECOVERY_ACCEPTED_ROUND_MISSING" }
+                resultHash = nextRequestHash(receipt.resultJson.toByteArray(Charsets.UTF_8))
+                state = NextRecoveryRequestState.ACCEPTED
+                actualProof = listOf(requireNotNull(requestHash("next_request_origins", actualId)),
+                    requireNotNull(requestHash("next_transmissions", actualId)), acceptanceHash).joinToString(";")
+            } else {
+                val pending = NextOriginalRequestProofStore(database).pending(access, NEXT_OPERATION, actualId)
+                require(pending.origin == actualOrigin)
+                resultHash = null; state = pending.state; actualProof = pending.evidenceHash
+            }
+            val dependencyHash = dep?.let { requireNotNull(hash("next_structural_dependencies", "operationId", logicalId)) }
+            val supersessionHash = supersession?.let { requireNotNull(hash("next_structural_supersessions", "originalId", logicalId)) }
+            val evidenceHash = nextRequestHash(listOf(logicalId, actualId,
+                requireNotNull(requestHash("next_request_origins", logicalId)), dependencyHash ?: "none",
+                supersessionHash ?: "none", dep?.predecessorId ?: "none", state.name, actualProof).joinToString(";").toByteArray(Charsets.UTF_8))
+            links += NextRecoveryStructuralLink(NextRecoveryKey(NEXT_OPERATION, logicalId),
+                NextRecoveryKey(NEXT_OPERATION, actualId), origin.queueId, actualOrigin.queueId,
+                operation.entityType, operation.entityUuid, dep?.predecessorId, dependencyHash,
+                supersessionHash, state, evidenceHash, acceptanceHash, resultHash)
+        }
+        val actual = resolveInSnapshot(id, access) { dep, origin, supersession -> capture(origin, dep, supersession) }
+        if (links.isEmpty()) capture(original(id), null, null) // Metric delete intentionally has no D-015 ancestry.
+        check(NextChallengeStore(database).activeInTransaction(access) == rounds)
+        NextRecoveryStructuralLineage(actual, links, checkpointHash)
     }
 
     internal suspend fun logicalOrder(queue: SyncOutboxEntity): Long = readOnlyProof {

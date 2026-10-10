@@ -908,6 +908,37 @@ NextRejectedInitialWorkflowTest 复验 9/9，0 failure/error/skipped，
 本批不是完整实际依赖图/退休终态/投影确认交付；按钮未开放，无正式 APK 安装/清除、
 新 PR/精确提交 CI、后端联合、阶段全量或手机/平板/外网/NAS/Docker 人工验收。
 
+2026-10-10 原结构链只读证明：授权 MI6/API35，首轮完整
+NextRecoveryStructuralLineageTest11、NextStructuralCausalStoreTest25、NextCoreRequestStoreTest47、
+NextRoundOperationStoreTest21、SyncProblemReaderTest16，120/120，0 failure/error/skipped，
+`bdb6589838bc472dbd521e0f9e9689e8/targeted.json`；build 2m11s、connected 8m、XML 452.6s。
+原 32 层完整因果用例 118.85s 通过，未改变 150s 单项/1500s 批次期限。
+此后只在新恢复读取器添加接受请求的完整轮次历史存在性检查及 3 个边界用例，未修改
+另外 4 个既有类的生产路径，不重跑它们，也不拼接为最终 123/134 项或全量门禁。
+
+最终完整 NextRecoveryStructuralLineageTest 14/14，0 failure/error/skipped，
+`91998bc979bf4b78ae0286d3a6e1db27/targeted.json`；build 30s、connected 1m34s、XML 73.35s。
+真实 Room/DataStore、生产编辑/删除、原 HTTP 冻结/拒绝/实际 ACK/受控替代和冷重开验证：
+原 A→B→C 前驱与逻辑/实际身份；永久拒绝根与从未发送后继；已接受祖先、拒绝替代和
+响应丢失替代的原字节；来源缺失不等于 ACK；普通祖先缺失不得降为根；完整回执/依赖
+损坏、矛盾拒绝、放弃成员、账户/设备/epoch 不符均拒绝；同实例失败后恢复 SQL 再读
+不复用旧快照；预先取消不写数据；权限丢失仍可只读而同实例 resolve/发送继续拒绝。
+指标删除使用实际来源和完整墓碑，不伪造 D-015 前驱。新增边界验证内部自洽但缺原轮次的
+检查点不能借给已接受计划；无关 SQL 错类型历史不被扫描/计入本链；实际生产 pull 的
+游标变化使聚合摘要失效、原链/队列和偏好保持不变。未声称中途取消、全类别闭包或
+10,000 条实际 SQL/大正文容量已验收，原 32 层 sender 用例不代替新读取器容量验证。
+
+此前 `d777508cf9d94e00ab80bcc53b229565`（build 1m59s）和
+`02158e2a878f4d919450bda0d4a6c09b`（build 1m32s）分别因新夹具结果实体/编辑权威的
+位置参数错误停止于编译；均无行为通过证据。确认进程与测试包退出后改为相应命名参数，
+不删断言、不加告警预算、不放宽期限；后一次仅复验新的完整 14 项类。
+根 51、构建/lint/原告警预算、实际 APK/发现/XML/新非空覆盖输入和两包清理均通过；
+全局覆盖校准未执行。最终因果存储/描述符/新测试 blob 分别
+`9e0490b4ef8173fd0ddbd01bcd60265494b25337`、`73214ffbfc2514b6e83021a03730f0f16267c498`、
+`ec1199328c89ac3b766e821e80c5c8897e8f969d`。
+没有正式包安装/清除、恢复按钮、队列退休、投影确认、新 PR/精确提交 CI、后端联合、
+阶段全量或手机/平板/外网/NAS/Docker 人工验收；默认 v4、Room/schema、后端和既有 UI 不变。
+
 日常定向真机入口按完整类选择，不接受方法、包、通配符或外部参数注入：
 
 ```bash
