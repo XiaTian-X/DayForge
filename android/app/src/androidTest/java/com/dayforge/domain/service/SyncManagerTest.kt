@@ -21,6 +21,17 @@ import org.junit.Test
 
 @RunWith(AndroidJUnit4::class)
 class SyncManagerTest {
+    @Test fun device_controls_use_shared_dispatcher_not_legacy_registration() = runTest {
+        manager.makeCurrentDevicePrimary()
+        manager.setCurrentDeviceStructuralEditing(true)
+        manager.setCurrentDeviceStructuralEditing(false)
+        coVerify(exactly = 1) { business.makeCurrentDevicePrimary() }
+        coVerify(exactly = 1) { business.setCurrentDeviceStructuralEditing(true) }
+        coVerify(exactly = 1) { business.setCurrentDeviceStructuralEditing(false) }
+        coVerify(exactly = 0) { repository.makeCurrentDevicePrimary() }
+        coVerify(exactly = 0) { repository.setCurrentDeviceStructuralEditing(any()) }
+    }
+
     @Test fun received_v5_http_and_invalid_reply_are_not_network_loss_even_inside_io_wrapper() = runTest {
         for (error in listOf(com.dayforge.data.api.NextSyncHttpFailure(403, "DENIED"),
             com.dayforge.data.api.NextSyncReplyInvalid())) {

@@ -190,11 +190,12 @@ class SettingsViewModel @Inject constructor(
 
     fun makeCurrentDevicePrimary() {
         viewModelScope.launch {
-            runCatching { syncManager.makeCurrentDevicePrimary() }
-                .onFailure { error ->
-                    _syncErrorMessage.value = error.message ?: context.getString(R.string.sync_device_role_failed)
-                    _showSyncError.value = true
-                }
+            try { syncManager.makeCurrentDevicePrimary() }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                _syncErrorMessage.value = error.message ?: context.getString(R.string.sync_device_role_failed)
+                _showSyncError.value = true
+            }
         }
     }
 

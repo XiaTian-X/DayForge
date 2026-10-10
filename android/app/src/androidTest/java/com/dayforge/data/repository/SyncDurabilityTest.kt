@@ -18,6 +18,30 @@ import org.junit.runner.RunWith
 /** Real client persistence and wire encoding. Scripted transport is not server idempotency evidence. */
 @RunWith(AndroidJUnit4::class)
 class SyncDurabilityTest : SyncPersistenceFixture() {
+    @Test fun guarded_v4_device_controls_revalidate_exact_protocol_without_upload_or_cursor_change() = runBlocking<Unit> {
+        val original = tokens.authenticationSnapshot()!!.session
+        assertTrue(repository.changeDeviceForAuthentication(original, null).isPrimaryEditor)
+        assertFalse(repository.changeDeviceForAuthentication(original, false).structuralEditEnabled)
+        assertEquals(2, paths.count { it == "/api/v2/devices/register" })
+        assertTrue(pushes.isEmpty()); assertTrue(cursors.isEmpty()); assertEquals(0L, tokens.syncCursor.first())
+        paths.clear()
+        for (version in listOf(5, 6)) {
+            identityProtocol = version
+            assertTrue(runCatching { repository.changeDeviceForAuthentication(original, null) }.exceptionOrNull() is SyncProtocolException)
+        }
+        assertTrue(paths.all { it == "/api/v2/system/identity" })
+    }
+
+    @Test fun guarded_v4_device_control_rejects_reauthentication_and_changed_replica_before_registration() = runBlocking<Unit> {
+        val original = tokens.authenticationSnapshot()!!.session
+        epoch = "other-epoch"
+        assertEquals("SYNC_REPLICA_CHANGED", runCatching { repository.changeDeviceForAuthentication(original, false) }.exceptionOrNull()!!.message)
+        assertEquals(listOf("/api/v2/system/identity"), paths.toList()); paths.clear()
+        tokens.saveLoginSession("new", "new-refresh", "again", original.userId, false)
+        assertEquals("SYNC_ACCOUNT_CHANGED", runCatching { repository.changeDeviceForAuthentication(original, null) }.exceptionOrNull()!!.message)
+        assertTrue(paths.isEmpty()); assertEquals("new", tokens.accessToken.first())
+    }
+
     @Test fun legacy_verification_rejects_v5_or_unknown_upgrade_without_register_or_upload() = runBlocking<Unit> {
         for (version in listOf(5, 6)) {
             identityProtocol = version

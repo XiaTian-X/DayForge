@@ -130,11 +130,11 @@ class SyncManager @Inject constructor(
     fun isPrimaryEditor(): Flow<Boolean> = syncRepository.isPrimaryEditor()
 
     suspend fun makeCurrentDevicePrimary() {
-        syncRepository.makeCurrentDevicePrimary()
+        businessSyncRepository.makeCurrentDevicePrimary()
     }
 
     suspend fun setCurrentDeviceStructuralEditing(enabled: Boolean) {
-        syncRepository.setCurrentDeviceStructuralEditing(enabled)
+        businessSyncRepository.setCurrentDeviceStructuralEditing(enabled)
     }
 
     /**

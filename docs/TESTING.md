@@ -2312,6 +2312,35 @@ NextObjectCreationTest12、ObjectCreationEntryTest3，含真实 ANALYZE 元数�
 收尾通过，150秒单例/25分钟整批和 lint 基线不变。完整 Android/覆盖校准、实际 FastAPI 联合、
 正式 APK、手机/平板人工、外网/NAS/本机 Docker及默认 v5 发布未执行；#160仍未完成。
 
+### 当前设备权限正式接入（Issue #160，2026-10-10）
+
+现有设置按钮经 SyncManager/共享分派接实际 v5 设备 HTTP 和条件权限发布，原账户/副本/
+设备/安装及完整挑战 ACTIVE 证明在网络前后复核。真实创建消费者读取更新后的权限。
+v4 正式控制重新核对精确协议/认证/副本；设置 ViewModel 不吞掉取消或发布取消错误弹窗。
+不改默认 v4、Room schema、后端、依赖、手机/平板布局，不新增编辑开关/设备列表 UI。
+
+MI6/API35 首轮八完整类发现139项，build3分35秒；运行至113项后有3失败并进程崩溃，
+证据 `b88d283e09ef420cb818c0587d15aa25`，connected3分53秒/XML209.61秒，未完成整批。
+两项新断言误把公开探测的 active URL 选择及同账户重新登录保留原设备当成权限变化；另
+一项 v4 夹具把零长度 POST 当作 JSON 解析，异常逃出 OkHttp 线程导致进程崩溃。
+四个已完整通过且未受夹具修正影响的类为 NextSyncHttpTest43、TokenManagerTest14、
+BusinessSyncRepositoryTest13、NextObjectCreationTest12；其余未完成部分不据此称通过。
+
+包装/Gradle/测试包退出后只修正夹具，生产实现不变；完整复验失败/未执行类并加共享夹具
+相邻类：NextDeviceControlTest10、SyncDurabilityTest21、SyncManagerTest9、
+SettingsViewModelTest17、ProtocolNextActivationBarrierTest16、SyncConflictDurabilityTest13。
+六完整类86/86，失败/错误/跳过0，证据 `60a8b63a6f3c4f859308241066614ecf`；build21秒、
+connected3分30秒/XML188.499秒。真实 HTTP/Room/文件 DataStore 验证主设备与编辑真/假、
+只读新建门禁、权限发布/Room冷重开、坏默认字段/设备/安装/平台/修订/标志、HTTP403、
+响应丢失后原设备重试、取消释放/重开、网络中重新认证及能力变化、plain/缺证明/副本/
+未知版本拒绝；保留 v4 冲突/重试及事务回滚矩阵。原失败 XML 保留，不拼成139/168项全量。
+
+根51/build/lint/警告、APK一致性/实际发现/XML/新非空覆盖输入和两包清理通过，期限和
+断言不放宽。完整 Android/覆盖校准、实际 FastAPI联合、正式APK/完整导航/手机平板人工/
+外网/NAS/Docker/默认v5发布未执行。另 PR #373 精确 head f436c726 的 CI38012840531
+attempt1在 compileDeviceTestKotlin 因 GC overhead / OOMErrorException 失败，build5分45秒；
+不把本地定向通过替代该 CI，不据未重跑声称容量修复。后续独立处理编译容量再继续冲突入口。
+
 ### 测试迁移后的独立复审（Issue #149）
 
 计时服务测试必须从命令调用前后的真实单调时钟获得有效时长上下界，排除暂停/重建时间。

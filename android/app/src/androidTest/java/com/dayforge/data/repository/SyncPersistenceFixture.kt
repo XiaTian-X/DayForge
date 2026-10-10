@@ -81,12 +81,14 @@ abstract class SyncPersistenceFixture {
             val body = request.body?.let { body ->
                 val buffer = Buffer()
                 body.writeTo(buffer)
-                json.parseToJsonElement(buffer.readUtf8()).jsonObject
+                buffer.readUtf8().takeIf(String::isNotEmpty)?.let { json.parseToJsonElement(it).jsonObject }
             }
             val response = when (request.method to path) {
                 "POST" to "/api/auth/refresh" -> onRefresh(requireNotNull(body))
                 "GET" to "/api/v2/system/identity" -> """{"server_instance_id":"$server","sync_epoch":"$epoch","protocol_version":$identityProtocol,"capabilities":["sync_v2","device_capabilities"],"server_time":"2026-09-20T00:00:00Z"}"""
                 "POST" to "/api/v2/devices/register" -> """{"device_id":"device-a","installation_id":${body!!.getValue("installation_id")},"platform":"android","capabilities":["structure.write","facts.write"],"is_primary_editor":true}"""
+                "POST" to "/api/v2/devices/device-a/make-primary" -> """{"device_id":"device-a","installation_id":"synthetic-installation","platform":"android","capabilities":["structure.write","facts.write"],"is_primary_editor":true,"capability_revision":2}"""
+                "PATCH" to "/api/v2/devices/device-a/editing" -> """{"device_id":"device-a","installation_id":"synthetic-installation","platform":"android","capabilities":["structure.write","facts.write"],"is_primary_editor":true,"structural_edit_enabled":${body!!.getValue("structural_edit_enabled")},"capability_revision":3}"""
                 "POST" to "/api/v2/sync/push" -> {
                     val requestBody = requireNotNull(body)
                     pushes += requestBody

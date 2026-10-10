@@ -435,6 +435,9 @@ class TokenManager @Inject constructor(
         }
     }
 
+    /** Device controls must prove the registered installation, not allocate a replacement. */
+    internal suspend fun registeredInstallationId(): String? = dataStore.data.first()[INSTALLATION_ID_KEY]
+
     suspend fun getOrCreateInstallationId(): String {
         // Concurrent callers must return the same committed installation, not two UUIDs.
         val saved = editPreferences { preferences ->
