@@ -120,6 +120,7 @@ class ProtocolNextActivationBarrierTest : SyncPersistenceFixture() {
         var afterSyncCalled = false
         val actions: List<suspend () -> Unit> = listOf(
             { repository.sync() },
+            { repository.retrySyncForAuthentication(tokens.authenticationSnapshot()?.session, {}) },
             { repository.syncAndThen { afterSyncCalled = true } },
             { repository.retryDeadLetter(rejected.firstOrNull()?.id ?: 1) },
             { repository.discardDeadLetter(rejected.firstOrNull()?.id ?: 1) },

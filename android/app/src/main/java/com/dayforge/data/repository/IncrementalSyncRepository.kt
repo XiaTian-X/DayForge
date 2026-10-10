@@ -78,6 +78,15 @@ class IncrementalSyncRepository(
         Unit
     }
 
+    /** Reactivation belongs to a verified v4 attempt, not to the UI before version/account discovery. */
+    internal suspend fun retrySyncForAuthentication(
+        expected: com.dayforge.data.local.AuthenticationSession?,
+        progressCallback: (SyncProgress) -> Unit
+    ) = accountSessionCoordinator.exclusive {
+        check(expected != null && tokenManager.authenticationSnapshot()?.session == expected) { "SYNC_ACCOUNT_CHANGED" }
+        syncInternal(progressCallback, retryRejected = true)
+    }
+
     suspend fun <T> syncAndThen(
         progressCallback: (SyncProgress) -> Unit = {},
         afterSync: suspend () -> T
@@ -86,7 +95,7 @@ class IncrementalSyncRepository(
         afterSync()
     }
 
-    private suspend fun syncInternal(progressCallback: (SyncProgress) -> Unit) {
+    private suspend fun syncInternal(progressCallback: (SyncProgress) -> Unit, retryRejected: Boolean = false) {
         requireV4LocalState()
         tokenManager.migrateLegacyTokenStorage()
         val accountId = ensureAccountId()
@@ -94,6 +103,9 @@ class IncrementalSyncRepository(
         val resolvedIdentity = endpointResolver.resolve()
         val epochChanged = verifyServerIdentity(resolvedIdentity)
         val deviceId = ensureDevice()
+
+        // Identity/replica and device checks must succeed before changing any rejected work.
+        if (retryRejected) retryAllDeadLettersInternal()
 
         // Upload first so offline-created data is part of the bootstrap snapshot.
         val uploadTotal = outboxDao.count()
@@ -188,6 +200,10 @@ class IncrementalSyncRepository(
     }
 
     suspend fun retryAllDeadLetters() = accountSessionCoordinator.exclusive {
+        retryAllDeadLettersInternal()
+    }
+
+    private suspend fun retryAllDeadLettersInternal() {
         requireV4LocalState()
         outboxDao.getDeadLetters().forEach {
             outboxDao.retryDeadLetter(it.id, UUID.randomUUID().toString())

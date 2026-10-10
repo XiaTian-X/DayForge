@@ -2349,6 +2349,30 @@ connected3分30秒/XML188.499秒。真实 HTTP/Room/文件 DataStore 验证主�
 attempt1在 compileDeviceTestKotlin 因 GC overhead / OOMErrorException 失败，build5分45秒；
 不把本地定向通过替代该 CI，不据未重跑声称容量修复。后续独立处理编译容量再继续冲突入口。
 
+### 设置页原请求重试分派与问题操作保护
+
+手动重试从 ViewModel/SyncManager 进入同一 BusinessSyncRepository 分派，原账户捕获与版本
+核验先于 v4 拒绝队列恢复；v5 保留原 ID、冻结字节和永久拒绝，合法独立工作仍继续。
+六个旧问题操作捕获保护异常并显示诊断，取消继续传播；不改既有成功后的行为或界面布局。
+具体 v5 问题列表和人工冲突恢复仍未完整接入，不能把网络重试当作业务冲突解决。
+
+MI6/API35 首轮七完整类102项：101通过/1新断言失败/0错误/跳过，
+`5de46f9ef76a4b68bffcd505e5ab4212`；build2分52秒、connected4分12秒/XML226.073秒。
+新增断言误把 HTTP 错误码 DENIED 当作文案，实际契约为 SYNC_HTTP_403；不是102项通过。
+已完整通过且未受随后 ViewModel/夹具修补影响：BusinessSyncRepositoryTest17、
+SyncDurabilityTest23、SyncConflictDurabilityTest13、TimerSyncDurabilityTest5、
+ProtocolNextActivationBarrierTest16、SyncManagerTest10。真实 Room/DataStore 与隔离 HTTP 验证
+首次注册、冷重开原字节重放、永久拒绝保留及独立上传/下载、v4原重新提交、未知版本/认证
+变化/损坏状态保护和计时相邻边界；脚本响应不是服务器真实幂等事务的证明。
+
+确认包装/Gradle/两测试包退出后，合批修正新断言及六个旧问题按钮的异常/取消处理，
+仅复验完整 SettingsViewModelTest：19/19、0失败/错误/跳过，
+`86ad8cc7f7fc49138a5ae3dc862dab1a/targeted.json`；build1分54秒、connected1分9秒/XML46.559秒。
+原失败 XML 保留在该次 prior-results；实际发现/APK/XML/新非空覆盖输入和两包清理通过。
+根51/build/lint/告警通过，原150秒单项/25分钟整批与基线不改，不拼成103/121项最终全量。
+完整 Android/覆盖校准、真实 FastAPI 联合、正式APK/导航/手机平板人工/外网/NAS/Docker及默认v5
+发布未执行。复验后只更新文档，不再改可执行实现或断言；精确提交 CI 另行核对。
+
 ### 测试迁移后的独立复审（Issue #149）
 
 计时服务测试必须从命令调用前后的真实单调时钟获得有效时长上下界，排除暂停/重建时间。

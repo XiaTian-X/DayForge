@@ -232,13 +232,9 @@ class SettingsViewModel @Inject constructor(
         if (manualSyncJob?.isActive == true) return
         manualSyncJob = viewModelScope.launch {
             val failure = try {
-                if (retryRejected) {
-                    // A retry explicitly requested by the user also reactivates
-                    // quarantined operations; ordinary background sync leaves them
-                    // isolated so one bad row cannot block downloads.
-                    syncManager.retryRejectedChanges()
-                }
-                syncManager.sync().exceptionOrNull()?.also { error ->
+                // Version/account discovery owns the retry policy; never mutate v4 queues before dispatch.
+                val result = if (retryRejected) syncManager.retrySync() else syncManager.sync()
+                result.exceptionOrNull()?.also { error ->
                     if (error is CancellationException) throw error
                 }
             } catch (cancelled: CancellationException) {
@@ -260,38 +256,42 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun retryRejectedChange(id: Long) {
-        viewModelScope.launch { syncManager.retryRejectedChange(id) }
+        runSyncIssueAction { syncManager.retryRejectedChange(id) }
     }
 
     fun retryRejectedTimerCommand(id: Long) {
-        viewModelScope.launch { syncManager.retryRejectedTimerCommand(id) }
+        runSyncIssueAction { syncManager.retryRejectedTimerCommand(id) }
     }
 
     fun cancelRejectedTimerCommandAndUseServer(id: Long) {
-        viewModelScope.launch {
-            runCatching {
-                syncManager.cancelRejectedTimerCommandAndUseServer(id)
-                syncManager.sync().getOrThrow()
-            }
-                .onFailure(::showSyncIssue)
+        runSyncIssueAction {
+            syncManager.cancelRejectedTimerCommandAndUseServer(id)
+            syncManager.sync().getOrThrow()
         }
     }
 
     fun discardRejectedChange(id: Long) {
-        viewModelScope.launch { syncManager.discardRejectedChange(id) }
+        runSyncIssueAction { syncManager.discardRejectedChange(id) }
     }
 
     fun resolveConflictUseServer(id: Long) {
-        viewModelScope.launch {
-            runCatching { syncManager.resolveConflictUseServer(id) }
-                .onFailure(::showSyncIssue)
-        }
+        runSyncIssueAction { syncManager.resolveConflictUseServer(id) }
     }
 
     fun resolveConflictUseLocal(id: Long) {
+        runSyncIssueAction { syncManager.resolveConflictUseLocal(id) }
+    }
+
+    /** A protected/stale action is feedback, not an uncaught coroutine failure; cancellation stays cancellation. */
+    private fun runSyncIssueAction(action: suspend () -> Unit) {
         viewModelScope.launch {
-            runCatching { syncManager.resolveConflictUseLocal(id) }
-                .onFailure(::showSyncIssue)
+            try {
+                action()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                showSyncIssue(error)
+            }
         }
     }
 

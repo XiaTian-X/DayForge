@@ -76,13 +76,22 @@ class BusinessSyncRepository @Inject internal constructor(
         }
     }
 
-    suspend fun sync(progress: (SyncProgress) -> Unit = {}, afterSync: (suspend () -> Unit)? = null): Unit = mutex.withLock {
+    suspend fun sync(progress: (SyncProgress) -> Unit = {}, afterSync: (suspend () -> Unit)? = null): Unit =
+        synchronize(progress, afterSync, retryRejected = false)
+
+    /** A user retry shares discovery/account capture; v5 always retains original requests and rejection proofs. */
+    suspend fun retrySync(progress: (SyncProgress) -> Unit = {}): Unit =
+        synchronize(progress, null, retryRejected = true)
+
+    private suspend fun synchronize(progress: (SyncProgress) -> Unit, afterSync: (suspend () -> Unit)?,
+        retryRejected: Boolean): Unit = mutex.withLock {
         val (original, originalCore, originalSync) = sessions.exclusive {
             Triple(tokens.authenticationSnapshot()?.session, tokens.localCoreWriteAccess(), tokens.localSyncAccess())
         }
         val identity = endpoints.resolve()
         when (identity?.protocolVersion) {
-            null, 4 -> legacy.syncForAuthentication(original, progress, afterSync)
+            null, 4 -> if (retryRejected) legacy.retrySyncForAuthentication(original, progress)
+                else legacy.syncForAuthentication(original, progress, afterSync)
             5 -> {
                 val (core, oldSync) = sessions.exclusive {
                     check(tokens.authenticationSnapshot()?.session == original) { "SYNC_ACCOUNT_CHANGED" }

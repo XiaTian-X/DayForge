@@ -296,12 +296,10 @@ class SettingsViewModelTest {
         }
 
     @Test
-    fun retry_is_user_owned_reactivates_rejected_changes_and_clears_the_old_modal() =
+    fun retry_is_user_owned_uses_shared_dispatch_and_clears_the_old_modal() =
         runTest(testDispatcher.scheduler) {
-            coEvery { mockSyncManager.sync(any()) } returnsMany listOf(
-                Result.failure(java.io.IOException("offline")),
-                Result.success(Unit)
-            )
+            coEvery { mockSyncManager.sync(any()) } returns Result.failure(java.io.IOException("offline"))
+            coEvery { mockSyncManager.retrySync(any()) } returns Result.success(Unit)
 
             viewModel.sync()
             testDispatcher.scheduler.runCurrent()
@@ -311,8 +309,58 @@ class SettingsViewModelTest {
             testDispatcher.scheduler.runCurrent()
 
             assertFalse(viewModel.showSyncError.value)
-            coVerify(exactly = 1) { mockSyncManager.retryRejectedChanges() }
-            coVerify(exactly = 2) { mockSyncManager.sync(any()) }
+            coVerify(exactly = 1) { mockSyncManager.retrySync(any()) }
+            coVerify(exactly = 1) { mockSyncManager.sync(any()) }
+        }
+
+    @Test fun retry_failure_uses_manual_diagnostic_and_cancellation_does_not_open_modal() =
+        runTest(testDispatcher.scheduler) {
+            coEvery { mockSyncManager.retrySync(any()) } returns Result.failure(com.dayforge.data.api.NextSyncHttpFailure(403, "DENIED"))
+            viewModel.retrySync(); testDispatcher.scheduler.runCurrent()
+            assertTrue(viewModel.showSyncError.value)
+            assertEquals("SYNC_HTTP_403", viewModel.syncErrorMessage.value)
+            viewModel.dismissSyncError()
+            coEvery { mockSyncManager.retrySync(any()) } throws kotlinx.coroutines.CancellationException("screen left")
+            viewModel.retrySync(); testDispatcher.scheduler.runCurrent()
+            assertFalse(viewModel.showSyncError.value)
+            coVerify(exactly = 0) { mockSyncManager.sync(any()) }
+        }
+
+    @Test fun all_issue_actions_report_protected_failures_propagate_cancellation_and_keep_success_behavior() =
+        runTest(testDispatcher.scheduler) {
+            var fault: Exception? = com.dayforge.data.repository.ProtocolNextDataRequiresUpgradeException()
+            coEvery { mockSyncManager.retryRejectedChange(any()) } coAnswers { fault?.let { throw it }; Unit }
+            coEvery { mockSyncManager.retryRejectedTimerCommand(any()) } coAnswers { fault?.let { throw it }; Unit }
+            coEvery { mockSyncManager.cancelRejectedTimerCommandAndUseServer(any()) } coAnswers { fault?.let { throw it }; Unit }
+            coEvery { mockSyncManager.discardRejectedChange(any()) } coAnswers { fault?.let { throw it }; Unit }
+            coEvery { mockSyncManager.resolveConflictUseServer(any()) } coAnswers { fault?.let { throw it }; Unit }
+            coEvery { mockSyncManager.resolveConflictUseLocal(any()) } coAnswers { fault?.let { throw it }; Unit }
+            coEvery { mockSyncManager.sync(any()) } returns Result.success(Unit)
+            val actions = listOf<() -> Unit>(
+                { viewModel.retryRejectedChange(1) }, { viewModel.retryRejectedTimerCommand(1) },
+                { viewModel.cancelRejectedTimerCommandAndUseServer(1) }, { viewModel.discardRejectedChange(1) },
+                { viewModel.resolveConflictUseServer(1) }, { viewModel.resolveConflictUseLocal(1) })
+            for (action in actions) {
+                action(); testDispatcher.scheduler.runCurrent()
+                assertTrue(viewModel.showSyncError.value)
+                assertEquals(fault!!.message, viewModel.syncErrorMessage.value)
+                viewModel.dismissSyncError()
+            }
+            coVerify(exactly = 0) { mockSyncManager.sync(any()) }
+            val originalMessage = viewModel.syncErrorMessage.value
+            fault = kotlinx.coroutines.CancellationException("screen left")
+            for (action in actions) {
+                action(); testDispatcher.scheduler.runCurrent()
+                assertFalse(viewModel.showSyncError.value)
+                assertEquals(originalMessage, viewModel.syncErrorMessage.value)
+            }
+            coVerify(exactly = 0) { mockSyncManager.sync(any()) }
+            fault = null
+            for (action in actions) {
+                action(); testDispatcher.scheduler.runCurrent()
+                assertFalse(viewModel.showSyncError.value)
+            }
+            coVerify(exactly = 1) { mockSyncManager.sync(any()) } // Only the existing timer-use-server action syncs.
         }
 
     @Test

@@ -269,4 +269,95 @@ class BusinessSyncRepositoryTest : NextObjectEditorFixture() {
         assertTrue(rejected { driver(future).sync() } is SyncProtocolException)
         coVerify(exactly = 1) { legacy.syncForAuthentication(any(), any(), any()) }
     }
+
+    @Test fun retryOfEmptyV5RegistersAndBootstrapsWithoutLegacyQueueReactivation() = runBlocking<Unit> {
+        db.clearAllData(); val (http, server) = channel { response(it) }
+        assertTrue(SyncManager(legacy, driver(http)).retrySync().isSuccess)
+        assertEquals(1, db.nextSyncStateDao().rows().single().challengeContract)
+        assertNotNull(preferences.lastSyncTimestamp.first())
+        assertEquals(1, server.requests.count { it.path.endsWith("/bootstrap") })
+        coVerify(exactly = 0) { legacy.retryAllDeadLetters() }
+        coVerify(exactly = 0) { legacy.retrySyncForAuthentication(any(), any()) }
+    }
+
+    @Test fun settingsRetryReplaysExactV5UnknownResultAcrossColdReopen() = runBlocking<Unit> {
+        db.clearAllData(); var loseResponse = true
+        val (http, server) = channel { input ->
+            val value = response(input)
+            if (input.path.endsWith("/push") && loseResponse) value.copy(length = value.bytes.size + 10) else value
+        }
+        val service = driver(http); service.sync()
+        val ticket = requireNotNull(creator.captureForNavigation())
+        val saved = creatingMetrics().createMetric(metric.copy(id = 0), creationAuthority = ticket)
+        val source = db.syncOutboxDao().getAll().single()
+        assertTrue(SyncManager(legacy, service).sync().exceptionOrNull() is java.io.IOException)
+        val original = requireNotNull(db.nextRequestDao().origin(NEXT_OPERATION, source.operationId))
+        val frozen = requireNotNull(db.nextRequestDao().transmission(NEXT_OPERATION, source.operationId))
+        assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, source.operationId))
+        val failedTimestamp = preferences.lastSyncTimestamp.first()
+        storage.reopen(); loseResponse = false
+        assertTrue(SyncManager(legacy, driver(http)).retrySync().isSuccess)
+        val transmissions = server.requests.filter { it.path.endsWith("/push") }
+        assertEquals(2, transmissions.size)
+        assertTrue(transmissions.all { it.body.contentEquals(frozen.wireBytes) })
+        assertEquals(original, db.nextRequestDao().origin(NEXT_OPERATION, source.operationId))
+        assertTrue(frozen.wireBytes.contentEquals(db.nextRequestDao().transmission(NEXT_OPERATION, source.operationId)!!.wireBytes))
+        assertNotNull(db.nextRequestDao().acceptance(NEXT_OPERATION, source.operationId))
+        assertTrue(db.syncOutboxDao().getAll().isEmpty())
+        assertEquals(metric.appearance, db.metricDao().getMetricById(saved)!!.appearance)
+        assertTrue(requireNotNull(preferences.lastSyncTimestamp.first()) >= requireNotNull(failedTimestamp))
+        coVerify(exactly = 0) { legacy.retrySyncForAuthentication(any(), any()) }
+    }
+
+    @Test fun retryKeepsV5PermanentRejectionAndFrozenSourceWhileIndependentWorkContinues() = runBlocking<Unit> {
+        db.clearAllData(); var denied: String? = null
+        val (http, server) = channel { input ->
+            if (input.path.endsWith("/push") && denied != null) {
+                val request = json.decodeFromString<RoundSyncPushRequest>(input.body.toString(Charsets.UTF_8))
+                val operation = request.operations.single()
+                if (operation.operationId == denied) MaterialSocketServer.Reply(json.encodeToString(RoundSyncPushResponse(
+                    listOf(NextSyncOperationResult(operation.operationId, operation.entityType, operation.entityUuid,
+                        "rejected", errorCode = "INVALID_PAYLOAD", message = "Needs correction")),
+                    1, emptyList(), emptyList())).toByteArray()) else response(input)
+            } else response(input)
+        }
+        val service = driver(http); service.sync()
+        val ticket = requireNotNull(creator.captureForNavigation())
+        creatingMetrics().createMetric(metric.copy(id = 0), creationAuthority = ticket)
+        val row = db.syncOutboxDao().getAll().single(); denied = row.operationId
+        assertTrue(rejected { service.sync() } is NextSyncAttention)
+        val original = db.nextRequestDao().origin(NEXT_OPERATION, row.operationId)
+        val frozen = db.nextRequestDao().transmission(NEXT_OPERATION, row.operationId)!!.wireBytes
+        val rejection = db.nextSyncStateDao().rejections().single()
+        val lastSync = preferences.lastSyncTimestamp.first()
+        storage.reopen()
+        // Existing creator points to the prior Room instance; reconstruct the real creator after cold reopen.
+        creator = NextObjectCreator(db, tokens, sessions, icons)
+        val nextTicket = requireNotNull(creator.captureForNavigation())
+        creatingMetrics().createMetric(metric.copy(id = 0, uuid = id(190), name = "Independent"), creationAuthority = nextTicket)
+        val independent = db.syncOutboxDao().getAll().single { it.operationId != row.operationId }
+        assertTrue(SyncManager(legacy, driver(http)).retrySync().exceptionOrNull() is NextSyncAttention)
+        assertEquals(listOf(row), db.syncOutboxDao().getAll())
+        assertEquals(original, db.nextRequestDao().origin(NEXT_OPERATION, row.operationId))
+        assertTrue(frozen.contentEquals(db.nextRequestDao().transmission(NEXT_OPERATION, row.operationId)!!.wireBytes))
+        assertEquals(listOf(rejection), db.nextSyncStateDao().rejections())
+        assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, row.operationId))
+        assertNotNull(db.nextRequestDao().acceptance(NEXT_OPERATION, independent.operationId))
+        assertEquals(lastSync, preferences.lastSyncTimestamp.first())
+        assertEquals(2, server.requests.count { it.path.endsWith("/push") })
+        assertTrue(server.requests.count { it.path.endsWith("/changes") } >= 3)
+        coVerify(exactly = 0) { legacy.retrySyncForAuthentication(any(), any()) }
+    }
+
+    @Test fun userRetryUsesCapturedV4EntryButFutureVersionCannotReactivateAnyLegacyWork() = runBlocking<Unit> {
+        val (http, _) = channel { reply(it, 4) }
+        val original = tokens.authenticationSnapshot()!!.session
+        driver(http).retrySync()
+        coVerify(exactly = 1) { legacy.retrySyncForAuthentication(original, any()) }
+        coVerify(exactly = 0) { legacy.syncForAuthentication(any(), any(), any()) }
+        val (future, _) = channel { reply(it, 6) }
+        assertTrue(rejected { driver(future).retrySync() } is SyncProtocolException)
+        coVerify(exactly = 1) { legacy.retrySyncForAuthentication(any(), any()) }
+        coVerify(exactly = 0) { legacy.retryAllDeadLetters() }
+    }
 }
