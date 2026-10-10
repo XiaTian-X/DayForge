@@ -196,10 +196,16 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         if (ids.size < 2) return
 
         suspend fun warm(table: String, column: String, keys: List<Any>, kind: String? = null): Boolean {
-            val hashes = NextRequestSql.boundedRowHashes(sql, table, column, keys, kind) ?: return false
+            fun proofKey(id: Any) = if (kind == null) ProofKey(table, "$column=?", listOf(id))
+                else ProofKey(table, "kind=? AND requestId=?", listOf(kind, id))
+            // The initial walk and earlier batches already audited some of these exact keys.
+            // Reuse presence AND absence only inside this SELECT-only snapshot; readOnlyProof
+            // discards the map before any later write, HTTP boundary or new resolve call.
+            val missing = keys.filter { !p.hashes.containsKey(proofKey(it)) }
+            if (missing.isEmpty()) return true
+            val hashes = NextRequestSql.boundedRowHashes(sql, table, column, missing, kind) ?: return false
             hashes.forEach { (id, value) ->
-                val key = if (kind == null) ProofKey(table, "$column=?", listOf(id))
-                    else ProofKey(table, "kind=? AND requestId=?", listOf(kind, id))
+                val key = proofKey(id)
                 if (p.hashes.size < 512 || key in p.hashes) p.hashes[key] = value
             }
             return true

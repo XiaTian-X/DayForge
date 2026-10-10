@@ -651,6 +651,59 @@ class NextStructuralCausalStoreTest : NextCoreRequestFixture() {
         assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
     }
 
+    @Test fun warmedAncestryPresenceAndAbsenceAreReauditedAfterWritesAndFailedPasses() = runBlocking<Unit> {
+        val a = editMetric("A"); val b = editMetric("B"); val c = editMetric("C"); register()
+        var revision = 0L
+        val (http, server) = channel { input ->
+            if (input.path.endsWith("/identity")) reply(input) else successReply(input, ++revision)
+        }
+        val store = sender(http)
+        assertEquals(NextOperationAcceptance.COMMITTED, store.sendAndAcceptOperation(access(), a.operationId))
+        assertEquals(NextOperationAcceptance.COMMITTED, store.sendAndAcceptOperation(access(), b.operationId))
+        val delivery = requireNotNull(store.sendOperation(access(), c.operationId))
+        val replacement = db.nextStructuralCausalDao().supersession(c.operationId)!!
+        val captured = access()
+        val networkBefore = server.requests.size
+        val receipt = db.nextRequestDao().acceptance(NEXT_OPERATION, a.operationId)!!
+        val dependency = db.nextStructuralCausalDao().dependency(a.operationId)!!
+        db.withTransaction {
+            val coordinator = NextStructuralCausalStore(db)
+            val sql = db.openHelper.writableDatabase
+            assertEquals(replacement.replacementId, coordinator.resolve(c.operationId, captured))
+            // A retired logical source was absent in the prior warm pass. Reintroducing its
+            // exact original row must invalidate that absence, even on the same coordinator.
+            assertEquals(b.id, db.syncOutboxDao().insert(b))
+            assertNotNull(rejected { coordinator.resolve(c.operationId, captured) })
+            sql.execSQL("DELETE FROM sync_outbox WHERE id=?", arrayOf<Any>(b.id))
+            assertEquals(replacement.replacementId, coordinator.resolve(c.operationId, captured))
+            // Keep the old value's bytes but corrupt the earliest ancestor's actual SQL type.
+            // A failed pass cannot retain its previously validated receipt/dependency either.
+            sql.execSQL("UPDATE next_acceptances SET resultHash=CAST(resultHash AS BLOB) WHERE kind=? AND requestId=?",
+                arrayOf<Any>(NEXT_OPERATION, a.operationId))
+            assertEquals(NextRequestException.Reason.INVALID_LOCAL_STATE,
+                (rejected { coordinator.resolve(c.operationId, captured) } as NextRequestException).reason)
+            sql.execSQL("UPDATE next_acceptances SET resultHash=? WHERE kind=? AND requestId=?",
+                arrayOf<Any>(receipt.resultHash, NEXT_OPERATION, a.operationId))
+            assertEquals(replacement.replacementId, coordinator.resolve(c.operationId, captured))
+            sql.execSQL("UPDATE next_structural_dependencies SET logicalOrder='bad' WHERE operationId=?",
+                arrayOf<Any>(a.operationId))
+            assertEquals(NextRequestException.Reason.INVALID_LOCAL_STATE,
+                (rejected { coordinator.resolve(c.operationId, captured) } as NextRequestException).reason)
+            sql.execSQL("UPDATE next_structural_dependencies SET logicalOrder=? WHERE operationId=?",
+                arrayOf<Any>(dependency.logicalOrder, a.operationId))
+            assertEquals(replacement.replacementId, coordinator.resolve(c.operationId, captured))
+        }
+        assertEquals(networkBefore, server.requests.size)
+        assertEquals(receipt, db.nextRequestDao().acceptance(NEXT_OPERATION, a.operationId))
+        assertEquals(dependency, db.nextStructuralCausalDao().dependency(a.operationId))
+        assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
+        storage.reopen()
+        assertEquals(NextOperationAcceptance.REPLAYED, sender(http).acceptOperation(delivery))
+        assertEquals(networkBefore, server.requests.size)
+        assertEquals(3, count("next_acceptances")); assertEquals(2, count("next_structural_supersessions"))
+        assertEquals(0, count("sync_outbox")); assertEquals("C", db.metricDao().getMetricById(metric.id)!!.name)
+    }
+
     @Test fun pureMemoNeverReusesDatabaseProofsAcrossTransactions() = runBlocking<Unit> {
         val a = editMetric("A"); val b = editMetric("B"); register()
         val (http, server) = channel { successReply(it, if (wireOrIdentity(it) == a.operationId) 1 else 2) }
