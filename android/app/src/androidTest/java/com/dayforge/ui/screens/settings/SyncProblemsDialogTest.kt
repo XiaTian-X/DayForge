@@ -20,13 +20,14 @@ class SyncProblemsDialogTest {
     private val id = "aa310000-0000-4000-8000-000000000099"
     private var actions = 0
     private fun label(resource: Int) = compose.activity.getString(resource)
-    private fun show(state: SyncProblems?) {
+    private fun show(state: SyncProblems?, onPreview: ((com.dayforge.data.repository.NextRecoveryKey) -> Unit)? = null) {
         val row = SyncOutboxEntity(id = 1, operationId = id, recordType = "metric", entityUuid = id,
             wireEntityUuid = id, action = "upsert", createdAt = 0, lastError = "legacy reason", deadLetteredAt = 1)
         compose.setContent { MaterialTheme { RejectedChangesDialog(listOf(row), emptyList(), emptyList(),
             onDismiss = {}, onRetry = { actions++ }, onRetryTimerCommand = { actions++ },
             onCancelTimerAndUseServer = { actions++ }, onUseServer = { actions++ }, onUseLocal = { actions++ },
-            onDiscard = { actions++ }, problems = if (state is SyncProblems.Legacy) state.copy(changes = listOf(row)) else state) } }
+            onDiscard = { actions++ }, problems = if (state is SyncProblems.Legacy) state.copy(changes = listOf(row)) else state,
+            onPreviewRecovery = onPreview) } }
     }
     @Test fun nextProblemHasReasonAndNoLegacyMutationEvenWhenOldRowsAreStillCached() {
         show(SyncProblems.Next(listOf(NextSyncProblem("sync_operation", id, "metric", id, "INVALID_PAYLOAD"))))
@@ -53,5 +54,12 @@ class SyncProblemsDialogTest {
         compose.onNodeWithText(label(R.string.sync_rejected_retry)).performClick()
         compose.onNodeWithText(label(R.string.sync_rejected_discard)).performClick()
         assertEquals(2, actions)
+    }
+    @Test fun nextPreviewUsesTheOriginalRequestIdentityAndNeverDispatchesLegacyActions() {
+        var selected: com.dayforge.data.repository.NextRecoveryKey? = null
+        show(SyncProblems.Next(listOf(NextSyncProblem("sync_operation", id, "metric", id, "INVALID_PAYLOAD")))) { selected = it }
+        compose.onNodeWithTag("preview-recovery-$id").performClick()
+        assertEquals(com.dayforge.data.repository.NextRecoveryKey("sync_operation", id), selected)
+        assertEquals(0, actions)
     }
 }

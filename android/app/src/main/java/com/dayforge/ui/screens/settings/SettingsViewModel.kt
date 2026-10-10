@@ -111,12 +111,20 @@ class SettingsViewModel @Inject constructor(
     private val problemReload = MutableStateFlow(problemStamp)
     private val mutableProblems = MutableStateFlow<com.dayforge.data.model.SyncProblems>(com.dayforge.data.model.SyncProblems.Checking)
     internal val syncProblems = mutableProblems.asStateFlow()
+    private val recoveryWorkflow = SettingsRecoveryWorkflow(syncManager, viewModelScope)
+    internal val recoveryState = recoveryWorkflow.state
+    internal fun previewRecovery(key: com.dayforge.data.repository.NextRecoveryKey) = recoveryWorkflow.preview(key)
+    internal fun refreshRecovery() = recoveryWorkflow.refresh()
+    internal fun approveRecovery(value: Boolean) = recoveryWorkflow.approve(value)
+    internal fun confirmRecovery() = recoveryWorkflow.confirm()
+    internal fun dismissRecovery() = recoveryWorkflow.dismiss()
     // Strongly held; synchronous invalidation precedes any account/replica/permission transition.
     private val problemInvalidator = object : com.dayforge.data.local.AccountIconMemory.Cache {
         override fun authenticationTransition(blocked: Boolean) = synchronized(problemMonitor) {
             problemBlocked = blocked
             problemStamp = Any()
             mutableProblems.value = com.dayforge.data.model.SyncProblems.Checking
+            recoveryWorkflow.authenticationTransition(blocked)
             problemReload.value = problemStamp
         }
     }
@@ -166,6 +174,7 @@ class SettingsViewModel @Inject constructor(
         tokenManager.registerIconCache(problemInvalidator)
         viewModelScope.launch {
             combine(problemReload, syncManager.problemChanges()) { ticket, _ -> ticket }.collectLatest { ticket ->
+                recoveryWorkflow.databaseChanged()
                 if (!synchronized(problemMonitor) { !problemBlocked && problemStamp === ticket }) return@collectLatest
                 val result = try { syncManager.readProblems() }
                 catch (cancelled: CancellationException) { throw cancelled }

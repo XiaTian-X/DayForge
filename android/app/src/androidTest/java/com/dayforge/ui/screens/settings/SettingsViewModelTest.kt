@@ -72,6 +72,26 @@ import java.io.File
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 class SettingsViewModelTest {
+    @Test fun authenticationTransitionClearsRecoveryLoadingAndPreventsLateTicketPreparation() = runTest(testDispatcher.scheduler) {
+        testDispatcher.scheduler.runCurrent()
+        val graph = recoveryUiGraph()
+        val started = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        coEvery { mockSyncManager.readRecoveryPreview(graph.root) } coAnswers {
+            started.complete(Unit); withContext(kotlinx.coroutines.NonCancellable) { release.await() }; graph
+        }
+        viewModel.previewRecovery(graph.root); testDispatcher.scheduler.runCurrent()
+        assertTrue(started.isCompleted); assertEquals(RecoveryUiState.Loading, viewModel.recoveryState.value)
+        try {
+            withContext(Dispatchers.IO) { tokenManager.saveLoginSession("new", "new-refresh", "member",
+                "aa310000-0000-4000-8000-000000000010", false) }
+            assertEquals(RecoveryUiState.Hidden, viewModel.recoveryState.value)
+        } finally { release.complete(Unit) }
+        testDispatcher.scheduler.runCurrent()
+        assertEquals(RecoveryUiState.Hidden, viewModel.recoveryState.value)
+        coVerify(exactly = 0) { mockSyncManager.prepareRecoveryConfirmation(any(), any()) }
+        assertFalse(viewModel.showSyncError.value)
+    }
+
     @Test fun nextProblemSnapshotPublishesAndUnreadableReadIsNotSilentlyEmpty() = runTest(testDispatcher.scheduler) {
         val changes = MutableStateFlow(0)
         every { mockSyncManager.problemChanges() } returns changes.map { Unit }

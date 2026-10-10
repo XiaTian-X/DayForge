@@ -26,6 +26,14 @@ class SyncManager @Inject constructor(
     val syncProgress: Flow<SyncProgress> = _syncProgress.asStateFlow()
     internal fun problemChanges() = businessSyncRepository.problemChanges()
     internal suspend fun readProblems() = businessSyncRepository.readProblems()
+    internal suspend fun readRecoveryPreview(root: com.dayforge.data.repository.NextRecoveryKey) =
+        businessSyncRepository.readRecoveryPreview(root)
+    internal suspend fun prepareRecoveryConfirmation(preview: com.dayforge.data.repository.NextRecoveryDependencyPreview,
+        selected: Set<com.dayforge.data.repository.NextRecoveryKey>) =
+        businessSyncRepository.prepareRecoveryConfirmation(preview, selected)
+    // Local recovery is not a sync success and must not change global progress or last-sync time.
+    internal suspend fun confirmRecovery(ticket: com.dayforge.data.repository.NextRecoveryConfirmation) =
+        businessSyncRepository.confirmRecovery(ticket)
 
     /**
      * Pushes pending V2 operations, then pulls and merges remote changes.

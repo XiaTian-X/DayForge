@@ -26,7 +26,7 @@ internal class NextRecoveryConfirmation internal constructor(val recoveryId: Str
 }
 
 /**
- * Internal D-020 transaction participant. No UI entry until every terminal consumer is integrated.
+ * D-020 transaction participant. Settings reaches this only through the shared sync coordinator.
  * Caller owns sync serialization, authenticated account lock and Room transaction; no HTTP here.
  */
 internal class NextRecoveryConfirmationStore(private val database: HabitDatabase,

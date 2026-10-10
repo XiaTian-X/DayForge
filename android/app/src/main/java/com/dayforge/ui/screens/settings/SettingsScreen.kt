@@ -60,6 +60,7 @@ fun SettingsScreen(
     val activeTimerHabitName by viewModel.activeTimerHabitName.collectAsState()
     val activeTimerDuration by viewModel.activeTimerDuration.collectAsState()
     val syncProblems by viewModel.syncProblems.collectAsState()
+    val recoveryState by viewModel.recoveryState.collectAsState()
     val legacyProblems = syncProblems as? com.dayforge.data.model.SyncProblems.Legacy
     val rejectedChanges = legacyProblems?.changes.orEmpty()
     val syncConflicts = legacyProblems?.conflicts.orEmpty()
@@ -984,6 +985,10 @@ fun SettingsScreen(
             conflicts = syncConflicts,
             timerCommands = rejectedTimerCommands,
             problems = syncProblems,
+            onPreviewRecovery = {
+                showRejectedChanges = false
+                viewModel.previewRecovery(it)
+            },
             onDismiss = { showRejectedChanges = false },
             onRetry = viewModel::retryRejectedChange,
             onRetryTimerCommand = viewModel::retryRejectedTimerCommand,
@@ -1001,6 +1006,9 @@ fun SettingsScreen(
             }
         )
     }
+    if (recoveryState != RecoveryUiState.Hidden) RecoveryConfirmationDialog(recoveryState,
+        onDismiss = viewModel::dismissRecovery, onRefresh = viewModel::refreshRecovery,
+        onApprove = viewModel::approveRecovery, onConfirm = viewModel::confirmRecovery)
     rejectedChangeToDiscard?.takeIf { legacyProblems != null && legacyProblems.session == rejectedActionSession }?.let { change ->
         AlertDialog(
             onDismissRequest = { rejectedChangeToDiscard = null },

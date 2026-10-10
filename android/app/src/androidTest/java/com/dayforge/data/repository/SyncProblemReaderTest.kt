@@ -282,6 +282,25 @@ class SyncProblemReaderTest : NextCoreRequestFixture() {
         }
         assertEquals(before, proof())
     }
+    @Test fun protectedTimerSegmentChangeEmitsWithoutAnyOutboxOrProblemCountChange() = runBlocking<Unit> {
+        initialize(); val command = start()
+        val pending = db.timeLogDao().getPendingTimerCommands()
+        val calls = server.requests.size
+        val initial = CompletableDeferred<Unit>()
+        val changed = async(start = CoroutineStart.UNDISPATCHED) {
+            reader().problemChanges().first {
+                val start = db.timeLogDao().getTimerSegments(command.sessionUuid).single().startedAt
+                if (start == millis) initial.complete(Unit)
+                start == millis + 1
+            }
+        }
+        withTimeout(5000) { initial.await() }
+        db.withTransaction { db.openHelper.writableDatabase.execSQL(
+            "UPDATE timer_segments SET startedAt=startedAt+1 WHERE sessionUuid=?", arrayOf(command.sessionUuid)) }
+        withTimeout(5000) { changed.await() }
+        assertEquals(pending, db.timeLogDao().getPendingTimerCommands())
+        assertEquals(calls, server.requests.size)
+    }
     @Test fun frozenUnknownOutcomeIsNotMisreportedAsPermanentRejectionOrRebasedByDisplay() = runBlocking<Unit> {
         initialize(); val row = edit("Local")
         sender(http).sendOperation(access(), row.operationId) // A delivered response alone is not an acceptance receipt.

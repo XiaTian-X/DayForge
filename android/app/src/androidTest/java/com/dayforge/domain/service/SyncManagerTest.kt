@@ -21,6 +21,25 @@ import org.junit.Test
 
 @RunWith(AndroidJUnit4::class)
 class SyncManagerTest {
+    @Test fun local_recovery_delegates_to_shared_coordinator_without_publishing_sync_success_or_swallowing_cancellation() = runTest {
+        val key = com.dayforge.data.repository.NextRecoveryKey("sync_operation", "bb160000-0000-4000-8000-000000000001")
+        val preview = mockk<com.dayforge.data.repository.NextRecoveryDependencyPreview>()
+        val ticket = mockk<com.dayforge.data.repository.NextRecoveryConfirmation>()
+        val proof = mockk<com.dayforge.data.repository.NextRecoveryTerminalProof>()
+        coEvery { business.readRecoveryPreview(key) } returns preview
+        coEvery { business.prepareRecoveryConfirmation(preview, setOf(key)) } returns ticket
+        coEvery { business.confirmRecovery(ticket) } returns proof
+        assertEquals(preview, manager.readRecoveryPreview(key))
+        assertEquals(ticket, manager.prepareRecoveryConfirmation(preview, setOf(key)))
+        assertEquals(proof, manager.confirmRecovery(ticket))
+        assertEquals(SyncProgress.Idle, manager.syncProgress.first())
+        coVerify(exactly = 0) { business.sync(any(), any()) }
+        coEvery { business.confirmRecovery(ticket) } throws CancellationException("leave")
+        var cancelled = false
+        try { manager.confirmRecovery(ticket) } catch (_: CancellationException) { cancelled = true }
+        assertTrue(cancelled); assertEquals(SyncProgress.Idle, manager.syncProgress.first())
+    }
+
     @Test fun device_controls_use_shared_dispatcher_not_legacy_registration() = runTest {
         manager.makeCurrentDevicePrimary()
         manager.setCurrentDeviceStructuralEditing(true)

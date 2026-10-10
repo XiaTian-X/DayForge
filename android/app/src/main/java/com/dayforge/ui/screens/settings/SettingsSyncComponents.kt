@@ -214,7 +214,8 @@ internal fun RejectedChangesDialog(
     onUseServer: (Long) -> Unit,
     onUseLocal: (Long) -> Unit,
     onDiscard: (SyncOutboxEntity) -> Unit,
-    problems: com.dayforge.data.model.SyncProblems? = null
+    problems: com.dayforge.data.model.SyncProblems? = null,
+    onPreviewRecovery: ((com.dayforge.data.repository.NextRecoveryKey) -> Unit)? = null
 ) {
     val visibleChanges = (problems as? com.dayforge.data.model.SyncProblems.Legacy)?.changes ?: changes
     val visibleConflicts = (problems as? com.dayforge.data.model.SyncProblems.Legacy)?.conflicts ?: conflicts
@@ -228,7 +229,7 @@ internal fun RejectedChangesDialog(
                     com.dayforge.data.model.SyncProblems.Checking -> item { Text(stringResource(R.string.sync_problems_loading)) }
                     com.dayforge.data.model.SyncProblems.Unavailable -> item { Text(stringResource(R.string.sync_problems_unavailable)) }
                     is com.dayforge.data.model.SyncProblems.Next -> {
-                        item { Text(stringResource(R.string.sync_problems_read_only), style = MaterialTheme.typography.bodySmall) }
+                        item { Text(stringResource(R.string.sync_problems_preserved), style = MaterialTheme.typography.bodySmall) }
                         items(problems.items, key = { "${it.kind}:${it.requestId}" }) { problem ->
                             Column(Modifier.testTag("next-sync-problem-${problem.requestId}")) {
                                 Text("${problem.entityType} · ${problem.entityUuid.take(8)}")
@@ -242,6 +243,11 @@ internal fun RejectedChangesDialog(
                                 Text(problem.code, style = MaterialTheme.typography.bodySmall)
                                 if (problem.fields.isNotEmpty()) Text(stringResource(R.string.sync_conflict_fields,
                                     problem.fields.joinToString(", ")), style = MaterialTheme.typography.bodySmall)
+                                if (onPreviewRecovery != null) TextButton(onClick = {
+                                    onPreviewRecovery(com.dayforge.data.repository.NextRecoveryKey(problem.kind, problem.requestId))
+                                }, modifier = Modifier.testTag("preview-recovery-${problem.requestId}")) {
+                                    Text(stringResource(R.string.sync_recovery_preview))
+                                }
                             }
                         }
                     }

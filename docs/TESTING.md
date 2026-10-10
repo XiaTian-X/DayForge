@@ -19,6 +19,35 @@
 
 ## 验证层级
 
+### 设置恢复入口与确认工作流（2026-10-11，Issue #160）
+
+正式设置问题窗口接入完整依赖/投影预览、整组显式批准及本地确认；保留旧v4恢复路径和
+已确认手机/平板主布局。ViewModel持有内存票据，真实认证过渡清除旧状态，数据库与保护
+表变化使预览失效。自身COMMIT不丢失确认票据；关闭窗口不取消已确认任务；结果丢失/
+取消只显式重试同一票据，陈旧预览必须重新批准。本地完成不发布同步成功或更新时间。
+
+首轮 `4214fdb959de4b86acdf6ff632a01040` 被新英文数量资源的3项PluralsCandidate阻止，
+build2m47s，未执行行为测试。改用标准plurals和pluralStringResource/getQuantityString，
+保留单数/复数断言，不修改lint基线、告警预算或原业务。最终完整8类
+`9aa29ab37e6e43558c2cbb08d386051f/targeted.json`：136/136、0失败/错误/跳过；
+Audit48、Runtime12、ProblemReader17、SyncManager11、SettingsViewModel23、
+RecoveryWorkflow12、RecoveryDialog8、ProblemsDialog5。根51、build1m53s、
+connected11m09s/XML642.467s；lint、原告警预算、新鲜发现/APK/XML/非空覆盖输入及
+两隔离包清理通过，进程全部结束后才更新文档。
+
+真实Room/DataStore/HTTP链验证Settings工作流经正式facade恢复、持久审计、无伪ACK/
+同步成功及后续新编辑正常接受；真实计时段单表变化触发失效，实际TokenManager过渡
+阻止迟到票据。其余工作流断点使用明确mock/有界门控，Compose在真机验证全组批准、
+阻碍、陈旧、提交/重试/完成及2000节点列表末尾可达；不冒称后端联合或完整SQL容量。
+成功清单SHA256 `2cb5af044fb844b81cd5cbfcbf90a8ea7c20f510324fa84ff0e3578a85e15803`；
+XML `c1a6cc4693042b686e865f4617922fc85c7601fa604e13c885b35c45e16823ad`。
+基于 `b2f4432`，工作流/对话框/ViewModel/问题读取blob分别为
+`56f3138d70b6db18cd29e5de5ce37bddf0b56bcb`、`7fe30d94d8d6d5c5302566cb245e11457c5aedc8`、
+`a34da5eb060a8bba6106cdfa24b29032701d7d5b`、`c439654607e9901924f52b5a973e781c931cc261`。
+默认v4、Room17、后端、依赖、150s单项及2700s批次不变，未重跑未改长链。此结果不代替
+全部消费者联合、最大实际SQL容量、产品/账户素材备份、真实后端、阶段全量/覆盖校准、
+精确提交CI或正式手机/平板人工验收；没有正式APK安装/清除、v5激活、清库、部署或Docker。
+
 ### 混合工作保护、关闭数据库恢复及无关因果替代（2026-10-11，Issue #160）
 
 恢复审计新增6项实际Room/HTTP回归：正在运行的计时、事项和已接受指标/计数历史与多个

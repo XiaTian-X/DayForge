@@ -53,7 +53,7 @@ internal class NextSyncRuntime @Inject constructor(
 
     private fun recoveryReader() = NextRecoveryDependencyReader(database, tokens, sessions, core, timers, once, restart)
 
-    /** No settings/button entry until all terminal consumers are ready. */
+    /** Settings preview preparation is SELECT-only; confirmation uses the shared runtime lock. */
     internal suspend fun prepareRecoveryConfirmation(preview: NextRecoveryDependencyPreview, selected: Set<NextRecoveryKey>) = sessions.exclusive {
         val authority = requireNotNull(tokens.localCoreWriteAccess())
         val access = requireNotNull(tokens.localSyncAccess()).let { it.copy(capabilities = it.capabilities.toSet()) }

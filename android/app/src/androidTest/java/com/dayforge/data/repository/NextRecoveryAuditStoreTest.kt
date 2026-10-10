@@ -306,6 +306,42 @@ class NextRecoveryAuditStoreTest : NextObjectEditorFixture() {
         assertEquals(preserved, preservation(ticket.recoveryId)); assertEquals(calls, server.requests.size)
     }
 
+    @Test fun settingsRecoveryWorkflowUsesRealFacadeAndAtomicProofWithoutMarkingSyncSuccessful() = runBlocking<Unit> {
+        val (http, _) = initialize(); val a = edit("Settings A"); edit("Settings B")
+        val root = refuse(http, a.operationId); failing = false
+        val manager = com.dayforge.domain.service.SyncManager(mockk(relaxed = true), business(http))
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Default)
+        val workflow = com.dayforge.ui.screens.settings.SettingsRecoveryWorkflow(manager, scope)
+        try {
+            workflow.preview(NextRecoveryKey(NEXT_OPERATION, root))
+            val preview = kotlinx.coroutines.withTimeout(60_000) {
+                workflow.state.first { it != com.dayforge.ui.screens.settings.RecoveryUiState.Loading }
+            } as com.dayforge.ui.screens.settings.RecoveryUiState.Review
+            assertTrue(preview.data.graph.canConfirm); assertFalse(preview.approved)
+            val change = preview.data.changes.single().fields.single { it.field == "name" }
+            assertEquals("Settings B", change.before); assertEquals(metric.name, change.after)
+            workflow.approve(true); workflow.confirm()
+            val completed = kotlinx.coroutines.withTimeout(60_000) {
+                workflow.state.first { it !is com.dayforge.ui.screens.settings.RecoveryUiState.Committing }
+            } as com.dayforge.ui.screens.settings.RecoveryUiState.Completed
+            assertEquals(2, completed.count)
+            assertEquals(com.dayforge.data.model.SyncProgress.Idle, manager.syncProgress.first())
+            assertNull(preferences.lastSyncTimestamp.first()); assertEquals(0, count("next_acceptances"))
+            assertTrue(db.syncOutboxDao().getAll().isEmpty())
+            assertEquals(completed.recoveryId, db.withTransaction { audit.read(access(), completed.recoveryId).recoveryId })
+            assertEquals(0, (manager.readProblems() as com.dayforge.data.model.SyncProblems.Next).count)
+            val later = edit("Settings later edit")
+            assertTrue(manager.sync().isSuccess)
+            assertEquals(com.dayforge.data.model.SyncProgress.Success, manager.syncProgress.first())
+            assertNotNull(preferences.lastSyncTimestamp.first())
+            assertNotNull(db.nextRequestDao().acceptance(NEXT_OPERATION, later.operationId))
+            assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, root))
+        } finally {
+            scope.cancel()
+            scope.coroutineContext[kotlinx.coroutines.Job]!!.join()
+        }
+    }
+
     @Test fun nonemptyTimerAndOnceDrainsRejectDamagedAuditThenCompleteNormallyWithOriginalHistory() = runBlocking<Unit> {
         val (http, server) = initialize(withOnce = true)
         val timerRows = protectedTimer(complete = true); val onceRows = List(3) { protectedOnce(720 + it) }
