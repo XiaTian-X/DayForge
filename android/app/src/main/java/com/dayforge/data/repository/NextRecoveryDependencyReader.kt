@@ -66,6 +66,7 @@ internal class NextRecoveryDependencyReader(private val database: HabitDatabase,
             requireNotNull(structuralProofs[actual(key)])
         }
         private lateinit var contextHash: String
+        private lateinit var retired: Set<NextRecoveryKey>
         private var importEntry: NextConfigImportStore.NetworkEntry? = null
 
         private fun digest(vararg parts: String) = nextRequestHash(parts.joinToString(";").toByteArray(Charsets.UTF_8))
@@ -76,17 +77,16 @@ internal class NextRecoveryDependencyReader(private val database: HabitDatabase,
         suspend fun read(root: NextRecoveryKey): NextRecoveryDependencyPreview {
             check(database.inTransaction())
             NextRequestSql.requireOutboxEnabled(sql)
-            // Formal terminal consumers are not enabled yet. Even an orphan header is not
-            // permission to hide requests; the complete consumer will replace this barrier.
-            sql.query("SELECT 1 FROM next_recovery_audits UNION ALL SELECT 1 FROM next_abandoned_requests " +
-                "UNION ALL SELECT 1 FROM next_recovery_audit_payloads LIMIT 1").use {
-                require(!it.moveToFirst()) { "SYNC_RECOVERY_TERMINAL_REQUIRED" }
-            }
+            // Only fully verified historical groups may leave the pending graph. An orphan or
+            // damaged audit still rejects the entire preview, and is never an accepted ancestor.
+            retired = NextRecoveryAuditStore(database).validatedMembers(access)
+            if (root in retired) rejectNextRequest(NextRequestException.Reason.LOCALLY_ABANDONED)
             require(database.syncConflictDao().getUnresolved().isEmpty())
             val operations = sources(NEXT_OPERATION)
             val commands = sources(NEXT_TIMER)
             require(operations.size + commands.size <= 10_000)
             pending += operations.map { it.second }; pending += commands.map { it.second }
+            require(pending.none { it in retired }) { "SYNC_RECOVERY_RETIRED_SOURCE_PRESENT" }
             require(root in pending)
             contextHash = digest(requireNotNull(NextRequestSql.rowHash(sql, "next_sync_state", "1=1", emptyArray())),
                 requireNotNull(NextRequestSql.rowHash(sql, "next_challenge_state", "1=1", emptyArray())),
@@ -109,7 +109,7 @@ internal class NextRecoveryDependencyReader(private val database: HabitDatabase,
             joinImport()
             drain()
             // An orphan rejection is corruption, not a smaller apparently healthy closure.
-            for (key in keys("SELECT kind,requestId FROM next_rejections ORDER BY kind,requestId LIMIT 10001"))
+            for (key in keys("SELECT kind,requestId FROM next_rejections ORDER BY kind,requestId", excluded = retired))
                 require(key in pending && nodes[actual(key)]?.state in setOf(NextRecoveryRequestState.PERMANENT_REJECTION,
                     NextRecoveryRequestState.UNKNOWN_RESULT))
             return NextRecoveryDependencyGraph(nodes.values.toList(), edges.toList(), groups, aliases).preview(root)
@@ -129,12 +129,14 @@ internal class NextRecoveryDependencyReader(private val database: HabitDatabase,
             return result
         }
 
-        private suspend fun keys(query: String, args: Array<Any> = emptyArray()): List<NextRecoveryKey> =
+        private suspend fun keys(query: String, args: Array<Any> = emptyArray(),
+            excluded: Set<NextRecoveryKey> = emptySet()): List<NextRecoveryKey> =
             sql.query(query, args).use { c -> buildList {
                 while (c.moveToNext()) {
                     currentCoroutineContext().ensureActive()
                     require(c.getType(0) == Cursor.FIELD_TYPE_STRING && c.getType(1) == Cursor.FIELD_TYPE_STRING)
-                    add(NextRecoveryKey(c.getString(0), c.getString(1)))
+                    val key = NextRecoveryKey(c.getString(0), c.getString(1))
+                    if (key !in excluded) add(key)
                 }
                 require(size <= 10_000) { "SYNC_RECOVERY_REFERENCE_LIMIT" }
             } }
@@ -169,6 +171,7 @@ internal class NextRecoveryDependencyReader(private val database: HabitDatabase,
 
         private suspend fun ensure(key: NextRecoveryKey) {
             currentCoroutineContext().ensureActive()
+            require(key !in retired) { "SYNC_RECOVERY_RETIRED_DEPENDENCY" }
             if (key in nodes) return
             val source = original(key)
             if (key.kind == NEXT_TIMER) {

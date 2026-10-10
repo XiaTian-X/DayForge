@@ -52,16 +52,21 @@ internal class SyncProblemReader(
             NextRequestSql.requireOutboxEnabled(sql)
             NextRequestSql.sources(sql, "sync_outbox")
             NextRequestSql.sources(sql, "timer_command_outbox")
-            val rejectedKeys = sql.query("SELECT kind,requestId FROM next_rejections ORDER BY kind,requestId LIMIT 10001").use { c ->
+            val retired = NextRecoveryAuditStore(database).validatedMembers(captured)
+            val rejectedKeys = sql.query("SELECT kind,requestId FROM next_rejections ORDER BY kind,requestId").use { c ->
                 buildList { while (c.moveToNext()) {
                     require(c.getType(0) == Cursor.FIELD_TYPE_STRING && c.getType(1) == Cursor.FIELD_TYPE_STRING)
-                    add(c.getString(0) to c.getString(1))
+                    val key = NextRecoveryKey(c.getString(0), c.getString(1))
+                    if (key !in retired) {
+                        require(size < 10_000)
+                        add(key.kind to key.requestId)
+                    }
                 } }
             }
             require(rejectedKeys.size <= 10_000)
             for ((kind, id) in rejectedKeys) requireNotNull(NextRequestSql.rowHash(sql, "next_rejections",
                 "kind=? AND requestId=?", arrayOf(kind, id)))
-            val rejected = database.nextSyncStateDao().rejections()
+            val rejected = database.nextSyncStateDao().rejections().filter { NextRecoveryKey(it.kind, it.requestId) !in retired }
             require(rejected.map { it.kind to it.requestId } == rejectedKeys)
             val operations = (database.syncOutboxDao().getAll() + database.syncOutboxDao().getDeadLetters()).sortedBy { it.id }
             val commands = (database.timeLogDao().getPendingTimerCommands(10_001) +

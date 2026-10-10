@@ -136,6 +136,7 @@ internal class NextCoreRequestStore(
         database.withTransaction {
             val sql = database.openHelper.writableDatabase
             NextRequestSql.requireOutboxEnabled(sql)
+            val terminals = NextRecoveryAuditStore(database).validatedMembers(access)
             val captured = origin(access, kind, id)
             val goalSource = if (kind == NEXT_OPERATION) roundOperationIntent(captured.intentJson) else null
             val goalProof = goalSource?.let { NextGoalChildFrontierStore(database).requireAccepted(it, access) }
@@ -195,6 +196,7 @@ internal class NextCoreRequestStore(
                 val current = rounds.activeInTransaction(access)
                 check(current.first == checkpoint.first && current.second == merged) { "SYNC_CHALLENGE_ACK_CHANGED" }
             } else rounds.requirePlainInTransaction()
+            require(NextRecoveryAuditStore(database).validatedMembers(access) == terminals) { "RECOVERY_TERMINAL_CHANGED" }
             authorize(access)
         }
     }
@@ -206,6 +208,7 @@ internal class NextCoreRequestStore(
             authorize(access)
             database.withTransaction {
                 val sql = database.openHelper.writableDatabase
+                NextRecoveryAuditStore(database).validatedMembers(access)
                 val actualId = NextStructuralCausalStore(database, memo).resolve(operationId, access)
                 if (NextRequestSql.rowHash(sql, "next_acceptances", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, actualId)) == null) null
                 else {
@@ -235,6 +238,7 @@ internal class NextCoreRequestStore(
         database.withTransaction {
             val sql = database.openHelper.writableDatabase
             NextRequestSql.requireOutboxEnabled(sql)
+            val terminals = NextRecoveryAuditStore(database).validatedMembers(access)
             val id = delivery.requestId
             require(isContractUuid(id) && delivery.result.results.size == 1)
             val causal = NextStructuralCausalStore(database, memo)
@@ -365,6 +369,7 @@ internal class NextCoreRequestStore(
                 val actual = rounds.activeInTransaction(access)
                 check(actual.first == currentCheckpoint.first && actual.second == mergedMetadata) { "SYNC_CHALLENGE_ACK_CHANGED" }
             }
+            require(NextRecoveryAuditStore(database).validatedMembers(access) == terminals) { "RECOVERY_TERMINAL_CHANGED" }
             authorize(access)
             outcome
         }
@@ -456,6 +461,9 @@ internal class NextCoreRequestStore(
         authorize(access)
         database.withTransaction {
             val sql = database.openHelper.writableDatabase
+            // Global terminal health belongs at the entry boundary, not the recursive ancestor
+            // reader: a missing member must not permit an old source to be resurrected.
+            val terminals = NextRecoveryAuditStore(database).validatedMembers(access)
             if (NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(kind, requestedId)) == null)
                 rejectNextRequest(NextRequestException.Reason.OLD_INTENT)
             val original = requireNotNull(database.nextRequestDao().origin(kind, requestedId))
@@ -527,6 +535,7 @@ internal class NextCoreRequestStore(
                 "CONFIG_IMPORT_ACCEPTANCES_CHANGED"
             }
             NextRequestSql.requireOutboxEnabled(sql)
+            require(NextRecoveryAuditStore(database).validatedMembers(access) == terminals) { "RECOVERY_TERMINAL_CHANGED" }
             authorize(access)
             require((if (kind == NEXT_OPERATION) roundOperationIntent(origin.intentJson) != null
                 else roundTimerIntent(origin.intentJson) != null) == challengeProfile)
@@ -538,6 +547,7 @@ internal class NextCoreRequestStore(
         memo: NextStructuralCausalStore.PureMemo? = null) = sessions.exclusive {
         authorize(access)
         database.withTransaction {
+            NextRecoveryAuditStore(database).validatedMembers(access)
             val row = prepared.row
             if (row.kind == NEXT_OPERATION) require(NextStructuralCausalStore(database, requireNotNull(memo)).resolve(row.requestId, access) == row.requestId)
             val origin = origin(access, row.kind, row.requestId)

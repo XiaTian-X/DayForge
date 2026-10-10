@@ -50,6 +50,27 @@ internal class NextRecoveryAuditStore(private val database: HabitDatabase) {
         return result.values.toList()
     }
 
+    /** SELECT-only transaction snapshot for terminal consumers. No cached authority across writes/HTTP. */
+    internal suspend fun validatedMembers(access: LocalSyncAccess): Set<NextRecoveryKey> {
+        check(database.inTransaction()); NextRequestSql.requireOutboxEnabled(sql)
+        // Even orphan chunks/members are corruption, not a reason to hide an old rejection.
+        for (table in listOf("next_abandoned_requests", "next_recovery_audit_payloads")) {
+            sql.query("SELECT 1 FROM $table child WHERE NOT EXISTS(SELECT 1 FROM next_recovery_audits parent " +
+                "WHERE parent.recoveryId=child.recoveryId) LIMIT 1").use { require(!it.moveToFirst()) { "RECOVERY_ORPHAN_TERMINAL" } }
+        }
+        val result = linkedSetOf<NextRecoveryKey>()
+        // Stream small header identities; do not retain all groups' original source/body bytes.
+        sql.query("SELECT recoveryId FROM next_recovery_audits ORDER BY recoveryId").use { c ->
+            while (c.moveToNext()) {
+                currentCoroutineContext().ensureActive()
+                require(c.getType(0) == Cursor.FIELD_TYPE_STRING && isContractUuid(c.getString(0)))
+                val proof = read(access, c.getString(0))
+                for (request in proof.manifest.requests) require(result.add(request.key)) { "RECOVERY_DUPLICATE_TERMINAL" }
+            }
+        }
+        return result.toSet()
+    }
+
     suspend fun read(access: LocalSyncAccess, id: String): NextRecoveryTerminalProof {
         check(database.inTransaction()); currentCoroutineContext().ensureActive(); require(isContractUuid(id))
         NextRequestSql.requireOutboxEnabled(sql)
@@ -106,7 +127,16 @@ internal class NextRecoveryAuditStore(private val database: HabitDatabase) {
     /** Referenced membership always audits the WHOLE original group, not just this source. */
     suspend fun source(access: LocalSyncAccess, key: NextRecoveryKey): Pair<NextRecoveryTerminalProof, SyncOutboxEntity>? {
         check(database.inTransaction())
-        val memberHash = NextRequestSql.rowHash(sql, "next_abandoned_requests", "kind=? AND requestId=?", arrayOf(key.kind, key.requestId)) ?: return null
+        currentCoroutineContext().ensureActive()
+        // Negative indexed lookup only: do not pay schema/whole-row preflight costs for every
+        // ordinary ancestor when no member exists. Presence still requires the exact original
+        // row and WHOLE audit below; absence never grants an origin or acceptance.
+        val present = sql.query("SELECT 1 FROM next_abandoned_requests WHERE kind=? AND requestId=? LIMIT 1",
+            arrayOf(key.kind, key.requestId)).use { it.moveToFirst() }
+        if (!present) return null
+        val memberHash = requireNotNull(NextRequestSql.rowHash(sql, "next_abandoned_requests", "kind=? AND requestId=?", arrayOf(key.kind, key.requestId))) {
+            "RECOVERY_MEMBER_CHANGED"
+        }
         val id = sql.query("SELECT recoveryId FROM next_abandoned_requests WHERE kind=? AND requestId=?",
             arrayOf(key.kind, key.requestId)).use { require(it.moveToFirst()); it.getString(0) }
         val proof = read(access, id)

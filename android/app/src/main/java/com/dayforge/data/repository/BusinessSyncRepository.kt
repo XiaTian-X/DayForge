@@ -30,6 +30,13 @@ class BusinessSyncRepository @Inject internal constructor(
     private val mutex = Mutex()
     internal fun problemChanges() = next.problemChanges()
     internal suspend fun readProblems() = next.readProblems()
+    internal suspend fun readRecoveryPreview(root: NextRecoveryKey) = next.readRecoveryPreview(root)
+
+    /** Local recovery shares the manual/worker/device coordinator. No HTTP under account/Room locks. */
+    internal suspend fun prepareRecoveryConfirmation(preview: NextRecoveryDependencyPreview,
+        selected: Set<NextRecoveryKey>) = mutex.withLock { next.prepareRecoveryConfirmation(preview, selected) }
+
+    internal suspend fun confirmRecovery(ticket: NextRecoveryConfirmation) = mutex.withLock { next.confirmRecovery(ticket) }
 
     /** Existing settings actions share sync serialization, but never hold the account lock over v5 HTTP. */
     suspend fun makeCurrentDevicePrimary(): DeviceResponse = changeDevice(null)

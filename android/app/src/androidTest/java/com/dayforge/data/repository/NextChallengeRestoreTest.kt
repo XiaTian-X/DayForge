@@ -201,19 +201,28 @@ class NextChallengeRestoreTest : NextCoreRequestFixture() {
             requireNotNull(authority.session.syncEpoch), requireNotNull(authority.deviceId), NEXT_OPERATION, source.operationId,
             "a".repeat(64), "b".repeat(64), "c".repeat(64), 1))
         val changes = page(21, changes = listOf(roundChange()))
-        val actions = listOf("UPDATE next_recovery_audits SET graphHash='changed'",
-            "INSERT INTO next_abandoned_requests VALUES('sync_operation','${source.operationId}','$receipt','never_sent','bad','bad','bad',NULL,NULL)",
-            "INSERT INTO next_recovery_audit_payloads VALUES('$receipt','manifest',0,X'00')")
+        // An orphan is not a valid baseline anymore: all public read/merge paths must refuse it.
+        rejected { store.page(access(), before, changes) }; rejected { store.state(access(), true) }
+        rejected { store.challengeMetadata(access()) }
+        assertEquals(before, db.nextSyncStateDao().rows().single())
+        sql.query("SELECT graphHash FROM next_recovery_audits WHERE recoveryId=?", arrayOf(receipt)).use {
+            assertTrue(it.moveToFirst()); assertEquals("a".repeat(64), it.getString(0))
+        }
+        sql.execSQL("DELETE FROM next_recovery_audits WHERE recoveryId=?", arrayOf(receipt)) // Isolated invalid fixture only.
+        val header = "INSERT INTO next_recovery_audits VALUES('$receipt','${authority.session.authentication.userId}'," +
+            "'${authority.session.serverInstanceId}','${authority.session.syncEpoch}','${authority.deviceId}'," +
+            "'sync_operation','${source.operationId}','${"a".repeat(64)}','${"b".repeat(64)}','${"c".repeat(64)}',1);"
+        val actions = listOf(header,
+            header + "INSERT INTO next_abandoned_requests VALUES('sync_operation','${source.operationId}','$receipt','never_sent','bad','bad','bad',NULL,NULL);",
+            header + "INSERT INTO next_recovery_audit_payloads VALUES('$receipt','manifest',0,X'00');")
         for (action in actions) {
-            sql.execSQL("CREATE TRIGGER damage_recovery_cursor AFTER UPDATE ON next_sync_state BEGIN $action; END")
+            sql.execSQL("CREATE TRIGGER damage_recovery_cursor AFTER UPDATE ON next_sync_state BEGIN $action END")
             rejected { store.page(access(), before, changes) }
             assertEquals(before, store.state(access(), true)); assertEquals(metadata(), store.challengeMetadata(access()))
             assertEquals(source, db.syncOutboxDao().getById(source.id))
             assertEquals(0, count("next_abandoned_requests")); assertEquals(0, count("next_recovery_audit_payloads"))
             assertEquals(0, count("next_acceptances"))
-            sql.query("SELECT graphHash FROM next_recovery_audits WHERE recoveryId=?", arrayOf(receipt)).use {
-                assertTrue(it.moveToFirst()); assertEquals("a".repeat(64), it.getString(0))
-            }
+            assertEquals(0, count("next_recovery_audits"))
             sql.execSQL("DROP TRIGGER damage_recovery_cursor")
         }
     }

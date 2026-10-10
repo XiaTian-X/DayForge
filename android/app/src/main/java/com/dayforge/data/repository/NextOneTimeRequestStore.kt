@@ -38,7 +38,10 @@ internal class NextOneTimeRequestStore(
         require(isContractUuid(id))
         val saved = sessions.exclusive {
             authorize(access)
-            database.withTransaction { savedOutcome(access, id) }
+            database.withTransaction {
+                NextRecoveryAuditStore(database).validatedMembers(access)
+                savedOutcome(access, id)
+            }
         }
         if (saved != null) return saved
         val delivery = send(access, id) ?: return null // Unsupported is not a completed synchronization.
@@ -54,6 +57,7 @@ internal class NextOneTimeRequestStore(
                 authorize(access)
                 database.withTransaction {
                     NextRequestSql.requireOutboxEnabled(database.openHelper.writableDatabase)
+                    val terminals = NextRecoveryAuditStore(database).validatedMembers(access)
                     var evidence = evidence(access, id)
                     val profile = roundOperationIntent(evidence.origin.intentJson) != null
                     val checkpoint = if (profile) NextChallengeStore(database).activeInTransaction(access) else null
@@ -85,6 +89,7 @@ internal class NextOneTimeRequestStore(
                     if (checkpoint != null) check(NextChallengeStore(database).activeInTransaction(access) == checkpoint) {
                         "SYNC_CHALLENGE_SOURCE_CHANGED"
                     }
+                    require(NextRecoveryAuditStore(database).validatedMembers(access) == terminals) { "RECOVERY_TERMINAL_CHANGED" }
                     authorize(access)
                     evidence
                 }
@@ -96,6 +101,7 @@ internal class NextOneTimeRequestStore(
             sessions.exclusive {
                 authorize(access)
                 database.withTransaction {
+                    NextRecoveryAuditStore(database).validatedMembers(access)
                     val current = evidence(access, id, consumed = hash("next_acceptances", id) != null)
                     require(current.hashes == prepared.hashes)
                     if (hash("next_acceptances", id) != null) require(savedOutcome(access, id) is NextOneTimeOutcome.Accepted)
@@ -115,6 +121,7 @@ internal class NextOneTimeRequestStore(
         database.withTransaction {
             val sql = database.openHelper.writableDatabase
             NextRequestSql.requireOutboxEnabled(sql)
+            val terminals = NextRecoveryAuditStore(database).validatedMembers(access)
             val saved = savedOutcome(access, delivery.requestId)
             val evidence = evidence(access, delivery.requestId, consumed = saved is NextOneTimeOutcome.Accepted,
                 rejected = saved is NextOneTimeOutcome.Rejected)
@@ -136,6 +143,7 @@ internal class NextOneTimeRequestStore(
                     val actual = rounds.activeInTransaction(access)
                     check(actual.first == checkpoint.first && actual.second == merged) { "SYNC_CHALLENGE_ACK_CHANGED" }
                 } else rounds.requirePlainInTransaction()
+                require(NextRecoveryAuditStore(database).validatedMembers(access) == terminals) { "RECOVERY_TERMINAL_CHANGED" }
             }
             if (saved != null) {
                 when (saved) {
@@ -202,6 +210,7 @@ internal class NextOneTimeRequestStore(
             val ids = sessions.exclusive {
                 authorize(access)
                 database.withTransaction {
+                    NextRecoveryAuditStore(database).validatedMembers(access)
                     NextRequestSql.sources(database.openHelper.writableDatabase, "sync_outbox")
                     (database.syncOutboxDao().getAll() + database.syncOutboxDao().getDeadLetters())
                         .filter { it.recordType == "one_time_completion" }.sortedBy { it.id }.take(100)

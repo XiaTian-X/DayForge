@@ -3,22 +3,36 @@ package com.dayforge.data.repository
 import androidx.room.withTransaction
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.dayforge.data.api.NextSyncHttp
+import com.dayforge.data.api.EndpointResolver
+import com.dayforge.data.api.NetworkMonitor
+import com.dayforge.data.api.SelectedNetworkTransport
 import com.dayforge.data.api.dto.*
 import com.dayforge.data.appearance.MaterialSocketServer
+import com.dayforge.data.appearance.ConfigBundleOutput
+import com.dayforge.data.appearance.ConfigFileFixture
 import com.dayforge.data.local.entity.SyncOutboxEntity
 import com.dayforge.data.local.entity.HabitMetricLinkEntity
 import com.dayforge.domain.model.ChallengeRoundRecord
 import com.dayforge.domain.model.initialChallengeRoundHead
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.async
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
+import io.mockk.coEvery
+import io.mockk.mockk
 
 /** Real producers/refusals and SQLite; audits are created by the actual atomic transaction participant. */
 @RunWith(AndroidJUnit4::class)
@@ -26,6 +40,9 @@ class NextRecoveryAuditStoreTest : NextObjectEditorFixture() {
     private val json = Json { encodeDefaults = true }
     private var failing = false
     private lateinit var recoveryHttp: NextSyncHttp
+    private lateinit var rejectedDelivery: NextCoreDelivery<NextSyncPushResponse>
+    private var pullFault: (() -> Unit)? = null
+    private var registrationFault: (() -> Unit)? = null
     private val audit get() = NextRecoveryAuditStore(db)
     private val payloads get() = NextRecoveryPayloadStore(db)
     private val projections get() = NextRecoveryProjectionStore(db)
@@ -39,6 +56,20 @@ class NextRecoveryAuditStoreTest : NextObjectEditorFixture() {
             "created_at" to JsonPrimitive(time), "updated_at" to JsonPrimitive(time), "deleted_at" to JsonNull)), time)
     private fun respond(input: MaterialSocketServer.Input): MaterialSocketServer.Reply? {
         if (input.path.endsWith("/identity")) return reply(input)
+        if (input.path == "/api/v2/devices/register") {
+            val fault = registrationFault; registrationFault = null; fault?.invoke()
+            val request = json.decodeFromString<DeviceRegisterRequest>(input.body.toString(Charsets.UTF_8))
+            return MaterialSocketServer.Reply(json.encodeToString(DeviceResponse(id(4), request.installationId, "android",
+                isPrimaryEditor = true, structuralEditEnabled = true, capabilityRevision = 1,
+                capabilities = caps.toList(), lastSeenAt = time)).toByteArray())
+        }
+        if (input.path == "/api/v2/sync/rounds/changes") {
+            val fault = pullFault; pullFault = null; fault?.invoke()
+            val meta = metadata()
+            val cursor = input.target.substringAfter("cursor=").substringBefore('&').toLong()
+            return MaterialSocketServer.Reply(json.encodeToString(RoundSyncPullResponse(emptyList(), cursor,
+                false, time, 1, meta.checkpoints, meta.births)).toByteArray())
+        }
         assertEquals("/api/v2/sync/rounds/push", input.path)
         val operation = json.decodeFromString<RoundSyncPushRequest>(input.body.toString(Charsets.UTF_8)).operations.single()
         val results = if (failing) listOf(NextSyncOperationResult(operation.operationId, operation.entityType,
@@ -51,15 +82,25 @@ class NextRecoveryAuditStoreTest : NextObjectEditorFixture() {
     }
     private suspend fun initialize(): Pair<NextSyncHttp, MaterialSocketServer> {
         register(); val (http, server) = channel(::respond)
-        val timers = NextTimerRequestStore(db, tokens, sessions, sender(http))
-        val merge = NextSyncMergeStore(db, tokens, sessions, OneTimeAcceptedEventStore(db, tokens, sessions,
-            OneTimeLocalIntentStore(db, tokens, sessions, preferences), timerRequests = timers), timers)
+        recoveryHttp = http
+        val merge = mergeStore()
         val meta = metadata()
         merge.bootstrap(access(), null, RoundSyncBootstrapResponse(listOf(canonical("plan_node", habit.uuid, NextStructureMapper.writePlan(habit)),
             canonical("plan_node", timerHabit.uuid, NextStructureMapper.writePlan(timerHabit)),
             canonical("metric", metric.uuid, NextStructureMapper.writeMetric(metric))), 20, time, emptyList(), 1, meta.checkpoints, meta.births))
-        recoveryHttp = http
         return http to server
+    }
+    private fun mergeStore(): NextSyncMergeStore {
+        val timers = NextTimerRequestStore(db, tokens, sessions, sender(recoveryHttp))
+        return NextSyncMergeStore(db, tokens, sessions, OneTimeAcceptedEventStore(db, tokens, sessions,
+            OneTimeLocalIntentStore(db, tokens, sessions, preferences), timerRequests = timers), timers)
+    }
+    private fun business(http: NextSyncHttp): BusinessSyncRepository {
+        val monitor = mockk<NetworkMonitor>()
+        coEvery { monitor.localNetworks() } returns emptyList()
+        return BusinessSyncRepository(mockk(relaxed = true),
+            EndpointResolver(monitor, preferences, tokens, json, SelectedNetworkTransport()), db, tokens, sessions, http,
+            NextSyncRuntime(db, tokens, sessions, http, preferences))
     }
     private suspend fun edit(name: String): SyncOutboxEntity {
         val ticket = editor.metric(metric.id)
@@ -69,6 +110,7 @@ class NextRecoveryAuditStoreTest : NextObjectEditorFixture() {
     private suspend fun refuse(http: NextSyncHttp, id: String): String {
         failing = true
         val delivery = requireNotNull(sender(http).sendOperation(access(), id))
+        rejectedDelivery = delivery
         sender(http).recordRejection(access(), NEXT_OPERATION, delivery.requestId, delivery.transmissionProof,
             json.encodeToString(delivery.result.results.single()), delivery.challengeMetadata)
         return delivery.requestId
@@ -520,5 +562,284 @@ class NextRecoveryAuditStoreTest : NextObjectEditorFixture() {
             assertEquals(metric, db.metricDao().getMetricById(metric.id)); assertEquals(queue, db.syncOutboxDao().getAll())
             NextRequestSql.requireOutboxEnabled(sql)
         }
+    }
+
+    @Test fun retiredSourcesStopDirectSendLateRejectionAndAcceptedFrontierWithoutAnyFakeAck() = runBlocking<Unit> {
+        val (http, server) = initialize(); val a = edit("A"); val b = edit("B")
+        val root = refuse(http, a.operationId); val delivery = rejectedDelivery
+        val saved = terminal(preview(http, root)); val cursor = db.nextSyncStateDao().rows()
+        val calls = server.requests.count { it.path.endsWith("/push") }
+        for (row in listOf(a, b)) {
+            val error = rejected { sender(http).sendOperation(access(), row.operationId) }
+            assertEquals(NextRequestException.Reason.LOCALLY_ABANDONED, (error as NextRequestException).reason)
+            val frontier = rejected { db.withTransaction { NextStructuralCausalStore(db).acceptedOperationProof(row.operationId, access()) } }
+            assertEquals(NextRequestException.Reason.LOCALLY_ABANDONED, (frontier as NextRequestException).reason)
+        }
+        val late = rejected { sender(http).recordRejection(access(), NEXT_OPERATION, delivery.requestId,
+            delivery.transmissionProof, json.encodeToString(delivery.result.results.single()), delivery.challengeMetadata) }
+        assertEquals(NextRequestException.Reason.LOCALLY_ABANDONED, (late as NextRequestException).reason)
+        // The actual delayed result cannot enter acceptance either; never manufacture an ACK.
+        val acceptance = rejected { sender(http).acceptOperation(delivery) }
+        assertEquals(NextRequestException.Reason.LOCALLY_ABANDONED, (acceptance as NextRequestException).reason)
+        assertEquals(calls, server.requests.count { it.path.endsWith("/push") })
+        assertEquals(cursor, db.nextSyncStateDao().rows()); assertEquals(0, count("next_acceptances"))
+        assertTrue(db.syncOutboxDao().getAll().isEmpty())
+        assertEquals(saved.manifest, db.withTransaction { audit.read(access(), saved.id).manifest })
+    }
+
+    @Test fun coldRecoveredObjectCanBeEditedAndSyncedWithoutRetiredPredecessorOrLingeringProblem() = runBlocking<Unit> {
+        val (http, server) = initialize(); val a = edit("A"); edit("B")
+        val service = business(http)
+        val preview = service.readRecoveryPreview(NextRecoveryKey(NEXT_OPERATION, refuse(http, a.operationId)))
+        val ticket = service.prepareRecoveryConfirmation(preview, preview.affected.map { it.key }.toSet())
+        val saved = Saved(ticket, service.confirmRecovery(ticket).manifest, ticket.drafts())
+        storage.reopen(); editor = NextObjectEditor(db, tokens, sessions, icons)
+        val runtime = NextSyncRuntime(db, tokens, sessions, http, preferences)
+        assertTrue((runtime.readProblems() as com.dayforge.data.model.SyncProblems.Next).items.isEmpty())
+        val rejectedBefore = db.nextSyncStateDao().rejections()
+        val later = edit("Later legitimate edit")
+        assertNull(db.nextStructuralCausalDao().dependency(later.operationId)!!.predecessorId)
+        assertEquals(1L, decodeNextOperationIntent(db.nextRequestDao().origin(NEXT_OPERATION, later.operationId)!!.intentJson).baseRevision)
+        failing = false
+        business(http).sync()
+        assertEquals("Later legitimate edit", db.metricDao().getMetricById(metric.id)!!.name)
+        assertNotNull(db.nextRequestDao().acceptance(NEXT_OPERATION, later.operationId))
+        assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, a.operationId))
+        assertTrue(db.syncOutboxDao().getAll().isEmpty()); assertEquals(rejectedBefore, db.nextSyncStateDao().rejections())
+        assertTrue((runtime.readProblems() as com.dayforge.data.model.SyncProblems.Next).items.isEmpty())
+        assertNotNull(preferences.lastSyncTimestamp.first())
+        assertEquals(saved.manifest, db.withTransaction { audit.read(access(), saved.id).manifest })
+        assertEquals(1, server.requests.count { it.path.endsWith("/push") &&
+            json.decodeFromString<RoundSyncPushRequest>(it.body.toString(Charsets.UTF_8)).operations.single().operationId == later.operationId })
+    }
+
+    @Test fun missingMembershipAndResurrectedOriginalSourceCannotBypassDirectSendOrLateRejection() = runBlocking<Unit> {
+        val (saved, server) = saved()
+        val root = saved.manifest.root
+        val source = db.withTransaction { requireNotNull(audit.source(access(), root)).second }
+        val delivery = rejectedDelivery
+        db.withTransaction {
+            sql.execSQL("DELETE FROM next_abandoned_requests WHERE kind=? AND requestId=?", arrayOf(root.kind, root.requestId))
+            assertEquals(source.id, db.syncOutboxDao().insert(source))
+        }
+        val queues = db.syncOutboxDao().getAll(); val cursor = db.nextSyncStateDao().rows()
+        val refused = db.nextSyncStateDao().rejections()
+        val journal = requireNotNull(NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", arrayOf(root.kind, root.requestId)))
+        val calls = server.requests.count { it.path.endsWith("/push") }
+        rejected { sender(recoveryHttp).sendOperation(access(), root.requestId) }
+        rejected { sender(recoveryHttp).sendAndAcceptOperation(access(), root.requestId) }
+        rejected { sender(recoveryHttp).recordRejection(access(), root.kind, root.requestId, delivery.transmissionProof,
+            json.encodeToString(delivery.result.results.single()), delivery.challengeMetadata) }
+        assertEquals(calls, server.requests.count { it.path.endsWith("/push") })
+        assertEquals(queues, db.syncOutboxDao().getAll()); assertEquals(cursor, db.nextSyncStateDao().rows())
+        assertEquals(refused, db.nextSyncStateDao().rejections())
+        assertEquals(journal, NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", arrayOf(root.kind, root.requestId)))
+        assertEquals(0, count("next_acceptances"))
+    }
+
+    @Test fun actualSuccessfulDeliveryCannotCommitWhileAnEarlierTerminalIsDamaged() = runBlocking<Unit> {
+        val (saved, _) = saved(); val later = edit("Actual later delivery"); failing = false
+        val delivery = requireNotNull(sender(recoveryHttp).sendOperation(access(), later.operationId))
+        assertEquals("applied", delivery.result.results.single().status)
+        val queue = db.syncOutboxDao().getAll(); val cursor = db.nextSyncStateDao().rows()
+        val journal = requireNotNull(NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, delivery.requestId)))
+        sql.execSQL("UPDATE next_recovery_audits SET selectedCount=1 WHERE recoveryId=?", arrayOf(saved.id))
+        rejected { sender(recoveryHttp).acceptOperation(delivery) }
+        assertEquals(queue, db.syncOutboxDao().getAll()); assertEquals(cursor, db.nextSyncStateDao().rows())
+        assertEquals(journal, NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, delivery.requestId)))
+        assertEquals(0, count("next_acceptances")); assertNull(preferences.lastSyncTimestamp.first())
+    }
+
+    @Test fun terminalDamageDuringActualHttpIsRejectedBeforePublishingItsDelivery() = runBlocking<Unit> {
+        val (saved, _) = saved(); val later = edit("Work during real HTTP"); failing = false
+        var preparedQueue: List<SyncOutboxEntity>? = null
+        val (http, server) = channel { input ->
+            respond(input).also {
+                if (input.path.endsWith("/push")) runBlocking { db.withTransaction {
+                    preparedQueue = db.syncOutboxDao().getAll()
+                    sql.execSQL("DELETE FROM next_abandoned_requests WHERE kind=? AND requestId=?",
+                        arrayOf(saved.manifest.root.kind, saved.manifest.root.requestId))
+                } }
+            }
+        }
+        rejected { sender(http).sendOperation(access(), later.operationId) }
+        assertEquals(1, server.requests.count { it.path.endsWith("/push") })
+        assertEquals(requireNotNull(preparedQueue), db.syncOutboxDao().getAll())
+        assertNotNull(db.nextRequestDao().transmission(NEXT_OPERATION, later.operationId))
+        assertEquals(0, count("next_acceptances")); assertNull(preferences.lastSyncTimestamp.first())
+    }
+
+    @Test fun lateAcceptanceTriggerDamagingEarlierTerminalRollsBackAndOriginalDeliveryCanRetry() = runBlocking<Unit> {
+        val (saved, _) = saved(); val later = edit("Accepted after terminal"); failing = false
+        val delivery = requireNotNull(sender(recoveryHttp).sendOperation(access(), later.operationId))
+        val queue = db.syncOutboxDao().getAll(); val metricBefore = db.metricDao().getMetricById(metric.id)
+        val cursor = db.nextSyncStateDao().rows()
+        sql.execSQL("CREATE TRIGGER recovery_late_accept AFTER INSERT ON next_acceptances BEGIN " +
+            "UPDATE next_recovery_audits SET selectedCount=1; END")
+        rejected { sender(recoveryHttp).acceptOperation(delivery) }
+        storage.reopen()
+        assertEquals(queue, db.syncOutboxDao().getAll()); assertEquals(metricBefore, db.metricDao().getMetricById(metric.id))
+        assertEquals(cursor, db.nextSyncStateDao().rows()); assertEquals(0, count("next_acceptances"))
+        assertEquals(saved.manifest, db.withTransaction { audit.read(access(), saved.id).manifest })
+        sql.execSQL("DROP TRIGGER recovery_late_accept")
+        assertEquals(NextOperationAcceptance.COMMITTED, sender(recoveryHttp).acceptOperation(delivery))
+        assertTrue(db.syncOutboxDao().getAll().isEmpty())
+        assertEquals(saved.manifest, db.withTransaction { audit.read(access(), saved.id).manifest })
+        assertNull(db.nextRequestDao().acceptance(saved.manifest.root.kind, saved.manifest.root.requestId))
+    }
+
+    @Test fun corruptedTerminalCannotLetEmptyTimerOrOneTimeDrainClaimSuccess() = runBlocking<Unit> {
+        val (saved, server) = saved(); val calls = server.requests.size
+        val core = sender(recoveryHttp); val timers = NextTimerRequestStore(db, tokens, sessions, core)
+        val local = OneTimeLocalIntentStore(db, tokens, sessions, preferences)
+        val facts = OneTimeAcceptedEventStore(db, tokens, sessions, local, timerRequests = timers)
+        val once = NextOneTimeRequestStore(db, tokens, sessions, recoveryHttp, facts, core)
+        assertEquals(0, timers.pushPending(access())); assertEquals(0, once.pushPending(access()))
+        sql.execSQL("UPDATE next_recovery_audits SET selectedCount=1 WHERE recoveryId=?", arrayOf(saved.id))
+        rejected { timers.pushPending(access()) }; rejected { once.pushPending(access()) }
+        rejected { timers.sendAndAccept(access(), id(999)) }; rejected { once.sendAndAccept(access(), id(999)) }
+        assertEquals(calls, server.requests.size); assertEquals(0, count("next_acceptances"))
+        assertTrue(db.syncOutboxDao().getAll().isEmpty()); assertNull(preferences.lastSyncTimestamp.first())
+    }
+
+    @Test fun damagedOrOrphanTerminalCannotHideProblemsOrLetUnrelatedSyncReportSuccess() = runBlocking<Unit> {
+        val (saved, _) = saved()
+        val runtime = NextSyncRuntime(db, tokens, sessions, recoveryHttp, preferences)
+        val before = db.nextSyncStateDao().rows(); val last = preferences.lastSyncTimestamp.first()
+        sql.execSQL("UPDATE next_recovery_audits SET selectedCount=1 WHERE recoveryId=?", arrayOf(saved.id))
+        rejected { runtime.readProblems() }; rejected { runtime.syncRounds() }
+        assertEquals(before, db.nextSyncStateDao().rows()); assertEquals(last, preferences.lastSyncTimestamp.first())
+        sql.execSQL("UPDATE next_recovery_audits SET selectedCount=3 WHERE recoveryId=?", arrayOf(saved.id))
+        sql.execSQL("INSERT INTO next_recovery_audits SELECT ?,accountId,serverInstanceId,syncEpoch,deviceId," +
+            "rootKind,rootRequestId,graphHash,checkpointHash,manifestHash,selectedCount FROM next_recovery_audits WHERE recoveryId=?",
+            arrayOf(id(999), saved.id))
+        rejected { runtime.readProblems() }; rejected { runtime.syncRounds() }
+        assertEquals(before, db.nextSyncStateDao().rows()); assertEquals(last, preferences.lastSyncTimestamp.first())
+        assertEquals(0, count("next_acceptances"))
+    }
+
+    @Test fun auditDamagedDuringActualPullCannotAdvanceCursorOrLastSuccessfulSync() = runBlocking<Unit> {
+        val (saved, _) = saved()
+        val before = db.nextSyncStateDao().rows(); val last = preferences.lastSyncTimestamp.first()
+        pullFault = { runBlocking { db.withTransaction {
+            sql.execSQL("UPDATE next_recovery_audits SET selectedCount=1 WHERE recoveryId=?", arrayOf(saved.id))
+        } } }
+        rejected { NextSyncRuntime(db, tokens, sessions, recoveryHttp, preferences).syncRounds() }
+        assertNull(pullFault)
+        assertEquals(before, db.nextSyncStateDao().rows()); assertEquals(last, preferences.lastSyncTimestamp.first())
+        assertEquals(0, count("next_acceptances")); assertTrue(db.syncOutboxDao().getAll().isEmpty())
+    }
+
+    @Test fun validAuditSurvivesCacheBootstrapButDamagedAuditCannotReinitializeCache() = runBlocking<Unit> {
+        val (saved, _) = saved(); val meta = metadata()
+        val before = db.nextSyncStateDao().rows().single()
+        val response = RoundSyncBootstrapResponse(listOf(canonical("plan_node", habit.uuid, NextStructureMapper.writePlan(habit)),
+            canonical("plan_node", timerHabit.uuid, NextStructureMapper.writePlan(timerHabit)),
+            canonical("metric", metric.uuid, NextStructureMapper.writeMetric(metric))), 20, time, emptyList(),
+            1, meta.checkpoints, meta.births)
+        mergeStore().bootstrap(access(), before, response, cacheOnly = true)
+        assertEquals(saved.manifest, db.withTransaction { audit.read(access(), saved.id).manifest })
+        val state = db.nextSyncStateDao().rows().single(); val originalMetric = db.metricDao().getMetricById(metric.id)
+        sql.execSQL("UPDATE next_recovery_audits SET selectedCount=1 WHERE recoveryId=?", arrayOf(saved.id))
+        rejected { mergeStore().bootstrap(access(), state, response, cacheOnly = true) }
+        assertEquals(state, db.nextSyncStateDao().rows().single())
+        assertEquals(originalMetric, db.metricDao().getMetricById(metric.id))
+        assertEquals(0, count("next_acceptances")); assertNull(preferences.lastSyncTimestamp.first())
+    }
+
+    @Test fun lateCursorTriggerCannotCommitDamagedAuditOrSuccessfulSync() = runBlocking<Unit> {
+        val (saved, _) = saved(); val before = db.nextSyncStateDao().rows()
+        for (action in listOf("UPDATE next_recovery_audits SET selectedCount=1",
+            "UPDATE next_abandoned_requests SET sourceHash='${"a".repeat(64)}'",
+            "UPDATE next_recovery_audit_payloads SET bytes=X'00' WHERE part=0")) {
+            sql.execSQL("CREATE TRIGGER recovery_late_cursor AFTER UPDATE ON next_sync_state BEGIN $action; END")
+            rejected { NextSyncRuntime(db, tokens, sessions, recoveryHttp, preferences).syncRounds() }
+            assertEquals(before, db.nextSyncStateDao().rows()); assertNull(preferences.lastSyncTimestamp.first())
+            assertEquals(saved.manifest, db.withTransaction { audit.read(access(), saved.id).manifest })
+            assertEquals(0, count("next_acceptances")); assertTrue(db.syncOutboxDao().getAll().isEmpty())
+            sql.execSQL("DROP TRIGGER recovery_late_cursor")
+        }
+    }
+
+    @Test fun nextRecoveryUsesOnlyItsLiveChainAndKeepsEarlierAuditAndConfirmationImmutable() = runBlocking<Unit> {
+        val (http, _) = initialize(); val a = edit("First rejected edit"); edit("First successor")
+        val first = terminal(preview(http, refuse(http, a.operationId)))
+        val b = edit("Second rejected edit"); val c = edit("Second successor")
+        val secondPreview = preview(http, refuse(http, b.operationId))
+        assertTrue(secondPreview.canConfirm)
+        assertEquals(setOf(b.operationId, c.operationId), secondPreview.affected.map { it.key.requestId }.toSet())
+        val second = terminal(secondPreview)
+        assertEquals(2, count("next_recovery_audits")); assertEquals(4, count("next_abandoned_requests"))
+        val metricAfter = db.metricDao().getMetricById(metric.id)
+        assertEquals(first.manifest, confirm(first.ticket).manifest)
+        assertEquals(second.manifest, db.withTransaction { audit.read(access(), second.id).manifest })
+        assertEquals(metricAfter, db.metricDao().getMetricById(metric.id))
+        assertTrue((NextSyncRuntime(db, tokens, sessions, http, preferences).readProblems() as
+            com.dayforge.data.model.SyncProblems.Next).items.isEmpty())
+        assertEquals(0, count("next_acceptances")); assertTrue(db.syncOutboxDao().getAll().isEmpty())
+        val retired = rejected { preview(http, a.operationId) }
+        assertEquals(NextRequestException.Reason.LOCALLY_ABANDONED, (retired as NextRequestException).reason)
+    }
+
+    @Test fun configurationReplacementDoesNotTreatProvenRecoveryAsPendingButDamagedAuditStillRefuses() = runBlocking<Unit> {
+        val (saved, _) = saved()
+        val repository = NextConfigImportRepository(db, tokens, sessions, icons, creator, app)
+        val source = ConfigBundleOutput.create(ConfigFileFixture.manifest(), ConfigFileFixture::content)
+        val value = repository.previewReplacement(source)
+        assertTrue(value.eligible); repository.recheckReplacement(value)
+        assertEquals(saved.manifest, db.withTransaction { audit.read(access(), saved.id).manifest })
+        assertEquals(0, count("next_config_imports")); assertEquals(0, count("next_acceptances"))
+        sql.execSQL("UPDATE next_recovery_audits SET selectedCount=1 WHERE recoveryId=?", arrayOf(saved.id))
+        rejected { repository.previewReplacement(source) }; rejected { repository.recheckReplacement(value) }
+        assertEquals(0, count("next_config_imports")); assertTrue(db.syncOutboxDao().getAll().isEmpty())
+    }
+
+    @Test fun formalRegistrationSerializesConfirmationAndItsCompletedPullMakesTheOldPreviewStale() = runBlocking<Unit> {
+        val (http, _) = initialize(); val a = edit("Rejected edit"); edit("Successor")
+        val service = business(http)
+        val preview = service.readRecoveryPreview(NextRecoveryKey(NEXT_OPERATION, refuse(http, a.operationId)))
+        val ticket = service.prepareRecoveryConfirmation(preview, preview.affected.map { it.key }.toSet())
+        val sources = db.syncOutboxDao().getAll()
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        registrationFault = { entered.countDown(); check(release.await(10, TimeUnit.SECONDS)) }
+        val syncing = async(Dispatchers.IO) { runCatching { service.sync() }.exceptionOrNull() }
+        lateinit var confirming: kotlinx.coroutines.Deferred<Throwable?>
+        try {
+            assertTrue(entered.await(10, TimeUnit.SECONDS))
+            val started = CompletableDeferred<Unit>()
+            val pending = async(Dispatchers.IO) { started.complete(Unit); runCatching { service.confirmRecovery(ticket) }.exceptionOrNull() }
+            confirming = pending
+            started.await()
+            assertNull(withTimeoutOrNull(250) { pending.await() })
+            assertFalse(pending.isCompleted); assertEquals(0, count("next_recovery_audits"))
+        } finally { release.countDown() }
+        assertTrue(syncing.await() is NextSyncAttention)
+        assertNotNull(confirming.await())
+        assertEquals(sources, db.syncOutboxDao().getAll()); assertEquals(0, count("next_recovery_audits"))
+        val fresh = service.readRecoveryPreview(preview.root)
+        val newTicket = service.prepareRecoveryConfirmation(fresh, fresh.affected.map { it.key }.toSet())
+        assertEquals(newTicket.recoveryId, service.confirmRecovery(newTicket).recoveryId)
+        assertEquals(0, count("next_acceptances")); assertTrue(db.syncOutboxDao().getAll().isEmpty())
+    }
+
+    @Test fun retiredInitialCreationCannotProvideBirthOrReviveAfterColdOpenWhileOtherWorkSyncs() = runBlocking<Unit> {
+        val (http, _) = initialize()
+        val localId = creatingHabits().createHabit("Rejected initial", "", com.dayforge.data.model.HabitType.CHECK_IN,
+            0, "#123456", com.dayforge.data.model.HabitSchedule.Daily,
+            appearance = com.dayforge.domain.model.ObjectAppearance(com.dayforge.domain.model.IconReference.Role("habit.exercise"),
+                "#123456", "theme"), completionPolicy = "recurring", creationAuthority = creator.capture())
+        val created = db.habitDao().getHabitById(localId)!!.uuid
+        val source = db.syncOutboxDao().getEntityIntents("habit", created).single()
+        val saved = terminal(preview(http, refuse(http, source.operationId)))
+        storage.reopen(); editor = NextObjectEditor(db, tokens, sessions, icons)
+        assertNull(db.habitDao().getHabitByUuid(created))
+        assertFalse(db.withTransaction { NextRoundPendingInitialStore(db).read(access(), metadata()) }.containsKey(created))
+        assertFalse(producer().captureRounds().pendingInitials.containsKey(created))
+        val later = edit("Independent work after initial recovery"); failing = false
+        NextSyncRuntime(db, tokens, sessions, http, preferences).syncRounds()
+        assertNotNull(db.nextRequestDao().acceptance(NEXT_OPERATION, later.operationId))
+        assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, source.operationId))
+        assertNull(db.habitDao().getHabitByUuid(created)); assertNotNull(preferences.lastSyncTimestamp.first())
+        assertEquals(saved.manifest, db.withTransaction { audit.read(access(), saved.id).manifest })
     }
 }

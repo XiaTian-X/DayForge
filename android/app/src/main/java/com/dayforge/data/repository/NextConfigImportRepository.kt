@@ -64,7 +64,7 @@ internal class NextConfigImportRepository @Inject constructor(
         val context = icons.capture()
         guarded(context) {
             journal.requireNoOtherPending()
-            NextConfigReplacementInspector(database).capture(NextConfigImportPreview(context, source))
+            inspectReplacement(NextConfigImportPreview(context, source))
         }
     }
 
@@ -72,7 +72,7 @@ internal class NextConfigImportRepository @Inject constructor(
     suspend fun recheckReplacement(preview: NextConfigReplacementPreview) = withContext(Dispatchers.IO) {
         guarded(preview.original.context) {
             journal.requireNoOtherPending()
-            val current = NextConfigReplacementInspector(database).capture(preview.original)
+            val current = inspectReplacement(preview.original)
             check(current.fingerprint == preview.fingerprint && current.counts == preview.counts &&
                 current.blockers == preview.blockers) { "CONFIG_REPLACEMENT_PREVIEW_CHANGED" }
             check(current.eligible) { "CONFIG_REPLACEMENT_NOT_READY" }
@@ -83,7 +83,7 @@ internal class NextConfigImportRepository @Inject constructor(
     suspend fun confirmReplacement(preview: NextConfigReplacementPreview): String = withContext(Dispatchers.IO) {
         guarded(preview.original.context) {
             journal.requireNoOtherPending(); journal.requireNoActiveReplacement()
-            val current = NextConfigReplacementInspector(database).capture(preview.original)
+            val current = inspectReplacement(preview.original)
             check(current.fingerprint == preview.fingerprint && current.counts == preview.counts &&
                 current.blockers == preview.blockers) { "CONFIG_REPLACEMENT_PREVIEW_CHANGED" }
             check(current.eligible) { "CONFIG_REPLACEMENT_NOT_READY" }
@@ -228,7 +228,7 @@ internal class NextConfigImportRepository @Inject constructor(
         if (entry.network == null) requireEmptyReplica()
         else {
             journal.requireNoActiveReplacement()
-            val current = NextConfigReplacementInspector(database).capture(
+            val current = inspectReplacement(
                 NextConfigImportPreview(context, entry.plan.source), entry.plan.importId)
             check(current.fingerprint == entry.network.fingerprint) { "CONFIG_REPLACEMENT_PREVIEW_CHANGED" }
             check(current.eligible) { "CONFIG_REPLACEMENT_NOT_READY" }
@@ -287,6 +287,9 @@ internal class NextConfigImportRepository @Inject constructor(
         }
     }
 
+    private suspend fun inspectReplacement(original: NextConfigImportPreview, preparedImportId: String? = null) =
+        NextConfigReplacementInspector(database).capture(original, requireNotNull(tokens.localSyncAccess()), preparedImportId)
+
     private suspend fun requireAccess(context: AccountIconContext) {
         check(tokens.localIconAccess() == context.access) { "CONFIG_IMPORT_SESSION_CHANGED" }
         val access = requireNotNull(tokens.localCoreWriteAccess()) { "CONFIG_IMPORT_ACCESS_DENIED" }
@@ -306,6 +309,7 @@ internal class NextConfigImportRepository @Inject constructor(
                 cursor.serverInstanceId == context.namespace.serverInstanceId && cursor.syncEpoch == context.namespace.syncEpoch &&
                 cursor.deviceId == context.access.deviceId) { "CONFIG_IMPORT_REPLICA_CHANGED" }
             NextChallengeStore(database).readInTransaction(sync, cursor)
+            NextRecoveryAuditStore(database).validatedMembers(sync)
         }
     }
 
@@ -319,7 +323,8 @@ internal class NextConfigImportRepository @Inject constructor(
             "sync_entity_state", "sync_conflicts", "local_fact_submissions", "completion_metric_prompts",
             "one_time_transmissions", "next_recovery_state", "next_rejections", "next_request_origins",
             "next_transmissions", "next_acceptances", "next_structural_dependencies", "next_structural_supersessions",
-            "next_restart_materializations", "next_restart_plan_proofs", "next_challenge_births")) {
+            "next_restart_materializations", "next_restart_plan_proofs", "next_challenge_births",
+            "next_recovery_audits", "next_abandoned_requests", "next_recovery_audit_payloads")) {
             sql.query("SELECT 1 FROM $table LIMIT 1").use {
                 check(!it.moveToFirst()) { "CONFIG_IMPORT_REPLACEMENT_NOT_READY" }
             }

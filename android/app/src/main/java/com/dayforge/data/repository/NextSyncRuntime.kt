@@ -53,7 +53,7 @@ internal class NextSyncRuntime @Inject constructor(
 
     private fun recoveryReader() = NextRecoveryDependencyReader(database, tokens, sessions, core, timers, once, restart)
 
-    /** Internal integration only: no settings/button entry until all terminal consumers are ready. */
+    /** No settings/button entry until all terminal consumers are ready. */
     internal suspend fun prepareRecoveryConfirmation(preview: NextRecoveryDependencyPreview, selected: Set<NextRecoveryKey>) = sessions.exclusive {
         val authority = requireNotNull(tokens.localCoreWriteAccess())
         val access = requireNotNull(tokens.localSyncAccess()).let { it.copy(capabilities = it.capabilities.toSet()) }
@@ -66,7 +66,7 @@ internal class NextSyncRuntime @Inject constructor(
         }
     }
 
-    /** Runtime serialization precedes account/Room locks. Formal BusinessSync coordination is not enabled yet. */
+    /** BusinessSync's outer coordinator (when called formally) precedes runtime/account/Room locks. */
     internal suspend fun confirmRecovery(ticket: NextRecoveryConfirmation) = mutex.withLock {
         sessions.exclusive {
             val authority = requireNotNull(tokens.localCoreWriteAccess())
@@ -253,15 +253,17 @@ internal class NextSyncRuntime @Inject constructor(
                 if (challengeProfile) NextChallengeStore(database).activeInTransaction(access)
                 else NextChallengeStore(database).requirePlainInTransaction()
                 val outstanding = database.syncOutboxDao().getAll() + database.syncOutboxDao().getDeadLetters()
+                val retired = NextRecoveryAuditStore(database).validatedMembers(access)
+                val liveRejections = database.nextSyncStateDao().rejections().filter { NextRecoveryKey(it.kind, it.requestId) !in retired }
                 blocked += outstanding.map { it.operationId }
                 blocked += (database.timeLogDao().getPendingTimerCommands(Int.MAX_VALUE) +
                     database.timeLogDao().getRejectedTimerCommands()).map { it.commandId }
                 blocked += database.syncConflictDao().getUnresolved().map { it.operationId }
-                blocked += database.nextSyncStateDao().rejections().map { it.requestId }
+                blocked += liveRejections.map { it.requestId }
                 if (blocked.isNotEmpty()) {
                     if (permanentBlock || database.syncOutboxDao().countDeadLetters() > 0 ||
                         database.timeLogDao().countRejectedTimerCommands() > 0 ||
-                        database.syncConflictDao().getUnresolved().isNotEmpty() || database.nextSyncStateDao().rejections().isNotEmpty())
+                        database.syncConflictDao().getUnresolved().isNotEmpty() || liveRejections.isNotEmpty())
                         throw NextSyncAttention(blocked.toSet())
                     throw NextSyncRetryRequired()
                 }
@@ -302,7 +304,7 @@ internal class NextSyncRuntime @Inject constructor(
     private suspend fun requireNoChallengeUpload(access: LocalSyncAccess) = sessions.exclusive {
         authorize(access)
         database.withTransaction {
-            NextChallengeStore(database).requireQuiescentInTransaction()
+            NextChallengeStore(database).requireQuiescentInTransaction(access)
         }
     }
 
@@ -316,6 +318,7 @@ internal class NextSyncRuntime @Inject constructor(
             if (challengeProfile) NextChallengeStore(database).activeInTransaction(access)
             else NextChallengeStore(database).requirePlainInTransaction()
             NextRequestSql.sources(sql, "sync_outbox"); NextRequestSql.sources(sql, "timer_command_outbox")
+            val retired = NextRecoveryAuditStore(database).validatedMembers(access)
             val causal = NextStructuralCausalStore(database)
             if (challengeProfile) {
                 val metadata = NextChallengeStore(database).activeInTransaction(access).second
@@ -332,7 +335,7 @@ internal class NextSyncRuntime @Inject constructor(
                         val kind = cursor.getString(0); val id = cursor.getString(1)
                         require(kind in setOf(NEXT_OPERATION, NEXT_TIMER) && com.dayforge.domain.model.isContractUuid(id))
                         requireNotNull(NextRequestSql.rowHash(sql, "next_rejections", "kind=? AND requestId=?", arrayOf(kind, id)))
-                        add(id)
+                        if (NextRecoveryKey(kind, id) !in retired) add(id)
                     }
                 }
             }
@@ -340,7 +343,7 @@ internal class NextSyncRuntime @Inject constructor(
             if (challengeProfile) {
                 val originals = (ordered + database.syncOutboxDao().getDeadLetters()).map { NEXT_OPERATION to it.operationId } +
                     (commands + database.timeLogDao().getRejectedTimerCommands()).map { NEXT_TIMER to it.commandId } +
-                    database.nextSyncStateDao().rejections().map { it.kind to it.requestId }
+                    database.nextSyncStateDao().rejections().filter { NextRecoveryKey(it.kind, it.requestId) !in retired }.map { it.kind to it.requestId }
                 for ((kind, id) in originals.distinct()) {
                     requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(kind, id)))
                     val origin = requireNotNull(database.nextRequestDao().origin(kind, id))

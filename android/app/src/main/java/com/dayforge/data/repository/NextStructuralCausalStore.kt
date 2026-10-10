@@ -661,6 +661,8 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         val fromReplacement = byReplacement(id)
         require(fromOriginal == null || fromReplacement == null)
         val actual = fromOriginal?.replacementId ?: id
+        if (NextRecoveryAuditStore(database).source(access, NextRecoveryKey(NEXT_OPERATION, actual)) != null)
+            rejectNextRequest(NextRequestException.Reason.LOCALLY_ABANDONED)
         var current: String? = fromOriginal?.originalId ?: fromReplacement?.originalId ?: id
         warmAncestry(requireNotNull(current))
         val seen = mutableSetOf<String>()

@@ -73,14 +73,17 @@ internal class NextChallengeStore(private val database: HabitDatabase) {
         }
     }
 
-    suspend fun requireQuiescentInTransaction() {
+    suspend fun requireQuiescentInTransaction(access: LocalSyncAccess) {
         check(database.inTransaction())
         NextRequestSql.requireOutboxEnabled(database.openHelper.writableDatabase)
         NextRequestSql.sources(database.openHelper.writableDatabase, "sync_outbox")
         NextRequestSql.sources(database.openHelper.writableDatabase, "timer_command_outbox")
+        val retired = NextRecoveryAuditStore(database).validatedMembers(access)
         require(database.syncOutboxDao().count() == 0 && database.syncOutboxDao().countDeadLetters() == 0 &&
             database.timeLogDao().getPendingTimerCommands(1).isEmpty() && database.timeLogDao().countRejectedTimerCommands() == 0 &&
-            database.syncConflictDao().getUnresolved().isEmpty() && database.nextSyncStateDao().rejections().isEmpty()) {
+            database.syncConflictDao().getUnresolved().isEmpty() && database.nextSyncStateDao().rejections().none {
+                NextRecoveryKey(it.kind, it.requestId) !in retired
+            }) {
             "SYNC_CHALLENGE_UPLOAD_NOT_CONNECTED"
         }
     }

@@ -30,6 +30,7 @@ internal class NextTimerRequestStore(
         val saved = sessions.exclusive {
             authorize(access)
             database.withTransaction {
+                NextRecoveryAuditStore(database).validatedMembers(access)
                 if (hash("next_acceptances", id) == null) null else receipt(access, id)
             }
         }
@@ -56,6 +57,7 @@ internal class NextTimerRequestStore(
             val pending = sessions.exclusive {
                 authorize(access)
                 database.withTransaction {
+                    NextRecoveryAuditStore(database).validatedMembers(access)
                     NextRequestSql.sources(database.openHelper.writableDatabase, "timer_command_outbox")
                     database.timeLogDao().getPendingTimerCommands(100)
                 }
@@ -75,6 +77,7 @@ internal class NextTimerRequestStore(
         database.withTransaction {
             val sql = database.openHelper.writableDatabase
             NextRequestSql.requireOutboxEnabled(sql)
+            val terminals = NextRecoveryAuditStore(database).validatedMembers(access)
             require(isContractUuid(id))
             val dao = database.nextRequestDao()
             val originHash = hash("next_request_origins", id) ?: rejectNextRequest(NextRequestException.Reason.OLD_INTENT)
@@ -107,6 +110,7 @@ internal class NextTimerRequestStore(
                     val actual = rounds.activeInTransaction(access)
                     check(actual.first == checkpoint.first && actual.second == merged) { "SYNC_CHALLENGE_ACK_CHANGED" }
                 }
+                require(NextRecoveryAuditStore(database).validatedMembers(access) == terminals) { "RECOVERY_TERMINAL_CHANGED" }
             }
             if (hash("next_acceptances", id) != null) {
                 if (receipt(access, id).result != normalized) rejectNextRequest(NextRequestException.Reason.RESULT_CHANGED)

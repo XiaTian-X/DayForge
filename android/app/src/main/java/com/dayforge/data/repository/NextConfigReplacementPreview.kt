@@ -3,6 +3,7 @@ package com.dayforge.data.repository
 import android.database.Cursor
 import com.dayforge.data.api.dto.SyncV2Change
 import com.dayforge.data.local.HabitDatabase
+import com.dayforge.data.local.LocalSyncAccess
 import com.dayforge.data.model.HabitType
 import java.nio.ByteBuffer
 import java.security.MessageDigest
@@ -37,9 +38,13 @@ internal class NextConfigReplacementPreview internal constructor(
 internal class NextConfigReplacementInspector(private val database: HabitDatabase) {
     private val sql get() = database.openHelper.writableDatabase
 
-    suspend fun capture(original: NextConfigImportPreview, preparedImportId: String? = null): NextConfigReplacementPreview {
+    suspend fun capture(original: NextConfigImportPreview, access: LocalSyncAccess,
+        preparedImportId: String? = null): NextConfigReplacementPreview {
         check(database.inTransaction())
         NextRequestSql.requireOutboxEnabled(sql)
+        require(access.session == original.context.access.session && access.deviceId == original.context.access.deviceId &&
+            access.capabilityRevision == original.context.access.capabilityRevision) { "CONFIG_IMPORT_SESSION_CHANGED" }
+        val retired = NextRecoveryAuditStore(database).validatedMembers(access)
         val habits = database.habitDao().getAllHabitsOnce()
         val metrics = database.metricDao().getAllMetricsOnce()
         val links = database.habitMetricLinkDao().getAllLinksOnce()
@@ -66,8 +71,18 @@ internal class NextConfigReplacementInspector(private val database: HabitDatabas
         val blockers = buildSet {
             if (exists("timelogs", "endTime IS NULL")) add(ConfigReplacementBlocker.ACTIVE_TIMER)
             if (exists("sync_outbox") || exists("timer_command_outbox")) add(ConfigReplacementBlocker.PENDING_WORK)
-            val unresolvedRejection = sql.query("SELECT 1 FROM next_rejections r LEFT JOIN next_acceptances a " +
-                "ON a.kind=r.kind AND a.requestId=r.requestId WHERE a.requestId IS NULL LIMIT 1").use { it.moveToFirst() }
+            val unresolvedRejection = sql.query("SELECT r.kind,r.requestId FROM next_rejections r LEFT JOIN next_acceptances a " +
+                "ON a.kind=r.kind AND a.requestId=r.requestId WHERE a.requestId IS NULL ORDER BY r.kind,r.requestId").use { c ->
+                var unresolved = false
+                while (c.moveToNext()) {
+                    currentCoroutineContext().ensureActive()
+                    require(c.getType(0) == Cursor.FIELD_TYPE_STRING && c.getType(1) == Cursor.FIELD_TYPE_STRING)
+                    val key = NextRecoveryKey(c.getString(0), c.getString(1))
+                    requireNotNull(NextRequestSql.rowHash(sql, "next_rejections", "kind=? AND requestId=?", arrayOf(key.kind, key.requestId)))
+                    if (key !in retired) unresolved = true
+                }
+                unresolved
+            }
             if (exists("sync_conflicts", "status!='resolved'") || unresolvedRejection || exists("next_recovery_state"))
                 add(ConfigReplacementBlocker.CONFLICT_OR_RECOVERY)
             if (exists("completion_metric_prompts", "state='pending'")) add(ConfigReplacementBlocker.COMPLETION_PROMPT)

@@ -30,6 +30,7 @@ internal class NextSyncMergeStore(
         authorize(access)
         database.withTransaction {
             val state = readState(access)
+            NextRecoveryAuditStore(database).validatedMembers(access)
             val rounds = NextChallengeStore(database)
             if (challengeProfile) {
                 val metadata = rounds.readInTransaction(access, state)
@@ -41,13 +42,17 @@ internal class NextSyncMergeStore(
 
     suspend fun challengeMetadata(access: LocalSyncAccess): ChallengeMetadata? = sessions.exclusive {
         authorize(access)
-        database.withTransaction { NextChallengeStore(database).readInTransaction(access, readState(access)) }
+        database.withTransaction {
+            NextRecoveryAuditStore(database).validatedMembers(access)
+            NextChallengeStore(database).readInTransaction(access, readState(access))
+        }
     }
 
     suspend fun challengeBootstrapExpectation(access: LocalSyncAccess): NextSyncStateEntity? = sessions.exclusive {
         authorize(access)
         database.withTransaction {
             val state = readState(access)
+            NextRecoveryAuditStore(database).validatedMembers(access)
             require(NextChallengeStore(database).readInTransaction(access, state) == null) { "SYNC_CURSOR_CHANGED" }
             state
         }
@@ -81,12 +86,13 @@ internal class NextSyncMergeStore(
             authorize(access)
             database.withTransaction {
                 val current = readState(access)
+                val terminals = NextRecoveryAuditStore(database).validatedMembers(access)
                 val rounds = NextChallengeStore(database)
                 if (emptyBaseline) {
                     check(expected == null && current == null) { "SYNC_CURSOR_CHANGED" }
                     NextProtocolAdmission.requireRoundsOrEmpty(database, access)
                 }
-                if (cacheOnly) rounds.requireQuiescentInTransaction()
+                if (cacheOnly) rounds.requireQuiescentInTransaction(access)
                 if (metadata == null) rounds.requirePlainInTransaction() else rounds.readInTransaction(access, current)
                 if (current == next) return@withTransaction current
                 require(current == expected) { "SYNC_CURSOR_CHANGED" }
@@ -105,8 +111,12 @@ internal class NextSyncMergeStore(
                 check(pendingSources() == sources)
                 if (metadata != null) mergeRounds(access, current, next, metadata)
                 check(pendingSources() == sources)
-                if (cacheOnly) rounds.requireQuiescentInTransaction()
-                commitState(access, current, next)
+                val result = commitState(access, current, next)
+                // Metadata already names `next`; full terminal inspection must see its matching
+                // cursor too. Keep this after the cursor write but inside the same Room COMMIT.
+                if (cacheOnly) rounds.requireQuiescentInTransaction(access)
+                require(NextRecoveryAuditStore(database).validatedMembers(access) == terminals) { "RECOVERY_TERMINAL_CHANGED" }
+                result
             }
         }
     }
@@ -140,8 +150,9 @@ internal class NextSyncMergeStore(
             authorize(access)
             database.withTransaction {
                 val current = requireNotNull(readState(access))
+                val terminals = NextRecoveryAuditStore(database).validatedMembers(access)
                 val rounds = NextChallengeStore(database)
-                if (cacheOnly) rounds.requireQuiescentInTransaction()
+                if (cacheOnly) rounds.requireQuiescentInTransaction(access)
                 if (metadata == null) rounds.requirePlainInTransaction() else requireNotNull(rounds.readInTransaction(access, current))
                 if (current == next) return@withTransaction current
                 require(current == expected) { "SYNC_CURSOR_CHANGED" }
@@ -175,9 +186,11 @@ internal class NextSyncMergeStore(
                 if (metadata != null) mergeRounds(access, current, next, metadata)
                 check(pendingSources() == sources)
                 check(cacheProof(listOf("next_restart_plan_proofs")) == restartPlans)
-                if (cacheOnly) rounds.requireQuiescentInTransaction()
-                if (metadata == null && frozen.changes.isEmpty() && frozen.nextCursor == expected.cursor) current
+                val result = if (metadata == null && frozen.changes.isEmpty() && frozen.nextCursor == expected.cursor) current
                 else commitState(access, current, next)
+                if (cacheOnly) rounds.requireQuiescentInTransaction(access)
+                require(NextRecoveryAuditStore(database).validatedMembers(access) == terminals) { "RECOVERY_TERMINAL_CHANGED" }
+                result
             }
         }
     }

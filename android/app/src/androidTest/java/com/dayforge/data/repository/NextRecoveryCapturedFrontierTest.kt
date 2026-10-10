@@ -231,13 +231,14 @@ class NextRecoveryCapturedFrontierTest : NextObjectEditorFixture() {
         db.openHelper.writableDatabase.execSQL("UPDATE next_acceptances SET resultHash='bad' WHERE requestId=?", arrayOf(first.operationId))
         rejected { preview(http, key(later)) }; assertEquals(1, count("completions")); assertEquals(1, count("count_days"))
     }
-    @Test fun orphanRecoveryHeaderBlocksPreviewUntilTheCompleteTerminalReaderIsImplemented() = runBlocking<Unit> {
+    @Test fun orphanRecoveryHeaderStillBlocksPreviewAfterCompleteTerminalReaderIsConnected() = runBlocking<Unit> {
         val (http, server) = initialize(); val plan = edit(habit, "A")
         db.openHelper.writableDatabase.execSQL("INSERT INTO next_recovery_audits VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             arrayOf<Any>(id(990), id(1), id(2), id(3), id(4), NEXT_OPERATION, plan.operationId,
                 "a".repeat(64), "b".repeat(64), "c".repeat(64), 1))
-        assertEquals("SYNC_RECOVERY_TERMINAL_REQUIRED", rejected { preview(http, key(plan)) }.message)
+        assertTrue(rejected { preview(http, key(plan)) } is IllegalArgumentException)
         assertEquals(1, count("next_recovery_audits")); assertEquals(1, count("sync_outbox"))
+        assertEquals(plan, db.syncOutboxDao().getById(plan.id))
         assertEquals(0, count("next_acceptances")); assertEquals(0, server.requests.size)
     }
     @Test fun undoIndexRetainsRealCountTargetEvenAfterLocalCompletionIsDeleted() = runBlocking<Unit> {

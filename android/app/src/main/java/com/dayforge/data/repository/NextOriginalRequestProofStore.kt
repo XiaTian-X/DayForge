@@ -27,24 +27,23 @@ internal data class NextOriginalPendingProof(val origin: NextRequestOriginEntity
 /**
  * Shared SELECT-only original proof used by senders, display and recovery classification. Caller
  * owns its account lock and Room transaction. No authority capture, HTTP, prepare or mutation.
- * Live origins ALWAYS require the actual source row; retired evidence will have a separate reader.
+ * Live origins ALWAYS require the actual source row; retired evidence uses the complete audit reader.
  */
 internal class NextOriginalRequestProofStore(private val database: HabitDatabase) {
     private val sql get() = database.openHelper.writableDatabase
 
-    private fun requireNotAbandoned(kind: String, id: String) {
-        // Presence is a refusal, not a shortcut to a valid terminal. Partial/corrupt audits cannot
-        // cause a sender or late result to reuse a retired identity. No audit is treated as an ACK.
-        sql.query("SELECT 1 FROM next_abandoned_requests WHERE kind=? AND requestId=? LIMIT 1", arrayOf(kind, id)).use {
-            if (it.moveToFirst()) rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
-        }
+    private suspend fun requireNotAbandoned(access: LocalSyncAccess, kind: String, id: String) {
+        // Only complete original-source/group evidence earns the terminal classification. A partial
+        // audit still fails, and neither a valid nor damaged terminal ever grants a live origin/ACK.
+        if (NextRecoveryAuditStore(database).source(access, NextRecoveryKey(kind, id)) != null)
+            rejectNextRequest(NextRequestException.Reason.LOCALLY_ABANDONED)
     }
 
     suspend fun liveOrigin(access: LocalSyncAccess, kind: String, id: String,
         requirePermission: Boolean = true): NextRequestOriginEntity {
         check(database.inTransaction()); currentCoroutineContext().ensureActive()
         require(kind in setOf(NEXT_OPERATION, NEXT_TIMER) && isContractUuid(id))
-        requireNotAbandoned(kind, id)
+        requireNotAbandoned(access, kind, id)
         if (NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(kind, id)) == null)
             rejectNextRequest(NextRequestException.Reason.OLD_INTENT)
         val row = requireNotNull(database.nextRequestDao().origin(kind, id))
@@ -128,7 +127,7 @@ internal class NextOriginalRequestProofStore(private val database: HabitDatabase
     /** Exact source/context/wire binding shared with acceptance; does not infer a live source/ACK. */
     suspend fun journal(origin: NextRequestOriginEntity, row: NextTransmissionEntity, access: LocalSyncAccess) {
         check(database.inTransaction()); currentCoroutineContext().ensureActive()
-        requireNotAbandoned(origin.kind, origin.requestId)
+        requireNotAbandoned(access, origin.kind, origin.requestId)
         if (row.kind != origin.kind || row.requestId != origin.requestId || row.queueId != origin.queueId || row.protocol != 5)
             rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
         if (row.accountId != origin.accountId || row.accountId != access.session.authentication.userId ||

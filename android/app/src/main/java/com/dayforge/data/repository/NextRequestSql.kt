@@ -3,7 +3,6 @@ package com.dayforge.data.repository
 import android.database.Cursor
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.dayforge.data.api.SYNC_REQUEST_LIMIT
-import java.nio.ByteBuffer
 import java.security.MessageDigest
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -14,7 +13,7 @@ internal const val NEXT_TIMER = "timer_command"
 internal class NextRequestException(val reason: Reason) : IllegalStateException(reason.name) {
     enum class Reason { STALE_ACCESS, PERMISSION_DENIED, INVALID_LOCAL_STATE, OLD_INTENT,
         SOURCE_CHANGED, TRANSMISSION_CONTEXT_CHANGED, REQUEST_ID_REUSED, UNSUPPORTED_ACCEPTANCE, RESULT_CHANGED,
-        CAUSAL_PREDECESSOR_PENDING, TIMER_START_CONFIG_CHANGED, COUNT_START_CONFIG_CHANGED }
+        CAUSAL_PREDECESSOR_PENDING, TIMER_START_CONFIG_CHANGED, COUNT_START_CONFIG_CHANGED, LOCALLY_ABANDONED }
 }
 
 internal fun rejectNextRequest(reason: NextRequestException.Reason): Nothing = throw NextRequestException(reason)
@@ -28,6 +27,44 @@ private fun digestHex(bytes: ByteArray): String = buildString(bytes.size * 2) {
         val value = byte.toInt() and 255
         append(digits[value ushr 4]); append(digits[value and 15])
     }
+}
+
+/** Original framing, buffered only to avoid a native digest call for every length/type/cell.
+ * Owns at most 4 KiB scratch per row, no SQL/authority cache and no whole-row byte allocation.
+ */
+private class RowDigest(private val checkpoint: () -> Unit = {}) {
+    private val hash = MessageDigest.getInstance("SHA-256")
+    private val buffer = ByteArray(4096)
+    private var size = 0
+
+    fun byte(value: Int) {
+        if (size == buffer.size) flush()
+        buffer[size++] = value.toByte()
+    }
+
+    fun bytes(value: ByteArray) {
+        for (shift in 24 downTo 0 step 8) byte(value.size ushr shift)
+        var offset = 0
+        while (offset < value.size) {
+            if (size == buffer.size) flush()
+            val count = minOf(buffer.size - size, value.size - offset)
+            value.copyInto(buffer, size, offset, offset + count)
+            size += count; offset += count
+        }
+    }
+
+    fun integer(value: Long) {
+        // Framed 8-byte signed integer, in the same big-endian two's-complement encoding.
+        byte(0); byte(0); byte(0); byte(8)
+        for (shift in 56 downTo 0 step 8) byte((value ushr shift).toInt())
+    }
+
+    private fun flush() {
+        checkpoint()
+        if (size != 0) { hash.update(buffer, 0, size); size = 0 }
+    }
+
+    fun finish(): String { flush(); return digestHex(hash.digest()) }
 }
 
 /** Audit original SQLite types/ranges BEFORE Room's getInt/getLong/String coercion. */
@@ -51,21 +88,18 @@ internal object NextRequestSql {
             "payloadHash" to row.payloadHash, "updatedAt" to row.updatedAt))
 
     private fun savedRowHash(table: String, values: Map<String, Any?>): String {
-        val hash = MessageDigest.getInstance("SHA-256")
-        fun bytes(value: ByteArray) {
-            hash.update(ByteBuffer.allocate(4).putInt(value.size).array()); hash.update(value)
-        }
-        bytes(table.toByteArray(Charsets.UTF_8))
+        val hash = RowDigest()
+        hash.bytes(table.toByteArray(Charsets.UTF_8))
         values.forEach { (name, value) ->
-            bytes(name.toByteArray(Charsets.UTF_8))
-            hash.update(when (value) { null -> Cursor.FIELD_TYPE_NULL; is Long -> Cursor.FIELD_TYPE_INTEGER
-                is String -> Cursor.FIELD_TYPE_STRING; else -> error("Invalid source snapshot") }.toByte())
+            hash.bytes(name.toByteArray(Charsets.UTF_8))
+            hash.byte(when (value) { null -> Cursor.FIELD_TYPE_NULL; is Long -> Cursor.FIELD_TYPE_INTEGER
+                is String -> Cursor.FIELD_TYPE_STRING; else -> error("Invalid source snapshot") })
             when (value) {
-                is Long -> bytes(ByteBuffer.allocate(8).putLong(value).array())
-                is String -> bytes(value.toByteArray(Charsets.UTF_8))
+                is Long -> hash.integer(value)
+                is String -> hash.bytes(value.toByteArray(Charsets.UTF_8))
             }
         }
-        return digestHex(hash.digest())
+        return hash.finish()
     }
     fun requireOutboxEnabled(sql: SupportSQLiteDatabase) {
         val enabled = sql.query("SELECT id,suppressOutbox FROM sync_control").use { c ->
@@ -168,16 +202,13 @@ internal object NextRequestSql {
 
     /** Both single and bounded audits retain the identical original row byte encoding. */
     private fun hashRow(c: Cursor, table: String, checkpoint: () -> Unit): String {
-            val hash = MessageDigest.getInstance("SHA-256")
-            fun bytes(value: ByteArray) {
-                hash.update(ByteBuffer.allocate(4).putInt(value.size).array()); hash.update(value)
-            }
-            bytes(table.toByteArray(Charsets.UTF_8))
+            val hash = RowDigest(checkpoint)
+            hash.bytes(table.toByteArray(Charsets.UTF_8))
             for (i in 0 until c.columnCount) {
                 checkpoint()
                 val name = c.getColumnName(i)
                 val type = c.getType(i)
-                bytes(name.toByteArray(Charsets.UTF_8)); hash.update(type.toByte())
+                hash.bytes(name.toByteArray(Charsets.UTF_8)); hash.byte(type)
                 if (type == Cursor.FIELD_TYPE_NULL) continue
                 val expected = when { name in longs -> Cursor.FIELD_TYPE_INTEGER
                     name == "wireBytes" -> Cursor.FIELD_TYPE_BLOB
@@ -193,14 +224,14 @@ internal object NextRequestSql {
                             name == "targetValue" && value <= 0 || name == "habitId" && value <= 0 ||
                             name == "planQueueWatermark" && value < 0))
                             rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
-                        bytes(ByteBuffer.allocate(8).putLong(value).array())
+                        hash.integer(value)
                     }
-                    Cursor.FIELD_TYPE_BLOB -> bytes(c.getBlob(i))
-                    Cursor.FIELD_TYPE_STRING -> bytes(c.getString(i).toByteArray(Charsets.UTF_8))
+                    Cursor.FIELD_TYPE_BLOB -> hash.bytes(c.getBlob(i))
+                    Cursor.FIELD_TYPE_STRING -> hash.bytes(c.getString(i).toByteArray(Charsets.UTF_8))
                     Cursor.FIELD_TYPE_FLOAT, Cursor.FIELD_TYPE_NULL -> rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
                 }
             }
-            return digestHex(hash.digest())
+            return hash.finish()
     }
 
     /** Includes deleted historical IDs: new origins must come from a new AUTOINCREMENT allocation. */
