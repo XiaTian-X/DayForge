@@ -422,6 +422,9 @@
     <string name="dialog_delete_habit_message">Delete this habit? All history will be lost.</string>
     <string name="dialog_delete_metric_message">Delete this metric? Linked habits will keep their data.</string>
     <string name="dialog_reactivate_title">Reactivate?</string>
+    <string name="restart_message">Start a new challenge for \"%1$s\"? Progress starts from zero; past records and metric values are kept. Finish or cancel any active timer first.</string>
+    <string name="restart_completed">New challenge started; past records kept</string>
+    <string name="restart_failed">Unable to restart. Reload and check device permission and unfinished timers.</string>
     <string name="dialog_reactivate_message">Reactivate this habit?</string>
     <string name="dialog_error_save_title">Cannot Save</string>
     <string name="dialog_error_target_empty">Target value is empty</string>
@@ -770,7 +773,6 @@
     <string name="toast_habit_completed">Habit completed</string>
     <string name="toast_goal_habit_cannot_deactivate">Cannot deactivate goal habit in progress</string>
     <string name="toast_habit_reactivated">Habit reactivated, history cleared</string>
-    <string name="toast_clear_history_failed">Failed to clear history, check network connection</string>
     <string name="toast_duplicate_habit_name">A habit with this name already exists</string>
     <string name="dialog_duplicate_habit_message">A habit with this name already exists, please modify</string>
     <string name="toast_metric_not_found">Metric not found</string>

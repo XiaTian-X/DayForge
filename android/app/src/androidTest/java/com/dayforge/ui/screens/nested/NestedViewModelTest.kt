@@ -469,6 +469,7 @@ class NestedViewModelTest {
         assertEquals(FailMode.LOOSE, habitDao.getHabitById(childId)?.failMode)
 
         viewModel.showReactivationDialog(childId)
+        viewModel.showReactivationDialog.first { it }
         assertTrue(viewModel.showReactivationDialog.value)
         assertEquals(childId, viewModel.reactivationHabitId.value)
         assertEquals("Target child", viewModel.reactivationHabitName.value)

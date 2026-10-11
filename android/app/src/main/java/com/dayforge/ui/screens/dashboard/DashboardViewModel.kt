@@ -333,6 +333,7 @@ class DashboardViewModel @Inject constructor(
     val showReactivationDialog: StateFlow<Boolean> = lifecycleCoordinator.showReactivationDialog
     val reactivationHabitId: StateFlow<Long?> = lifecycleCoordinator.reactivationHabitId
     val reactivationHabitName: StateFlow<String> = lifecycleCoordinator.reactivationHabitName
+    val reactivationPreservesHistory: StateFlow<Boolean> = lifecycleCoordinator.reactivationPreservesHistory
 
     val showChildrenDialog = deletionCoordinator.pendingDeletion
 
@@ -458,21 +459,30 @@ class DashboardViewModel @Inject constructor(
      */
     fun showReactivationDialog(habitId: Long) {
         val habit = habitsWithStats.value.find { it.habit.id == habitId }?.habit
-        lifecycleCoordinator.showReactivationDialog(habit)
+        viewModelScope.launch {
+            try { lifecycleCoordinator.showReactivationDialog(habit) }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                Toast.makeText(context, context.getString(R.string.restart_failed), Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     /**
-     * Confirms reactivation: clears history and reactivates the habit.
+     * Confirms the captured restart; challenge profiles preserve history.
      */
     fun confirmReactivation() {
+        val habitId = lifecycleCoordinator.reactivationHabitId.value ?: return
+        val habit = habitsWithStats.value.find { it.habit.id == habitId }?.habit
+        val preservesHistory = lifecycleCoordinator.reactivationPreservesHistory.value
+        val confirmation = lifecycleCoordinator.captureReactivation(habit)
         viewModelScope.launch {
-            val habitId = lifecycleCoordinator.reactivationHabitId.value ?: return@launch
-            val habit = habitsWithStats.value.find { it.habit.id == habitId }?.habit
-            when (lifecycleCoordinator.confirmReactivation(habit)) {
+            when (confirmation()) {
                 ReactivationResult.SUCCESS ->
-                    Toast.makeText(context, "习惯已重新激活，历史记录已清空", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, context.getString(if (preservesHistory) R.string.restart_completed
+                        else R.string.toast_habit_reactivated), Toast.LENGTH_SHORT).show()
                 ReactivationResult.FAILURE ->
-                    Toast.makeText(context, "清空历史失败，请检查网络连接", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, context.getString(R.string.restart_failed), Toast.LENGTH_SHORT).show()
                 ReactivationResult.NO_HABIT -> Unit
             }
         }

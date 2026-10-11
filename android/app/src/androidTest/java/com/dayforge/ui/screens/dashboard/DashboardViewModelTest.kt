@@ -567,6 +567,7 @@ class DashboardViewModelTest {
             assertEquals(FailMode.LOOSE, repository.getHabitById(habitId)?.failMode)
 
             viewModel.showReactivationDialog(habitId)
+            viewModel.showReactivationDialog.first { it }
             assertTrue(viewModel.showReactivationDialog.value)
             assertEquals(habitId, viewModel.reactivationHabitId.value)
             assertEquals("Target habit", viewModel.reactivationHabitName.value)

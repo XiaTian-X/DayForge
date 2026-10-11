@@ -71,6 +71,7 @@ data class HabitDetailUiState(
     // Per TARGET-02: Reactivation confirmation dialog state
     val showReactivationDialog: Boolean = false,
     val reactivationHabitName: String = "",
+    val reactivationPreservesHistory: Boolean = false,
     // Metrics for GOAL habits: aggregated from self and children
     val metrics: List<MetricDisplayInfo> = emptyList(),
     // Per NOTIFY-04: Notification enabled state for this habit
@@ -95,8 +96,11 @@ class HabitDetailViewModel @Inject constructor(
 
     private var currentHabitId: Long? = null
     private var habitLoadJob: Job? = null
+    private var reactivationRequest: com.dayforge.data.repository.HabitReactivationRequest? = null
+    private var reactivationGeneration = 0
     fun retryRead() {
         val id = currentHabitId ?: return
+        dismissReactivationDialog()
         currentHabitId = null
         loadHabit(id) // Restart DAO/preferences subscriptions as well as the projection.
     }
@@ -104,6 +108,8 @@ class HabitDetailViewModel @Inject constructor(
     fun loadHabit(habitId: Long) {
         // Reset if different habit to ensure fresh data load
         if (currentHabitId != null && currentHabitId != habitId) {
+            reactivationGeneration++
+            reactivationRequest = null
             _uiState.value = HabitDetailUiState(habitId = habitId, isLoading = true)
         }
         if (currentHabitId == habitId) return
@@ -514,9 +520,14 @@ class HabitDetailViewModel @Inject constructor(
 
                 // Per TARGET-02: If reactivating a target-based habit, show confirmation dialog first
                 if (!habit.isActive && newIsActive && habit.targetCycles != null) {
+                    val generation = ++reactivationGeneration
+                    val request = habitRepository.prepareReactivation(habit)
+                    if (currentHabitId != habitId || generation != reactivationGeneration) return@let
+                    reactivationRequest = request
                     _uiState.value = _uiState.value.copy(
                         showReactivationDialog = true,
-                        reactivationHabitName = habit.name
+                        reactivationHabitName = habit.name,
+                        reactivationPreservesHistory = request.preservesHistory
                     )
                     return@let
                 }
@@ -528,28 +539,21 @@ class HabitDetailViewModel @Inject constructor(
     }
 
     /**
-     * Confirms reactivation and clears history before setting active.
+     * Confirms the captured restart; challenge profiles retain all previous facts.
      * Per TARGET-02: Called when user confirms the reactivation dialog.
      */
     fun confirmReactivation() {
-        viewModelScope.launch {
-            currentHabitId?.let { habitId ->
-                val habit = _uiState.value.habit ?: return@let
-                // Clear history first
-                habitRepository.clearHabitHistory(habit, context)
+        val request = reactivationRequest ?: return
+        launchCompletion {
+            if (currentHabitId == request.habit.id) {
+                habitRepository.reactivate(request, context)
                 Toast.makeText(
                     context,
-                    context.getString(R.string.toast_habit_reactivated),
+                    context.getString(if (request.preservesHistory) R.string.restart_completed else R.string.toast_habit_reactivated),
                     Toast.LENGTH_SHORT
                 ).show()
-                // Perform toggle
-                performToggleActive(habitId, true)
             }
-            // Close dialog
-            _uiState.value = _uiState.value.copy(
-                showReactivationDialog = false,
-                reactivationHabitName = ""
-            )
+            if (reactivationRequest === request) dismissReactivationDialog()
         }
     }
 
@@ -558,9 +562,12 @@ class HabitDetailViewModel @Inject constructor(
      * Per TARGET-02: Called when user cancels the reactivation dialog.
      */
     fun dismissReactivationDialog() {
+        reactivationGeneration++
+        reactivationRequest = null
         _uiState.value = _uiState.value.copy(
             showReactivationDialog = false,
-            reactivationHabitName = ""
+            reactivationHabitName = "",
+            reactivationPreservesHistory = false
         )
     }
 

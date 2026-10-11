@@ -43,7 +43,8 @@ class HabitRepository @Inject constructor(
     private val widgetFactReader: WidgetFactReader? = null,
     private val checkHistoryReader: CheckHistoryReader? = null,
     private val timerHistoryReader: TimerHistoryReader? = null,
-    private val recurringHabitReader: RecurringHabitReader? = null
+    private val recurringHabitReader: RecurringHabitReader? = null,
+    private val restartEntry: HabitRestartEntry? = null
 ) {
     val allHabits: Flow<List<HabitEntity>> = habitDao.getAllHabits()
 
@@ -65,6 +66,28 @@ class HabitRepository @Inject constructor(
 
     suspend fun getRecurringSnapshot(habit: HabitEntity): RecurringHabitSnapshot =
         requireNotNull(recurringHabitReader) { "RECURRING_READER_REQUIRED" }.read(habit)
+
+    /** Capture BEFORE confirmation; typed plans never fall back to destructive history clearing. */
+    suspend fun prepareReactivation(habit: HabitEntity): HabitReactivationRequest {
+        if (habit.appearance == null) return HabitReactivationRequest(habit, null)
+        require(habit.completionPolicy == "recurring" && habit.habitType != HabitType.GOAL &&
+            (habit.targetCycles ?: 0) > 0) { "SYNC_RESTART_ACTIVITY_REQUIRED" }
+        val displayed = getRecurringSnapshot(habit)
+        require(displayed.authority.rounds != null) { "SYNC_RESTART_PROFILE_REQUIRED" }
+        return HabitReactivationRequest(displayed.habit, displayed.authority)
+    }
+
+    suspend fun reactivate(request: HabitReactivationRequest, context: Context) {
+        val committed = request.commit {
+            if (request.preservesHistory) requireNotNull(restartEntry) { "SYNC_RESTART_ENTRY_REQUIRED" }
+                .commit(request.habit, requireNotNull(request.authority))
+            else {
+                check(request.habit.appearance == null) { "SYNC_RESTART_PROFILE_REQUIRED" }
+                clearHabitHistory(request.habit, context)
+            }
+        }
+        if (committed && request.preservesHistory) notifyWidgetUpdate(context)
+    }
 
     suspend fun getOneTimeStatus(id: Long, expectedUuid: String? = null): OneTimeStatus = requireNotNull(oneTimeRepository) {
         "ONE_TIME_REPOSITORY_REQUIRED"

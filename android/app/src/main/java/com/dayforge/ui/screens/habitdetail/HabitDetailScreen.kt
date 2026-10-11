@@ -78,7 +78,8 @@ fun HabitDetailScreen(
             onDismissRequest = { viewModel.dismissReactivationDialog() },
             title = { Text(stringResource(R.string.dialog_reactivate_title)) },
             text = {
-                Text(stringResource(R.string.dialog_reactivate_habit_message, state.reactivationHabitName))
+                Text(stringResource(if (state.reactivationPreservesHistory) R.string.restart_message
+                    else R.string.dialog_reactivate_habit_message, state.reactivationHabitName))
             },
             confirmButton = {
                 TextButton(onClick = { viewModel.confirmReactivation() }) {

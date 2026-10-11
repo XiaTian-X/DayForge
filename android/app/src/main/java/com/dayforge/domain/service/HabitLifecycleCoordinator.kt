@@ -36,6 +36,10 @@ class HabitLifecycleCoordinator @Inject constructor(
 
     private val _reactivationHabitName = MutableStateFlow("")
     val reactivationHabitName: StateFlow<String> = _reactivationHabitName.asStateFlow()
+    private var reactivationRequest: com.dayforge.data.repository.HabitReactivationRequest? = null
+    private var reactivationGeneration = 0
+    private val _reactivationPreservesHistory = MutableStateFlow(false)
+    val reactivationPreservesHistory: StateFlow<Boolean> = _reactivationPreservesHistory.asStateFlow()
 
     fun showGoalCompletion(habit: HabitEntity?, progress: Int) {
         val target = habit?.targetCycles ?: return
@@ -62,28 +66,43 @@ class HabitLifecycleCoordinator @Inject constructor(
         _showGoalDialog.value = false
     }
 
-    fun showReactivationDialog(habit: HabitEntity?) {
+    suspend fun showReactivationDialog(habit: HabitEntity?) {
         habit ?: return
+        val generation = ++reactivationGeneration
+        val request = habitRepository.prepareReactivation(habit)
+        if (generation != reactivationGeneration) return
+        reactivationRequest = request
+        _reactivationPreservesHistory.value = request.preservesHistory
         _reactivationHabitId.value = habit.id
         _reactivationHabitName.value = habit.name
         // Keep the visible state from exposing an empty/stale payload.
         _showReactivationDialog.value = true
     }
 
-    suspend fun confirmReactivation(habit: HabitEntity?): ReactivationResult {
-        if (_reactivationHabitId.value == null) return ReactivationResult.NO_HABIT
-        val result = if (habit == null) {
+    /** Capture at the button click, not later when its coroutine is dispatched. */
+    fun captureReactivation(habit: HabitEntity?): suspend () -> ReactivationResult {
+        val request = reactivationRequest
+        return { confirmReactivation(habit, request) }
+    }
+
+    suspend fun confirmReactivation(habit: HabitEntity?): ReactivationResult =
+        confirmReactivation(habit, reactivationRequest)
+
+    private suspend fun confirmReactivation(habit: HabitEntity?,
+        captured: com.dayforge.data.repository.HabitReactivationRequest?): ReactivationResult {
+        val request = captured ?: return ReactivationResult.NO_HABIT
+        val result = if (habit == null || habit.id != request.habit.id || habit.uuid != request.habit.uuid) {
             ReactivationResult.NO_HABIT
         } else {
             try {
-                habitRepository.clearHabitHistory(habit, context)
+                habitRepository.reactivate(request, context)
                 ReactivationResult.SUCCESS
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 ReactivationResult.FAILURE
             }
         }
-        clearReactivationDialog()
+        if (reactivationRequest === request) clearReactivationDialog()
         return result
     }
 
@@ -92,9 +111,12 @@ class HabitLifecycleCoordinator @Inject constructor(
     }
 
     private fun clearReactivationDialog() {
+        reactivationGeneration++
+        reactivationRequest = null
         _showReactivationDialog.value = false
         _reactivationHabitId.value = null
         _reactivationHabitName.value = ""
+        _reactivationPreservesHistory.value = false
     }
 }
 

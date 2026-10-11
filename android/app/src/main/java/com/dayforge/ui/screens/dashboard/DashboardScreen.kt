@@ -75,6 +75,7 @@ fun DashboardScreen(
     // Reactivation dialog states
     val showReactivationDialog by viewModel.showReactivationDialog.collectAsState()
     val reactivationHabitName by viewModel.reactivationHabitName.collectAsState()
+    val reactivationPreservesHistory by viewModel.reactivationPreservesHistory.collectAsState()
     // Children deletion dialog state
     val showChildrenDialog by viewModel.showChildrenDialog.collectAsState()
     val scope = rememberCoroutineScope()
@@ -585,7 +586,8 @@ fun DashboardScreen(
             onDismissRequest = { viewModel.dismissReactivationDialog() },
             title = { Text(stringResource(R.string.dialog_reactivate_title)) },
             text = {
-                Text(stringResource(R.string.dialog_reactivate_habit_message, reactivationHabitName))
+                Text(stringResource(if (reactivationPreservesHistory) R.string.restart_message
+                    else R.string.dialog_reactivate_habit_message, reactivationHabitName))
             },
             confirmButton = {
                 TextButton(onClick = { viewModel.confirmReactivation() }) {

@@ -422,6 +422,9 @@
     <string name="dialog_delete_habit_message">删除此习惯？所有历史记录将丢失。</string>
     <string name="dialog_delete_metric_message">删除此指标？关联的习惯数据将保留。</string>
     <string name="dialog_reactivate_title">重新激活？</string>
+    <string name="restart_message">为“%1$s”开启新一轮挑战？本轮进度从零开始，历史记录与指标值保留。请先正常结束或取消正在运行或暂停的计时。</string>
+    <string name="restart_completed">新一轮挑战已开始，历史记录已保留</string>
+    <string name="restart_failed">无法重新挑战，请重新加载并检查设备权限及未结束的计时</string>
     <string name="dialog_reactivate_message">重新激活此习惯？</string>
     <string name="dialog_error_save_title">无法保存</string>
     <string name="dialog_error_target_empty">目标值为空</string>
@@ -770,7 +773,6 @@
     <string name="toast_habit_completed">习惯已完成</string>
     <string name="toast_goal_habit_cannot_deactivate">有目标的习惯进行中不能设为非活跃</string>
     <string name="toast_habit_reactivated">习惯已重新激活，历史记录已清空</string>
-    <string name="toast_clear_history_failed">清空历史失败，请检查网络连接</string>
     <string name="toast_duplicate_habit_name">已存在同名习惯，请修改</string>
     <string name="dialog_duplicate_habit_message">已存在同名习惯，请修改</string>
     <string name="toast_metric_not_found">指标不存在</string>
