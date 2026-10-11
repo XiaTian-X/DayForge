@@ -21,10 +21,17 @@ from tests.test_alembic_migration import alembic_config
 
 
 @contextmanager
-def isolated_server(tmp_path, *, asset_root=None):
-    database = tmp_path / "jwt-acceptance.sqlite"
+def isolated_server(tmp_path, *, asset_root=None, database=None, credentials=None):
+    # Optional paths/credentials are exclusively owned pytest fixtures. Reopen
+    # an actual restored DB with the SAME key to prove epoch/identity rejection,
+    # rather than accidentally rejecting every old JWT through a key change.
+    database = database if database is not None else tmp_path / "jwt-acceptance.sqlite"
     command.upgrade(alembic_config(str(database)), "head")
-    key, password = secrets.token_urlsafe(48), secrets.token_urlsafe(24)
+    key, password = (
+        credentials
+        if credentials is not None
+        else (secrets.token_urlsafe(48), secrets.token_urlsafe(24))
+    )
     setting_names = {name.casefold() for name in Settings.model_fields}
     environment = {
         name: value

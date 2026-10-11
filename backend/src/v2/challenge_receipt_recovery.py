@@ -49,11 +49,11 @@ def validate_challenge_receipts(read_rows, *, owner_user_id: int | None = None):
         )
     }
     events = {
-        row["public_id"]: row
+        (row["owner_user_id"], row["public_id"]): row
         for row in read_rows("SELECT * FROM activity_events" + suffix, parameters)
     }
     timers = {
-        row["public_id"]: row
+        (row["owner_user_id"], row["public_id"]): row
         for row in read_rows("SELECT * FROM timer_sessions" + suffix, parameters)
     }
     event_bindings = {
@@ -128,7 +128,10 @@ def validate_challenge_receipts(read_rows, *, owner_user_id: int | None = None):
                     ):
                         raise ValueError("timer acknowledgement changed")
                     if result.status == "applied":
-                        source = timers[str(original.session_id)]
+                        # Public IDs are unique per account, not per database.
+                        # Whole-backup validation must never select a foreign
+                        # fact/session just because it shares this UUID.
+                        source = timers[(row["user_id"], str(original.session_id))]
                         if (
                             source["owner_user_id"] != row["user_id"]
                             or birth(source, timer_bindings) != value.source.head
@@ -199,7 +202,7 @@ def validate_challenge_receipts(read_rows, *, owner_user_id: int | None = None):
                         result.status == "applied"
                         and original.entity_type == "activity_event"
                     ):
-                        source = events[str(original.entity_uuid)]
+                        source = events[(row["user_id"], str(original.entity_uuid))]
                         recurring = (
                             details[source["activity_node_id"]]["completion_policy"]
                             == "recurring"
