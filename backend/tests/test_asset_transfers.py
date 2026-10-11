@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from src.appearance.input import ImageInputError
 from src.auth.models import User
-from src.auth.service import create_access_token
+from src.auth.service import account_token_claims, create_access_token
 from src.storage.asset_files import AssetFiles
 from src.storage.asset_io import AssetIoPool
 from src.storage.database_adapter import DatabaseBusyError
@@ -44,7 +44,7 @@ async def transfers(runtime_engine, tmp_path, request):
             owners[owner] = user.public_id
             if request.param == "jwt":
                 headers[owner] = "Bearer " + create_access_token(
-                    {"sub": str(owner), "ver": user.auth_version}
+                    await account_token_claims(user, session)
                 )
             else:
                 key = generate_token()
@@ -188,7 +188,9 @@ async def test_changed_authority_during_file_stage_never_marks_ready(
         release.set()
         with pytest.raises((HTTPException, DomainError)) as caught:
             await asyncio.wait_for(task, timeout=5)
-        if change in {"inactive", "credential"}:
+        if change in {"inactive", "credential"} or (
+            kind == "jwt" and change in {"epoch", "instance", "owner"}
+        ):
             assert (
                 isinstance(caught.value, HTTPException)
                 and caught.value.status_code == 401

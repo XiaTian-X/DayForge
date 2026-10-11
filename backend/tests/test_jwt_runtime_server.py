@@ -197,7 +197,10 @@ def test_real_server_login_refresh_sync_replay_isolation_and_bad_claims(
         assert isolated["changes"] == []
 
         for kind in ("access", "refresh"):
-            claims = {"sub": str(me["id"]), "ver": 1, "type": kind, "exp": 2524608000}
+            claims = jwt.decode(token, key, algorithms=["HS256"]) | {
+                "type": kind,
+                "exp": 2524608000,
+            }
             missing_exp = claims.copy()
             del missing_exp["exp"]
             for malformed in (

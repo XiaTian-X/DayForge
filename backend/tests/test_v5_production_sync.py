@@ -13,8 +13,9 @@ from sqlalchemy.exc import OperationalError
 
 from src.main import app
 from src.auth.models import User
-from src.auth.service import create_access_token
+from src.auth.service import account_token_claims, create_access_token
 from tests.account_fixtures import account_password_hash
+from tests.runtime_auth_fixtures import relogin_runtime_headers
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from src.v2.next_sync_contract import (
     NextSyncBootstrapResponse,
@@ -212,6 +213,11 @@ async def test_identity_discovery_does_not_authorize_request_after_epoch_changes
     assert current.json()["sync_epoch"] != headers[EPOCH_HEADER]
     before = await database_state(engine)
     response = await call_path(client, path, headers, device)
+    if headers["Authorization"].startswith("Bearer "):
+        assert response.status_code == 401
+        assert await database_state(engine) == before
+        authenticated = await relogin_runtime_headers(client, headers)
+        response = await call_path(client, path, authenticated, device)
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "SYNC_EPOCH_MISMATCH"
     assert await database_state(engine) == before
@@ -930,7 +936,7 @@ async def test_actual_accounts_can_share_public_ids_without_sharing_data_or_devi
         session.add(foreign)
         await session.flush()
         foreign_auth = "Bearer " + create_access_token(
-            {"sub": str(foreign.id), "ver": foreign.auth_version}
+            await account_token_claims(foreign, session)
         )
     foreign_headers = headers | {"Authorization": foreign_auth}
     registered = await client.post(
@@ -995,6 +1001,13 @@ async def test_actual_epoch_transition_does_not_relabel_or_reexecute_receipt(
     old = await client.post(
         PATHS[1], headers=headers, json=dict(device_id=device, operations=[queued])
     )
+    if headers["Authorization"].startswith("Bearer "):
+        assert old.status_code == 401
+        assert await database_state(engine) == before
+        headers = await relogin_runtime_headers(client, headers)
+        old = await client.post(
+            PATHS[1], headers=headers, json=dict(device_id=device, operations=[queued])
+        )
     assert (
         old.status_code == 409 and old.json()["detail"]["code"] == "SYNC_EPOCH_MISMATCH"
     )
@@ -1108,6 +1121,11 @@ async def test_epoch_writer_after_admission_cannot_acknowledge_a_stale_snapshot(
             )
     before = await database_state(engine)
     stale = await call_path(client, path, headers, device)
+    if headers["Authorization"].startswith("Bearer "):
+        assert stale.status_code == 401
+        assert await database_state(engine) == before
+        authenticated = await relogin_runtime_headers(client, headers)
+        stale = await call_path(client, path, authenticated, device)
     assert (
         stale.status_code == 409
         and stale.json()["detail"]["code"] == "SYNC_EPOCH_MISMATCH"

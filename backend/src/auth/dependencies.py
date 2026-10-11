@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
 from src.auth.models import User
-from src.auth.service import token_account_identity, verify_token
+from src.auth.service import resolve_token_account, verify_token
 from src.tokens.models import ApiToken
 from src.tokens.service import hash_token, verify_token_expiry
 from src.time_utils import utc_now
@@ -77,20 +77,8 @@ async def authenticate_header(
         if token_type != "access":
             raise credentials_exception
 
-        identity = token_account_identity(payload)
-        if identity is None:
-            raise credentials_exception
-        internal_user_id, token_version = identity
-
-        result = await session.execute(select(User).where(User.id == internal_user_id))
-        user = result.scalar()
-
-        if (
-            user is None
-            or not user.is_active
-            or user.status != "active"
-            or user.auth_version != token_version
-        ):
+        user = await resolve_token_account(payload, session)
+        if user is None:
             raise credentials_exception
 
         return user

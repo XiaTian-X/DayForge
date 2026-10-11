@@ -27,7 +27,10 @@ class Token(BaseModel):
 class TokenPayload(BaseModel):
     """JWT token payload schema."""
 
-    sub: str  # Subject (user ID)
+    sub: str  # Internal subject, insufficient without stable identity and scope
+    uid: UUID  # Stable account identity
+    sid: UUID  # Server identity
+    epoch: UUID  # Restores invalidate both token kinds
     exp: datetime  # Expiration time
     type: str  # Token type (access or refresh)
     ver: int  # Account auth version used to revoke existing sessions

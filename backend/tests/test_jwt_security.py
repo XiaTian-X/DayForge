@@ -20,6 +20,7 @@ from src.auth.service import (
     MAX_JWT_JSON_DEPTH,
     MAX_JWT_LENGTH,
     token_account_identity,
+    account_token_claims,
     verify_token,
 )
 from src.config import settings
@@ -320,8 +321,8 @@ def test_representable_integer_claims_retain_previous_semantics(value):
     assert token_account_identity({"sub": " 00017 ", "ver": value}) == (17, value)
 
 
-def _bad_token(kind: str, case: str) -> str:
-    claims = _claims(kind)
+def _bad_token(kind: str, case: str, identity: dict[str, str | int]) -> str:
+    claims = _claims(kind) | identity
     if case == "missing-exp":
         del claims["exp"]
     elif case == "null-exp":
@@ -357,6 +358,8 @@ async def _seed(engine, version: int = 4):
             )
         )
         await session.commit()
+        user = (await session.execute(select(User))).scalar_one()
+        return await account_token_claims(user, session)
 
 
 @pytest.mark.parametrize("kind", ["access", "refresh"])
@@ -379,7 +382,7 @@ async def test_real_http_rejects_bad_credentials_without_500_or_database_writes(
     # True == 1 used to pass isinstance(ver, int); reproduce with an actual
     # active account at that version, not an already-mismatched fixture.
     version = 1 if case == "boolean-version" else 4
-    await _seed(runtime_engine, version)
+    identity = await _seed(runtime_engine, version)
     statements = []
 
     def observe(_connection, _cursor, statement, _parameters, _context, _many):
@@ -387,7 +390,7 @@ async def test_real_http_rejects_bad_credentials_without_500_or_database_writes(
 
     event.listen(runtime_engine.sync_engine, "before_cursor_execute", observe)
     try:
-        token = _bad_token(kind, case)
+        token = _bad_token(kind, case, identity)
         if kind == "access":
             response = await runtime_client.get(
                 "/api/v1/auth/users/me", headers={"Authorization": "Bearer " + token}
@@ -408,7 +411,7 @@ async def test_real_http_rejects_bad_credentials_without_500_or_database_writes(
         assert user.id == 17 and user.auth_version == version and user.is_active
 
 
-async def test_real_http_accepts_legacy_access_and_refresh_without_changing_identity(
+async def test_real_http_rejects_legacy_access_and_refresh_after_identity_upgrade(
     runtime_client, runtime_engine
 ):
     await _seed(runtime_engine)
@@ -416,19 +419,12 @@ async def test_real_http_accepts_legacy_access_and_refresh_without_changing_iden
         "/api/v1/auth/users/me",
         headers={"Authorization": "Bearer " + _legacy("access")},
     )
-    assert me.status_code == 200 and me.json()["id"] == 17
+    assert me.status_code == 401
+    assert me.headers["www-authenticate"] == "Bearer"
     refreshed = await runtime_client.post(
         "/api/v1/auth/refresh", json={"refresh_token": _legacy("refresh")}
     )
-    assert (
-        refreshed.status_code == 200
-        and refreshed.json()["user_id"] == me.json()["public_id"]
-    )
-    for field, kind in (("access_token", "access"), ("refresh_token", "refresh")):
-        payload = verify_token(refreshed.json()[field])
-        assert (
-            payload is not None
-            and payload["sub"] == "17"
-            and payload["ver"] == 4
-            and payload["type"] == kind
-        )
+    assert refreshed.status_code == 401
+    async with AsyncSession(runtime_engine) as session:
+        user = (await session.execute(select(User))).scalar_one()
+        assert user.id == 17 and user.auth_version == 4 and user.is_active

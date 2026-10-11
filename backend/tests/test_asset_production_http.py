@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import text
 
 from src.auth.models import User
-from src.auth.service import create_access_token
+from src.auth.service import account_token_claims, create_access_token
 from src.main import app
 from src.storage.asset_files import AssetFiles
 from src.tokens.models import ApiToken
@@ -43,7 +43,7 @@ async def production_assets(runtime_engine, tmp_path, monkeypatch, request):
             assert user is not None
             if request.param == "jwt":
                 header = "Bearer " + create_access_token(
-                    {"sub": str(owner), "ver": user.auth_version}
+                    await account_token_claims(user, session)
                 )
             else:
                 key = generate_token()
@@ -386,12 +386,16 @@ async def test_reauthorization_after_network_and_file_io(
             == {
                 "proof": 426,
                 "server": 426,
-                "epoch": 409,
+                "epoch": 401
+                if headers[1]["Authorization"].startswith("Bearer ")
+                else 409,
                 "user": 401,
                 "device": 404,
                 "capability": 403,
                 "credential": 401,
-                "identity": 409,
+                "identity": 401
+                if headers[1]["Authorization"].startswith("Bearer ")
+                else 409,
             }[revocation]
         )
         async with sessions() as session:
@@ -764,9 +768,10 @@ async def test_lifespan_material_failure_does_not_block_sync_or_timer(
             (root / "accounts").symlink_to(other, target_is_directory=True)
     async with sessions() as session:
         user = await session.get(User, 1)
+        assert user is not None
         header = {
             "Authorization": "Bearer "
-            + create_access_token({"sub": "1", "ver": user.auth_version})
+            + create_access_token(await account_token_claims(user, session))
         }
     monkeypatch.setattr(
         "src.main.get_settings",
@@ -919,9 +924,10 @@ async def test_lifespan_cancelled_shutdown_joins_actual_io_before_database_dispo
             text("UPDATE client_devices SET registered_protocol_version=5")
         )
         user = await session.get(User, 1)
+        assert user is not None
         headers = {
             "Authorization": "Bearer "
-            + create_access_token({"sub": "1", "ver": user.auth_version}),
+            + create_access_token(await account_token_claims(user, session)),
             "X-DayForge-Protocol": "5",
             "Content-Type": "application/octet-stream",
         }

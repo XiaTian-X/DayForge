@@ -10,7 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from src.auth.models import User
-from src.auth.service import create_access_token
+from src.auth.service import account_token_claims, create_access_token
 from src.v2.count_policy import CountDayPolicy
 from src.v2.models import ActivityEvent
 from src.v2.next_sync_contract import NextSyncBootstrapResponse
@@ -442,7 +442,7 @@ async def test_owned_same_public_uuid_different_rules_do_not_cross_accounts(
         session.add(other)
         await session.flush()
         other_id = other.id
-        token = create_access_token(dict(sub=str(other.id), ver=other.auth_version))
+        token = create_access_token(await account_token_claims(other, session))
     other_headers = headers | {"Authorization": "Bearer " + token}
     registered = await client.post(
         "/api/v2/devices/register",

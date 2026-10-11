@@ -9,7 +9,12 @@ from pydantic import ValidationError
 
 from src.auth.models import User
 from src.auth.router import _token_response
-from src.auth.service import create_access_token, create_refresh_token, verify_token
+from src.auth.service import (
+    account_token_claims,
+    create_access_token,
+    create_refresh_token,
+    verify_token,
+)
 from src.time_utils import utc_now
 from src.tokens.models import ApiToken
 from src.tokens.router import create_token
@@ -27,7 +32,9 @@ from tests.account_fixtures import account_password_hash
         "abcdef1234564789abcd123456789012",
     ],
 )
-def test_auth_response_validates_uuid_without_changing_internal_jwt_subject(public_id):
+async def test_auth_response_validates_uuid_without_changing_internal_jwt_subject(
+    public_id, async_session
+):
     user = User(
         id=17,
         public_id=public_id,
@@ -35,7 +42,7 @@ def test_auth_response_validates_uuid_without_changing_internal_jwt_subject(publ
         password_hash="unused",
         auth_version=4,
     )
-    response = _token_response(user)
+    response = await _token_response(user, async_session)
     assert response.user_id == UUID(public_id)
     assert response.model_dump(mode="json")["user_id"] == str(UUID(public_id))
     for token, kind in [
@@ -46,14 +53,17 @@ def test_auth_response_validates_uuid_without_changing_internal_jwt_subject(publ
         assert payload is not None
         assert payload["sub"] == "17"
         assert payload["ver"] == 4
+        assert payload["uid"] == public_id
+        assert UUID(payload["sid"])
+        assert UUID(payload["epoch"])
         assert payload["type"] == kind
 
 
 @pytest.mark.parametrize("public_id", ["not-a-uuid", ""])
-def test_auth_response_rejects_invalid_stored_uuid(public_id):
+async def test_auth_response_rejects_invalid_stored_uuid(public_id, async_session):
     user = User(id=17, public_id=public_id, username="boundary", password_hash="unused")
     with pytest.raises(ValidationError) as error:
-        _token_response(user)
+        await _token_response(user, async_session)
     assert error.value.errors()[0]["loc"] == ("user_id",)
     assert error.value.errors()[0]["type"] == "uuid_parsing"
 
@@ -129,7 +139,7 @@ async def test_jwt_refresh_and_api_token_resolve_the_same_account_status(
     )
     async_session.add(token)
     await async_session.commit()
-    claims = {"sub": str(user.id), "ver": user.auth_version}
+    claims = await account_token_claims(user, async_session)
     expected = 200 if state == "active" else 401
     for credentials in [f"Bearer {create_access_token(claims)}", f"Token {raw_token}"]:
         response = await test_client.get(
