@@ -23,10 +23,31 @@ class CiCapacityTest(unittest.TestCase):
 
     def test_backend_whole_job_has_explicit_bounded_capacity(self):
         backend = self.job("backend")
-        self.assertIn("    timeout-minutes: 25\n", backend)
+        self.assert_backend_capacity(backend)
         self.assertIn("    needs: changes\n", backend)
         self.assertIn("needs.changes.outputs.backend == 'true'", backend)
-        self.assertIn("后端作业上限 25 分钟", (ROOT / "docs/TESTING.md").read_text())
+        self.assertIn("后端作业上限 40 分钟", (ROOT / "docs/TESTING.md").read_text())
+
+    def assert_backend_capacity(self, backend):
+        self.assertEqual(
+            ["40"],
+            re.findall(r"^    timeout-minutes: (\d+)$", backend, flags=re.MULTILINE),
+            "require exactly one explicit backend whole-job capacity",
+        )
+
+    def test_backend_capacity_guard_rejects_stale_missing_or_duplicate_deadlines(self):
+        backend = self.job("backend")
+        for broken in (
+            backend.replace("timeout-minutes: 40", "timeout-minutes: 15"),
+            backend.replace("timeout-minutes: 40", "timeout-minutes: 25"),
+            backend.replace("timeout-minutes: 40", "timeout-minutes: 60"),
+            backend.replace("    timeout-minutes: 40\n", ""),
+            backend.replace("    timeout-minutes: 40\n", "        timeout-minutes: 40\n"),
+            backend + "    timeout-minutes: 40\n",
+            backend + "    timeout-minutes: 25\n",
+        ):
+            with self.subTest(broken=broken), self.assertRaises(AssertionError):
+                self.assert_backend_capacity(broken)
 
     def test_backend_still_runs_full_locked_serial_warning_gate(self):
         backend = self.job("backend")
