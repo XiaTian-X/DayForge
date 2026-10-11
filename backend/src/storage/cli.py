@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
+import json
 from pathlib import Path
 from alembic.config import Config
 from alembic.script import ScriptDirectory
@@ -15,6 +17,7 @@ from src.storage.sqlite_maintenance import (
     restore_backup,
 )
 from src.storage.logical_archive import export_archive, import_archive
+from src.storage.v5_preflight import preflight_v5
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -40,6 +43,13 @@ def _parser() -> argparse.ArgumentParser:
     verify = commands.add_parser("sqlite-verify", help="verify a live SQLite database")
     verify.add_argument("--database", type=Path, required=True)
     verify.add_argument("--asset-root", type=Path)
+
+    preflight = commands.add_parser(
+        "sqlite-v5-preflight",
+        help="read-only empty-baseline inventory; never activates v5",
+    )
+    preflight.add_argument("--database", type=Path, required=True)
+    preflight.add_argument("--asset-root", type=Path)
 
     snapshots = commands.add_parser(
         "snapshot-backfill",
@@ -71,7 +81,19 @@ def _current_alembic_head() -> str | None:
 def main() -> int:
     args = _parser().parse_args()
     try:
-        if args.command == "sqlite-backup":
+        if args.command == "sqlite-v5-preflight":
+            report = preflight_v5(args.database, asset_root=args.asset_root)
+            print(
+                json.dumps(
+                    {
+                        **asdict(report),
+                        "empty_baseline_candidate": report.empty_baseline_candidate,
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 0 if report.empty_baseline_candidate else 2
+        elif args.command == "sqlite-backup":
             database, manifest = create_backup(
                 args.database,
                 args.backup_dir,
