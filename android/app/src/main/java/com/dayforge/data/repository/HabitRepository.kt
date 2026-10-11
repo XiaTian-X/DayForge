@@ -44,7 +44,8 @@ class HabitRepository @Inject constructor(
     private val checkHistoryReader: CheckHistoryReader? = null,
     private val timerHistoryReader: TimerHistoryReader? = null,
     private val recurringHabitReader: RecurringHabitReader? = null,
-    private val restartEntry: HabitRestartEntry? = null
+    private val restartEntry: HabitRestartEntry? = null,
+    private val widgetRestartEntry: WidgetRestartEntry? = null
 ) {
     val allHabits: Flow<List<HabitEntity>> = habitDao.getAllHabits()
 
@@ -81,13 +82,19 @@ class HabitRepository @Inject constructor(
         val committed = request.commit {
             if (request.preservesHistory) requireNotNull(restartEntry) { "SYNC_RESTART_ENTRY_REQUIRED" }
                 .commit(request.habit, requireNotNull(request.authority))
+            else if (request.legacyAccess != null) requireNotNull(widgetRestartEntry)
+                .commitLegacy(request.habit, request.legacyAccess)
             else {
                 check(request.habit.appearance == null) { "SYNC_RESTART_PROFILE_REQUIRED" }
                 clearHabitHistory(request.habit, context)
             }
         }
-        if (committed && request.preservesHistory) notifyWidgetUpdate(context)
+        if (committed && (request.preservesHistory || request.legacyAccess != null)) notifyWidgetUpdate(context)
     }
+
+    suspend fun prepareWidgetReactivation(id: Long, fact: WidgetFactClaim?,
+        timer: com.dayforge.domain.model.TimerActionAuthority?, legacy: LegacyWidgetRestartClaim?): HabitReactivationRequest =
+        requireNotNull(widgetRestartEntry).prepare(id, fact, timer, legacy)
 
     suspend fun getOneTimeStatus(id: Long, expectedUuid: String? = null): OneTimeStatus = requireNotNull(oneTimeRepository) {
         "ONE_TIME_REPOSITORY_REQUIRED"
@@ -721,14 +728,7 @@ class HabitRepository @Inject constructor(
         database.withTransaction {
             // A profile cache may already contain another round. Physical history deletion is
             // never a challenge restart; leave all facts/requests intact until its new entry is ready.
-            NextChallengeStore(database).requirePlainInTransaction()
-            val current = requireNotNull(habitDao.getHabitById(habit.id))
-            check(current.uuid == habit.uuid) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
-            require(current.completionPolicy != "one_and_done") { "ONE_TIME_HISTORY_IS_IMMUTABLE" }
-            // Local deletes become fact tombstones/revert events through the outbox.
-            completionDao.deleteByHabitId(current.id)
-            timeLogDao.deleteByHabitId(current.id)
-            habitDao.updateIsActive(current.id, true)
+            clearLegacyHabitHistoryInTransaction(database, habit)
         }
 
         // Notify widgets

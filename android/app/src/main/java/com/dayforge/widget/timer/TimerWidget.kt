@@ -80,6 +80,7 @@ class TimerWidget : GlanceAppWidget() {
         val DATA_LOADED_KEY = booleanPreferencesKey("dataLoaded")
         val READ_FAILED_KEY = booleanPreferencesKey("timerReadFailed")
         val ACTION_PROOF_KEY = stringPreferencesKey("timerActionProof")
+        val LEGACY_RESTART_PROOF_KEY = stringPreferencesKey("legacyRestartProof")
         val IS_DELETED_KEY = booleanPreferencesKey("isDeleted")
         val APP_WIDGET_ID_KEY = intPreferencesKey("appWidgetId")
         val IS_ACTIVE_KEY = booleanPreferencesKey("isActive")
@@ -151,7 +152,8 @@ class TimerWidget : GlanceAppWidget() {
                 }
                 // v4 sources are prepared outside the lock; typed healthy snapshots still
                 // keep NextTimerWriter's stronger lock through all reads and display IO.
-                val display = prepareWidgetState(appContext, glanceId, habitId, visibleHabit, null)
+                val display = prepareWidgetState(appContext, glanceId, habitId, visibleHabit, null,
+                    publication.legacyRestartClaim(visibleHabit)?.encode())
                 return publication { publishingDisplay = true; display() }
             } catch (error: Exception) {
                 if (error is CancellationException || publishingDisplay) throw error
@@ -163,6 +165,7 @@ class TimerWidget : GlanceAppWidget() {
 
         private fun clearActionAndTickState(prefs: MutablePreferences) {
             prefs.remove(ACTION_PROOF_KEY)
+            prefs.remove(LEGACY_RESTART_PROOF_KEY)
             prefs.remove(TICK_PLAN_KEY); prefs.remove(TICK_LOG_HASH_KEY)
             prefs.remove(TICK_DATE_KEY); prefs.remove(TICK_ZONE_KEY); prefs.remove(TICK_COMPLETED_SECONDS_KEY)
         }
@@ -246,7 +249,7 @@ class TimerWidget : GlanceAppWidget() {
 
         private suspend fun prepareWidgetState(context: Context, glanceId: GlanceId, habitId: Long,
             habit: com.dayforge.data.local.entity.HabitEntity,
-            snapshot: com.dayforge.data.repository.WidgetTimerReadSnapshot?): suspend () -> Unit {
+            snapshot: com.dayforge.data.repository.WidgetTimerReadSnapshot?, legacyProof: String? = null): suspend () -> Unit {
             val appContext = context.applicationContext
             val database = HabitDatabaseProvider.getInstance(appContext)
             val timeLogDao = database.timeLogDao()
@@ -353,6 +356,7 @@ class TimerWidget : GlanceAppWidget() {
                     prefs[READ_FAILED_KEY] = false
                     if (snapshot != null) prefs[ACTION_PROOF_KEY] = WidgetTimerAction.from(snapshot).encode()
                     else prefs.remove(ACTION_PROOF_KEY)
+                    if (legacyProof != null) prefs[LEGACY_RESTART_PROOF_KEY] = legacyProof else prefs.remove(LEGACY_RESTART_PROOF_KEY)
                     if (snapshot != null) {
                         prefs[TICK_PLAN_KEY] = com.dayforge.data.repository.NextStructureMapper.writePlan(habit).toString()
                         snapshot.activeLogHash?.let { prefs[TICK_LOG_HASH_KEY] = it } ?: prefs.remove(TICK_LOG_HASH_KEY)
@@ -466,7 +470,8 @@ class TimerWidget : GlanceAppWidget() {
                         nextCheckInDate = nextCheckInDate,
                         hasFailed = hasFailed,
                         isGoalReached = isGoalReached,
-                        actionProof = state[ACTION_PROOF_KEY]
+                        actionProof = state[ACTION_PROOF_KEY],
+                        legacyProof = state[LEGACY_RESTART_PROOF_KEY]
                     )
                 }
             }
@@ -492,7 +497,8 @@ class TimerWidget : GlanceAppWidget() {
         nextCheckInDate: String = "",
         hasFailed: Boolean = false,
         isGoalReached: Boolean = false,
-        actionProof: String? = null
+        actionProof: String? = null,
+        legacyProof: String? = null
     ) {
         val context = androidx.glance.LocalContext.current
         // Use pre-computed colors from WidgetColorResolver
@@ -576,7 +582,8 @@ class TimerWidget : GlanceAppWidget() {
                             hasFailed = hasFailed,
                             isGoalReached = isGoalReached,
                             textColorArgb = textColorArgb,
-                            actionProof = actionProof
+                            actionProof = actionProof,
+                            legacyProof = legacyProof
                         )
                     }
                 }
@@ -764,7 +771,8 @@ class TimerWidget : GlanceAppWidget() {
         hasFailed: Boolean = false,
         isGoalReached: Boolean = false,
         textColorArgb: Int = android.graphics.Color.WHITE,
-        actionProof: String? = null
+        actionProof: String? = null,
+        legacyProof: String? = null
     ) {
         val context = androidx.glance.LocalContext.current
         val textColor = Color(textColorArgb)
@@ -787,7 +795,9 @@ class TimerWidget : GlanceAppWidget() {
                         context,
                         habitId,
                         habitName,
-                        isFailed = true
+                        isFailed = true,
+                        timerProof = actionProof,
+                        legacyProof = legacyProof
                     )
                     Box(
                         modifier = GlanceModifier
@@ -811,7 +821,9 @@ class TimerWidget : GlanceAppWidget() {
                         context,
                         habitId,
                         habitName,
-                        isFailed = false
+                        isFailed = false,
+                        timerProof = actionProof,
+                        legacyProof = legacyProof
                     )
                     Box(
                         modifier = GlanceModifier

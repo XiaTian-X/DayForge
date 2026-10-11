@@ -101,7 +101,7 @@ class WidgetConfigurationRepository @Inject constructor(
                 var written = false
                 val current = snapshot.publication { if (ownsBinding()) { render(); written = true } }
                 current && written
-            }, { snapshot.publication.isCurrentWhileAccountLocked() && ownsBinding() })
+            }, { snapshot.publication.isCurrentWhileAccountLocked() && ownsBinding() }, snapshot.publication::legacyRestartClaim)
             display(selectedPublication)
             if (!snapshot.publication {
                 requireSelection(spec, expected)

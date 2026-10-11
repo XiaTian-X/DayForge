@@ -111,6 +111,7 @@ class FocusWidget : GlanceAppWidget() {
         val READ_FAILED_KEY = booleanPreferencesKey("timerReadFailed")
         val TIMER_ACTION_PROOF_KEY = stringPreferencesKey("timerActionProof")
         val FACT_ACTION_PROOF_KEY = stringPreferencesKey("factActionProof")
+        val LEGACY_RESTART_PROOF_KEY = stringPreferencesKey("legacyRestartProof")
 
         /**
          * Refresh all FocusWidget instances without requiring glanceId.
@@ -138,7 +139,7 @@ class FocusWidget : GlanceAppWidget() {
             val publication = com.dayforge.di.WidgetEntryPoint.from(appContext).displayPublisher()
                 .capturePublication() ?: return
             val prepared = try {
-                prepareWidgetData(appContext, glanceId)
+                prepareWidgetData(appContext, glanceId, publication)
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 publication {
@@ -148,6 +149,7 @@ class FocusWidget : GlanceAppWidget() {
                         prefs[READ_FAILED_KEY] = true
                         prefs.remove(TIMER_ACTION_PROOF_KEY)
                         prefs.remove(FACT_ACTION_PROOF_KEY)
+                        prefs.remove(LEGACY_RESTART_PROOF_KEY)
                     }
                 }
                 return
@@ -162,7 +164,8 @@ class FocusWidget : GlanceAppWidget() {
 
         private class PreparedDisplay(val hasActiveTimer: Boolean, val display: suspend () -> Unit)
 
-        private suspend fun prepareWidgetData(context: Context, glanceId: GlanceId): PreparedDisplay {
+        private suspend fun prepareWidgetData(context: Context, glanceId: GlanceId,
+            publication: com.dayforge.data.repository.WidgetDisplayPublisher.Publication): PreparedDisplay {
             val appContext = context.applicationContext
             val database = HabitDatabaseProvider.getInstance(appContext)
             val currentTime = ZonedDateTime.now()
@@ -254,6 +257,7 @@ class FocusWidget : GlanceAppWidget() {
                         view.count.todayPolicy?.targetValue == stats.displayTargetValue &&
                         view.count.todayPolicy?.isCountdown == stats.displayIsCountdown))) { "FACT_WIDGET_STALE_DISPLAY" }
             }
+            val legacyProof = primaryOriginal?.let { publication.legacyRestartClaim(it)?.encode() }
             return PreparedDisplay(activeTimeLog != null, suspend {
                 val themes = DeviceThemeControllerEntryPoint.from(appContext).themeController()
                 val widgetColorResolver = WidgetColorResolver(appContext, themes)
@@ -266,6 +270,7 @@ class FocusWidget : GlanceAppWidget() {
                     else prefs.remove(TIMER_ACTION_PROOF_KEY)
                     if (primaryFactSnapshot != null) prefs[FACT_ACTION_PROOF_KEY] = primaryFactSnapshot.claim.encode()
                     else prefs.remove(FACT_ACTION_PROOF_KEY)
+                    if (legacyProof != null) prefs[LEGACY_RESTART_PROOF_KEY] = legacyProof else prefs.remove(LEGACY_RESTART_PROOF_KEY)
 
                     if (primary != null) {
                         prefs[HAS_HABITS_KEY] = true
@@ -631,7 +636,10 @@ class FocusWidget : GlanceAppWidget() {
                             context,
                             habitId,
                             habitName,
-                            isFailed = true
+                            isFailed = true,
+                            factProof = state[FACT_ACTION_PROOF_KEY],
+                            timerProof = state[TIMER_ACTION_PROOF_KEY],
+                            legacyProof = state[LEGACY_RESTART_PROOF_KEY]
                         )
                         Box(
                             modifier = GlanceModifier
@@ -655,7 +663,10 @@ class FocusWidget : GlanceAppWidget() {
                             context,
                             habitId,
                             habitName,
-                            isFailed = false
+                            isFailed = false,
+                            factProof = state[FACT_ACTION_PROOF_KEY],
+                            timerProof = state[TIMER_ACTION_PROOF_KEY],
+                            legacyProof = state[LEGACY_RESTART_PROOF_KEY]
                         )
                         Box(
                             modifier = GlanceModifier

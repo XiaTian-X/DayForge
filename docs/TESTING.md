@@ -19,6 +19,37 @@
 
 ## 验证层级
 
+### 小组件重新挑战的完整确认链（2026-10-11，Issue #160）
+
+打卡、计数、计时与专注小组件发布原显示声明，再通过非导出确认 Activity 捕获内存票据。
+弹窗及提交分别核对账户/计划/轮次和未结束计时；取消只读，重复确认只提交一次，过期
+入口不认领新账户或复用数字 ID。v5 新轮保留原事实，v4 通过原显示账户与对象声明沿用旧
+清理/outbox 事务；首次遇到未带声明的旧卡片须刷新。无默认档位、HTTP、Room、依赖或
+既有手机/平板/小组件视觉布局变更，不隐式结束计时。移除原 Activity 直接 DAO 删除路径。
+
+首轮 `130885af622b4ae78d7a670651f86ca4` 因新测试注入字段暴露 internal 类型而编译失败，
+未执行行为。修正可见性及排版后，八完整类 `466fe3fd72004209b4743b8dec41e0d1`：51项，
+50 passed/1 failed/0错误或跳过；build2m6s、connected5m48s/XML321.957s。
+唯一失败为新夹具未设置 bestTime，专注小组件按原筛选规则没有候选，不修改生产筛选规则。
+七完整类 CountRoundConsumerTest11、HabitRestartEntryTest8、ProductionWorkflowInjectionTest6、
+WidgetConfigurationRepositoryTest7、WidgetDisplayPublicationTest7、WidgetFactEntryTest5、
+WidgetTimerLifecycleTest4 均通过，之后其代码及生产实现未变，不重复这些48项。
+
+确认全部拥有进程与测试包退出后只补齐夹具时间偏好，复验完整 WidgetRestartActivityTest：
+3/3、0失败/错误/跳过，`d09d7f9bd4d94228803734683b1513c9/targeted.json`；root52、build21s、
+connected1m34s/XML73.886s。原失败 XML 保留在该次 prior-results，不拼成51项新全量。
+lint/原告警门禁、APK/真实发现/XML/新非空覆盖输入及两测试包清理通过；150秒单项与
+2700秒批次不改。清单 SHA256 `eb185b697431cc38d3020ab4d1654079e18a2264d994a51942918d3b3bdf5ba2`；
+仓库/Activity/新入口测试 blob 分别为 `bc60d858473b36f99cdfb4d2124bb1c41d72c9b2`、
+`7b0a969cffb91da018d9ad0c1277c508b6a8646d`、`91b221af62ea01bb545f30663686a250c995b33b`。
+
+真实 Room、DataStore、Glance 状态、Hilt 和 Compose 确认覆盖三类习惯及专注声明；新轮
+outbox 冷重开结算使用合成 TCP 对端，v4 仓库清理测试仅隔离权限刷新网络。不能冒称真实
+FastAPI 联合、桌面像素或人工验收通过。全量/覆盖校准、素材/产品备份、全消费者联合仍待
+完成；极端容量既有失败与未知证据单独保留，不再诊断/重跑或放宽断言阻碍主线。
+仅使用 android-cli 规范核对的 MI6/API35 隔离测试包；未安装/清除正式 APK，不清库、部署、
+激活 v5 或本机验证 Docker。复验后仅更新文档；精确提交 CI 另行核对。
+
 ### 重新挑战的正式页面入口（2026-10-11，Issue #160）
 
 主列表、嵌套列表和详情页接入已冻结的离线重启：弹窗前捕获原账户/计划/轮次内存票据，
@@ -42,7 +73,8 @@ lint、原告警预算、真实发现/APK/XML/新覆盖输入及两测试包清�
 `6beb7a30d4823caa1efffd0557833b24e903dd28`、`1b1e731e2d30e182b632d972c99cbcfffeef76ab`。
 
 使用真实 Room/DataStore/原 outbox/runtime 与合成 TCP 对端，不冒称真实后端联合或全量通过，
-不拼接为90项新矩阵。小组件旧数字ID入口、产品/账户素材备份、全消费者联合及人工验收仍待完成。
+不拼接为90项新矩阵。当批小组件旧数字ID入口尚未接线，后续状态见上节；产品/账户素材备份、
+全消费者联合及人工验收仍待完成。
 按用户确认，极端 SQL 容量失败与未验证的最大确认/冷恢复单独保留，不再次诊断或放宽断言；
 本批不安装/清除正式 APK，不激活 v5、不清库、不部署，不在本机验证 Docker。
 

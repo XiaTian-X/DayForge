@@ -24,7 +24,8 @@ class WidgetDisplayPublisher @Inject constructor(
     private class Scope(val stamp: Any, val access: LocalCoreWriteAccess?)
     internal class Publication(
         private val guardedPublish: suspend (suspend () -> Unit) -> Boolean,
-        private val current: suspend () -> Boolean
+        private val current: suspend () -> Boolean,
+        private val legacyRestart: (com.dayforge.data.local.entity.HabitEntity) -> LegacyWidgetRestartClaim?
     ) {
         suspend operator fun invoke(display: suspend () -> Unit): Boolean = guardedPublish(display)
         suspend fun renderPrepared(onReadFailure: suspend (Exception) -> Unit,
@@ -38,6 +39,8 @@ class WidgetDisplayPublisher @Inject constructor(
         }
         /** Only a writer ALREADY holding the shared account lock may use this read-only check. */
         suspend fun isCurrentWhileAccountLocked(): Boolean = current()
+        /** Pure display claim from the original pre-read scope; publication still verifies that scope. */
+        fun legacyRestartClaim(habit: com.dayforge.data.local.entity.HabitEntity): LegacyWidgetRestartClaim? = legacyRestart(habit)
     }
     @Volatile private var blocked = false
     @Volatile private var stamp = Any()
@@ -74,7 +77,9 @@ class WidgetDisplayPublisher @Inject constructor(
             val access = tokens.localCoreWriteAccess()
             if (blocked || captured !== stamp) null else Scope(captured, access)
         } ?: return null
-        return Publication({ display -> publish(scope, display) }, { isCurrent(scope) })
+        return Publication({ display -> publish(scope, display) }, { isCurrent(scope) }, { habit ->
+            if (habit.appearance != null) null else scope.access?.let { LegacyWidgetRestartClaim.displayed(habit, it) }
+        })
     }
 
     private suspend fun publish(scope: Scope, display: suspend () -> Unit): Boolean = sessions.exclusive {

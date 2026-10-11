@@ -448,8 +448,6 @@
     <string name="dialog_reactivate_failed_message">\"%1$s\" failed. Reactivating clears all history.</string>
     <string name="dialog_reactivate_completed_message">\"%1$s\" completed goal. Reactivating clears all history.</string>
     <string name="toast_reactivate_success">Habit reactivated</string>
-    <string name="toast_reactivate_error">Reactivation failed. Check network.</string>
-    <string name="default_habit_name">Habit</string>
 
     <!-- Timer Display Formats -->
     <string name="timer_remaining_format">%1$02d:%2$02d left / %3$d min</string>

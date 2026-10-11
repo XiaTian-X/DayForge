@@ -448,8 +448,6 @@
     <string name="dialog_reactivate_failed_message">「%1$s」已失败\n\n重新激活将清空所有历史记录，重新开始追踪。</string>
     <string name="dialog_reactivate_completed_message">「%1$s」已完成目标\n\n重新激活将清空所有历史记录，重新开始追踪。</string>
     <string name="toast_reactivate_success">习惯已重新激活</string>
-    <string name="toast_reactivate_error">重新激活失败，请检查网络连接</string>
-    <string name="default_habit_name">习惯</string>
 
     <!-- Timer Display Formats -->
     <string name="timer_remaining_format">还剩 %1$02d:%2$02d / %3$d 分钟</string>

@@ -134,6 +134,148 @@ class HabitRestartEntryTest : NextObjectEditorFixture() {
     private suspend fun countHistory() = CountHistoryReader(db, tokens, sessions)
         .read(current(), java.time.LocalDate.parse("2026-10-06"))
 
+    private fun widgetHabits(http: NextSyncHttp): HabitRepository {
+        val guard = io.mockk.mockk<com.dayforge.domain.service.StructuralEditGuard>()
+        io.mockk.coEvery { guard.requireAllowed() } returns Unit
+        val facts = WidgetFactReader(db, tokens, sessions, preferences, CountHistoryReader(db, tokens, sessions))
+        return HabitRepository(db.habitDao(), db.completionDao(), db.timeLogDao(), db,
+            restartEntry = HabitRestartEntry(NextChallengeRestartRepository(db, tokens, sessions, http)),
+            widgetRestartEntry = WidgetRestartEntry(db, tokens, sessions, editor, facts, guard))
+    }
+
+    private suspend fun widgetFact() = WidgetFactReader(db, tokens, sessions, preferences,
+        CountHistoryReader(db, tokens, sessions)).read(current()).claim
+
+    @Test fun widgetDisplayedCountIdentityRestartsOnceAndStaleRoundCannotRecapture() = runBlocking<Unit> {
+        val http = initialize()
+        fact(1250, 10)
+        runtime(http).syncRounds()
+        val retained = db.completionDao().getByHabitOnce(habit.id)
+        val repo = widgetHabits(http)
+        val claim = WidgetFactClaim.decode(widgetFact().encode())
+        val before = durable()
+        val request = repo.prepareWidgetReactivation(habit.id, claim, null, null)
+        assertTrue(request.preservesHistory)
+        assertEquals(before, durable())
+        repo.reactivate(request, app)
+        val committed = durable()
+        repo.reactivate(request, app)
+        assertEquals(committed, durable())
+        rejected { repo.prepareWidgetReactivation(habit.id, claim, null, null) }
+        assertEquals(committed, durable())
+        assertEquals(retained, db.completionDao().getByHabitOnce(habit.id))
+        assertEquals(1, count("sync_outbox"))
+        storage.reopen()
+        runtime(http).syncRounds()
+        assertEquals(0, count("sync_outbox"))
+        assertEquals(0L, countHistory().todayQuantity)
+        assertEquals(retained, db.completionDao().getByHabitOnce(habit.id))
+    }
+
+    @Test fun widgetMissingMixedStalePlanAndReauthenticatedProofsAreReadOnlyRejections() = runBlocking<Unit> {
+        val http = initialize()
+        val repo = widgetHabits(http)
+        val claim = widgetFact()
+        val timer = requireNotNull(NextTimerWriter(db, tokens, sessions).widgetSnapshot(timerHabit)).authority
+        var before = durable()
+        rejected { repo.prepareWidgetReactivation(habit.id, null, null, null) }
+        rejected { repo.prepareWidgetReactivation(habit.id, claim, timer, null) }
+        rejected { repo.prepareWidgetReactivation(timerHabit.id, claim, null, null) }
+        rejected { repo.prepareWidgetReactivation(habit.id, claim.copy(plan = JsonObject(claim.plan +
+            ("title" to JsonPrimitive("Not rendered")))), null, null) }
+        assertEquals(before, durable())
+        val pending = repo.prepareWidgetReactivation(habit.id, claim, null, null)
+        tokens.saveLoginSession("synthetic-reauth", "synthetic-refresh", "member", id(1), false)
+        before = durable()
+        rejected { repo.prepareWidgetReactivation(habit.id, claim, null, null) }
+        rejected { repo.reactivate(pending, app) }
+        assertEquals(before, durable())
+        assertEquals(0, count("sync_outbox"))
+    }
+
+    @Test fun widgetTimerProofRestartsAndUnfinishedTimerBlocksOpeningAndLateConfirmation() = runBlocking<Unit> {
+        val http = initialize()
+        val repo = widgetHabits(http)
+        val writer = NextTimerWriter(db, tokens, sessions)
+        val proof = requireNotNull(writer.widgetSnapshot(timerHabit)).authority
+        val pending = repo.prepareWidgetReactivation(timerHabit.id, null, proof, null)
+        val log = com.dayforge.data.local.entity.TimeLogEntity(habitId = timerHabit.id,
+            uuid = id(1251), startTime = millis, endTime = null, durationSeconds = 0, date = millis)
+        val logId = db.withTransaction {
+            db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
+            val saved = db.timeLogDao().insert(log)
+            db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
+            saved
+        }
+        val before = durable()
+        assertEquals("CHALLENGE_TIMER_UNFINISHED", rejected {
+            repo.prepareWidgetReactivation(timerHabit.id, null, proof, null) }.message)
+        assertEquals("CHALLENGE_TIMER_UNFINISHED", rejected { repo.reactivate(pending, app) }.message)
+        assertEquals(before, durable())
+        db.withTransaction {
+            db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
+            db.timeLogDao().delete(log.copy(id = logId))
+            db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
+        }
+        val currentTimer = requireNotNull(db.habitDao().getHabitById(timerHabit.id))
+        val refreshed = requireNotNull(writer.widgetSnapshot(currentTimer)).authority
+        repo.reactivate(repo.prepareWidgetReactivation(timerHabit.id, null, refreshed, null), app)
+        assertEquals(1, count("sync_outbox"))
+        assertEquals(1, producer().captureRounds().pendingRestarts.getValue(timerHabit.uuid).head.generation)
+        val committed = durable()
+        rejected { repo.prepareWidgetReactivation(timerHabit.id, null, proof, null) }
+        assertEquals(committed, durable())
+    }
+
+    private suspend fun legacy(): LegacyWidgetRestartClaim {
+        habit = habit.copy(appearance = null, planMetadata = null, completionPolicy = null, targetCycles = 3, isActive = false)
+        db.withTransaction {
+            db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
+            db.habitDao().update(habit)
+            db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
+        }
+        return requireNotNull(WidgetDisplayPublisher(tokens, sessions).capturePublication()).legacyRestartClaim(habit)!!
+    }
+
+    @Test fun legacyDisplayClaimPreservesOldClearBehaviorWithoutNumericIdOrAccountFallback() = runBlocking<Unit> {
+        val claim = LegacyWidgetRestartClaim.decode(legacy().encode())
+        val (http, _) = channel()
+        val repo = widgetHabits(http)
+        val saved = db.completionDao().insert(CompletionEntity(habitId = habit.id, habitUuid = habit.uuid,
+            uuid = id(1252), date = millis, value = 10))
+        assertTrue(saved > 0)
+        val before = durable()
+        val request = repo.prepareWidgetReactivation(habit.id, null, null, claim)
+        assertFalse(request.preservesHistory)
+        assertEquals(before, durable())
+        repo.reactivate(request, app)
+        assertTrue(current().isActive)
+        assertEquals(0, count("completions"))
+        assertTrue(db.syncOutboxDao().getAll().isNotEmpty())
+        val committed = durable()
+        repo.reactivate(request, app)
+        assertEquals(committed, durable())
+        rejected { repo.prepareWidgetReactivation(habit.id, null, null, claim) }
+        assertEquals(committed, durable())
+    }
+
+    @Test fun legacyLateAccountChangeAndReusedLocalIdCannotDeleteAnotherIdentity() = runBlocking<Unit> {
+        val claim = legacy()
+        val (http, _) = channel()
+        val repo = widgetHabits(http)
+        val request = repo.prepareWidgetReactivation(habit.id, null, null, claim)
+        db.openHelper.writableDatabase.execSQL("UPDATE habits SET uuid=? WHERE id=?", arrayOf<Any>(id(1253), habit.id))
+        var before = durable()
+        rejected { repo.prepareWidgetReactivation(habit.id, null, null, claim) }
+        rejected { repo.reactivate(request, app) }
+        assertEquals(before, durable())
+        tokens.saveLoginSession("synthetic-other", "synthetic-refresh", "member", id(1254), false)
+        before = durable()
+        rejected { repo.prepareWidgetReactivation(habit.id, null, null, claim) }
+        rejected { repo.reactivate(request, app) }
+        assertEquals(before, durable())
+    }
+
     @Test fun actualListConfirmationPreservesHistoryQueuesOneRoundAndSettlesThroughRuntime() = runBlocking<Unit> {
         val http = initialize()
         fact(1200, 10)

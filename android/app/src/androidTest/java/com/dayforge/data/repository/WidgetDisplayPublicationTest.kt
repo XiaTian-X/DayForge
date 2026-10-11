@@ -23,6 +23,20 @@ class WidgetDisplayPublicationTest : NextCoreRequestFixture() {
     private fun reader() = WidgetFactReader(db, tokens, sessions, preferences, CountHistoryReader(db, tokens, sessions))
     private suspend fun proof() = db.withTransaction { nextRestartDatabaseProof(db) }
 
+    @Test fun legacyClaimUsesOriginalPublicationScopeAndTypedPlansNeverGetLegacyProof() = runBlocking<Unit> {
+        val publisher = WidgetDisplayPublisher(tokens, sessions)
+        val publication = requireNotNull(publisher.capturePublication())
+        assertNull(publication.legacyRestartClaim(habit))
+        val legacy = habit.copy(appearance = null, planMetadata = null, completionPolicy = null)
+        val captured = requireNotNull(publication.legacyRestartClaim(legacy))
+        sessions.exclusive { tokens.saveLoginSession("synthetic-other", "synthetic-refresh", "member", id(50), false) }
+        val stillOriginal = requireNotNull(publication.legacyRestartClaim(legacy))
+        assertEquals(captured, stillOriginal)
+        assertEquals(id(1), captured.accountId)
+        assertFalse(publication { throw AssertionError("Old display must not publish") })
+        assertNotEquals(captured, requireNotNull(publisher.capturePublication()).legacyRestartClaim(legacy))
+    }
+
     @Test fun preparationCanUseRealAccountReadersAndDisplayRunsOutsideRoomWithoutBusinessWrites() = runBlocking<Unit> {
         val publisher = WidgetDisplayPublisher(tokens, sessions)
         val state = display()
