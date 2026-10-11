@@ -13,6 +13,7 @@ from urllib.request import urlopen
 
 JOINT_CLASS = "com.dayforge.data.repository.RealBackendJointTest"
 JOINT_MATERIAL_CLASS = "com.dayforge.data.repository.RealBackendMaterialJointTest"
+JOINT_SCHEDULER_CLASS = "com.dayforge.data.repository.RealBackendSchedulerJointTest"
 
 
 def fixture_environment(repo):
@@ -51,7 +52,10 @@ def fixture_environment(repo):
 
 @contextlib.contextmanager
 def backend_for_cases(gate, expected):
-    if not any(name in {JOINT_CLASS, JOINT_MATERIAL_CLASS} for name, _ in expected):
+    if not any(
+        name in {JOINT_CLASS, JOINT_MATERIAL_CLASS, JOINT_SCHEDULER_CLASS}
+        for name, _ in expected
+    ):
         yield []
         return
     directory = gate.run / "joint-backend"

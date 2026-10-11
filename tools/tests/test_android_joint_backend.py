@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 from tools.android_joint_backend import (
     JOINT_CLASS,
     JOINT_MATERIAL_CLASS,
+    JOINT_SCHEDULER_CLASS,
     backend_for_cases,
     fixture_environment,
 )
@@ -127,6 +128,17 @@ class AndroidJointBackendTest(unittest.TestCase):
         self.assertNotIn("WEB_CONCURRENCY", isolated)
         self.assertEqual("development", isolated["ENVIRONMENT"])
         self.assertNotEqual("formal-key", isolated["JWT_SECRET_KEY"])
+
+    def test_scheduler_joint_class_requires_owned_peer_and_terminal_proof(self):
+        with backend_for_cases(
+            self.gate, {(JOINT_SCHEDULER_CLASS, "actualScheduler")}
+        ) as args:
+            self.assertEqual(1, len(args))
+            self.assertEqual({}, self.gate.evidence)
+        self.assertEqual(self.proof, self.gate.evidence["joint_backend"])
+        self.gate.adb_command.assert_any_call(
+            "joint-reverse-remove", "reverse", "--remove", "tcp:45001"
+        )
 
     def test_owned_loopback_uses_no_rebind_and_removes_only_owned_port(self):
         with backend_for_cases(self.gate, self.expected) as args:

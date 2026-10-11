@@ -34,6 +34,8 @@ def serve(directory: Path) -> None:
                 "joint-once",
                 "joint-material",
                 "joint-config",
+                "joint-scheduler",
+                "joint-scheduler-replace",
             ):
                 session.add(User(username=name, password_hash=account_password_hash()))
             session.commit()
