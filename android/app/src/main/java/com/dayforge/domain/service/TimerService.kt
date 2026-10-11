@@ -783,7 +783,7 @@ class TimerService : Service() {
             )
             persistDayAllocations(logIdToStop) }
             nextCommandSequence = sequence + 1
-            timerWriter.publish(stoppedHabitId, actionAuthority) {
+            timerWriter.publishCompletion(stoppedHabitId, actionAuthority) { habit, progress ->
             autoSyncCoordinator.enqueueNow()
 
             // Check if this habit has linked metrics with promptOnComplete=true
@@ -800,13 +800,7 @@ class TimerService : Service() {
             // TIMER habits use timelogs for progress calculation
             // Only count days where duration target was met
             if (stoppedHabitId != 0L) {
-                val habit = habitDao.getHabitById(stoppedHabitId)
-                if (habit?.targetCycles != null) {
-                    val dailyTargetSeconds = habit.targetValue * 60
-                    val progress = if (habit.appearance != null) timerHistoryReader.read(habit).qualifiedDates.size else timeLogDao.getTargetMetDayCount(
-                        stoppedHabitId,
-                        dailyTargetSeconds
-                    )
+                if (habit?.targetCycles != null && progress != null) {
                     if (progress >= habit.targetCycles) {
                         startActivity(
                             GoalCompletionActivity.createIntent(

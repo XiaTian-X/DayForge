@@ -22,6 +22,7 @@ from pathlib import Path
 from tools.check_android_coverage import validate as validate_coverage
 from tools.check_android_results import read_cases
 from tools.check_android_warnings import find_growth, load_budget, parse_warnings
+from tools.android_joint_backend import backend_for_cases
 
 SHARDS = 3
 SHARD_TIMEOUT_SECONDS = 2700
@@ -332,6 +333,11 @@ class Gate:
         )
         expected = discover(log.read_text())
         self.cleanup(prefix="discovery")
+        with backend_for_cases(self, expected) as arguments:
+            self.joint_arguments = arguments
+            self.run_discovered(classes, expected, apks, hashes, log)
+
+    def run_discovered(self, classes, expected, apks, hashes, log):
         if classes:
             if {name for name, _ in expected} != set(classes):
                 raise ValueError(
@@ -355,6 +361,7 @@ class Gate:
                     f"-Pandroid.testInstrumentationRunnerArguments.shardIndex={index}",
                     "-Pandroid.testInstrumentationRunnerArguments.log=false",
                     "-Pandroid.testInstrumentationRunnerArguments.timeout_msec=150000",
+                    *self.joint_arguments,
                 ],
                 SHARD_TIMEOUT_SECONDS,
             )
@@ -442,6 +449,7 @@ class Gate:
                 "-Pandroid.testInstrumentationRunnerArguments.timeout_msec=150000",
                 "-Pandroid.testInstrumentationRunnerArguments.class="
                 + ",".join(classes),
+                *self.joint_arguments,
             ],
             SHARD_TIMEOUT_SECONDS,
         )

@@ -166,8 +166,10 @@ internal class NextSyncMergeStore(
                     // Immutable round records are validated by the full sidecar, never structure-merged.
                     if (change.entityType == "challenge_round") { require(metadata != null); continue }
                     require(change.revision > 0 && change.payload["public_id"] == JsonPrimitive(change.entityUuid))
-                    val updated = change.payload.getValue("updated_at").let { require(it is JsonPrimitive && it.isString); Instant.parse(it.content) }
-                    require(updated == Instant.parse(change.changedAt))
+                    // PULL uses the server log's insertion instant for changedAt;
+                    // updated_at belongs to the frozen entity revision (possibly offline).
+                    // Sequence orders transport; never rewrite or equate these instants.
+                    change.payload.getValue("updated_at").let { require(it is JsonPrimitive && it.isString); Instant.parse(it.content) }
                     if (change.operation == "delete") NextRemoteDeletionStore(database).applyInTransaction(change)
                     else {
                         require(change.operation == "upsert")

@@ -113,6 +113,36 @@ class NextSyncRuntimeTest : NextCoreRequestFixture() {
         storage.reopen(); assertEquals(next, merger(http).state(access()))
     }
 
+    @Test fun incrementalLogTimestampDoesNotRewriteEntityTimeOrOrderCursor() = runBlocking {
+        register(); val (http, _) = channel(); val store = merger(http); val state = initial(http)
+        val first = renamed(21, 2, "Offline revision").copy(changedAt = "2026-10-07T01:00:00.123456Z")
+        val second = renamed(22, 3, "Clock-independent log").copy(changedAt = "2026-10-05T01:00:00Z")
+        val next = store.page(access(), state, NextSyncPullResponse(listOf(first, second), 22, false, time))
+        assertEquals(22L, next.cursor)
+        val saved = requireNotNull(db.metricDao().getMetricByUuid(metric.uuid))
+        assertEquals("Clock-independent log", saved.name)
+        assertEquals(Instant.parse(time).toEpochMilli(), saved.updatedAt)
+        assertEquals(second.payload.toString(), db.syncOutboxDao().getState("metric", metric.uuid)!!.payloadJson)
+        assertTrue(db.syncOutboxDao().getAll().isEmpty())
+        storage.reopen(); assertEquals(next, merger(http).state(access()))
+    }
+
+    @Test fun malformedEntityOrTransportTimeStillRollsBackTheWholeIncrementalPage() = runBlocking {
+        register(); val (http, _) = channel(); val store = merger(http); val state = initial(http)
+        val valid = renamed(21, 2, "Must roll back")
+        val last = renamed(22, 3, "Invalid second revision")
+        val invalid = listOf(JsonNull, JsonPrimitive(123), JsonPrimitive("not-an-instant")).map { value ->
+            last.copy(payload = JsonObject(last.payload + ("updated_at" to value)))
+        } + listOf(last.copy(payload = JsonObject(last.payload - "updated_at")), last.copy(changedAt = "not-an-instant"))
+        for (change in invalid) {
+            rejected { store.page(access(), state, NextSyncPullResponse(listOf(valid, change), 22, false, time)) }
+            assertEquals(state, store.state(access()))
+            assertEquals(metric.name, db.metricDao().getMetricByUuid(metric.uuid)!!.name)
+            assertEquals(1L, db.syncOutboxDao().getState("metric", metric.uuid)!!.revision)
+            assertTrue(db.syncOutboxDao().getAll().isEmpty())
+        }
+    }
+
     @Test fun cursorAbortIgnoreAndLateCacheMutationRollBackWholePageThenExactRetryWorks() = runBlocking {
         register(); val (http, _) = channel(); val store = merger(http); val state = initial(http)
         val page = NextSyncPullResponse(listOf(renamed(21, 2, "Must commit together")), 21, false, time)

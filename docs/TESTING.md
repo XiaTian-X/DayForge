@@ -19,6 +19,54 @@
 
 ## 验证层级
 
+### Android 与真实 FastAPI 的核心业务联合（2026-10-11，Issue #160）
+
+`RealBackendJointTest` 使用生产 Hilt、独立文件 Room、真实登录/续期、共享 BusinessSyncRepository
+和前台 TimerService，经 USB reverse 访问拥有的单 worker FastAPI/TCP。四个完整场景分别验证
+目标/打卡/正倒计数/指标与关联、事项完成撤销和离线重新挑战、正计时、倒计时；均重复同步。
+计时实际运行一分钟，包含运行中同步、暂停、恢复、终态和毫秒分摊，不补造结果或调整系统时间。
+这里只读 backend bootstrap/status 交叉核对，不代表主导航、全部素材/配置/Worker 或人工验收。
+
+验证工具在实际发现此完整类后自动提供对端；定向和全量三分片都使用同一受控入口。
+需要可用 uv、锁定后端环境及已授权真机；无基础设施即失败，不跳过。临时目录拒绝复用，
+隔离 Settings/部署环境与 uv env-file、随机 JWT 密钥、合成测试账户，仅临时 DB 显式启用 v5。
+只绑定拥有的 loopback socket，用 `reverse --no-rebind`，结束时只撤销拥有的映射、回收拥有
+的进程和两个 testbed 包。服务器退出后须实际 inspect 有效且无活跃计时才发布联合证据。
+不接收外部端口/凭据，不操作正式 APK、部署、数据或默认档位；单项150秒/整批2700秒不变。
+
+首批 `1eb5499bdbd741c3b9384c82dc50475a`：完整三类25项，23通过/2失败，失败是新用例
+误把 SyncManager 的 UI Success 当作仓库回调。修正为真实 afterSync 单次调用、Downloading、
+正常返回和成功时间；生产代码未为此改动。完整新类复验 `823f3f6dfe034c03af5c36454b54da96`
+两项均暴露真实增量时间缺陷：Android 错要求实体 updated_at 等于日志 changed_at。
+只纠正增量比较，保留格式及其他提交校验；新增不同时间和损坏时间整页回滚用例。
+
+相关六完整类 `c1c5b3a0afe748b78ae1811a211a6d66` 共97项：95通过/2超时，connected12m50s。
+NextSyncRuntime14、NextRoundSyncRuntime10、NextChallengeRestore18、NextCommonRestore35、
+NextStructureRestore16 全部通过，真实事项/挑战和混合业务两项通过。两种计时暴露生产死锁：
+完成发布持有账户锁再调用 TimerHistoryReader.read。不是容量不足；完成记录本地已提交而
+远端命令无法继续。新用例按完整业务场景组织，不把全部核心数据加计时堆进同一方法。
+
+修复完成发布事务读取后，原计时服务夹具补 targetCycles=3，并核对账户锁仍可使用。
+一次编译失败 `eb687442b8c545ed9a945cc7c681b4d8` 为误删开始路径仍用的注入字段，恢复字段；
+没有行为通过。最终五完整类 `4f3d8a45cbbf4e42960f09ab4ba9dc69`：28/28行为通过，
+0失败/错误/跳过，XML890.621s、connected15m15s、build2m1s：RealBackendJoint4、
+TimerServicePersistence8、NextTimerWriter9、TimerHistoryStorage2、WidgetTimerPublication5。
+保留前批未改增量源码的93项结果，不重复执行，也不拼称121项全量绿色。
+
+这批业务通过后统一工具仍因临时 host 退出超时失败，故没有 targeted.json，不能称门禁通过。
+UV wrapper/进程组的重复停止信号可能重入 Event 锁；夹具改为不持锁的停止标志和短轮询。
+新完整 test_android_joint_server.py 两项实际 uv/Uvicorn、登录及 SIGTERM/SIGINT 重复停止验证
+正常退出、终态证明与五测试账户，7.15s，告警1/1。其首次夹具调用错误为2失败/6.72s，
+修正实际 AcceptanceClient.request 后复验，不删除失败证据。
+该验证是 host 生命周期，不冒称新手机门禁；修复后的完整 USB→host 退出组合留到下一批
+实际功能联合/收尾，不为夹具退出修正重跑未变28项，不回写旧运行清单。
+
+原批真实数据库独立只读 inspect 有效，活跃计时0，正计时64219ms、倒计时60000ms；
+保存8计划、9事实、1指标观察、1关联、8计时命令和2分摊。原 XML 和新非空覆盖输入保留，
+该批工具已核验配对 APK 哈希，但没有成功清单；USB映射和testbed清理成功、拥有进程已退出。root60、构建/lint及原告警预算
+通过，静态/精确提交CI另行核对。当前结果不替代全量/覆盖校准、正式v5激活、完整素材/
+配置/Worker联合、手机平板人工或外网/NAS/Docker验收；极端容量继续单列，#160未完成。
+
 ### 混合产品数据与账户素材的真实 TCP 恢复（2026-10-11，Issue #160）
 
 新增完整 `test_product_restore_http.py` 两项，分别通过物理备份 v2 和逻辑归档 v4 恢复。

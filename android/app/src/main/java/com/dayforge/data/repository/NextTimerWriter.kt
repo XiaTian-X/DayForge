@@ -251,11 +251,35 @@ class NextTimerWriter @Inject constructor(
 
     /** Follow-up preferences/UI belong to the same account, but occur strictly after business COMMIT. */
     suspend fun publish(habitId: Long, ticket: TimerActionAuthority?, block: suspend () -> Unit) = sessions.exclusive {
+        requirePublication(habitId, ticket)
+        block()
+    }
+
+    /** Compute history in the already-owned account/Room snapshot, never reacquire the mutex.
+     * The follow-up callback still owns the account lock; it must not call lock-owning readers.
+     */
+    suspend fun publishCompletion(habitId: Long, ticket: TimerActionAuthority?,
+        block: suspend (HabitEntity?, Int?) -> Unit) = sessions.exclusive {
+        val (habit, progress) = database.withTransaction {
+            val habit = requirePublication(habitId, ticket)
+            val progress = if (habit?.targetCycles == null) null
+                else if (habit.appearance != null) timerHistoryReader.readInTransaction(habit,
+                    com.dayforge.util.DateTimeUtils.today()).qualifiedDates.size
+                else database.timeLogDao().getTargetMetDayCount(habitId, habit.targetValue * 60)
+            habit to progress
+        }
+        block(habit, progress)
+    }
+
+    private suspend fun requirePublication(habitId: Long, ticket: TimerActionAuthority?): HabitEntity? {
         if (ticket != null) {
             check(tokens.localCoreWriteAccess()?.session == ticket.session()) { "TIMER_FOLLOW_UP_STALE_ACCOUNT" }
-            check(database.habitDao().getHabitById(habitId)?.uuid == ticket.habitUuid) { "TIMER_FOLLOW_UP_STALE_ACTIVITY" }
         }
-        block()
+        val habit = database.habitDao().getHabitById(habitId)
+        if (ticket != null) {
+            check(habit?.uuid == ticket.habitUuid) { "TIMER_FOLLOW_UP_STALE_ACTIVITY" }
+        }
+        return habit
     }
 
     /** A service dispatch is not a completed stop. Wait without holding the account/Room locks. */

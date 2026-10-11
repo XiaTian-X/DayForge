@@ -312,7 +312,7 @@ class TimerServicePersistenceTest {
                 "ac350000-0000-4000-8000-000000000001", false)
         }
         habitId = habits.createHabit("Typed focus", "", HabitType.TIMER, 0, "#123456", HabitSchedule.Daily,
-            targetValue = 1, isCountdown = countdown, completionPolicy = "recurring",
+            targetValue = 1, isCountdown = countdown, targetCycles = 3, completionPolicy = "recurring",
             appearance = ObjectAppearance(IconReference.Role("habit.custom"), "#123456", "theme"),
             creationAuthority = creator.capture())
     }
@@ -375,6 +375,7 @@ class TimerServicePersistenceTest {
         send(TimerService.ACTION_STOP, authority = stopAuthority)
         awaitCommands(4)
         awaitServiceStopped()
+        withTimeout(5000) { sessions.exclusive { assertNotNull(tokens.localCoreWriteAccess()) } }
         val completed = requireNotNull(database.timeLogDao().getById(started.id))
         assertNotNull(completed.endTime); assertTrue(completed.durationSeconds in 60..180)
         assertEquals(listOf("start", "pause", "resume", "stop"), database.timeLogDao().getPendingTimerCommands().map { it.commandType })
@@ -545,6 +546,7 @@ class TimerServicePersistenceTest {
         habits.updateHabit(requireNotNull(edit.value).copy(targetValue = 5, isCountdown = false), editAuthority = edit.authority)
         withTimeout(75_000) { while (database.timeLogDao().getPendingTimerCommands().size < 2) delay(100) }
         awaitServiceStopped()
+        withTimeout(5000) { sessions.exclusive { assertNotNull(tokens.localCoreWriteAccess()) } }
         assertTrue(SystemClock.elapsedRealtime() - before >= 60_000)
         val completed = requireNotNull(database.timeLogDao().getById(started.id))
         assertEquals(60, completed.durationSeconds); assertEquals(60_000L, completed.timerActiveElapsedMillis)
