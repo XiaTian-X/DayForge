@@ -507,6 +507,8 @@
     <string name="sync_success">Sync successful</string>
     <string name="sync_error">Sync failed</string>
     <string name="sync_in_progress">Syncing…</string>
+    <string name="sync_waiting_materials">Waiting for icon assets to sync</string>
+    <string name="sync_material_attention">Required icon assets need attention. Check the icon library before retrying.</string>
     <string name="sync_last_time">Last sync: %1$s</string>
     <string name="sync_current_endpoint">Current endpoint: %1$s</string>
     <string name="sync_never">Never synced</string>

@@ -29,7 +29,7 @@ internal class NextConfigImportStore(private val database: HabitDatabase) {
     internal data class Entry(val plan: NextConfigImportPlan, val committed: Boolean,
         val sources: Map<String, ConfigImportedSource>, val network: ConfigNetworkPlan? = null)
     internal data class NetworkEntry(val plan: ConfigNetworkPlan, val receipt: ConfigNetworkReceipt,
-        val accepted: Map<String, String>?, val proof: String, val sourceProof: String)
+        val accepted: Map<String, String>?, val proof: String, val sourceProof: String, val fixedAssets: Set<String>)
     private val sql get() = database.openHelper.writableDatabase
 
     fun pending(context: AccountIconContext): String? {
@@ -191,6 +191,7 @@ internal class NextConfigImportStore(private val database: HabitDatabase) {
         require(receipt.sources.keys == network.steps.map { it.operationId }.toSet() &&
             receipt.sources.values.map { it.queueId }.distinct().size == receipt.sources.size)
         val origins = mutableListOf<String>()
+        val fixedAssets = linkedSetOf<String>()
         for (step in network.steps) {
             currentCoroutineContext().ensureActive()
             origins += requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, step.operationId)))
@@ -199,7 +200,9 @@ internal class NextConfigImportStore(private val database: HabitDatabase) {
             require(origin.protocol == 5 && origin.queueId == saved.queueId && origin.sourceHash == saved.sourceHash &&
                 origin.accountId == network.target.accountId && origin.serverInstanceId == network.target.serverInstanceId &&
                 origin.syncEpoch == network.target.syncEpoch)
-            step.requireOperation(decodeNextOperationIntent(origin.intentJson))
+            val operation = decodeNextOperationIntent(origin.intentJson)
+            step.requireOperation(operation)
+            fixedMaterialAsset(operation)?.let { fixedAssets.add(it) }
         }
         val accepted: Map<String, String>? = if (!complete) {
             require(receipt.acceptanceHash == null); null
@@ -216,7 +219,7 @@ internal class NextConfigImportStore(private val database: HabitDatabase) {
         // header() has already bounded and checked EVERY SQLite field type before coercion.
         // This is its own journal proof, not an extension of the request SQL table allow-list.
         return NetworkEntry(network, receipt, accepted, nextRequestHash(Json.encodeToString(head).toByteArray(Charsets.UTF_8)),
-            nextRequestHash((Json.encodeToString(head.take(8)) + origins.joinToString(";")).toByteArray(Charsets.UTF_8)))
+            nextRequestHash((Json.encodeToString(head.take(8)) + origins.joinToString(";")).toByteArray(Charsets.UTF_8)), fixedAssets.toSet())
     }
 
     fun requireNoActiveReplacement() {

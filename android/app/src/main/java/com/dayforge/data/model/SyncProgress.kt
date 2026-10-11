@@ -26,6 +26,9 @@ sealed class SyncProgress {
      */
     object Success : SyncProgress()
 
+    /** Business requests remain durable; independent material sync is still preparing them. */
+    object WaitingForMaterials : SyncProgress()
+
     /**
      * Sync failed with an error.
      * @param message Error message describing the failure

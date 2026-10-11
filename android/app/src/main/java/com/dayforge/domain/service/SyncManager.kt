@@ -6,10 +6,13 @@ import com.dayforge.data.local.entity.SyncConflictEntity
 import com.dayforge.data.local.entity.TimerCommandEntity
 import com.dayforge.data.repository.IncrementalSyncRepository
 import com.dayforge.data.repository.BusinessSyncRepository
+import com.dayforge.data.repository.NextMaterialPending
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import com.dayforge.data.local.LocalDataSession
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -23,7 +26,14 @@ class SyncManager @Inject constructor(
     private val businessSyncRepository: BusinessSyncRepository
 ) {
     private val _syncProgress = MutableStateFlow<SyncProgress>(SyncProgress.Idle)
-    val syncProgress: Flow<SyncProgress> = _syncProgress.asStateFlow()
+    private data class MaterialWait(val session: LocalDataSession?, val after: Long)
+    private val materialWait = MutableStateFlow<MaterialWait?>(null)
+    val syncProgress: Flow<SyncProgress> = combine(_syncProgress.asStateFlow(), materialWait,
+        businessSyncRepository.completions) { progress, waiting, completion ->
+        if (progress == SyncProgress.WaitingForMaterials && waiting?.session != null &&
+            waiting.session == completion.session && completion.sequence > waiting.after) SyncProgress.Success
+        else progress
+    }
     internal fun problemChanges() = businessSyncRepository.problemChanges()
     internal suspend fun readProblems() = businessSyncRepository.readProblems()
     internal suspend fun readRecoveryPreview(root: com.dayforge.data.repository.NextRecoveryKey) =
@@ -62,6 +72,12 @@ class SyncManager @Inject constructor(
             Result.success(Unit)
         } catch (cancelled: CancellationException) {
             throw cancelled
+        } catch (pending: NextMaterialPending) {
+            materialWait.value = MaterialWait(pending.session,
+                pending.completedAfter ?: businessSyncRepository.completions.value.sequence)
+            _syncProgress.value = SyncProgress.WaitingForMaterials
+            progressCallback(SyncProgress.WaitingForMaterials)
+            Result.failure(pending)
         } catch (e: Exception) {
             val errorProgress = SyncProgress.Error(
                 message = e.message ?: "Unknown error",
@@ -84,6 +100,11 @@ class SyncManager @Inject constructor(
             Result.success(Unit)
         } catch (cancelled: CancellationException) {
             throw cancelled
+        } catch (pending: NextMaterialPending) {
+            materialWait.value = MaterialWait(pending.session,
+                pending.completedAfter ?: businessSyncRepository.completions.value.sequence)
+            _syncProgress.value = SyncProgress.WaitingForMaterials
+            Result.failure(pending)
         } catch (e: Exception) {
             _syncProgress.value = SyncProgress.Error(
                 message = e.message ?: "Unknown error",

@@ -29,21 +29,25 @@ internal class NextSyncRetryRequired : IllegalStateException("SYNC_RETRY_REQUIRE
  * Only this runtime's mutex spans HTTP, never the account mutex or a Room transaction.
  */
 @Singleton
-internal class NextSyncRuntime @Inject constructor(
+internal class NextSyncRuntime internal constructor(
     private val database: HabitDatabase,
     private val tokens: TokenManager,
     private val sessions: AccountSessionCoordinator,
     private val http: NextSyncHttp,
-    private val preferences: PreferencesManager
+    private val preferences: PreferencesManager,
+    private val materials: NextMaterialDependencyGate = UnavailableMaterialDependencies
 ) {
+    @Inject constructor(database: HabitDatabase, tokens: TokenManager, sessions: AccountSessionCoordinator,
+        http: NextSyncHttp, preferences: PreferencesManager, materials: AccountMaterialDependencyGate) :
+        this(database, tokens, sessions, http, preferences, materials as NextMaterialDependencyGate)
     private val mutex = Mutex()
-    private val core = NextCoreRequestStore(database, tokens, sessions, http)
+    private val core = NextCoreRequestStore(database, tokens, sessions, http, materials)
     private val timers = NextTimerRequestStore(database, tokens, sessions, core)
     private val localOnce = OneTimeLocalIntentStore(database, tokens, sessions, preferences)
     private val onceFacts = OneTimeAcceptedEventStore(database, tokens, sessions, localOnce, timerRequests = timers)
     private val once = NextOneTimeRequestStore(database, tokens, sessions, http, onceFacts, core)
     private val merge = NextSyncMergeStore(database, tokens, sessions, onceFacts, timers)
-    private val restart = NextChallengeRestartRepository(database, tokens, sessions, http)
+    private val restart = NextChallengeRestartRepository(database, tokens, sessions, http, materials)
     private val problems = SyncProblemReader(database, tokens, sessions, core, once, restart)
 
     internal fun problemChanges() = problems.changes()
@@ -139,6 +143,8 @@ internal class NextSyncRuntime @Inject constructor(
         val blocked = linkedSetOf<String>()
         val waiting = linkedSetOf<String>()
         var permanentBlock = false
+        var materialPending = false
+        var materialAttention = false
         var uploaded = 0
         var total = queues(access, challengeProfile).let { it.operations.size + it.commands.size }
         progress(SyncProgress.UploadingChanges(0, total))
@@ -147,7 +153,12 @@ internal class NextSyncRuntime @Inject constructor(
             val queues = queues(access, challengeProfile)
             blocked += queues.rejectedIds
             if (queues.rejectedIds.isNotEmpty()) permanentBlock = true
-            val operations = queues.operations.filter { it.operationId !in blocked }
+            // Replacement deletions precede its new definitions, unlike ordinary structural
+            // upserts. Do not re-attempt ALL later phases after each individual predecessor ACK.
+            // This is a candidate hint, not acceptance proof: core still checks exact receipts.
+            val firstImportPhase = queues.operations.mapNotNull { queues.importPhases[it.operationId] }.minOrNull()
+            val operations = queues.operations.filter { it.operationId !in blocked &&
+                (queues.importPhases[it.operationId] == null || queues.importPhases[it.operationId] == firstImportPhase) }
             val commands = queues.commands.filter { it.commandId !in blocked }
             // Create/update endpoints first; timers produce facts before ordinary undo;
             // parent tombstones last. Per-entity causal heads are still proved by each store.
@@ -209,6 +220,12 @@ internal class NextSyncRuntime @Inject constructor(
                 waiting.clear()
                 total = maxOf(total, uploaded + queues.operations.size + queues.commands.size - 1)
                 progress(SyncProgress.UploadingChanges(uploaded, total))
+            } catch (_: NextMaterialPending) {
+                materialPending = true
+                blocked += requestId
+            } catch (_: NextMaterialAttention) {
+                materialAttention = true
+                blocked += requestId
             } catch (error: NextRequestException) {
                 if (error.reason in setOf(NextRequestException.Reason.TIMER_START_CONFIG_CHANGED,
                         NextRequestException.Reason.COUNT_START_CONFIG_CHANGED)) {
@@ -265,6 +282,8 @@ internal class NextSyncRuntime @Inject constructor(
                         database.timeLogDao().countRejectedTimerCommands() > 0 ||
                         database.syncConflictDao().getUnresolved().isNotEmpty() || liveRejections.isNotEmpty())
                         throw NextSyncAttention(blocked.toSet())
+                    if (materialAttention) throw NextMaterialAttention()
+                    if (materialPending) throw NextMaterialPending(access.session)
                     throw NextSyncRetryRequired()
                 }
             }
@@ -308,7 +327,8 @@ internal class NextSyncRuntime @Inject constructor(
         }
     }
 
-    private data class Queues(val operations: List<SyncOutboxEntity>, val commands: List<TimerCommandEntity>, val rejectedIds: Set<String>)
+    private data class Queues(val operations: List<SyncOutboxEntity>, val commands: List<TimerCommandEntity>,
+        val rejectedIds: Set<String>, val importPhases: Map<String, Int>)
 
     private suspend fun queues(access: LocalSyncAccess, challengeProfile: Boolean): Queues = sessions.exclusive {
         authorize(access)
@@ -356,7 +376,7 @@ internal class NextSyncRuntime @Inject constructor(
                     require(device == access.deviceId) { "SYNC_CHALLENGE_SOURCE_REQUIRED" }
                 }
             }
-            Queues(ordered, commands, rejected)
+            Queues(ordered, commands, rejected, NextConfigImportBarrier(database).schedulingPhases(access))
         }
     }
 

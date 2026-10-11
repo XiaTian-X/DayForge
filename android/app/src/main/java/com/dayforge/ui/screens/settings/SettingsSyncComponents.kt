@@ -50,6 +50,7 @@ internal fun SyncStatusCard(
         !isOnline -> SemanticStatus.WARNING
         !isLoggedIn -> null
         syncProgress is SyncProgress.Error -> SemanticStatus.ERROR
+        syncProgress is SyncProgress.WaitingForMaterials -> SemanticStatus.PENDING
         syncProgress.isRunning() -> SemanticStatus.PENDING
         syncProgress is SyncProgress.Success -> SemanticStatus.SUCCESS
         else -> null
@@ -57,7 +58,8 @@ internal fun SyncStatusCard(
     val status = rememberStatusAppearance(state ?: SemanticStatus.PENDING, background, backdrop)
     val neutral = rememberReadableStatusIcon(MaterialTheme.colorScheme.onSurfaceVariant, background, backdrop)
     val warning = rememberStatusAppearance(SemanticStatus.WARNING, background, backdrop)
-    val description = when (state) {
+    val description = if (syncProgress is SyncProgress.WaitingForMaterials && state == SemanticStatus.PENDING)
+        stringResource(R.string.sync_waiting_materials) else when (state) {
         SemanticStatus.WARNING -> stringResource(R.string.sync_need_network)
         SemanticStatus.ERROR -> stringResource(R.string.sync_error)
         SemanticStatus.PENDING -> stringResource(R.string.sync_in_progress)
@@ -102,7 +104,8 @@ internal fun SyncStatusCard(
 
                 // Last sync time
                 Text(
-                    text = stringResource(R.string.sync_last_time, lastSyncTime),
+                    text = if (syncProgress is SyncProgress.WaitingForMaterials)
+                        stringResource(R.string.sync_waiting_materials) else stringResource(R.string.sync_last_time, lastSyncTime),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )

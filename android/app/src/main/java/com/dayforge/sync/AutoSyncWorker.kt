@@ -9,6 +9,8 @@ import com.dayforge.data.api.NextSyncReplyInvalid
 import com.dayforge.data.repository.BusinessSyncRepository
 import com.dayforge.data.repository.NextSyncAttention
 import com.dayforge.data.repository.NextSyncRetryRequired
+import com.dayforge.data.repository.NextMaterialPending
+import com.dayforge.data.repository.NextMaterialAttention
 import com.dayforge.data.repository.ServerIdentityMismatchException
 import com.dayforge.data.repository.SyncEpochChangedException
 import com.dayforge.data.repository.SyncProtocolException
@@ -64,6 +66,10 @@ class AutoSyncWorker internal constructor(
             Result.failure()
         } catch (_: NextSyncRetryRequired) {
             Result.retry()
+        } catch (_: NextMaterialPending) {
+            Result.retry()
+        } catch (_: NextMaterialAttention) {
+            Result.failure()
         } catch (_: NextSyncReplyInvalid) {
             // A received but invalid reply is not evidence of transient transport
             // loss. Keep the original queue for diagnosis/explicit recovery.

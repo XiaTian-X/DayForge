@@ -32,6 +32,8 @@ def serve(directory: Path) -> None:
                 "joint-countdown",
                 "joint-core",
                 "joint-once",
+                "joint-material",
+                "joint-config",
             ):
                 session.add(User(username=name, password_hash=account_password_hash()))
             session.commit()

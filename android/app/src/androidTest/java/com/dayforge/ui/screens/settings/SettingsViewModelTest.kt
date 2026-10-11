@@ -340,6 +340,20 @@ class SettingsViewModelTest {
         }
 
     @Test
+    fun manual_material_wait_is_non_modal_but_explicit_material_block_is_actionable() =
+        runTest(testDispatcher.scheduler) {
+            coEvery { mockSyncManager.sync(any()) } returns
+                Result.failure(com.dayforge.data.repository.NextMaterialPending())
+            viewModel.sync(); testDispatcher.scheduler.runCurrent()
+            assertFalse(viewModel.showSyncError.value)
+            coEvery { mockSyncManager.sync(any()) } returns
+                Result.failure(com.dayforge.data.repository.NextMaterialAttention())
+            viewModel.sync(); testDispatcher.scheduler.runCurrent()
+            assertTrue(viewModel.showSyncError.value)
+            assertEquals(context.getString(com.dayforge.R.string.sync_material_attention), viewModel.syncErrorMessage.value)
+        }
+
+    @Test
     fun manual_sync_failure_shows_current_network_error_and_dismiss_does_not_reset_global_state() =
         runTest(testDispatcher.scheduler) {
             coEvery { mockSyncManager.sync(any()) } returns

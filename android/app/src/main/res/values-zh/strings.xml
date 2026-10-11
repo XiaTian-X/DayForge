@@ -507,6 +507,8 @@
     <string name="sync_success">同步成功</string>
     <string name="sync_error">同步失败</string>
     <string name="sync_in_progress">同步中…</string>
+    <string name="sync_waiting_materials">等待图标素材同步</string>
+    <string name="sync_material_attention">所需图标素材需要处理，请检查图标库后重试。</string>
     <string name="sync_last_time">上次同步：%1$s</string>
     <string name="sync_current_endpoint">当前入口：%1$s</string>
     <string name="sync_never">从未同步</string>

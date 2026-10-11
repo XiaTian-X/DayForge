@@ -13,6 +13,7 @@ import java.io.IOException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -21,6 +22,16 @@ import org.junit.Test
 
 @RunWith(AndroidJUnit4::class)
 class SyncManagerTest {
+    @Test fun pendingMaterialsAreNeitherSuccessfulNorReportedAsNetworkFailure() = runTest {
+        coEvery { business.sync(any(), any()) } throws com.dayforge.data.repository.NextMaterialPending()
+        val progress = mutableListOf<SyncProgress>()
+        assertTrue(manager.sync(progress::add).isFailure)
+        assertEquals(listOf(SyncProgress.WaitingForMaterials), progress)
+        assertEquals(SyncProgress.WaitingForMaterials, manager.syncProgress.first())
+        assertTrue(manager.syncAndThen { error("Must not finish while waiting") }.isFailure)
+        assertEquals(SyncProgress.WaitingForMaterials, manager.syncProgress.first())
+    }
+
     @Test fun local_recovery_delegates_to_shared_coordinator_without_publishing_sync_success_or_swallowing_cancellation() = runTest {
         val key = com.dayforge.data.repository.NextRecoveryKey("sync_operation", "bb160000-0000-4000-8000-000000000001")
         val preview = mockk<com.dayforge.data.repository.NextRecoveryDependencyPreview>()
@@ -73,12 +84,59 @@ class SyncManagerTest {
     private lateinit var repository: IncrementalSyncRepository
     private lateinit var manager: SyncManager
     private lateinit var business: BusinessSyncRepository
+    private val completions = MutableStateFlow(com.dayforge.data.repository.BusinessSyncCompletion(null, 0))
 
     @Before
     fun setUp() {
         repository = mockk(relaxed = true)
         business = mockk(relaxed = true)
+        every { business.completions } returns completions
         manager = SyncManager(repository, business)
+    }
+
+    @Test fun onlyNewSuccessfulBusinessRoundFromSameAuthenticationClearsMaterialWaiting() = runTest {
+        val session = com.dayforge.data.local.LocalDataSession(
+            com.dayforge.data.local.AuthenticationSession("owner", "login"), "server", "epoch")
+        completions.value = com.dayforge.data.repository.BusinessSyncCompletion(session, 1)
+        coEvery { business.sync(any(), any()) } throws com.dayforge.data.repository.NextMaterialPending(session)
+        assertTrue(manager.sync().isFailure)
+        assertEquals(SyncProgress.WaitingForMaterials, manager.syncProgress.first())
+        completions.value = com.dayforge.data.repository.BusinessSyncCompletion(session.copy(syncEpoch = "other"), 2)
+        assertEquals(SyncProgress.WaitingForMaterials, manager.syncProgress.first())
+        completions.value = com.dayforge.data.repository.BusinessSyncCompletion(session.copy(
+            authentication = session.authentication.copy(generation = "other")), 3)
+        assertEquals(SyncProgress.WaitingForMaterials, manager.syncProgress.first())
+        completions.value = com.dayforge.data.repository.BusinessSyncCompletion(session, 4)
+        assertEquals(SyncProgress.Success, manager.syncProgress.first())
+        manager.resetProgress(); assertEquals(SyncProgress.Idle, manager.syncProgress.first())
+    }
+
+    @Test fun coordinatorFenceExcludesQueuedPriorSuccessButRetainsSuccessBeforeUiCatch() = runTest {
+        val session = com.dayforge.data.local.LocalDataSession(
+            com.dayforge.data.local.AuthenticationSession("owner", "login"), "server", "epoch")
+        for (cleanup in listOf(false, true)) {
+            manager.resetProgress()
+            completions.value = com.dayforge.data.repository.BusinessSyncCompletion(session, 6)
+            coEvery { business.sync(any(), any()) } answers {
+                // Previous serialized round succeeds after the manual call started, before it waits.
+                completions.value = com.dayforge.data.repository.BusinessSyncCompletion(session, 7)
+                throw com.dayforge.data.repository.NextMaterialPending(session, 7)
+            }
+            assertTrue((if (cleanup) manager.syncAndThen { error("Waiting cannot run cleanup") }
+                else manager.sync()).isFailure)
+            assertEquals(SyncProgress.WaitingForMaterials, manager.syncProgress.first())
+            completions.value = com.dayforge.data.repository.BusinessSyncCompletion(session, 8)
+            assertEquals(SyncProgress.Success, manager.syncProgress.first())
+            manager.resetProgress()
+            coEvery { business.sync(any(), any()) } answers {
+                // A later successful round may finish after release, before the UI handles pending.
+                completions.value = com.dayforge.data.repository.BusinessSyncCompletion(session, 9)
+                throw com.dayforge.data.repository.NextMaterialPending(session, 8)
+            }
+            assertTrue((if (cleanup) manager.syncAndThen { error("Waiting cannot run cleanup") }
+                else manager.sync()).isFailure)
+            assertEquals(SyncProgress.Success, manager.syncProgress.first())
+        }
     }
 
     @Test fun user_retry_uses_shared_policy_and_preserves_progress_failure_classification_and_cancellation() = runTest {

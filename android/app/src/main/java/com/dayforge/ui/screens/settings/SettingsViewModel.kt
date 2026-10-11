@@ -276,6 +276,12 @@ class SettingsViewModel @Inject constructor(
     }
 
     private fun showManualSyncIssue(error: Throwable) {
+        if (error is com.dayforge.data.repository.NextMaterialPending) return
+        if (error is com.dayforge.data.repository.NextMaterialAttention) {
+            _syncErrorMessage.value = context.getString(R.string.sync_material_attention)
+            _showSyncError.value = true
+            return
+        }
         _syncErrorMessage.value = if (error.isSyncTransportFailure()) {
             context.getString(R.string.error_network_failed)
         } else {

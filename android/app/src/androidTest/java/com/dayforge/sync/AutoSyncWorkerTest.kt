@@ -36,6 +36,11 @@ class AutoSyncWorkerTest : NextCoreRequestFixture() {
     private fun legacyHttp(status: Int) = HttpException(Response.error<Unit>(status,
         "{}".toResponseBody()))
 
+    @Test fun materialWaitingRetriesButMaterialBlockNeverReportsSuccess() = runBlocking<Unit> {
+        assertEquals(Result.retry(), worker { throw NextMaterialPending() }.doWork())
+        assertEquals(Result.failure(), worker { throw NextMaterialAttention() }.doWork())
+    }
+
     @Test fun authenticatedAttemptCallsTheRepositoryExactlyOnceAndReturnsSuccess() = runBlocking<Unit> {
         var calls = 0
         assertEquals(Result.success(), worker { calls++ }.doWork())

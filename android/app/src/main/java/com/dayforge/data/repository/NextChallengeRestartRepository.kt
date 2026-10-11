@@ -26,14 +26,18 @@ import kotlinx.serialization.json.*
 internal enum class NextRestartOutcome { COMMITTED, REPLAYED, REJECTED, RETRY_REQUIRED }
 
 @Singleton
-internal class NextChallengeRestartRepository @Inject constructor(
+internal class NextChallengeRestartRepository internal constructor(
     private val database: HabitDatabase,
     private val tokens: TokenManager,
     private val sessions: AccountSessionCoordinator,
-    private val http: NextSyncHttp
+    private val http: NextSyncHttp,
+    materials: NextMaterialDependencyGate = UnavailableMaterialDependencies
 ) {
+    @Inject constructor(database: HabitDatabase, tokens: TokenManager, sessions: AccountSessionCoordinator,
+        http: NextSyncHttp, materials: AccountMaterialDependencyGate) :
+        this(database, tokens, sessions, http, materials as NextMaterialDependencyGate)
     private val store = NextRestartStore(database)
-    private val core = NextCoreRequestStore(database, tokens, sessions, http)
+    private val core = NextCoreRequestStore(database, tokens, sessions, http, materials)
     private val timers = NextTimerRequestStore(database, tokens, sessions, core)
     private val sql get() = database.openHelper.writableDatabase
     private val requests get() = database.nextRequestDao()

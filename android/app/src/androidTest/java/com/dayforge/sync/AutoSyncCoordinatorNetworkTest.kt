@@ -13,6 +13,7 @@ import com.dayforge.data.local.dao.TimeLogDao
 import io.mockk.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.*
 import org.junit.After
@@ -47,6 +48,15 @@ class AutoSyncCoordinatorNetworkTest {
         verify(exactly = count) {
             workManager.enqueueUniqueWork("dayforge-auto-sync", ExistingWorkPolicy.REPLACE, any<OneTimeWorkRequest>())
         }
+    }
+
+    @Test fun materialConfirmationBurstsScheduleOneDebouncedBusinessAttempt() = runTest {
+        val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
+        AutoSyncCoordinator(context, outbox, timers, monitor, backgroundScope, changes).start()
+        runCurrent(); enqueues(1)
+        changes.emit(Unit); runCurrent(); advanceTimeBy(2_000)
+        changes.emit(Unit); runCurrent(); advanceTimeBy(2_000); runCurrent(); enqueues(1)
+        advanceTimeBy(1_000); runCurrent(); enqueues(2)
     }
 
     @Test fun network_bursts_debounce_and_reconnect_schedules_exactly_one_attempt() = runTest {

@@ -132,6 +132,50 @@ class AccountIconCatalogTest {
         failure?.let { throw it }
     }
 
+    @Test fun remoteCatalogProvesDeclarationButNotContentAndNeverAnotherNamespace() = runBlocking<Unit> {
+        val context = metadata.capture()
+        catalog.accept(catalog.next(context), first())
+        assertEquals(IconDependencyState.READY, catalog.dependencies(context, setOf(id(10)), emptySet()))
+        assertEquals(IconDependencyState.PENDING, catalog.dependencies(context, emptySet(), setOf(id(10))))
+        assertEquals(IconDependencyState.ATTENTION, catalog.dependencies(context, setOf(id(99)), emptySet()))
+        reopen()
+        assertEquals(IconDependencyState.READY, catalog.dependencies(metadata.capture(), setOf(id(10)), emptySet()))
+        login(owner = id(88))
+        assertEquals(IconDependencyState.ATTENTION, catalog.dependencies(metadata.capture(), setOf(id(10)), emptySet()))
+        rejected { catalog.dependencies(context, setOf(id(10)), emptySet()) }
+    }
+
+    @Test fun declarationOnlyUnblocksOrdinaryReferenceAndExplicitBlockStopsContentRetry() = runBlocking<Unit> {
+        login(editing = true)
+        val context = metadata.capture()
+        queue.reserveAndEnqueueAsset(context, asset())
+        assertEquals(IconDependencyState.PENDING, catalog.dependencies(context, setOf(id(10)), emptySet()))
+        val declaration = requireNotNull(queue.prepareNext(context))
+        assertEquals(IconTransferKind.DECLARE_ASSET, declaration.job.kind)
+        queue.confirmAsset(declaration, AssetRecord(binding, asset(), emptyList()))
+        assertEquals(IconDependencyState.READY, catalog.dependencies(context, setOf(id(10)), emptySet()))
+        assertEquals(IconDependencyState.PENDING, catalog.dependencies(context, emptySet(), setOf(id(10))))
+        val upload = requireNotNull(queue.prepareNext(context))
+        queue.block(upload, IconTransferFailure.REMOTE_QUOTA)
+        assertEquals(IconDependencyState.ATTENTION, catalog.dependencies(context, emptySet(), setOf(id(10))))
+        assertEquals(IconDependencyState.READY, catalog.dependencies(context, setOf(id(10)), emptySet()))
+    }
+
+    @Test fun aWellFormedButChangedConfirmationOrReadyMaskCannotAuthorizeBusinessDependencies() = runBlocking<Unit> {
+        login(editing = true)
+        val context = metadata.capture()
+        queue.reserveAndEnqueueAsset(context, asset())
+        val attempt = requireNotNull(queue.prepareNext(context))
+        queue.confirmAsset(attempt, AssetRecord(binding, asset(), emptyList()))
+        assertEquals(IconDependencyState.READY, catalog.dependencies(context, setOf(id(10)), emptySet()))
+        val sql = database.openHelper.writableDatabase
+        sql.execSQL("UPDATE icon_transfers SET readyMask=3 WHERE operationId=?", arrayOf(attempt.job.operationId))
+        assertEquals("ICON_TRANSFER_CORRUPT", rejected { catalog.dependencies(context, emptySet(), setOf(id(10))) }.message)
+        sql.execSQL("UPDATE icon_transfers SET readyMask=0,confirmationHash=? WHERE operationId=?",
+            arrayOf("f".repeat(64), attempt.job.operationId))
+        assertEquals("ICON_TRANSFER_CORRUPT", rejected { catalog.dependencies(context, setOf(id(10)), emptySet()) }.message)
+    }
+
     @Test fun readonlyPagesCommitDeduplicatedReservationsAllDownloadsAndCheckpointTogetherAndColdReplayIsExact() = runBlocking<Unit> {
         val context=metadata.capture(); val original=catalog.next(context)
         assertEquals(IconCatalogCheckpoint(0,0,0),original.checkpoint)

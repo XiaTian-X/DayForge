@@ -15,6 +15,11 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import com.dayforge.data.local.LocalDataSession
+
+internal data class BusinessSyncCompletion(val session: LocalDataSession?, val sequence: Long)
 
 /** Shared manual/background entry. Server metadata still defaults to v4 until coordinated release. */
 @Singleton
@@ -28,6 +33,8 @@ class BusinessSyncRepository @Inject internal constructor(
     private val next: NextSyncRuntime
 ) {
     private val mutex = Mutex()
+    private val completed = MutableStateFlow(BusinessSyncCompletion(null, 0))
+    internal val completions = completed.asStateFlow()
     internal fun problemChanges() = next.problemChanges()
     internal suspend fun readProblems() = next.readProblems()
     internal suspend fun readRecoveryPreview(root: NextRecoveryKey) = next.readRecoveryPreview(root)
@@ -128,7 +135,20 @@ class BusinessSyncRepository @Inject internal constructor(
                     }
                 }
                 // Never invoke plain v5 or recapture a subsequent login after registration.
-                next.syncRoundsCaptured(access, progress, afterSync)
+                try {
+                    next.syncRoundsCaptured(access, progress) {
+                        // This callback already owns the account lock after the whole successful round.
+                        // Cleanup is allowed to log out; never turn that successful cleanup into failure,
+                        // nor let it clear another authentication's material-wait display.
+                        afterSync?.invoke()
+                        if (tokens.localSyncAccess() == access)
+                            completed.value = BusinessSyncCompletion(access.session, Math.addExact(completed.value.sequence, 1))
+                    }
+                } catch (pending: NextMaterialPending) {
+                    // Fence under this coordinator's mutex: an earlier queued success cannot
+                    // clear this wait, while a later success racing the UI catch still can.
+                    throw NextMaterialPending(pending.session, completed.value.sequence)
+                }
             }
             else -> throw SyncProtocolException("SYNC_PROTOCOL_UNSUPPORTED")
         }

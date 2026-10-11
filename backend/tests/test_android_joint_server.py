@@ -87,7 +87,7 @@ def test_owned_joint_host_stops_with_terminal_proof_even_with_repeated_signals(
             assert proof["valid"] is True
             assert proof["active_timer_count"] == 0
             assert proof["protocol_version"] == 5
-            assert proof["row_counts"]["users"] == 5
+            assert proof["row_counts"]["users"] == 7
         finally:
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGKILL)

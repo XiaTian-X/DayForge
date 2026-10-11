@@ -14,6 +14,18 @@ import kotlinx.serialization.encodeToString
 /** Direct sender/HTTP-return/ACK boundary, not merely a scheduler hint. No network or file I/O. */
 internal class NextConfigImportBarrier(private val database: HabitDatabase) {
     private val journal get() = NextConfigImportStore(database)
+    internal var requiredContent: Set<String> = emptySet()
+        private set
+
+    /** Scheduling hint only. Queue absence NEVER proves an earlier phase's ACK.
+     * The sender's requireReady still audits every required original receipt at its boundaries.
+     */
+    suspend fun schedulingPhases(access: LocalSyncAccess): Map<String, Int> {
+        check(database.inTransaction())
+        val entry = journal.activeNetwork() ?: return emptyMap()
+        requireTarget(entry, access)
+        return entry.plan.steps.associate { it.operationId to it.phase }
+    }
 
     suspend fun requireReady(operation: SyncV2Operation, access: LocalSyncAccess, expectedProof: String? = null,
         replay: Boolean = false): String? {
@@ -39,6 +51,8 @@ internal class NextConfigImportBarrier(private val database: HabitDatabase) {
         requireTarget(entry, access)
         val own = entry.plan.steps.singleOrNull { it.operationId == operation.operationId }
         own?.requireOperation(operation)
+        // Every retained delete is guarded, including a cold retry after a partial remote ACK.
+        if (own?.action == "delete") requiredContent = entry.fixedAssets
         val references = buildSet {
             add(operation.entityUuid)
             for (key in listOf("parent_uuid", "activity_uuid", "metric_uuid")) {

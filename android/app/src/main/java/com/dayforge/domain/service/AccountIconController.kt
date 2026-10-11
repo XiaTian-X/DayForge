@@ -95,7 +95,8 @@ internal class AccountIconRuntime(
         materialOwner.withLock { imports.confirmConfiguration(context, plan) }
 
     /** One captured session/route and sole owner, including the real file recovery and all phases. */
-    suspend fun synchronize(context: AccountIconContext, http: AccountIconHttp): IconMaterialOutcome = materialOwner.withLock {
+    suspend fun synchronize(context: AccountIconContext, http: AccountIconHttp,
+        dependenciesChanged: () -> Unit = {}): IconMaterialOutcome = materialOwner.withLock {
         withTimeoutOrNull(maximumRoundMillis) {
             http.session(context) { session ->
                 session.authorize(context)
@@ -108,8 +109,10 @@ internal class AccountIconRuntime(
                     // A local file failure is not a transient remote/network failure.
                     throw IllegalStateException("ICON_RECOVERY_REQUIRED", error)
                 }
-                processor.admitted(context, session)
+                val transferred = processor.admitted(context, session)
+                if (transferred.completed > 0) dependenciesChanged()
                 val directory = catalogProcessor.admitted(context, session)
+                if (directory.batch.entries > 0) dependenciesChanged()
                 val work = transfers.work(context)
                 when {
                     directory.retryable || directory.batch.limited || work.pending -> IconMaterialOutcome.RETRY
@@ -140,6 +143,10 @@ class AccountIconController internal constructor(
     private val materialWakeups = MutableSharedFlow<Unit>(extraBufferCapacity = 1,
         onBufferOverflow = BufferOverflow.DROP_OLDEST)
     internal val workRequests = materialWakeups.asSharedFlow()
+    private val businessWakeups = MutableSharedFlow<Unit>(extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    internal val businessRequests = businessWakeups.asSharedFlow()
+    internal fun requestMaterialSync() { materialWakeups.tryEmit(Unit) }
     private val references = mutableListOf<WeakReference<IconImageHandle>>()
     private val imageMonitor = Any()
     private var imageCalls = 0
@@ -155,13 +162,15 @@ class AccountIconController internal constructor(
         block: (ValidatedConfigBundle) -> T): T =
         io { AccountConfigExport(it.metadata, it.store).publish(preview, block) }
     internal suspend fun transferJobs(context: AccountIconContext) = io { it.transfers.jobs(context) }
+    internal suspend fun dependencies(context: AccountIconContext, declarations: Set<String>, content: Set<String>) =
+        io { it.catalog.dependencies(context, declarations, content) }
     internal suspend fun synchronize(http: AccountIconHttp): IconMaterialOutcome = withContext(Dispatchers.IO) {
         // Incomplete/unknown authority never initializes the material DB/runtime or sends HTTP.
         val access = tokens.localIconAccess() ?: return@withContext IconMaterialOutcome.INACTIVE
         val storage = runtime.value
         val context = storage.metadata.capture()
         check(context.access == access) { "ICON_SESSION_CHANGED" }
-        val result = storage.synchronize(context, http)
+        val result = storage.synchronize(context, http) { businessWakeups.tryEmit(Unit) }
         if (result != IconMaterialOutcome.UNSUPPORTED)
             storage.metadata.authorized(context) { refreshReferences(context.namespace) }
         result

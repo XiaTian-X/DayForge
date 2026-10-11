@@ -32,7 +32,8 @@ internal class NextCoreRequestStore(
     private val database: HabitDatabase,
     private val tokens: TokenManager,
     private val sessions: AccountSessionCoordinator,
-    private val http: NextSyncHttp
+    private val http: NextSyncHttp,
+    private val materials: NextMaterialDependencyGate = UnavailableMaterialDependencies
 ) {
     suspend fun sendOperation(captured: LocalSyncAccess, operationId: String): NextCoreDelivery<NextSyncPushResponse>? =
         sendOperation(captured, operationId, NextStructuralCausalStore.PureMemo())
@@ -43,6 +44,8 @@ internal class NextCoreRequestStore(
         val access = captured.copy(capabilities = captured.capabilities.toSet())
         return http.session(access) { channel ->
             val prepared = prepare(access, NEXT_OPERATION, operationId, memo)
+            // prepare has ended its account/Room scope; material I/O cannot nest those locks.
+            materials.requireReady(access, prepared.declarations, prepared.content)
             val round = if (prepared.challengeProfile) channel.roundPushFrozen(prepared.row.wireBytes) else null
             val response = if (round == null) channel.pushFrozen(prepared.row.wireBytes) else NextSyncPushResponse(round.results)
             requireStillCurrent(access, prepared, memo)
@@ -82,7 +85,7 @@ internal class NextCoreRequestStore(
     }
 
     private data class Prepared(val row: NextTransmissionEntity, val proof: String, val challengeProfile: Boolean = false,
-        val importProof: String? = null)
+        val importProof: String? = null, val declarations: Set<String> = emptySet(), val content: Set<String> = emptySet())
 
     /** Exact ordinary count ACK, not queue absence or a pulled shadow. No account lock is reacquired. */
     internal suspend fun requireAcceptedCountInTransaction(access: LocalSyncAccess, id: String) {
@@ -539,7 +542,9 @@ internal class NextCoreRequestStore(
             authorize(access)
             require((if (kind == NEXT_OPERATION) roundOperationIntent(origin.intentJson) != null
                 else roundTimerIntent(origin.intentJson) != null) == challengeProfile)
-            Prepared(stored, proof, challengeProfile, importProof)
+            val declarations = if (kind == NEXT_OPERATION)
+                setOfNotNull(fixedMaterialAsset(decodeNextOperationIntent(origin.intentJson))) else emptySet()
+            Prepared(stored, proof, challengeProfile, importProof, declarations, imports.requiredContent)
         }
     }
 

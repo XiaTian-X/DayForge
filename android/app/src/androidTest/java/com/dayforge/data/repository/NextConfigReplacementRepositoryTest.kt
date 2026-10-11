@@ -3,13 +3,18 @@ package com.dayforge.data.repository
 import androidx.room.withTransaction
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.dayforge.data.api.NextSyncHttp
+import com.dayforge.data.api.MaterialHttpRoute
 import com.dayforge.data.api.dto.*
 import com.dayforge.data.appearance.*
 import com.dayforge.data.local.entity.NextSyncStateEntity
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.model.*
 import java.util.concurrent.atomic.AtomicBoolean
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import org.junit.Assert.*
@@ -23,6 +28,84 @@ class NextConfigReplacementRepositoryTest : NextObjectEditorFixture() {
     private val responses = mutableMapOf<String, MaterialSocketServer.Reply>()
     private val json = Json { encodeDefaults = true }
     private var roundMetadata: ChallengeMetadata? = null
+    private var materialHttp: AccountIconHttp? = null
+    private var materialOrigin: okhttp3.HttpUrl? = null
+    private val remoteAssets = mutableMapOf<String, IconAsset>()
+
+    private suspend fun <T> timed(name: String, block: suspend () -> T): T {
+        val started = android.os.SystemClock.elapsedRealtime()
+        var completed = false
+        android.util.Log.i("ConfigPhase", "Starting $name")
+        return try { block().also { completed = true } }
+        finally { android.util.Log.i("ConfigPhase", "${if (completed) "Completed" else "Failed"} $name in " +
+            "${android.os.SystemClock.elapsedRealtime() - started}ms") }
+    }
+
+    /** Real isolated transfer processor and TCP receipts, not a permissive business gate.
+     * Full catalog/worker integration and negative waiting remain in the actual-backend suite.
+     */
+    private suspend fun transferMaterials() {
+        val context = icons.capture()
+        val store = AccountIconStore(iconMetadata, AccountIconFiles(directory))
+        val transfers = AccountIconTransfers(iconDatabase, iconMetadata, store)
+        val work = transfers.work(context)
+        if (!work.pending) { assertFalse(work.blocked); return }
+        val http = materialHttp ?: run {
+            val server = MaterialSocketServer { input, _ ->
+                if (input.path == MaterialHttpRoute.IDENTITY_PATH) reply(input) else {
+                    assertEquals("5", input.headers["x-dayforge-protocol"])
+                    assertEquals("PUT", input.method)
+                    val body = when {
+                        input.path.contains("/content/") -> {
+                            val assetId = input.path.substringAfter("/assets/").substringBefore('/')
+                            val asset = remoteAssets.getValue(assetId)
+                            val variant = input.path.substringAfterLast('/')
+                            val blob = if (variant == "light") asset.light else requireNotNull(asset.dark)
+                            assertEquals(blob.sha256, ConfigFileFixture.hash(input.body))
+                            assertEquals(blob.byteLength, input.body.size)
+                            val url = ("http://localhost" + input.target).toHttpUrl()
+                            val binding = AssetSyncContext(requireNotNull(url.queryParameter("server_instance_id")),
+                                requireNotNull(url.queryParameter("sync_epoch")), requireNotNull(url.queryParameter("device_id")))
+                            json.encodeToString(AssetTransferReceipt(binding, assetId, variant, blob))
+                        }
+                        input.path.contains("/assets/") -> {
+                            val declaration = json.decodeFromString<AssetDeclaration>(input.body.toString(Charsets.UTF_8))
+                            assertEquals(declaration.asset.assetId, input.path.substringAfterLast('/'))
+                            remoteAssets[declaration.asset.assetId]?.let { assertEquals(it, declaration.asset) }
+                            remoteAssets[declaration.asset.assetId] = declaration.asset
+                            json.encodeToString(AssetRecord(declaration.context, declaration.asset, emptyList()))
+                        }
+                        else -> {
+                            val declaration = json.decodeFromString<PackDeclaration>(input.body.toString(Charsets.UTF_8))
+                            assertTrue(declaration.pack.assets.all { remoteAssets[it.assetId] == it })
+                            json.encodeToString(declaration)
+                        }
+                    }
+                    MaterialSocketServer.Reply(body.toByteArray())
+                }
+            }
+            servers += server
+            materialOrigin = server.origin
+            AccountIconHttp(client, tokens, server.origin).also { materialHttp = it }
+        }
+        val processor = AccountIconTransferProcessor(iconMetadata, store, transfers)
+        // Both real TCP peers are fixture-owned. Pin the selected material endpoint while its
+        // calls run, then restore the business endpoint after all actual IO has joined.
+        // Keep BaseUrlInterceptor/AuthInterceptor and their route/session guards intact.
+        assertNull(preferences.activeServerUrl.first())
+        val previous = preferences.serverUrl.first()
+        try {
+            preferences.setServerUrl(requireNotNull(materialOrigin).toString())
+            repeat(3) { if (transfers.work(context).pending) processor.run(context, http) }
+            assertFalse(transfers.work(context).pending); assertFalse(transfers.work(context).blocked)
+        } finally { withContext(NonCancellable) { preferences.setServerUrl(previous) } }
+    }
+
+    private suspend fun materialSender(http: NextSyncHttp): NextCoreRequestStore {
+        transferMaterials()
+        return materialCore(http)
+    }
+    private fun materialCore(http: NextSyncHttp) = NextCoreRequestStore(db, tokens, sessions, http, AccountMaterialDependencyGate(icons))
     private fun service() = NextConfigImportRepository(db, tokens, sessions, icons,
         NextObjectCreator(db, tokens, sessions, icons), app)
     private suspend fun source() = ConfigBundleOutput.create(ConfigFileFixture.manifest(), ConfigFileFixture::content)
@@ -87,7 +170,7 @@ class NextConfigReplacementRepositoryTest : NextObjectEditorFixture() {
     private suspend fun drain(http: NextSyncHttp) {
         while (db.syncOutboxDao().getAll().isNotEmpty()) {
             val row = db.syncOutboxDao().getAll().first()
-            assertEquals(NextOperationAcceptance.COMMITTED, sender(http).sendAndAcceptOperation(access(), row.operationId))
+            assertEquals(NextOperationAcceptance.COMMITTED, materialSender(http).sendAndAcceptOperation(access(), row.operationId))
         }
     }
     private suspend fun graph(): Pair<ValidatedConfigBundle, NextSyncHttp> {
@@ -102,7 +185,7 @@ class NextConfigReplacementRepositoryTest : NextObjectEditorFixture() {
     private suspend fun confirm(source: ValidatedConfigBundle) = service().confirmReplacement(service().previewReplacement(source))
     private suspend fun blocked(http: NextSyncHttp, step: ConfigNetworkStep) {
         assertEquals(NextRequestException.Reason.CAUSAL_PREDECESSOR_PENDING,
-            (rejected { sender(http).sendOperation(access(), step.operationId) } as NextRequestException).reason)
+            (rejected { materialCore(http).sendOperation(access(), step.operationId) } as NextRequestException).reason)
         assertNull(db.nextRequestDao().transmission(NEXT_OPERATION, step.operationId))
     }
 
@@ -139,27 +222,49 @@ class NextConfigReplacementRepositoryTest : NextObjectEditorFixture() {
         assertEquals(selected, iconMetadata.selection(icons.capture())); assertEquals(receipt, service().resume(id, source))
     }
 
-    @Test fun directSenderCannotJumpAnyDeletionOrCreationPhaseAndLateExactAckReplayIsIdempotent() = runBlocking<Unit> {
-        val (source, http) = graph(); val id = confirm(source); service().resume(id, source)
+    private suspend fun exercisePhase(http: NextSyncHttp, steps: List<ConfigNetworkStep>, phase: Int) = timed("phase $phase") {
+        steps.filter { it.phase > phase }.forEach { blocked(http, it) }
+        for (step in steps.filter { it.phase == phase }) {
+            val delivery = requireNotNull(materialSender(http).sendOperation(access(), step.operationId))
+            assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, step.operationId))
+            assertEquals(NextOperationAcceptance.COMMITTED, materialCore(http).acceptOperation(delivery))
+            storage.reopen()
+            assertEquals(NextOperationAcceptance.REPLAYED, materialCore(http).acceptOperation(delivery))
+            assertEquals(NextOperationAcceptance.REPLAYED, materialCore(http).sendAndAcceptOperation(access(), step.operationId))
+        }
+    }
+
+    @Test fun directSenderCannotJumpDeletionPhasesAndTheirColdAcksAreIdempotent() = runBlocking<Unit> {
+        val (source, http) = timed("original graph") { graph() }
+        val id = timed("first local replacement") { confirm(source).also { service().resume(it, source) } }
         val steps = network(id).plan.steps
         assertEquals((0..5).toList(), steps.map { it.phase }.distinct())
-        for (phase in 0..5) {
-            steps.filter { it.phase > phase }.forEach { blocked(http, it) }
-            for (step in steps.filter { it.phase == phase }) {
-                val delivery = requireNotNull(sender(http).sendOperation(access(), step.operationId))
-                assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, step.operationId))
-                assertEquals(NextOperationAcceptance.COMMITTED, sender(http).acceptOperation(delivery))
-                storage.reopen()
-                assertEquals(NextOperationAcceptance.REPLAYED, sender(http).acceptOperation(delivery))
-                assertEquals(NextOperationAcceptance.REPLAYED, sender(http).sendAndAcceptOperation(access(), step.operationId))
-            }
+        for (phase in 0..2) exercisePhase(http, steps, phase)
+        assertEquals("local_committed", state(id)); assertNull(network(id).accepted)
+        assertEquals(steps.filter { it.phase >= 3 }.map { it.operationId }.toSet(),
+            db.syncOutboxDao().getAll().map { it.operationId }.toSet())
+    }
+
+    @Test fun directSenderCannotJumpCreationPhasesAndLateExactAckReplayIsIdempotent() = runBlocking<Unit> {
+        val (source, http) = timed("original graph") { graph() }
+        val id = timed("first local replacement") { confirm(source).also { service().resume(it, source) } }
+        val steps = network(id).plan.steps
+        assertEquals((0..5).toList(), steps.map { it.phase }.distinct())
+        // Real predecessor HTTP/ACK preparation is included in this method's 150s budget.
+        // The complementary test exercises every deletion phase's premature/cold replay boundary.
+        timed("accepted deletion prerequisites") {
+            for (step in steps.filter { it.phase < 3 })
+                assertEquals(NextOperationAcceptance.COMMITTED, materialSender(http).sendAndAcceptOperation(access(), step.operationId))
         }
+        for (phase in 3..5) exercisePhase(http, steps, phase)
         val accepted = network(id); assertEquals("operations_accepted", state(id))
         assertEquals(steps.map { it.operationId }.toSet(), accepted.accepted!!.keys)
         val another = confirm(source); assertNotEquals(id, another)
-        service().resume(another, source)
+        timed("later local import") { service().resume(another, source) }
         val newer = db.syncOutboxDao().getAll()
-        assertEquals(NextOperationAcceptance.REPLAYED, sender(http).sendAndAcceptOperation(access(), steps.last().operationId))
+        timed("old receipt replay without new material transfer") {
+            assertEquals(NextOperationAcceptance.REPLAYED, materialCore(http).sendAndAcceptOperation(access(), steps.last().operationId))
+        }
         assertEquals(newer, db.syncOutboxDao().getAll()); assertEquals("local_committed", state(another))
     }
 
@@ -171,7 +276,7 @@ class NextConfigReplacementRepositoryTest : NextObjectEditorFixture() {
             val result = response(input)
             if (wireOrIdentity(input) == link.operationId && lose.compareAndSet(true, false)) null else result
         }
-        rejected { sender(http).sendOperation(access(), link.operationId) }
+        rejected { materialSender(http).sendOperation(access(), link.operationId) }
         val wire = transmission(NEXT_OPERATION, link.operationId).wireBytes.copyOf()
         assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, link.operationId))
         blocked(http, steps.first { it.phase == 3 }); assertEquals("local_committed", state(id))
@@ -190,6 +295,20 @@ class NextConfigReplacementRepositoryTest : NextObjectEditorFixture() {
         assertNotNull(db.syncOutboxDao().getState(first.entityType, first.entityUuid))
         blocked(http, steps.first { it.phase == 3 }); assertEquals("local_committed", state(id))
         assertNull(network(id).accepted)
+        transferMaterials()
+        val attempted = canonical.toMap()
+        // A scheduling hint may pick a later queued phase after corruption removes the earlier
+        // row. It cannot authorize that phase: the actual sender still requires the missing ACK.
+        val (runtimeHttp, peer) = channel { input -> when (input.path) {
+            "/api/v2/sync/changes" -> MaterialSocketServer.Reply(json.encodeToString(
+                NextSyncPullResponse(emptyList(), 0, false, time)).toByteArray())
+            else -> response(input)
+        } }
+        val error = rejected { NextSyncRuntime(db, tokens, sessions, runtimeHttp, preferences, AccountMaterialDependencyGate(icons)).sync() }
+        assertTrue(error is NextSyncRetryRequired)
+        assertTrue(peer.requests.any { it.path == "/api/v2/sync/changes" })
+        assertTrue(peer.requests.none { it.path.endsWith("/push") })
+        assertEquals(attempted, canonical); assertNull(network(id).accepted)
     }
 
     @Test fun changedPreviewOrNewFactAfterConfirmationNeverDeletesLaterWorkOrReallocatesIds() = runBlocking<Unit> {
@@ -259,34 +378,34 @@ class NextConfigReplacementRepositoryTest : NextObjectEditorFixture() {
         assertEquals("CONFIG_IMPORT_ACCESS_DENIED", rejected { service().resume(id, source) }.message)
         register(device = id(900)); assertEquals("CONFIG_IMPORT_REPLICA_CHANGED", rejected { service().resume(id, source) }.message)
         register(); service().resume(id, source)
-        register(device = id(900)); rejected { sender(http).sendOperation(access(), saved.network!!.steps.first().operationId) }
+        register(device = id(900)); rejected { materialSender(http).sendOperation(access(), saved.network!!.steps.first().operationId) }
         register(); drain(http); assertEquals("operations_accepted", state(id))
     }
 
     @Test fun previousAckDamageAfterHttpOrInsideNewAckTransactionCannotAdvancePhases() = runBlocking<Unit> {
         val (source, http) = graph(); val id = confirm(source); service().resume(id, source)
         val steps = network(id).plan.steps; val link = steps.first()
-        sender(http).sendAndAcceptOperation(access(), link.operationId)
-        val next = steps.first { it.phase == 1 }; val delivery = requireNotNull(sender(http).sendOperation(access(), next.operationId))
+        materialSender(http).sendAndAcceptOperation(access(), link.operationId)
+        val next = steps.first { it.phase == 1 }; val delivery = requireNotNull(materialSender(http).sendOperation(access(), next.operationId))
         val sql = db.openHelper.writableDatabase
         val receipt = requireNotNull(db.nextRequestDao().acceptance(NEXT_OPERATION, link.operationId))
         sql.execSQL("UPDATE next_acceptances SET resultHash=? WHERE requestId=?", arrayOf("f".repeat(64), link.operationId))
-        rejected { sender(http).acceptOperation(delivery) }
+        rejected { materialCore(http).acceptOperation(delivery) }
         assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, next.operationId)); assertEquals("local_committed", state(id))
         sql.execSQL("UPDATE next_acceptances SET resultHash=? WHERE requestId=?", arrayOf(receipt.resultHash, link.operationId))
         sql.execSQL("CREATE TRIGGER replacement_previous_ack AFTER INSERT ON next_acceptances WHEN NEW.requestId='${next.operationId}' " +
             "BEGIN UPDATE next_acceptances SET resultHash='${"f".repeat(64)}' WHERE requestId='${link.operationId}'; END")
-        rejected { sender(http).acceptOperation(delivery) }; storage.reopen()
+        rejected { materialCore(http).acceptOperation(delivery) }; storage.reopen()
         assertEquals(receipt, db.nextRequestDao().acceptance(NEXT_OPERATION, link.operationId))
         assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, next.operationId))
         db.openHelper.writableDatabase.execSQL("DROP TRIGGER replacement_previous_ack")
-        sender(http).acceptOperation(delivery); drain(http); assertEquals("operations_accepted", state(id))
+        materialCore(http).acceptOperation(delivery); drain(http); assertEquals("operations_accepted", state(id))
     }
 
     @Test fun metricDeleteReceiptWithMatchingHashButInvalidTombstoneCannotReleaseTheNextPhase() = runBlocking<Unit> {
         val (source, http) = graph(); val id = confirm(source); service().resume(id, source)
         val steps = network(id).plan.steps
-        for (step in steps.filter { it.phase <= 1 }) sender(http).sendAndAcceptOperation(access(), step.operationId)
+        for (step in steps.filter { it.phase <= 1 }) materialSender(http).sendAndAcceptOperation(access(), step.operationId)
         val metric = steps.single { it.entityType == "metric" && it.action == "delete" }
         val original = requireNotNull(db.nextRequestDao().acceptance(NEXT_OPERATION, metric.operationId))
         val result = json.parseToJsonElement(original.resultJson).jsonObject
@@ -295,7 +414,7 @@ class NextConfigReplacementRepositoryTest : NextObjectEditorFixture() {
         db.openHelper.writableDatabase.execSQL("UPDATE next_acceptances SET resultJson=?,resultHash=? WHERE requestId=?",
             arrayOf(damaged, nextRequestHash(damaged.toByteArray(Charsets.UTF_8)), metric.operationId))
         val next = steps.first { it.phase == 2 }
-        rejected { sender(http).sendOperation(access(), next.operationId) }
+        rejected { materialSender(http).sendOperation(access(), next.operationId) }
         assertNull(db.nextRequestDao().transmission(NEXT_OPERATION, next.operationId))
         assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, next.operationId))
         assertEquals("local_committed", state(id))
@@ -307,16 +426,16 @@ class NextConfigReplacementRepositoryTest : NextObjectEditorFixture() {
     @Test fun finalAckAndCompletionReceiptRollBackTogetherOnTerminalJournalFailureThenColdReplayFinishes() = runBlocking<Unit> {
         val (source, http) = graph(); val id = confirm(source); service().resume(id, source)
         val steps = network(id).plan.steps
-        for (step in steps.dropLast(1)) sender(http).sendAndAcceptOperation(access(), step.operationId)
-        val last = steps.last(); val delivery = requireNotNull(sender(http).sendOperation(access(), last.operationId))
+        for (step in steps.dropLast(1)) materialSender(http).sendAndAcceptOperation(access(), step.operationId)
+        val last = steps.last(); val delivery = requireNotNull(materialSender(http).sendOperation(access(), last.operationId))
         db.openHelper.writableDatabase.execSQL("CREATE TRIGGER replacement_finish_fault BEFORE UPDATE ON next_config_imports " +
             "WHEN NEW.state='operations_accepted' BEGIN SELECT RAISE(ABORT,'completion receipt fault'); END")
-        rejected { sender(http).acceptOperation(delivery) }; storage.reopen()
+        rejected { materialCore(http).acceptOperation(delivery) }; storage.reopen()
         assertEquals("local_committed", state(id)); assertNull(network(id).accepted)
         assertNotNull(db.syncOutboxDao().getByOperationId(last.operationId)); assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, last.operationId))
         db.openHelper.writableDatabase.execSQL("DROP TRIGGER replacement_finish_fault")
-        assertEquals(NextOperationAcceptance.COMMITTED, sender(http).acceptOperation(delivery))
-        assertEquals("operations_accepted", state(id)); assertEquals(NextOperationAcceptance.REPLAYED, sender(http).acceptOperation(delivery))
+        assertEquals(NextOperationAcceptance.COMMITTED, materialCore(http).acceptOperation(delivery))
+        assertEquals("operations_accepted", state(id)); assertEquals(NextOperationAcceptance.REPLAYED, materialCore(http).acceptOperation(delivery))
     }
 
     @Test fun realDeferredFinalCommitFailurePreservesOldGraphAndPreparedMappingForExactColdRetry() = runBlocking<Unit> {
@@ -340,7 +459,7 @@ class NextConfigReplacementRepositoryTest : NextObjectEditorFixture() {
     @Test fun priorReceiptChangedInsideActualHttpResponseCannotReturnAUsableDelivery() = runBlocking<Unit> {
         val (source, originalHttp) = graph(); val id = confirm(source); service().resume(id, source)
         val steps = network(id).plan.steps; val first = steps.first()
-        sender(originalHttp).sendAndAcceptOperation(access(), first.operationId)
+        materialSender(originalHttp).sendAndAcceptOperation(access(), first.operationId)
         val old = db.nextRequestDao().acceptance(NEXT_OPERATION, first.operationId)!!
         val next = steps.first { it.phase == 1 }; val change = AtomicBoolean(true)
         val (http, _) = channel { input ->
@@ -350,7 +469,7 @@ class NextConfigReplacementRepositoryTest : NextObjectEditorFixture() {
                     arrayOf("f".repeat(64), first.operationId))
             result
         }
-        rejected { sender(http).sendOperation(access(), next.operationId) }
+        rejected { materialSender(http).sendOperation(access(), next.operationId) }
         assertNotNull(db.syncOutboxDao().getByOperationId(next.operationId))
         assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, next.operationId)); assertEquals("local_committed", state(id))
         db.openHelper.writableDatabase.execSQL("UPDATE next_acceptances SET resultHash=? WHERE requestId=?", arrayOf(old.resultHash, first.operationId))
@@ -365,7 +484,8 @@ class NextConfigReplacementRepositoryTest : NextObjectEditorFixture() {
                 NextSyncPullResponse(emptyList(), 0, false, time)).toByteArray())
             else -> response(input)
         } }
-        NextSyncRuntime(db, tokens, sessions, http, preferences).sync()
+        transferMaterials()
+        NextSyncRuntime(db, tokens, sessions, http, preferences, AccountMaterialDependencyGate(icons)).sync()
         assertEquals("operations_accepted", state(id)); assertEquals(0, count("sync_outbox"))
         val sent = server.requests.filter { it.path.endsWith("/push") }.mapNotNull(::wireOrIdentity)
         assertEquals(steps.map { it.operationId }.toSet(), sent.toSet())
@@ -428,12 +548,13 @@ class NextConfigReplacementRepositoryTest : NextObjectEditorFixture() {
         assertTrue(parent.deleted)
         db.syncOutboxDao().deleteState("metric", metric.uuid)
         val before = db.nextSyncStateDao().rows().single()
-        rejected { NextSyncRuntime(db, tokens, sessions, http, preferences).sync() }
+        rejected { NextSyncRuntime(db, tokens, sessions, http, preferences, AccountMaterialDependencyGate(icons)).sync() }
         storage.reopen(); assertEquals(before, db.nextSyncStateDao().rows().single())
         assertNull(db.syncOutboxDao().getState("metric_observation", unseenId))
         assertEquals(0, count("completions")); assertEquals(0, count("metric_logs"))
         db.syncOutboxDao().upsertState(parent)
-        NextSyncRuntime(db, tokens, sessions, http, preferences).sync()
+        transferMaterials()
+        NextSyncRuntime(db, tokens, sessions, http, preferences, AccountMaterialDependencyGate(icons)).sync()
         storage.reopen(); assertEquals(changes.size.toLong(), db.nextSyncStateDao().rows().single().cursor)
         assertEquals(unseen.toString(), db.syncOutboxDao().getState("metric_observation", unseenId)!!.payloadJson)
         assertEquals(0, count("completions")); assertEquals(0, count("metric_logs")); assertEquals(0, count("count_days"))
@@ -483,7 +604,7 @@ class NextConfigReplacementRepositoryTest : NextObjectEditorFixture() {
             "public_id" to JsonPrimitive(metric.uuid), "revision" to JsonPrimitive(1), "created_at" to JsonPrimitive(time),
             "updated_at" to JsonPrimitive(time), "deleted_at" to JsonNull)), time)
         changes.forEach { canonical[it.entityUuid] = it.payload }
-        val timers = NextTimerRequestStore(db, tokens, sessions, sender(http))
+        val timers = NextTimerRequestStore(db, tokens, sessions, materialSender(http))
         val merge = NextSyncMergeStore(db, tokens, sessions, OneTimeAcceptedEventStore(db, tokens, sessions,
             OneTimeLocalIntentStore(db, tokens, sessions, preferences), timerRequests = timers), timers)
         merge.bootstrap(access(), null, RoundSyncBootstrapResponse(changes, 20, time, emptyList(), 1,
@@ -494,7 +615,7 @@ class NextConfigReplacementRepositoryTest : NextObjectEditorFixture() {
         val original = db.nextRequestDao().origin(NEXT_OPERATION, goalDelete.operationId)!!
         assertEquals(setOf(habit.uuid, timerHabit.uuid), roundOperationIntent(original.intentJson)!!.goalChildFrontier!!.map { it.childUuid }.toSet())
         val first = db.syncOutboxDao().getAll().first()
-        val runtime = NextSyncRuntime(db, tokens, sessions, http, preferences)
+        val runtime = NextSyncRuntime(db, tokens, sessions, http, preferences, AccountMaterialDependencyGate(icons))
         val preview = runtime.readRecoveryPreview(NextRecoveryKey(NEXT_OPERATION, first.operationId))
         assertFalse(preview.canConfirm)
         assertTrue(preview.affected.all { it.category == NextRecoveryCategory.CONFIG_IMPORT &&
@@ -502,7 +623,7 @@ class NextConfigReplacementRepositoryTest : NextObjectEditorFixture() {
         val phase = steps.single { it.operationId == first.operationId }.phase
         assertTrue(preview.affected.map { it.key.requestId }.containsAll(steps.filter { it.phase > phase }.map { it.operationId }))
         assertEquals(0, count("next_transmissions")); assertEquals("local_committed", state(id))
-        assertEquals(NextOperationAcceptance.COMMITTED, sender(http).sendAndAcceptOperation(access(), first.operationId))
+        assertEquals(NextOperationAcceptance.COMMITTED, materialSender(http).sendAndAcceptOperation(access(), first.operationId))
         val remaining = db.syncOutboxDao().getAll().first()
         val partial = runtime.readRecoveryPreview(NextRecoveryKey(NEXT_OPERATION, remaining.operationId))
         assertFalse(partial.canConfirm); assertTrue(partial.affected.none { it.key.requestId == first.operationId })

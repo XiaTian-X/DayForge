@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 
 from tools.android_joint_backend import (
     JOINT_CLASS,
+    JOINT_MATERIAL_CLASS,
     backend_for_cases,
     fixture_environment,
 )
@@ -93,6 +94,16 @@ class AndroidJointBackendTest(unittest.TestCase):
             self.assertEqual([], args)
         self.gate.adb_command.assert_not_called()
         self.assertFalse((self.root / "joint-backend").exists())
+
+    def test_material_joint_class_alone_provisions_the_actual_owned_peer(self):
+        with backend_for_cases(
+            self.gate, {(JOINT_MATERIAL_CLASS, "actualMaterial")}
+        ) as args:
+            self.assertEqual(1, len(args))
+        self.assertEqual(self.proof, self.gate.evidence["joint_backend"])
+        self.gate.adb_command.assert_any_call(
+            "joint-reverse-remove", "reverse", "--remove", "tcp:45001"
+        )
 
     def test_environment_cannot_import_deployment_data_or_supervisor_flags(self):
         with patch.dict(

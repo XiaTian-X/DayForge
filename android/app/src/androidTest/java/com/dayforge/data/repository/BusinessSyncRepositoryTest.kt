@@ -7,6 +7,12 @@ import androidx.work.WorkerParameters
 import com.dayforge.data.api.*
 import com.dayforge.data.api.dto.*
 import com.dayforge.data.appearance.MaterialSocketServer
+import com.dayforge.data.appearance.AccountIconStore
+import com.dayforge.data.appearance.AccountIconFiles
+import com.dayforge.data.appearance.AccountIconTransfers
+import com.dayforge.data.appearance.ConfigFileFixture
+import com.dayforge.domain.model.IconReference
+import com.dayforge.domain.model.ObjectAppearance
 import com.dayforge.data.local.entity.NextSyncStateEntity
 import com.dayforge.domain.service.SyncManager
 import com.dayforge.sync.AutoSyncWorker
@@ -26,12 +32,12 @@ import org.junit.runner.RunWith
 class BusinessSyncRepositoryTest : NextObjectEditorFixture() {
     private val json = Json { encodeDefaults = true }
     private val legacy = mockk<IncrementalSyncRepository>(relaxed = true)
-    private fun driver(http: NextSyncHttp): BusinessSyncRepository {
+    private fun driver(http: NextSyncHttp, materials: NextMaterialDependencyGate = UnavailableMaterialDependencies): BusinessSyncRepository {
         val monitor = mockk<NetworkMonitor>()
         coEvery { monitor.localNetworks() } returns emptyList()
         val resolver = EndpointResolver(monitor, preferences, tokens, json, SelectedNetworkTransport())
         return BusinessSyncRepository(legacy, resolver, db, tokens, sessions, http,
-            NextSyncRuntime(db, tokens, sessions, http, preferences))
+            NextSyncRuntime(db, tokens, sessions, http, preferences, materials))
     }
 
     private fun response(input: MaterialSocketServer.Input, revision: Int = 1): MaterialSocketServer.Reply {
@@ -106,6 +112,39 @@ class BusinessSyncRepositoryTest : NextObjectEditorFixture() {
         assertEquals(metric.appearance, db.metricDao().getMetricById(saved)!!.appearance)
         assertEquals(1, server.requests.count { it.path == "/api/v2/sync/rounds/push" })
         storage.reopen(); assertEquals(metric.appearance, db.metricDao().getMetricById(saved)!!.appearance)
+    }
+
+    @Test fun materialWaitingFencesEarlierSuccessAndDoesNotStarveIndependentRoleDefinitions() = runBlocking<Unit> {
+        db.clearAllData(); val (http, server) = channel { response(it) }
+        val service = driver(http, AccountMaterialDependencyGate(icons))
+        service.sync()
+        assertEquals(1L, service.completions.value.sequence)
+        val context = icons.capture()
+        val asset = ConfigFileFixture.manifest().iconPack!!.assets.first().copy(assetId = id(901), purpose = "general")
+        val store = AccountIconStore(iconMetadata, AccountIconFiles(directory))
+        AccountIconTransfers(iconDatabase, iconMetadata, store).reserveAndEnqueueAsset(context, asset)
+        for (blob in listOfNotNull(asset.light, asset.dark))
+            store.install(context, asset.assetId, blob.sha256, ConfigFileFixture.content(blob))
+        val fixed = creatingMetrics().createMetric(metric.copy(id = 0, uuid = id(902), name = "Waiting fixed reference",
+            appearance = ObjectAppearance(IconReference.Asset(asset.assetId), "#123456", "theme")),
+            creationAuthority = requireNotNull(creator.captureForNavigation()))
+        val role = creatingMetrics().createMetric(metric.copy(id = 0, uuid = id(903), name = "Independent role reference"),
+            creationAuthority = requireNotNull(creator.captureForNavigation()))
+        val operations = db.syncOutboxDao().getAll()
+        val fixedOperation = operations.single { it.entityUuid == db.metricDao().getMetricById(fixed)!!.uuid }
+        val roleOperation = operations.single { it.entityUuid == db.metricDao().getMetricById(role)!!.uuid }
+        val pending = rejected { service.sync() }
+        assertTrue(pending is NextMaterialPending)
+        assertEquals(context.access.session, (pending as NextMaterialPending).session)
+        assertEquals(1L, pending.completedAfter)
+        assertEquals(1L, service.completions.value.sequence)
+        assertEquals(listOf(fixedOperation.operationId), db.syncOutboxDao().getAll().map { it.operationId })
+        assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, fixedOperation.operationId))
+        assertNotNull(db.nextRequestDao().acceptance(NEXT_OPERATION, roleOperation.operationId))
+        assertTrue(db.nextSyncStateDao().rejections().isEmpty())
+        val sent = server.requests.filter { it.path.endsWith("/push") }.map { wireOperation(it)
+            .getValue("operation_id").jsonPrimitive.content }
+        assertEquals(listOf(roleOperation.operationId), sent)
     }
 
     @Test fun nonemptyOrOrphanOrPlainProfileNeverRegistersConvertsOrClears() = runBlocking<Unit> {

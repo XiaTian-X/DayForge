@@ -17,6 +17,8 @@ internal data class IconCatalogCheckpoint(val generation: Long, val cursor: Long
     companion object { const val MAX_ENTRIES = 33_768L }
 }
 
+internal enum class IconDependencyState { READY, PENDING, ATTENTION }
+
 /** Captured authorization and exact durable CAS; not transferable to another account/device/session. */
 internal class IconCatalogAttempt internal constructor(val context: AccountIconContext, val checkpoint: IconCatalogCheckpoint) {
     val binding get() = AssetSyncContext(context.namespace.serverInstanceId, context.namespace.syncEpoch, context.access.deviceId)
@@ -41,6 +43,64 @@ internal class AccountIconRemoteCatalog(
 
     suspend fun next(context: AccountIconContext): IconCatalogAttempt = metadata.transferTransaction(context) { catalog ->
         IconCatalogAttempt(context, read(context, catalog).checkpoint)
+    }
+
+    /** Namespace-scoped immutable remote evidence, never a local ready flag or queue absence. */
+    suspend fun dependencies(context: AccountIconContext, declarations: Set<String>, content: Set<String>): IconDependencyState =
+        metadata.transferTransaction(context) { catalog ->
+            val required = declarations + content
+            require(required.size <= 1000 && required.all(::isContractUuid))
+            val snapshot = read(context, catalog)
+            val remote = snapshot.entries.filter { it.kind == "asset" }.map { it.targetId }.toSet()
+            var pending = false
+            for (id in required) {
+                currentCoroutineContext().ensureActive()
+                val asset = catalog.assets[id] ?: return@transferTransaction IconDependencyState.ATTENTION
+                val jobs = snapshot.transfers.filter { it.targetId == id }
+                val declaration = jobs.singleOrNull { it.kind == "declare_asset" }
+                val declarationConfirmed = declaration?.let { confirmed(context, asset, it) } == true
+                val declared = id in remote || declarationConfirmed
+                if (!declared) {
+                    if (declaration == null || declaration.state == "blocked" || !context.access.canDeclare)
+                        return@transferTransaction IconDependencyState.ATTENTION
+                    pending = true
+                }
+                if (id !in content) continue
+                for ((variant, mask) in listOf("light" to 1) + if (asset.dark != null) listOf("dark" to 2) else emptyList()) {
+                    val upload = jobs.singleOrNull { it.kind == "upload" && it.variant == variant }
+                    val download = jobs.singleOrNull { it.kind == "download" && it.variant == variant }
+                    val acknowledged = upload?.let { confirmed(context, asset, it) } == true ||
+                        declarationConfirmed && (requireNotNull(declaration).readyMask and mask != 0) ||
+                        id in remote && download?.let { confirmed(context, asset, it) } == true
+                    if (acknowledged) continue
+                    val candidate = if (context.access.canDeclare) upload ?: download else download
+                    if (candidate == null || candidate.state == "blocked")
+                        return@transferTransaction IconDependencyState.ATTENTION
+                    pending = true
+                }
+            }
+            if (pending) IconDependencyState.PENDING else IconDependencyState.READY
+        }
+
+    /** Reconstruct the exact normalized confirmation, not merely a well-shaped digest.
+     * Transfer/catalog audits above still prove the current namespace and immutable metadata.
+     */
+    private fun confirmed(context: AccountIconContext, asset: IconAsset, row: AccountIconTransferRow): Boolean {
+        if (row.state != "complete") return false
+        val binding = AssetSyncContext(context.namespace.serverInstanceId, context.namespace.syncEpoch,
+            requireNotNull(row.deviceId))
+        val expected = when (row.kind) {
+            "declare_asset" -> json.encodeToString(AssetRecord(binding, asset,
+                listOfNotNull("dark".takeIf { row.readyMask and 2 != 0 }, "light".takeIf { row.readyMask and 1 != 0 })))
+            "upload", "download" -> {
+                val blob = if (row.variant == "light") asset.light else requireNotNull(asset.dark)
+                if (row.kind == "upload") json.encodeToString(AssetTransferReceipt(binding, asset.assetId, row.variant, blob))
+                else "local-validated:${json.encodeToString(blob)}:${iconValidationProfile(blob)}"
+            }
+            else -> error("ICON_TRANSFER_CORRUPT")
+        }
+        check(row.confirmationHash == sha(expected)) { "ICON_TRANSFER_CORRUPT" }
+        return true
     }
 
     suspend fun accept(attempt: IconCatalogAttempt, input: AppearanceCatalogPage): IconCatalogCheckpoint {
