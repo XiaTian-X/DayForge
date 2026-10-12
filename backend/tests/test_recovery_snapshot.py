@@ -243,12 +243,15 @@ async def test_all_fact_kinds_and_once_proof_are_preserved(production_v5):
     once = operation(node(once=True), identity=ACTIVITY)
     metric_id = str(uuid4())
     metric_op = operation(metric(), identity=metric_id, kind="metric")
-    await call_push(client, headers, batch(device, [once, metric_op]))
+    created = await call_push(client, headers, batch(device, [once, metric_op]))
+    for item in created["results"]:
+        assert item["status"] == "applied", item
     fact_op = once_fact().model_dump(mode="json")
     observation = operation(
         dict(
             metric_uuid=metric_id,
             value=64.25,
+            unit="kg",
             occurred_at="2026-10-08T03:04:05.123456Z",
             local_date="2026-10-08",
             timezone="UTC",
@@ -257,16 +260,15 @@ async def test_all_fact_kinds_and_once_proof_are_preserved(production_v5):
         kind="metric_observation",
     )
     link = operation(
-        dict(
-            activity_uuid=ACTIVITY, metric_uuid=metric_id, required_on_completion=True
-        ),
+        dict(activity_uuid=ACTIVITY, metric_uuid=metric_id, prompt_on_complete=True),
         identity=str(uuid4()),
         kind="activity_metric_link",
     )
     response = await call_push(
         client, headers, batch(device, [fact_op, observation, link])
     )
-    assert all(item["status"] == "applied" for item in response["results"]), response
+    for item in response["results"]:
+        assert item["status"] == "applied", item
     before = await database_state(engine)
     result = await preview(client, headers, device)
     assert await database_state(engine) == before

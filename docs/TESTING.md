@@ -19,6 +19,30 @@
 
 ## 验证层级
 
+### 新副本快照和隔离候选验证（2026-10-12，Issue #160 / D-022）
+
+本批只完成只读快照和独立内存 Room 的业务候选验证；完整旧内容差异、素材、私有档案、
+阶段日志/栅栏、活动切换和正式恢复页面仍未交付。最新主分支状态以整合审计为准，
+本节是 `codex/df-160-recovery-snapshot` 分支验证，不表示已合并或目标完成。
+
+完整后端 `test_recovery_snapshot.py` 与 `test_product_restore_http.py` 48/48、61.90秒、
+warning1/1，锁定 Ruff/format/mypy252及两份 OpenAPI检查通过。真实停止/重开服务、
+物理/逻辑恢复后的 JWT/API Token 预览，核对所有业务类型、跨日完整计时、账户隔离、
+原完整历史及逐表无写入；`--no-cov` 未执行覆盖率校准。不是全后端门禁。
+
+MI6/API35：完整 NextSyncHttpTest43、ReplicaRecoveryPreviewHttpTest8、
+ChallengeSyncContractTest13、NextReplicaCandidateValidatorTest6、NextSyncRuntimeTest14，
+实际84项83通过1新夹具同名失败，0错误/跳过，XML112.207秒；证据
+`01bd9c6a1b434f52b5b96c11307172a5`。只修新夹具名称后完整候选类6/6通过，
+`5dd043c2b2a644f39da1b82b1b3afe4d/targeted.json`，build20秒、connected43秒、
+XML14.119秒，0 failure/error/skipped。其余78项生产/测试源码未变，不重复执行，
+不拼称最终84项全绿。root62、构建/lint/告警、发现/XML/APK/覆盖输入及测试包清理通过。
+首构建因新注解位置告警失败，明确 `@param:` 后预算不变；所有失败及后续门槛见
+[恢复快照进展](reviews/2026-10-12-recovery-snapshot-pause.md)。
+
+此范围不代替 Android 对真实恢复服务器的确认/中断联合、全量/全局覆盖校准及人工验收。
+保持已确认UI、业务、Room/Alembic版本和默认v4；没有正式APK、部署、本机Docker或极端容量。
+
 ### 跨恢复代次的只读诊断（2026-10-12，Issue #160 / D-022）
 
 共享手动/重试/Worker 入口发现同服务器的新 epoch 后先核验原账户和完整挑战检查点，

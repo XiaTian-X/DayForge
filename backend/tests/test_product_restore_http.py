@@ -33,6 +33,7 @@ from src.v2.challenge_receipt_recovery import validate_challenge_receipts
 from src.v2.challenge_sync_contract import RoundSyncPullResponse
 from src.v2.errors import DomainError
 from src.v2.replica_context import EPOCH_HEADER, INSTANCE_HEADER, PROTOCOL_HEADER
+from src.v2.recovery_snapshot_contract import ReplicaRecoveryPreviewResponse
 from tests.account_fixtures import TEST_ACCOUNT_PASSWORD, account_password_hash
 from tests.asset_file_fixtures import SVG, blob
 from tests.test_asset_declarations import ASSET, PACK, asset, pack
@@ -49,6 +50,7 @@ from tests.test_challenge_profile import (
 )
 from tests.test_jwt_runtime_server import isolated_server
 from tests.test_logical_archive import migrate
+from tests.test_logical_archive_identity import database_dump
 from tests.test_next_structural_sync import goal, metric, node, operation
 from tests.test_one_time_mutations import operation as task_operation
 from tests.test_one_time_storage import ACTIVITY, EVENTS
@@ -631,6 +633,29 @@ async def test_real_product_tcp_restore_and_continue_without_cross_account_or_re
                         if kind == "logical"
                         else internal
                     )
+                    before_preview = database_dump(destination)
+                    preview = await client.get(
+                        "/api/v2/sync/rounds/recovery-preview",
+                        headers=headers,
+                        params=dict(
+                            device_id=device,
+                            installation_id=f"restore-device-{internal}",
+                            challenge_contract="1",
+                        ),
+                    )
+                    assert preview.status_code == 200, preview.text
+                    assert preview.headers["cache-control"] == "private, no-store"
+                    candidate = ReplicaRecoveryPreviewResponse.model_validate(
+                        preview.json()
+                    )
+                    assert candidate.account_id == public
+                    assert candidate.server_instance_id == fresh[INSTANCE_HEADER]
+                    assert candidate.sync_epoch == epoch
+                    assert candidate.active_timer is None
+                    assert projection(preview.json()["snapshot"]) == projection(
+                        record["state"]
+                    )
+                    assert database_dump(destination) == before_preview
                     state = await snapshot(client, headers, device)
                     assert projection(state) == projection(record["state"])
                     if kind == "logical":
