@@ -139,6 +139,18 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
         }
     }
 
+    /** Read actual current server business after binding, without bypassing the old-scope
+     * preview guard. A changed candidate needs durable catch-up, never optimistic release.
+     */
+    suspend fun verifyDestinationSnapshot(expected: ReplicaSwitchStage): ReplicaDestinationPreview =
+        coordinator.coordinateReplicaRecovery {
+            ReplicaDestinationReadAccess.verified(database, tokens, sessions, archives, expected) { read ->
+                val fresh = candidates.validateDestination(read, read.read(http))
+                ReplicaDestinationPreview(fresh, fresh.contentHash == expected.candidateHash &&
+                    fresh.projection.hash == requireNotNull(expected.target).projectionHash && !fresh.hasUnfinishedTimer)
+            }
+        }
+
     /** Fresh authenticated directory/transfer round, exact archived preference and ALL owned
      * metadata/receipts/files + current/retained authority references. Still no activation.
      */

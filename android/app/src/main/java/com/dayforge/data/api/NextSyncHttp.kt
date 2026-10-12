@@ -7,6 +7,7 @@ import com.dayforge.data.local.AuthenticationSession
 import com.dayforge.data.local.LocalSyncAccess
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
+import com.dayforge.data.repository.ReplicaDestinationReadAccess
 import com.dayforge.domain.model.isContractUuid
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.ByteArrayOutputStream
@@ -89,23 +90,27 @@ internal class NextSyncHttp private constructor(
     }
 
     private suspend fun <T> withSession(captured: LocalSyncAccess, noRefresh: Boolean = false,
+        destinationRead: ReplicaDestinationReadAccess? = null,
         block: suspend (Session, LocalSyncAccess) -> T): T {
         val context = captured.copy(capabilities = captured.capabilities.toSet())
+        check(destinationRead == null || noRefresh && destinationRead.access == context)
+        destinationRead?.authorize(tokens)
         authorize(tokens, context, recoveryReadOnly = noRefresh)
         val route = try { captureRoute() } catch (_: IllegalArgumentException) { throw IOException("SYNC_ROUTE_INVALID") }
         val builder = shared.newBuilder()
         builder.interceptors().removeAll { it is HttpLoggingInterceptor }
         builder.networkInterceptors().removeAll { it is HttpLoggingInterceptor }
-        if (noRefresh) builder.authenticator(Authenticator.NONE)
+        if (noRefresh) builder.authenticator(Authenticator.NONE).cache(null)
         val client = route.bind(builder).connectionPool(ConnectionPool(1, 1, TimeUnit.MINUTES))
             .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
             .connectTimeout(10, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS).callTimeout(45, TimeUnit.SECONDS)
             .addNetworkInterceptor { chain ->
                 if (!route.matches(chain.request().url)) throw IOException("SYNC_ROUTE_CHANGED")
                 runBlocking { authorize(tokens, context, recoveryReadOnly = noRefresh) }
+                destinationRead?.let { runBlocking { it.authorizeRequest(tokens, chain.request()) } }
                 chain.proceed(chain.request())
             }.build()
-        val session = Session(client, tokens, context, route, requireNotNull(currentCoroutineContext()[Job]), noRefresh)
+        val session = Session(client, tokens, context, route, requireNotNull(currentCoroutineContext()[Job]), noRefresh, destinationRead)
         try {
             return block(session, context)
         } finally {
@@ -114,9 +119,30 @@ internal class NextSyncHttp private constructor(
         }
     }
 
+    /** Only the actual SQL/archive/destination factory supplies this lease. In particular,
+     * recoveryPreview cannot be made to accept same-epoch ordinary access via a Boolean flag.
+     */
+    internal suspend fun destinationPreview(read: ReplicaDestinationReadAccess): ReplicaRecoveryPreviewResponse {
+        read.requireOwner()
+        read.authorize(tokens)
+        val response = withSession(read.access, noRefresh = true, destinationRead = read) { session, context ->
+            val identity = session.identity()
+            if (identity.serverInstanceId != context.session.serverInstanceId)
+                throw NextSyncHttpFailure(409, "SERVER_IDENTITY_MISMATCH")
+            if (identity.syncEpoch != context.session.syncEpoch)
+                throw NextSyncHttpFailure(409, "SYNC_EPOCH_MISMATCH")
+            if (identity.protocolVersion != 5) throw NextSyncHttpFailure(426, "CLIENT_UPGRADE_REQUIRED")
+            read.authorize(tokens)
+            session.readRecoveryPreview(requireNotNull(context.session.syncEpoch), read.installationId, false, null)
+        }
+        read.authorize(tokens)
+        return response
+    }
+
     internal class Session internal constructor(
         private val client: OkHttpClient, private val tokens: TokenManager, private val context: LocalSyncAccess,
-        private val route: MaterialHttpRoute, private val owner: Job, private val recoveryReadOnly: Boolean = false
+        private val route: MaterialHttpRoute, private val owner: Job, private val recoveryReadOnly: Boolean = false,
+        private val destinationRead: ReplicaDestinationReadAccess? = null
     ) {
         private var closed = false
         internal fun close() { closed = true }
@@ -400,6 +426,7 @@ internal class NextSyncHttp private constructor(
             val builder = Request.Builder().url(route.origin.newBuilder().encodedPath(path).build()).header("Accept-Encoding", "identity")
                 .tag(AuthenticationSession::class.java, context.session.authentication).tag(LocalSyncAccess::class.java, context)
                 .tag(MaterialHttpRoute::class.java, route)
+                .tag(ReplicaDestinationReadAccess::class.java, destinationRead)
             if (!public) builder.header("X-DayForge-Protocol", "5")
                 .header("X-DayForge-Server-Instance", requireNotNull(context.session.serverInstanceId))
                 .header("X-DayForge-Sync-Epoch", requireNotNull(context.session.syncEpoch))

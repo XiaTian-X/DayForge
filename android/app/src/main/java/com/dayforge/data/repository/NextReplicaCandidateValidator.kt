@@ -63,8 +63,20 @@ internal class NextReplicaCandidateValidator @Inject constructor(
     private val json = Json { encodeDefaults = true }
 
     suspend fun validate(original: LocalSyncAccess, installation: String,
-        response: ReplicaRecoveryPreviewResponse): ValidatedReplicaCandidate = withContext(Dispatchers.IO) {
+        response: ReplicaRecoveryPreviewResponse): ValidatedReplicaCandidate =
+        validateSnapshot(original, installation, response, null)
+
+    /** Same-epoch private validation is confined to a freshly verified destination lease.
+     * It never gives that lease to active storage, ordinary writers or a general HTTP Session.
+     */
+    internal suspend fun validateDestination(read: ReplicaDestinationReadAccess,
+        response: ReplicaRecoveryPreviewResponse): ValidatedReplicaCandidate =
+        validateSnapshot(read.access, read.installationId, response, read)
+
+    private suspend fun validateSnapshot(original: LocalSyncAccess, installation: String,
+        response: ReplicaRecoveryPreviewResponse, read: ReplicaDestinationReadAccess?): ValidatedReplicaCandidate = withContext(Dispatchers.IO) {
         sessions.exclusive {
+            read?.authorize(tokens)
             authorize(original, installation)
             // Re-decode caller-owned collections before using them across suspensions.
             val wire = json.encodeToString(response)
@@ -72,7 +84,8 @@ internal class NextReplicaCandidateValidator @Inject constructor(
             val frozen = json.decodeFromString<ReplicaRecoveryPreviewResponse>(wire)
             val proof = frozen.device
             require(frozen.accountId == original.session.authentication.userId &&
-                frozen.serverInstanceId == original.session.serverInstanceId && frozen.syncEpoch != original.session.syncEpoch)
+                frozen.serverInstanceId == original.session.serverInstanceId &&
+                (if (read == null) frozen.syncEpoch != original.session.syncEpoch else frozen.syncEpoch == original.session.syncEpoch))
             require(proof.deviceId == original.deviceId && proof.installationId == installation &&
                 proof.platform == "android" && proof.deviceClass == "interactive" && proof.capabilityRevision > 0)
             require(proof.capabilities.distinct().size == proof.capabilities.size &&
@@ -138,6 +151,7 @@ internal class NextReplicaCandidateValidator @Inject constructor(
                 }
                 currentCoroutineContext().ensureActive()
                 authorize(original, installation)
+                read?.authorize(tokens)
                 val records = linkedMapOf<ReplicaRecordKey, JsonElement>()
                 fun add(kind: String, identity: String, value: JsonElement) {
                     check(records.put(ReplicaRecordKey(kind, identity), value) == null)
@@ -176,6 +190,7 @@ internal class NextReplicaCandidateValidator @Inject constructor(
                     check(candidate.nextChallengeDao().update(challenge.copy(batchHash = contentHash)) == 1)
                     NextChallengeStore(candidate).activeInTransaction(candidateScope)
                 }
+                read?.authorize(tokens)
                 ValidatedReplicaCandidate(original.copy(capabilities = original.capabilities.toSet()), frozen.syncEpoch,
                     snapshot.nextCursor, syncPayloadHash(wire), proof.copy(capabilities = Collections.unmodifiableList(proof.capabilities.toList())),
                     records, frozen.activeTimer != null, ReplicaProjection.capture(candidate))

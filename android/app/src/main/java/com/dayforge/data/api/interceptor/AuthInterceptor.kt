@@ -7,6 +7,7 @@ import com.dayforge.data.local.LocalSyncAccess
 import com.dayforge.data.api.MaterialHttpRoute
 import com.dayforge.data.api.materialTokenSafe
 import com.dayforge.data.appearance.ReplicaMaterialAccess
+import com.dayforge.data.repository.ReplicaDestinationReadAccess
 import java.io.IOException
 import kotlinx.coroutines.runBlocking
 import okhttp3.Interceptor
@@ -29,6 +30,8 @@ class AuthInterceptor @Inject constructor(
         val url = request.url.toString()
         val materialRecovery = request.tag(ReplicaMaterialAccess::class.java)
         materialRecovery?.let { runBlocking { it.authorizeRequest(tokenManager, request) } }
+        val destinationRead = request.tag(ReplicaDestinationReadAccess::class.java)
+        destinationRead?.let { runBlocking { it.authorizeRequest(tokenManager, request) } }
 
         // Skip auth header for authentication endpoints
         if (shouldSkipAuth(url)) {
@@ -49,7 +52,7 @@ class AuthInterceptor @Inject constructor(
                 request.header("X-DayForge-Sync-Epoch")?.let {
                     com.dayforge.domain.model.isContractUuid(it) && it != syncAccess.session.syncEpoch
                 } == true
-            if (!recoveryRead && materialRecovery == null && runBlocking { tokenManager.replicaSwitchPending() })
+            if (!recoveryRead && materialRecovery == null && destinationRead == null && runBlocking { tokenManager.replicaSwitchPending() })
                 throw IOException(com.dayforge.data.local.ReplicaSwitchGuard.PENDING)
         }
         if (route != null && !route.matches(request.url)) throw IOException("MATERIAL_ROUTE_CHANGED")

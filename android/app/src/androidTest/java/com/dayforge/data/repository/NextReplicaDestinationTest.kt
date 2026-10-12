@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -47,6 +48,8 @@ class NextReplicaDestinationTest : NextCoreRequestFixture() {
     private val materialJson = Json { encodeDefaults = true }
     private var materialReply: ((MaterialSocketServer.Input) -> MaterialSocketServer.Reply)? = null
     private var recoveryPack: IconPack? = null
+    private var destinationTransform: (ReplicaRecoveryPreviewResponse) -> ReplicaRecoveryPreviewResponse = { it }
+    private var destinationFailure: Int? = null
     // Registry intentionally holds weak references. Keep the real fault observer alive across
     // the complete archive verification, including GC, until this per-case fixture is released.
     private lateinit var cancellationCache: AccountIconMemory.Cache
@@ -93,12 +96,13 @@ class NextReplicaDestinationTest : NextCoreRequestFixture() {
                 "/api/v2/system/identity" -> reply(input).let { it.copy(bytes = it.bytes.toString(Charsets.UTF_8).replace(id(3), id(99)).toByteArray()) }
                 "/api/v2/sync/rounds/recovery-preview" -> {
                     assertEquals("GET", input.method)
+                    destinationFailure?.let { return@channel MaterialSocketServer.Reply(byteArrayOf(), status = it) }
                     val selected = recoveryPack ?: pack
                     val available = selected.assets + listOfNotNull(destinationAsset?.let {
                         asset.copy(assetId = it, name = "Required fixed reference")
                     })
-                    MaterialSocketServer.Reply(json.encodeToString(recoveryMaterialReply(response, input,
-                        listOf(selected), available)).toByteArray())
+                    MaterialSocketServer.Reply(json.encodeToString(recoveryMaterialReply(destinationTransform(response), input,
+                        listOf(selected), available)).toByteArray(), headers = mapOf("Cache-Control" to "private, max-age=3600"))
                 }
                 else -> if (input.path.startsWith("/api/v2/appearance/")) requireNotNull(materialReply)(input)
                     else error("Recovery may not send ordinary work: ${input.path}")
@@ -151,6 +155,119 @@ class NextReplicaDestinationTest : NextCoreRequestFixture() {
         assertNotNull(rejected { tokens.saveSyncCursor(999) })
         assertNotNull(rejected { workflow().cancel(stage) })
         assertEquals(ReplicaCommitFate.COMMITTED, NextReplicaCommitStore(db, tokens, sessions).fate(stage))
+    }
+
+    @Test fun actualDestinationReadRevalidatesColdSqlArchiveAndScopeWithoutOpeningConsumers() = runBlocking<Unit> {
+        initialize(); val stage = workflow().bindDestination(committed())
+        val sql = ReplicaProjection.capture(db).hash; val preferencesBefore = dataStore.data.first()
+        val bytes = archive(stage).readBytes(); val calls = peer.requests.size
+        assertNotNull(rejected { http.recoveryPreview(access(), stage.newEpoch, stage.installationId) })
+        assertEquals(calls, peer.requests.size) // Old preview must still reject same-epoch access.
+        val preview = workflow().verifyDestinationSnapshot(stage)
+        assertTrue(preview.matchesCommittedSnapshot); assertFalse(preview.activationAuthorized)
+        assertEquals(stage.newEpoch, preview.candidate.original.session.syncEpoch)
+        assertEquals(sql, preview.candidate.projection.hash)
+        for (input in peer.requests.drop(calls)) {
+            assertEquals("GET", input.method); assertTrue(input.body.isEmpty())
+            assertTrue(input.path in setOf("/api/v2/system/identity", "/api/v2/sync/rounds/recovery-preview"))
+            if (input.path.endsWith("recovery-preview")) assertEquals(stage.newEpoch, input.headers["x-dayforge-sync-epoch"])
+        }
+        coldReopen(); assertTrue(workflow().verifyDestinationSnapshot(stage).matchesCommittedSnapshot)
+        assertEquals(preferencesBefore, dataStore.data.first()); assertEquals(sql, ReplicaProjection.capture(db).hash)
+        assertArrayEquals(bytes, archive(stage).readBytes()); assertFrozen(stage)
+    }
+
+    @Test fun freshDestinationChangeBypassesInheritedHttpCacheButDoesNotReplaceFrozenSql() = runBlocking<Unit> {
+        initialize(); val stage = workflow().bindDestination(committed())
+        val sql = ReplicaProjection.capture(db).hash; val preferencesBefore = dataStore.data.first()
+        okhttp3.Cache(File(directory, "destination-http-cache"), 1024 * 1024).use { cache ->
+            client = client.newBuilder().cache(cache).build(); http = NextSyncHttp(client, tokens, peer.origin)
+            assertTrue(workflow().verifyDestinationSnapshot(stage).matchesCommittedSnapshot)
+            val calls = peer.requests.size
+            destinationTransform = { response -> response.copy(snapshot = response.snapshot.copy(nextCursor = 21,
+                changes = response.snapshot.changes.map { change -> if (change.entityUuid != habit.uuid) change else
+                    change.copy(revision = 2, payload = JsonObject(change.payload + mapOf("title" to JsonPrimitive("Fresh destination"),
+                        "revision" to JsonPrimitive(2)))) })) }
+            val fresh = workflow().verifyDestinationSnapshot(stage)
+            assertFalse(fresh.matchesCommittedSnapshot); assertFalse(fresh.activationAuthorized)
+            assertEquals(21L, fresh.candidate.cursor)
+            assertEquals(JsonPrimitive("Fresh destination"), fresh.candidate.records.getValue(ReplicaRecordKey("plan_node", habit.uuid)).jsonObject["title"])
+            assertEquals(2, peer.requests.size - calls)
+        }
+        assertEquals(preferencesBefore, dataStore.data.first()); assertEquals(sql, ReplicaProjection.capture(db).hash)
+        assertFrozen(stage)
+    }
+
+    @Test fun destinationReadLeaseCannotEscapeOwnerOrFactoryAnd401NeverRefreshes() = runBlocking<Unit> {
+        initialize(); val stage = workflow().bindDestination(committed())
+        lateinit var retained: ReplicaDestinationReadAccess
+        ReplicaDestinationReadAccess.verified(db, tokens, sessions, ReplicaPrivateArchiveStore(directory), stage) { read ->
+            retained = read
+            val calls = peer.requests.size
+            coroutineScope { assertEquals("SYNC_RECOVERY_READ_OWNER_CHANGED", async { rejected { read.read(http) } }.await().message) }
+            assertEquals(calls, peer.requests.size)
+            val good = okhttp3.Request.Builder().url(peer.origin.newBuilder().encodedPath("/api/v2/sync/rounds/recovery-preview")
+                .addQueryParameter("device_id", stage.deviceId).addQueryParameter("challenge_contract", "1")
+                .addQueryParameter("installation_id", stage.installationId).build())
+                .tag(com.dayforge.data.api.MaterialHttpRoute::class.java, com.dayforge.data.api.MaterialHttpRoute(peer.origin, null))
+                .tag(ReplicaDestinationReadAccess::class.java, read).tag(LocalSyncAccess::class.java, read.access)
+                .tag(AuthenticationSession::class.java, read.access.session.authentication)
+                .header("X-DayForge-Protocol", "5").header("X-DayForge-Server-Instance", stage.serverInstanceId)
+                .header("X-DayForge-Sync-Epoch", stage.newEpoch).build()
+            read.authorizeRequest(tokens, good)
+            for (request in listOf(good.newBuilder().method("POST", byteArrayOf().toRequestBody()).build(),
+                good.newBuilder().url(good.url.newBuilder().encodedPath("/api/v2/auth/refresh").build()).build(),
+                good.newBuilder().url(good.url.newBuilder().addQueryParameter("device_id", stage.deviceId).build()).build(),
+                good.newBuilder().url(good.url.newBuilder().addQueryParameter("owner", stage.accountId).build()).build(),
+                good.newBuilder().header("X-DayForge-Sync-Epoch", stage.oldEpoch).build(),
+                good.newBuilder().tag(ReplicaDestinationReadAccess::class.java, null).build())) {
+                assertTrue(rejected { read.authorizeRequest(tokens, request) } is java.io.IOException)
+            }
+            assertEquals(calls, peer.requests.size)
+            assertTrue(NextReplicaCandidateValidator(app, tokens, sessions, preferences)
+                .validateDestination(read, read.read(http)).projection.hash == stage.target!!.projectionHash)
+        }
+        val calls = peer.requests.size
+        assertEquals("SYNC_RECOVERY_READ_CLOSED", rejected { retained.read(http) }.message)
+        assertEquals(calls, peer.requests.size)
+        destinationFailure = 401
+        val preferencesBefore = dataStore.data.first()
+        assertTrue(rejected { workflow().verifyDestinationSnapshot(stage) } is com.dayforge.data.api.NextSyncHttpFailure)
+        assertEquals(2, peer.requests.size - calls)
+        assertTrue(peer.requests.drop(calls).all { it.method == "GET" && !it.path.contains("refresh") })
+        assertEquals(preferencesBefore, dataStore.data.first()); assertFrozen(stage)
+    }
+
+    @Test fun damagedActualControlTypeOrArchiveDeniesDestinationReadBeforeNetworkAndLeavesBytesUntouched() = runBlocking<Unit> {
+        initialize(); val stage = workflow().bindDestination(committed())
+        // Isolated corruption fixture: restore the exact guard DDL after changing raw storage.
+        // This is not a product mutation API or an ordinary fence bypass.
+        suspend fun fenceRevision(value: Number) = db.withTransaction {
+            val sql = db.openHelper.writableDatabase
+            val guard = sql.query("SELECT sql FROM sqlite_master WHERE name='replica_fence_control_update'").use {
+                check(it.moveToFirst()); it.getString(0)
+            }
+            sql.execSQL("DROP TRIGGER replica_fence_control_update")
+            sql.execSQL("UPDATE next_replica_fence SET capabilityRevision=? WHERE id=1", arrayOf<Any>(value))
+            sql.execSQL(guard)
+        }
+        val callsBeforeDamage = peer.requests.size
+        fenceRevision(stage.capabilityRevision + 0.5)
+        assertEquals(stage.fence, db.nextReplicaFenceDao().state()) // DAO coercion alone hides it.
+        assertEquals("real", db.openHelper.writableDatabase.query("SELECT typeof(capabilityRevision) FROM next_replica_fence").use {
+            check(it.moveToFirst()); it.getString(0)
+        })
+        assertEquals("SYNC_REPLICA_FENCE_INVALID", rejected { workflow().verifyDestinationSnapshot(stage) }.message)
+        assertEquals(callsBeforeDamage, peer.requests.size)
+        fenceRevision(stage.capabilityRevision.toLong())
+        assertTrue(workflow().verifyDestinationSnapshot(stage).matchesCommittedSnapshot)
+        val damaged = archive(stage).readBytes().also { it[it.lastIndex] = (it.last().toInt() xor 1).toByte() }
+        archive(stage).writeBytes(damaged)
+        val calls = peer.requests.size; val before = dataStore.data.first(); val sql = ReplicaProjection.capture(db).hash
+        assertNotNull(rejected { workflow().verifyDestinationSnapshot(stage) })
+        assertEquals(calls, peer.requests.size); assertEquals(before, dataStore.data.first())
+        assertEquals(sql, ReplicaProjection.capture(db).hash); assertArrayEquals(damaged, archive(stage).readBytes())
+        assertFrozen(stage)
     }
 
     private val svg get() = """<svg width="1" height="1"><rect width="1" height="1" fill="#000000"/></svg>""".toByteArray()
