@@ -11,17 +11,31 @@ import com.dayforge.data.export.ConfigImportIdentities
 import com.dayforge.data.export.ConfigImportTarget
 import com.dayforge.data.export.NextConfigImportPlan
 import com.dayforge.data.local.HabitDatabase
+import com.dayforge.data.local.LocalSyncAccess
 import com.dayforge.domain.model.isContractUuid
 import java.io.ByteArrayOutputStream
+import java.time.Instant
+import java.time.ZoneOffset
+import java.util.Collections
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
 
 @Serializable
 internal data class ConfigImportedSource(val queueId: Long, val sourceHash: String) {
     init { require(queueId > 0 && sourceHash.matches(Regex("[0-9a-f]{64}"))) }
+}
+
+/** Local journal evidence only. A prepared mapping still requires its original external bundle. */
+internal class ReplicaConfigJournal(val importId: String, val state: String,
+    requests: Map<NextRecoveryKey, NextRecoveryRequestState>, reserved: Set<String>, assets: Set<String>) {
+    val requests: Map<NextRecoveryKey, NextRecoveryRequestState> = Collections.unmodifiableMap(requests.toMap())
+    val reservedOperationIds: Set<String> = Collections.unmodifiableSet(reserved.toSet())
+    val allocatedAssets: Set<String> = Collections.unmodifiableSet(assets.toSet())
+    val hasUnsettledWork: Boolean get() = state == "prepared" || requests.values.any { it != NextRecoveryRequestState.ACCEPTED }
 }
 
 /** Caller owns account lock/Room transaction. Frozen source must be supplied again on cold recovery. */
@@ -31,6 +45,142 @@ internal class NextConfigImportStore(private val database: HabitDatabase) {
     internal data class NetworkEntry(val plan: ConfigNetworkPlan, val receipt: ConfigNetworkReceipt,
         val accepted: Map<String, String>?, val proof: String, val sourceProof: String, val fixedAssets: Set<String>)
     private val sql get() = database.openHelper.writableDatabase
+
+    /** SELECT-only ALL retained journals, including completed groups ignored by scheduling.
+     * Caller supplies a freshly validated complete request ledger in the same raw snapshot.
+     * Never finishes a journal or treats a local commit/source hash as remote acceptance.
+     */
+    internal suspend fun recoveryInTransaction(access: LocalSyncAccess,
+        states: Map<NextRecoveryKey, NextRecoveryRequestState>): List<ReplicaConfigJournal> {
+        check(database.inTransaction())
+        requireNoOtherPending(pendingIdForRecovery())
+        val result = mutableListOf<ReplicaConfigJournal>()
+        val claimed = mutableSetOf<String>()
+        sql.query("SELECT importId FROM next_config_imports ORDER BY importId").use { cursor ->
+            while (cursor.moveToNext()) {
+                currentCoroutineContext().ensureActive()
+                require(result.size < NEXT_RECOVERY_PROOF_NODE_LIMIT && cursor.getType(0) == Cursor.FIELD_TYPE_STRING)
+                val id = cursor.getString(0); val head = header(id)
+                val target = ConfigImportTarget(requireNotNull(head[1]), requireNotNull(head[2]),
+                    requireNotNull(head[3]), requireNotNull(head[4]))
+                require(target == ConfigImportTarget(access.session.authentication.userId,
+                    requireNotNull(access.session.serverInstanceId), requireNotNull(access.session.syncEpoch), requireNotNull(access.deviceId))) {
+                    "CONFIG_IMPORT_TARGET_CHANGED"
+                }
+                require(head[7] in setOf("empty_replica", "replacement") && head[8] in
+                    if (head[7] == "replacement") setOf("prepared", "local_committed", "operations_accepted")
+                    else setOf("prepared", "local_committed"))
+                val identities = ConfigImportIdentities.decode(payload(id, "identities", requireNotNull(head[6])))
+                val ids = identities.ids
+                require(ids.keys.count { it.startsWith("node:") } <= 1000 && ids.keys.count { it.startsWith("metric:") } <= 1000 &&
+                    ids.keys.count { it.startsWith("link:") } <= 5000 && ids.keys.count { it.startsWith("theme:") } <= 16 &&
+                    ids.keys.count { it.startsWith("asset:") } <= 128)
+                val time = Instant.parse(identities.creationTimestamp)
+                require(identities.target == target && recoveryHash(identities.archiveHash) && identities.archiveHash == head[5] &&
+                    time.toString() == identities.creationTimestamp && time.atOffset(ZoneOffset.UTC).year in 1..9999 &&
+                    ids["import"] == id && ids.values.all(::isContractUuid) && ids.values.distinct().size == ids.size)
+                val creations = buildMap {
+                    for ((key, value) in ids) {
+                        when {
+                            key == "import" || key == "pack" -> Unit
+                            key.startsWith("asset:") -> require(isContractUuid(key.removePrefix("asset:")))
+                            key.startsWith("theme:") -> {
+                                val parts = key.split(':')
+                                require(parts.size == 3 && isContractUuid(parts[1]) && parts[2].toIntOrNull()?.let { it > 0 && it.toString() == parts[2] } == true)
+                            }
+                            else -> {
+                                val objectKey = key.removePrefix("operation:")
+                                require(objectKey.matches(Regex("(node|metric|link):[a-z][a-z0-9_-]{0,63}")))
+                                require("operation:$objectKey" in ids && objectKey in ids)
+                                if (key.startsWith("operation:")) put(value, ids.getValue(objectKey))
+                            }
+                        }
+                    }
+                }
+                val creationTypes = ids.filterKeys { it.startsWith("operation:") }.entries.associate { (key, value) ->
+                    value to when {
+                        key.startsWith("operation:node:") -> "plan_node"
+                        key.startsWith("operation:metric:") -> "metric"
+                        else -> "activity_metric_link"
+                    }
+                }
+                require(ids.keys.any { it.startsWith("asset:") } == ("pack" in ids))
+                val requests: Set<String>
+                if (head[8] == "prepared") {
+                    require(kinds(id) == if (head[7] == "replacement") setOf("identities", "network") else setOf("identities"))
+                    if (head[7] == "replacement") {
+                        val plan = ConfigNetworkPlan.decode(payload(id, "network", requireNotNull(head[9])))
+                        validateRecoveryAllocation(plan, target, id, creations, creationTypes, ids.values.toSet())
+                        requests = plan.steps.map { it.operationId }.toSet()
+                    } else { require(head[9] == null); requests = creations.keys }
+                    require(requests.none { NextRecoveryKey(NEXT_OPERATION, it) in states }) { "CONFIG_IMPORT_STATE_CHANGED" }
+                } else if (head[7] == "replacement") {
+                    val entry = network(id)
+                    validateRecoveryAllocation(entry.plan, target, id, creations, creationTypes, ids.values.toSet())
+                    for (step in entry.plan.steps) {
+                        val operation = decodeNextOperationIntent(requireNotNull(database.nextRequestDao().origin(NEXT_OPERATION, step.operationId)).intentJson)
+                        val phase = when (step.entityType) {
+                            "metric" -> if (step.action == "delete") 1 else 3
+                            "activity_metric_link" -> if (step.action == "delete") 0 else 5
+                            else -> if (step.action == "delete") {
+                                if (operation.payload["child_policy"] == JsonPrimitive("cascade_children")) 2 else 1
+                            } else when (operation.payload["node_kind"]) {
+                                JsonPrimitive("goal") -> 3
+                                JsonPrimitive("activity") -> 4
+                                else -> error("CONFIG_IMPORT_OPERATION_CHANGED")
+                            }
+                        }
+                        require(step.phase == phase) { "CONFIG_IMPORT_NETWORK_PLAN_CHANGED" }
+                    }
+                    requests = entry.receipt.sources.keys
+                    require(requests.all { NextRecoveryKey(NEXT_OPERATION, it) in states }) { "CONFIG_IMPORT_SOURCE_MISSING" }
+                    if (entry.accepted != null) require(requests.all {
+                        states[NextRecoveryKey(NEXT_OPERATION, it)] == NextRecoveryRequestState.ACCEPTED
+                    }) { "CONFIG_IMPORT_ACCEPTANCES_CHANGED" }
+                    else require(requests.any { states[NextRecoveryKey(NEXT_OPERATION, it)] != NextRecoveryRequestState.ACCEPTED }) {
+                        "CONFIG_IMPORT_ACCEPTANCES_CHANGED"
+                    }
+                } else {
+                    require(kinds(id) == setOf("identities", "receipt"))
+                    val sources = Json.decodeFromString<Map<String, ConfigImportedSource>>(strictAppearanceJson(
+                        payload(id, "receipt", requireNotNull(head[9])), LIMIT, {}) { error("CONFIG_IMPORT_RECEIPT_$it") })
+                    require(sources.keys == creations.keys && sources.values.map { it.queueId }.distinct().size == sources.size)
+                    requests = sources.keys
+                    for ((operationId, source) in sources) {
+                        val key = NextRecoveryKey(NEXT_OPERATION, operationId)
+                        require(key in states && NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?",
+                            arrayOf(key.kind, key.requestId)) != null) { "CONFIG_IMPORT_SOURCE_MISSING" }
+                        val origin = requireNotNull(database.nextRequestDao().origin(key.kind, key.requestId))
+                        val operation = decodeNextOperationIntent(origin.intentJson)
+                        require(origin.queueId == source.queueId && origin.sourceHash == source.sourceHash &&
+                            origin.accountId == target.accountId && origin.serverInstanceId == target.serverInstanceId && origin.syncEpoch == target.syncEpoch &&
+                            operation.operationId == operationId && operation.entityUuid == creations.getValue(operationId) &&
+                            operation.action == "upsert" && operation.baseRevision == null &&
+                            operation.entityType == creationTypes.getValue(operationId)) { "CONFIG_IMPORT_OPERATION_CHANGED" }
+                    }
+                }
+                require(requests.all { claimed.add(it) }) { "CONFIG_IMPORT_DUPLICATE_SOURCE" }
+                result += ReplicaConfigJournal(id, requireNotNull(head[8]), if (head[8] == "prepared") emptyMap() else requests.associate {
+                    NextRecoveryKey(NEXT_OPERATION, it) to states.getValue(NextRecoveryKey(NEXT_OPERATION, it))
+                }, if (head[8] == "prepared") requests else emptySet(), ids.filterKeys { it.startsWith("asset:") }.values.toSet())
+            }
+        }
+        activeNetwork() // Also checks forged/unsupported terminal markers and live-group uniqueness.
+        return result.toList()
+    }
+
+    private fun pendingIdForRecovery(): String? = sql.query("SELECT importId FROM next_config_imports WHERE state='prepared' LIMIT 2").use { c ->
+        if (!c.moveToFirst()) null else c.getString(0).also { require(!c.moveToNext()) { "CONFIG_IMPORT_STATE_CHANGED" } }
+    }
+
+    private fun validateRecoveryAllocation(plan: ConfigNetworkPlan, target: ConfigImportTarget, id: String,
+        creations: Map<String, String>, types: Map<String, String>, ids: Set<String>) {
+        require(plan.target == target && plan.importId == id && plan.steps.filter { it.action == "upsert" }
+            .associate { it.operationId to it.entityUuid } == creations && plan.steps.filter { it.action == "upsert" }.all {
+                it.entityType == types.getValue(it.operationId)
+            } && plan.steps.filter { it.action == "delete" }
+            .none { it.entityUuid in ids || it.operationId in ids }) { "CONFIG_IMPORT_NETWORK_PLAN_CHANGED" }
+    }
 
     fun pending(context: AccountIconContext): String? {
         check(database.inTransaction())
