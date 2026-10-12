@@ -189,6 +189,14 @@ class NextRoundSyncRuntimeTest : NextCoreRequestFixture() {
         val calls = posts.size; storage.reopen(); runtime(http).syncRounds()
         assertEquals(calls, server.requests.count { it.method == "POST" }); assertEquals(26L, merger(http).state(access(), true)!!.cursor)
         rejected { runtime(http).sync() }; assertEquals(calls, server.requests.count { it.method == "POST" })
+        val point = db.withTransaction { NextReplicaStorageProof(db).readInTransaction().hash }
+        val proof = NextReplicaSchemaValidator(app, db, tokens, sessions).validate(access(), point)
+        val image = storage.snapshotClosedDatabase(); val prefs = dataStore.data.first(); val totalCalls = server.requests.size
+        val ledger = NextReplicaRequestProofReader(db, tokens, sessions, preferences, http).read(proof)
+        assertEquals(7, ledger.states.size); assertTrue(ledger.states.values.all { it == NextRecoveryRequestState.ACCEPTED })
+        assertFalse(ledger.hasUnsettledRequests); assertFalse(ledger.activationAuthorized)
+        assertArrayEquals(image, storage.snapshotClosedDatabase()); assertEquals(prefs, dataStore.data.first())
+        assertEquals(totalCalls, server.requests.size)
     }
 
     @Test fun coldProfileBootstrapUsesOnlyExplicitRoutesButLegacyPendingWorkStopsBeforeNetwork() = runBlocking {
