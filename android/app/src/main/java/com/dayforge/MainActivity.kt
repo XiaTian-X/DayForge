@@ -47,6 +47,9 @@ import com.dayforge.ui.theme.ThemeLoadScreen
 import com.dayforge.ui.theme.ThemeRecoveryScreen
 import com.dayforge.ui.navigation.HabitNavGraph
 import com.dayforge.ui.navigation.Screen
+import com.dayforge.ui.navigation.ReplicaPresentationGate
+import com.dayforge.ui.navigation.ReplicaNavigationLifetime
+import com.dayforge.domain.service.ReplicaPresentationController
 import com.dayforge.ui.theme.DayForgeTheme
 import com.dayforge.ui.theme.DayForgeWindow
 import com.dayforge.ui.theme.DayForgeNavigationBar
@@ -72,6 +75,9 @@ class MainActivity : AppCompatActivity() {
     @Inject
     lateinit var iconController: AccountIconController
 
+    @Inject
+    lateinit var replicaPresentation: ReplicaPresentationController
+
     @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -80,28 +86,32 @@ class MainActivity : AppCompatActivity() {
         enableEdgeToEdge()
 
         setContent {
-            val themeState by themeController.state.collectAsState()
+            ReplicaPresentationGate(replicaPresentation) { permit ->
+                val themeState by themeController.state.collectAsState()
 
-            // Calculate WindowSizeClass - auto-updates on resize/rotation
-            val windowSizeClass: WindowSizeClass = calculateWindowSizeClass(this)
+                // Calculate WindowSizeClass - auto-updates on resize/rotation
+                val windowSizeClass: WindowSizeClass = calculateWindowSizeClass(this)
 
-            val loaded = (themeState as? DeviceThemeLoadState.Ready)?.theme
-            if (loaded == null) {
-                var recovering by remember { mutableStateOf(false) }
-                if (recovering) ThemeRecoveryScreen(onBack = { recovering = false })
-                else ThemeLoadScreen(themeState, themeController::retry, onManage = { recovering = true })
-            } else DayForgeTheme(theme = loaded) {
-                CompositionLocalProvider(LocalAccountIcons provides iconController) {
-                    val navController = rememberNavController()
-                    MainScreen(
-                        activity = this@MainActivity,
-                        navController = navController,
-                        tokenManager = tokenManager,
-                        preferencesManager = preferencesManager,
-                        windowSizeClass = windowSizeClass,
-                        reminderRequest = reminderRequest,
-                        onReminderConsumed = { if (reminderRequest == it) reminderRequest = null }
-                    )
+                val loaded = (themeState as? DeviceThemeLoadState.Ready)?.theme
+                if (loaded == null) {
+                    var recovering by remember { mutableStateOf(false) }
+                    if (recovering) ThemeRecoveryScreen(onBack = { recovering = false })
+                    else ThemeLoadScreen(themeState, themeController::retry, onManage = { recovering = true })
+                } else DayForgeTheme(theme = loaded) {
+                    CompositionLocalProvider(LocalAccountIcons provides iconController) {
+                        ReplicaNavigationLifetime(permit) {
+                            val navController = rememberNavController()
+                            MainScreen(
+                                activity = this@MainActivity,
+                                navController = navController,
+                                tokenManager = tokenManager,
+                                preferencesManager = preferencesManager,
+                                windowSizeClass = windowSizeClass,
+                                reminderRequest = reminderRequest,
+                                onReminderConsumed = { if (reminderRequest == it) reminderRequest = null }
+                            )
+                        }
+                    }
                 }
             }
         }

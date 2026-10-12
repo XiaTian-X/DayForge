@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="replica_display_title">Checking the local replica</string>
+    <string name="replica_display_pending">Replica recovery is incomplete. Business data cannot be displayed or changed yet. Original data and archives are retained. Rechecking only reads local state; it does not perform recovery.</string>
+    <string name="replica_display_retry">Recheck local state</string>
     <string name="count_rule_unknown_quantity">Recorded: %1$d · daily target unavailable</string>
     <string name="count_rule_unknown_history">Some past counts lack their original daily rule. Quantities are preserved, but these days are not classified as achieved or failed.</string>
     <string name="theme_custom_version">Custom · v%1$d · %2$s</string>

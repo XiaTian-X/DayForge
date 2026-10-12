@@ -107,6 +107,8 @@ class TokenManager @Inject constructor(
     }
 
     internal fun registerIconCache(cache: AccountIconMemory.Cache) = iconMemory.register(cache)
+    private val replicaPresentation = ReplicaPresentationMemory()
+    internal fun registerReplicaPresentation(cache: ReplicaPresentationMemory.Cache) = replicaPresentation.register(cache)
     internal fun beginIconSelectionTransition() = iconMemory.beginTransition()
     internal fun endIconSelectionTransition() = iconMemory.endTransition()
 
@@ -118,6 +120,7 @@ class TokenManager @Inject constructor(
     private suspend fun editPreferences(block: suspend (MutablePreferences) -> Unit): Preferences {
         val caller = currentCoroutineContext()
         var transitioning = false
+        var replicaTransitioning = false
         try {
             // DataStore owns the write actor: cancelling its caller need not stop a write
             // after transform. Join actual persistence before reopening image publication.
@@ -125,11 +128,16 @@ class TokenManager @Inject constructor(
                 dataStore.edit { preferences ->
                     caller.ensureActive()
                     val before = iconIdentity(preferences)
+                    val beforePointer = preferences.asMap().filterKeys { it.name == ReplicaSwitchGuard.POINTER.name }
                     block(preferences)
                     caller.ensureActive()
                     if (before != iconIdentity(preferences)) {
                         iconMemory.beginTransition()
                         transitioning = true
+                    }
+                    if (beforePointer != preferences.asMap().filterKeys { it.name == ReplicaSwitchGuard.POINTER.name }) {
+                        replicaPresentation.begin()
+                        replicaTransitioning = true
                     }
                 }
             }
@@ -139,6 +147,7 @@ class TokenManager @Inject constructor(
             // Also runs after failed/cancelled writes. Never pretend persistence succeeded;
             // conservative memory eviction is safe and cannot delete installation intent.
             if (transitioning) iconMemory.endTransition()
+            if (replicaTransitioning) replicaPresentation.end()
         }
     }
 
@@ -271,6 +280,28 @@ class TokenManager @Inject constructor(
     }
 
     internal suspend fun replicaSwitchPending(): Boolean = ReplicaSwitchGuard.blocked(dataStore.data.first())
+    internal val replicaPresentationChanges: Flow<Unit> = dataStore.data.map { Unit }
+
+    /** One actual snapshot, no credential export. Orphan/corrupt stages are not an open replica. */
+    internal suspend fun replicaPresentationWitness(): ReplicaPresentationWitness {
+        val values = dataStore.data.first()
+        val rows = values.asMap().filterKeys { it.name.startsWith(ReplicaSwitchStage.KEY_PREFIX) }
+        check(rows.values.sumOf { (it as? String)?.toByteArray(Charsets.UTF_8)?.size?.toLong()
+            ?: error("SYNC_REPLICA_STAGE_INVALID") } <= ReplicaSwitchStage.HISTORY_LIMIT) { "SYNC_REPLICA_STAGE_LIMIT" }
+        val history = rows.map { (key, raw) ->
+            ReplicaSwitchStage.decode(raw as String).also {
+                check(key.name == ReplicaSwitchStage.key(it.recoveryId).name) { "SYNC_REPLICA_STAGE_CHANGED" }
+            }
+        }
+        val present = ReplicaSwitchGuard.blocked(values)
+        val active = if (present) {
+            val id = requireNotNull(values[ReplicaSwitchGuard.POINTER]) { "SYNC_REPLICA_STAGE_MISSING" }
+            requireNotNull(history.singleOrNull { it.recoveryId == id && it.phase != ReplicaSwitchPhase.ABORTED }) {
+                "SYNC_REPLICA_STAGE_MISSING"
+            }
+        } else null
+        return ReplicaPresentationWitness(present, active, history)
+    }
     internal suspend fun requireOrdinaryReplicaAccess() = ReplicaSwitchGuard.requireOpen(dataStore)
 
     internal suspend fun activeReplicaStage(): ReplicaSwitchStage? {

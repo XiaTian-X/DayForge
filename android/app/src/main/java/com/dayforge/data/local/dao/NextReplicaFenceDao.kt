@@ -8,6 +8,9 @@ import com.dayforge.data.local.entity.NextReplicaFenceEntity
 
 @Dao
 interface NextReplicaFenceDao {
+    /** Invalidation signal only. A cached count is never permission to display business data. */
+    @Query("SELECT COUNT(*) FROM next_replica_fence")
+    fun changes(): kotlinx.coroutines.flow.Flow<Int>
     @Query("SELECT * FROM next_replica_fence ORDER BY id")
     suspend fun rows(): List<NextReplicaFenceEntity>
 

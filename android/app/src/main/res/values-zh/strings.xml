@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="replica_display_title">正在核对本地副本</string>
+    <string name="replica_display_pending">副本恢复尚未完成，暂不显示或修改业务数据。原数据和恢复档案保留；重新核对只读取本地状态，不执行恢复。</string>
+    <string name="replica_display_retry">重新核对</string>
     <string name="count_rule_unknown_quantity">已记录 %1$d · 当日目标未知</string>
     <string name="count_rule_unknown_history">部分历史计数缺少原始每日规则，保留数量，但不判定这些日期是否达标或失败。</string>
     <string name="theme_custom_version">自定义 · v%1$d · %2$s</string>
