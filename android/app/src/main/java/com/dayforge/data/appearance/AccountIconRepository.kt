@@ -60,6 +60,12 @@ internal data class AccountIconCatalog(
     val packs: List<IconPack>, val selection: AccountIconSelection, val readyVersions: Set<IconPackVersion>
 )
 
+/** Full owned catalog, not only selected/referenced configuration dependencies. No file proof. */
+internal data class AccountIconRecoveryMetadata(
+    val selection: AccountIconSelection, val assets: List<IconAsset>, val packs: List<IconPack>,
+    val installations: List<IconInstallation>
+)
+
 /** Local safety ceilings; lower limits retain existing data and permit exact replay. */
 internal data class AccountIconLimits(
     val assets: Int = 1000, val bytes: Long = 268_435_456L, val metadataBytes: Long = 8_388_608L
@@ -125,6 +131,17 @@ internal class AccountIconRepository(
             listOfNotNull(asset.light, asset.dark).all { it.sha256 in state.ready }
         } }.map { IconPackVersion(it.packId, it.revision) }.toSet()
         AccountIconCatalog(Collections.unmodifiableList(packs), state.selection, Collections.unmodifiableSet(ready))
+    }
+
+    /** Short read-only transaction; the file lease must be acquired before this account lock. */
+    internal suspend fun recoveryMetadata(context: AccountIconContext): AccountIconRecoveryMetadata = scoped(context) {
+        val state = catalog(context.namespace)
+        AccountIconRecoveryMetadata(state.selection,
+            Collections.unmodifiableList(state.assets.values.sortedBy { it.assetId }),
+            Collections.unmodifiableList(state.packs.values.sortedWith(compareBy<IconPack> { it.packId }.thenBy { it.revision })),
+            Collections.unmodifiableList(state.blobs.toSortedMap().map { (hash, reservation) ->
+                IconInstallation(reservation, state.ready[hash]?.validationProfile)
+            }))
     }
 
     /** One owned metadata/receipt snapshot, not the display resolver's placeholder fallback. */

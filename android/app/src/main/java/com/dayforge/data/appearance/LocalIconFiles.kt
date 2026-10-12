@@ -6,6 +6,7 @@ import android.system.OsConstants
 import com.dayforge.domain.model.IconBlob
 import com.dayforge.domain.model.isContractUuid
 import java.io.Closeable
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileDescriptor
 import java.io.IOException
@@ -100,6 +101,46 @@ internal class LocalIconFiles(root: File, private val io: IconFileIo = IconFileI
         }
         validate(bytes, expected)
         return bytes
+    }
+
+    /**
+     * Archive-only bytes of an already journalled installation, including an empty/partial write.
+     * Not image validation, a ready receipt, cleanup or publication. The caller proves ownership
+     * and holds the namespace lease. Never accept a provider path or an arbitrary filename here.
+     */
+    internal fun readRecoveryTemporary(operationId: String, maximumBytes: Int,
+        checkpoint: () -> Unit): ByteArray {
+        require(isContractUuid(operationId) && maximumBytes in 1..2_097_152)
+        checkpoint()
+        active()
+        val source = path(".install-$operationId.part")
+        return descriptor(source, OsConstants.O_RDONLY).use { handle ->
+            val initial = Os.fstat(handle.fd)
+            require(initial.st_size in 0..maximumBytes.toLong()) { "ICON_RECOVERY_FILE_SIZE" }
+            fun verify() {
+                checkpoint()
+                active()
+                val current = Os.lstat(source)
+                val held = Os.fstat(handle.fd)
+                check(OsConstants.S_ISREG(current.st_mode) && current.st_dev == initial.st_dev &&
+                    current.st_ino == initial.st_ino && held.st_size == initial.st_size &&
+                    current.st_size == initial.st_size) { "ICON_RECOVERY_FILE_CHANGED" }
+            }
+            verify()
+            val output = ByteArrayOutputStream(initial.st_size.toInt())
+            val buffer = ByteArray(65_536)
+            while (true) {
+                checkpoint()
+                val count = io.read(handle.fd, buffer, 0, buffer.size)
+                if (count < 0 || count > buffer.size) throw IOException("ICON_RECOVERY_FILE_READ")
+                if (count == 0) break
+                check(count <= initial.st_size - output.size()) { "ICON_RECOVERY_FILE_CHANGED" }
+                output.write(buffer, 0, count)
+            }
+            check(output.size().toLong() == initial.st_size) { "ICON_RECOVERY_FILE_CHANGED" }
+            verify()
+            output.toByteArray()
+        }
     }
 
     /** Only for an operation proven by the caller's durable journal; final hashes are never removed. */

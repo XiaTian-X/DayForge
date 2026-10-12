@@ -19,6 +19,26 @@
 
 ## 验证层级
 
+### 旧范围图标文件只读归档输入（2026-10-12，Issue #160 / D-022）
+
+AccountIconRecoveryFilesTest 完整12项及 LocalIconFilesTest 完整20项（新增6项），
+与未修改的 AccountIconStoreTest24、AccountIconRepositoryTest25 合批，共81/81通过。
+`7de9c67413e34c6a9a186b69ef9fa4a6/targeted.json` 为 targeted_complete；
+build2分53秒、connected1分31秒，XML68.255秒、0failure/error/skipped；root62、
+编译/lint/告警预算、发现/XML/APK/新覆盖
+输入及 testbed 清理通过。只使用已授权 MI6 和隔离测试包，不安装正式 APK。
+
+覆盖完整自有元数据与未选包/未引用文件、空/部分/完整临时字节、pending 最终文件不
+转 ready、只读权限、冷重开、账户/服务器/epoch 隔离、不可变输出和关闭后的访问拒绝。
+损坏或缺少 ready 文件、超长部分文件、未知文件、符号链接/目录/FIFO、文件替换/增长/
+截断、非法读取进度、同长度内容变化、元数据/权限变化、I/O失败及取消均明确失败，
+原字节和元数据不由读取修改，不进行普通恢复的临时清理。
+
+这是分支的图标文件输入，不是主分支交付或完整素材/恢复：原图标 SQL/schema、
+传输确认/目录日志、主题闭包、持久私有档案及回读、阶段/所有写入发布栅栏、正式确认
+与真实恢复联合仍待完成。没有全量/全局覆盖校准、极端容量、新后端、人工/外网/NAS/
+本机 Docker，未改业务/UI/schema/依赖或默认 v5，未放宽时限、断言或告警预算。
+
 ### 旧副本当前投影与保留历史核验（2026-10-12，Issue #160 / D-022）
 
 新增 NextReplicaBusinessProofReaderTest，连接实际 bootstrap、本地生产者、原请求、
