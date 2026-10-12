@@ -14,11 +14,23 @@ internal class AccountIconStore(private val metadata: AccountIconRepository, pri
     internal fun usesFiles(value: AccountIconFiles): Boolean = files === value
     /** A local display choice, not a structural write. Validate the whole pack, not only visible icons. */
     suspend fun select(context: AccountIconContext, expectedGeneration: Long,
-        version: IconPackVersion?): AccountIconSelection {
+        version: IconPackVersion?): AccountIconSelection = select(context, expectedGeneration, version, restoring = false)
+
+    /** No caller-selected version or arbitrary no-pack fallback. Normal selection stays frozen. */
+    internal suspend fun restoreReplicaSelection(context: AccountIconContext): AccountIconSelection {
+        val intent = requireNotNull(context.recovery).intent
+        val current = metadata.selection(context)
+        if (current != AccountIconSelection(0, null)) intent.requireRestored(current)
+        return select(context, current.generation, intent.version, restoring = true).also { intent.requireRestored(it) }
+    }
+
+    private suspend fun select(context: AccountIconContext, expectedGeneration: Long,
+        version: IconPackVersion?, restoring: Boolean): AccountIconSelection {
         require(expectedGeneration >= 0)
         metadata.reauthorize(context)
         val result = if (version == null) {
-            metadata.selectValidated(context, expectedGeneration, null, emptyMap())
+            if (restoring) metadata.restoreReplicaSelectionValidated(context, expectedGeneration, null, emptyMap())
+            else metadata.selectValidated(context, expectedGeneration, null, emptyMap())
         } else files.exclusive(context.namespace, create = false, beforeAccess = { metadata.reauthorize(context) }) { directory ->
             val pack = requireNotNull(metadata.pack(context, version.packId, version.revision)) { "ICON_PACK_NOT_OWNED" }
             check(metadata.selection(context).generation == expectedGeneration) { "ICON_SELECTION_CHANGED" }
@@ -32,10 +44,13 @@ internal class AccountIconStore(private val metadata: AccountIconRepository, pri
                     receipts[blob.sha256] = receipt
                 } else check(receipts[blob.sha256] == receipt) { "ICON_INSTALL_CHANGED" }
             }
-            metadata.selectValidated(context, expectedGeneration, pack, receipts)
+            if (restoring) metadata.restoreReplicaSelectionValidated(context, expectedGeneration, pack, receipts)
+            else metadata.selectValidated(context, expectedGeneration, pack, receipts)
         }
         // A concurrent choice can commit while withContext queues delivery back to the caller.
-        return metadata.withSelection(context, result) { result }
+        return if (restoring) {
+            check(metadata.selection(context) == result) { "ICON_SELECTION_CHANGED" }; result
+        } else metadata.withSelection(context, result) { result }
     }
 
     suspend fun install(context: AccountIconContext, assetId: String, hash: String, content: ByteArray) {

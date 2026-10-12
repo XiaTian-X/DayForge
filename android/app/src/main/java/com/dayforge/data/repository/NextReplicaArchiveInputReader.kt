@@ -62,8 +62,8 @@ internal class NextReplicaArchiveInputReader(private val context: Context,
     private val database: HabitDatabase, private val tokens: TokenManager,
     private val sessions: AccountSessionCoordinator, private val preferences: PreferencesManager,
     private val http: NextSyncHttp, iconDatabase: AccountIconDatabase,
-    private val iconMetadata: AccountIconRepository, iconTransfers: AccountIconTransfers,
-    iconFiles: AccountIconFiles, appearancePreferences: DataStore<Preferences>,
+    private val iconMetadata: AccountIconRepository, private val iconTransfers: AccountIconTransfers,
+    private val iconFiles: AccountIconFiles, appearancePreferences: DataStore<Preferences>,
     themeFiles: ThemeFileRepository, builtIns: BuiltInThemes) {
     init {
         require(tokens.usesPreferences(appearancePreferences) && preferences.usesPreferences(appearancePreferences) &&
@@ -73,6 +73,30 @@ internal class NextReplicaArchiveInputReader(private val context: Context,
     private val iconDatabaseReader = AccountIconRecoveryDatabase(context, iconDatabase, iconMetadata, iconTransfers)
     private val iconFileReader = AccountIconRecoveryFiles(iconMetadata, iconFiles)
     private val themeReader = DeviceThemeRecoveryReader(appearancePreferences, themeFiles, builtIns)
+
+    internal fun usesDestinationMaterial(metadata: AccountIconRepository, transfers: AccountIconTransfers,
+        store: AccountIconStore): Boolean = iconMetadata === metadata && iconTransfers === transfers &&
+        store.usesMetadata(iconMetadata) && store.usesFiles(iconFiles)
+
+    /** Complete new-scope read under the actual file lease, not old material adoption. Caller
+     * owns the shared material coordinator; no mutation is permitted inside this callback.
+     */
+    internal suspend fun <T> inspectDestinationIcons(captured: AccountIconContext,
+        block: suspend (IconRecoveryDatabaseProof, AccountIconRecoverySnapshot) -> T): T {
+        requireNotNull(captured.recovery).authorize(tokens)
+        val original = iconDatabaseReader.read(captured)
+        val result = iconFileReader.inspect(captured) { files, _ ->
+            require(files.metadata == original.metadata) { "ICON_RECOVERY_PREVIEW_CHANGED" }
+            val value = block(original, files)
+            val after = iconDatabaseReader.read(captured)
+            check(after.hash == original.hash && after.metadata == original.metadata && after.remote == original.remote) {
+                "ICON_RECOVERY_PREVIEW_CHANGED"
+            }
+            value
+        }
+        captured.recovery.authorize(tokens)
+        return result
+    }
 
     suspend fun <T> inspect(captured: LocalSyncAccess, expectedStorageHash: String,
         block: suspend (ReplicaArchiveInput, ReplicaArchiveFileAccess) -> T): T {

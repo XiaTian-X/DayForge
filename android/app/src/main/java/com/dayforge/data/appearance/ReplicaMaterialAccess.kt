@@ -10,12 +10,14 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import okhttp3.Request
 
-/** Scoped READ/download recovery authority, never an ordinary writer/publication override.
+/** Scoped READ/download plus archived exact local selection recovery, never an ordinary
+ * writer/publication override. Network authority remains strictly authenticated GET-only.
  * Only the actual destination SQL/archive verification factory creates it. It stays bound to
  * one live owner and one fresh authentication generation and closes after all owned IO joins.
  */
 internal class ReplicaMaterialAccess private constructor(private val tokens: TokenManager,
-    private val stage: ReplicaSwitchStage, val access: LocalIconAccess, private val owner: Job) {
+    private val stage: ReplicaSwitchStage, val access: LocalIconAccess, private val owner: Job,
+    val intent: ReplicaPackIntent) {
     @Volatile private var open = true
 
     suspend fun authorize(values: TokenManager) {
@@ -81,11 +83,11 @@ internal class ReplicaMaterialAccess private constructor(private val tokens: Tok
                 saved.archiveId, saved.inputHash, saved.byteLength, saved.contentHash,
                 saved.entries.map { ReplicaArchiveEntry(it.name, it.byteLength, it.contentHash) })
             check(commits.fate(stage) == ReplicaCommitFate.COMMITTED) { "SYNC_REPLICA_COMMIT_STATE_INVALID" }
-            archives.verify(receipt) { tokens.replicaDestinationAccess(stage) }
+            val intent = archives.iconIntent(receipt) { tokens.replicaDestinationAccess(stage) }
             val current = tokens.replicaDestinationAccess(stage)
             val access = LocalIconAccess(current.session, requireNotNull(current.deviceId),
                 requireNotNull(current.capabilityRevision), "structure.write" in current.capabilities)
-            val lease = ReplicaMaterialAccess(tokens, stage, access, requireNotNull(currentCoroutineContext()[Job]))
+            val lease = ReplicaMaterialAccess(tokens, stage, access, requireNotNull(currentCoroutineContext()[Job]), intent)
             try {
                 lease.authorize(tokens)
                 val result = block(AccountIconContext(access, lease))

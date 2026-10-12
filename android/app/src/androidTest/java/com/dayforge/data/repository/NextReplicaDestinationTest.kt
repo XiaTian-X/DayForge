@@ -72,16 +72,20 @@ class NextReplicaDestinationTest : NextCoreRequestFixture() {
         val head = initialChallengeRoundHead(it)
         ChallengeCheckpoint(head, listOf(ChallengeRoundRecord(head, null, null, null)))
     }, emptyList())
-    private suspend fun initialize() {
+    private suspend fun initialize(destinationAsset: String? = null) {
         register(); val installation = tokens.getOrCreateInstallationId()
         val meta = checkpoint()
         val snapshot = RoundSyncBootstrapResponse(listOf(habit, timerHabit).map {
             canonical("plan_node", it.uuid, NextStructureMapper.writePlan(it))
         } + canonical("metric", metric.uuid, NextStructureMapper.writeMetric(metric)),
             20, time, emptyList(), 1, meta.checkpoints, meta.births)
+        val destinationSnapshot = if (destinationAsset == null) snapshot else snapshot.copy(changes = snapshot.changes.map { change ->
+            if (change.entityUuid != habit.uuid) change else change.copy(payload = JsonObject(change.payload +
+                ("appearance" to Json.encodeToJsonElement(habit.appearance!!.copy(icon = IconReference.Asset(destinationAsset))))))
+        })
         val response = ReplicaRecoveryPreviewResponse(1, 5, id(1), id(2), id(99),
             RecoveryDeviceProof(id(4), installation, "android", "interactive", null, null,
-                false, false, 2, listOf("sync.read", "facts.append"), time), snapshot, null)
+                false, false, 2, listOf("sync.read", "facts.append"), time), destinationSnapshot, null)
         val json = Json { encodeDefaults = true }
         val channel = channel { input ->
             when (input.path) {
@@ -156,7 +160,8 @@ class NextReplicaDestinationTest : NextCoreRequestFixture() {
     }
     // Independent actual durable observation; ordinary queue APIs intentionally remain frozen.
     private suspend fun destinationJobs() = iconDb.transfers().rows(id(1), id(2), id(99))
-    private fun materialResponse(input: MaterialSocketServer.Input): MaterialSocketServer.Reply {
+    private fun materialResponse(input: MaterialSocketServer.Input,
+        catalog: List<AppearanceCatalogEntry> = listOf(AppearanceCatalogEntry.Asset(1, asset), AppearanceCatalogEntry.Pack(2, pack))): MaterialSocketServer.Reply {
         assertEquals("GET", input.method); assertTrue(input.body.isEmpty())
         assertEquals("5", input.headers["x-dayforge-protocol"])
         assertEquals("Bearer ${runBlocking { tokens.accessToken.first() }}", input.headers["authorization"])
@@ -166,10 +171,10 @@ class NextReplicaDestinationTest : NextCoreRequestFixture() {
         return when (input.path) {
             "/api/v2/appearance/catalog" -> {
                 val after = url.queryParameter("after")!!.toLong()
-                val entries = listOf(AppearanceCatalogEntry.Asset(1, asset), AppearanceCatalogEntry.Pack(2, pack))
-                    .filter { it.sequence > after }
+                val entries = catalog.filter { it.sequence > after }
+                val through = catalog.lastOrNull()?.sequence ?: 0
                 MaterialSocketServer.Reply(materialJson.encodeToString(AppearanceCatalogPage(
-                    AssetSyncContext(id(2), id(99), id(4)), entries, 2, 2, false)).toByteArray())
+                    AssetSyncContext(id(2), id(99), id(4)), entries, through, through, false)).toByteArray())
             }
             "/api/v2/appearance/assets/${asset.assetId}/content/light" -> MaterialSocketServer.Reply(svg,
                 type = "image/svg+xml", headers = mapOf("Cache-Control" to "private, no-store", "X-Content-Type-Options" to "nosniff"))
@@ -186,7 +191,7 @@ class NextReplicaDestinationTest : NextCoreRequestFixture() {
         assertEquals(calls, peer.requests.size)
         val destination = workflow().bindDestination(committed); val archiveBytes = archive(destination).readBytes()
         val sql = ReplicaProjection.capture(db).hash; val metadata = dataStore.data.first()
-        materialReply = ::materialResponse
+        materialReply = { materialResponse(it) }
         assertNotNull(rejected { runtime().synchronize(icons.capture(), AccountIconHttp(client, tokens, peer.origin)) })
         assertEquals(calls, peer.requests.size)
         assertEquals(IconMaterialOutcome.RETRY, workflow().recoverMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)))
@@ -207,10 +212,23 @@ class NextReplicaDestinationTest : NextCoreRequestFixture() {
             workflow().recoverMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)))
         assertArrayEquals(svg, store.read(icons.capture(), asset.assetId, hash)); assertFrozen(destination)
         assertEquals(1, peer.requests.count { it.path.endsWith("/content/light") })
+        val verified = workflow().verifyMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)) as ReplicaMaterialVerification.Verified
+        assertEquals(AccountIconSelection(1, IconPackVersion(pack.packId, 1)), verified.proof.selection)
+        assertFalse(verified.proof.activationAuthorized); assertTrue(verified.proof.unresolvedRoles.isEmpty())
+        coldReopen()
+        val again = workflow().verifyMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)) as ReplicaMaterialVerification.Verified
+        assertEquals(verified.proof.hash, again.proof.hash); assertEquals(verified.proof.selection, again.proof.selection)
+        assertArrayEquals(archiveBytes, archive(destination).readBytes()); assertEquals(metadata, dataStore.data.first())
+        assertEquals(sql, ReplicaProjection.capture(db).hash); assertFrozen(destination)
+        val ready = File(directory, "account-icons-v1/${id(1)}/${id(2)}/${id(99)}/$hash")
+        val damaged = svg.copyOf().also { it[10] = (it[10].toInt() xor 1).toByte() }; ready.writeBytes(damaged)
+        assertNotNull(rejected { workflow().verifyMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)) })
+        assertArrayEquals(damaged, ready.readBytes()); assertEquals(verified.proof.selection, icons.selection(icons.capture()))
+        assertFrozen(destination)
     }
 
     @Test fun transientMaterialFailureRetainsNewDownloadIdentityAndColdResumeNeverReplaysOldNamespaceWork() = runBlocking<Unit> {
-        initialize(); val destination = workflow().bindDestination(committed()); materialReply = ::materialResponse
+        initialize(); val destination = workflow().bindDestination(committed()); materialReply = { materialResponse(it) }
         assertEquals(IconMaterialOutcome.RETRY, workflow().recoverMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)))
         val pending = destinationJobs().single(); assertEquals("download", pending.kind)
         for (status in listOf(503, 401)) {
@@ -226,16 +244,31 @@ class NextReplicaDestinationTest : NextCoreRequestFixture() {
             assertEquals(pending.operationId, transfers.prepareNext(context)!!.job.operationId)
         }
         assertEquals("sending", destinationJobs().single().state)
-        coldReopen(); materialReply = ::materialResponse
+        coldReopen(); materialReply = { materialResponse(it) }
         assertEquals(IconMaterialOutcome.COMPLETE, workflow().recoverMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)))
         val complete = destinationJobs().single(); assertEquals(pending.operationId, complete.operationId)
         assertTrue(complete.generation > retried.generation); assertEquals("complete", complete.state)
         assertArrayEquals(svg, store.read(icons.capture(), asset.assetId, hash)); assertFrozen(destination)
         assertTrue(peer.requests.filter { it.path.startsWith("/api/v2/appearance/") }.all { it.method == "GET" && it.target.contains("sync_epoch=${id(99)}") })
+        val verified = workflow().verifyMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)) as ReplicaMaterialVerification.Verified
+        assertEquals(AccountIconSelection(0, null), verified.proof.selection)
+        assertFalse(verified.proof.activationAuthorized)
+        assertEquals(setOf("habit.custom", "metric.custom"), verified.proof.unresolvedRoles)
+        assertFrozen(destination)
     }
 
     @Test fun recoveryLeaseCannotAuthorizeWritesMalformedScopeRefreshOrWorkAfterReauthenticationOrReturn() = runBlocking<Unit> {
-        initialize(); val destination = workflow().bindDestination(committed()); materialReply = ::materialResponse
+        initialize(); val destination = workflow().bindDestination(committed()); materialReply = { materialResponse(it) }
+        val otherStore = AccountIconStore(icons, AccountIconFiles(directory))
+        val otherTransfers = AccountIconTransfers(iconDb, icons, otherStore)
+        val otherImports = AccountIconImport(icons, otherStore, otherTransfers)
+        val otherRuntime = AccountIconRuntime(icons, otherStore, AccountIconRenderer(icons, otherStore), otherImports,
+            AccountIconDocuments(otherImports, app.contentResolver), {})
+        val beforeCalls = peer.requests.size
+        assertEquals("ICON_RECOVERY_STORE_MISMATCH", rejected {
+            workflow().verifyMaterials(destination, otherRuntime, AccountIconHttp(client, tokens, peer.origin))
+        }.message)
+        assertEquals(beforeCalls, peer.requests.size)
         var captured: AccountIconContext? = null
         ReplicaMaterialAccess.verified(db, tokens, sessions, ReplicaPrivateArchiveStore(directory), destination) { context ->
             captured = context; val lease = context.recovery!!
@@ -276,6 +309,95 @@ class NextReplicaDestinationTest : NextCoreRequestFixture() {
         assertEquals(IconMaterialOutcome.RETRY, workflow().recoverMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)))
         assertEquals(IconMaterialOutcome.COMPLETE, workflow().recoverMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)))
         assertEquals("synthetic-fresh", tokens.accessToken.first()); assertFrozen(destination)
+    }
+
+    @Test fun explicitNoPackSurvivesFreshEmptyRemoteCatalogAndColdRepeatWithoutActivating() = runBlocking<Unit> {
+        initialize(); val old = icons.capture()
+        icons.reserveAsset(old, asset); icons.reservePack(old, pack)
+        store.install(old, asset.assetId, hash, svg)
+        store.select(old, 0, IconPackVersion(pack.packId, 1)); store.select(old, 1, null)
+        val destination = workflow().bindDestination(committed()); val archiveBytes = archive(destination).readBytes()
+        val sql = ReplicaProjection.capture(db).hash; val preferencesBefore = dataStore.data.first()
+        materialReply = { materialResponse(it, emptyList()) }
+        val verified = workflow().verifyMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)) as ReplicaMaterialVerification.Verified
+        assertEquals(AccountIconSelection(1, null), verified.proof.selection); assertFalse(verified.proof.activationAuthorized)
+        assertEquals(setOf("habit.custom", "metric.custom"), verified.proof.unresolvedRoles)
+        assertFalse(File(directory, "account-icons-v1/${id(1)}/${id(2)}/${id(99)}").exists())
+        assertTrue(destinationJobs().isEmpty()); assertTrue(peer.requests.any { it.path == "/api/v2/appearance/catalog" })
+        coldReopen()
+        val again = workflow().verifyMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)) as ReplicaMaterialVerification.Verified
+        assertEquals(verified.proof.hash, again.proof.hash); assertEquals(verified.proof.selection, again.proof.selection)
+        assertEquals(preferencesBefore, dataStore.data.first()); assertEquals(sql, ReplicaProjection.capture(db).hash)
+        assertArrayEquals(archiveBytes, archive(destination).readBytes())
+        assertNotNull(rejected { store.select(icons.capture(), 1, null) }); assertFrozen(destination)
+    }
+
+    @Test fun missingPinnedRevisionCannotFallBackAndFailedSelectionSqlColdResumesExactlyOnce() = runBlocking<Unit> {
+        initialize(); val old = icons.capture()
+        icons.reserveAsset(old, asset); icons.reservePack(old, pack); store.install(old, asset.assetId, hash, svg)
+        store.select(old, 0, IconPackVersion(pack.packId, 1))
+        val destination = workflow().bindDestination(committed())
+        val another = pack.copy(revision = 2)
+        var catalog = listOf(AppearanceCatalogEntry.Asset(1, asset), AppearanceCatalogEntry.Pack(2, another))
+        materialReply = { materialResponse(it, catalog) }
+        assertEquals(ReplicaMaterialVerification.Waiting(IconMaterialOutcome.RETRY),
+            workflow().verifyMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)))
+        assertEquals("ICON_PACK_NOT_OWNED", rejected {
+            workflow().verifyMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin))
+        }.message)
+        assertEquals(AccountIconSelection(0, null), icons.selection(icons.capture())); assertFrozen(destination)
+        ReplicaMaterialAccess.verified(db, tokens, sessions, ReplicaPrivateArchiveStore(directory), destination) { context ->
+            assertEquals("ICON_RECOVERY_PACK_CHANGED", rejected {
+                icons.restoreReplicaSelectionValidated(context, 0, another, emptyMap())
+            }.message)
+            assertEquals("ICON_RECOVERY_PACK_CHANGED", rejected {
+                icons.restoreReplicaSelectionValidated(context, 0, pack.copy(name = "Altered immutable metadata"), emptyMap())
+            }.message)
+            assertNotNull(rejected { store.select(context, 0, IconPackVersion(another.packId, another.revision)) })
+            assertNotNull(rejected { icons.withSelection(context, AccountIconSelection(0, null)) { fail("Publication") } })
+        }
+        catalog = catalog + AppearanceCatalogEntry.Pack(3, pack)
+        iconDb.openHelper.writableDatabase.execSQL("""CREATE TRIGGER synthetic_pin_fault BEFORE INSERT ON icon_pack_selection
+            BEGIN SELECT RAISE(ABORT,'synthetic_pin_fault'); END""")
+        assertNotNull(rejected { workflow().verifyMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)) })
+        assertEquals(AccountIconSelection(0, null), icons.selection(icons.capture()))
+        iconDb.openHelper.writableDatabase.execSQL("DROP TRIGGER synthetic_pin_fault")
+        coldReopen()
+        val verified = workflow().verifyMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)) as ReplicaMaterialVerification.Verified
+        assertEquals(AccountIconSelection(1, IconPackVersion(pack.packId, 1)), verified.proof.selection)
+        assertFalse(verified.proof.activationAuthorized)
+        val again = workflow().verifyMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)) as ReplicaMaterialVerification.Verified
+        assertEquals(verified.proof.hash, again.proof.hash); assertEquals(1L, icons.selection(icons.capture()).generation)
+        assertEquals(1, peer.requests.count { it.path.endsWith("/content/light") }); assertFrozen(destination)
+    }
+
+    @Test fun explicitNewAuthorityAssetMustBeAuthenticatedAndDownloadedBeforeMaterialProof() = runBlocking<Unit> {
+        val requiredAsset = asset.copy(assetId = id(102), name = "Required fixed reference")
+        initialize(destinationAsset = requiredAsset.assetId)
+        val destination = workflow().bindDestination(committed())
+        var catalog = listOf(AppearanceCatalogEntry.Asset(1, asset), AppearanceCatalogEntry.Pack(2, pack))
+        materialReply = { input ->
+            if (input.path == "/api/v2/appearance/assets/${requiredAsset.assetId}/content/light")
+                MaterialSocketServer.Reply(svg, type = "image/svg+xml", headers = mapOf("Cache-Control" to "private, no-store",
+                    "X-Content-Type-Options" to "nosniff")) else materialResponse(input, catalog)
+        }
+        assertEquals(ReplicaMaterialVerification.Waiting(IconMaterialOutcome.RETRY),
+            workflow().verifyMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)))
+        assertEquals("ICON_RECOVERY_REFERENCE_MISSING", rejected {
+            workflow().verifyMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin))
+        }.message)
+        assertEquals(IconReference.Asset(requiredAsset.assetId), db.habitDao().getHabitByUuid(habit.uuid)!!.appearance!!.icon)
+        assertEquals(AccountIconSelection(0, null), icons.selection(icons.capture())); assertFrozen(destination)
+        catalog = catalog + AppearanceCatalogEntry.Asset(3, requiredAsset)
+        assertEquals(ReplicaMaterialVerification.Waiting(IconMaterialOutcome.RETRY),
+            workflow().verifyMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)))
+        coldReopen()
+        val verified = workflow().verifyMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)) as ReplicaMaterialVerification.Verified
+        assertEquals(AccountIconSelection(0, null), verified.proof.selection); assertFalse(verified.proof.activationAuthorized)
+        assertEquals(setOf("habit.custom", "metric.custom"), verified.proof.unresolvedRoles)
+        assertArrayEquals(svg, store.read(icons.capture(), requiredAsset.assetId, hash))
+        assertTrue(destinationJobs().all { it.kind == "download" && it.state == "complete" })
+        assertFrozen(destination)
     }
 
     @Test fun destinationPublishesCompleteMetadataAtomicallyWithoutBorrowingOldMaterialOrResettingTheme() = runBlocking<Unit> {

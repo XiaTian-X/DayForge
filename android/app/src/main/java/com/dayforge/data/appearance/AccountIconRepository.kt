@@ -235,15 +235,29 @@ internal class AccountIconRepository(
 
     /** Only the file store may activate a pack, after proving all its real ready variants. */
     suspend fun selectValidated(context: AccountIconContext, expectedGeneration: Long,
-        pack: IconPack?, receipts: Map<String, IconInstallation>): AccountIconSelection {
+        pack: IconPack?, receipts: Map<String, IconInstallation>): AccountIconSelection =
+        selectValidated(context, expectedGeneration, pack, receipts, restoring = false)
+
+    /** Only the archived exact preference is accepted, after the store's real file verification. */
+    internal suspend fun restoreReplicaSelectionValidated(context: AccountIconContext, expectedGeneration: Long,
+        pack: IconPack?, receipts: Map<String, IconInstallation>): AccountIconSelection =
+        selectValidated(context, expectedGeneration, pack, receipts, restoring = true)
+
+    private suspend fun selectValidated(context: AccountIconContext, expectedGeneration: Long,
+        pack: IconPack?, receipts: Map<String, IconInstallation>, restoring: Boolean): AccountIconSelection {
         require(expectedGeneration >= 0)
         var transitioning = false
         try {
             return scoped(context) {
-                tokens.requireOrdinaryReplicaAccess()
+                val intent = if (restoring) requireNotNull(context.recovery).also { it.authorize(tokens) }.intent
+                    else { tokens.requireOrdinaryReplicaAccess(); null }
                 val ns = context.namespace
                 val before = catalog(ns)
                 check(before.selection.generation == expectedGeneration) { "ICON_SELECTION_CHANGED" }
+                intent?.let {
+                    it.requirePack(pack)
+                    if (before.selection != AccountIconSelection(0, null)) it.requireRestored(before.selection)
+                }
                 val version = pack?.let { IconPackVersion(it.packId, it.revision) }
                 if (pack != null) {
                     check(before.packs[pack.packId to pack.revision] == pack) { "ICON_PACK_NOT_OWNED" }
@@ -252,7 +266,8 @@ internal class AccountIconRepository(
                     }.associateBy { it.reservation.blob.sha256 }
                     check(variants == receipts && variants.values.all { it.validationProfile != null }) { "ICON_NOT_READY" }
                 } else require(receipts.isEmpty())
-                if (before.selection.pack == version) return@scoped before.selection
+                if (before.selection.pack == version &&
+                    !(intent != null && intent.originalGeneration > 0 && before.selection.generation == 0L)) return@scoped before.selection
                 check(expectedGeneration < Long.MAX_VALUE) { "ICON_SELECTION_EXHAUSTED" }
                 val next = AccountIconSelection(expectedGeneration + 1, version)
                 tokens.beginIconSelectionTransition(); transitioning = true

@@ -5,6 +5,9 @@ import com.dayforge.data.api.NextSyncHttp
 import com.dayforge.data.appearance.AccountIconNamespace
 import com.dayforge.data.appearance.AccountIconHttp
 import com.dayforge.data.appearance.ReplicaMaterialAccess
+import com.dayforge.data.appearance.ConfigIconUse
+import com.dayforge.domain.model.ObjectAppearance
+import kotlinx.serialization.json.*
 import com.dayforge.data.local.*
 import com.dayforge.data.local.entity.NextReplicaFenceEntity
 import com.dayforge.domain.service.AccountSessionCoordinator
@@ -124,9 +127,55 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
     suspend fun recoverMaterials(expected: ReplicaSwitchStage, material: AccountIconRuntime,
         transport: AccountIconHttp): IconMaterialOutcome = coordinator.coordinateReplicaRecovery {
         require(expected.phase == ReplicaSwitchPhase.DESTINATION_BOUND)
-        require(material.metadata.usesAccess(tokens, sessions)) { "ICON_RECOVERY_STORE_MISMATCH" }
+        require(material.metadata.usesAccess(tokens, sessions) &&
+            inputs.usesDestinationMaterial(material.metadata, material.transfers, material.store)) { "ICON_RECOVERY_STORE_MISMATCH" }
         ReplicaMaterialAccess.verified(database, tokens, sessions, archives, expected) { context ->
             material.synchronize(context, transport)
+        }
+    }
+
+    /** Fresh authenticated directory/transfer round, exact archived preference and ALL owned
+     * metadata/receipts/files + current/retained authority references. Still no activation.
+     */
+    suspend fun verifyMaterials(expected: ReplicaSwitchStage, material: AccountIconRuntime,
+        transport: AccountIconHttp): ReplicaMaterialVerification = coordinator.coordinateReplicaRecovery {
+        require(material.metadata.usesAccess(tokens, sessions) &&
+            inputs.usesDestinationMaterial(material.metadata, material.transfers, material.store)) { "ICON_RECOVERY_STORE_MISMATCH" }
+        ReplicaMaterialAccess.verified(database, tokens, sessions, archives, expected) { context ->
+            val (outcome, proof) = material.recoverAndInspect(context, transport) {
+                val uses = destinationUses(expected)
+                material.store.restoreReplicaSelection(context)
+                inputs.inspectDestinationIcons(context) { metadata, files ->
+                    ReplicaMaterialProof.checked(expected, context, uses, metadata, files)
+                }
+            }
+            if (proof == null) ReplicaMaterialVerification.Waiting(outcome)
+            else ReplicaMaterialVerification.Verified(proof)
+        }
+    }
+
+    private suspend fun destinationUses(stage: ReplicaSwitchStage): List<ConfigIconUse> = sessions.exclusive {
+        database.withTransaction {
+            check(commits.fateInTransaction(stage) == ReplicaCommitFate.COMMITTED) { "SYNC_REPLICA_COMMIT_STATE_INVALID" }
+            val projection = ReplicaProjection.capture(database)
+            val uses = mutableListOf<ConfigIconUse>()
+            fun add(appearance: JsonElement, once: Boolean) {
+                uses += ConfigIconUse(Json.decodeFromJsonElement<ObjectAppearance>(appearance).icon, once)
+            }
+            for (table in listOf("habits", "metrics")) for (value in projection.tables.getValue(table).jsonArray) {
+                val row = value.jsonObject
+                val appearance = row.getValue("appearance").jsonObject.getValue("value").jsonPrimitive.content
+                val once = table == "habits" && row.getValue("completionPolicy").jsonObject.getValue("value") == JsonPrimitive("one_and_done")
+                add(Json.parseToJsonElement(appearance), once)
+            }
+            NextAuthorityShadowReader(database).readInTransaction { change ->
+                if (change.operation == "upsert" && change.entityType in setOf("plan_node", "metric")) {
+                    val activity = change.payload["activity"] as? JsonObject
+                    add(change.payload.getValue("appearance"), change.entityType == "plan_node" &&
+                        activity?.get("completion_policy") == JsonPrimitive("one_and_done"))
+                }
+            }
+            java.util.Collections.unmodifiableList(uses.distinct().sortedBy { Json.encodeToJsonElement(it.reference).toString() + it.oneTime })
         }
     }
 

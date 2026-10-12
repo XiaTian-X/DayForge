@@ -6,6 +6,8 @@ import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
 import com.dayforge.data.appearance.AccountIconNamespace
+import com.dayforge.data.appearance.ReplicaPackIntent
+import com.dayforge.data.appearance.strictAppearanceJson
 import com.dayforge.data.appearance.ICON_OPEN_CLOEXEC
 import com.dayforge.domain.model.isContractUuid
 import java.io.*
@@ -136,11 +138,32 @@ internal class ReplicaPrivateArchiveStore(filesDirectory: File, private val io: 
             val caller = currentCoroutineContext()
             directory(receipt.namespace, create = false) { root, verify, _ ->
                 descriptor(File(root, "${receipt.archiveId}.candidate"), OsConstants.O_RDONLY) { fd ->
-                    readback(fd, receipt, verify) { caller.ensureActive() }
+                    readback(fd, receipt, verify, { caller.ensureActive() })
                 }
             }
         }
         authorize()
+    }
+
+    /** Bounded preference read from the SAME descriptor as full frame/hash/EOF verification.
+     * No file extraction, old pixel adoption or path reuse. Damaged later frames reject the read.
+     */
+    suspend fun iconIntent(receipt: ReplicaArchiveReceipt, authorize: suspend () -> Unit): ReplicaPackIntent = lease.withLock {
+        authorize()
+        require(isContractUuid(receipt.archiveId)) { "SYNC_ARCHIVE_RECEIPT_INVALID" }
+        val intent = withContext(Dispatchers.IO) {
+            val caller = currentCoroutineContext()
+            directory(receipt.namespace, create = false) { root, verify, _ ->
+                descriptor(File(root, "${receipt.archiveId}.candidate"), OsConstants.O_RDONLY) { fd ->
+                    val bytes = requireNotNull(readback(fd, receipt, verify, { caller.ensureActive() }, captureIcons = true))
+                    val text = strictAppearanceJson(bytes, JSON_LIMIT.toInt(), { caller.ensureActive() }) {
+                        error("SYNC_ARCHIVE_ICON_$it")
+                    }
+                    ReplicaPackIntent.fromArchive(receipt.namespace, Json.parseToJsonElement(text) as JsonObject) { caller.ensureActive() }
+                }
+            }
+        }
+        authorize(); intent
     }
 
     private fun measure(value: JsonObject, checkpoint: () -> Unit): Pair<Long, String> {
@@ -171,7 +194,8 @@ internal class ReplicaPrivateArchiveStore(filesDirectory: File, private val io: 
         return total
     }
 
-    private fun readback(fd: FileDescriptor, receipt: ReplicaArchiveReceipt, verify: () -> Unit, checkpoint: () -> Unit) {
+    private fun readback(fd: FileDescriptor, receipt: ReplicaArchiveReceipt, verify: () -> Unit,
+        checkpoint: () -> Unit, captureIcons: Boolean = false): ByteArray? {
         require(isContractUuid(receipt.archiveId) && receipt.inputHash == receipt.entries.firstOrNull()?.contentHash &&
             receipt.contentHash.matches(Regex("[0-9a-f]{64}")) && receipt.byteLength == length(receipt.entries)) { "SYNC_ARCHIVE_RECEIPT_INVALID" }
         val before = Os.fstat(fd)
@@ -190,21 +214,27 @@ internal class ReplicaPrivateArchiveStore(filesDirectory: File, private val io: 
         val input = DataInputStream(BufferedInputStream(DigestInputStream(stream, digest), 65_536))
         val magic = ByteArray(MAGIC.size); input.readFully(magic); require(magic.contentEquals(MAGIC)) { "SYNC_ARCHIVE_FORMAT_INVALID" }
         val buffer = ByteArray(65_536)
+        var icons: ByteArray? = null
         for (entry in receipt.entries) {
             checkpoint()
             require(input.readInt() == entry.name.length) { "SYNC_ARCHIVE_ENTRY_INVALID" }
             val name = ByteArray(entry.name.length); input.readFully(name)
             require(name.contentEquals(entry.name.toByteArray(Charsets.US_ASCII)) && input.readLong() == entry.byteLength) { "SYNC_ARCHIVE_ENTRY_INVALID" }
             var remaining = entry.byteLength; val content = MessageDigest.getInstance("SHA-256")
+            val captured = if (captureIcons && entry.name == "icons.json") ByteArray(entry.byteLength.toInt()) else null
             while (remaining > 0) {
                 checkpoint(); val amount = minOf(remaining, buffer.size.toLong()).toInt()
+                val offset = (entry.byteLength - remaining).toInt()
                 input.readFully(buffer, 0, amount); content.update(buffer, 0, amount); remaining -= amount
+                captured?.let { buffer.copyInto(it, offset, 0, amount) }
             }
             require(hash(content.digest()) == entry.contentHash) { "SYNC_ARCHIVE_CONTENT_INVALID" }
+            if (captured != null) icons = captured
         }
         require(input.readInt() == 0 && input.read() == -1 && hash(digest.digest()) == receipt.contentHash) { "SYNC_ARCHIVE_CONTENT_INVALID" }
         val after = Os.fstat(fd); verify(); checkpoint()
         require(after.st_dev == before.st_dev && after.st_ino == before.st_ino && after.st_size == before.st_size) { "SYNC_ARCHIVE_FILE_CHANGED" }
+        return icons
     }
 
     private suspend fun <T> directory(ns: AccountIconNamespace, create: Boolean,

@@ -97,6 +97,21 @@ internal class AccountIconRuntime(
     /** One captured session/route and sole owner, including the real file recovery and all phases. */
     suspend fun synchronize(context: AccountIconContext, http: AccountIconHttp,
         dependenciesChanged: () -> Unit = {}): IconMaterialOutcome = materialOwner.withLock {
+        synchronizeOwned(context, http, dependenciesChanged)
+    }
+
+    /** Fresh remote admission and full verification share the SAME canonical owner. The callback
+     * is never ordinary publication; its recovery lease only restores the archived exact choice.
+     */
+    internal suspend fun <T : Any> recoverAndInspect(context: AccountIconContext, http: AccountIconHttp,
+        inspect: suspend () -> T): Pair<IconMaterialOutcome, T?> = materialOwner.withLock {
+        requireNotNull(context.recovery)
+        val outcome = synchronizeOwned(context, http) {}
+        outcome to if (outcome == IconMaterialOutcome.COMPLETE) inspect() else null
+    }
+
+    private suspend fun synchronizeOwned(context: AccountIconContext, http: AccountIconHttp,
+        dependenciesChanged: () -> Unit): IconMaterialOutcome =
         withTimeoutOrNull(maximumRoundMillis) {
             http.session(context) { session ->
                 session.authorize(context)
@@ -121,7 +136,6 @@ internal class AccountIconRuntime(
                 }
             } ?: IconMaterialOutcome.UNSUPPORTED
         } ?: IconMaterialOutcome.RETRY // Only our deadline; parent cancellation still propagates after IO joins.
-    }
 }
 
 /** Lazy process-singleton storage, using the same authoritative credentials/coordinator as login. */

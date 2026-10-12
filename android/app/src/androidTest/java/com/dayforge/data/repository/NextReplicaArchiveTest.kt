@@ -736,6 +736,9 @@ class NextReplicaArchiveTest : NextCoreRequestFixture() {
         val forged = ReplicaArchiveReceipt(receipt.namespace, "../owned-target", receipt.inputHash,
             receipt.byteLength, receipt.contentHash, receipt.entries)
         assertEquals("SYNC_ARCHIVE_RECEIPT_INVALID", rejected { service().verify(access(), forged) }.message)
+        assertEquals("SYNC_ARCHIVE_RECEIPT_INVALID", rejected { ReplicaPrivateArchiveStore(directory).iconIntent(forged) {} }.message)
+        val intent = ReplicaPrivateArchiveStore(directory).iconIntent(receipt) {}
+        assertEquals(0L, intent.originalGeneration); assertNull(intent.version)
         assertArrayEquals(original, file.readBytes())
         val corruptions = listOf(original.copyOf().also { it[0] = 0 }, original.copyOf().also { it[it.lastIndex] = 1 },
             original.copyOf().also { it[it.lastIndex - 10] = (it[it.lastIndex - 10].toInt() xor 1).toByte() },
@@ -743,6 +746,7 @@ class NextReplicaArchiveTest : NextCoreRequestFixture() {
         for (bad in corruptions) {
             file.writeBytes(bad)
             rejected { service(ReplicaPrivateArchiveStore(directory)).verify(access(), receipt) }
+            rejected { ReplicaPrivateArchiveStore(directory).iconIntent(receipt) {} }
             assertArrayEquals(bad, file.readBytes())
         }
         file.writeBytes(original); service().verify(access(), receipt)
@@ -783,6 +787,7 @@ class NextReplicaArchiveTest : NextCoreRequestFixture() {
         val receipt = service(store).create(access(), raw)
         assertTrue(writes > 1); assertTrue(reads > 1)
         service(store).verify(access(), receipt); assertEquals(raw, storageHash())
+        assertNull(store.iconIntent(receipt) {}.version)
         assertEquals(receipt.contentHash, sha(archive(receipt).readBytes()))
         assertFalse(receipt.activationAuthorized)
     }
