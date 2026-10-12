@@ -2200,6 +2200,85 @@
         "title": "PackDeclaration",
         "type": "object"
       },
+      "RecoveryPackVersion": {
+        "additionalProperties": false,
+        "properties": {
+          "pack_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Pack Id",
+            "type": "string"
+          },
+          "revision": {
+            "maximum": 2147483647,
+            "minimum": 1,
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pack_id",
+          "revision"
+        ],
+        "title": "RecoveryPackVersion",
+        "type": "object"
+      },
+      "ReplicaRecoveryMaterialPreview": {
+        "additionalProperties": false,
+        "description": "Metadata gaps only, not native bytes, selection or activation authority.",
+        "properties": {
+          "assets": {
+            "items": {
+              "$ref": "#/components/schemas/AssetRecord"
+            },
+            "maxItems": 50000,
+            "title": "Assets",
+            "type": "array"
+          },
+          "material_contract": {
+            "const": 1,
+            "title": "Material Contract",
+            "type": "integer"
+          },
+          "missing_assets": {
+            "items": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "maxItems": 50000,
+            "title": "Missing Assets",
+            "type": "array"
+          },
+          "pack": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IconPack"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requested_pack": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RecoveryPackVersion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "material_contract",
+          "requested_pack",
+          "pack",
+          "assets",
+          "missing_assets"
+        ],
+        "title": "ReplicaRecoveryMaterialPreview",
+        "type": "object"
+      },
       "ReplicaRecoveryPreviewResponse": {
         "additionalProperties": false,
         "properties": {
@@ -2220,6 +2299,17 @@
           },
           "device": {
             "$ref": "#/components/schemas/DeviceResponse"
+          },
+          "material_preview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReplicaRecoveryMaterialPreview"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "protocol_version": {
             "const": 5,
@@ -4899,6 +4989,35 @@
             "schema": {
               "maxLength": 255,
               "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_materials",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pack_id",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pack_revision",
+            "required": false,
+            "schema": {
+              "pattern": "^[1-9][0-9]{0,9}$",
               "type": "string"
             }
           }

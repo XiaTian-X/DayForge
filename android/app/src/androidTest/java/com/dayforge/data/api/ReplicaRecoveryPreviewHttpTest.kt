@@ -24,6 +24,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import okhttp3.OkHttpClient
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -89,6 +90,74 @@ class ReplicaRecoveryPreviewHttpTest {
     private suspend fun rejected(block: suspend () -> Unit): Throwable {
         try { block() } catch (error: Exception) { if (error is CancellationException) throw error; return error }
         throw AssertionError("Must reject")
+    }
+
+    @Test fun materialPreviewIsAnExactOptInGetAndDoesNotGrantWritesOrRefresh() = runBlocking<Unit> {
+        val original = capture(); val requested = RecoveryPackVersion(id(100), 7)
+        val (http, server) = peer { input, _ -> if (input.path.endsWith("/identity")) reply(identity()) else {
+            val url = ("http://localhost" + input.target).toHttpUrl()
+            assertEquals(path, input.path); assertEquals("GET", input.method)
+            assertEquals(listOf("1"), url.queryParameterValues("include_materials"))
+            assertEquals(listOf(requested.packId), url.queryParameterValues("pack_id"))
+            assertEquals(listOf("7"), url.queryParameterValues("pack_revision"))
+            val raw = Json.decodeFromJsonElement<ReplicaRecoveryPreviewResponse>(candidate())
+            reply(wire.encodeToString(raw.copy(materialPreview = ReplicaRecoveryMaterialPreview(1, requested, null, emptyList(), emptyList()))))
+        } }
+        data.edit { it[com.dayforge.data.local.ReplicaSwitchGuard.POINTER] = "missing-stage" }
+        val before = data.data.first()
+        val result = http.recoveryPreview(original, id(5), installation, includeMaterials = true, requestedPack = requested)
+        assertEquals(requested, result.materialPreview!!.requestedPack); assertNull(result.materialPreview.pack)
+        assertEquals(2, server.requests.size); assertEquals(before, data.data.first())
+        rejected { http.session(original) { fail("No writable Session") } }
+        assertEquals(2, server.requests.size)
+    }
+
+    @Test fun exactPackRolesDecodeStrictlyAndMalformedMapsScopesAndPartitionsFailClosed() = runBlocking<Unit> {
+        val original = capture(); val requested = RecoveryPackVersion(id(100), 1)
+        val blob = com.dayforge.domain.model.IconBlob("a".repeat(64), 96, "image/png", 24, 24)
+        val asset = com.dayforge.domain.model.IconAsset(id(102), "Readonly asset", "general", "template", blob, null)
+        val pack = com.dayforge.domain.model.IconPack("dayforge.icon-pack", 1, requested.packId, 1, "Readonly pack",
+            listOf(asset), mapOf("habit.water" to asset.assetId), null)
+        val record = com.dayforge.domain.model.AssetRecord(com.dayforge.domain.model.AssetSyncContext(id(2), id(5), id(4)),
+            asset, listOf("light"))
+        val envelope = Json.decodeFromJsonElement<ReplicaRecoveryPreviewResponse>(candidate()).copy(
+            materialPreview = ReplicaRecoveryMaterialPreview(1, requested, pack, listOf(record), emptyList()))
+        val good = wire.encodeToString(envelope); var response = good
+        val (http, server) = peer { input, _ -> if (input.path.endsWith("/identity")) reply(identity()) else reply(response) }
+        val before = data.data.first()
+        assertEquals(pack, http.recoveryPreview(original, id(5), installation, true, requested).materialPreview!!.pack)
+        val pair = "\"habit.water\":\"${asset.assetId}\""
+        for (raw in listOf(good.replace(pair, "\"habit.water\":7"), good.replace(pair, "\"habit.water\":null"),
+            good.replace(pair, "\"habit.water\":true"), good.replace(pair, "$pair,$pair"),
+            good.replace(pair, "\"task.water\":\"${asset.assetId}\""),
+            good.replace("\"roles\":{$pair}", "\"roles\":[]"),
+            good.replace("\"device_id\":\"${id(4)}\"", "\"device_id\":\"${id(90)}\""),
+            good.replace("\"missing_assets\":[]", "\"missing_assets\":[\"${asset.assetId}\"]"),
+            good.replace("\"material_contract\":1", "\"material_contract\":true"))) {
+            assertNotEquals(good, raw); response = raw
+            assertTrue(rejected { http.recoveryPreview(original, id(5), installation, true, requested) } is NextSyncReplyInvalid)
+        }
+        assertEquals(before, data.data.first()); assertTrue(server.requests.all { it.method == "GET" })
+    }
+
+    @Test fun missingOrSubstitutedMaterialEvidenceNeverPassesOptInValidation() = runBlocking<Unit> {
+        val original = capture(); val requested = RecoveryPackVersion(id(100), 1)
+        var response = candidate().toString()
+        val (http, _) = peer { input, _ -> if (input.path.endsWith("/identity")) reply(identity()) else reply(response) }
+        val before = data.data.first()
+        assertTrue(rejected { http.recoveryPreview(original, id(5), installation, true, requested) } is IOException)
+        val raw = Json.decodeFromJsonElement<ReplicaRecoveryPreviewResponse>(candidate())
+        response = wire.encodeToString(raw.copy(materialPreview = ReplicaRecoveryMaterialPreview(1,
+            requested.copy(revision = 2), null, emptyList(), emptyList())))
+        assertTrue(rejected { http.recoveryPreview(original, id(5), installation, true, requested) } is IOException)
+        assertEquals(before, data.data.first())
+    }
+
+    @Test fun selectedPackWithoutOptInIsRejectedBeforeAnyNetwork() = runBlocking<Unit> {
+        val original = capture(); val (http, server) = peer { _, _ -> error("No request") }
+        assertTrue(rejected { http.recoveryPreview(original, id(5), installation, requestedPack = RecoveryPackVersion(id(100), 1)) }
+            is IllegalArgumentException)
+        assertTrue(server.requests.isEmpty())
     }
 
     @Test fun frozenReplicaStillAllowsOnlyFixedAuthenticatedNewEpochReadWithoutPublishingAuthority() = runBlocking<Unit> {

@@ -17,7 +17,8 @@ import java.util.UUID
 
 /** Fresh evidence for a future explicit confirmation, NOT user consent or COMMIT authority. */
 internal class ReplicaRecoveryConfirmationEvidence internal constructor(val stage: ReplicaSwitchStage,
-    val candidate: ValidatedReplicaCandidate, val differences: ReplicaDifferencePreview) {
+    val candidate: ValidatedReplicaCandidate, val differences: ReplicaDifferencePreview,
+    val materials: ReplicaMaterialPreflight) {
     val activationAuthorized: Boolean get() = false
 }
 
@@ -43,6 +44,7 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
         require(!preview.hasUnfinishedTimer && preview.unconfirmedLocalRecords.isEmpty()) { "SYNC_RECOVERY_REVIEW_REQUIRED" }
         val stage = inputs.inspect(fresh.original, preview.oldStorage.hash) { input, _ ->
             require(!input.hasReview) { "SYNC_RECOVERY_REVIEW_REQUIRED" }
+            materialPreflight(fresh, input).requireAvailable()
             val prior = sessions.exclusive { database.withTransaction { database.nextReplicaFenceDao().state() } }
             require(prior == null || prior.mode == NextReplicaFenceEntity.CLOSED) { "SYNC_REPLICA_FENCE_CHANGED" }
             val original = fresh.original
@@ -87,10 +89,13 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
         val fresh = candidate(expected.original, expected.newEpoch, expected.installationId)
         requireCandidate(expected, fresh)
         expected.target?.let { require(it == target(fresh)) { "SYNC_RECOVERY_PREVIEW_CHANGED" } }
-        val preview = verifiedInput(expected) { _, _ -> differences.capture(fresh) }
+        val (preview, materials) = verifiedInput(expected) { input, _ ->
+            val material = materialPreflight(fresh, input).also { it.requireAvailable() }
+            differences.capture(fresh) to material
+        }
         require(!preview.hasUnfinishedTimer && preview.unconfirmedLocalRecords.isEmpty()) { "SYNC_RECOVERY_REVIEW_REQUIRED" }
         requireCurrent(expected)
-        return ReplicaRecoveryConfirmationEvidence(expected, fresh, preview)
+        return ReplicaRecoveryConfirmationEvidence(expected, fresh, preview, materials)
     }
 
     /** Only an explicit caller action invokes this, never discovery/startup/diagnostic GET.
@@ -276,6 +281,17 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
 
     private suspend fun candidate(original: LocalSyncAccess, epoch: String, installation: String): ValidatedReplicaCandidate =
         candidates.validate(original, installation, http.recoveryPreview(original, epoch, installation))
+
+    private suspend fun materialPreflight(candidate: ValidatedReplicaCandidate, input: ReplicaArchiveInput): ReplicaMaterialPreflight {
+        val selected = input.icons.metadata.selection.pack
+        val response = http.recoveryPreview(candidate.original, candidate.newEpoch, candidate.deviceProof.installationId,
+            includeMaterials = true, requestedPack = selected?.let { com.dayforge.data.api.dto.RecoveryPackVersion(it.packId, it.revision) })
+        val fresh = candidates.validate(candidate.original, candidate.deviceProof.installationId, response)
+        require(fresh.contentHash == candidate.contentHash && fresh.projection.hash == candidate.projection.hash) {
+            "SYNC_RECOVERY_PREVIEW_CHANGED"
+        }
+        return ReplicaMaterialPreflight.checked(response, input.icons.metadata)
+    }
 
     private fun requireCandidate(stage: ReplicaSwitchStage, fresh: ValidatedReplicaCandidate) {
         require(fresh.original == stage.original && fresh.newEpoch == stage.newEpoch &&

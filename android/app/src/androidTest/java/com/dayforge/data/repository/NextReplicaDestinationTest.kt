@@ -46,6 +46,7 @@ class NextReplicaDestinationTest : NextCoreRequestFixture() {
     private lateinit var peer: MaterialSocketServer
     private val materialJson = Json { encodeDefaults = true }
     private var materialReply: ((MaterialSocketServer.Input) -> MaterialSocketServer.Reply)? = null
+    private var recoveryPack: IconPack? = null
     // Registry intentionally holds weak references. Keep the real fault observer alive across
     // the complete archive verification, including GC, until this per-case fixture is released.
     private lateinit var cancellationCache: AccountIconMemory.Cache
@@ -92,7 +93,12 @@ class NextReplicaDestinationTest : NextCoreRequestFixture() {
                 "/api/v2/system/identity" -> reply(input).let { it.copy(bytes = it.bytes.toString(Charsets.UTF_8).replace(id(3), id(99)).toByteArray()) }
                 "/api/v2/sync/rounds/recovery-preview" -> {
                     assertEquals("GET", input.method)
-                    MaterialSocketServer.Reply(json.encodeToString(response).toByteArray())
+                    val selected = recoveryPack ?: pack
+                    val available = selected.assets + listOfNotNull(destinationAsset?.let {
+                        asset.copy(assetId = it, name = "Required fixed reference")
+                    })
+                    MaterialSocketServer.Reply(json.encodeToString(recoveryMaterialReply(response, input,
+                        listOf(selected), available)).toByteArray())
                 }
                 else -> if (input.path.startsWith("/api/v2/appearance/")) requireNotNull(materialReply)(input)
                     else error("Recovery may not send ordinary work: ${input.path}")
@@ -412,6 +418,7 @@ class NextReplicaDestinationTest : NextCoreRequestFixture() {
         val asset = IconAsset(id(100), "Old asset", "general", "template", blob, blob)
         val pack = IconPack("dayforge.icon-pack", 1, id(101), 1, "Old pack", listOf(asset),
             mapOf("habit.custom" to id(100), "metric.custom" to id(100)), id(100))
+        recoveryPack = pack // Exact restored server metadata, not the other tests' default style.
         val oldContext = icons.capture(); icons.reserveAsset(oldContext, asset); icons.reservePack(oldContext, pack)
         store.install(oldContext, asset.assetId, hash, svg); store.select(oldContext, 0, IconPackVersion(pack.packId, 1))
         val oldMaterial = icons.recoveryMetadata(oldContext)

@@ -53,6 +53,15 @@ internal fun <T> decodeSyncReply(bytes: ByteArray, limit: Int, serializer: KSeri
                     require(raw is JsonArray)
                     raw.forEach { typed(it, descriptor.getElementDescriptor(0)) }
                 }
+                StructureKind.MAP -> {
+                    // IconPack roles are a JSON object with typed string keys/values.
+                    // Do not coerce scalars or silently skip the descriptor's value checks.
+                    require(raw is JsonObject && descriptor.getElementDescriptor(0).kind == PrimitiveKind.STRING)
+                    raw.forEach { (key, value) ->
+                        typed(JsonPrimitive(key), descriptor.getElementDescriptor(0))
+                        typed(value, descriptor.getElementDescriptor(1))
+                    }
+                }
                 StructureKind.CLASS, StructureKind.OBJECT -> {
                     require(raw is JsonObject)
                     repeat(descriptor.elementsCount) { index ->

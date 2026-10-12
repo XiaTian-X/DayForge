@@ -23,7 +23,11 @@ from src.v2.errors import DomainError
 from src.v2.invariants import require_internal
 from src.v2.read_service import bootstrap, pull_changes
 from src.v2.protocol_admission import require_next_business
-from src.v2.recovery_snapshot_contract import ReplicaRecoveryPreviewResponse
+from src.v2.recovery_snapshot_contract import (
+    ReplicaRecoveryPreviewResponse,
+    RecoveryPackVersion,
+)
+from src.v2.contract_types import PublicId
 from src.v2.recovery_snapshot_service import read_recovery_preview
 from src.v2.replica_context import (
     ReplicaIdentity,
@@ -84,14 +88,40 @@ async def recovery_preview(
     device_id: UUID,
     installation_id: str = Query(..., min_length=1, max_length=255),
     challenge_contract: str = Query(..., pattern="^1$"),
+    include_materials: str | None = Query(None, pattern="^1$"),
+    pack_id: PublicId | None = Query(None),
+    pack_revision: str | None = Query(None, pattern=r"^[1-9][0-9]{0,9}$"),
     user: User = Depends(_preview_user),
     db: AsyncSession = Depends(get_session, scope="function"),
 ) -> ReplicaRecoveryPreviewResponse:
     try:
-        if (
-            http.query_params.getlist("device_id") != [str(device_id)]
-            or http.query_params.getlist("installation_id") != [installation_id]
-            or http.query_params.getlist("challenge_contract") != ["1"]
+        expected = dict(
+            device_id=str(device_id),
+            installation_id=installation_id,
+            challenge_contract="1",
+        )
+        if include_materials is not None:
+            expected["include_materials"] = "1"
+        if (pack_id is None) != (pack_revision is None) or (
+            pack_id is not None and include_materials != "1"
+        ):
+            raise DomainError(
+                "INVALID_SYNC_CONTEXT",
+                "Exact selected pack pair requires material preview",
+            )
+        requested = None
+        if pack_id is not None and pack_revision is not None:
+            if int(pack_revision) > 2_147_483_647:
+                raise DomainError(
+                    "INVALID_SYNC_CONTEXT", "Invalid selected pack revision"
+                )
+            expected.update(pack_id=pack_id, pack_revision=pack_revision)
+            requested = RecoveryPackVersion(
+                pack_id=pack_id, revision=int(pack_revision)
+            )
+        if set(http.query_params.keys()) != set(expected) or any(
+            http.query_params.getlist(name) != [value]
+            for name, value in expected.items()
         ):
             raise DomainError(
                 "INVALID_SYNC_CONTEXT", "Single exact query context required"
@@ -108,7 +138,14 @@ async def recovery_preview(
             raise DomainError(
                 "DEVICE_IDENTITY_MISMATCH", "Installation does not match device"
             )
-        result = await read_recovery_preview(user, device, replica, db)
+        result = await read_recovery_preview(
+            user,
+            device,
+            replica,
+            db,
+            include_materials=include_materials == "1",
+            requested_pack=requested,
+        )
         response.headers["Cache-Control"] = "private, no-store"
         return result
     except DomainError as error:

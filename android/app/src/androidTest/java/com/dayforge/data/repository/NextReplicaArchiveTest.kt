@@ -46,6 +46,7 @@ class NextReplicaArchiveTest : NextCoreRequestFixture() {
     private var task: HabitEntity? = null
     private var remoteCount = false
     private var recoveryWire: ReplicaRecoveryPreviewResponse? = null
+    private var materialPreviewTransform: (ReplicaRecoveryPreviewResponse) -> ReplicaRecoveryPreviewResponse = { it }
     private val svg = """<svg width="1" height="1"><rect width="1" height="1" fill="#000000"/></svg>""".toByteArray()
     private fun sha(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
     private fun blob() = IconBlob(sha(svg), svg.size, "image/svg+xml", 1, 1)
@@ -111,7 +112,9 @@ class NextReplicaArchiveTest : NextCoreRequestFixture() {
                     .replace(id(3), id(99)).toByteArray())
             } else if (input.path == "/api/v2/sync/rounds/recovery-preview") {
                 assertEquals("GET", input.method)
-                MaterialSocketServer.Reply(json.encodeToString(requireNotNull(recoveryWire)).toByteArray())
+                val response = recoveryMaterialReply(requireNotNull(recoveryWire), input, listOf(pack()), listOf(asset()))
+                MaterialSocketServer.Reply(json.encodeToString(if (response.materialPreview == null) response
+                    else materialPreviewTransform(response)).toByteArray())
             } else {
                 assertEquals("/api/v2/sync/rounds/push", input.path)
                 val request = json.decodeFromString<RoundSyncPushRequest>(input.body.toString(Charsets.UTF_8))
@@ -210,6 +213,36 @@ class NextReplicaArchiveTest : NextCoreRequestFixture() {
             .authenticator(com.dayforge.data.api.authenticator.TokenAuthenticator(tokens, preferences,
                 com.dayforge.data.api.SelectedNetworkTransport())).build()
         http = NextSyncHttp(client, tokens, peer.origin)
+    }
+
+    @Test fun missingExactMaterialPackBlocksBeforeAnyFreezeOrArchive() = runBlocking<Unit> {
+        initialize(); completeMaterial(); startRecovery()
+        val preview = differences().capture(recoveryCandidate())
+        val original = storageHash(); val preferencesBefore = dataStore.data.first()
+        materialPreviewTransform = { response -> response.copy(materialPreview = response.materialPreview!!.copy(pack = null, assets = emptyList())) }
+        assertEquals("ICON_RECOVERY_PACK_MISSING", rejected { workflow().prepare(preview) }.message)
+        assertNull(tokens.activeReplicaStage()); assertNull(db.nextReplicaFenceDao().state())
+        assertEquals(original, storageHash()); assertEquals(preferencesBefore, dataStore.data.first())
+        assertFalse(File(directory, "replica-archives-v1").exists())
+    }
+
+    @Test fun freshMaterialLossInvalidatesConfirmationAndColdResumeWithoutCommitting() = runBlocking<Unit> {
+        initialize(); completeMaterial(); startRecovery()
+        val flow = workflow(); val stage = flow.prepare(differences().capture(recoveryCandidate()))
+        val evidence = flow.verifyForConfirmation(stage)
+        evidence.materials.requireAvailable(); assertFalse(evidence.materials.nativeFilesVerified)
+        val before = storageHash(); val saved = archive(receipt(stage)).readBytes()
+        materialPreviewTransform = { response -> response.copy(materialPreview = response.materialPreview!!.let { material ->
+            material.copy(assets = material.assets.map { it.copy(readyVariants = emptyList()) })
+        }) }
+        assertEquals("ICON_RECOVERY_CONTENT_PENDING", rejected { flow.confirm(evidence) }.message)
+        assertEquals(before, storageHash()); assertEquals(stage, tokens.activeReplicaStage())
+        assertArrayEquals(saved, archive(receipt(stage)).readBytes())
+        coldReopen()
+        assertEquals("ICON_RECOVERY_CONTENT_PENDING", rejected { workflow().verifyForConfirmation(stage) }.message)
+        assertEquals(stage, tokens.activeReplicaStage()); assertEquals(before, storageHash())
+        assertArrayEquals(saved, archive(receipt(stage)).readBytes())
+        assertEquals(ReplicaSwitchPhase.ABORTED, workflow().cancel(stage).phase)
     }
 
     @Test fun explicitConfirmationCommitsExactProjectionAndKeepsSqlAndPublicationFrozenAfterColdReopen() = runBlocking<Unit> {

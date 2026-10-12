@@ -419,6 +419,17 @@ def rendered_contract():
                 "installation_id",
                 schema={"type": "string", "minLength": 1, "maxLength": 255},
             ),
+            parameter(
+                "include_materials",
+                required=False,
+                schema={"type": "string", "enum": ["1"]},
+            ),
+            parameter("pack_id", required=False),
+            parameter(
+                "pack_revision",
+                required=False,
+                schema={"type": "string", "pattern": "^[1-9][0-9]{0,9}$"},
+            ),
         ],
         replica=True,
     )

@@ -69,7 +69,9 @@ internal class NextSyncHttp private constructor(
     }
 
     /** The new scope is usable ONLY by a fixed read-only GET, never by a writable Session. */
-    suspend fun recoveryPreview(captured: LocalSyncAccess, newEpoch: String, installation: String): ReplicaRecoveryPreviewResponse {
+    suspend fun recoveryPreview(captured: LocalSyncAccess, newEpoch: String, installation: String,
+        includeMaterials: Boolean = false, requestedPack: RecoveryPackVersion? = null): ReplicaRecoveryPreviewResponse {
+        require(includeMaterials || requestedPack == null)
         require(captured.deviceId != null && isContractUuid(newEpoch) && newEpoch != captured.session.syncEpoch && isContractUuid(installation))
         authorize(tokens, captured, recoveryReadOnly = true)
         if (tokens.registeredInstallationId() != installation) throw IOException("SYNC_SESSION_CHANGED")
@@ -79,7 +81,7 @@ internal class NextSyncHttp private constructor(
                 throw NextSyncHttpFailure(409, "SERVER_IDENTITY_MISMATCH")
             if (identity.syncEpoch != newEpoch) throw NextSyncHttpFailure(409, "SYNC_EPOCH_MISMATCH")
             if (identity.protocolVersion != 5) throw NextSyncHttpFailure(426, "CLIENT_UPGRADE_REQUIRED")
-            session.readRecoveryPreview(newEpoch, installation)
+            session.readRecoveryPreview(newEpoch, installation, includeMaterials, requestedPack)
         }
         authorize(tokens, captured, recoveryReadOnly = true)
         if (tokens.registeredInstallationId() != installation) throw IOException("SYNC_SESSION_CHANGED")
@@ -129,13 +131,18 @@ internal class NextSyncHttp private constructor(
             }
         }
 
-        internal suspend fun readRecoveryPreview(newEpoch: String, installation: String): ReplicaRecoveryPreviewResponse {
+        internal suspend fun readRecoveryPreview(newEpoch: String, installation: String,
+            includeMaterials: Boolean, requestedPack: RecoveryPackVersion?): ReplicaRecoveryPreviewResponse {
             val builder = request("/api/v2/sync/rounds/recovery-preview").queryRoundDevice()
                 .header("X-DayForge-Sync-Epoch", newEpoch)
-            val response = value(builder.url(builder.build().url.newBuilder()
-                .addQueryParameter("installation_id", installation).build()),
+            val url = builder.build().url.newBuilder().addQueryParameter("installation_id", installation)
+            if (includeMaterials) url.addQueryParameter("include_materials", "1")
+            requestedPack?.let { url.addQueryParameter("pack_id", it.packId).addQueryParameter("pack_revision", it.revision.toString()) }
+            val response = value(builder.url(url.build()),
                 ReplicaRecoveryPreviewResponse.serializer(), BOOTSTRAP_REPLY)
             valid {
+                if (includeMaterials) require(requireNotNull(response.materialPreview).requestedPack == requestedPack)
+                else require(response.materialPreview == null)
                 require(response.accountId == context.session.authentication.userId &&
                     response.serverInstanceId == context.session.serverInstanceId && response.syncEpoch == newEpoch)
                 val proof = response.device
