@@ -109,6 +109,13 @@ class BusinessSyncRepository @Inject internal constructor(
             null, 4 -> if (retryRejected) legacy.retrySyncForAuthentication(original, progress)
                 else legacy.syncForAuthentication(original, progress, afterSync)
             5 -> {
+                // A changed epoch needs an explicit recovery preview, not a registration
+                // with relabelled old work. This diagnostic never publishes new authority.
+                if (originalSync != null && identity.serverInstanceId == originalSync.session.serverInstanceId &&
+                    identity.syncEpoch != originalSync.session.syncEpoch) {
+                    throw NextReplicaRecoveryRequired(NextReplicaRecoveryReader(database, tokens, sessions)
+                        .read(originalSync, identity))
+                }
                 val (core, oldSync) = sessions.exclusive {
                     check(tokens.authenticationSnapshot()?.session == original) { "SYNC_ACCOUNT_CHANGED" }
                     val core = requireNotNull(tokens.localCoreWriteAccess()) { "SYNC_ACCOUNT_PROOF_REQUIRED" }
