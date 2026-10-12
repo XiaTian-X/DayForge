@@ -197,4 +197,14 @@ class NextReplicaStageStoreTest : NextCoreRequestFixture() {
         assertEquals(before, dataStore.data.first()); assertEquals(source, hash()); assertFalse(tokens.replicaSwitchPending())
         assertNull(tokens.replicaStage(good.recoveryId)); assertNotNull(tokens.localCoreWriteAccess())
     }
+
+    @Test fun optionalReceiptFieldsDoNotPreventExactCancelOfAnOlderPreCommitJournal() = runBlocking<Unit> {
+        val stage = begin()
+        val key = ReplicaSwitchStage.key(stage.recoveryId)
+        dataStore.edit { values ->
+            values[key] = values[key]!!.replace(",\"previousFenceHash\":null", "").replace(",\"archive\":null", "")
+        }
+        assertEquals(stage, stages().active()); stages().cancel(stage)
+        assertFalse(tokens.replicaSwitchPending()); assertNotNull(tokens.localCoreWriteAccess())
+    }
 }

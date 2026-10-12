@@ -58,9 +58,7 @@ internal class NextReplicaDifferenceReader(private val database: HabitDatabase, 
             require(previous.assessment.original == current.assessment.original &&
                 previous.assessment.observedEpoch == current.assessment.observedEpoch &&
                 previous.oldStorage.hash == current.oldStorage.hash &&
-                previous.candidate.cursor == fresh.cursor && previous.candidate.deviceProof == fresh.deviceProof &&
-                previous.candidate.records == fresh.records &&
-                previous.candidate.hasUnfinishedTimer == fresh.hasUnfinishedTimer) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
+                previous.candidate.contentHash == fresh.contentHash) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
             current
         } } }
 

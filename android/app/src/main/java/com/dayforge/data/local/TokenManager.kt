@@ -304,8 +304,8 @@ class TokenManager @Inject constructor(
                 }
             } else {
                 check(values[ReplicaSwitchGuard.POINTER] == expected.recoveryId &&
-                    values[key] == ReplicaSwitchStage.encode(expected) &&
-                    frozen == expected.transition(frozen.phase)) { "SYNC_REPLICA_STAGE_CHANGED" }
+                    values[key]?.let { ReplicaSwitchStage.decode(it) } == expected &&
+                    frozen == expected.transition(frozen.phase, frozen.archive)) { "SYNC_REPLICA_STAGE_CHANGED" }
                 val actual = syncAccess(values)
                 val authenticated = actual?.let { frozen.original.copy(session = frozen.original.session.copy(
                     authentication = it.session.authentication)) }

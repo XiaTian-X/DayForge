@@ -47,6 +47,17 @@ internal class NextReplicaStageStore(private val database: HabitDatabase, privat
         }
     }
 
+    /** Owning workflow has verified the complete source closure and actual private archive bytes. */
+    suspend fun recordArchive(expected: ReplicaSwitchStage,
+        receipt: com.dayforge.data.local.ReplicaStageArchive): ReplicaSwitchStage = sessions.exclusive {
+        database.withTransaction {
+            check(database.nextReplicaFenceDao().state() == expected.fence) { "SYNC_REPLICA_FENCE_CHANGED" }
+            check(NextReplicaSourceClosure.storage(NextReplicaStorageProof(database).readInTransaction(), expected.fence) ==
+                expected.sourceHash) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
+            tokens.persistReplicaStage(expected, expected.transition(ReplicaSwitchPhase.ARCHIVE_VERIFIED, receipt))
+        }
+    }
+
     /** Only pre-COMMIT phases exist here. Close SQL first, then release the persistent pointer.
      * If delivery/persistence is interrupted, ordinary work stays blocked until this exact cancel
      * observes the actual closed row and finishes forward. No data or credential restoration.

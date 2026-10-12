@@ -32,6 +32,15 @@ internal class ValidatedReplicaCandidate internal constructor(
     val hasUnfinishedTimer: Boolean
 ) {
     val records: Map<ReplicaRecordKey, JsonElement> = Collections.unmodifiableMap(records.toMap())
+    /** Stable business/device proof, excluding only volatile response server_time/wire bytes. */
+    val contentHash: String = syncPayloadHash(canonicalReplicaJson(buildJsonObject {
+        put("new_epoch", newEpoch); put("cursor", cursor); put("unfinished_timer", hasUnfinishedTimer)
+        put("device", Json.encodeToJsonElement(deviceProof.copy(capabilities = deviceProof.capabilities.sorted())))
+        put("records", buildJsonArray {
+            for ((key, value) in records.entries.sortedWith(compareBy({ it.key.kind }, { it.key.identity })))
+                add(buildJsonObject { put("kind", key.kind); put("identity", key.identity); put("value", value) })
+        })
+    }).toString())
     val activationAuthorized: Boolean get() = false
 }
 

@@ -45,6 +45,7 @@ class NextReplicaArchiveTest : NextCoreRequestFixture() {
     private lateinit var peer: MaterialSocketServer
     private var task: HabitEntity? = null
     private var remoteCount = false
+    private var recoveryWire: ReplicaRecoveryPreviewResponse? = null
     private val svg = """<svg width="1" height="1"><rect width="1" height="1" fill="#000000"/></svg>""".toByteArray()
     private fun sha(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
     private fun blob() = IconBlob(sha(svg), svg.size, "image/svg+xml", 1, 1)
@@ -105,7 +106,13 @@ class NextReplicaArchiveTest : NextCoreRequestFixture() {
             sql.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
         }
         val channel = channel { input ->
-            if (input.path.endsWith("/identity")) reply(input) else {
+            if (input.path.endsWith("/identity")) reply(input).let { reply ->
+                if (recoveryWire == null) reply else reply.copy(bytes = reply.bytes.toString(Charsets.UTF_8)
+                    .replace(id(3), id(99)).toByteArray())
+            } else if (input.path == "/api/v2/sync/rounds/recovery-preview") {
+                assertEquals("GET", input.method)
+                MaterialSocketServer.Reply(json.encodeToString(requireNotNull(recoveryWire)).toByteArray())
+            } else {
                 assertEquals("/api/v2/sync/rounds/push", input.path)
                 val request = json.decodeFromString<RoundSyncPushRequest>(input.body.toString(Charsets.UTF_8))
                 val operation = request.operations.single()
@@ -159,6 +166,142 @@ class NextReplicaArchiveTest : NextCoreRequestFixture() {
         block()
         assertArrayEquals(before, storage.snapshotClosedDatabase()); assertEquals(prefs, dataStore.data.first())
         assertEquals(scope, access()); assertEquals(calls, peer.requests.size); assertEquals(iconsBefore, icons.recoveryMetadata(icons.capture()))
+    }
+
+    private suspend fun startRecovery() {
+        val installation = tokens.getOrCreateInstallationId()
+        recoveryWire = ReplicaRecoveryPreviewResponse(1, 5, id(1), id(2), id(99),
+            RecoveryDeviceProof(id(4), installation, "android", "interactive", null, null,
+                false, false, 1, listOf("sync.read", "facts.append"), time),
+            RoundSyncBootstrapResponse(listOf(habit, timerHabit).map {
+                canonical("plan_node", it.uuid, NextStructureMapper.writePlan(it))
+            } + canonical("metric", metric.uuid, NextStructureMapper.writeMetric(metric)),
+                20, time, emptyList(), 1, metadata().checkpoints, metadata().births), null)
+    }
+    private fun validator() = NextReplicaCandidateValidator(app, tokens, sessions, preferences)
+    private fun differences() = NextReplicaDifferenceReader(db, tokens, sessions, preferences)
+    private suspend fun recoveryCandidate() = validator().validate(access(), tokens.registeredInstallationId()!!,
+        http.recoveryPreview(access(), id(99), tokens.registeredInstallationId()!!))
+    private fun workflow(store: ReplicaPrivateArchiveStore = ReplicaPrivateArchiveStore(directory)): NextReplicaRecoveryWorkflow {
+        val coordinator = BusinessSyncRepository(io.mockk.mockk(), io.mockk.mockk(), db, tokens, sessions, http,
+            NextSyncRuntime(db, tokens, sessions, http, preferences))
+        return NextReplicaRecoveryWorkflow(coordinator, db, tokens, sessions, http, validator(), differences(), reader(), store)
+    }
+    private fun receipt(stage: ReplicaSwitchStage): ReplicaArchiveReceipt {
+        val saved = stage.archive!!
+        return ReplicaArchiveReceipt(AccountIconNamespace(stage.accountId, stage.serverInstanceId, stage.oldEpoch),
+            saved.archiveId, saved.inputHash, saved.byteLength, saved.contentHash,
+            saved.entries.map { ReplicaArchiveEntry(it.name, it.byteLength, it.contentHash) })
+    }
+
+    @Test fun completeWorkflowPersistsArchiveAndColdVerifiesFreshEvidenceWithoutSwitchingScope() = runBlocking<Unit> {
+        initialize(fixed = true); completeMaterial(); initializeThemes(); startRecovery()
+        val original = access(); val initial = differences().capture(recoveryCandidate())
+        val before = db.withTransaction { NextReplicaSourceClosure.storage(NextReplicaStorageProof(db).readInTransaction(), null) }
+        val staged = workflow().prepare(initial)
+        assertEquals(ReplicaSwitchPhase.ARCHIVE_VERIFIED, staged.phase); assertEquals(3L, staged.generation)
+        assertEquals(before, staged.sourceHash); assertNotNull(staged.archive)
+        assertTrue(archive(receipt(staged)).exists()); assertEquals(staged, tokens.activeReplicaStage())
+        assertNull(tokens.localCoreWriteAccess()); assertEquals(original, access())
+        assertThrows(UnsupportedOperationException::class.java) { (staged.archive!!.entries as MutableList).clear() }
+        storage.reopen()
+        val oldWire = recoveryWire!!
+        recoveryWire = oldWire.copy(snapshot = oldWire.snapshot.copy(serverTime = "2026-10-06T00:01:00Z",
+            changes = oldWire.snapshot.changes.reversed()), device = oldWire.device.copy(capabilities = oldWire.device.capabilities.reversed()))
+        assertEquals(staged, workflow().resume(tokens.activeReplicaStage()!!))
+        val proof = workflow().verifyForConfirmation(staged)
+        assertFalse(proof.activationAuthorized); assertTrue(proof.differences.differences.isEmpty())
+        assertEquals(staged.candidateHash, proof.candidate.contentHash); assertNotEquals(staged.candidateWireHash, proof.candidate.wireHash)
+        assertEquals(20L, db.nextSyncStateDao().rows().single().cursor); assertEquals(original, access())
+        val ended = workflow().cancel(staged)
+        assertEquals(4L, ended.generation); assertEquals(staged.archive, ended.archive)
+        assertTrue(archive(receipt(staged)).exists()); assertNotNull(tokens.localCoreWriteAccess()); assertEquals(original, access())
+    }
+
+    @Test fun changedSourceOrMissingMaterialBeforeFreezeCannotCreateAnActiveStage() = runBlocking<Unit> {
+        initialize(fixed = true); startRecovery()
+        val preview = differences().capture(recoveryCandidate()); val before = storageHash()
+        assertEquals("SYNC_RECOVERY_REVIEW_REQUIRED", rejected { workflow().prepare(preview) }.message)
+        assertFalse(tokens.replicaSwitchPending()); assertNull(db.nextReplicaFenceDao().state()); assertEquals(before, storageHash())
+        assertFalse(File(directory, "replica-archives-v1").exists())
+        completeMaterial()
+        val writer = producer(); writer.writeRounds(writer.captureRounds()) { metrics().recordValue(metric.id, 5.5, "", millis) }
+        val changed = storageHash()
+        assertEquals("SYNC_RECOVERY_PREVIEW_CHANGED", rejected { workflow().prepare(preview) }.message)
+        assertFalse(tokens.replicaSwitchPending()); assertEquals(changed, storageHash()); assertEquals(1, db.syncOutboxDao().getAll().size)
+    }
+
+    @Test fun archiveFailureLeavesFrozenStageAndResumeCreatesNewCandidateWithoutAdoptingPartialFile() = runBlocking<Unit> {
+        initialize(); startRecovery(); val preview = differences().capture(recoveryCandidate())
+        val failing = ReplicaPrivateArchiveStore(directory, object : ReplicaArchiveIo() {
+            override fun sync(fd: FileDescriptor) { throw IOException("simulated archive fsync failure") }
+        })
+        assertEquals("simulated archive fsync failure", rejected { workflow(failing).prepare(preview) }.message)
+        val frozen = tokens.activeReplicaStage()!!; assertEquals(ReplicaSwitchPhase.FROZEN, frozen.phase); assertNull(frozen.archive)
+        assertEquals(frozen.fence, db.nextReplicaFenceDao().state()); assertNull(tokens.localCoreWriteAccess())
+        val root = File(directory, "replica-archives-v1/${id(1)}/${id(2)}/${id(3)}")
+        val partial = root.listFiles()!!.single(); val retained = partial.readBytes()
+        val wire = recoveryWire!!; recoveryWire = wire.copy(snapshot = wire.snapshot.copy(nextCursor = 21))
+        assertEquals("SYNC_RECOVERY_PREVIEW_CHANGED", rejected { workflow().resume(frozen) }.message)
+        assertEquals(frozen, tokens.activeReplicaStage()); assertEquals(1, root.listFiles()!!.size)
+        recoveryWire = wire
+        val archived = workflow().resume(frozen)
+        assertEquals(ReplicaSwitchPhase.ARCHIVE_VERIFIED, archived.phase); assertNotEquals(partial, archive(receipt(archived)))
+        assertArrayEquals(retained, partial.readBytes()); assertEquals(2, root.listFiles()!!.size)
+        assertFalse(workflow().verifyForConfirmation(archived).activationAuthorized)
+    }
+
+    @Test fun corruptedArchiveOrChangedDeviceProofInvalidatesConfirmationWithoutReplacingTheReceipt() = runBlocking<Unit> {
+        initialize(); startRecovery(); val stage = workflow().prepare(differences().capture(recoveryCandidate()))
+        val wire = recoveryWire!!; recoveryWire = wire.copy(device = wire.device.copy(capabilityRevision = 2))
+        assertEquals("SYNC_RECOVERY_PREVIEW_CHANGED", rejected { workflow().verifyForConfirmation(stage) }.message)
+        recoveryWire = wire
+        val file = archive(receipt(stage)); val bytes = file.readBytes(); bytes[bytes.size / 2] = (bytes[bytes.size / 2].toInt() xor 1).toByte()
+        file.writeBytes(bytes)
+        assertNotNull(rejected { workflow().verifyForConfirmation(stage) }); assertNotNull(rejected { workflow().resume(stage) })
+        assertEquals(stage, tokens.activeReplicaStage()); assertEquals(stage.fence, db.nextReplicaFenceDao().state())
+        assertEquals(1, file.parentFile!!.listFiles()!!.size); assertNull(tokens.localCoreWriteAccess())
+        workflow().cancel(stage); assertArrayEquals(bytes, file.readBytes()); assertEquals(id(3), tokens.syncEpoch.first())
+    }
+
+    @Test fun coldResumeAtEveryActualFreezeGapRevalidatesFullInputsAndArchiveBeforeConfirmation() = runBlocking<Unit> {
+        initialize(); completeMaterial(); initializeThemes(); startRecovery()
+        for (gap in 0..2) {
+            val fresh = recoveryCandidate(); val prior = db.nextReplicaFenceDao().state()
+            val inputStage = reader().inspect(access(), storageHash()) { input, _ ->
+                tokens.replicaStageFixture(NextReplicaSourceClosure.storage(input.storage, prior)).copy(newEpoch = id(99),
+                    inputHash = NextReplicaSourceClosure.input(input, prior), candidateHash = fresh.contentHash,
+                    candidateWireHash = fresh.wireHash, previousFenceHash = NextReplicaSourceClosure.controlHash(prior))
+            }
+            var stage = NextReplicaStageStore(db, tokens, sessions).begin(inputStage)
+            if (gap > 0) NextReplicaWriteFence(db).acquire(stage.fence)
+            if (gap == 2) stage = NextReplicaStageStore(db, tokens, sessions).recordFrozen(stage)
+            scope.coroutineContext[Job]!!.cancelAndJoin(); scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            dataStore = androidx.datastore.preferences.core.PreferenceDataStoreFactory.create(scope = scope,
+                produceFile = { File(directory, "auth.preferences_pb") })
+            tokens = TokenManager(dataStore); preferences = PreferencesManager(dataStore); storage.reopen(); configureIcons()
+            client.connectionPool.evictAll(); client.dispatcher.executorService.shutdown()
+            client = okhttp3.OkHttpClient.Builder()
+                .addInterceptor(com.dayforge.data.api.interceptor.BaseUrlInterceptor(preferences))
+                .addInterceptor(com.dayforge.data.api.interceptor.AuthInterceptor(tokens))
+                .authenticator(com.dayforge.data.api.authenticator.TokenAuthenticator(tokens, preferences,
+                    com.dayforge.data.api.SelectedNetworkTransport())).build()
+            http = NextSyncHttp(client, tokens, peer.origin)
+            assertEquals(stage, tokens.activeReplicaStage()); assertNull(tokens.localCoreWriteAccess())
+            val archived = workflow().resume(stage); assertEquals(ReplicaSwitchPhase.ARCHIVE_VERIFIED, archived.phase)
+            assertFalse(workflow().verifyForConfirmation(archived).activationAuthorized)
+            workflow().cancel(archived); assertNotNull(tokens.localCoreWriteAccess()); assertEquals(id(3), tokens.syncEpoch.first())
+        }
+    }
+
+    @Test fun sameOwnerReauthenticationCannotContinueArchivedConfirmationButCanCancelWithoutRestoringCredentials() = runBlocking<Unit> {
+        initialize(); startRecovery(); val archived = workflow().prepare(differences().capture(recoveryCandidate()))
+        tokens.clearAuthenticationTokens()
+        assertNotNull(rejected { workflow().resume(archived) })
+        tokens.saveLoginSession("synthetic-relogin", "synthetic-refresh", "member", id(1), false)
+        assertEquals("SYNC_REPLICA_STAGE_AUTHORITY_CHANGED", rejected { workflow().verifyForConfirmation(archived) }.message)
+        workflow().cancel(archived); assertEquals("synthetic-relogin", tokens.accessToken.first())
+        assertEquals(id(3), tokens.syncEpoch.first()); assertTrue(archive(receipt(archived)).exists())
     }
 
     @Test fun frozenParticipantsStillAllowActualCompleteOldInputAndPrivateArchiveColdReadback() = runBlocking<Unit> {

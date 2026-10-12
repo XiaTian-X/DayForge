@@ -39,6 +39,9 @@ class BusinessSyncRepository @Inject internal constructor(
     internal suspend fun readProblems() = next.readProblems()
     internal suspend fun readRecoveryPreview(root: NextRecoveryKey) = next.readRecoveryPreview(root)
 
+    /** Same coordinator as manual/background sync; no account or Room lock spans network/file I/O. */
+    internal suspend fun <T> coordinateReplicaRecovery(block: suspend () -> T): T = mutex.withLock { block() }
+
     /** Local recovery shares the manual/worker/device coordinator. No HTTP under account/Room locks. */
     internal suspend fun prepareRecoveryConfirmation(preview: NextRecoveryDependencyPreview,
         selected: Set<NextRecoveryKey>) = mutex.withLock { next.prepareRecoveryConfirmation(preview, selected) }
