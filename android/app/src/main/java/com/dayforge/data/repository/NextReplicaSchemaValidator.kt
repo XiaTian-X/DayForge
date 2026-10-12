@@ -42,11 +42,11 @@ internal class NextReplicaSchemaValidator @Inject constructor(
                 val expected = reference.withTransaction {
                     val sql = reference.openHelper.writableDatabase
                     sql.execSQL("ANALYZE")
-                    schema(sql)
+                    ReplicaSqlSchema.read(sql)
                 }
                 database.withTransaction {
                     val sql = database.openHelper.writableDatabase
-                    val actual = schema(sql)
+                    val actual = ReplicaSqlSchema.read(sql)
                     val optional = setOf("table.sqlite_stat1", "table.sqlite_stat4", "table.android_metadata")
                     require(actual.keys - optional == expected.keys - optional &&
                         actual.all { (key, value) -> expected[key] == value }) { "SYNC_RECOVERY_SCHEMA_INVALID" }
@@ -62,7 +62,7 @@ internal class NextReplicaSchemaValidator @Inject constructor(
                     }
                     for (table in actual.values.filter { it.type == "table" }) {
                         currentCoroutineContext().ensureActive()
-                        verifyTypes(sql, table.name)
+                        ReplicaSqlSchema.verifyTypes(sql, table.name)
                     }
                     sql.query("PRAGMA integrity_check").use {
                         require(it.moveToFirst() && it.getType(0) == Cursor.FIELD_TYPE_STRING && it.getString(0) == "ok" && !it.moveToNext()) {
@@ -89,9 +89,13 @@ internal class NextReplicaSchemaValidator @Inject constructor(
         check(tokens.localSyncAccess() == original && tokens.syncAuthenticationSnapshot(original) != null) { "SYNC_ACCOUNT_CHANGED" }
     }
 
-    private data class SchemaObject(val type: String, val name: String, val owner: String, val definition: List<List<String>>)
+}
 
-    private suspend fun schema(sql: SupportSQLiteDatabase): Map<String, SchemaObject> {
+/** Identical schema/type comparison for the business and separately scoped appearance databases. */
+internal object ReplicaSqlSchema {
+    data class SchemaObject(val type: String, val name: String, val owner: String, val definition: List<List<String>>)
+
+    suspend fun read(sql: SupportSQLiteDatabase): Map<String, SchemaObject> {
         sql.query("SELECT COALESCE(length(CAST(sql AS BLOB)),0) FROM sqlite_master").use { cursor ->
             while (cursor.moveToNext()) require(cursor.getType(0) == Cursor.FIELD_TYPE_INTEGER && cursor.getLong(0) in 0..262_144L) {
                 "SYNC_RECOVERY_SCHEMA_INVALID"
@@ -159,7 +163,7 @@ internal class NextReplicaSchemaValidator @Inject constructor(
         return listOf(header) + columns
     }
 
-    private fun verifyTypes(sql: SupportSQLiteDatabase, table: String) {
+    fun verifyTypes(sql: SupportSQLiteDatabase, table: String) {
         val invalid = sql.query("PRAGMA table_info(`$table`)").use { cursor -> buildList {
             while (cursor.moveToNext()) {
                 require(cursor.getType(1) == Cursor.FIELD_TYPE_STRING && cursor.getType(2) == Cursor.FIELD_TYPE_STRING &&

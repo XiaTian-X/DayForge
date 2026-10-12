@@ -135,8 +135,23 @@ internal class AccountIconRepository(
 
     /** Short read-only transaction; the file lease must be acquired before this account lock. */
     internal suspend fun recoveryMetadata(context: AccountIconContext): AccountIconRecoveryMetadata = scoped(context) {
-        val state = catalog(context.namespace)
-        AccountIconRecoveryMetadata(state.selection,
+        catalog(context.namespace).recoveryMetadata()
+    }
+
+    /** Short archival metadata read, not file/network/preference I/O or a new-scope authorization. */
+    internal suspend fun <T> recoveryTransaction(context: AccountIconContext,
+        block: suspend (AccountIconRecoveryMetadata, AccountIconTransferMetadata) -> T): T = scoped(context) {
+        val before = catalog(context.namespace)
+        val result = block(before.recoveryMetadata(), AccountIconTransferMetadata(
+            Collections.unmodifiableMap(before.assets), Collections.unmodifiableMap(before.packs)))
+        check(catalog(context.namespace) == before) { "ICON_RECOVERY_METADATA_CHANGED" }
+        check(context)
+        result
+    }
+
+    private fun Catalog.recoveryMetadata(): AccountIconRecoveryMetadata {
+        val state = this
+        return AccountIconRecoveryMetadata(state.selection,
             Collections.unmodifiableList(state.assets.values.sortedBy { it.assetId }),
             Collections.unmodifiableList(state.packs.values.sortedWith(compareBy<IconPack> { it.packId }.thenBy { it.revision })),
             Collections.unmodifiableList(state.blobs.toSortedMap().map { (hash, reservation) ->

@@ -19,6 +19,11 @@ internal data class IconCatalogCheckpoint(val generation: Long, val cursor: Long
 
 internal enum class IconDependencyState { READY, PENDING, ATTENTION }
 
+internal data class AccountIconRemoteRecovery(
+    val state: AccountIconCatalogStateRow?, val entries: List<AccountIconCatalogEntryRow>,
+    val transfers: List<AccountIconTransferRow>
+)
+
 /** Captured authorization and exact durable CAS; not transferable to another account/device/session. */
 internal class IconCatalogAttempt internal constructor(val context: AccountIconContext, val checkpoint: IconCatalogCheckpoint) {
     val binding get() = AssetSyncContext(context.namespace.serverInstanceId, context.namespace.syncEpoch, context.access.deviceId)
@@ -43,6 +48,19 @@ internal class AccountIconRemoteCatalog(
 
     suspend fun next(context: AccountIconContext): IconCatalogAttempt = metadata.transferTransaction(context) { catalog ->
         IconCatalogAttempt(context, read(context, catalog).checkpoint)
+    }
+
+    /** Caller owns the canonical metadata transaction, never a nested account lock. */
+    internal suspend fun recoveryInTransaction(context: AccountIconContext,
+        catalog: AccountIconTransferMetadata): AccountIconRemoteRecovery {
+        check(database.inTransaction())
+        val snapshot = read(context, catalog)
+        // Also evaluate checkpoint constructor invariants for a state with an empty history.
+        snapshot.checkpoint
+        val confirmed = transfers.recoveryRows(context, catalog)
+        check(confirmed == snapshot.transfers) { "ICON_RECOVERY_METADATA_CHANGED" }
+        return AccountIconRemoteRecovery(snapshot.row,
+            Collections.unmodifiableList(snapshot.entries.toList()), confirmed)
     }
 
     /** Namespace-scoped immutable remote evidence, never a local ready flag or queue absence. */

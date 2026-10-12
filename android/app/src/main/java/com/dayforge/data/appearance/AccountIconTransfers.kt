@@ -110,6 +110,35 @@ internal class AccountIconTransfers(
     /** Called only inside the canonical metadata/catalog transaction; no nested account locking. */
     internal suspend fun catalogRows(context: AccountIconContext, catalog: AccountIconTransferMetadata) = read(context, catalog)
 
+    /** Complete old-scope receipt validation only. Does not claim/release/replay or infer remote ACK. */
+    internal suspend fun recoveryRows(context: AccountIconContext,
+        catalog: AccountIconTransferMetadata): List<AccountIconTransferRow> {
+        val rows = read(context, catalog)
+        for (row in rows.filter { it.state == "complete" }) {
+            currentCoroutineContext().ensureActive()
+            val binding = AssetSyncContext(context.namespace.serverInstanceId, context.namespace.syncEpoch,
+                requireNotNull(row.deviceId))
+            val expected = if (row.kind == "declare_pack") {
+                val pack = catalog.packs.getValue(row.targetId to row.revision)
+                json.encodeToString(PackDeclaration(binding, pack.copy(roles = pack.roles.toSortedMap())))
+            } else {
+                val asset = catalog.assets.getValue(row.targetId)
+                when (row.kind) {
+                    "declare_asset" -> json.encodeToString(AssetRecord(binding, asset,
+                        listOfNotNull("dark".takeIf { row.readyMask and 2 != 0 }, "light".takeIf { row.readyMask and 1 != 0 })))
+                    "upload", "download" -> {
+                        val blob = if (row.variant == "light") asset.light else requireNotNull(asset.dark)
+                        if (row.kind == "upload") json.encodeToString(AssetTransferReceipt(binding, asset.assetId, row.variant, blob))
+                        else "local-validated:${json.encodeToString(blob)}:${iconValidationProfile(blob)}"
+                    }
+                    else -> error("ICON_TRANSFER_CORRUPT")
+                }
+            }
+            check(row.confirmationHash == sha(expected)) { "ICON_RECOVERY_CONFIRMATION_INVALID" }
+        }
+        return Collections.unmodifiableList(rows.toList())
+    }
+
     internal suspend fun enqueueCatalogDownloads(context: AccountIconContext, catalog: AccountIconTransferMetadata,
         assetIds: Set<String>): List<AccountIconTransferRow> {
         val keys = assetIds.flatMap { id ->
