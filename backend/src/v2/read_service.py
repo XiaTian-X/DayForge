@@ -186,6 +186,36 @@ async def bootstrap(
     device = await require_device(
         require_internal(user.id, "User.id"), device_public_id, session
     )
+    response = await read_bootstrap_snapshot(
+        user, session, next_protocol=next_protocol, round_profile=round_profile
+    )
+    cursor_result = await session.execute(
+        select(SyncCursor).where(
+            SyncCursor.user_id == user.id,
+            SyncCursor.device_id == device.id,
+        )
+    )
+    cursor = cursor_result.scalar_one_or_none()
+    if cursor is None:
+        cursor = SyncCursor(user_id=user.id, device_id=device.id)
+        session.add(cursor)
+    cursor.last_pulled_sequence = response.next_cursor
+    cursor.last_pull_at = utc_now()
+    return response
+
+
+async def read_bootstrap_snapshot(
+    user: User,
+    session: AsyncSession,
+    *,
+    next_protocol: bool = False,
+    round_profile: bool = False,
+) -> SyncBootstrapResponse:
+    """Pure projection within the caller's authenticated transaction.
+
+    Unlike bootstrap this does not register/touch a device or advance a cursor.
+    Admission belongs to the caller; this helper is not an HTTP authority gate.
+    """
     if next_protocol:
         await require_count_history(session, require_internal(user.id, "User.id"))
         await require_challenge_history(session, require_internal(user.id, "User.id"))
@@ -356,18 +386,6 @@ async def bootstrap(
             )
         )
 
-    cursor_result = await session.execute(
-        select(SyncCursor).where(
-            SyncCursor.user_id == user.id,
-            SyncCursor.device_id == device.id,
-        )
-    )
-    cursor = cursor_result.scalar_one_or_none()
-    if cursor is None:
-        cursor = SyncCursor(user_id=user.id, device_id=device.id)
-        session.add(cursor)
-    cursor.last_pulled_sequence = high_watermark
-    cursor.last_pull_at = utc_now()
     if next_protocol:
         return NextSyncBootstrapResponse(
             changes=synthetic,
@@ -384,4 +402,4 @@ async def bootstrap(
     )
 
 
-__all__ = ["bootstrap", "pull_changes"]
+__all__ = ["bootstrap", "pull_changes", "read_bootstrap_snapshot"]

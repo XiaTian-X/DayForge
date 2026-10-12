@@ -2,10 +2,10 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.auth.dependencies import get_current_user
+from src.auth.dependencies import authenticate_header, get_current_user
 from src.auth.models import User
 from src.database import get_session
 from src.v2.challenge_profile_service import read_challenge_metadata
@@ -22,6 +22,9 @@ from src.v2.encoding import canonical_json
 from src.v2.errors import DomainError
 from src.v2.invariants import require_internal
 from src.v2.read_service import bootstrap, pull_changes
+from src.v2.protocol_admission import require_next_business
+from src.v2.recovery_snapshot_contract import ReplicaRecoveryPreviewResponse
+from src.v2.recovery_snapshot_service import read_recovery_preview
 from src.v2.replica_context import (
     ReplicaIdentity,
     PROTOCOL_HEADER,
@@ -59,6 +62,57 @@ PROFILE_DOCS = {
 }
 
 router = APIRouter(prefix="/api/v2", tags=["v5-challenge-profile"])
+
+
+async def _preview_user(
+    http: Request,
+    db: AsyncSession = Depends(get_session, scope="function"),
+) -> User:
+    return await authenticate_header(
+        http.headers.get("Authorization"), db, record_token_use=False
+    )
+
+
+@router.get(
+    "/sync/rounds/recovery-preview",
+    response_model=ReplicaRecoveryPreviewResponse,
+    openapi_extra=PROFILE_DOCS,
+)
+async def recovery_preview(
+    http: Request,
+    response: Response,
+    device_id: UUID,
+    installation_id: str = Query(..., min_length=1, max_length=255),
+    challenge_contract: str = Query(..., pattern="^1$"),
+    user: User = Depends(_preview_user),
+    db: AsyncSession = Depends(get_session, scope="function"),
+) -> ReplicaRecoveryPreviewResponse:
+    try:
+        if (
+            http.query_params.getlist("device_id") != [str(device_id)]
+            or http.query_params.getlist("installation_id") != [installation_id]
+            or http.query_params.getlist("challenge_contract") != ["1"]
+        ):
+            raise DomainError(
+                "INVALID_SYNC_CONTEXT", "Single exact query context required"
+            )
+        device, replica = await require_next_business(
+            db,
+            user,
+            str(device_id),
+            tuple(http.headers.getlist(PROTOCOL_HEADER)),
+            tuple(http.headers.getlist(INSTANCE_HEADER)),
+            tuple(http.headers.getlist(EPOCH_HEADER)),
+        )
+        if device.installation_id != installation_id:
+            raise DomainError(
+                "DEVICE_IDENTITY_MISMATCH", "Installation does not match device"
+            )
+        result = await read_recovery_preview(user, device, replica, db)
+        response.headers["Cache-Control"] = "private, no-store"
+        return result
+    except DomainError as error:
+        raise _http_error(error) from error
 
 
 async def _admit(

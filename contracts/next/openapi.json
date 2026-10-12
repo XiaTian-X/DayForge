@@ -2200,6 +2200,64 @@
         "title": "PackDeclaration",
         "type": "object"
       },
+      "ReplicaRecoveryPreviewResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Account Id",
+            "type": "string"
+          },
+          "active_timer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimerSessionResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "device": {
+            "$ref": "#/components/schemas/DeviceResponse"
+          },
+          "protocol_version": {
+            "const": 5,
+            "title": "Protocol Version",
+            "type": "integer"
+          },
+          "recovery_contract": {
+            "const": 1,
+            "title": "Recovery Contract",
+            "type": "integer"
+          },
+          "server_instance_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Server Instance Id",
+            "type": "string"
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/RoundSyncBootstrapResponse"
+          },
+          "sync_epoch": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Sync Epoch",
+            "type": "string"
+          }
+        },
+        "required": [
+          "recovery_contract",
+          "protocol_version",
+          "account_id",
+          "server_instance_id",
+          "sync_epoch",
+          "device",
+          "snapshot",
+          "active_timer"
+        ],
+        "title": "ReplicaRecoveryPreviewResponse",
+        "type": "object"
+      },
       "RoleIcon": {
         "additionalProperties": false,
         "properties": {
@@ -4775,6 +4833,129 @@
           }
         ],
         "summary": "Explicit challenge contract 1; shared original receipts and durable birth evidence; not default activation",
+        "x-dayforge-challenge-contract": 1
+      }
+    },
+    "/api/v2/sync/rounds/recovery-preview": {
+      "get": {
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                5
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Server-Instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Sync-Epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "challenge_contract",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "installation_id",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplicaRecoveryPreviewResponse"
+                }
+              }
+            },
+            "description": "Authenticated complete snapshot and unfinished timer in one read transaction; no activation authority",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "private, no-store",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Account or device capability denied"
+          },
+          "404": {
+            "description": "Asset/pack not found in the authenticated account; other accounts are indistinguishable"
+          },
+          "409": {
+            "description": "Identity/content conflict, stale server epoch, or pending content; inspect detail.code"
+          },
+          "413": {
+            "description": "Streaming or account quota limit exceeded"
+          },
+          "422": {
+            "description": "Invalid metadata, content or path binding"
+          },
+          "426": {
+            "description": "Protocol v5 is not active/supported"
+          },
+          "503": {
+            "description": "Transient failure; retain original identity and retry after backoff"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiTokenAuth": []
+          }
+        ],
+        "summary": "Read-only current-scope recovery candidate; no registration, cursor or token-use writes; never an activation ticket",
         "x-dayforge-challenge-contract": 1
       }
     },

@@ -36,6 +36,7 @@ from src.v2.schemas import (  # noqa: E402
     TimerHeartbeatResponse,
 )
 from src.v2.replica_context import INSTANCE_HEADER, EPOCH_HEADER  # noqa: E402
+from src.v2.recovery_snapshot_contract import ReplicaRecoveryPreviewResponse  # noqa: E402
 from src.v2.challenge_sync_contract import (  # noqa: E402
     RoundSyncPushRequest,
     RoundSyncPushResponse,
@@ -75,6 +76,7 @@ MODELS = (
     RoundTimerCommandBatchRequest,
     RoundTimerCommandBatchResponse,
     RoundActiveTimerResponse,
+    ReplicaRecoveryPreviewResponse,
 )
 
 
@@ -408,6 +410,26 @@ def rendered_contract():
         )
         value["x-dayforge-challenge-contract"] = 1
         paths[path] = {method: value}
+    preview = operation(
+        "Read-only current-scope recovery candidate; no registration, cursor or token-use writes; never an activation ticket",
+        ReplicaRecoveryPreviewResponse,
+        parameters=[
+            *profile_scope,
+            parameter(
+                "installation_id",
+                schema={"type": "string", "minLength": 1, "maxLength": 255},
+            ),
+        ],
+        replica=True,
+    )
+    preview["x-dayforge-challenge-contract"] = 1
+    preview["responses"]["200"]["description"] = (
+        "Authenticated complete snapshot and unfinished timer in one read transaction; no activation authority"
+    )
+    preview["responses"]["200"]["headers"] = {
+        "Cache-Control": {"schema": {"type": "string", "const": "private, no-store"}}
+    }
+    paths["/api/v2/sync/rounds/recovery-preview"] = {"get": preview}
     document = {
         "openapi": "3.1.0",
         "info": {

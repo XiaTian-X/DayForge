@@ -1320,6 +1320,64 @@
         "title": "PackDeclaration",
         "type": "object"
       },
+      "ReplicaRecoveryPreviewResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Account Id",
+            "type": "string"
+          },
+          "active_timer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimerSessionResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "device": {
+            "$ref": "#/components/schemas/DeviceResponse"
+          },
+          "protocol_version": {
+            "const": 5,
+            "title": "Protocol Version",
+            "type": "integer"
+          },
+          "recovery_contract": {
+            "const": 1,
+            "title": "Recovery Contract",
+            "type": "integer"
+          },
+          "server_instance_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Server Instance Id",
+            "type": "string"
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/RoundSyncBootstrapResponse"
+          },
+          "sync_epoch": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Sync Epoch",
+            "type": "string"
+          }
+        },
+        "required": [
+          "recovery_contract",
+          "protocol_version",
+          "account_id",
+          "server_instance_id",
+          "sync_epoch",
+          "device",
+          "snapshot",
+          "active_timer"
+        ],
+        "title": "ReplicaRecoveryPreviewResponse",
+        "type": "object"
+      },
       "RoundActiveTimerResponse": {
         "additionalProperties": false,
         "properties": {
@@ -5256,6 +5314,106 @@
           }
         ],
         "summary": "Push",
+        "tags": [
+          "v5-challenge-profile"
+        ],
+        "x-dayforge-v5-challenge-profile": {
+          "activation": "guarded-not-default",
+          "challenge_contract": 1,
+          "contract": "contracts/next/openapi.json",
+          "requires_actual_server_version": 5,
+          "requires_registered_device_version": 5
+        }
+      }
+    },
+    "/api/v2/sync/rounds/recovery-preview": {
+      "get": {
+        "operationId": "recovery_preview_api_v2_sync_rounds_recovery_preview_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Device Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "installation_id",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "Installation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "challenge_contract",
+            "required": true,
+            "schema": {
+              "pattern": "^1$",
+              "title": "Challenge Contract",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Protocol",
+            "required": true,
+            "schema": {
+              "enum": [
+                "5"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Server-Instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-DayForge-Sync-Epoch",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplicaRecoveryPreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Recovery Preview",
         "tags": [
           "v5-challenge-profile"
         ],

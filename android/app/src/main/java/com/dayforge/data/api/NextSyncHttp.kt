@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.*
 import okhttp3.Call
+import okhttp3.Authenticator
 import okhttp3.ConnectionPool
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -57,12 +58,43 @@ internal class NextSyncHttp private constructor(
 
     /** Only exact public v5 proof admits calls. Null means unsupported, never sync success. */
     suspend fun <T> session(captured: LocalSyncAccess, block: suspend (Session) -> T): T? {
+        return withSession(captured) { session, context ->
+            val identity = session.identity()
+            if (identity.serverInstanceId != context.session.serverInstanceId)
+                throw NextSyncHttpFailure(409, "SERVER_IDENTITY_MISMATCH")
+            if (identity.syncEpoch != context.session.syncEpoch)
+                throw NextSyncHttpFailure(409, "SYNC_EPOCH_MISMATCH")
+            if (identity.protocolVersion != 5) null else block(session)
+        }
+    }
+
+    /** The new scope is usable ONLY by a fixed read-only GET, never by a writable Session. */
+    suspend fun recoveryPreview(captured: LocalSyncAccess, newEpoch: String, installation: String): ReplicaRecoveryPreviewResponse {
+        require(captured.deviceId != null && isContractUuid(newEpoch) && newEpoch != captured.session.syncEpoch && isContractUuid(installation))
+        authorize(tokens, captured)
+        if (tokens.registeredInstallationId() != installation) throw IOException("SYNC_SESSION_CHANGED")
+        val response = withSession(captured, noRefresh = true) { session, context ->
+            val identity = session.identity()
+            if (identity.serverInstanceId != context.session.serverInstanceId)
+                throw NextSyncHttpFailure(409, "SERVER_IDENTITY_MISMATCH")
+            if (identity.syncEpoch != newEpoch) throw NextSyncHttpFailure(409, "SYNC_EPOCH_MISMATCH")
+            if (identity.protocolVersion != 5) throw NextSyncHttpFailure(426, "CLIENT_UPGRADE_REQUIRED")
+            session.readRecoveryPreview(newEpoch, installation)
+        }
+        authorize(tokens, captured)
+        if (tokens.registeredInstallationId() != installation) throw IOException("SYNC_SESSION_CHANGED")
+        return response
+    }
+
+    private suspend fun <T> withSession(captured: LocalSyncAccess, noRefresh: Boolean = false,
+        block: suspend (Session, LocalSyncAccess) -> T): T {
         val context = captured.copy(capabilities = captured.capabilities.toSet())
         authorize(tokens, context)
         val route = try { captureRoute() } catch (_: IllegalArgumentException) { throw IOException("SYNC_ROUTE_INVALID") }
         val builder = shared.newBuilder()
         builder.interceptors().removeAll { it is HttpLoggingInterceptor }
         builder.networkInterceptors().removeAll { it is HttpLoggingInterceptor }
+        if (noRefresh) builder.authenticator(Authenticator.NONE)
         val client = route.bind(builder).connectionPool(ConnectionPool(1, 1, TimeUnit.MINUTES))
             .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
             .connectTimeout(10, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS).callTimeout(45, TimeUnit.SECONDS)
@@ -73,13 +105,7 @@ internal class NextSyncHttp private constructor(
             }.build()
         val session = Session(client, tokens, context, route, requireNotNull(currentCoroutineContext()[Job]))
         try {
-            val identity = session.identity()
-            if (identity.serverInstanceId != context.session.serverInstanceId)
-                throw NextSyncHttpFailure(409, "SERVER_IDENTITY_MISMATCH")
-            if (identity.syncEpoch != context.session.syncEpoch)
-                throw NextSyncHttpFailure(409, "SYNC_EPOCH_MISMATCH")
-            if (identity.protocolVersion != 5) return null
-            return block(session)
+            return block(session, context)
         } finally {
             session.close()
             client.connectionPool.evictAll()
@@ -101,6 +127,33 @@ internal class NextSyncHttp private constructor(
                 require(it.capabilities.distinct().size == it.capabilities.size && it.capabilities.all(String::isNotBlank))
                 Instant.parse(it.serverTime)
             }
+        }
+
+        internal suspend fun readRecoveryPreview(newEpoch: String, installation: String): ReplicaRecoveryPreviewResponse {
+            val builder = request("/api/v2/sync/rounds/recovery-preview").queryRoundDevice()
+                .header("X-DayForge-Sync-Epoch", newEpoch)
+            val response = value(builder.url(builder.build().url.newBuilder()
+                .addQueryParameter("installation_id", installation).build()),
+                ReplicaRecoveryPreviewResponse.serializer(), BOOTSTRAP_REPLY)
+            valid {
+                require(response.accountId == context.session.authentication.userId &&
+                    response.serverInstanceId == context.session.serverInstanceId && response.syncEpoch == newEpoch)
+                val proof = response.device
+                require(proof.deviceId == device() && proof.installationId == installation &&
+                    proof.platform == "android" && proof.deviceClass == "interactive" && proof.capabilityRevision > 0)
+                require(proof.capabilities.distinct().size == proof.capabilities.size &&
+                    proof.capabilities.all(String::isNotBlank) && "sync.read" in proof.capabilities)
+                require(("structure.write" in proof.capabilities) == (proof.isPrimaryEditor || proof.structuralEditEnabled))
+                Instant.parse(requireNotNull(proof.lastSeenAt))
+                require(response.snapshot.nextCursor >= 0)
+                Instant.parse(response.snapshot.serverTime)
+                response.snapshot.changes.forEach { change ->
+                    validateChange(change, roundProfile = true)
+                    require(change.sequence == 0L && change.operation == "upsert")
+                }
+                response.activeTimer?.let(::validateTimer)
+            }
+            return response
         }
 
         suspend fun register(body: DeviceRegisterRequest): DeviceResponse {
