@@ -107,11 +107,13 @@ class WidgetFactReader @Inject constructor(
     private val checks: CheckHistoryReader = CheckHistoryReader(database, tokens, sessions)
 ) {
     private val once = OneTimeLocalIntentStore(database, tokens, sessions, preferences)
+    private val replica = ReplicaPresentationRepository(database, tokens, sessions)
     internal val accessChanges = combine(tokens.factAccessChanges, tokens.iconAccessChanges) { _, _ ->
         tokens.localCoreWriteAccess()
     }.distinctUntilChanged()
 
     suspend fun read(expected: HabitEntity): WidgetFactSnapshot = sessions.exclusive {
+        check(replica.isOpenWhileAccountLocked()) { com.dayforge.data.local.ReplicaSwitchGuard.PENDING }
         database.withTransaction {
             val current = requireNotNull(database.habitDao().getVisibleHabitById(expected.id))
             check(current == expected) { "FACT_WIDGET_STALE_DISPLAY" }
@@ -121,6 +123,7 @@ class WidgetFactReader @Inject constructor(
 
     internal suspend fun authorize(claim: WidgetFactClaim, exactFact: Boolean = true): ObjectEditSnapshot<HabitEntity> =
         sessions.exclusive {
+            check(replica.isOpenWhileAccountLocked()) { com.dayforge.data.local.ReplicaSwitchGuard.PENDING }
             database.withTransaction {
                 val view = requireInTransaction(claim, exactFact)
                 // Mint the actual in-memory ticket from the trusted current row, not decoded plan/owner fields.
@@ -134,6 +137,7 @@ class WidgetFactReader @Inject constructor(
     internal suspend fun requireInTransaction(claim: WidgetFactClaim, exactFact: Boolean = true,
         requireDay: Boolean = true): WidgetFactSnapshot {
         check(database.inTransaction())
+        check(replica.isOpenWhileAccountLocked()) { com.dayforge.data.local.ReplicaSwitchGuard.PENDING }
         val access = requireNotNull(tokens.localCoreWriteAccess()) { "FACT_WIDGET_STALE_ACCOUNT" }
         check(access.session == claim.session() && access.capturedDeviceId == claim.deviceId) { "FACT_WIDGET_STALE_ACCOUNT" }
         val habit = requireNotNull(database.habitDao().getVisibleHabitById(claim.habitId)) { "FACT_WIDGET_NOT_FOUND" }
@@ -166,6 +170,7 @@ class WidgetFactReader @Inject constructor(
 
     /** The same committed object's follow-up, never a fresh local-ID lookup in another account. */
     suspend fun afterWrite(claim: WidgetFactClaim): WidgetFactSnapshot = sessions.exclusive {
+        check(replica.isOpenWhileAccountLocked()) { com.dayforge.data.local.ReplicaSwitchGuard.PENDING }
         database.withTransaction {
             val access = requireNotNull(tokens.localCoreWriteAccess())
             check(access.session == claim.session() && access.capturedDeviceId == claim.deviceId) { "FACT_WIDGET_STALE_ACCOUNT" }
@@ -177,6 +182,7 @@ class WidgetFactReader @Inject constructor(
 
     /** No UI/network/files or another account-coordinated repository may run inside this callback. */
     internal suspend fun publish(claim: WidgetFactClaim, block: suspend () -> Unit) = sessions.exclusive {
+        check(replica.isOpenWhileAccountLocked()) { com.dayforge.data.local.ReplicaSwitchGuard.PENDING }
         val access = requireNotNull(tokens.localCoreWriteAccess()) { "FACT_WIDGET_STALE_ACCOUNT" }
         check(access.session == claim.session() && access.capturedDeviceId == claim.deviceId) { "FACT_WIDGET_STALE_ACCOUNT" }
         database.withTransaction {

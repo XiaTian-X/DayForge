@@ -42,6 +42,9 @@ class WidgetUpdateWorker internal constructor(
         Result.success()
     } catch (error: CancellationException) {
         throw error
+    } catch (_: com.dayforge.data.repository.SyncProtocolException) {
+        // A frozen/corrupt replica needs explicit recovery, not cache-write retry churn.
+        Result.failure()
     } catch (error: Exception) {
         Log.e("WidgetUpdateWorker", "Midnight refresh failed", error)
         if (runAttemptCount < 2) Result.retry() else Result.failure()

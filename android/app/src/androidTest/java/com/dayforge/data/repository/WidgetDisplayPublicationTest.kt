@@ -4,6 +4,7 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.room.withTransaction
+import com.dayforge.data.local.replicaStageFixture
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.io.File
 import java.io.IOException
@@ -23,8 +24,57 @@ class WidgetDisplayPublicationTest : NextCoreRequestFixture() {
     private fun reader() = WidgetFactReader(db, tokens, sessions, preferences, CountHistoryReader(db, tokens, sessions))
     private suspend fun proof() = db.withTransaction { nextRestartDatabaseProof(db) }
 
+    @Test fun orphanSqlBlocksCapturePreparationLatePublicationAndForegroundClaims() = runBlocking<Unit> {
+        register()
+        val publisher = WidgetDisplayPublisher(tokens, sessions, ReplicaPresentationRepository(db, tokens, sessions))
+        val original = requireNotNull(publisher.capturePublication())
+        val view = reader().read(habit)
+        val stage = tokens.replicaStageFixture()
+        NextReplicaWriteFence(db).acquire(stage.fence)
+        assertFalse(tokens.replicaSwitchPending())
+        assertNull(publisher.capturePublication())
+        assertFalse(original { fail("A late display cannot use pointer loss as admission") })
+        assertFalse(publisher.renderPrepared({ fail("Must not publish a mixed source failure") }) {
+            fail("Must not read business rows"); suspend { }
+        })
+        for (read in listOf<suspend () -> Unit>({ reader().read(habit) }, { reader().authorize(view.claim) },
+            { reader().afterWrite(view.claim) }, { reader().publish(view.claim) { fail("No foreground publication") } }))
+            assertEquals(com.dayforge.data.local.ReplicaSwitchGuard.PENDING, rejected(read).message)
+        assertEquals(stage.fence, db.nextReplicaFenceDao().state())
+        assertEquals(habit, db.habitDao().getHabitById(habit.id))
+    }
+
+    @Test fun orphanAndDamagedJournalBlockNewCaptureWithoutSqlAndNeverPublishAnError() = runBlocking<Unit> {
+        register()
+        val publisher = WidgetDisplayPublisher(tokens, sessions, ReplicaPresentationRepository(db, tokens, sessions))
+        val stage = tokens.replicaStageFixture()
+        tokens.persistReplicaStage(null, stage)
+        dataStore.edit { it.remove(com.dayforge.data.local.ReplicaSwitchGuard.POINTER) }
+        assertNull(db.nextReplicaFenceDao().state()); assertNull(publisher.capturePublication())
+        dataStore.edit { it[com.dayforge.data.local.ReplicaSwitchStage.key(stage.recoveryId)] = "private/path/synthetic-secret" }
+        assertNull(publisher.capturePublication())
+        assertFalse(publisher.renderPrepared({ fail("No error publication") }) { fail("No prepare"); suspend { } })
+    }
+
+    @Test fun verifiedPreCommitCancelAllowsFreshPublicationAndLockedChecksDoNotReenterMutex() = runBlocking<Unit> {
+        register()
+        val publisher = WidgetDisplayPublisher(tokens, sessions, ReplicaPresentationRepository(db, tokens, sessions))
+        val original = requireNotNull(publisher.capturePublication())
+        withTimeout(5_000) { sessions.exclusive { db.withTransaction { assertTrue(original.isCurrentWhileAccountLocked()) } } }
+        val stages = NextReplicaStageStore(db, tokens, sessions)
+        val stage = stages.begin(tokens.replicaStageFixture())
+        NextReplicaWriteFence(db).acquire(stage.fence)
+        val frozen = stages.recordFrozen(stage)
+        assertNull(publisher.capturePublication())
+        stages.cancel(frozen)
+        assertFalse(original { fail("No freeze/abort ABA") })
+        val fresh = requireNotNull(publisher.capturePublication())
+        withTimeout(5_000) { sessions.exclusive { db.withTransaction { assertTrue(fresh.isCurrentWhileAccountLocked()) } } }
+        assertTrue(fresh { assertFalse(db.inTransaction()) })
+    }
+
     @Test fun legacyClaimUsesOriginalPublicationScopeAndTypedPlansNeverGetLegacyProof() = runBlocking<Unit> {
-        val publisher = WidgetDisplayPublisher(tokens, sessions)
+        val publisher = WidgetDisplayPublisher(tokens, sessions, ReplicaPresentationRepository(db, tokens, sessions))
         val publication = requireNotNull(publisher.capturePublication())
         assertNull(publication.legacyRestartClaim(habit))
         val legacy = habit.copy(appearance = null, planMetadata = null, completionPolicy = null)
@@ -38,7 +88,7 @@ class WidgetDisplayPublicationTest : NextCoreRequestFixture() {
     }
 
     @Test fun preparationCanUseRealAccountReadersAndDisplayRunsOutsideRoomWithoutBusinessWrites() = runBlocking<Unit> {
-        val publisher = WidgetDisplayPublisher(tokens, sessions)
+        val publisher = WidgetDisplayPublisher(tokens, sessions, ReplicaPresentationRepository(db, tokens, sessions))
         val state = display()
         val before = proof()
         assertTrue(withTimeout(5000) {
@@ -56,7 +106,7 @@ class WidgetDisplayPublicationTest : NextCoreRequestFixture() {
     }
 
     @Test fun oldPreparationAndItsFailureCannotOverwriteNewAccountDisplay() = runBlocking<Unit> {
-        val publisher = WidgetDisplayPublisher(tokens, sessions)
+        val publisher = WidgetDisplayPublisher(tokens, sessions, ReplicaPresentationRepository(db, tokens, sessions))
         val state = display()
         val before = proof()
         for (failRead in listOf(false, true)) {
@@ -88,7 +138,7 @@ class WidgetDisplayPublicationTest : NextCoreRequestFixture() {
     }
 
     @Test fun accountCleanupWaitsForActualDisplayWriteThenClearsIt() = runBlocking<Unit> {
-        val publisher = WidgetDisplayPublisher(tokens, sessions)
+        val publisher = WidgetDisplayPublisher(tokens, sessions, ReplicaPresentationRepository(db, tokens, sessions))
         val state = display()
         val before = proof()
         val entered = CompletableDeferred<Unit>()
@@ -122,7 +172,7 @@ class WidgetDisplayPublicationTest : NextCoreRequestFixture() {
     }
 
     @Test fun anonymousAbaAndReplicaRegistrationChangesDiscardPreparedDisplay() = runBlocking<Unit> {
-        val publisher = WidgetDisplayPublisher(tokens, sessions)
+        val publisher = WidgetDisplayPublisher(tokens, sessions, ReplicaPresentationRepository(db, tokens, sessions))
         val before = proof()
         for (anonymous in listOf(true, false)) {
             sessions.exclusive {
@@ -157,7 +207,7 @@ class WidgetDisplayPublicationTest : NextCoreRequestFixture() {
     }
 
     @Test fun sourceFailureIsPublishedOnlyInScopeAndRendererFailureIsNotMisclassified() = runBlocking<Unit> {
-        val publisher = WidgetDisplayPublisher(tokens, sessions)
+        val publisher = WidgetDisplayPublisher(tokens, sessions, ReplicaPresentationRepository(db, tokens, sessions))
         val state = display()
         val before = proof()
         val source = IOException("source unavailable")
@@ -177,7 +227,7 @@ class WidgetDisplayPublicationTest : NextCoreRequestFixture() {
     }
 
     @Test fun cancellationInEitherPhaseReleasesResourcesWithoutPublishingReadFailure() = runBlocking<Unit> {
-        val publisher = WidgetDisplayPublisher(tokens, sessions)
+        val publisher = WidgetDisplayPublisher(tokens, sessions, ReplicaPresentationRepository(db, tokens, sessions))
         val before = proof()
         val calls = AtomicInteger()
         for (cancelPreparation in listOf(true, false)) {

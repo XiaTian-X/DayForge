@@ -42,6 +42,7 @@ class NextTimerWriter @Inject constructor(
     private val timerHistoryReader: TimerHistoryReader = TimerHistoryReader(database, tokens, sessions)
 ) {
     private val producer = NextCoreLocalIntentStore(database, tokens, sessions)
+    private val replica = ReplicaPresentationRepository(database, tokens, sessions)
     internal val accessChanges = combine(tokens.factAccessChanges, tokens.iconAccessChanges) { _, _ ->
         tokens.localCoreWriteAccess()
     }.distinctUntilChanged()
@@ -72,7 +73,7 @@ class NextTimerWriter @Inject constructor(
         // An inactive habit has no original timer owner to reject a queued old lookup.
         // The caller's pre-source display scope must be checked under THIS strong lock.
         // Predicate must not reenter repositories/this lock or perform business writes.
-        if (!beforeRead()) return@exclusive false
+        if (!replica.isOpenWhileAccountLocked() || !beforeRead()) return@exclusive false
         val snapshot = database.withTransaction { readSnapshotInTransaction(expectedHabit, true) }
             ?: return@exclusive false
         render(snapshot)
@@ -86,6 +87,7 @@ class NextTimerWriter @Inject constructor(
     suspend fun renderWidgetTick(habitId: Long, displayedPlan: String, displayedLogHash: String,
         displayedAuthority: TimerActionAuthority,
         render: suspend (TimeLogEntity, TimerStartPolicy) -> Unit): Boolean = sessions.exclusive {
+        if (!replica.isOpenWhileAccountLocked()) return@exclusive false
         val current = database.withTransaction {
             val habit = database.habitDao().getVisibleHabitById(habitId) ?: return@withTransaction null
             if (habit.appearance == null || NextStructureMapper.writePlan(habit).toString() != displayedPlan)
@@ -107,6 +109,7 @@ class NextTimerWriter @Inject constructor(
     }
 
     private suspend fun readSnapshot(expectedHabit: HabitEntity, includeStartGuard: Boolean): WidgetTimerReadSnapshot? = sessions.exclusive {
+        if (!replica.isOpenWhileAccountLocked()) return@exclusive null
         database.withTransaction { readSnapshotInTransaction(expectedHabit, includeStartGuard) }
     }
 
@@ -272,6 +275,7 @@ class NextTimerWriter @Inject constructor(
     }
 
     private suspend fun requirePublication(habitId: Long, ticket: TimerActionAuthority?): HabitEntity? {
+        check(replica.isOpenWhileAccountLocked()) { com.dayforge.data.local.ReplicaSwitchGuard.PENDING }
         if (ticket != null) {
             check(tokens.localCoreWriteAccess()?.session == ticket.session()) { "TIMER_FOLLOW_UP_STALE_ACCOUNT" }
         }

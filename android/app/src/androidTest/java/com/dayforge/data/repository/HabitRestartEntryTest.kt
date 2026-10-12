@@ -234,7 +234,7 @@ class HabitRestartEntryTest : NextObjectEditorFixture() {
             db.habitDao().update(habit)
             db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
         }
-        return requireNotNull(WidgetDisplayPublisher(tokens, sessions).capturePublication()).legacyRestartClaim(habit)!!
+        return requireNotNull(WidgetDisplayPublisher(tokens, sessions, ReplicaPresentationRepository(db, tokens, sessions)).capturePublication()).legacyRestartClaim(habit)!!
     }
 
     @Test fun legacyDisplayClaimPreservesOldClearBehaviorWithoutNumericIdOrAccountFallback() = runBlocking<Unit> {

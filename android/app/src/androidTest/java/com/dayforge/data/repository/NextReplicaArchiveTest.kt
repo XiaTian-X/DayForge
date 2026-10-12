@@ -237,7 +237,7 @@ class NextReplicaArchiveTest : NextCoreRequestFixture() {
         assertEquals(6.75, db.metricDao().getMetricByUuid(id(200))!!.targetValueUpper!!, 0.0)
         assertEquals(original, access()); assertEquals(id(3), tokens.syncEpoch.first())
         assertNull(tokens.localCoreWriteAccess()); assertFalse(tokens.localFactAccess()!!.canAppend)
-        assertNull(WidgetDisplayPublisher(tokens, sessions).capturePublication())
+        assertNull(WidgetDisplayPublisher(tokens, sessions, ReplicaPresentationRepository(db, tokens, sessions)).capturePublication())
         assertEquals(committed.fence, db.nextReplicaFenceDao().state())
         assertNotNull(rejected { db.habitDao().update(habit.copy(name = "ordinary write after COMMIT")) })
         assertNotNull(rejected { workflow().cancel(committed) }); assertNotNull(rejected { workflow().confirm(evidence) })

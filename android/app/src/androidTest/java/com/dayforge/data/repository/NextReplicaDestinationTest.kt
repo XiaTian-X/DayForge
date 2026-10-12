@@ -139,7 +139,7 @@ class NextReplicaDestinationTest : NextCoreRequestFixture() {
         assertTrue(tokens.replicaSwitchPending()); assertEquals(stage, tokens.activeReplicaStage())
         assertNull(tokens.localCoreWriteAccess()); assertFalse(tokens.localFactAccess()!!.canAppend)
         assertFalse(tokens.canEditStructure.first()); assertNull(tokens.iconAccessChanges.first())
-        assertNull(WidgetDisplayPublisher(tokens, sessions).capturePublication())
+        assertNull(WidgetDisplayPublisher(tokens, sessions, ReplicaPresentationRepository(db, tokens, sessions)).capturePublication())
         assertEquals(stage.fence, db.nextReplicaFenceDao().state())
         assertNotNull(rejected { db.habitDao().update(habit.copy(name = "Ordinary edit")) })
         assertNotNull(rejected { tokens.saveSyncCursor(999) })

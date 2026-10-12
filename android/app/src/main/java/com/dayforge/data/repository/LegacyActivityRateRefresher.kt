@@ -20,8 +20,10 @@ class LegacyActivityRateRefresher @Inject constructor(
     private val tokens: TokenManager,
     private val sessions: AccountSessionCoordinator
 ) {
+    private val replica = ReplicaPresentationRepository(database, tokens, sessions)
     suspend fun refresh(): Unit = withContext(Dispatchers.IO) {
         sessions.exclusive {
+            if (!replica.isOpenWhileAccountLocked()) throw SyncProtocolException(com.dayforge.data.local.ReplicaSwitchGuard.PENDING)
             // A stale worker after logout or an unbound authentication must not touch personal rows.
             val access = tokens.localFactAccess() ?: return@exclusive
             database.withTransaction {

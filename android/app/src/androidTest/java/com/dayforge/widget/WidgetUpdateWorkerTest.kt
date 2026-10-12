@@ -6,6 +6,8 @@ import androidx.work.WorkerParameters
 import com.dayforge.data.repository.LegacyActivityRateRefresher
 import com.dayforge.data.repository.NextCoreRequestFixture
 import com.dayforge.data.local.entity.HabitEntity
+import com.dayforge.data.local.replicaStageFixture
+import androidx.datastore.preferences.core.edit
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.google.common.util.concurrent.ListenableFuture
@@ -42,6 +44,22 @@ class WidgetUpdateWorkerTest : NextCoreRequestFixture() {
         val params = mockk<WorkerParameters>(relaxed = true)
         every { params.runAttemptCount } returns attempt
         return WidgetUpdateWorker(app, params) { LegacyActivityRateRefresher(db, tokens, sessions).refresh() }
+    }
+
+    @Test fun frozenSqlAndOrphanJournalDoNotRewriteCacheEnqueueOrRequestRetry() = runBlocking<Unit> {
+        register()
+        val id = db.habitDao().insert(HabitEntity(name = "Frozen midnight", habitType = HabitType.CHECK_IN,
+            iconResId = 1, colorHex = "#2196F3", schedule = HabitSchedule.Daily, activityRateUpdatedAt = 1L))
+        val row = requireNotNull(db.habitDao().getHabitById(id))
+        val stages = com.dayforge.data.repository.NextReplicaStageStore(db, tokens, sessions)
+        val stage = stages.begin(tokens.replicaStageFixture())
+        dataStore.edit { it.remove(com.dayforge.data.local.ReplicaSwitchGuard.POINTER) }
+        assertEquals(Result.failure(), worker().doWork())
+        com.dayforge.data.repository.NextReplicaWriteFence(db).acquire(stage.fence)
+        dataStore.edit { it.remove(com.dayforge.data.local.ReplicaSwitchStage.key(stage.recoveryId)) }
+        assertEquals(Result.failure(), worker().doWork())
+        assertEquals(row, db.habitDao().getHabitById(id))
+        verify(exactly = 0) { WidgetRefreshScheduler.request(any()) }
     }
 
     @Test fun midnight_commits_activity_rate_refresh_before_enqueue_and_waits_for_enqueue_result() = runTest {

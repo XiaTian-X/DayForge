@@ -1,6 +1,7 @@
 package com.dayforge.data.repository
 
 import androidx.room.withTransaction
+import androidx.datastore.preferences.core.edit
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.work.ListenableWorker.Result
 import androidx.work.WorkerParameters
@@ -82,6 +83,43 @@ class BusinessSyncRepositoryTest : NextObjectEditorFixture() {
             assertEquals(com.dayforge.data.local.ReplicaSwitchGuard.PENDING, rejected(work).message)
         assertTrue(server.requests.isEmpty()); coVerify(exactly = 0) { legacy.syncForAuthentication(any(), any(), any()) }
         assertEquals(stage, tokens.activeReplicaStage())
+    }
+
+    @Test fun orphanSqlBlocksManualDevicesAndActualWorkerBeforeAnyDiscoveryAcrossColdReopen() = runBlocking<Unit> {
+        register(); val (http, server) = channel { error("No HTTP on orphan SQL") }
+        val stage = tokens.replicaStageFixture()
+        NextReplicaWriteFence(db).acquire(stage.fence)
+        assertFalse(tokens.replicaSwitchPending())
+        fun worker(service: BusinessSyncRepository): AutoSyncWorker {
+            val entry = mockk<AutoSyncWorker.AutoSyncWorkerEntryPoint>()
+            every { entry.tokenManager() } returns tokens
+            every { entry.businessSyncRepository() } returns service
+            return AutoSyncWorker(app, mockk<WorkerParameters>(relaxed = true)) { entry }
+        }
+        suspend fun verifyClosed(service: BusinessSyncRepository) {
+            for (work in listOf<suspend () -> Unit>({ service.sync() }, { service.retrySync() },
+                { service.makeCurrentDevicePrimary() }, { service.setCurrentDeviceStructuralEditing(true) }))
+                assertEquals(com.dayforge.data.local.ReplicaSwitchGuard.PENDING, rejected(work).message)
+            assertEquals(Result.failure(), worker(service).doWork())
+        }
+        verifyClosed(driver(http)); storage.reopen(); verifyClosed(driver(http))
+        assertEquals(stage.fence, db.nextReplicaFenceDao().state()); assertTrue(server.requests.isEmpty())
+        coVerify(exactly = 0) { legacy.syncForAuthentication(any(), any(), any()) }
+    }
+
+    @Test fun lostPointerAndDamagedOrphanJournalAreAttentionNotConnectivityOrLegacyFallback() = runBlocking<Unit> {
+        register(); val (http, server) = channel { error("No HTTP on damaged journal") }
+        val stage = tokens.replicaStageFixture(); tokens.persistReplicaStage(null, stage)
+        dataStore.edit { it.remove(com.dayforge.data.local.ReplicaSwitchGuard.POINTER) }
+        val service = driver(http)
+        assertEquals(com.dayforge.data.local.ReplicaSwitchGuard.PENDING, rejected { service.sync() }.message)
+        dataStore.edit { it[com.dayforge.data.local.ReplicaSwitchStage.key(stage.recoveryId)] = "synthetic-secret" }
+        val entry = mockk<AutoSyncWorker.AutoSyncWorkerEntryPoint>()
+        every { entry.tokenManager() } returns tokens
+        every { entry.businessSyncRepository() } returns service
+        assertEquals(Result.failure(), AutoSyncWorker(app, mockk<WorkerParameters>(relaxed = true)) { entry }.doWork())
+        assertTrue(server.requests.isEmpty()); assertNull(db.nextReplicaFenceDao().state())
+        coVerify(exactly = 0) { legacy.retrySyncForAuthentication(any(), any()) }
     }
 
     @Test fun manualAndWorkerUseSameRealRegistrationAndRoundsChainAcrossColdReopen() = runBlocking<Unit> {

@@ -33,6 +33,7 @@ class BusinessSyncRepository @Inject internal constructor(
     private val next: NextSyncRuntime
 ) {
     private val mutex = Mutex()
+    private val replica = ReplicaPresentationRepository(database, tokens, sessions)
     private val completed = MutableStateFlow(BusinessSyncCompletion(null, 0))
     internal val completions = completed.asStateFlow()
     internal fun problemChanges() = next.problemChanges()
@@ -44,10 +45,13 @@ class BusinessSyncRepository @Inject internal constructor(
 
     /** Local recovery shares the manual/worker/device coordinator. No HTTP under account/Room locks. */
     internal suspend fun prepareRecoveryConfirmation(preview: NextRecoveryDependencyPreview,
-        selected: Set<NextRecoveryKey>) = mutex.withLock { next.prepareRecoveryConfirmation(preview, selected) }
+        selected: Set<NextRecoveryKey>) = mutex.withLock {
+        replica.requireOrdinaryAccess()
+        next.prepareRecoveryConfirmation(preview, selected)
+    }
 
     internal suspend fun confirmRecovery(ticket: NextRecoveryConfirmation) = mutex.withLock {
-        tokens.requireOrdinaryReplicaAccess()
+        replica.requireOrdinaryAccess()
         next.confirmRecovery(ticket)
     }
 
@@ -57,7 +61,7 @@ class BusinessSyncRepository @Inject internal constructor(
     suspend fun setCurrentDeviceStructuralEditing(enabled: Boolean): DeviceResponse = changeDevice(enabled)
 
     private suspend fun changeDevice(editing: Boolean?): DeviceResponse = mutex.withLock {
-        tokens.requireOrdinaryReplicaAccess()
+        replica.requireOrdinaryAccess()
         val (original, installation) = sessions.exclusive {
             Triple(tokens.authenticationSnapshot()?.session, tokens.localCoreWriteAccess(), tokens.localSyncAccess()) to
                 tokens.registeredInstallationId()
@@ -108,7 +112,7 @@ class BusinessSyncRepository @Inject internal constructor(
 
     private suspend fun synchronize(progress: (SyncProgress) -> Unit, afterSync: (suspend () -> Unit)?,
         retryRejected: Boolean): Unit = mutex.withLock {
-        tokens.requireOrdinaryReplicaAccess()
+        replica.requireOrdinaryAccess()
         val (original, originalCore, originalSync) = sessions.exclusive {
             Triple(tokens.authenticationSnapshot()?.session, tokens.localCoreWriteAccess(), tokens.localSyncAccess())
         }

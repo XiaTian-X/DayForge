@@ -28,23 +28,36 @@ class ReplicaPresentationRepository @Inject constructor(private val database: Ha
         emit(Unit); delay(1_000); true
     }
 
-    internal suspend fun inspect(): ReplicaPresentationCheck = sessions.exclusive {
-        database.withTransaction {
-            val before = tokens.replicaPresentationWitness()
-            val sql = readFence()
-            check(before == tokens.replicaPresentationWitness()) { "SYNC_REPLICA_STAGE_CHANGED" }
-            when {
-                before.pointerPresent -> ReplicaPresentationCheck(ReplicaPresentationProblem.RECOVERY_PENDING,
-                    requireNotNull(before.stage).phase)
-                sql?.mode == NextReplicaFenceEntity.FROZEN -> ReplicaPresentationCheck(ReplicaPresentationProblem.ORPHAN_STAGE)
-                before.history.any { it.phase != ReplicaSwitchPhase.ABORTED } ->
-                    ReplicaPresentationCheck(ReplicaPresentationProblem.ORPHAN_STAGE)
-                sql != null && before.history.none { it.phase == ReplicaSwitchPhase.ABORTED &&
-                    it.fence.copy(mode = NextReplicaFenceEntity.CLOSED) == sql } ->
-                    ReplicaPresentationCheck(ReplicaPresentationProblem.ORPHAN_STAGE)
-                else -> ReplicaPresentationCheck()
-            }
+    internal suspend fun inspect(): ReplicaPresentationCheck = sessions.exclusive { inspectWhileAccountLocked() }
+
+    /** Only callers already owning the shared account lock may enter; Room nesting is read-only. */
+    internal suspend fun inspectWhileAccountLocked(): ReplicaPresentationCheck = database.withTransaction {
+        val before = tokens.replicaPresentationWitness()
+        val sql = readFence()
+        check(before == tokens.replicaPresentationWitness()) { "SYNC_REPLICA_STAGE_CHANGED" }
+        when {
+            before.pointerPresent -> ReplicaPresentationCheck(ReplicaPresentationProblem.RECOVERY_PENDING,
+                requireNotNull(before.stage).phase)
+            sql?.mode == NextReplicaFenceEntity.FROZEN -> ReplicaPresentationCheck(ReplicaPresentationProblem.ORPHAN_STAGE)
+            before.history.any { it.phase != ReplicaSwitchPhase.ABORTED } ->
+                ReplicaPresentationCheck(ReplicaPresentationProblem.ORPHAN_STAGE)
+            sql != null && before.history.none { it.phase == ReplicaSwitchPhase.ABORTED &&
+                it.fence.copy(mode = NextReplicaFenceEntity.CLOSED) == sql } ->
+                ReplicaPresentationCheck(ReplicaPresentationProblem.ORPHAN_STAGE)
+            else -> ReplicaPresentationCheck()
         }
+    }
+
+    internal suspend fun isOrdinaryOpen(): Boolean = sessions.exclusive { isOpenWhileAccountLocked() }
+
+    internal suspend fun isOpenWhileAccountLocked(): Boolean = try { inspectWhileAccountLocked().problem == null }
+    catch (error: Exception) {
+        if (error is CancellationException) throw error
+        false // Corrupt/failed control reads are attention, never permission or a network retry.
+    }
+
+    internal suspend fun requireOrdinaryAccess() {
+        if (!isOrdinaryOpen()) throw SyncProtocolException(ReplicaSwitchGuard.PENDING)
     }
 
     /** Room's typed conversion can coerce SQLite values: validate actual storage classes first. */

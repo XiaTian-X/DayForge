@@ -156,14 +156,14 @@ class NextReplicaStageStoreTest : NextCoreRequestFixture() {
             }
             reject { stages().active() }; assertTrue(tokens.replicaSwitchPending()); assertNull(tokens.localCoreWriteAccess())
             reject { preferences.clearAccountScopedPreferences() }; reject { tokens.clearTokens() }
-            assertNull(WidgetDisplayPublisher(tokens, sessions).capturePublication())
+            assertNull(WidgetDisplayPublisher(tokens, sessions, ReplicaPresentationRepository(db, tokens, sessions)).capturePublication())
         }
         dataStore.edit { it.remove(ReplicaSwitchGuard.POINTER); it[booleanPreferencesKey(ReplicaSwitchGuard.POINTER.name)] = false }
         assertTrue(tokens.replicaSwitchPending()); assertNull(tokens.localCoreWriteAccess()); reject { stages().active() }
     }
 
     @Test fun preCapturedOrdinaryWriterAndWidgetPublicationCannotSurviveFreezeAbortAba() = runBlocking<Unit> {
-        register(); val writer = tokens.localCoreWriteAccess()!!; val publisher = WidgetDisplayPublisher(tokens, sessions)
+        register(); val writer = tokens.localCoreWriteAccess()!!; val publisher = WidgetDisplayPublisher(tokens, sessions, ReplicaPresentationRepository(db, tokens, sessions))
         val old = publisher.capturePublication()!!; val before = hash(); val stage = stages().begin(tokens.replicaStageFixture(before))
         reject { producer().write(writer.session) { db.habitDao().update(habit.copy(name = "late")) } }
         assertEquals(before, hash()); assertNull(publisher.capturePublication())

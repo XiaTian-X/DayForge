@@ -4,6 +4,7 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.room.withTransaction
+import com.dayforge.data.local.replicaStageFixture
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.io.File
 import java.io.IOException
@@ -22,6 +23,24 @@ class WidgetTimerPublicationTest : NextCoreRequestFixture() {
     private val label = stringPreferencesKey("timer-publication-label")
     private fun display() = PreferenceDataStoreFactory.create(scope = scope,
         produceFile = { File(directory, "timer-display.preferences_pb") })
+
+    @Test fun orphanSqlBlocksSnapshotTickAndFollowUpEvenWithAnOtherwiseValidOriginalTimer() = runBlocking<Unit> {
+        register(); start()
+        val view = requireNotNull(writer().widgetSnapshot(timerHabit))
+        val stage = tokens.replicaStageFixture()
+        NextReplicaWriteFence(db).acquire(stage.fence)
+        assertFalse(tokens.replicaSwitchPending())
+        assertNull(writer().widgetSnapshot(timerHabit)); assertNull(writer().statusSnapshot(timerHabit))
+        assertFalse(writer().renderWidgetSnapshot(timerHabit) { fail("No timer display") })
+        assertFalse(writer().renderWidgetTick(timerHabit.id, NextStructureMapper.writePlan(timerHabit).toString(),
+            requireNotNull(view.activeLogHash), view.authority) { _, _ -> fail("No timer tick") })
+        for (publish in listOf<suspend () -> Unit>(
+            { writer().publish(timerHabit.id, view.authority) { fail("No old notification") } },
+            { writer().publishCompletion(timerHabit.id, view.authority) { _, _ -> fail("No completion follow-up") } }))
+            assertEquals(com.dayforge.data.local.ReplicaSwitchGuard.PENDING, rejected(publish).message)
+        assertEquals(stage.fence, db.nextReplicaFenceDao().state())
+        assertEquals(view.activeLog, db.timeLogDao().getActiveTimeLogForHabit(timerHabit.id))
+    }
 
     @Test fun publicationUsesOriginalSnapshotOutsideRoomAndNeverWritesBusinessData() = runBlocking<Unit> {
         start()
