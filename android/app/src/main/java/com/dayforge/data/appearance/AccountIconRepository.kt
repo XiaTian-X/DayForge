@@ -89,6 +89,8 @@ internal class AccountIconRepository(
     private var parsedMetadata: ParsedMetadata? = null
 
     internal fun usesDatabase(value: AccountIconDatabase): Boolean = database === value
+    internal fun usesAccess(value: TokenManager, coordinator: AccountSessionCoordinator): Boolean =
+        tokens === value && sessions === coordinator
     internal fun remoteCatalog(transfers: AccountIconTransfers) = AccountIconRemoteCatalog(database, this, transfers)
 
     internal fun registerCache(cache: com.dayforge.data.local.AccountIconMemory.Cache) =

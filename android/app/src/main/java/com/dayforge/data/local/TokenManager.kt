@@ -77,6 +77,7 @@ class TokenManager @Inject constructor(
     private val tokenCipher: TokenCipher,
     private val iconMemory: AccountIconMemory
 ) {
+    internal fun usesPreferences(value: DataStore<Preferences>) = dataStore === value
     constructor(dataStore: DataStore<Preferences>, tokenCipher: TokenCipher) :
         this(dataStore, tokenCipher, AccountIconMemory())
     constructor(dataStore: DataStore<Preferences>) : this(dataStore, PlaintextTokenCipher)

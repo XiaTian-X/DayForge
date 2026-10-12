@@ -22,6 +22,7 @@ class PreferencesManager @Inject constructor(
     private val dataStore: DataStore<Preferences>,
     val calendar: DeviceCalendar = DeviceCalendar()
 ) {
+    internal fun usesPreferences(value: DataStore<Preferences>) = dataStore === value
     companion object {
         private val LAST_SYNC_TIMESTAMP_KEY = longPreferencesKey("last_sync_timestamp")
         private val BATTERY_GUIDANCE_SHOWN = booleanPreferencesKey("battery_guidance_shown")

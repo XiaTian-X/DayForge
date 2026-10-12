@@ -50,6 +50,7 @@ internal class AccountIconTransfers(
     internal fun usesStores(valueMetadata: AccountIconRepository, valueStore: AccountIconStore) =
         metadata === valueMetadata && store === valueStore
     internal fun usesMetadata(value: AccountIconRepository) = metadata === value
+    internal fun usesFiles(value: AccountIconFiles) = store.usesFiles(value)
     private val dao get() = database.transfers()
     private data class Key(val kind: String, val targetId: String, val revision: Int = 0, val variant: String = "")
     private fun AccountIconTransferRow.key() = Key(kind, targetId, revision, variant)
