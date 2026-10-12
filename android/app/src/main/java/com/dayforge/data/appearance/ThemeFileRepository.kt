@@ -4,6 +4,8 @@ import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
 import com.dayforge.domain.model.isContractUuid
+import com.dayforge.domain.appearance.ThemeVersionRef
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileDescriptor
 import java.io.IOException
@@ -11,6 +13,7 @@ import java.io.InputStream
 import java.nio.file.Files
 import java.util.ArrayDeque
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -19,6 +22,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 internal open class ThemeFileIo {
+    open fun read(fd: FileDescriptor, bytes: ByteArray, offset: Int, length: Int): Int = Os.read(fd, bytes, offset, length)
     open fun write(fd: FileDescriptor, bytes: ByteArray, offset: Int, length: Int): Int = Os.write(fd, bytes, offset, length)
     open fun sync(fd: FileDescriptor) = Os.fsync(fd)
     open fun rename(source: String, target: String) = Os.rename(source, target)
@@ -50,6 +54,83 @@ internal class ThemeFileRepository(filesDirectory: File, private val io: ThemeFi
         if (!exists(root)) return@access null
         directory(create = false) { if (exists(target)) readFile(target, themeId, revision) else null }
     }
+
+    /** Reader-only access under the same process lease as all installs/deletions. */
+    internal class RecoveryDirectory internal constructor(
+        private val inventoryFiles: () -> Set<String>, private val readFile: (String) -> ByteArray
+    ) {
+        fun inventory(): Set<String> = inventoryFiles()
+        fun version(ref: ThemeVersionRef): ByteArray = readFile("${ref.themeId}-${ref.revision}.json")
+        fun temporary(operationId: String): ByteArray {
+            require(isContractUuid(operationId))
+            return readFile(".theme-$operationId.part")
+        }
+    }
+
+    /** No mkdir, cleanup or nested catalog mutex. The callback must not mutate theme files. */
+    internal suspend fun <T> inspectRecovery(block: suspend (RecoveryDirectory?) -> T): T = access {
+        if (!exists(root)) return@access block(null)
+        val coroutine = currentCoroutineContext()
+        directory(create = false) { held ->
+            val open = AtomicBoolean(true)
+            fun verify() {
+                check(open.get()) { "THEME_RECOVERY_ACCESS_CLOSED" }
+                coroutine.ensureActive()
+                checkRoot(held)
+            }
+            val directory = RecoveryDirectory(inventoryFiles = {
+                verify()
+                var used = 0L
+                val names = linkedSetOf<String>()
+                Files.newDirectoryStream(root.toPath()).use { entries ->
+                    for (entry in entries) {
+                        verify()
+                        check(names.size < 511) { "THEME_RECOVERY_ENTRY_LIMIT" }
+                        val stat = Os.lstat(entry.toString())
+                        require(OsConstants.S_ISREG(stat.st_mode)) { "THEME_RECOVERY_ENTRY_INVALID" }
+                        require(stat.st_size in 0..(STORAGE_LIMIT - used)) { "THEME_RECOVERY_BYTE_LIMIT" }
+                        used += stat.st_size
+                        names.add(entry.fileName.toString())
+                    }
+                }
+                verify()
+                names
+            }, readFile = { name ->
+                verify()
+                readRecoveryFile(File(root, name), ::verify)
+            })
+            try { block(directory).also { verify() } } finally { open.set(false) }
+        }
+    }
+
+    /** Preserve original bytes, including empty partial files; the caller validates final themes. */
+    private fun readRecoveryFile(file: File, verifyDirectory: () -> Unit): ByteArray =
+        descriptor(file, OsConstants.O_RDONLY) { fd ->
+            val initial = Os.fstat(fd)
+            require(initial.st_size in 0..THEME_FILE_LIMIT.toLong()) { "THEME_RECOVERY_FILE_SIZE" }
+            fun verify() {
+                verifyDirectory()
+                val current = Os.lstat(file.path)
+                val held = Os.fstat(fd)
+                check(OsConstants.S_ISREG(current.st_mode) && current.st_dev == initial.st_dev &&
+                    current.st_ino == initial.st_ino && current.st_size == initial.st_size &&
+                    held.st_size == initial.st_size) { "THEME_RECOVERY_FILE_CHANGED" }
+            }
+            verify()
+            val output = ByteArrayOutputStream(initial.st_size.toInt())
+            val buffer = ByteArray(8192)
+            while (true) {
+                verifyDirectory()
+                val count = io.read(fd, buffer, 0, buffer.size)
+                if (count < 0 || count > buffer.size) throw IOException("THEME_RECOVERY_FILE_READ")
+                if (count == 0) break
+                check(count <= initial.st_size - output.size()) { "THEME_RECOVERY_FILE_CHANGED" }
+                output.write(buffer, 0, count)
+            }
+            check(output.size().toLong() == initial.st_size) { "THEME_RECOVERY_FILE_CHANGED" }
+            verify()
+            output.toByteArray()
+        }
 
     /** Only a persisted catalog journal may supply an operation ID or authorize cleanup/deletion. */
     suspend fun install(theme: ValidatedTheme, operationId: String? = null): ValidatedTheme = access {

@@ -19,6 +19,28 @@
 
 ## 验证层级
 
+### 设备主题只读归档输入（2026-10-12，Issue #160 / D-022）
+
+DeviceThemeRecoveryReaderTest 完整14项，与原 ThemeFileRepositoryTest17、
+DeviceThemeStoreTest12、ThemeCatalogRepositoryTest21 合批，64/64通过；
+`127b723a632e4d78886e0ae5ad5efe92/targeted.json` 为 targeted_complete。
+build3分1秒、connected2分4秒，XML97.194秒、0failure/error/skipped；root62、
+编译/lint/告警预算、发现/XML/APK/新覆盖
+输入及 testbed 清理通过。前批图标81项的源码未变，不重跑或拼接成145项全量绿色。
+
+覆盖全部已装和未选版本、原 BOM/空白字节、明暗/卡片样式及原偏好保留、未初始化和
+无目录的独立合法选择、白名单不含凭据、冷重开、不可变快照和关闭后的访问拒绝。
+显式故障存储夹具覆盖安装/删除中间日志、空/部分临时及已发布但未激活文件，读取不
+完成日志或清理文件。损坏/缺少未选活跃文件、未知/超长文件、链接/目录/FIFO、损坏或
+重复字段偏好、内置内容及重哈希目录、同长度文件和原值变化、短 EOF/替换/I/O失败及
+取消均拒绝。无关偏好变化不进入外观档案；旧选择/目录原字符串变化仍使证据失效。
+
+仅为分支的设备外观输入，不是完整素材/恢复或主分支交付。原图标 SQL/schema、
+传输确认/目录日志、与业务和原授权的闭包、持久档案及回读、阶段/所有写入发布栅栏、
+正式确认与真实恢复联合仍待完成；精确提交 CI 随完整候选核验。没有全量/全局覆盖
+校准、极端容量、新后端、人工/外网/NAS/本机 Docker；未操作正式数据、正式 APK、
+部署或默认 v5，未改正常主题/UI/schema/依赖，未放宽时限、断言或告警预算。
+
 ### 旧范围图标文件只读归档输入（2026-10-12，Issue #160 / D-022）
 
 AccountIconRecoveryFilesTest 完整12项及 LocalIconFilesTest 完整20项（新增6项），
