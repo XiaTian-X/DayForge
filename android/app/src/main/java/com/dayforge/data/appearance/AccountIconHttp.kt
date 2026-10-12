@@ -80,13 +80,14 @@ class AccountIconHttp private constructor(
 
     /** No material job may be claimed until actual public identity admits the exact v5 replica. */
     internal suspend fun <T> session(context: AccountIconContext, block: suspend (Session) -> T): T? {
-        tokens.requireOrdinaryReplicaAccess()
+        authorizeAccess(tokens, context)
         check(tokens.iconAuthenticationSnapshot(context.access) != null) { "ICON_SESSION_CHANGED" }
         val route = try { captureRoute() } catch (_: IllegalArgumentException) { throw IOException("MATERIAL_ROUTE_INVALID") }
         val builder = shared.newBuilder()
         builder.interceptors().removeAll { it is HttpLoggingInterceptor }
         builder.networkInterceptors().removeAll { it is HttpLoggingInterceptor }
         val client = route.bind(builder)
+            .let { if (context.recovery != null) it.authenticator(okhttp3.Authenticator.NONE) else it }
             // Never share pooled sockets with a mutable LAN/default-route client.
             .connectionPool(ConnectionPool(1, 1, TimeUnit.MINUTES))
             .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
@@ -95,6 +96,7 @@ class AccountIconHttp private constructor(
             .addNetworkInterceptor { chain ->
                 if (!route.matches(chain.request().url) || tokensCheck(tokens, context) == null)
                     throw IOException("ICON_SESSION_CHANGED")
+                context.recovery?.let { recovery -> runBlocking { recovery.authorizeRequest(tokens, chain.request()) } }
                 chain.proceed(chain.request())
             }.build()
         val session = Session(client, tokens, context, route, requireNotNull(currentCoroutineContext()[Job]))
@@ -122,8 +124,9 @@ class AccountIconHttp private constructor(
         internal suspend fun identity(): MaterialServerIdentity = value(request(MaterialHttpRoute.IDENTITY_PATH))
 
         internal suspend fun authorize(expected: AccountIconContext) {
-            tokens.requireOrdinaryReplicaAccess()
-            check(!closed && currentCoroutineContext()[Job] === owner && expected.access == context.access) { "MATERIAL_SCOPE_CHANGED" }
+            authorizeAccess(tokens, context)
+            check(!closed && currentCoroutineContext()[Job] === owner && expected.access == context.access &&
+                expected.recovery === context.recovery) { "MATERIAL_SCOPE_CHANGED" }
             check(tokens.iconAuthenticationSnapshot(context.access) != null) { "ICON_SESSION_CHANGED" }
         }
 
@@ -146,6 +149,7 @@ class AccountIconHttp private constructor(
                 .header("X-DayForge-Protocol", "5")
                 .tag(AuthenticationSession::class.java, context.access.session.authentication)
                 .tag(LocalIconAccess::class.java, context.access).tag(MaterialHttpRoute::class.java, route)
+                .tag(ReplicaMaterialAccess::class.java, context.recovery)
         }
 
         private fun checkAttempt(attempt: IconTransferAttempt, kind: IconTransferKind) {
@@ -208,8 +212,9 @@ class AccountIconHttp private constructor(
 
         private suspend fun execute(request: Request, limit: Int, type: String): ByteArray {
             check(!closed && currentCoroutineContext()[Job] === owner) { "MATERIAL_SCOPE_CHANGED" }
+            context.recovery?.authorizeRequest(tokens, request)
             return supervisorScope {
-                tokens.requireOrdinaryReplicaAccess()
+                authorizeAccess(tokens, context)
                 check(tokens.iconAuthenticationSnapshot(context.access) != null) { "ICON_SESSION_CHANGED" }
                 val cancellation = MaterialCallCancellation()
                 val call = client.newCall(request.newBuilder().tag(MaterialCallCancellation::class.java, cancellation).build())
@@ -235,7 +240,7 @@ class AccountIconHttp private constructor(
                     cancellation.cancel()
                     withContext(NonCancellable) { worker.join() }
                 }
-                tokens.requireOrdinaryReplicaAccess()
+                authorizeAccess(tokens, context)
                 check(tokens.iconAuthenticationSnapshot(context.access) != null) { "ICON_SESSION_CHANGED" }
                 result
             }
@@ -275,8 +280,14 @@ class AccountIconHttp private constructor(
     }
 
     private companion object {
+        suspend fun authorizeAccess(tokens: TokenManager, context: AccountIconContext) {
+            context.recovery?.authorize(tokens) ?: tokens.requireOrdinaryReplicaAccess()
+        }
         fun tokensCheck(tokens: TokenManager, context: AccountIconContext) = runBlocking {
-            if (tokens.replicaSwitchPending()) null else tokens.iconAuthenticationSnapshot(context.access)
+            if (context.recovery != null) {
+                context.recovery.authorize(tokens)
+                tokens.iconAuthenticationSnapshot(context.access)
+            } else if (tokens.replicaSwitchPending()) null else tokens.iconAuthenticationSnapshot(context.access)
         }
     }
 }

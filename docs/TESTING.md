@@ -19,6 +19,34 @@
 
 ## 验证层级
 
+### 冻结副本的新范围素材恢复（2026-10-12，Issue #160 / D-022）
+
+内部恢复工作流通过实际目标SQL、私有档案与新范围DataStore证明取得本轮专用授权，
+复用原素材运行时、目录检查点、download队列和原生安装；普通运输、声明/上传、
+选包与发布仍被阻断。轮次完成不解除阶段指针或SQL栅栏，不表示正式消费者屏障、
+精确选包意图恢复、生产入口或默认v5已完成。
+
+完整NextReplicaDestinationTest追加三项实际Room/档案/DataStore/TCP用例：旧ready及
+同hash字节不得被新范围采用，实际认证目录和内容下载后验证全部包字节；401/503及
+真实sending日志冷续行保留原operationId；越权方法/路径、重复参数、旧epoch、刷新、
+非规范游标、重新登录和退出本轮后的授权拒绝。坏请求在实际OkHttp拦截器边界拒绝，
+不送达对端；新范围下载不修改业务SQL、阶段DataStore、旧档案或自动选包。
+
+首轮运行`035c32473bb94e209954a9c4b50aad36`：root62及编译/lint完成，build3分11秒；
+原告警门禁拒绝夹具重复创建Json的一条新增告警，未执行Android行为测试。复用夹具
+解析器后，授权MI6/API35七个完整类118/118通过、0failure/error/skipped：认证8、恢复
+HTTP9、目录24、素材HTTP28、元数据26、传输15、实际目标/素材恢复8。最终运行
+`c6b072a46f8b4ae79f6e23f16f3e20f1/targeted.json`为targeted_complete；build23秒、
+connected14分3秒、XML821.760秒，新增三项分别70.931/67.628/63.245秒。
+root62、lint/原告警预算、APK/实际发现/XML/新非空EC及测试包清理通过；独立adb确认
+无testbed包/进程，拥有的构建和测试结束后才编辑文档。成功清单SHA256
+`87af56425882056093960bcd8d7033a5e37d2b8e0d94d1a056d6aad910ece721`，XML SHA256
+`e26a715c56490cd94efd9abb52ed68d01bca7ee6e72601c9c8084f545d09883a`。
+
+150秒单项、25分钟批次、限额/断言/告警预算不变；未重复未受影响全量或极端容量。
+未执行完整Android/覆盖校准、真实FastAPI恢复联合、精确提交CI或正式人工/外网/NAS
+验收，不操作正式数据/部署/正式APK/默认v5或本机Docker。定向结果不替代这些门槛。
+
 ### 提交后账户范围原子发布（2026-10-12，Issue #160 / D-022）
 
 内部恢复链追加SQL_COMMITTED→DESTINATION_BOUND。发布前重验实际完整目标SQL、

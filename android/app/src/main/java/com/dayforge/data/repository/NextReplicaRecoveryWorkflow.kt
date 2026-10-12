@@ -3,9 +3,13 @@ package com.dayforge.data.repository
 import androidx.room.withTransaction
 import com.dayforge.data.api.NextSyncHttp
 import com.dayforge.data.appearance.AccountIconNamespace
+import com.dayforge.data.appearance.AccountIconHttp
+import com.dayforge.data.appearance.ReplicaMaterialAccess
 import com.dayforge.data.local.*
 import com.dayforge.data.local.entity.NextReplicaFenceEntity
 import com.dayforge.domain.service.AccountSessionCoordinator
+import com.dayforge.domain.service.AccountIconRuntime
+import com.dayforge.domain.service.IconMaterialOutcome
 import java.util.UUID
 
 /** Fresh evidence for a future explicit confirmation, NOT user consent or COMMIT authority. */
@@ -111,6 +115,19 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
         if (stages.active() == next) return@coordinateReplicaRecovery resumeCommit(next)
         resumeCommit(expected)
         stages.bindDestination(expected)
+    }
+
+    /** Reuse the sole material owner, real catalog/checkpoint and native download journal.
+     * A completed round is NOT activation/selection proof. The stage, SQL fence and all ordinary
+     * consumer gates remain retained; interruptions reacquire fresh authority, never old requests.
+     */
+    suspend fun recoverMaterials(expected: ReplicaSwitchStage, material: AccountIconRuntime,
+        transport: AccountIconHttp): IconMaterialOutcome = coordinator.coordinateReplicaRecovery {
+        require(expected.phase == ReplicaSwitchPhase.DESTINATION_BOUND)
+        require(material.metadata.usesAccess(tokens, sessions)) { "ICON_RECOVERY_STORE_MISMATCH" }
+        ReplicaMaterialAccess.verified(database, tokens, sessions, archives, expected) { context ->
+            material.synchronize(context, transport)
+        }
     }
 
     /** Actual SQL fate distinguishes rollback from committed-but-undelivered. No automatic

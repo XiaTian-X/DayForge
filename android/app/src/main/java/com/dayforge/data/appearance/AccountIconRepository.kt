@@ -23,7 +23,8 @@ internal data class AccountIconNamespace(val accountId: String, val serverInstan
 }
 
 /** Captured request lifetime, not credentials. A caller cannot choose its own owner. */
-internal class AccountIconContext internal constructor(internal val access: LocalIconAccess) {
+internal class AccountIconContext internal constructor(internal val access: LocalIconAccess,
+    internal val recovery: ReplicaMaterialAccess? = null) {
     val namespace = AccountIconNamespace(
         access.session.authentication.userId,
         requireNotNull(access.session.serverInstanceId), requireNotNull(access.session.syncEpoch)
@@ -106,8 +107,15 @@ internal class AccountIconRepository(
 
     /** Includes local download/install/cleanup, even on a device without declaration permission. */
     suspend fun reauthorizeOrdinary(context: AccountIconContext, writing: Boolean = false) = sessions.exclusive {
-        tokens.requireOrdinaryReplicaAccess()
+        if (writing) tokens.requireOrdinaryReplicaAccess() else requireDownloadAccess(context)
         check(context, writing)
+    }
+
+    /** Only catalog/download journal and local readiness mutations use the recovery lease.
+     * Structural declaration, selection and all image publication still require ordinary access.
+     */
+    private suspend fun requireDownloadAccess(context: AccountIconContext) {
+        context.recovery?.authorize(tokens) ?: tokens.requireOrdinaryReplicaAccess()
     }
 
     /** Short in-memory publication only. Never perform image I/O/rendering or suspend in block. */
@@ -215,12 +223,12 @@ internal class AccountIconRepository(
     /** Short queue transaction only: no I/O/network, nested account locking or preference writes. */
     internal suspend fun <T> transferTransaction(context: AccountIconContext,
         block: suspend (AccountIconTransferMetadata) -> T): T = scoped(context) {
-        tokens.requireOrdinaryReplicaAccess()
+        requireDownloadAccess(context)
         val before = catalog(context.namespace)
         val result = block(AccountIconTransferMetadata(
             Collections.unmodifiableMap(before.assets), Collections.unmodifiableMap(before.packs)))
         check(catalog(context.namespace) == before) { "ICON_TRANSFER_CHANGED_METADATA" }
-        tokens.requireOrdinaryReplicaAccess()
+        requireDownloadAccess(context)
         check(context)
         result
     }
@@ -335,7 +343,7 @@ internal class AccountIconRepository(
 
     private suspend fun ready(context: AccountIconContext, assetId: String, expected: IconReservation,
         profile: String, writing: Boolean) = scoped(context, writing) {
-            tokens.requireOrdinaryReplicaAccess()
+            if (writing) tokens.requireOrdinaryReplicaAccess() else requireDownloadAccess(context)
             val ns = context.namespace
             val before = catalog(ns)
             val current = installation(before, assetId, expected.blob.sha256)
@@ -396,6 +404,7 @@ internal class AccountIconRepository(
 
     private suspend fun check(context: AccountIconContext, writing: Boolean = false) {
         currentCoroutineContext().ensureActive()
+        context.recovery?.authorize(tokens)
         check(tokens.localIconAccess() == context.access) { "ICON_SESSION_CHANGED" }
         if (writing) tokens.requireOrdinaryReplicaAccess()
         check(!writing || context.access.canDeclare) { "ICON_DECLARATION_DENIED" }
@@ -411,7 +420,7 @@ internal class AccountIconRepository(
     private suspend fun <T> declare(context: AccountIconContext, assets: List<IconAsset>, packs: List<IconPack>, writing: Boolean,
         block: suspend (AccountIconTransferMetadata) -> T): T =
         sessions.exclusive {
-            tokens.requireOrdinaryReplicaAccess()
+            if (writing) tokens.requireOrdinaryReplicaAccess() else requireDownloadAccess(context)
             check(context, writing)
             val result = database.withTransaction {
                 val ns = context.namespace

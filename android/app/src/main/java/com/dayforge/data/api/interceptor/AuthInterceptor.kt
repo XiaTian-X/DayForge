@@ -6,6 +6,7 @@ import com.dayforge.data.local.LocalIconAccess
 import com.dayforge.data.local.LocalSyncAccess
 import com.dayforge.data.api.MaterialHttpRoute
 import com.dayforge.data.api.materialTokenSafe
+import com.dayforge.data.appearance.ReplicaMaterialAccess
 import java.io.IOException
 import kotlinx.coroutines.runBlocking
 import okhttp3.Interceptor
@@ -26,6 +27,8 @@ class AuthInterceptor @Inject constructor(
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
         val url = request.url.toString()
+        val materialRecovery = request.tag(ReplicaMaterialAccess::class.java)
+        materialRecovery?.let { runBlocking { it.authorizeRequest(tokenManager, request) } }
 
         // Skip auth header for authentication endpoints
         if (shouldSkipAuth(url)) {
@@ -36,8 +39,8 @@ class AuthInterceptor @Inject constructor(
         val iconAccess = request.tag(LocalIconAccess::class.java)
         val syncAccess = request.tag(LocalSyncAccess::class.java)
         val route = request.tag(MaterialHttpRoute::class.java)
-        // The only personal cross-epoch exception is a fixed read-only preview. It cannot
-        // be used for a push, heartbeat, registration or material call (including legacy v4).
+        // Fixed preview and verified destination GET/download only; never ordinary writes,
+        // refresh, registration, timer commands or a query/header-only material exemption.
         if (request.url.pathSegments.take(2) == listOf("api", "v2") &&
             request.url.pathSegments.getOrNull(2) in setOf("sync", "timers", "devices", "appearance")) {
             val recoveryRead = route != null && syncAccess != null && request.method == "GET" &&
@@ -46,7 +49,7 @@ class AuthInterceptor @Inject constructor(
                 request.header("X-DayForge-Sync-Epoch")?.let {
                     com.dayforge.domain.model.isContractUuid(it) && it != syncAccess.session.syncEpoch
                 } == true
-            if (!recoveryRead && runBlocking { tokenManager.replicaSwitchPending() })
+            if (!recoveryRead && materialRecovery == null && runBlocking { tokenManager.replicaSwitchPending() })
                 throw IOException(com.dayforge.data.local.ReplicaSwitchGuard.PENDING)
         }
         if (route != null && !route.matches(request.url)) throw IOException("MATERIAL_ROUTE_CHANGED")

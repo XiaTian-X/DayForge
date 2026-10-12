@@ -13,6 +13,8 @@ import com.dayforge.data.local.*
 import com.dayforge.data.model.*
 import com.dayforge.domain.appearance.*
 import com.dayforge.domain.model.*
+import com.dayforge.domain.service.AccountIconRuntime
+import com.dayforge.domain.service.IconMaterialOutcome
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicBoolean
@@ -42,6 +44,8 @@ class NextReplicaDestinationTest : NextCoreRequestFixture() {
     private lateinit var builtIns: BuiltInThemes
     private lateinit var http: NextSyncHttp
     private lateinit var peer: MaterialSocketServer
+    private val materialJson = Json { encodeDefaults = true }
+    private var materialReply: ((MaterialSocketServer.Input) -> MaterialSocketServer.Reply)? = null
     // Registry intentionally holds weak references. Keep the real fault observer alive across
     // the complete archive verification, including GC, until this per-case fixture is released.
     private lateinit var cancellationCache: AccountIconMemory.Cache
@@ -86,7 +90,8 @@ class NextReplicaDestinationTest : NextCoreRequestFixture() {
                     assertEquals("GET", input.method)
                     MaterialSocketServer.Reply(json.encodeToString(response).toByteArray())
                 }
-                else -> error("Recovery may not send ordinary work: ${input.path}")
+                else -> if (input.path.startsWith("/api/v2/appearance/")) requireNotNull(materialReply)(input)
+                    else error("Recovery may not send ordinary work: ${input.path}")
             }
         }
         http = channel.first; peer = channel.second
@@ -136,6 +141,141 @@ class NextReplicaDestinationTest : NextCoreRequestFixture() {
         assertNotNull(rejected { tokens.saveSyncCursor(999) })
         assertNotNull(rejected { workflow().cancel(stage) })
         assertEquals(ReplicaCommitFate.COMMITTED, NextReplicaCommitStore(db, tokens, sessions).fate(stage))
+    }
+
+    private val svg get() = """<svg width="1" height="1"><rect width="1" height="1" fill="#000000"/></svg>""".toByteArray()
+    private val hash get() = MessageDigest.getInstance("SHA-256").digest(svg).joinToString("") { "%02x".format(it) }
+    private val asset get() = IconAsset(id(100), "Material", "general", "template",
+        IconBlob(hash, svg.size, "image/svg+xml", 1, 1), null)
+    private val pack get() = IconPack("dayforge.icon-pack", 1, id(101), 1, "Material pack", listOf(asset),
+        mapOf("habit.custom" to asset.assetId, "metric.custom" to asset.assetId), null)
+    private fun runtime(): AccountIconRuntime {
+        val imports = AccountIconImport(icons, store, transfers)
+        return AccountIconRuntime(icons, store, AccountIconRenderer(icons, store), imports,
+            AccountIconDocuments(imports, app.contentResolver), {})
+    }
+    // Independent actual durable observation; ordinary queue APIs intentionally remain frozen.
+    private suspend fun destinationJobs() = iconDb.transfers().rows(id(1), id(2), id(99))
+    private fun materialResponse(input: MaterialSocketServer.Input): MaterialSocketServer.Reply {
+        assertEquals("GET", input.method); assertTrue(input.body.isEmpty())
+        assertEquals("5", input.headers["x-dayforge-protocol"])
+        assertEquals("Bearer ${runBlocking { tokens.accessToken.first() }}", input.headers["authorization"])
+        val url = peer.origin.resolve(input.target)!!
+        assertEquals(id(2), url.queryParameter("server_instance_id"))
+        assertEquals(id(99), url.queryParameter("sync_epoch")); assertEquals(id(4), url.queryParameter("device_id"))
+        return when (input.path) {
+            "/api/v2/appearance/catalog" -> {
+                val after = url.queryParameter("after")!!.toLong()
+                val entries = listOf(AppearanceCatalogEntry.Asset(1, asset), AppearanceCatalogEntry.Pack(2, pack))
+                    .filter { it.sequence > after }
+                MaterialSocketServer.Reply(materialJson.encodeToString(AppearanceCatalogPage(
+                    AssetSyncContext(id(2), id(99), id(4)), entries, 2, 2, false)).toByteArray())
+            }
+            "/api/v2/appearance/assets/${asset.assetId}/content/light" -> MaterialSocketServer.Reply(svg,
+                type = "image/svg+xml", headers = mapOf("Cache-Control" to "private, no-store", "X-Content-Type-Options" to "nosniff"))
+            else -> error("Unexpected material write/path: ${input.path}")
+        }
+    }
+
+    @Test fun frozenDestinationDownloadsAuthenticatedNewScopeBytesWithoutBorrowingOldReadyOrSelecting() = runBlocking<Unit> {
+        initialize(); val old = icons.capture()
+        icons.reserveAsset(old, asset); icons.reservePack(old, pack)
+        store.install(old, asset.assetId, hash, svg); store.select(old, 0, IconPackVersion(pack.packId, 1))
+        val committed = committed(); val calls = peer.requests.size
+        assertNotNull(rejected { workflow().recoverMaterials(committed, runtime(), AccountIconHttp(client, tokens, peer.origin)) })
+        assertEquals(calls, peer.requests.size)
+        val destination = workflow().bindDestination(committed); val archiveBytes = archive(destination).readBytes()
+        val sql = ReplicaProjection.capture(db).hash; val metadata = dataStore.data.first()
+        materialReply = ::materialResponse
+        assertNotNull(rejected { runtime().synchronize(icons.capture(), AccountIconHttp(client, tokens, peer.origin)) })
+        assertEquals(calls, peer.requests.size)
+        assertEquals(IconMaterialOutcome.RETRY, workflow().recoverMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)))
+        val context = icons.capture(); assertNull(icons.installation(context, asset.assetId, hash).validationProfile)
+        assertTrue(destinationJobs().all { it.kind == "download" && it.state == "pending" })
+        assertNull(icons.selection(context).pack); assertNotNull(rejected { store.read(context, asset.assetId, hash) })
+        assertEquals(IconMaterialOutcome.COMPLETE, workflow().recoverMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)))
+        assertArrayEquals(svg, store.read(context, asset.assetId, hash)); store.verifyPack(context, pack)
+        assertTrue(destinationJobs().all { it.state == "complete" })
+        assertNull(icons.selection(context).pack); assertNotNull(rejected { store.select(context, 0, IconPackVersion(pack.packId, 1)) })
+        assertNotNull(rejected { transfers.enqueueAsset(context, asset.assetId) })
+        assertNotNull(rejected { icons.authorized(context) { error("Publication must remain blocked") } })
+        assertEquals(metadata, dataStore.data.first()); assertEquals(sql, ReplicaProjection.capture(db).hash)
+        assertArrayEquals(archiveBytes, archive(destination).readBytes()); assertFrozen(destination)
+        val materialCalls = peer.requests.drop(calls).filter { it.path.startsWith("/api/v2/appearance/") }
+        assertEquals(1, materialCalls.count { it.path.endsWith("/content/light") }); assertTrue(materialCalls.all { it.method == "GET" })
+        coldReopen(); assertEquals(IconMaterialOutcome.COMPLETE,
+            workflow().recoverMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)))
+        assertArrayEquals(svg, store.read(icons.capture(), asset.assetId, hash)); assertFrozen(destination)
+        assertEquals(1, peer.requests.count { it.path.endsWith("/content/light") })
+    }
+
+    @Test fun transientMaterialFailureRetainsNewDownloadIdentityAndColdResumeNeverReplaysOldNamespaceWork() = runBlocking<Unit> {
+        initialize(); val destination = workflow().bindDestination(committed()); materialReply = ::materialResponse
+        assertEquals(IconMaterialOutcome.RETRY, workflow().recoverMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)))
+        val pending = destinationJobs().single(); assertEquals("download", pending.kind)
+        for (status in listOf(503, 401)) {
+            materialReply = { input -> if (input.path.endsWith("/content/light"))
+                MaterialSocketServer.Reply(byteArrayOf(), status = status) else materialResponse(input) }
+            assertEquals(IconMaterialOutcome.RETRY, workflow().recoverMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)))
+            assertEquals(pending.operationId, destinationJobs().single().operationId)
+        }
+        val retried = destinationJobs().single()
+        assertEquals(pending.operationId, retried.operationId); assertEquals("pending", retried.state)
+        assertNull(icons.installation(icons.capture(), asset.assetId, hash).validationProfile)
+        ReplicaMaterialAccess.verified(db, tokens, sessions, ReplicaPrivateArchiveStore(directory), destination) { context ->
+            assertEquals(pending.operationId, transfers.prepareNext(context)!!.job.operationId)
+        }
+        assertEquals("sending", destinationJobs().single().state)
+        coldReopen(); materialReply = ::materialResponse
+        assertEquals(IconMaterialOutcome.COMPLETE, workflow().recoverMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)))
+        val complete = destinationJobs().single(); assertEquals(pending.operationId, complete.operationId)
+        assertTrue(complete.generation > retried.generation); assertEquals("complete", complete.state)
+        assertArrayEquals(svg, store.read(icons.capture(), asset.assetId, hash)); assertFrozen(destination)
+        assertTrue(peer.requests.filter { it.path.startsWith("/api/v2/appearance/") }.all { it.method == "GET" && it.target.contains("sync_epoch=${id(99)}") })
+    }
+
+    @Test fun recoveryLeaseCannotAuthorizeWritesMalformedScopeRefreshOrWorkAfterReauthenticationOrReturn() = runBlocking<Unit> {
+        initialize(); val destination = workflow().bindDestination(committed()); materialReply = ::materialResponse
+        var captured: AccountIconContext? = null
+        ReplicaMaterialAccess.verified(db, tokens, sessions, ReplicaPrivateArchiveStore(directory), destination) { context ->
+            captured = context; val lease = context.recovery!!
+            val route = com.dayforge.data.api.MaterialHttpRoute(peer.origin, null)
+            val url = peer.origin.newBuilder().encodedPath("/api/v2/appearance/catalog")
+                .addQueryParameter("server_instance_id", id(2)).addQueryParameter("sync_epoch", id(99))
+                .addQueryParameter("device_id", id(4)).addQueryParameter("after", "0").addQueryParameter("limit", "4").build()
+            val valid = okhttp3.Request.Builder().url(url).header("X-DayForge-Protocol", "5")
+                .tag(com.dayforge.data.api.MaterialHttpRoute::class.java, route)
+                .tag(AuthenticationSession::class.java, context.access.session.authentication)
+                .tag(LocalIconAccess::class.java, context.access).tag(ReplicaMaterialAccess::class.java, lease).build()
+            lease.authorizeRequest(tokens, valid)
+            val invalid = listOf(valid.newBuilder().delete().build(), valid.newBuilder().url(url.newBuilder()
+                .addQueryParameter("limit", "4").build()).build(), valid.newBuilder().url(url.newBuilder()
+                .setQueryParameter("sync_epoch", id(3)).build()).build(), valid.newBuilder().url(url.newBuilder()
+                .encodedPath("/api/v1/auth/refresh").build()).build(), valid.newBuilder().url(url.newBuilder()
+                .setQueryParameter("after", "00").build()).build())
+            val calls = peer.requests.size
+            for (request in invalid) {
+                assertNotNull(rejected { lease.authorizeRequest(tokens, request) })
+                assertNotNull(rejected { withContext(Dispatchers.IO) { client.newCall(request).execute().close() } })
+            }
+            assertEquals(calls, peer.requests.size)
+            assertNotNull(rejected { transfers.enqueueAsset(context, asset.assetId) })
+        }
+        assertNotNull(rejected { icons.library(captured!!) })
+        assertNotNull(rejected { captured!!.recovery!!.authorize(tokens) })
+        assertNotNull(rejected {
+            ReplicaMaterialAccess.verified(db, tokens, sessions, ReplicaPrivateArchiveStore(directory), destination) { context ->
+                captured = context
+                tokens.saveLoginSession("synthetic-fresh", "synthetic-refresh-fresh", "member", id(1), false)
+                assertNotNull(rejected { context.recovery!!.authorize(tokens) })
+                assertNotNull(rejected { icons.library(context) })
+                // Factory must also reject its return if authentication changed during owned work.
+            }
+        })
+        assertNotNull(rejected { captured!!.recovery!!.authorize(tokens) })
+        assertEquals(IconMaterialOutcome.RETRY, workflow().recoverMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)))
+        assertEquals(IconMaterialOutcome.COMPLETE, workflow().recoverMaterials(destination, runtime(), AccountIconHttp(client, tokens, peer.origin)))
+        assertEquals("synthetic-fresh", tokens.accessToken.first()); assertFrozen(destination)
     }
 
     @Test fun destinationPublishesCompleteMetadataAtomicallyWithoutBorrowingOldMaterialOrResettingTheme() = runBlocking<Unit> {

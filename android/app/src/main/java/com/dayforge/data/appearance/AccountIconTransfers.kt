@@ -56,6 +56,7 @@ internal class AccountIconTransfers(
     private fun AccountIconTransferRow.key() = Key(kind, targetId, revision, variant)
     private fun next(value: Long): Long { check(value < Long.MAX_VALUE) { "ICON_TRANSFER_EXHAUSTED" }; return value + 1 }
     private fun writing(context: AccountIconContext, kind: String) {
+        check(context.recovery == null || kind == IconTransferKind.DOWNLOAD.wire) { "ICON_RECOVERY_READ_ONLY" }
         check(kind == IconTransferKind.DOWNLOAD.wire || context.access.canDeclare) { "ICON_DECLARATION_DENIED" }
     }
 
@@ -330,6 +331,7 @@ internal class AccountIconTransfers(
         check(!audit.invalidValues && audit.count <= MAX_JOBS) { "ICON_TRANSFER_CORRUPT" }
         val rows = dao.rows(ns.accountId, ns.serverInstanceId, ns.syncEpoch)
         check(rows.size.toLong() == audit.count) { "ICON_TRANSFER_CORRUPT" }
+        check(context.recovery == null || rows.all { it.kind == IconTransferKind.DOWNLOAD.wire }) { "ICON_RECOVERY_READ_ONLY" }
         val byKey = rows.associateBy { it.key() }
         check(byKey.size == rows.size) { "ICON_TRANSFER_CORRUPT" }
         val hashes = mutableMapOf<Pair<String, Int>, String>()
