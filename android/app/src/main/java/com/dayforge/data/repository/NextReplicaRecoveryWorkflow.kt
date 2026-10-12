@@ -52,7 +52,8 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
 
     /** Cold continuation always re-reads authenticated server contents; saved hashes are not DTOs. */
     suspend fun resume(expected: ReplicaSwitchStage): ReplicaSwitchStage = coordinator.coordinateReplicaRecovery {
-        if (expected.phase in setOf(ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED))
+        if (expected.phase in setOf(ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED,
+            ReplicaSwitchPhase.DESTINATION_BOUND))
             return@coordinateReplicaRecovery resumeCommit(expected)
         requireCurrent(expected)
         requireCandidate(expected, candidate(expected.original, expected.newEpoch, expected.installationId))
@@ -60,7 +61,8 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
             ReplicaSwitchPhase.FREEZING -> archiveFrozen(freeze(expected))
             ReplicaSwitchPhase.FROZEN -> archiveFrozen(expected)
             ReplicaSwitchPhase.ARCHIVE_VERIFIED -> { verifiedInput(expected) { _, _ -> Unit }; expected }
-            ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED -> error("SYNC_REPLICA_STAGE_CHANGED")
+            ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED,
+                ReplicaSwitchPhase.DESTINATION_BOUND -> error("SYNC_REPLICA_STAGE_CHANGED")
             ReplicaSwitchPhase.ABORTED -> error("SYNC_REPLICA_STAGE_TRANSITION_INVALID")
         }
     }
@@ -98,6 +100,19 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
         resumeCommit(committing)
     }
 
+    /** Controlled forward publication, never cancel/rebootstrap/ordinary preferences writes.
+     * A lost return after the ONE DS write is observed as destination-bound on cold resume.
+     * Old namespace files/ready/selection do not become destination material proof.
+     */
+    suspend fun bindDestination(expected: ReplicaSwitchStage): ReplicaSwitchStage = coordinator.coordinateReplicaRecovery {
+        require(expected.phase in setOf(ReplicaSwitchPhase.SQL_COMMITTED, ReplicaSwitchPhase.DESTINATION_BOUND))
+        if (expected.phase == ReplicaSwitchPhase.DESTINATION_BOUND) return@coordinateReplicaRecovery resumeCommit(expected)
+        val next = expected.transition(ReplicaSwitchPhase.DESTINATION_BOUND)
+        if (stages.active() == next) return@coordinateReplicaRecovery resumeCommit(next)
+        resumeCommit(expected)
+        stages.bindDestination(expected)
+    }
+
     /** Actual SQL fate distinguishes rollback from committed-but-undelivered. No automatic
      * pre-COMMIT retry: OLD is reverified and left awaiting another explicit confirm/cancel.
      * COMMITTED can only move forward, even after same-account reauthentication. Publication
@@ -113,7 +128,8 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
             }
             ReplicaCommitFate.COMMITTED -> {
                 archives.verify(receipt(stage, requireNotNull(stage.archive))) { requireRetainedOwner(stage) }
-                if (stage.phase == ReplicaSwitchPhase.SQL_COMMITTED) stage else stages.recordSqlCommitted(stage)
+                if (stage.phase in setOf(ReplicaSwitchPhase.SQL_COMMITTED, ReplicaSwitchPhase.DESTINATION_BOUND)) stage
+                else stages.recordSqlCommitted(stage)
             }
         }
     }
@@ -125,6 +141,10 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
     }
 
     private suspend fun requireRetainedOwner(stage: ReplicaSwitchStage) {
+        if (stage.phase == ReplicaSwitchPhase.DESTINATION_BOUND) {
+            tokens.replicaDestinationAccess(stage)
+            return
+        }
         val actual = requireNotNull(tokens.localSyncAccess()) { "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED" }
         val sameOwner = stage.original.copy(session = stage.original.session.copy(authentication = actual.session.authentication))
         check(tokens.activeReplicaStage() == stage && actual.session.authentication.userId == stage.accountId && actual == sameOwner &&

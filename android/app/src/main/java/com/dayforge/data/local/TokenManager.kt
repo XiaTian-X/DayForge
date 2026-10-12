@@ -288,8 +288,9 @@ class TokenManager @Inject constructor(
     }
 
     /** Specialized durable CAS, not a general preferences writer or ordinary-write override.
-     * Only the pre-COMMIT participant calls this after checking the actual SQL phase.
-     * Pointer and row commit together and join persistence before publication reopens.
+     * The participant calls this after checking the actual SQL phase. Destination publication
+     * changes ONLY the verified target identity/checkpoint with its journal in ONE actor write.
+     * The pointer remains present: neither SQL_COMMITTED nor DESTINATION_BOUND reopens work.
      */
     internal suspend fun persistReplicaStage(expected: ReplicaSwitchStage?, next: ReplicaSwitchStage): ReplicaSwitchStage {
         val raw = ReplicaSwitchStage.encode(next)
@@ -311,8 +312,25 @@ class TokenManager @Inject constructor(
                     authentication = it.session.authentication)) }
                 check(values[INSTALLATION_ID_KEY] == frozen.installationId &&
                     actual != null && actual.session.authentication.userId == frozen.accountId && actual == authenticated &&
-                    (frozen.phase in setOf(ReplicaSwitchPhase.ABORTED, ReplicaSwitchPhase.SQL_COMMITTED) || actual == frozen.original)) {
+                    (frozen.phase in setOf(ReplicaSwitchPhase.ABORTED, ReplicaSwitchPhase.SQL_COMMITTED,
+                        ReplicaSwitchPhase.DESTINATION_BOUND) || actual == frozen.original)) {
                     "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED"
+                }
+                if (frozen.phase == ReplicaSwitchPhase.DESTINATION_BOUND) {
+                    val target = requireNotNull(frozen.target)
+                    values[SERVER_INSTANCE_ID_KEY] = frozen.serverInstanceId
+                    values[SYNC_EPOCH_KEY] = frozen.newEpoch
+                    values[SYNC_DEVICE_ID_KEY] = target.deviceId
+                    values[DEVICE_CAPABILITIES_KEY] = target.capabilities.toSet()
+                    values[DEVICE_CAPABILITIES_KNOWN_KEY] = true
+                    values[DEVICE_PRIMARY_EDITOR_KEY] = target.isPrimaryEditor
+                    values[DEVICE_CAPABILITY_REVISION_KEY] = target.capabilityRevision.toString()
+                    values[DEVICE_CAPABILITIES_DEVICE_KEY] = target.deviceId
+                    values[SYNC_CURSOR_KEY] = frozen.candidateCursor.toString()
+                    values[SYNC_BOOTSTRAPPED_KEY] = true
+                    check(syncAccess(values) == frozen.destination(actual.session.authentication)) {
+                        "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED"
+                    }
                 }
             }
             var bytes = raw.toByteArray(Charsets.UTF_8).size.toLong()
@@ -328,6 +346,23 @@ class TokenManager @Inject constructor(
             else values[ReplicaSwitchGuard.POINTER] = frozen.recoveryId
         }
         return frozen
+    }
+
+    /** Cold proof of ALL published metadata, not only an epoch or a decoded phase name.
+     * Same-owner fresh authentication can finish committed recovery without restoring old JWTs.
+     */
+    internal suspend fun replicaDestinationAccess(stage: ReplicaSwitchStage): LocalSyncAccess = withContext(Dispatchers.IO) {
+        require(stage.phase == ReplicaSwitchPhase.DESTINATION_BOUND)
+        val values = dataStore.data.first()
+        val actual = requireNotNull(syncAccess(values)) { "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED" }
+        val target = requireNotNull(stage.target)
+        check(values[ReplicaSwitchGuard.POINTER] == stage.recoveryId &&
+            values[ReplicaSwitchStage.key(stage.recoveryId)]?.let { ReplicaSwitchStage.decode(it) } == stage &&
+            actual.session.authentication.userId == stage.accountId && actual == stage.destination(actual.session.authentication) &&
+            values[INSTALLATION_ID_KEY] == stage.installationId &&
+            values[SYNC_CURSOR_KEY] == stage.candidateCursor.toString() && values[SYNC_BOOTSTRAPPED_KEY] == true &&
+            values[DEVICE_PRIMARY_EDITOR_KEY] == target.isPrimaryEditor) { "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED" }
+        actual
     }
 
     private fun coreWriteAccess(preferences: Preferences): LocalCoreWriteAccess? {

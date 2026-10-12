@@ -15,7 +15,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
-internal enum class ReplicaSwitchPhase { FREEZING, FROZEN, ARCHIVE_VERIFIED, COMMITTING, SQL_COMMITTED, ABORTED }
+internal enum class ReplicaSwitchPhase { FREEZING, FROZEN, ARCHIVE_VERIFIED, COMMITTING, SQL_COMMITTED, DESTINATION_BOUND, ABORTED }
 
 @Serializable
 internal data class ReplicaStageTarget(val projectionHash: String, val schemaHash: String, val deviceId: String,
@@ -77,14 +77,17 @@ internal data class ReplicaSwitchStage(
             ReplicaSwitchPhase.ARCHIVE_VERIFIED -> generation == 3L
             ReplicaSwitchPhase.COMMITTING -> generation == 4L
             ReplicaSwitchPhase.SQL_COMMITTED -> generation == 5L
+            ReplicaSwitchPhase.DESTINATION_BOUND -> generation == 6L
             ReplicaSwitchPhase.ABORTED -> generation in 2L..5L
         })
         require(when (phase) {
             ReplicaSwitchPhase.FREEZING, ReplicaSwitchPhase.FROZEN -> archive == null
-            ReplicaSwitchPhase.ARCHIVE_VERIFIED, ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED -> archive != null
+            ReplicaSwitchPhase.ARCHIVE_VERIFIED, ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED,
+                ReplicaSwitchPhase.DESTINATION_BOUND -> archive != null
             ReplicaSwitchPhase.ABORTED -> (archive != null) == (generation >= 4L)
         })
-        require((target != null) == (phase in setOf(ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED) ||
+        require((target != null) == (phase in setOf(ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED,
+            ReplicaSwitchPhase.DESTINATION_BOUND) ||
             phase == ReplicaSwitchPhase.ABORTED && generation == 5L))
         require(target == null || target.deviceId == deviceId)
     }
@@ -94,6 +97,14 @@ internal data class ReplicaSwitchStage(
     val fence: NextReplicaFenceEntity get() = NextReplicaFenceEntity(recoveryId, accountId,
         serverInstanceId, oldEpoch, newEpoch, authenticationGeneration, deviceId, capabilityRevision.toLong(), sourceHash)
 
+    /** Target scope only; a journal or this value is never material/publication permission. */
+    fun destination(authentication: AuthenticationSession): LocalSyncAccess {
+        require(authentication.userId == accountId)
+        val proof = requireNotNull(target)
+        return LocalSyncAccess(LocalDataSession(authentication, serverInstanceId, newEpoch),
+            proof.deviceId, proof.capabilityRevision, proof.capabilities.toSet())
+    }
+
     fun transition(next: ReplicaSwitchPhase, receipt: ReplicaStageArchive? = archive,
         destination: ReplicaStageTarget? = target): ReplicaSwitchStage {
         require(generation < Long.MAX_VALUE && when (phase) {
@@ -101,7 +112,8 @@ internal data class ReplicaSwitchStage(
             ReplicaSwitchPhase.FROZEN -> next == ReplicaSwitchPhase.ARCHIVE_VERIFIED || next == ReplicaSwitchPhase.ABORTED
             ReplicaSwitchPhase.ARCHIVE_VERIFIED -> next == ReplicaSwitchPhase.COMMITTING || next == ReplicaSwitchPhase.ABORTED
             ReplicaSwitchPhase.COMMITTING -> next == ReplicaSwitchPhase.SQL_COMMITTED || next == ReplicaSwitchPhase.ABORTED
-            ReplicaSwitchPhase.SQL_COMMITTED -> false
+            ReplicaSwitchPhase.SQL_COMMITTED -> next == ReplicaSwitchPhase.DESTINATION_BOUND
+            ReplicaSwitchPhase.DESTINATION_BOUND -> false
             ReplicaSwitchPhase.ABORTED -> false
         }) { "SYNC_REPLICA_STAGE_TRANSITION_INVALID" }
         require(if (next == ReplicaSwitchPhase.ARCHIVE_VERIFIED) receipt != null else receipt == archive)

@@ -84,6 +84,23 @@ internal class NextReplicaStageStore(private val database: HabitDatabase, privat
         }
     }
 
+    /** Owner has verified the actual private archive. Keep the SQL fence and DS pointer while
+     * atomically publishing the complete target scope; this is NOT ordinary activation.
+     */
+    suspend fun bindDestination(expected: ReplicaSwitchStage): ReplicaSwitchStage = exclusive {
+        require(expected.phase == ReplicaSwitchPhase.SQL_COMMITTED)
+        database.withTransaction {
+            val next = expected.transition(ReplicaSwitchPhase.DESTINATION_BOUND)
+            check(NextReplicaCommitStore(database, tokens, sessions).fateInTransaction(expected) == ReplicaCommitFate.COMMITTED) {
+                "SYNC_REPLICA_COMMIT_STATE_INVALID"
+            }
+            if (tokens.activeReplicaStage() == next) {
+                tokens.replicaDestinationAccess(next)
+                next
+            } else tokens.persistReplicaStage(expected, next)
+        }
+    }
+
     /** Cancel only while complete actual SQL still proves the old replica. Close SQL first,
      * then release the persistent pointer.
      * If delivery/persistence is interrupted, ordinary work stays blocked until this exact cancel

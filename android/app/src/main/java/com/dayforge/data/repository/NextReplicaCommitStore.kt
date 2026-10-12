@@ -25,7 +25,8 @@ internal class NextReplicaCommitStore(private val database: HabitDatabase, priva
 
     internal suspend fun fateInTransaction(stage: ReplicaSwitchStage, allowClosedOld: Boolean = false): ReplicaCommitFate {
         check(database.inTransaction())
-        require(stage.phase in setOf(ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED))
+        require(stage.phase in setOf(ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED,
+            ReplicaSwitchPhase.DESTINATION_BOUND))
         val fence = database.nextReplicaFenceDao().state()
         check(fence == stage.fence || allowClosedOld && fence == stage.fence.copy(mode = com.dayforge.data.local.entity.NextReplicaFenceEntity.CLOSED)) {
             "SYNC_REPLICA_FENCE_CHANGED"
