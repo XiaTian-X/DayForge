@@ -21,15 +21,21 @@ import com.dayforge.data.api.dto.validateNextSyncOperation
 import com.dayforge.data.api.encodeSyncRequest
 import com.dayforge.data.api.decodeFrozenSyncRequest
 import com.dayforge.domain.model.isContractUuid
+import com.dayforge.domain.model.isContractName
 import com.dayforge.domain.service.AccountSessionCoordinator
 import com.dayforge.util.NumericInputUtils
 import java.time.Instant
 import java.time.ZoneId
 import java.util.UUID
+import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.intOrNull
 
 @Serializable
 internal data class CompletionMetricDraft(
@@ -80,6 +86,77 @@ internal class CompletionMetricPromptStore(
     internal suspend fun pendingInTransaction(session: LocalDataSession): List<CompletionMetricPrompt> {
         check(database.inTransaction())
         return dao.pendingPrompts().map { decode(it, session) }
+    }
+
+    /** Recovery observes every retained draft, including saved/dismissed history. It does not
+     * refresh metadata or demand that the original activity/link/metric still exists. Reuse the
+     * actual submit payload/receipt builders; local storage is never interpreted as server ACK.
+     */
+    internal suspend fun recoveryInTransaction(session: LocalDataSession,
+        operations: Map<String, SyncV2Operation>, submissions: Map<String, LocalFactSubmissionEntity>,
+        states: Map<NextRecoveryKey, NextRecoveryRequestState>): List<ReplicaMetricPromptEvidence> {
+        check(database.inTransaction())
+        val sql = database.openHelper.writableDatabase
+        val ids = sql.query("SELECT eventUuid FROM completion_metric_prompts ORDER BY eventUuid").use { c ->
+            buildList { while (c.moveToNext()) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                require(c.getType(0) == android.database.Cursor.FIELD_TYPE_STRING && size < NEXT_RECOVERY_PROOF_NODE_LIMIT)
+                add(c.getString(0))
+            } }
+        }
+        val reservedOperations = mutableSetOf<String>()
+        val reservedObservations = mutableSetOf<String>()
+        val observationsInOrigins = operations.values.filter { it.entityType == "metric_observation" }.map { it.entityUuid }.toSet()
+        val completionSources = operations.values.filter { it.entityType == "activity_event" && it.payload["one_time"] is JsonObject }
+            .groupBy { it.entityUuid }
+        return ids.map { id ->
+            requireNotNull(NextRequestSql.rowHash(sql, "completion_metric_prompts", "eventUuid=?", arrayOf(id)))
+            val row = requireNotNull(dao.prompt(id))
+            // Kotlin's Int decoder must not turn an out-of-range JSON integer into metadata.
+            val caller = kotlinx.coroutines.currentCoroutineContext()
+            val text = com.dayforge.data.appearance.strictAppearanceJson(row.entriesJson.toByteArray(),
+                com.dayforge.data.api.SYNC_REQUEST_LIMIT, { caller.ensureActive() }) { error("SYNC_RECOVERY_DRAFT_$it") }
+            val raw = Json.parseToJsonElement(text).jsonArray
+            require(raw.isNotEmpty() && raw.size <= 5000)
+            raw.forEach { entry ->
+                val fields = entry.jsonObject
+                for (key in listOf("linkUuid", "metricUuid", "metricName", "unit", "observationUuid", "operationId"))
+                    require(fields.getValue(key).jsonPrimitive.isString) { "SYNC_RECOVERY_DRAFT_INVALID" }
+                for (key in listOf("input", "note")) fields[key]?.let {
+                    require(it.jsonPrimitive.isString) { "SYNC_RECOVERY_DRAFT_INVALID" }
+                }
+                val value = fields.getValue("decimalPlaces").jsonPrimitive
+                require(!value.isString && requireNotNull(value.intOrNull) in 0..6) { "SYNC_RECOVERY_DRAFT_INVALID" }
+            }
+            val prompt = decodeContents(row, session)
+            require(prompt.entries.map { it.linkUuid }.distinct().size == prompt.entries.size) { "SYNC_RECOVERY_DRAFT_INVALID" }
+            val completion = completionSources[row.eventUuid]?.singleOrNull()
+            require(completion != null && completion.action == "upsert" &&
+                completion.payload["activity_uuid"]?.jsonPrimitive?.content == row.activityUuid &&
+                completion.payload["one_time"]?.jsonObject?.get("action")?.jsonPrimitive?.content == "complete" &&
+                completion.operationId in submissions) { "SYNC_RECOVERY_DRAFT_SOURCE_INVALID" }
+            val selected = if (row.state == "saved") selected(prompt).associateBy { it.operationId } else emptyMap()
+            val observations = linkedMapOf<String, NextRecoveryRequestState>()
+            prompt.entries.forEach { entry ->
+                require(isContractName(entry.metricName, 100) && isContractName(entry.unit, 50)) { "SYNC_RECOVERY_DRAFT_INVALID" }
+                require(reservedOperations.add(entry.operationId) && reservedObservations.add(entry.observationUuid)) {
+                    "SYNC_RECOVERY_DRAFT_ID_REUSED"
+                }
+                if (entry.operationId in selected) {
+                    val payload = SyncV2Mapper.metricObservation(log(prompt, entry, 0), entry.metricUuid).toString()
+                    require(submissions[entry.operationId] == receipt(entry, payload)) { "SYNC_RECOVERY_DRAFT_RECEIPT_INVALID" }
+                    observations[entry.operationId] = requireNotNull(states[NextRecoveryKey(NEXT_OPERATION, entry.operationId)])
+                } else {
+                    // All observations in a saved prompt commit together. Pending/dismissed
+                    // prompts, and omitted blank entries, never acquired facts or original IDs.
+                    require(entry.operationId !in operations && entry.operationId !in submissions &&
+                        entry.observationUuid !in observationsInOrigins &&
+                        dao.submissionForEntity("metric_observation", entry.observationUuid) == null &&
+                        database.metricLogDao().getLogByUuid(entry.observationUuid) == null) { "SYNC_RECOVERY_DRAFT_RECEIPT_INVALID" }
+                }
+            }
+            ReplicaMetricPromptEvidence(row, prompt.entries, completion.operationId, observations)
+        }
     }
 
     suspend fun read(eventUuid: String): CompletionMetricPrompt = sessions.exclusive {
@@ -301,7 +378,13 @@ internal class CompletionMetricPromptStore(
     }
 
     private suspend fun decode(row: CompletionMetricPromptEntity, session: LocalDataSession): CompletionMetricPrompt {
-        val decoded = try {
+        val decoded = decodeContents(row, session)
+        // Do not wrap cancellation/authentication/profile failures as draft decoding errors.
+        return decoded.copy(rounds = producer.captureDisplayedRoundsInTransaction())
+    }
+
+    private fun decodeContents(row: CompletionMetricPromptEntity, session: LocalDataSession): CompletionMetricPrompt =
+        try {
             require(isContractUuid(row.eventUuid) && isContractUuid(row.activityUuid))
             require(row.state in setOf("pending", "saved", "dismissed") && row.revision >= 0)
             require((row.recordedAtMillis == null) == (row.timezone == null))
@@ -315,9 +398,6 @@ internal class CompletionMetricPromptStore(
             entries.forEach { require(listOf(it.linkUuid, it.metricUuid, it.operationId, it.observationUuid).all(::isContractUuid)) }
             CompletionMetricPrompt(row, entries, session)
         } catch (_: IllegalArgumentException) { fail(CompletionMetricPromptException.Reason.CORRUPT) }
-        // Do not wrap cancellation/authentication/profile failures as draft decoding errors.
-        return decoded.copy(rounds = producer.captureDisplayedRoundsInTransaction())
-    }
 
     private fun selected(prompt: CompletionMetricPrompt): List<CompletionMetricDraft> {
         val entries = prompt.entries.filter { it.input.isNotBlank() }

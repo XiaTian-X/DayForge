@@ -11,6 +11,7 @@ import com.dayforge.domain.model.isContractUuid
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonPrimitive
 
 /** Bound persisted failure, not an acceptance, parent birth ticket or conflict payload authority. */
 internal data class NextOriginalRejection(val origin: NextRequestOriginEntity, val problem: NextSyncProblem) {
@@ -112,7 +113,21 @@ internal class NextOriginalRequestProofStore(private val database: HabitDatabase
         } else {
             if (kind == NEXT_OPERATION) {
                 val row = requireNotNull(database.syncOutboxDao().getById(source.queueId))
-                require(row.payloadJson == null && row.baseRevision == null && row.basePayloadJson == null &&
+                // Ordinary trigger rows have no payload. The actual completion-prompt producer
+                // instead commits a metric payload AND an immutable local receipt with its origin.
+                // Inspect that exact birth, never adopt arbitrary legacy pre-filled payloads.
+                row.payloadJson?.let { payload ->
+                    val operation = decodeNextOperationIntent(source.intentJson)
+                    require(operation.entityType == "metric_observation" && operation.action == "upsert" && operation.baseRevision == null &&
+                        row.recordType == "metric_log" && row.entityUuid == operation.entityUuid && row.wireEntityUuid == operation.entityUuid &&
+                        row.referenceUuid == operation.payload.getValue("metric_uuid").jsonPrimitive.content &&
+                        payload == operation.payload.toString())
+                    requireNotNull(NextRequestSql.rowHash(sql, "local_fact_submissions", "operationId=?", arrayOf(id)))
+                    require(database.completionFollowUpDao().submission(id) ==
+                        com.dayforge.data.local.entity.LocalFactSubmissionEntity(id, "metric_observation", operation.entityUuid,
+                            requireNotNull(row.referenceUuid), payload))
+                }
+                require(row.baseRevision == null && row.basePayloadJson == null &&
                     row.attemptedAt == null && row.attemptCount == 0 && row.lastError == null &&
                     row.errorCode == null && row.deadLetteredAt == null)
             } else {
