@@ -61,8 +61,9 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
 
     /** Cold continuation always re-reads authenticated server contents; saved hashes are not DTOs. */
     suspend fun resume(expected: ReplicaSwitchStage): ReplicaSwitchStage = coordinator.coordinateReplicaRecovery {
+        if (expected.phase == ReplicaSwitchPhase.CATCHUP_COMMITTING) return@coordinateReplicaRecovery catchUpOwned(expected)
         if (expected.phase in setOf(ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED,
-            ReplicaSwitchPhase.DESTINATION_BOUND))
+            ReplicaSwitchPhase.DESTINATION_BOUND, ReplicaSwitchPhase.CATCHUP_BOUND))
             return@coordinateReplicaRecovery resumeCommit(expected)
         requireCurrent(expected)
         requireCandidate(expected, candidate(expected.original, expected.newEpoch, expected.installationId))
@@ -71,7 +72,8 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
             ReplicaSwitchPhase.FROZEN -> archiveFrozen(expected)
             ReplicaSwitchPhase.ARCHIVE_VERIFIED -> { verifiedInput(expected) { _, _ -> Unit }; expected }
             ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED,
-                ReplicaSwitchPhase.DESTINATION_BOUND -> error("SYNC_REPLICA_STAGE_CHANGED")
+                ReplicaSwitchPhase.DESTINATION_BOUND, ReplicaSwitchPhase.CATCHUP_COMMITTING,
+                ReplicaSwitchPhase.CATCHUP_BOUND -> error("SYNC_REPLICA_STAGE_CHANGED")
             ReplicaSwitchPhase.ABORTED -> error("SYNC_REPLICA_STAGE_TRANSITION_INVALID")
         }
     }
@@ -131,7 +133,7 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
      */
     suspend fun recoverMaterials(expected: ReplicaSwitchStage, material: AccountIconRuntime,
         transport: AccountIconHttp): IconMaterialOutcome = coordinator.coordinateReplicaRecovery {
-        require(expected.phase == ReplicaSwitchPhase.DESTINATION_BOUND)
+        require(expected.phase in setOf(ReplicaSwitchPhase.DESTINATION_BOUND, ReplicaSwitchPhase.CATCHUP_BOUND))
         require(material.metadata.usesAccess(tokens, sessions) &&
             inputs.usesDestinationMaterial(material.metadata, material.transfers, material.store)) { "ICON_RECOVERY_STORE_MISMATCH" }
         ReplicaMaterialAccess.verified(database, tokens, sessions, archives, expected) { context ->
@@ -146,10 +148,48 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
         coordinator.coordinateReplicaRecovery {
             ReplicaDestinationReadAccess.verified(database, tokens, sessions, archives, expected) { read ->
                 val fresh = candidates.validateDestination(read, read.read(http))
-                ReplicaDestinationPreview(fresh, fresh.contentHash == expected.candidateHash &&
-                    fresh.projection.hash == requireNotNull(expected.target).projectionHash && !fresh.hasUnfinishedTimer)
+                ReplicaDestinationPreview(fresh, fresh.contentHash == expected.publishedSnapshot.contentHash &&
+                    fresh.projection.hash == expected.publishedSnapshot.target.projectionHash && !fresh.hasUnfinishedTimer)
             }
         }
+
+    /** Persist the whole fresh intent before replacing SQL. No old request is retargeted or
+     * replayed; the original confirmation/archive/target are immutable. A lost SQL return is
+     * recognized by actual full fate and only completes DS forward. The gates remain closed.
+     */
+    suspend fun catchUp(expected: ReplicaSwitchStage): ReplicaSwitchStage =
+        coordinator.coordinateReplicaRecovery { catchUpOwned(expected) }
+
+    private suspend fun catchUpOwned(expected: ReplicaSwitchStage): ReplicaSwitchStage {
+        require(expected.destinationPending)
+        tokens.replicaDestinationAccess(expected)
+        if (expected.phase == ReplicaSwitchPhase.CATCHUP_COMMITTING &&
+            commits.catchupFate(expected) == ReplicaCatchupFate.COMMITTED) {
+            verifyRetainedArchive(expected)
+            return stages.bindCatchup(expected)
+        }
+        val fresh = ReplicaDestinationReadAccess.verified(database, tokens, sessions, archives, expected) { read ->
+            candidates.validateDestination(read, read.read(http))
+        }
+        require(!fresh.hasUnfinishedTimer) { "SYNC_RECOVERY_REVIEW_REQUIRED" }
+        val snapshot = ReplicaStageSnapshot(fresh.contentHash, fresh.wireHash, fresh.cursor, target(fresh))
+        // Fresh same-device grants may advance; same-version drift/schema/cursor regression may not.
+        val intent = ReplicaStageCatchup(expected.publishedSnapshot, snapshot, fresh.original.session.authentication.generation)
+        val retained = expected.catchup
+        val committing = if (expected.phase == ReplicaSwitchPhase.CATCHUP_COMMITTING &&
+            retained != null && retained.authenticationGeneration == intent.authenticationGeneration &&
+            retained.next.copy(wireHash = snapshot.wireHash) == snapshot) expected
+        else if (expected.phase != ReplicaSwitchPhase.CATCHUP_COMMITTING &&
+            snapshot.copy(wireHash = expected.publishedSnapshot.wireHash) == expected.publishedSnapshot) return expected
+        else stages.recordCatchup(expected, intent)
+        commits.catchup(committing, fresh)
+        verifyRetainedArchive(committing)
+        return stages.bindCatchup(committing)
+    }
+
+    private suspend fun verifyRetainedArchive(stage: ReplicaSwitchStage) {
+        archives.verify(receipt(stage, requireNotNull(stage.archive))) { tokens.replicaDestinationAccess(stage) }
+    }
 
     /** Fresh authenticated directory/transfer round, exact archived preference and ALL owned
      * metadata/receipts/files + current/retained authority references. Still no activation.
@@ -211,7 +251,8 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
             }
             ReplicaCommitFate.COMMITTED -> {
                 archives.verify(receipt(stage, requireNotNull(stage.archive))) { requireRetainedOwner(stage) }
-                if (stage.phase in setOf(ReplicaSwitchPhase.SQL_COMMITTED, ReplicaSwitchPhase.DESTINATION_BOUND)) stage
+                if (stage.phase in setOf(ReplicaSwitchPhase.SQL_COMMITTED, ReplicaSwitchPhase.DESTINATION_BOUND,
+                    ReplicaSwitchPhase.CATCHUP_BOUND)) stage
                 else stages.recordSqlCommitted(stage)
             }
         }
@@ -224,7 +265,7 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
     }
 
     private suspend fun requireRetainedOwner(stage: ReplicaSwitchStage) {
-        if (stage.phase == ReplicaSwitchPhase.DESTINATION_BOUND) {
+        if (stage.destinationPending) {
             tokens.replicaDestinationAccess(stage)
             return
         }

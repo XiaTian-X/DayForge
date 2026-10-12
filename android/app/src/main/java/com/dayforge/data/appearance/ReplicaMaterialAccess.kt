@@ -1,5 +1,6 @@
 package com.dayforge.data.appearance
 
+import androidx.room.withTransaction
 import com.dayforge.data.api.MaterialHttpRoute
 import com.dayforge.data.local.*
 import com.dayforge.data.repository.*
@@ -76,13 +77,20 @@ internal class ReplicaMaterialAccess private constructor(private val tokens: Tok
         suspend fun <T> verified(database: HabitDatabase, tokens: TokenManager, sessions: AccountSessionCoordinator,
             archives: ReplicaPrivateArchiveStore, stage: ReplicaSwitchStage,
             block: suspend (AccountIconContext) -> T): T {
-            require(stage.phase == ReplicaSwitchPhase.DESTINATION_BOUND)
+            require(stage.phase in setOf(ReplicaSwitchPhase.DESTINATION_BOUND, ReplicaSwitchPhase.CATCHUP_BOUND))
             val commits = NextReplicaCommitStore(database, tokens, sessions)
+            suspend fun verifySql() = sessions.exclusive { database.withTransaction {
+                val control = ReplicaPresentationRepository(database, tokens, sessions).inspectWhileAccountLocked()
+                check(control.problem == ReplicaPresentationProblem.RECOVERY_PENDING && control.phase == stage.phase &&
+                    tokens.activeReplicaStage() == stage) { "SYNC_REPLICA_STAGE_CHANGED" }
+                check(commits.fateInTransaction(stage) == ReplicaCommitFate.COMMITTED) { "SYNC_REPLICA_COMMIT_STATE_INVALID" }
+            } }
             val saved = requireNotNull(stage.archive)
             val receipt = ReplicaArchiveReceipt(AccountIconNamespace(stage.accountId, stage.serverInstanceId, stage.oldEpoch),
                 saved.archiveId, saved.inputHash, saved.byteLength, saved.contentHash,
                 saved.entries.map { ReplicaArchiveEntry(it.name, it.byteLength, it.contentHash) })
-            check(commits.fate(stage) == ReplicaCommitFate.COMMITTED) { "SYNC_REPLICA_COMMIT_STATE_INVALID" }
+            check(!database.inTransaction()) { "SYNC_REPLICA_AMBIENT_TRANSACTION" }
+            verifySql()
             val intent = archives.iconIntent(receipt) { tokens.replicaDestinationAccess(stage) }
             val current = tokens.replicaDestinationAccess(stage)
             val access = LocalIconAccess(current.session, requireNotNull(current.deviceId),
@@ -92,7 +100,7 @@ internal class ReplicaMaterialAccess private constructor(private val tokens: Tok
                 lease.authorize(tokens)
                 val result = block(AccountIconContext(access, lease))
                 lease.authorize(tokens)
-                check(commits.fate(stage) == ReplicaCommitFate.COMMITTED) { "SYNC_REPLICA_COMMIT_STATE_INVALID" }
+                verifySql()
                 archives.verify(receipt) { lease.authorize(tokens) }
                 return result
             } finally { lease.open = false }

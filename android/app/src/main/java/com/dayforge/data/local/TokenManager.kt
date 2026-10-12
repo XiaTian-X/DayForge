@@ -286,7 +286,9 @@ class TokenManager @Inject constructor(
     internal suspend fun replicaPresentationWitness(): ReplicaPresentationWitness {
         val values = dataStore.data.first()
         val rows = values.asMap().filterKeys { it.name.startsWith(ReplicaSwitchStage.KEY_PREFIX) }
-        check(rows.values.sumOf { (it as? String)?.toByteArray(Charsets.UTF_8)?.size?.toLong()
+        val historyRows = values.asMap().filterKeys { it.name.startsWith(ReplicaSwitchStage.KEY_PREFIX) ||
+            it.name.startsWith(ReplicaSwitchStage.CATCHUP_AUDIT_PREFIX) }
+        check(historyRows.values.sumOf { (it as? String)?.toByteArray(Charsets.UTF_8)?.size?.toLong()
             ?: error("SYNC_REPLICA_STAGE_INVALID") } <= ReplicaSwitchStage.HISTORY_LIMIT) { "SYNC_REPLICA_STAGE_LIMIT" }
         val history = rows.map { (key, raw) ->
             ReplicaSwitchStage.decode(raw as String).also {
@@ -337,14 +339,16 @@ class TokenManager @Inject constructor(
             } else {
                 check(values[ReplicaSwitchGuard.POINTER] == expected.recoveryId &&
                     values[key]?.let { ReplicaSwitchStage.decode(it) } == expected &&
-                    frozen == expected.transition(frozen.phase, frozen.archive, frozen.target)) { "SYNC_REPLICA_STAGE_CHANGED" }
+                    frozen == expected.transition(frozen.phase, frozen.archive, frozen.target, frozen.catchup)) { "SYNC_REPLICA_STAGE_CHANGED" }
                 val actual = syncAccess(values)
-                val authenticated = actual?.let { frozen.original.copy(session = frozen.original.session.copy(
-                    authentication = it.session.authentication)) }
+                val authenticated = actual?.let { if (expected.destinationPending)
+                    expected.destination(it.session.authentication)
+                    else frozen.original.copy(session = frozen.original.session.copy(authentication = it.session.authentication)) }
                 check(values[INSTALLATION_ID_KEY] == frozen.installationId &&
                     actual != null && actual.session.authentication.userId == frozen.accountId && actual == authenticated &&
                     (frozen.phase in setOf(ReplicaSwitchPhase.ABORTED, ReplicaSwitchPhase.SQL_COMMITTED,
-                        ReplicaSwitchPhase.DESTINATION_BOUND) || actual == frozen.original)) {
+                        ReplicaSwitchPhase.DESTINATION_BOUND, ReplicaSwitchPhase.CATCHUP_COMMITTING,
+                        ReplicaSwitchPhase.CATCHUP_BOUND) || actual == frozen.original)) {
                     "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED"
                 }
                 if (frozen.phase == ReplicaSwitchPhase.DESTINATION_BOUND) {
@@ -363,10 +367,33 @@ class TokenManager @Inject constructor(
                         "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED"
                     }
                 }
+                if (frozen.phase == ReplicaSwitchPhase.CATCHUP_COMMITTING) {
+                    check(values[SYNC_CURSOR_KEY] == expected.publishedSnapshot.cursor.toString() &&
+                        values[SYNC_BOOTSTRAPPED_KEY] == true &&
+                        requireNotNull(frozen.catchup).authenticationGeneration == actual.session.authentication.generation) {
+                        "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED"
+                    }
+                    val audit = ReplicaSwitchStage.catchupKey(frozen)
+                    check(values[audit] == null) { "SYNC_REPLICA_STAGE_CHANGED" }
+                    values[audit] = ReplicaSwitchStage.encodeCatchup(frozen)
+                }
+                if (frozen.phase == ReplicaSwitchPhase.CATCHUP_BOUND) {
+                    check(values[SYNC_CURSOR_KEY] == expected.publishedSnapshot.cursor.toString() &&
+                        values[SYNC_BOOTSTRAPPED_KEY] == true) { "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED" }
+                    values[SYNC_CURSOR_KEY] = frozen.publishedSnapshot.cursor.toString()
+                    val target = frozen.publishedSnapshot.target
+                    values[DEVICE_CAPABILITIES_KEY] = target.capabilities.toSet()
+                    values[DEVICE_PRIMARY_EDITOR_KEY] = target.isPrimaryEditor
+                    values[DEVICE_CAPABILITY_REVISION_KEY] = target.capabilityRevision.toString()
+                    check(syncAccess(values) == frozen.destination(actual.session.authentication)) {
+                        "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED"
+                    }
+                }
             }
             var bytes = raw.toByteArray(Charsets.UTF_8).size.toLong()
             values.asMap().forEach { (other, value) ->
-                if (other.name.startsWith(ReplicaSwitchStage.KEY_PREFIX) && other.name != key.name) {
+                if ((other.name.startsWith(ReplicaSwitchStage.KEY_PREFIX) ||
+                    other.name.startsWith(ReplicaSwitchStage.CATCHUP_AUDIT_PREFIX)) && other.name != key.name) {
                     check(value is String) { "SYNC_REPLICA_STAGE_INVALID" }
                     bytes += value.toByteArray(Charsets.UTF_8).size
                 }
@@ -383,15 +410,18 @@ class TokenManager @Inject constructor(
      * Same-owner fresh authentication can finish committed recovery without restoring old JWTs.
      */
     internal suspend fun replicaDestinationAccess(stage: ReplicaSwitchStage): LocalSyncAccess = withContext(Dispatchers.IO) {
-        require(stage.phase == ReplicaSwitchPhase.DESTINATION_BOUND)
+        require(stage.destinationPending)
         val values = dataStore.data.first()
         val actual = requireNotNull(syncAccess(values)) { "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED" }
-        val target = requireNotNull(stage.target)
+        val target = stage.publishedSnapshot.target
+        check(stage.catchup == null || values[ReplicaSwitchStage.catchupKey(stage)] == ReplicaSwitchStage.encodeCatchup(stage)) {
+            "SYNC_REPLICA_CATCHUP_INTENT_CHANGED"
+        }
         check(values[ReplicaSwitchGuard.POINTER] == stage.recoveryId &&
             values[ReplicaSwitchStage.key(stage.recoveryId)]?.let { ReplicaSwitchStage.decode(it) } == stage &&
             actual.session.authentication.userId == stage.accountId && actual == stage.destination(actual.session.authentication) &&
             values[INSTALLATION_ID_KEY] == stage.installationId &&
-            values[SYNC_CURSOR_KEY] == stage.candidateCursor.toString() && values[SYNC_BOOTSTRAPPED_KEY] == true &&
+            values[SYNC_CURSOR_KEY] == stage.publishedSnapshot.cursor.toString() && values[SYNC_BOOTSTRAPPED_KEY] == true &&
             values[DEVICE_PRIMARY_EDITOR_KEY] == target.isPrimaryEditor) { "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED" }
         actual
     }

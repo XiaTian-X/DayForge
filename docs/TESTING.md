@@ -19,6 +19,46 @@
 
 ## 验证层级
 
+### 持久追赶、真实SQL命运与冷续行（2026-10-13，Issue #160）
+
+恢复分支现实现意图CAS→完整35表SQL替换→新检查点/权限CAS发布；原确认目标、
+旧档案及各代次意图保留。冷重开区分SQL未提交/已提交；前者重取当前快照再规划，
+后者只完成DataStore发布。最新投影的素材核验仍不授权启用，正式入口/最终放行未完成。
+
+首轮完整 `NextReplicaDestinationTest` 20项18通过2失败（run
+`a85f10ab95b44e2cbe1242141d7cc932`，XML1233.577秒）；不存在targeted_complete回执。
+两项均为新增故障注入夹具错误：自建trigger被严格schema校验先拒绝；普通检查点更新
+不会触发图标身份变更回调。未放宽生产校验或测试期限。分别改为真实SQLiteFull
+有界故障和实际DataStore变换后取消；此前失败保留，不据后续绿灯抹除。
+
+最终源码不变期间，在授权MI6/API35、隔离testbed执行两个完整类批次：
+
+| 批次 | 完整类/项数 | 结果 | 构建/lint与connected耗时 |
+| --- | --- | --- | --- |
+| `3ffe13aaf0d6479fba0ff33fca90f014` | Destination，20 | 20通过，0失败/错误/跳过 | 2分16秒；22分15秒（XML1311.861秒） |
+| `b9f11a78042748c3a36e7244d3503713` | Archive34、StageStore13、TokenManager14、Presentation8，共69 | 69通过，0失败/错误/跳过 | 8秒，构建/lint复用同源产物；17分57秒（XML1055.096秒） |
+
+覆盖实际新业务/指标UTC时间、无旧请求重发、全部表及DDL回滚、SQL提交返回丢失、
+同账户重新认证、未提交意图刷新/审计保留、权限版本前进及倒退/漂移拒绝、真实
+DataStore取消持久化、冷重开和持续冻结；相邻完整类覆盖原确认/COMMIT/取消/根屏障。
+最长单项96.863秒，150秒单项/25分钟批次未扩容。没有重复未受影响全量或极端容量。
+
+两轮APK SHA256相同：
+`499b1a2cf5ff765bd76ffb654adef10109c3f1a6a6a2d312bba88b41ebef9fd5` /
+`c027a5658928f9ff628ca912519534b1ce816fb1647b720f3e145e225bb07f45`。
+targeted.json SHA256分别为
+`0b2335dff7b8cf947048f8d7e2bb2c60b59a01711306708c739595a27904f906`、
+`bba76bedc4c4101072a3ff58e68521b7a52158dbb3ab006539553cbe2daa6c6c`；
+XML SHA256分别为
+`bf931f7bdcc5a43c9a3514d6603f39b9dad940a2f20d44e7ef9f8f1cff3d0065`、
+`b274aa4ae8fb5c68bafa813aafd46cd2d1deae789a01ed644a418e4b23739e9c`。
+发现集、非空新EC、警告和测试包清理门禁通过；结束后独立核对无测试包/进程。
+回执位于忽略的 `android/app/build/reports/dayforge-device/<run>/`，不提交产物。
+
+这是5个完整类89项的定向/相邻组合，不是Android全量、覆盖率阈值校准、实际FastAPI
+跨epoch联合或人工验收。后端/API/schema迁移未改，不重复其未受影响全量。本批未运行
+Docker、安装正式APK、部署、接入正式恢复UI或启用默认v5；分支实现不是main交付。
+
 ### 新范围业务只读重验与原始控制类型（2026-10-13，Issue #160）
 
 内部工作流通过实际SQL/档案/新范围DataStore工厂取得短期GET权限；普通旧范围预览仍

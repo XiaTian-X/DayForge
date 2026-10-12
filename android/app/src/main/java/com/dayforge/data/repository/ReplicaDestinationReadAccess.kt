@@ -70,7 +70,7 @@ internal class ReplicaDestinationReadAccess private constructor(private val toke
         suspend fun <T> verified(database: HabitDatabase, tokens: TokenManager, sessions: AccountSessionCoordinator,
             archives: ReplicaPrivateArchiveStore, stage: ReplicaSwitchStage,
             block: suspend (ReplicaDestinationReadAccess) -> T): T {
-            require(stage.phase == ReplicaSwitchPhase.DESTINATION_BOUND)
+            require(stage.destinationPending)
             val commits = NextReplicaCommitStore(database, tokens, sessions)
             val controls = ReplicaPresentationRepository(database, tokens, sessions)
             suspend fun verifySql() {
@@ -82,7 +82,9 @@ internal class ReplicaDestinationReadAccess private constructor(private val toke
                     check(control.problem == ReplicaPresentationProblem.RECOVERY_PENDING && control.phase == stage.phase) {
                         "SYNC_REPLICA_STAGE_CHANGED"
                     }
-                    check(commits.fateInTransaction(stage) == ReplicaCommitFate.COMMITTED) { "SYNC_REPLICA_COMMIT_STATE_INVALID" }
+                    if (stage.phase == ReplicaSwitchPhase.CATCHUP_COMMITTING)
+                        check(commits.catchupFateInTransaction(stage) == ReplicaCatchupFate.PREVIOUS) { "SYNC_REPLICA_ALREADY_COMMITTED" }
+                    else check(commits.fateInTransaction(stage) == ReplicaCommitFate.COMMITTED) { "SYNC_REPLICA_COMMIT_STATE_INVALID" }
                 } }
             }
             val saved = requireNotNull(stage.archive)

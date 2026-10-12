@@ -157,6 +157,186 @@ class NextReplicaDestinationTest : NextCoreRequestFixture() {
         assertEquals(ReplicaCommitFate.COMMITTED, NextReplicaCommitStore(db, tokens, sessions).fate(stage))
     }
 
+    private fun changedDestination(title: String, cursor: Long) {
+        destinationTransform = { response -> response.copy(snapshot = response.snapshot.copy(nextCursor = cursor,
+            changes = response.snapshot.changes.map { change -> if (change.entityUuid != habit.uuid) change else
+                change.copy(revision = 2, payload = JsonObject(change.payload + mapOf("title" to JsonPrimitive(title),
+                    "revision" to JsonPrimitive(2)))) })) }
+    }
+
+    private suspend fun pendingCatchup(stage: ReplicaSwitchStage): Pair<ReplicaSwitchStage, ValidatedReplicaCandidate> {
+        val fresh = ReplicaDestinationReadAccess.verified(db, tokens, sessions, ReplicaPrivateArchiveStore(directory), stage) { read ->
+            NextReplicaCandidateValidator(app, tokens, sessions, preferences).validateDestination(read, read.read(http))
+        }
+        val device = fresh.deviceProof
+        val snapshot = ReplicaStageSnapshot(fresh.contentHash, fresh.wireHash, fresh.cursor,
+            ReplicaStageTarget(fresh.projection.hash, ReplicaProjection.schemaHash(db), device.deviceId,
+                device.capabilityRevision, device.capabilities.sorted(), device.isPrimaryEditor, device.structuralEditEnabled))
+        val next = NextReplicaStageStore(db, tokens, sessions).recordCatchup(stage,
+            ReplicaStageCatchup(stage.publishedSnapshot, snapshot, fresh.original.session.authentication.generation))
+        return next to fresh
+    }
+
+    @Test fun actualCatchupPublishesOneNewCheckpointPreservesOriginalArchiveAndKeepsAllConsumersFrozen() = runBlocking<Unit> {
+        initialize(); val initial = workflow().bindDestination(committed())
+        val archiveBytes = archive(initial).readBytes(); val oldSql = ReplicaProjection.capture(db).hash
+        val before = dataStore.data.first(); val calls = peer.requests.size
+        assertEquals(initial, workflow().catchUp(initial)); assertEquals(before, dataStore.data.first())
+        changedDestination("Caught up", 21)
+        val changes = destinationTransform
+        destinationTransform = { response -> changes(response).let { updated -> updated.copy(snapshot = updated.snapshot.copy(
+            changes = updated.snapshot.changes + canonical("metric_observation", id(54), buildJsonObject {
+                put("metric_uuid", metric.uuid); put("value", "21.125"); put("unit", "kg")
+                put("occurred_at", time); put("received_at", time); put("local_date", "2026-10-06"); put("timezone", "Asia/Shanghai")
+                put("note", "Caught up observation"); put("source_type", "app"); put("source_device_id", id(4))
+                put("external_event_id", JsonNull); put("metadata", buildJsonObject {})
+            }))) } }
+        val current = workflow().catchUp(initial)
+        assertEquals(ReplicaSwitchPhase.CATCHUP_BOUND, current.phase); assertEquals(8L, current.generation)
+        assertEquals(initial.target, current.target); assertEquals(initial.candidateHash, current.candidateHash)
+        assertEquals(initial.archive, current.archive); assertArrayEquals(archiveBytes, archive(current).readBytes())
+        assertNotEquals(oldSql, ReplicaProjection.capture(db).hash)
+        assertEquals("Caught up", db.habitDao().getHabitByUuid(habit.uuid)!!.name)
+        val observation = db.metricLogDao().getLogByUuid(id(54))!!
+        assertEquals(21.125, observation.value, 0.0); assertEquals(millis, observation.date)
+        assertEquals("Asia/Shanghai", observation.recordedTimezone); assertEquals("Caught up observation", observation.note)
+        assertTrue(db.syncOutboxDao().getAll().isEmpty()); assertFalse(db.nextRequestDao().hasAny())
+        assertEquals(21L, tokens.syncCursor.first()); assertEquals(21L, db.nextSyncStateDao().rows().single().cursor)
+        assertEquals(current.publishedSnapshot.contentHash, db.nextSyncStateDao().rows().single().batchHash)
+        assertEquals(ReplicaSwitchStage.encodeCatchup(current), dataStore.data.first()[ReplicaSwitchStage.catchupKey(current)])
+        assertNotNull(rejected { workflow().catchUp(initial) }); assertFrozen(current)
+        assertTrue(peer.requests.drop(calls).all { it.method == "GET" })
+        coldReopen(); assertEquals(current, workflow().resume(current))
+        assertTrue(workflow().verifyDestinationSnapshot(current).matchesCommittedSnapshot)
+        assertEquals(current, workflow().catchUp(current)); assertFrozen(current)
+        materialReply = { materialResponse(it) }
+        assertEquals(IconMaterialOutcome.RETRY, workflow().recoverMaterials(current, runtime(), AccountIconHttp(client, tokens, peer.origin)))
+        val verified = workflow().verifyMaterials(current, runtime(), AccountIconHttp(client, tokens, peer.origin)) as ReplicaMaterialVerification.Verified
+        assertFalse(verified.proof.activationAuthorized); assertFrozen(current)
+    }
+
+    @Test fun failedCatchupSqlRollsBackAllTablesAndDdlThenColdReplansFreshServerWithoutErasingOldIntent() = runBlocking<Unit> {
+        initialize(); val initial = workflow().bindDestination(committed())
+        val sql = ReplicaProjection.capture(db).hash; val schema = ReplicaProjection.schemaHash(db)
+        val bytes = archive(initial).readBytes(); changedDestination("Blocked catchup", 21)
+        val changes = destinationTransform
+        destinationTransform = { response -> changes(response).let { updated -> updated.copy(snapshot = updated.snapshot.copy(
+            changes = updated.snapshot.changes + (200..229).map {
+                canonical("metric", id(it), NextStructureMapper.writeMetric(metric.copy(uuid = id(it), name = "Catchup metric $it",
+                    description = "x".repeat(1000))))
+            })) } }
+        val database = db.openHelper.writableDatabase
+        fun pragma(name: String) = database.query("PRAGMA $name").use { check(it.moveToFirst()); it.getLong(0) }
+        // Same bounded real SQLiteFull injection used by the original COMMIT regression.
+        // The primary connection's storage limit changes neither schema nor production code.
+        val maximum = db.withTransaction {
+            val previous = pragma("max_page_count"); val pages = pragma("page_count")
+            assertEquals(pages, pragma("max_page_count=$pages")); previous
+        }
+        try {
+            val error = rejected { workflow().catchUp(initial) }
+            assertTrue("Must exercise actual SQLiteFull rollback, got $error", generateSequence(error as Throwable?) { it.cause }
+                .any { it is android.database.sqlite.SQLiteFullException })
+        } finally { db.withTransaction { assertEquals(maximum, pragma("max_page_count=$maximum")) } }
+        val pending = tokens.activeReplicaStage()!!
+        assertEquals(ReplicaSwitchPhase.CATCHUP_COMMITTING, pending.phase); assertEquals(7L, pending.generation)
+        assertEquals(ReplicaCatchupFate.PREVIOUS, NextReplicaCommitStore(db, tokens, sessions).catchupFate(pending))
+        assertEquals(sql, ReplicaProjection.capture(db).hash); assertEquals(schema, ReplicaProjection.schemaHash(db))
+        assertEquals(20L, tokens.syncCursor.first()); assertEquals(initial.fence, db.nextReplicaFenceDao().state())
+        assertNotNull(rejected { db.habitDao().update(habit.copy(name = "Forbidden writer")) })
+        val savedIntent = dataStore.data.first()[ReplicaSwitchStage.catchupKey(pending)]!!
+        coldReopen(); changedDestination("Fresh after rollback", 22)
+        val current = workflow().resume(pending)
+        assertEquals(10L, current.generation); assertEquals(ReplicaSwitchPhase.CATCHUP_BOUND, current.phase)
+        assertEquals("Fresh after rollback", db.habitDao().getHabitByUuid(habit.uuid)!!.name)
+        assertEquals(22L, tokens.syncCursor.first()); assertEquals(schema, ReplicaProjection.schemaHash(db))
+        assertEquals(savedIntent, dataStore.data.first()[ReplicaSwitchStage.catchupKey(pending)])
+        assertNotNull(dataStore.data.first()[ReplicaSwitchStage.catchupKey(current)])
+        assertArrayEquals(bytes, archive(current).readBytes()); assertFrozen(current)
+    }
+
+    @Test fun lostCatchupSqlReturnFinishesForwardAfterSameOwnerReauthenticationThenCanCatchUpAgain() = runBlocking<Unit> {
+        initialize(); val initial = workflow().bindDestination(committed()); val bytes = archive(initial).readBytes()
+        changedDestination("First committed catchup", 21)
+        val (pending, fresh) = pendingCatchup(initial)
+        NextReplicaCommitStore(db, tokens, sessions).catchup(pending, fresh)
+        assertEquals(ReplicaCatchupFate.COMMITTED, NextReplicaCommitStore(db, tokens, sessions).catchupFate(pending))
+        assertEquals(20L, tokens.syncCursor.first()); assertEquals(21L, db.nextSyncStateDao().rows().single().cursor)
+        assertNotNull(rejected { workflow().cancel(pending) })
+        val calls = peer.requests.size; coldReopen(); changedDestination("Second committed catchup", 22)
+        tokens.clearAuthenticationTokens(); assertNotNull(rejected { workflow().resume(pending) })
+        tokens.saveLoginSession("synthetic-catchup-new", "synthetic-catchup-refresh", "member", id(1), false)
+        val first = workflow().resume(pending)
+        assertEquals(8L, first.generation); assertEquals(calls, peer.requests.size)
+        assertEquals("First committed catchup", db.habitDao().getHabitByUuid(habit.uuid)!!.name)
+        assertEquals(21L, tokens.syncCursor.first()); assertFrozen(first)
+        val second = workflow().catchUp(first)
+        assertEquals(10L, second.generation); assertEquals(first.publishedSnapshot, second.catchup!!.previous)
+        assertEquals("Second committed catchup", db.habitDao().getHabitByUuid(habit.uuid)!!.name)
+        assertEquals(22L, tokens.syncCursor.first()); assertArrayEquals(bytes, archive(second).readBytes())
+        assertNotNull(dataStore.data.first()[ReplicaSwitchStage.catchupKey(first)])
+        assertNotNull(dataStore.data.first()[ReplicaSwitchStage.catchupKey(second)])
+        val before = dataStore.data.first()
+        dataStore.edit { it[ReplicaSwitchStage.catchupKey(second)] = "{}" }
+        val callsBeforeDamage = peer.requests.size
+        assertEquals("SYNC_REPLICA_CATCHUP_INTENT_CHANGED", rejected { workflow().catchUp(second) }.message)
+        assertEquals(callsBeforeDamage, peer.requests.size); assertNull(tokens.localCoreWriteAccess())
+        dataStore.updateData { before }; assertFrozen(second)
+    }
+
+    @Test fun catchupRejectsGrantRegressionOrSameVersionDriftAndBindsOnlyFreshGrantsWhileRemainingFrozen() = runBlocking<Unit> {
+        initialize(); val initial = workflow().bindDestination(committed())
+        val before = dataStore.data.first(); val sql = ReplicaProjection.capture(db).hash
+        destinationTransform = { it.copy(device = it.device.copy(capabilityRevision = 1)) }
+        assertEquals("SYNC_RECOVERY_PERMISSION_CHANGED", rejected { workflow().catchUp(initial) }.message)
+        destinationTransform = { it.copy(device = it.device.copy(capabilities = listOf("sync.read"))) }
+        assertEquals("SYNC_RECOVERY_PERMISSION_CHANGED", rejected { workflow().catchUp(initial) }.message)
+        changedDestination("Regressed cursor", 19); assertNotNull(rejected { workflow().catchUp(initial) })
+        val timer = TimerSessionResponse(id(60), timerHabit.uuid, "paused", id(61), 1, 2, 3,
+            time, time, null, "Asia/Shanghai", false, 1, 1, 500, time, null)
+        destinationTransform = { it.copy(activeTimer = timer, snapshot = it.snapshot.copy(births =
+            it.snapshot.births + ChallengeBirth("timer_session", id(60), initialChallengeRoundHead(timerHabit.uuid)))) }
+        assertEquals("SYNC_RECOVERY_REVIEW_REQUIRED", rejected { workflow().catchUp(initial) }.message)
+        assertEquals(before, dataStore.data.first()); assertEquals(sql, ReplicaProjection.capture(db).hash)
+        assertTrue(peer.requests.all { it.method == "GET" }); assertFrozen(initial)
+        destinationTransform = { it.copy(device = it.device.copy(capabilityRevision = 3, capabilities = listOf("sync.read"))) }
+        val bound = workflow().catchUp(initial)
+        assertEquals(initial.target, bound.target); assertEquals(3, bound.publishedSnapshot.target.capabilityRevision)
+        assertEquals(listOf("sync.read"), bound.publishedSnapshot.target.capabilities)
+        assertEquals(3, tokens.replicaDestinationAccess(bound).capabilityRevision)
+        assertEquals(setOf("sync.read"), tokens.replicaDestinationAccess(bound).capabilities)
+        assertEquals(20L, tokens.syncCursor.first()); assertFrozen(bound)
+        coldReopen(); assertTrue(workflow().verifyDestinationSnapshot(bound).matchesCommittedSnapshot)
+        assertEquals(bound, workflow().catchUp(bound)); assertFrozen(bound)
+    }
+
+    @Test fun cancellationAfterCatchupDsPublicationJoinsDurabilityAndColdResumeDoesNotRepeatSqlOrHttp() = runBlocking<Unit> {
+        initialize(); val initial = workflow().bindDestination(committed()); changedDestination("Cancellation catchup", 21)
+        val (pending, fresh) = pendingCatchup(initial)
+        NextReplicaCommitStore(db, tokens, sessions).catchup(pending, fresh)
+        val armed = AtomicBoolean(true); val calls = peer.requests.size
+        lateinit var writing: Deferred<ReplicaSwitchStage>
+        val actualDataStore = dataStore
+        dataStore = object : androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences> by actualDataStore {
+            override suspend fun updateData(transform: suspend (androidx.datastore.preferences.core.Preferences) ->
+                androidx.datastore.preferences.core.Preferences): androidx.datastore.preferences.core.Preferences = actualDataStore.updateData { before ->
+                val after = transform(before)
+                val saved = after[ReplicaSwitchStage.key(pending.recoveryId)]?.let { ReplicaSwitchStage.decode(it) }
+                if (saved?.phase == ReplicaSwitchPhase.CATCHUP_BOUND && armed.compareAndSet(true, false)) writing.cancel()
+                after
+            }
+        }
+        tokens = TokenManager(dataStore); preferences = PreferencesManager(dataStore); materialParticipants()
+        writing = async(start = CoroutineStart.LAZY) { workflow().resume(pending) }; writing.start()
+        val error = runCatching { writing.await() }.exceptionOrNull()
+        assertTrue("Expected cancellation at actual DS transform, got $error", error is CancellationException)
+        writing.cancelAndJoin(); assertFalse(armed.get())
+        val bound = tokens.activeReplicaStage()!!
+        assertEquals(ReplicaSwitchPhase.CATCHUP_BOUND, bound.phase); assertEquals(21L, tokens.syncCursor.first())
+        coldReopen(); assertEquals(bound, workflow().resume(bound)); assertEquals(calls, peer.requests.size)
+        assertFrozen(bound)
+    }
+
     @Test fun actualDestinationReadRevalidatesColdSqlArchiveAndScopeWithoutOpeningConsumers() = runBlocking<Unit> {
         initialize(); val stage = workflow().bindDestination(committed())
         val sql = ReplicaProjection.capture(db).hash; val preferencesBefore = dataStore.data.first()

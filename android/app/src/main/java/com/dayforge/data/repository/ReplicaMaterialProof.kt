@@ -61,7 +61,7 @@ internal class ReplicaMaterialProof private constructor(val recoveryId: String, 
                     (resolved == null || (resolved.purpose == "task") == use.oneTime)) { "ICON_RECOVERY_PURPOSE_INVALID" }
             }
             val witness = buildJsonObject {
-                put("recovery_id", stage.recoveryId); put("projection_hash", requireNotNull(stage.target).projectionHash)
+                put("recovery_id", stage.recoveryId); put("projection_hash", stage.publishedSnapshot.target.projectionHash)
                 put("archive_hash", requireNotNull(stage.archive).contentHash); put("material_database_hash", database.hash)
                 put("files", buildJsonArray { for (file in files.files) add(buildJsonObject {
                     put("name", file.name); put("hash", file.contentHash); put("length", file.byteLength); put("operation_id", file.operationId)

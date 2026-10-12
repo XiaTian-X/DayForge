@@ -101,6 +101,35 @@ internal class NextReplicaStageStore(private val database: HabitDatabase, privat
         }
     }
 
+    /** Persist before any SQL catch-up. A refreshed pending intent leaves an immutable audit. */
+    suspend fun recordCatchup(expected: ReplicaSwitchStage,
+        intent: com.dayforge.data.local.ReplicaStageCatchup): ReplicaSwitchStage = exclusive {
+        require(expected.destinationPending)
+        database.withTransaction {
+            val control = ReplicaPresentationRepository(database, tokens, sessions).inspectWhileAccountLocked()
+            check(control.problem == ReplicaPresentationProblem.RECOVERY_PENDING && control.phase == expected.phase &&
+                tokens.activeReplicaStage() == expected) { "SYNC_REPLICA_STAGE_CHANGED" }
+            val commits = NextReplicaCommitStore(database, tokens, sessions)
+            if (expected.phase == ReplicaSwitchPhase.CATCHUP_COMMITTING)
+                check(commits.catchupFateInTransaction(expected) == ReplicaCatchupFate.PREVIOUS) { "SYNC_REPLICA_ALREADY_COMMITTED" }
+            else check(commits.fateInTransaction(expected) == ReplicaCommitFate.COMMITTED) { "SYNC_REPLICA_COMMIT_STATE_INVALID" }
+            tokens.replicaDestinationAccess(expected)
+            tokens.persistReplicaStage(expected, expected.transition(ReplicaSwitchPhase.CATCHUP_COMMITTING, pursuit = intent))
+        }
+    }
+
+    /** SQL committed first; this single DS CAS publishes only that proved current checkpoint. */
+    suspend fun bindCatchup(expected: ReplicaSwitchStage): ReplicaSwitchStage = exclusive {
+        require(expected.phase == ReplicaSwitchPhase.CATCHUP_COMMITTING)
+        database.withTransaction {
+            check(NextReplicaCommitStore(database, tokens, sessions).catchupFateInTransaction(expected) == ReplicaCatchupFate.COMMITTED) {
+                "SYNC_REPLICA_CATCHUP_STATE_INVALID"
+            }
+            tokens.replicaDestinationAccess(expected)
+            tokens.persistReplicaStage(expected, expected.transition(ReplicaSwitchPhase.CATCHUP_BOUND))
+        }
+    }
+
     /** Cancel only while complete actual SQL still proves the old replica. Close SQL first,
      * then release the persistent pointer.
      * If delivery/persistence is interrupted, ordinary work stays blocked until this exact cancel
