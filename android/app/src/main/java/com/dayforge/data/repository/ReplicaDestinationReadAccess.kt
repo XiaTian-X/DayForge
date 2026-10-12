@@ -84,6 +84,7 @@ internal class ReplicaDestinationReadAccess private constructor(private val toke
                     }
                     if (stage.phase == ReplicaSwitchPhase.CATCHUP_COMMITTING)
                         check(commits.catchupFateInTransaction(stage) == ReplicaCatchupFate.PREVIOUS) { "SYNC_REPLICA_ALREADY_COMMITTED" }
+                    else if (stage.phase == ReplicaSwitchPhase.RELEASING) commits.releaseFateInTransaction(stage)
                     else check(commits.fateInTransaction(stage) == ReplicaCommitFate.COMMITTED) { "SYNC_REPLICA_COMMIT_STATE_INVALID" }
                 } }
             }

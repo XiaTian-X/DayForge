@@ -110,6 +110,25 @@ internal class AccountIconRuntime(
         outcome to if (outcome == IconMaterialOutcome.COMPLETE) inspect() else null
     }
 
+    /** Keeps the canonical material owner across verification leases AND final publication.
+     * This mutex is not access authority: every scoped operation still requires its verified
+     * recovery context. The supplied owned round cannot escape its job or this callback.
+     */
+    internal suspend fun <T> coordinateReplicaCompletion(block: suspend (
+        suspend (AccountIconContext, AccountIconHttp) -> IconMaterialOutcome) -> T): T = materialOwner.withLock {
+        val job = requireNotNull(kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job])
+        var open = true
+        try {
+            block { context, http ->
+                check(open && job.isActive && kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job] === job) {
+                    "ICON_RECOVERY_OWNER_CLOSED"
+                }
+                requireNotNull(context.recovery)
+                synchronizeOwned(context, http) {}
+            }
+        } finally { open = false }
+    }
+
     private suspend fun synchronizeOwned(context: AccountIconContext, http: AccountIconHttp,
         dependenciesChanged: () -> Unit): IconMaterialOutcome =
         withTimeoutOrNull(maximumRoundMillis) {

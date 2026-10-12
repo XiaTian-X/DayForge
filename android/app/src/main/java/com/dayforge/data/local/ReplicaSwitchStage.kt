@@ -16,7 +16,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 internal enum class ReplicaSwitchPhase { FREEZING, FROZEN, ARCHIVE_VERIFIED, COMMITTING, SQL_COMMITTED,
-    DESTINATION_BOUND, CATCHUP_COMMITTING, CATCHUP_BOUND, ABORTED }
+    DESTINATION_BOUND, CATCHUP_COMMITTING, CATCHUP_BOUND, RELEASING, COMPLETED, ABORTED }
 
 @Serializable
 internal data class ReplicaStageTarget(val projectionHash: String, val schemaHash: String, val deviceId: String,
@@ -51,6 +51,21 @@ internal data class ReplicaStageCatchup(val previous: ReplicaStageSnapshot, val 
 }
 
 @Serializable
+internal data class ReplicaStageRelease(val fromGeneration: Long, val materialHash: String,
+    val authenticationGeneration: String) {
+    init {
+        require(fromGeneration >= 6 && fromGeneration % 2L == 0L && fromGeneration <= Long.MAX_VALUE - 2)
+        require(materialHash.matches(Regex("[0-9a-f]{64}")) && isContractUuid(authenticationGeneration))
+    }
+}
+
+/** Actual fresh proof at final publication, not a cached copy of the earlier release intent. */
+@Serializable
+internal data class ReplicaStageCompletion(val materialHash: String, val authenticationGeneration: String) {
+    init { require(materialHash.matches(Regex("[0-9a-f]{64}")) && isContractUuid(authenticationGeneration)) }
+}
+
+@Serializable
 internal data class ReplicaStageArchiveEntry(val name: String, val byteLength: Long, val contentHash: String)
 
 /** Durable private receipt only; actual file verification remains mandatory after every reopen. */
@@ -82,7 +97,8 @@ internal data class ReplicaSwitchStage(
     val phase: ReplicaSwitchPhase = ReplicaSwitchPhase.FREEZING,
     val generation: Long = 1, val formatVersion: Int = 1,
     val previousFenceHash: String? = null, val archive: ReplicaStageArchive? = null,
-    val target: ReplicaStageTarget? = null, val catchup: ReplicaStageCatchup? = null
+    val target: ReplicaStageTarget? = null, val catchup: ReplicaStageCatchup? = null,
+    val release: ReplicaStageRelease? = null, val completion: ReplicaStageCompletion? = null
 ) {
     init {
         require(formatVersion == 1 && generation > 0 && capabilityRevision > 0 && candidateCursor >= 0)
@@ -101,20 +117,26 @@ internal data class ReplicaSwitchStage(
             ReplicaSwitchPhase.DESTINATION_BOUND -> generation == 6L
             ReplicaSwitchPhase.CATCHUP_COMMITTING -> generation >= 7L && generation % 2L == 1L
             ReplicaSwitchPhase.CATCHUP_BOUND -> generation >= 8L && generation % 2L == 0L
+            ReplicaSwitchPhase.RELEASING -> release != null && generation == release.fromGeneration + 1
+            ReplicaSwitchPhase.COMPLETED -> release != null && generation == release.fromGeneration + 2
             ReplicaSwitchPhase.ABORTED -> generation in 2L..5L
         })
         require(when (phase) {
             ReplicaSwitchPhase.FREEZING, ReplicaSwitchPhase.FROZEN -> archive == null
             ReplicaSwitchPhase.ARCHIVE_VERIFIED, ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED,
                 ReplicaSwitchPhase.DESTINATION_BOUND, ReplicaSwitchPhase.CATCHUP_COMMITTING,
-                ReplicaSwitchPhase.CATCHUP_BOUND -> archive != null
+                ReplicaSwitchPhase.CATCHUP_BOUND, ReplicaSwitchPhase.RELEASING, ReplicaSwitchPhase.COMPLETED -> archive != null
             ReplicaSwitchPhase.ABORTED -> (archive != null) == (generation >= 4L)
         })
         require((target != null) == (phase in setOf(ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED,
-            ReplicaSwitchPhase.DESTINATION_BOUND, ReplicaSwitchPhase.CATCHUP_COMMITTING, ReplicaSwitchPhase.CATCHUP_BOUND) ||
+            ReplicaSwitchPhase.DESTINATION_BOUND, ReplicaSwitchPhase.CATCHUP_COMMITTING, ReplicaSwitchPhase.CATCHUP_BOUND,
+            ReplicaSwitchPhase.RELEASING, ReplicaSwitchPhase.COMPLETED) ||
             phase == ReplicaSwitchPhase.ABORTED && generation == 5L))
         require(target == null || target.deviceId == deviceId)
-        require((catchup != null) == (phase in setOf(ReplicaSwitchPhase.CATCHUP_COMMITTING, ReplicaSwitchPhase.CATCHUP_BOUND)))
+        require((release != null) == (phase in setOf(ReplicaSwitchPhase.RELEASING, ReplicaSwitchPhase.COMPLETED)))
+        require((completion != null) == (phase == ReplicaSwitchPhase.COMPLETED))
+        require((catchup != null) == (phase in setOf(ReplicaSwitchPhase.CATCHUP_COMMITTING, ReplicaSwitchPhase.CATCHUP_BOUND) ||
+            release != null && release.fromGeneration >= 8))
         catchup?.let {
             val baseline = requireNotNull(target)
             require(it.previous.target.deviceId == baseline.deviceId && it.previous.target.schemaHash == baseline.schemaHash &&
@@ -133,40 +155,53 @@ internal data class ReplicaSwitchStage(
     val publishedSnapshot: ReplicaStageSnapshot get() = when (phase) {
         ReplicaSwitchPhase.CATCHUP_COMMITTING -> requireNotNull(catchup).previous
         ReplicaSwitchPhase.CATCHUP_BOUND -> requireNotNull(catchup).next
+        ReplicaSwitchPhase.RELEASING, ReplicaSwitchPhase.COMPLETED -> catchup?.next ?:
+            ReplicaStageSnapshot(candidateHash, candidateWireHash, candidateCursor, requireNotNull(target))
         else -> ReplicaStageSnapshot(candidateHash, candidateWireHash, candidateCursor, requireNotNull(target))
     }
 
     val destinationPending: Boolean get() = phase in setOf(ReplicaSwitchPhase.DESTINATION_BOUND,
-        ReplicaSwitchPhase.CATCHUP_COMMITTING, ReplicaSwitchPhase.CATCHUP_BOUND)
+        ReplicaSwitchPhase.CATCHUP_COMMITTING, ReplicaSwitchPhase.CATCHUP_BOUND, ReplicaSwitchPhase.RELEASING)
+
+    val terminal: Boolean get() = phase in setOf(ReplicaSwitchPhase.ABORTED, ReplicaSwitchPhase.COMPLETED)
 
     /** Target scope only; a journal or this value is never material/publication permission. */
     fun destination(authentication: AuthenticationSession): LocalSyncAccess {
         require(authentication.userId == accountId)
-        val proof = if (destinationPending) publishedSnapshot.target else requireNotNull(target)
+        val proof = if (destinationPending || phase == ReplicaSwitchPhase.COMPLETED) publishedSnapshot.target else requireNotNull(target)
         return LocalSyncAccess(LocalDataSession(authentication, serverInstanceId, newEpoch),
             proof.deviceId, proof.capabilityRevision, proof.capabilities.toSet())
     }
 
     fun transition(next: ReplicaSwitchPhase, receipt: ReplicaStageArchive? = archive,
-        destination: ReplicaStageTarget? = target, pursuit: ReplicaStageCatchup? = catchup): ReplicaSwitchStage {
+        destination: ReplicaStageTarget? = target, pursuit: ReplicaStageCatchup? = catchup,
+        releasing: ReplicaStageRelease? = release, completed: ReplicaStageCompletion? = completion): ReplicaSwitchStage {
         require(generation < Long.MAX_VALUE && when (phase) {
             ReplicaSwitchPhase.FREEZING -> next == ReplicaSwitchPhase.FROZEN || next == ReplicaSwitchPhase.ABORTED
             ReplicaSwitchPhase.FROZEN -> next == ReplicaSwitchPhase.ARCHIVE_VERIFIED || next == ReplicaSwitchPhase.ABORTED
             ReplicaSwitchPhase.ARCHIVE_VERIFIED -> next == ReplicaSwitchPhase.COMMITTING || next == ReplicaSwitchPhase.ABORTED
             ReplicaSwitchPhase.COMMITTING -> next == ReplicaSwitchPhase.SQL_COMMITTED || next == ReplicaSwitchPhase.ABORTED
             ReplicaSwitchPhase.SQL_COMMITTED -> next == ReplicaSwitchPhase.DESTINATION_BOUND
-            ReplicaSwitchPhase.DESTINATION_BOUND, ReplicaSwitchPhase.CATCHUP_BOUND -> next == ReplicaSwitchPhase.CATCHUP_COMMITTING
+            ReplicaSwitchPhase.DESTINATION_BOUND, ReplicaSwitchPhase.CATCHUP_BOUND ->
+                next in setOf(ReplicaSwitchPhase.CATCHUP_COMMITTING, ReplicaSwitchPhase.RELEASING)
             ReplicaSwitchPhase.CATCHUP_COMMITTING -> next in setOf(ReplicaSwitchPhase.CATCHUP_COMMITTING, ReplicaSwitchPhase.CATCHUP_BOUND)
-            ReplicaSwitchPhase.ABORTED -> false
+            ReplicaSwitchPhase.RELEASING -> next in setOf(ReplicaSwitchPhase.CATCHUP_COMMITTING, ReplicaSwitchPhase.COMPLETED)
+            ReplicaSwitchPhase.COMPLETED, ReplicaSwitchPhase.ABORTED -> false
         }) { "SYNC_REPLICA_STAGE_TRANSITION_INVALID" }
         require(if (next == ReplicaSwitchPhase.ARCHIVE_VERIFIED) receipt != null else receipt == archive)
         require(if (next == ReplicaSwitchPhase.COMMITTING) destination != null else destination == target)
         if (next == ReplicaSwitchPhase.CATCHUP_COMMITTING) {
             require(pursuit != null && pursuit.previous == publishedSnapshot) { "SYNC_REPLICA_STAGE_CHANGED" }
         } else require(pursuit == catchup)
-        val increment = if (phase == ReplicaSwitchPhase.CATCHUP_COMMITTING && next == phase) 2L else 1L
+        require(if (next == ReplicaSwitchPhase.RELEASING) releasing != null && releasing.fromGeneration == generation
+            else if (phase == ReplicaSwitchPhase.RELEASING && next == ReplicaSwitchPhase.CATCHUP_COMMITTING) releasing == null
+            else releasing == release)
+        require(if (next == ReplicaSwitchPhase.COMPLETED) completed != null else completed == completion)
+        val increment = if (next == ReplicaSwitchPhase.CATCHUP_COMMITTING &&
+            phase in setOf(ReplicaSwitchPhase.CATCHUP_COMMITTING, ReplicaSwitchPhase.RELEASING)) 2L else 1L
         require(generation <= Long.MAX_VALUE - increment)
-        return copy(phase = next, generation = generation + increment, archive = receipt, target = destination, catchup = pursuit)
+        return copy(phase = next, generation = generation + increment, archive = receipt, target = destination,
+            catchup = pursuit, release = releasing, completion = completed)
     }
 
     companion object {
@@ -176,11 +211,26 @@ internal data class ReplicaSwitchStage(
         const val HISTORY_LIMIT = 16 * 1024 * 1024
         const val KEY_PREFIX = "replica_switch_stage_"
         const val CATCHUP_AUDIT_PREFIX = "replica_catchup_intent_"
+        const val RELEASE_AUDIT_PREFIX = "replica_release_intent_"
+        const val COMPLETION_WITNESS_PREFIX = "replica_completed_witness_"
         fun catchupKey(stage: ReplicaSwitchStage): Preferences.Key<String> {
-            require(stage.phase in setOf(ReplicaSwitchPhase.CATCHUP_COMMITTING, ReplicaSwitchPhase.CATCHUP_BOUND))
-            val intentGeneration = stage.generation - if (stage.phase == ReplicaSwitchPhase.CATCHUP_BOUND) 1 else 0
+            requireNotNull(stage.catchup)
+            val intentGeneration = stage.release?.fromGeneration?.minus(1) ?:
+                stage.generation - if (stage.phase == ReplicaSwitchPhase.CATCHUP_BOUND) 1 else 0
             return stringPreferencesKey(CATCHUP_AUDIT_PREFIX + stage.recoveryId + "_" + intentGeneration)
         }
+        fun releaseKey(stage: ReplicaSwitchStage): Preferences.Key<String> = stringPreferencesKey(
+            RELEASE_AUDIT_PREFIX + stage.recoveryId + "_" + (requireNotNull(stage.release).fromGeneration + 1))
+        fun encodeRelease(stage: ReplicaSwitchStage): String = json.encodeToString(requireNotNull(stage.release))
+        fun completionKey(id: String): Preferences.Key<String> {
+            require(isContractUuid(id)); return stringPreferencesKey(COMPLETION_WITNESS_PREFIX + id)
+        }
+        /** Exact durable body integrity, not authentication, material or COMMIT authority. */
+        fun completionWitness(raw: String): String = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(raw.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+        fun isHistoryKey(name: String): Boolean = name.startsWith(KEY_PREFIX) ||
+            name.startsWith(CATCHUP_AUDIT_PREFIX) || name.startsWith(RELEASE_AUDIT_PREFIX) ||
+            name.startsWith(COMPLETION_WITNESS_PREFIX)
         fun encodeCatchup(stage: ReplicaSwitchStage): String = json.encodeToString(requireNotNull(stage.catchup))
         fun key(id: String): Preferences.Key<String> {
             require(isContractUuid(id)); return stringPreferencesKey(KEY_PREFIX + id)

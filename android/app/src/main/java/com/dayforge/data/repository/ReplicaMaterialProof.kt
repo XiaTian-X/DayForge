@@ -18,12 +18,14 @@ internal sealed interface ReplicaMaterialVerification {
  * Actual stage/SQL/archive/auth/material must be rebuilt again before consumer gates can open.
  */
 internal class ReplicaMaterialProof private constructor(val recoveryId: String, val access: LocalIconAccess,
-    val selection: AccountIconSelection, val hash: String, val unresolvedRoles: Set<String>) {
+    val selection: AccountIconSelection, val hash: String, val unresolvedRoles: Set<String>,
+    val stageGeneration: Long, val projectionHash: String, val archiveHash: String) {
     val activationAuthorized: Boolean get() = false
 
     companion object {
         internal fun checked(stage: ReplicaSwitchStage, context: AccountIconContext, uses: List<ConfigIconUse>,
             database: IconRecoveryDatabaseProof, files: AccountIconRecoverySnapshot): ReplicaMaterialProof {
+            requireNotNull(context.recovery).requireStage(stage)
             val intent = requireNotNull(context.recovery).intent
             check(database.original == context.access && files.namespace == context.namespace &&
                 database.metadata == files.metadata) { "ICON_RECOVERY_SCOPE_CHANGED" }
@@ -71,7 +73,8 @@ internal class ReplicaMaterialProof private constructor(val recoveryId: String, 
                 }) })
             }
             return ReplicaMaterialProof(stage.recoveryId, context.access, catalog.selection,
-                syncPayloadHash(canonicalReplicaJson(witness).toString()), java.util.Collections.unmodifiableSet(unresolved))
+                syncPayloadHash(canonicalReplicaJson(witness).toString()), java.util.Collections.unmodifiableSet(unresolved),
+                stage.generation, stage.publishedSnapshot.target.projectionHash, requireNotNull(stage.archive).contentHash)
         }
     }
 }

@@ -112,9 +112,12 @@ internal class NextReplicaStageStore(private val database: HabitDatabase, privat
             val commits = NextReplicaCommitStore(database, tokens, sessions)
             if (expected.phase == ReplicaSwitchPhase.CATCHUP_COMMITTING)
                 check(commits.catchupFateInTransaction(expected) == ReplicaCatchupFate.PREVIOUS) { "SYNC_REPLICA_ALREADY_COMMITTED" }
+            else if (expected.phase == ReplicaSwitchPhase.RELEASING)
+                check(commits.releaseFateInTransaction(expected) == ReplicaReleaseFate.FROZEN) { "SYNC_REPLICA_RELEASE_STATE_INVALID" }
             else check(commits.fateInTransaction(expected) == ReplicaCommitFate.COMMITTED) { "SYNC_REPLICA_COMMIT_STATE_INVALID" }
             tokens.replicaDestinationAccess(expected)
-            tokens.persistReplicaStage(expected, expected.transition(ReplicaSwitchPhase.CATCHUP_COMMITTING, pursuit = intent))
+            tokens.persistReplicaStage(expected, expected.transition(ReplicaSwitchPhase.CATCHUP_COMMITTING,
+                pursuit = intent, releasing = null))
         }
     }
 
@@ -127,6 +130,45 @@ internal class NextReplicaStageStore(private val database: HabitDatabase, privat
             }
             tokens.replicaDestinationAccess(expected)
             tokens.persistReplicaStage(expected, expected.transition(ReplicaSwitchPhase.CATCHUP_BOUND))
+        }
+    }
+
+    /** Owning workflow has just verified actual business, archive and ALL material under its
+     * shared recovery/material owners. This intent is not permission to open the replica.
+     */
+    suspend fun recordRelease(expected: ReplicaSwitchStage, proof: ReplicaMaterialProof): ReplicaSwitchStage = exclusive {
+        require(expected.phase in setOf(ReplicaSwitchPhase.DESTINATION_BOUND, ReplicaSwitchPhase.CATCHUP_BOUND))
+        database.withTransaction {
+            check(NextReplicaCommitStore(database, tokens, sessions).fateInTransaction(expected) == ReplicaCommitFate.COMMITTED)
+            val access = tokens.replicaDestinationAccess(expected)
+            requireReleaseProof(expected, access, proof)
+            tokens.persistReplicaStage(expected, expected.transition(ReplicaSwitchPhase.RELEASING,
+                releasing = com.dayforge.data.local.ReplicaStageRelease(expected.generation, proof.hash,
+                    access.session.authentication.generation)))
+        }
+    }
+
+    /** Publish ONLY after actual committed CLOSED SQL and fresh full proof; pointer and terminal
+     * body share one DS CAS. Authentication cancellation is joined by TokenManager as usual.
+     */
+    suspend fun publishCompletion(expected: ReplicaSwitchStage, proof: ReplicaMaterialProof): ReplicaSwitchStage = exclusive {
+        database.withTransaction {
+            check(NextReplicaCommitStore(database, tokens, sessions).releaseFateInTransaction(expected) == ReplicaReleaseFate.CLOSED)
+            val access = tokens.replicaDestinationAccess(expected)
+            requireReleaseProof(expected, access, proof)
+            tokens.persistReplicaStage(expected, expected.transition(ReplicaSwitchPhase.COMPLETED,
+                completed = com.dayforge.data.local.ReplicaStageCompletion(proof.hash, access.session.authentication.generation)))
+        }
+    }
+
+    private fun requireReleaseProof(stage: ReplicaSwitchStage, access: com.dayforge.data.local.LocalSyncAccess,
+        proof: ReplicaMaterialProof) {
+        check(proof.recoveryId == stage.recoveryId && proof.stageGeneration == stage.generation &&
+            proof.projectionHash == stage.publishedSnapshot.target.projectionHash &&
+            proof.archiveHash == requireNotNull(stage.archive).contentHash &&
+            proof.access == com.dayforge.data.local.LocalIconAccess(access.session, requireNotNull(access.deviceId),
+                requireNotNull(access.capabilityRevision), "structure.write" in access.capabilities)) {
+            "SYNC_REPLICA_RELEASE_PROOF_CHANGED"
         }
     }
 

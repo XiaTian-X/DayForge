@@ -286,19 +286,19 @@ class TokenManager @Inject constructor(
     internal suspend fun replicaPresentationWitness(): ReplicaPresentationWitness {
         val values = dataStore.data.first()
         val rows = values.asMap().filterKeys { it.name.startsWith(ReplicaSwitchStage.KEY_PREFIX) }
-        val historyRows = values.asMap().filterKeys { it.name.startsWith(ReplicaSwitchStage.KEY_PREFIX) ||
-            it.name.startsWith(ReplicaSwitchStage.CATCHUP_AUDIT_PREFIX) }
+        val historyRows = values.asMap().filterKeys { ReplicaSwitchStage.isHistoryKey(it.name) }
         check(historyRows.values.sumOf { (it as? String)?.toByteArray(Charsets.UTF_8)?.size?.toLong()
             ?: error("SYNC_REPLICA_STAGE_INVALID") } <= ReplicaSwitchStage.HISTORY_LIMIT) { "SYNC_REPLICA_STAGE_LIMIT" }
         val history = rows.map { (key, raw) ->
             ReplicaSwitchStage.decode(raw as String).also {
                 check(key.name == ReplicaSwitchStage.key(it.recoveryId).name) { "SYNC_REPLICA_STAGE_CHANGED" }
+                verifyReplicaAudits(values, it)
             }
         }
         val present = ReplicaSwitchGuard.blocked(values)
         val active = if (present) {
             val id = requireNotNull(values[ReplicaSwitchGuard.POINTER]) { "SYNC_REPLICA_STAGE_MISSING" }
-            requireNotNull(history.singleOrNull { it.recoveryId == id && it.phase != ReplicaSwitchPhase.ABORTED }) {
+            requireNotNull(history.singleOrNull { it.recoveryId == id && !it.terminal }) {
                 "SYNC_REPLICA_STAGE_MISSING"
             }
         } else null
@@ -311,13 +311,17 @@ class TokenManager @Inject constructor(
         if (!ReplicaSwitchGuard.blocked(values)) return null
         val id = requireNotNull(values[ReplicaSwitchGuard.POINTER]) { "SYNC_REPLICA_STAGE_MISSING" }
         val stage = ReplicaSwitchStage.decode(requireNotNull(values[ReplicaSwitchStage.key(id)]) { "SYNC_REPLICA_STAGE_MISSING" })
-        check(stage.recoveryId == id && stage.phase != ReplicaSwitchPhase.ABORTED) { "SYNC_REPLICA_STAGE_CHANGED" }
+        check(stage.recoveryId == id && !stage.terminal) { "SYNC_REPLICA_STAGE_CHANGED" }
         return stage
     }
 
     internal suspend fun replicaStage(id: String): ReplicaSwitchStage? {
-        val raw = dataStore.data.first()[ReplicaSwitchStage.key(id)] ?: return null
-        return ReplicaSwitchStage.decode(raw).also { check(it.recoveryId == id) { "SYNC_REPLICA_STAGE_CHANGED" } }
+        val values = dataStore.data.first()
+        val raw = values[ReplicaSwitchStage.key(id)] ?: return null
+        return ReplicaSwitchStage.decode(raw).also {
+            check(it.recoveryId == id) { "SYNC_REPLICA_STAGE_CHANGED" }
+            verifyReplicaAudits(values, it)
+        }
     }
 
     /** Specialized durable CAS, not a general preferences writer or ordinary-write override.
@@ -339,7 +343,9 @@ class TokenManager @Inject constructor(
             } else {
                 check(values[ReplicaSwitchGuard.POINTER] == expected.recoveryId &&
                     values[key]?.let { ReplicaSwitchStage.decode(it) } == expected &&
-                    frozen == expected.transition(frozen.phase, frozen.archive, frozen.target, frozen.catchup)) { "SYNC_REPLICA_STAGE_CHANGED" }
+                    frozen == expected.transition(frozen.phase, frozen.archive, frozen.target, frozen.catchup,
+                        frozen.release, frozen.completion)) { "SYNC_REPLICA_STAGE_CHANGED" }
+                verifyReplicaAudits(values, expected)
                 val actual = syncAccess(values)
                 val authenticated = actual?.let { if (expected.destinationPending)
                     expected.destination(it.session.authentication)
@@ -348,7 +354,8 @@ class TokenManager @Inject constructor(
                     actual != null && actual.session.authentication.userId == frozen.accountId && actual == authenticated &&
                     (frozen.phase in setOf(ReplicaSwitchPhase.ABORTED, ReplicaSwitchPhase.SQL_COMMITTED,
                         ReplicaSwitchPhase.DESTINATION_BOUND, ReplicaSwitchPhase.CATCHUP_COMMITTING,
-                        ReplicaSwitchPhase.CATCHUP_BOUND) || actual == frozen.original)) {
+                        ReplicaSwitchPhase.CATCHUP_BOUND, ReplicaSwitchPhase.RELEASING,
+                        ReplicaSwitchPhase.COMPLETED) || actual == frozen.original)) {
                     "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED"
                 }
                 if (frozen.phase == ReplicaSwitchPhase.DESTINATION_BOUND) {
@@ -389,18 +396,37 @@ class TokenManager @Inject constructor(
                         "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED"
                     }
                 }
+                if (frozen.phase in setOf(ReplicaSwitchPhase.RELEASING, ReplicaSwitchPhase.COMPLETED)) {
+                    check(values[SYNC_CURSOR_KEY] == expected.publishedSnapshot.cursor.toString() &&
+                        values[SYNC_BOOTSTRAPPED_KEY] == true &&
+                        values[DEVICE_PRIMARY_EDITOR_KEY] == expected.publishedSnapshot.target.isPrimaryEditor) {
+                        "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED"
+                    }
+                    val proof = requireNotNull(frozen.release)
+                    if (frozen.phase == ReplicaSwitchPhase.RELEASING) {
+                        check(proof.authenticationGeneration == actual.session.authentication.generation &&
+                            values[ReplicaSwitchStage.releaseKey(frozen)] == null) { "SYNC_REPLICA_STAGE_CHANGED" }
+                        values[ReplicaSwitchStage.releaseKey(frozen)] = ReplicaSwitchStage.encodeRelease(frozen)
+                    } else {
+                        check(requireNotNull(frozen.completion).authenticationGeneration == actual.session.authentication.generation) {
+                            "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED"
+                        }
+                        val witness = ReplicaSwitchStage.completionKey(frozen.recoveryId)
+                        check(values[witness] == null) { "SYNC_REPLICA_STAGE_CHANGED" }
+                        values[witness] = ReplicaSwitchStage.completionWitness(raw)
+                    }
+                }
             }
             var bytes = raw.toByteArray(Charsets.UTF_8).size.toLong()
             values.asMap().forEach { (other, value) ->
-                if ((other.name.startsWith(ReplicaSwitchStage.KEY_PREFIX) ||
-                    other.name.startsWith(ReplicaSwitchStage.CATCHUP_AUDIT_PREFIX)) && other.name != key.name) {
+                if (ReplicaSwitchStage.isHistoryKey(other.name) && other.name != key.name) {
                     check(value is String) { "SYNC_REPLICA_STAGE_INVALID" }
                     bytes += value.toByteArray(Charsets.UTF_8).size
                 }
             }
             check(bytes <= ReplicaSwitchStage.HISTORY_LIMIT) { "SYNC_REPLICA_STAGE_HISTORY_LIMIT" }
             values[key] = raw
-            if (frozen.phase == ReplicaSwitchPhase.ABORTED) values.remove(ReplicaSwitchGuard.POINTER)
+            if (frozen.terminal) values.remove(ReplicaSwitchGuard.POINTER)
             else values[ReplicaSwitchGuard.POINTER] = frozen.recoveryId
         }
         return frozen
@@ -414,9 +440,7 @@ class TokenManager @Inject constructor(
         val values = dataStore.data.first()
         val actual = requireNotNull(syncAccess(values)) { "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED" }
         val target = stage.publishedSnapshot.target
-        check(stage.catchup == null || values[ReplicaSwitchStage.catchupKey(stage)] == ReplicaSwitchStage.encodeCatchup(stage)) {
-            "SYNC_REPLICA_CATCHUP_INTENT_CHANGED"
-        }
+        verifyReplicaAudits(values, stage)
         check(values[ReplicaSwitchGuard.POINTER] == stage.recoveryId &&
             values[ReplicaSwitchStage.key(stage.recoveryId)]?.let { ReplicaSwitchStage.decode(it) } == stage &&
             actual.session.authentication.userId == stage.accountId && actual == stage.destination(actual.session.authentication) &&
@@ -424,6 +448,21 @@ class TokenManager @Inject constructor(
             values[SYNC_CURSOR_KEY] == stage.publishedSnapshot.cursor.toString() && values[SYNC_BOOTSTRAPPED_KEY] == true &&
             values[DEVICE_PRIMARY_EDITOR_KEY] == target.isPrimaryEditor) { "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED" }
         actual
+    }
+
+    private fun verifyReplicaAudits(values: Preferences, stage: ReplicaSwitchStage) {
+        check(stage.catchup == null || values[ReplicaSwitchStage.catchupKey(stage)] == ReplicaSwitchStage.encodeCatchup(stage)) {
+            "SYNC_REPLICA_CATCHUP_INTENT_CHANGED"
+        }
+        check(stage.release == null || values[ReplicaSwitchStage.releaseKey(stage)] == ReplicaSwitchStage.encodeRelease(stage)) {
+            "SYNC_REPLICA_RELEASE_INTENT_CHANGED"
+        }
+        if (stage.phase == ReplicaSwitchPhase.COMPLETED) {
+            val raw = requireNotNull(values[ReplicaSwitchStage.key(stage.recoveryId)]) { "SYNC_REPLICA_STAGE_MISSING" }
+            check(values[ReplicaSwitchStage.completionKey(stage.recoveryId)] == ReplicaSwitchStage.completionWitness(raw)) {
+                "SYNC_REPLICA_COMPLETION_WITNESS_CHANGED"
+            }
+        }
     }
 
     private fun coreWriteAccess(preferences: Preferences): LocalCoreWriteAccess? {

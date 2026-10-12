@@ -19,6 +19,57 @@
 
 ## 验证层级
 
+### 恢复终态放行与完成日志一致性（2026-10-13，Issue #160）
+
+恢复分支现实现有界业务/素材重验→RELEASING意图CAS→实际SQL收尾→收尾后完整
+素材证明→COMPLETED正文/见证/指针CAS。阶段代次、最新投影、真实档案和当前完整
+权限绑定不可借用上一阶段证明；完成后普通业务进度不被首次快照锁定。
+
+新增完整 `NextReplicaCompletionTest` 六项，真实Room、磁盘DataStore、原生图标文件和
+TCP目录/快照验证完成/新显示生命周期、重复与冷重开不重发、最终DS失败/取消、
+同账户重新认证、SQL已收尾后的服务端变化和向前追赶、丢失指针/坏意图/合法格式的
+终态正文损坏，以及收尾后实际SVG损坏不得清指针。共享夹具从Destination提取，
+保留其全部20项业务断言；故障包装的HTTP与库使用同一真实TokenManager。
+
+保留本批失败及中间证据：
+
+- `3d7a4e9e61494f9096a6878a3268254d` 编译失败（2分48秒）：夹具protected成员暴露
+  internal类型及DeviceThemeStore导入路径错误；没有行为测试通过。
+- `12679c0c11b74055804d0c7872952cf3` 完整41项37通过4失败，XML474.174秒。
+  三项故障夹具更换TokenManager后未重建同实例HTTP边界；另一项目录轮次后尚未完成
+  实际原生下载。修正夹具实例接线及执行真实下载轮次，没有放宽生产校验或删除断言。
+- `372e0cb6f4d743989707285ebead9794` 完整41项通过（XML632.179秒，connected10分57秒）；
+  `1cd579988bdf4e2aa4ca4de7936cfbbe` 绑定补强后的完整终态6项通过（connected9分39秒）。
+  两轮均在最终正文见证补强之前，不拼为最终源码结果。
+- `b17ffc5d42704970bd077578b0ea81a2` 最终源码构建/lint通过（2分17秒），发现选择错误
+  `ReplicaPresentationRepositoryTest`；实际类为 `ReplicaPresentationTest`。没有行为
+  执行通过，不将发现事件计作测试。
+
+最终源码在授权MI6/API35、隔离testbed执行：
+
+| 批次 | 完整类及项数 | 结果 | 构建/lint与connected耗时 |
+| --- | --- | --- | --- |
+| `b4101d58fdf047c480bcfa9ef00da672` | Completion6、StageStore13、TokenManager14、Presentation8，共41 | 41通过，0失败/错误/跳过 | 9秒（同源编译产物）；10分53秒，XML630.324秒 |
+| `1bb47ddfc12f4bdfb300f7c6cf270faf` | Destination，20 | 20通过，0失败/错误/跳过 | 8秒（同源编译产物）；22分10秒，XML1308.409秒 |
+| `2087ed7785424d3aabd7ba35a051b728` | Archive，34 | 34通过，0失败/错误/跳过 | 8秒（同源编译产物）；16分55秒，XML993.056秒 |
+
+该轮APK SHA256：
+`4ace9ef79d01c33838b154d529c2ee7292c96ce5cc9bb0cd9417bf6dff7a7483` /
+`1c3fee9d5e689752b9ba4893a3e0e900ec47e6e6b70515279443d7dc6e5bb103`。
+targeted.json SHA256 `1516db80d18b42c4db72203ebe8e200ea6a38762844c0464ad825cdeb3a34079`，
+XML SHA256 `d3ddd4316f11ce043ede97518a5c0f1639dde36fc623a1850f4a4ff6ef283d00`。
+后两轮APK相同；targeted.json SHA256分别为
+`d724c6f1b067dbbd66cb00d73ad4d57feea28c07eb07300b6ef21071bd60e5a2`、
+`b5cb803fb156a4ce47f47867854edbde51c6a85e8125d7626d4ada84934d5372`，
+XML SHA256分别为 `11a51566abcd6f7b0d05b5dc4b0cf82698b913124c270aff5d353f5565707233`、
+`e1a73c2929a853bdf3b26f68e22a4d58e4d68940ba56223b1d469bb173a409db`。
+根工具62项、发现/新EC/警告门禁与测试包清理通过；回执位于忽略的
+`android/app/build/reports/dayforge-device/<run>/`，不提交产物。
+
+这是相同最终源码/APK的六完整类95项定向组合，不称Android全量、实际FastAPI跨epoch
+联合、正式入口或人工验收通过。没有改后端/API/schema/依赖/默认v5/已确认UI，
+未运行Docker、部署或安装正式APK；阶段分支实现尚未进入main。
+
 ### 持久追赶、真实SQL命运与冷续行（2026-10-13，Issue #160）
 
 恢复分支现实现意图CAS→完整35表SQL替换→新检查点/权限CAS发布；原确认目标、

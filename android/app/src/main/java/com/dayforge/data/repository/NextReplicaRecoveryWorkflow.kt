@@ -22,6 +22,12 @@ internal class ReplicaRecoveryConfirmationEvidence internal constructor(val stag
     val activationAuthorized: Boolean get() = false
 }
 
+internal sealed interface ReplicaCompletionOutcome {
+    data class Waiting(val stage: ReplicaSwitchStage, val material: IconMaterialOutcome) : ReplicaCompletionOutcome
+    data class Changed(val stage: ReplicaSwitchStage) : ReplicaCompletionOutcome
+    data class Completed(val stage: ReplicaSwitchStage) : ReplicaCompletionOutcome
+}
+
 /** Recovery owner through actual SQL COMMIT, not installed in the production UI or DI graph.
  * Shared sync serialization drains manual/worker requests; persistent gates stop new ordinary
  * work. Full input inspection takes the real icon/theme leases and rechecks every source byte.
@@ -61,6 +67,11 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
 
     /** Cold continuation always re-reads authenticated server contents; saved hashes are not DTOs. */
     suspend fun resume(expected: ReplicaSwitchStage): ReplicaSwitchStage = coordinator.coordinateReplicaRecovery {
+        if (expected.phase == ReplicaSwitchPhase.COMPLETED) return@coordinateReplicaRecovery completed(expected)
+        if (expected.phase == ReplicaSwitchPhase.RELEASING) {
+            commits.releaseFate(expected); verifyRetainedArchive(expected)
+            return@coordinateReplicaRecovery expected // Fresh material/full finalization remains mandatory.
+        }
         if (expected.phase == ReplicaSwitchPhase.CATCHUP_COMMITTING) return@coordinateReplicaRecovery catchUpOwned(expected)
         if (expected.phase in setOf(ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED,
             ReplicaSwitchPhase.DESTINATION_BOUND, ReplicaSwitchPhase.CATCHUP_BOUND))
@@ -73,7 +84,8 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
             ReplicaSwitchPhase.ARCHIVE_VERIFIED -> { verifiedInput(expected) { _, _ -> Unit }; expected }
             ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED,
                 ReplicaSwitchPhase.DESTINATION_BOUND, ReplicaSwitchPhase.CATCHUP_COMMITTING,
-                ReplicaSwitchPhase.CATCHUP_BOUND -> error("SYNC_REPLICA_STAGE_CHANGED")
+                ReplicaSwitchPhase.CATCHUP_BOUND, ReplicaSwitchPhase.RELEASING,
+                ReplicaSwitchPhase.COMPLETED -> error("SYNC_REPLICA_STAGE_CHANGED")
             ReplicaSwitchPhase.ABORTED -> error("SYNC_REPLICA_STAGE_TRANSITION_INVALID")
         }
     }
@@ -181,7 +193,10 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
             retained.next.copy(wireHash = snapshot.wireHash) == snapshot) expected
         else if (expected.phase != ReplicaSwitchPhase.CATCHUP_COMMITTING &&
             snapshot.copy(wireHash = expected.publishedSnapshot.wireHash) == expected.publishedSnapshot) return expected
-        else stages.recordCatchup(expected, intent)
+        else {
+            if (expected.phase == ReplicaSwitchPhase.RELEASING) commits.refreezeForCatchup(expected)
+            stages.recordCatchup(expected, intent)
+        }
         commits.catchup(committing, fresh)
         verifyRetainedArchive(committing)
         return stages.bindCatchup(committing)
@@ -189,6 +204,69 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
 
     private suspend fun verifyRetainedArchive(stage: ReplicaSwitchStage) {
         archives.verify(receipt(stage, requireNotNull(stage.archive))) { tokens.replicaDestinationAccess(stage) }
+    }
+
+    /** One bounded final attempt. No cached preview/proof is accepted as input. Shared business
+     * and material owners prevent ordinary/late publication; actual native file leases close
+     * and revalidate before any stage mutation. Only after complete proof do SQL close and DS
+     * terminal CAS happen, in that order. A crash between them remains gated and resumes forward.
+     */
+    suspend fun finishRecovery(expected: ReplicaSwitchStage, material: AccountIconRuntime,
+        transport: AccountIconHttp): ReplicaCompletionOutcome = coordinator.coordinateReplicaRecovery {
+        if (expected.phase == ReplicaSwitchPhase.COMPLETED)
+            return@coordinateReplicaRecovery ReplicaCompletionOutcome.Completed(completed(expected))
+        require(material.metadata.usesAccess(tokens, sessions) &&
+            inputs.usesDestinationMaterial(material.metadata, material.transfers, material.store)) { "ICON_RECOVERY_STORE_MISMATCH" }
+        val current = catchUpOwned(expected)
+        material.coordinateReplicaCompletion { round ->
+            suspend fun inspectComplete(stage: ReplicaSwitchStage,
+                context: com.dayforge.data.appearance.AccountIconContext): ReplicaMaterialProof {
+                val uses = destinationUses(stage)
+                material.store.restoreReplicaSelection(context)
+                return inputs.inspectDestinationIcons(context) { metadata, files ->
+                    ReplicaMaterialProof.checked(stage, context, uses, metadata, files)
+                }
+            }
+            val checked = ReplicaMaterialAccess.verified(database, tokens, sessions, archives, current) { context ->
+                val outcome = round(context, transport)
+                if (outcome != IconMaterialOutcome.COMPLETE) outcome to null
+                else outcome to inspectComplete(current, context)
+            }
+            val proof = checked.second ?: return@coordinateReplicaCompletion ReplicaCompletionOutcome.Waiting(current, checked.first)
+            // Server may have changed during catalog/file IO. Never release the older SQL as
+            // current; next bounded call catches up using a new durable intent.
+            val fresh = ReplicaDestinationReadAccess.verified(database, tokens, sessions, archives, current) { read ->
+                candidates.validateDestination(read, read.read(http))
+            }
+            if (fresh.hasUnfinishedTimer || fresh.contentHash != current.publishedSnapshot.contentHash ||
+                fresh.projection.hash != current.publishedSnapshot.target.projectionHash)
+                return@coordinateReplicaCompletion ReplicaCompletionOutcome.Changed(current)
+            check(proof.access.session.authentication == fresh.original.session.authentication) { "SYNC_REPLICA_RELEASE_PROOF_CHANGED" }
+            verifyRetainedArchive(current)
+            val releasing = if (current.phase == ReplicaSwitchPhase.RELEASING) current else stages.recordRelease(current, proof)
+            commits.closeForRelease(releasing)
+            // Reacquire actual closed-state leases, not the previous object whose phase changed.
+            // Rebuild all files/metadata and archive after SQL close before removing the pointer.
+            val finalProof = ReplicaMaterialAccess.verified(database, tokens, sessions, archives, releasing) { context ->
+                inspectComplete(releasing, context)
+            }
+            check(finalProof.hash == proof.hash && finalProof.access == proof.access) { "SYNC_REPLICA_RELEASE_PROOF_CHANGED" }
+            // Actual full SQL and current authentication are checked again by final DS CAS.
+            ReplicaCompletionOutcome.Completed(stages.publishCompletion(releasing, finalProof))
+        }
+    }
+
+    private suspend fun completed(stage: ReplicaSwitchStage): ReplicaSwitchStage = sessions.exclusive {
+        check(stage.phase == ReplicaSwitchPhase.COMPLETED && tokens.activeReplicaStage() == null &&
+            tokens.replicaStage(stage.recoveryId) == stage) { "SYNC_REPLICA_STAGE_CHANGED" }
+        val access = requireNotNull(tokens.localSyncAccess()) { "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED" }
+        check(access.session.authentication.userId == stage.accountId && access.session.serverInstanceId == stage.serverInstanceId &&
+            access.session.syncEpoch == stage.newEpoch && access.deviceId == stage.publishedSnapshot.target.deviceId &&
+            tokens.registeredInstallationId() == stage.installationId) { "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED" }
+        val control = ReplicaPresentationRepository(database, tokens, sessions).inspectWhileAccountLocked()
+        check(control.problem == null) { "SYNC_REPLICA_RELEASE_STATE_INVALID" }
+        // Completed replicas may have ordinary new writes/cursors, and cannot re-enter recovery.
+        stage
     }
 
     /** Fresh authenticated directory/transfer round, exact archived preference and ALL owned
@@ -213,7 +291,8 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
 
     private suspend fun destinationUses(stage: ReplicaSwitchStage): List<ConfigIconUse> = sessions.exclusive {
         database.withTransaction {
-            check(commits.fateInTransaction(stage) == ReplicaCommitFate.COMMITTED) { "SYNC_REPLICA_COMMIT_STATE_INVALID" }
+            if (stage.phase == ReplicaSwitchPhase.RELEASING) commits.releaseFateInTransaction(stage)
+            else check(commits.fateInTransaction(stage) == ReplicaCommitFate.COMMITTED) { "SYNC_REPLICA_COMMIT_STATE_INVALID" }
             val projection = ReplicaProjection.capture(database)
             val uses = mutableListOf<ConfigIconUse>()
             fun add(appearance: JsonElement, once: Boolean) {

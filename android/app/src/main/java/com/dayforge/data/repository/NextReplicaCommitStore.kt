@@ -10,6 +10,7 @@ import kotlinx.serialization.json.*
 
 internal enum class ReplicaCommitFate { OLD, COMMITTED }
 internal enum class ReplicaCatchupFate { PREVIOUS, COMMITTED }
+internal enum class ReplicaReleaseFate { FROZEN, CLOSED }
 
 /** Dedicated SQL replacement, not a callback/ordinary writer override. The durable pointer and
  * SQL fence remain active throughout and after COMMIT. Exactly the approved 105 business guards
@@ -28,7 +29,7 @@ internal class NextReplicaCommitStore(private val database: HabitDatabase, priva
         check(database.inTransaction())
         require(stage.phase in setOf(ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED,
             ReplicaSwitchPhase.DESTINATION_BOUND, ReplicaSwitchPhase.CATCHUP_BOUND))
-        val fence = database.nextReplicaFenceDao().state()
+        val fence = ReplicaPresentationRepository(database, tokens, sessions).readFenceInTransaction()
         check(fence == stage.fence || allowClosedOld && fence == stage.fence.copy(mode = com.dayforge.data.local.entity.NextReplicaFenceEntity.CLOSED)) {
             "SYNC_REPLICA_FENCE_CHANGED"
         }
@@ -66,6 +67,46 @@ internal class NextReplicaCommitStore(private val database: HabitDatabase, priva
     suspend fun catchupFate(stage: ReplicaSwitchStage): ReplicaCatchupFate {
         check(!database.inTransaction()) { "SYNC_REPLICA_AMBIENT_TRANSACTION" }
         return sessions.exclusive { database.withTransaction { catchupFateInTransaction(stage) } }
+    }
+
+    /** Closing SQL alone never opens consumers: RELEASING and the pointer remain durable. */
+    internal suspend fun releaseFateInTransaction(stage: ReplicaSwitchStage): ReplicaReleaseFate {
+        check(database.inTransaction())
+        require(stage.phase == ReplicaSwitchPhase.RELEASING)
+        val actual = ReplicaPresentationRepository(database, tokens, sessions).readFenceInTransaction()
+        check(tokens.activeReplicaStage() == stage &&
+            (actual == stage.fence || actual == stage.fence.copy(mode = com.dayforge.data.local.entity.NextReplicaFenceEntity.CLOSED)) &&
+            ReplicaProjection.schemaHash(database) == stage.publishedSnapshot.target.schemaHash &&
+            matches(stage, stage.publishedSnapshot)) { "SYNC_REPLICA_RELEASE_STATE_INVALID" }
+        tokens.replicaDestinationAccess(stage)
+        return if (actual == stage.fence) ReplicaReleaseFate.FROZEN else ReplicaReleaseFate.CLOSED
+    }
+
+    suspend fun releaseFate(stage: ReplicaSwitchStage): ReplicaReleaseFate {
+        check(!database.inTransaction()) { "SYNC_REPLICA_AMBIENT_TRANSACTION" }
+        return sessions.exclusive { database.withTransaction { releaseFateInTransaction(stage) } }
+    }
+
+    /** A newer server snapshot after interrupted close still advances forward under the pointer.
+     * Re-freezing protects the next replacement, never restores the old replica or cancels it.
+     */
+    suspend fun refreezeForCatchup(stage: ReplicaSwitchStage) {
+        check(!database.inTransaction()) { "SYNC_REPLICA_AMBIENT_TRANSACTION" }
+        sessions.exclusive { database.withTransaction {
+            if (releaseFateInTransaction(stage) == ReplicaReleaseFate.CLOSED)
+                check(database.nextReplicaFenceDao().update(stage.fence) == 1)
+            check(releaseFateInTransaction(stage) == ReplicaReleaseFate.FROZEN)
+        } }
+    }
+
+    suspend fun closeForRelease(stage: ReplicaSwitchStage) {
+        check(!database.inTransaction()) { "SYNC_REPLICA_AMBIENT_TRANSACTION" }
+        sessions.exclusive { database.withTransaction {
+            if (releaseFateInTransaction(stage) == ReplicaReleaseFate.FROZEN)
+                check(database.nextReplicaFenceDao().update(stage.fence.copy(mode =
+                    com.dayforge.data.local.entity.NextReplicaFenceEntity.CLOSED)) == 1)
+            check(releaseFateInTransaction(stage) == ReplicaReleaseFate.CLOSED)
+        } }
     }
 
     private suspend fun matches(stage: ReplicaSwitchStage, snapshot: ReplicaStageSnapshot): Boolean {

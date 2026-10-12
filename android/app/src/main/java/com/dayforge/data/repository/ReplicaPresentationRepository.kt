@@ -33,15 +33,15 @@ class ReplicaPresentationRepository @Inject constructor(private val database: Ha
     /** Only callers already owning the shared account lock may enter; Room nesting is read-only. */
     internal suspend fun inspectWhileAccountLocked(): ReplicaPresentationCheck = database.withTransaction {
         val before = tokens.replicaPresentationWitness()
-        val sql = readFence()
+        val sql = readFenceInTransaction()
         check(before == tokens.replicaPresentationWitness()) { "SYNC_REPLICA_STAGE_CHANGED" }
         when {
             before.pointerPresent -> ReplicaPresentationCheck(ReplicaPresentationProblem.RECOVERY_PENDING,
                 requireNotNull(before.stage).phase)
             sql?.mode == NextReplicaFenceEntity.FROZEN -> ReplicaPresentationCheck(ReplicaPresentationProblem.ORPHAN_STAGE)
-            before.history.any { it.phase != ReplicaSwitchPhase.ABORTED } ->
+            before.history.any { !it.terminal } ->
                 ReplicaPresentationCheck(ReplicaPresentationProblem.ORPHAN_STAGE)
-            sql != null && before.history.none { it.phase == ReplicaSwitchPhase.ABORTED &&
+            sql != null && before.history.none { it.terminal &&
                 it.fence.copy(mode = NextReplicaFenceEntity.CLOSED) == sql } ->
                 ReplicaPresentationCheck(ReplicaPresentationProblem.ORPHAN_STAGE)
             else -> ReplicaPresentationCheck()
@@ -61,21 +61,24 @@ class ReplicaPresentationRepository @Inject constructor(private val database: Ha
     }
 
     /** Room's typed conversion can coerce SQLite values: validate actual storage classes first. */
-    private fun readFence(): NextReplicaFenceEntity? = database.openHelper.writableDatabase.query(
-        "SELECT * FROM next_replica_fence ORDER BY id").use { cursor ->
-        val text = listOf("recoveryId", "accountId", "serverInstanceId", "oldEpoch", "newEpoch",
-            "authenticationGeneration", "deviceId", "sourceHash", "mode")
-        check(cursor.columnNames.toSet() == (text + listOf("id", "capabilityRevision")).toSet() &&
-            cursor.count <= 1) { "SYNC_REPLICA_FENCE_INVALID" }
-        if (!cursor.moveToFirst()) return@use null
-        check(text.all { cursor.getType(cursor.getColumnIndexOrThrow(it)) == Cursor.FIELD_TYPE_STRING } &&
-            listOf("id", "capabilityRevision").all { cursor.getType(cursor.getColumnIndexOrThrow(it)) == Cursor.FIELD_TYPE_INTEGER }) {
-            "SYNC_REPLICA_FENCE_INVALID"
+    internal fun readFenceInTransaction(): NextReplicaFenceEntity? {
+        check(database.inTransaction()) { "SYNC_REPLICA_AMBIENT_TRANSACTION" }
+        return database.openHelper.writableDatabase.query(
+            "SELECT * FROM next_replica_fence ORDER BY id").use { cursor ->
+            val text = listOf("recoveryId", "accountId", "serverInstanceId", "oldEpoch", "newEpoch",
+                "authenticationGeneration", "deviceId", "sourceHash", "mode")
+            check(cursor.columnNames.toSet() == (text + listOf("id", "capabilityRevision")).toSet() &&
+                cursor.count <= 1) { "SYNC_REPLICA_FENCE_INVALID" }
+            if (!cursor.moveToFirst()) return@use null
+            check(text.all { cursor.getType(cursor.getColumnIndexOrThrow(it)) == Cursor.FIELD_TYPE_STRING } &&
+                listOf("id", "capabilityRevision").all { cursor.getType(cursor.getColumnIndexOrThrow(it)) == Cursor.FIELD_TYPE_INTEGER }) {
+                "SYNC_REPLICA_FENCE_INVALID"
+            }
+            fun string(name: String) = cursor.getString(cursor.getColumnIndexOrThrow(name))
+            check(cursor.getLong(cursor.getColumnIndexOrThrow("id")) == 1L) { "SYNC_REPLICA_FENCE_INVALID" }
+            NextReplicaFenceEntity(string("recoveryId"), string("accountId"), string("serverInstanceId"),
+                string("oldEpoch"), string("newEpoch"), string("authenticationGeneration"), string("deviceId"),
+                cursor.getLong(cursor.getColumnIndexOrThrow("capabilityRevision")), string("sourceHash"), string("mode"))
         }
-        fun string(name: String) = cursor.getString(cursor.getColumnIndexOrThrow(name))
-        check(cursor.getLong(cursor.getColumnIndexOrThrow("id")) == 1L) { "SYNC_REPLICA_FENCE_INVALID" }
-        NextReplicaFenceEntity(string("recoveryId"), string("accountId"), string("serverInstanceId"),
-            string("oldEpoch"), string("newEpoch"), string("authenticationGeneration"), string("deviceId"),
-            cursor.getLong(cursor.getColumnIndexOrThrow("capabilityRevision")), string("sourceHash"), string("mode"))
     }
 }

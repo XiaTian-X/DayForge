@@ -21,6 +21,10 @@ internal class ReplicaMaterialAccess private constructor(private val tokens: Tok
     val intent: ReplicaPackIntent) {
     @Volatile private var open = true
 
+    internal fun requireStage(expected: ReplicaSwitchStage) {
+        check(open && owner.isActive && stage == expected) { "ICON_RECOVERY_STAGE_CHANGED" }
+    }
+
     suspend fun authorize(values: TokenManager) {
         check(open && owner.isActive && values === tokens) { "ICON_RECOVERY_ACCESS_CLOSED" }
         val actual = tokens.replicaDestinationAccess(stage)
@@ -77,13 +81,15 @@ internal class ReplicaMaterialAccess private constructor(private val tokens: Tok
         suspend fun <T> verified(database: HabitDatabase, tokens: TokenManager, sessions: AccountSessionCoordinator,
             archives: ReplicaPrivateArchiveStore, stage: ReplicaSwitchStage,
             block: suspend (AccountIconContext) -> T): T {
-            require(stage.phase in setOf(ReplicaSwitchPhase.DESTINATION_BOUND, ReplicaSwitchPhase.CATCHUP_BOUND))
+            require(stage.phase in setOf(ReplicaSwitchPhase.DESTINATION_BOUND, ReplicaSwitchPhase.CATCHUP_BOUND,
+                ReplicaSwitchPhase.RELEASING))
             val commits = NextReplicaCommitStore(database, tokens, sessions)
             suspend fun verifySql() = sessions.exclusive { database.withTransaction {
                 val control = ReplicaPresentationRepository(database, tokens, sessions).inspectWhileAccountLocked()
                 check(control.problem == ReplicaPresentationProblem.RECOVERY_PENDING && control.phase == stage.phase &&
                     tokens.activeReplicaStage() == stage) { "SYNC_REPLICA_STAGE_CHANGED" }
-                check(commits.fateInTransaction(stage) == ReplicaCommitFate.COMMITTED) { "SYNC_REPLICA_COMMIT_STATE_INVALID" }
+                if (stage.phase == ReplicaSwitchPhase.RELEASING) commits.releaseFateInTransaction(stage)
+                else check(commits.fateInTransaction(stage) == ReplicaCommitFate.COMMITTED) { "SYNC_REPLICA_COMMIT_STATE_INVALID" }
             } }
             val saved = requireNotNull(stage.archive)
             val receipt = ReplicaArchiveReceipt(AccountIconNamespace(stage.accountId, stage.serverInstanceId, stage.oldEpoch),
