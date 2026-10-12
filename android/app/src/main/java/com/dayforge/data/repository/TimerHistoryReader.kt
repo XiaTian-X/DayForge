@@ -52,7 +52,8 @@ class TimerHistoryReader @Inject constructor(private val database: HabitDatabase
 
     private suspend fun readEvidenceInTransaction(expected: HabitEntity, today: LocalDate, recovery: Boolean): TimerHistory {
         check(database.inTransaction()) { "TIMER_READ_TRANSACTION_REQUIRED" }
-        val access = requireNotNull(tokens.localCoreWriteAccess()) { "TIMER_SESSION_CHANGED" }
+        suspend fun observedAccess() = if (recovery) tokens.replicaObservationCoreAccess() else tokens.localCoreWriteAccess()
+        val access = requireNotNull(observedAccess()) { "TIMER_SESSION_CHANGED" }
         val habit = requireNotNull(database.habitDao().getHabitById(expected.id))
         check(habit == expected && habit.appearance != null &&
             (if (recovery) habit.habitType != HabitType.GOAL else habit.habitType == HabitType.TIMER) &&
@@ -203,7 +204,7 @@ class TimerHistoryReader @Inject constructor(private val database: HabitDatabase
                 }
             }
         }
-        check(tokens.localCoreWriteAccess() == access && (scope == null || tokens.localSyncAccess() == scope.access)) { "TIMER_SESSION_CHANGED" }
+        check(observedAccess() == access && (scope == null || tokens.localSyncAccess() == scope.access)) { "TIMER_SESSION_CHANGED" }
         return TimerHistory(today, Math.multiplyExact(habit.targetValue.toLong(), 60L), totals, visible, active, activeSegments, head)
     }
 

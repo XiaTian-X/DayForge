@@ -22,7 +22,7 @@ internal class NextRecoveryDependencyReader(private val database: HabitDatabase,
     private val restart: NextChallengeRestartRepository) {
 
     suspend fun preview(root: NextRecoveryKey): NextRecoveryDependencyPreview = sessions.exclusive {
-        val authority = requireNotNull(tokens.localCoreWriteAccess())
+        val authority = requireNotNull(tokens.replicaObservationCoreAccess())
         val access = requireNotNull(tokens.localSyncAccess()).let { it.copy(capabilities = it.capabilities.toSet()) }
         require(authority.session == access.session && tokens.syncAuthenticationSnapshot(access) != null)
         database.withTransaction {
@@ -30,7 +30,7 @@ internal class NextRecoveryDependencyReader(private val database: HabitDatabase,
             val checkpoint = NextChallengeStore(database).activeInTransaction(access)
             val result = readInTransaction(access, root)
             check(NextChallengeStore(database).activeInTransaction(access) == checkpoint &&
-                tokens.localCoreWriteAccess() == authority && tokens.localSyncAccess() == access &&
+                tokens.replicaObservationCoreAccess() == authority && tokens.localSyncAccess() == access &&
                 tokens.syncAuthenticationSnapshot(access) != null) { "SYNC_RECOVERY_ACCESS_CHANGED" }
             result
         }

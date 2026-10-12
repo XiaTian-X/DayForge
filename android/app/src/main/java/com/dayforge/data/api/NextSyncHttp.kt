@@ -71,7 +71,7 @@ internal class NextSyncHttp private constructor(
     /** The new scope is usable ONLY by a fixed read-only GET, never by a writable Session. */
     suspend fun recoveryPreview(captured: LocalSyncAccess, newEpoch: String, installation: String): ReplicaRecoveryPreviewResponse {
         require(captured.deviceId != null && isContractUuid(newEpoch) && newEpoch != captured.session.syncEpoch && isContractUuid(installation))
-        authorize(tokens, captured)
+        authorize(tokens, captured, recoveryReadOnly = true)
         if (tokens.registeredInstallationId() != installation) throw IOException("SYNC_SESSION_CHANGED")
         val response = withSession(captured, noRefresh = true) { session, context ->
             val identity = session.identity()
@@ -81,7 +81,7 @@ internal class NextSyncHttp private constructor(
             if (identity.protocolVersion != 5) throw NextSyncHttpFailure(426, "CLIENT_UPGRADE_REQUIRED")
             session.readRecoveryPreview(newEpoch, installation)
         }
-        authorize(tokens, captured)
+        authorize(tokens, captured, recoveryReadOnly = true)
         if (tokens.registeredInstallationId() != installation) throw IOException("SYNC_SESSION_CHANGED")
         return response
     }
@@ -89,7 +89,7 @@ internal class NextSyncHttp private constructor(
     private suspend fun <T> withSession(captured: LocalSyncAccess, noRefresh: Boolean = false,
         block: suspend (Session, LocalSyncAccess) -> T): T {
         val context = captured.copy(capabilities = captured.capabilities.toSet())
-        authorize(tokens, context)
+        authorize(tokens, context, recoveryReadOnly = noRefresh)
         val route = try { captureRoute() } catch (_: IllegalArgumentException) { throw IOException("SYNC_ROUTE_INVALID") }
         val builder = shared.newBuilder()
         builder.interceptors().removeAll { it is HttpLoggingInterceptor }
@@ -100,10 +100,10 @@ internal class NextSyncHttp private constructor(
             .connectTimeout(10, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS).callTimeout(45, TimeUnit.SECONDS)
             .addNetworkInterceptor { chain ->
                 if (!route.matches(chain.request().url)) throw IOException("SYNC_ROUTE_CHANGED")
-                runBlocking { authorize(tokens, context) }
+                runBlocking { authorize(tokens, context, recoveryReadOnly = noRefresh) }
                 chain.proceed(chain.request())
             }.build()
-        val session = Session(client, tokens, context, route, requireNotNull(currentCoroutineContext()[Job]))
+        val session = Session(client, tokens, context, route, requireNotNull(currentCoroutineContext()[Job]), noRefresh)
         try {
             return block(session, context)
         } finally {
@@ -114,7 +114,7 @@ internal class NextSyncHttp private constructor(
 
     internal class Session internal constructor(
         private val client: OkHttpClient, private val tokens: TokenManager, private val context: LocalSyncAccess,
-        private val route: MaterialHttpRoute, private val owner: Job
+        private val route: MaterialHttpRoute, private val owner: Job, private val recoveryReadOnly: Boolean = false
     ) {
         private var closed = false
         internal fun close() { closed = true }
@@ -387,6 +387,9 @@ internal class NextSyncHttp private constructor(
             it.url(it.build().url.newBuilder().addQueryParameter("challenge_contract", "1").build())
         }
         private fun request(path: String, public: Boolean = false): Request.Builder {
+            check(!recoveryReadOnly || path in setOf(MaterialHttpRoute.IDENTITY_PATH, "/api/v2/sync/rounds/recovery-preview")) {
+                "SYNC_RECOVERY_READ_ONLY"
+            }
             val builder = Request.Builder().url(route.origin.newBuilder().encodedPath(path).build()).header("Accept-Encoding", "identity")
                 .tag(AuthenticationSession::class.java, context.session.authentication).tag(LocalSyncAccess::class.java, context)
                 .tag(MaterialHttpRoute::class.java, route)
@@ -415,14 +418,15 @@ internal class NextSyncHttp private constructor(
                 val caller = currentCoroutineContext()
                 decodeSyncReply(bytes, limit, serializer, { caller.ensureActive() }, requiredFields)
             }
-            authorize(tokens, context)
+            authorize(tokens, context, recoveryReadOnly)
             return result
         }
 
         private suspend fun execute(request: Request, limit: Int): ByteArray {
             check(!closed && currentCoroutineContext()[Job] === owner) { "SYNC_SCOPE_CHANGED" }
+            check(!recoveryReadOnly || request.method == "GET") { "SYNC_RECOVERY_READ_ONLY" }
             return supervisorScope {
-                authorize(tokens, context)
+                authorize(tokens, context, recoveryReadOnly)
                 val cancellation = MaterialCallCancellation()
                 val call = client.newCall(request.newBuilder().tag(MaterialCallCancellation::class.java, cancellation).build())
                 cancellation.register(call)
@@ -441,7 +445,7 @@ internal class NextSyncHttp private constructor(
                     cancellation.cancel()
                     withContext(NonCancellable) { worker.join() }
                 }
-                authorize(tokens, context)
+                authorize(tokens, context, recoveryReadOnly)
                 result
             }
         }
@@ -497,7 +501,7 @@ internal class NextSyncHttp private constructor(
                 catch (_: NoSuchElementException) { throw NextSyncReplyInvalid() }
                 catch (_: java.time.DateTimeException) { throw NextSyncReplyInvalid() }
             }
-            authorize(tokens, context)
+            authorize(tokens, context, recoveryReadOnly)
             return result
         }
     }
@@ -507,7 +511,9 @@ internal class NextSyncHttp private constructor(
         const val SMALL_REPLY = 65_536
         const val NORMAL_REPLY = 8 * 1024 * 1024
         const val BOOTSTRAP_REPLY = 32 * 1024 * 1024
-        suspend fun authorize(tokens: TokenManager, context: LocalSyncAccess) {
+        suspend fun authorize(tokens: TokenManager, context: LocalSyncAccess, recoveryReadOnly: Boolean = false) {
+            if (!recoveryReadOnly && tokens.replicaSwitchPending())
+                throw IOException(com.dayforge.data.local.ReplicaSwitchGuard.PENDING)
             if (tokens.syncAuthenticationSnapshot(context) == null) throw IOException("SYNC_SESSION_CHANGED")
         }
     }

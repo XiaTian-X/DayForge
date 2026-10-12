@@ -54,7 +54,8 @@ internal class RecurringCompletionEvidenceReader(
 
     private suspend fun readEvidenceInTransaction(expected: HabitEntity, today: LocalDate, recovery: Boolean): RecurringCompletionEvidence {
         check(database.inTransaction()) { "COUNT_READ_TRANSACTION_REQUIRED" }
-        val access = requireNotNull(tokens.localCoreWriteAccess()) { "COUNT_SESSION_CHANGED" }
+        suspend fun observedAccess() = if (recovery) tokens.replicaObservationCoreAccess() else tokens.localCoreWriteAccess()
+        val access = requireNotNull(observedAccess()) { "COUNT_SESSION_CHANGED" }
         val rounds = NextCoreLocalIntentStore(database, tokens, sessions).captureDisplayedRoundsInTransaction()
         val habit = requireNotNull(database.habitDao().getHabitById(expected.id)) { "COUNT_NOT_FOUND" }
         check(habit == expected && habit.appearance != null &&
@@ -106,7 +107,7 @@ internal class RecurringCompletionEvidenceReader(
         val unknown = retained.mapTo(linkedSetOf()) { it.businessDate }.filterTo(linkedSetOf()) { it in unbound }
         // The shared habit/date rule survives undo and restart, even with no current-round facts.
         if (today in unbound) unknown += today
-        check(tokens.localCoreWriteAccess() == access) { "COUNT_SESSION_CHANGED" }
+        check(observedAccess() == access) { "COUNT_SESSION_CHANGED" }
         check(rounds == null || tokens.localSyncAccess() == rounds.access) { "COUNT_SESSION_CHANGED" }
         return RecurringCompletionEvidence(today, policies, unknown, retained, head)
     }

@@ -75,10 +75,12 @@ internal class DeviceThemeStore(
     suspend fun select(expectedRevision: Long, selection: DeviceThemeSelection): LoadedDeviceTheme {
         require(expectedRevision >= 0)
         currentCoroutineContext().ensureActive()
+        com.dayforge.data.local.ReplicaSwitchGuard.requireOpen(preferences)
         val light = themes.read(selection.light.themeId, selection.light.revision)
         val dark = if (selection.light == selection.dark) light
             else themes.read(selection.dark.themeId, selection.dark.revision)
         val committed = preferences.edit { values ->
+            com.dayforge.data.local.ReplicaSwitchGuard.requireOpen(values)
             currentCoroutineContext().ensureActive()
             val previous = decode(values[KEY])
             ThemeCatalogState.decode(values[THEME_CATALOG_KEY])?.let { catalog ->

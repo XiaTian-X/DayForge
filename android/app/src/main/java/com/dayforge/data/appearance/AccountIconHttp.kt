@@ -80,6 +80,7 @@ class AccountIconHttp private constructor(
 
     /** No material job may be claimed until actual public identity admits the exact v5 replica. */
     internal suspend fun <T> session(context: AccountIconContext, block: suspend (Session) -> T): T? {
+        tokens.requireOrdinaryReplicaAccess()
         check(tokens.iconAuthenticationSnapshot(context.access) != null) { "ICON_SESSION_CHANGED" }
         val route = try { captureRoute() } catch (_: IllegalArgumentException) { throw IOException("MATERIAL_ROUTE_INVALID") }
         val builder = shared.newBuilder()
@@ -121,6 +122,7 @@ class AccountIconHttp private constructor(
         internal suspend fun identity(): MaterialServerIdentity = value(request(MaterialHttpRoute.IDENTITY_PATH))
 
         internal suspend fun authorize(expected: AccountIconContext) {
+            tokens.requireOrdinaryReplicaAccess()
             check(!closed && currentCoroutineContext()[Job] === owner && expected.access == context.access) { "MATERIAL_SCOPE_CHANGED" }
             check(tokens.iconAuthenticationSnapshot(context.access) != null) { "ICON_SESSION_CHANGED" }
         }
@@ -207,6 +209,7 @@ class AccountIconHttp private constructor(
         private suspend fun execute(request: Request, limit: Int, type: String): ByteArray {
             check(!closed && currentCoroutineContext()[Job] === owner) { "MATERIAL_SCOPE_CHANGED" }
             return supervisorScope {
+                tokens.requireOrdinaryReplicaAccess()
                 check(tokens.iconAuthenticationSnapshot(context.access) != null) { "ICON_SESSION_CHANGED" }
                 val cancellation = MaterialCallCancellation()
                 val call = client.newCall(request.newBuilder().tag(MaterialCallCancellation::class.java, cancellation).build())
@@ -232,6 +235,7 @@ class AccountIconHttp private constructor(
                     cancellation.cancel()
                     withContext(NonCancellable) { worker.join() }
                 }
+                tokens.requireOrdinaryReplicaAccess()
                 check(tokens.iconAuthenticationSnapshot(context.access) != null) { "ICON_SESSION_CHANGED" }
                 result
             }
@@ -271,6 +275,8 @@ class AccountIconHttp private constructor(
     }
 
     private companion object {
-        fun tokensCheck(tokens: TokenManager, context: AccountIconContext) = runBlocking { tokens.iconAuthenticationSnapshot(context.access) }
+        fun tokensCheck(tokens: TokenManager, context: AccountIconContext) = runBlocking {
+            if (tokens.replicaSwitchPending()) null else tokens.iconAuthenticationSnapshot(context.access)
+        }
     }
 }

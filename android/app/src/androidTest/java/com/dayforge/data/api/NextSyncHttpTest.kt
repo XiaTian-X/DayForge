@@ -13,6 +13,8 @@ import com.dayforge.data.appearance.MaterialSocketServer
 import com.dayforge.data.local.LocalSyncAccess
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
+import com.dayforge.data.local.ReplicaSwitchGuard
+import androidx.datastore.preferences.core.edit
 import com.dayforge.domain.model.ChallengeRoundRecord
 import com.dayforge.domain.model.ChallengeRestartIntent
 import com.dayforge.domain.model.initialChallengeRoundHead
@@ -99,6 +101,23 @@ class NextSyncHttpTest {
         preferences.setServerUrl(server.origin.toString())
         return NextSyncHttp(client, tokens, server.origin) to server
     }
+    @Test fun freezePreventsNewSessionAndDiscardsAlreadySentOldResponseWithoutChangingCredentials() = runBlocking<Unit> {
+        val context = capture(); val sent = CountDownLatch(1); val release = CountDownLatch(1)
+        val (http, server) = http { input, _ ->
+            if (input.path.endsWith("/identity")) json(identity()) else {
+                sent.countDown(); check(release.await(10, TimeUnit.SECONDS)); json(pushReply())
+            }
+        }
+        val request = async(Dispatchers.IO) { runCatching { http.session(context) { it.push(push()) } } }
+        try {
+            assertTrue(withContext(Dispatchers.IO) { sent.await(5, TimeUnit.SECONDS) })
+            data.edit { it[ReplicaSwitchGuard.POINTER] = "missing-stage" }; val before = data.data.first()
+            release.countDown(); assertTrue(withTimeout(5000) { request.await() }.isFailure)
+            rejected { http.session(context) { fail("No ordinary session") } }
+            assertEquals(2, server.requests.size); assertEquals(before, data.data.first()); assertEquals(context, capture())
+        } finally { release.countDown(); request.cancelAndJoin() }
+    }
+
     private fun headers(input: MaterialSocketServer.Input, access: String = "synthetic-access") {
         assertEquals("identity", input.headers["accept-encoding"])
         if (input.path.endsWith("/identity")) {

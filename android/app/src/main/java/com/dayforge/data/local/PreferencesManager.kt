@@ -2,6 +2,7 @@ package com.dayforge.data.local
 
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
@@ -23,6 +24,10 @@ class PreferencesManager @Inject constructor(
     val calendar: DeviceCalendar = DeviceCalendar()
 ) {
     internal fun usesPreferences(value: DataStore<Preferences>) = dataStore === value
+    private suspend fun editOrdinary(block: suspend (MutablePreferences) -> Unit): Preferences = dataStore.edit {
+        ReplicaSwitchGuard.requireOpen(it)
+        block(it)
+    }
     companion object {
         private val LAST_SYNC_TIMESTAMP_KEY = longPreferencesKey("last_sync_timestamp")
         private val BATTERY_GUIDANCE_SHOWN = booleanPreferencesKey("battery_guidance_shown")
@@ -61,7 +66,7 @@ class PreferencesManager @Inject constructor(
      * Called after a successful sync operation.
      */
     suspend fun setLastSyncTimestamp(timestamp: Long) {
-        dataStore.edit { preferences ->
+        editOrdinary { preferences ->
             preferences[LAST_SYNC_TIMESTAMP_KEY] = timestamp
         }
     }
@@ -71,7 +76,7 @@ class PreferencesManager @Inject constructor(
      * Called on logout or when sync state needs to be reset.
      */
     suspend fun clearLastSyncTimestamp() {
-        dataStore.edit { preferences ->
+        editOrdinary { preferences ->
             preferences.remove(LAST_SYNC_TIMESTAMP_KEY)
         }
     }
@@ -94,7 +99,7 @@ class PreferencesManager @Inject constructor(
      * @param code The language code ("zh", "en", or null for system default)
      */
     suspend fun setLanguageCode(code: String?) {
-        dataStore.edit { preferences ->
+        editOrdinary { preferences ->
             if (code == null) {
                 preferences.remove(LANGUAGE_CODE_KEY)
             } else {
@@ -121,7 +126,7 @@ class PreferencesManager @Inject constructor(
      * @param mode The filter mode ("all", "time_window", "checkable", "terminated")
      */
     suspend fun setFilterMode(mode: String) {
-        dataStore.edit { preferences ->
+        editOrdinary { preferences ->
             preferences[FILTER_MODE_KEY] = mode
         }
     }
@@ -144,7 +149,7 @@ class PreferencesManager @Inject constructor(
      * @param enabled True to enable notifications globally, false to disable all
      */
     suspend fun setGlobalNotificationsEnabled(enabled: Boolean) {
-        dataStore.edit { preferences ->
+        editOrdinary { preferences ->
             preferences[GLOBAL_NOTIFICATIONS_ENABLED_KEY] = enabled
         }
     }
@@ -169,7 +174,7 @@ class PreferencesManager @Inject constructor(
      * @param enabled True to enable notifications for this habit, false to disable
      */
     suspend fun setHabitNotificationEnabled(habitId: Long, enabled: Boolean) {
-        dataStore.edit { prefs ->
+        editOrdinary { prefs ->
             prefs[habitNotificationKey(habitId)] = enabled
         }
     }
@@ -187,7 +192,7 @@ class PreferencesManager @Inject constructor(
      * Called after the first timer start shows the guidance dialog.
      */
     suspend fun setBatteryGuidanceShown() {
-        dataStore.edit { preferences ->
+        editOrdinary { preferences ->
             preferences[BATTERY_GUIDANCE_SHOWN] = true
         }
     }
@@ -211,7 +216,7 @@ class PreferencesManager @Inject constructor(
      * @param url The custom server URL (e.g., "https://api.example.com/api/v1/") or null for default
      */
     suspend fun setServerUrl(url: String?) {
-        dataStore.edit { preferences ->
+        editOrdinary { preferences ->
             if (url.isNullOrBlank()) {
                 preferences.remove(SERVER_URL_KEY)
             } else {
@@ -222,7 +227,7 @@ class PreferencesManager @Inject constructor(
     }
 
     suspend fun setRemoteServerUrl(url: String?) {
-        dataStore.edit { preferences ->
+        editOrdinary { preferences ->
             if (url.isNullOrBlank()) preferences.remove(REMOTE_SERVER_URL_KEY)
             else preferences[REMOTE_SERVER_URL_KEY] = url
             preferences.remove(ACTIVE_SERVER_URL_KEY)
@@ -230,7 +235,7 @@ class PreferencesManager @Inject constructor(
     }
 
     suspend fun setActiveServerUrl(url: String?) {
-        dataStore.edit { preferences ->
+        editOrdinary { preferences ->
             if (url.isNullOrBlank()) preferences.remove(ACTIVE_SERVER_URL_KEY)
             else preferences[ACTIVE_SERVER_URL_KEY] = url
         }
@@ -255,7 +260,7 @@ class PreferencesManager @Inject constructor(
      * @param value True to suppress future prompts, false to re-enable
      */
     suspend fun setNeverAskAgain(habitId: Long, value: Boolean) {
-        dataStore.edit { prefs ->
+        editOrdinary { prefs ->
             prefs[neverAskAgainKey(habitId)] = value
         }
     }
@@ -286,7 +291,7 @@ class PreferencesManager @Inject constructor(
      * @param habitId The ID of the habit that needs metric recording
      */
     suspend fun addPendingMetricHabit(habitId: Long) {
-        dataStore.edit { prefs ->
+        editOrdinary { prefs ->
             val current = prefs[PENDING_METRIC_HABITS_KEY]
             val currentSet = if (current.isNullOrBlank()) {
                 emptySet()
@@ -307,7 +312,7 @@ class PreferencesManager @Inject constructor(
      * @param habitId The ID of the habit to remove
      */
     suspend fun removePendingMetricHabit(habitId: Long) {
-        dataStore.edit { prefs ->
+        editOrdinary { prefs ->
             val current = prefs[PENDING_METRIC_HABITS_KEY]
             val currentSet = if (current.isNullOrBlank()) {
                 emptySet()
@@ -324,7 +329,7 @@ class PreferencesManager @Inject constructor(
      * Called on logout or when resetting app state.
      */
     suspend fun clearPendingMetricHabits() {
-        dataStore.edit { prefs ->
+        editOrdinary { prefs ->
             prefs.remove(PENDING_METRIC_HABITS_KEY)
         }
     }
@@ -337,7 +342,7 @@ class PreferencesManager @Inject constructor(
      * Device-wide preferences such as language, theme and server URL are preserved.
      */
     suspend fun clearAccountScopedPreferences() {
-        dataStore.edit { preferences ->
+        editOrdinary { preferences ->
             preferences.asMap().keys
                 .filter { key ->
                     key.name.startsWith("never_ask_metric_") ||
@@ -370,7 +375,7 @@ class PreferencesManager @Inject constructor(
      * @param uuids Set of UUIDs for expanded parent habits
      */
     suspend fun setExpandedParentUuids(uuids: Set<String>) {
-        dataStore.edit { prefs ->
+        editOrdinary { prefs ->
             prefs[EXPANDED_PARENT_UUIDS_KEY] = uuids.joinToString(",")
         }
     }
@@ -395,7 +400,7 @@ class PreferencesManager @Inject constructor(
      */
     suspend fun updateLastSeenDate(todayEpochDays: Long): Boolean {
         var dateChanged = false
-        dataStore.edit { prefs ->
+        editOrdinary { prefs ->
             val lastSeen = prefs[LAST_SEEN_DATE_KEY] ?: 0L
             if (lastSeen != todayEpochDays) {
                 dateChanged = true

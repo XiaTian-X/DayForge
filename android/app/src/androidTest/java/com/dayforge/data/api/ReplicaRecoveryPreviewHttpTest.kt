@@ -3,6 +3,7 @@ package com.dayforge.data.api
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.dayforge.data.api.authenticator.TokenAuthenticator
@@ -88,6 +89,19 @@ class ReplicaRecoveryPreviewHttpTest {
     private suspend fun rejected(block: suspend () -> Unit): Throwable {
         try { block() } catch (error: Exception) { if (error is CancellationException) throw error; return error }
         throw AssertionError("Must reject")
+    }
+
+    @Test fun frozenReplicaStillAllowsOnlyFixedAuthenticatedNewEpochReadWithoutPublishingAuthority() = runBlocking<Unit> {
+        val original = capture()
+        val (http, server) = peer { input, _ -> if (input.path.endsWith("/identity")) reply(identity()) else {
+            assertEquals(path, input.path); assertEquals("GET", input.method); reply(candidate().toString())
+        } }
+        data.edit { it[com.dayforge.data.local.ReplicaSwitchGuard.POINTER] = "missing-stage" }
+        val before = data.data.first()
+        assertEquals(id(5), http.recoveryPreview(original, id(5), installation).syncEpoch)
+        assertEquals(2, server.requests.size); assertEquals(original, capture()); assertEquals(before, data.data.first())
+        rejected { http.session(original) { fail("No ordinary Session") } }
+        assertEquals(2, server.requests.size); assertEquals(before, data.data.first())
     }
 
     @Test fun reloginReadsNewScopeWithoutPublishingIdentityCapabilitiesCursorOrSuccess() = runBlocking<Unit> {

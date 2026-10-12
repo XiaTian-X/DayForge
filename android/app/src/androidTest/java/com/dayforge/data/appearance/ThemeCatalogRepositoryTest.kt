@@ -72,6 +72,26 @@ class ThemeCatalogRepositoryTest {
     private fun code(expected: String, action: () -> Unit) =
         assertEquals(expected, assertThrows(ThemeCatalogException::class.java) { action() }.code)
 
+    @Test fun persistentRecoveryPointerBlocksAllThemeMutationsWithoutResettingChoiceOrFiles() = runBlocking<Unit> {
+        initialize(); val custom = custom(); repository().install(custom)
+        val selected = selection().read(); val catalog = repository().state()!!
+        val bytes = root.listFiles()!!.associate { it.name to it.readBytes().toList() }
+        preferences.edit { it[com.dayforge.data.local.ReplicaSwitchGuard.POINTER] = "missing-stage" }
+        val data = preferences.data.first()
+        for (mutation in listOf<suspend () -> Unit>(
+            { repository().initialize() }, { repository().install(custom(2)) },
+            { repository().delete(custom.ref(), catalog.revision) }, { repository().recover() },
+            { selection().select(selected!!.revision, defaults().copy(mode = DeviceThemeMode.DARK)) })) {
+            val error = runCatching { mutation() }.exceptionOrNull()
+            assertEquals(com.dayforge.data.local.ReplicaSwitchGuard.PENDING, error?.message)
+        }
+        assertEquals(data, preferences.data.first()); assertEquals(selected, selection().load()!!.saved)
+        assertEquals(catalog, repository().listing().state)
+        assertArrayEquals(custom.exportBytes(), repository().export(custom.ref()).exportBytes())
+        assertEquals(bytes, root.listFiles()!!.associate { it.name to it.readBytes().toList() })
+        reopen(); assertEquals(selected, selection().read()); assertEquals(catalog, repository().state())
+    }
+
     @Test fun initializeAndImportAreDurableWithoutChangingSelectionOrUnrelatedPreferences() = runBlocking<Unit> {
         preferences.edit { it[unrelated] = "keep" }
         assertNull(repository().state()); assertNull(selection().read())

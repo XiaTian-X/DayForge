@@ -161,6 +161,25 @@ class NextReplicaArchiveTest : NextCoreRequestFixture() {
         assertEquals(scope, access()); assertEquals(calls, peer.requests.size); assertEquals(iconsBefore, icons.recoveryMetadata(icons.capture()))
     }
 
+    @Test fun frozenParticipantsStillAllowActualCompleteOldInputAndPrivateArchiveColdReadback() = runBlocking<Unit> {
+        initialize(); completeMaterial(); initializeThemes()
+        val stage = NextReplicaStageStore(db, tokens, sessions).begin(tokens.replicaStageFixture(storageHash()))
+        NextReplicaWriteFence(db).acquire(stage.fence)
+        val frozen = NextReplicaStageStore(db, tokens, sessions).recordFrozen(stage)
+        val expected = access(); val before = storageHash(); val data = dataStore.data.first(); val calls = peer.requests.size
+        inspect { input, _ ->
+            assertFalse(input.hasReview); assertEquals(1, input.storage.contents.getValue("tables").jsonObject
+                .getValue("next_replica_fence").jsonArray.size)
+            assertTrue(input.iconFiles.files.isNotEmpty()); assertTrue(input.themes.files.isNotEmpty())
+        }
+        val receipt = service().create(expected, before)
+        service(ReplicaPrivateArchiveStore(directory)).verify(expected, receipt)
+        assertEquals(before, storageHash()); assertEquals(data, dataStore.data.first()); assertEquals(calls, peer.requests.size)
+        assertEquals(frozen, tokens.activeReplicaStage()); assertFalse(receipt.activationAuthorized)
+        NextReplicaStageStore(db, tokens, sessions).cancel(frozen)
+        assertNotNull(tokens.localCoreWriteAccess()); assertEquals(expected, access())
+    }
+
     @Test fun completeEmptyMaterialInputKeepsAllBusinessAndWhitelistWithoutInitializingAppearance() = runBlocking<Unit> {
         initialize()
         lateinit var expired: ReplicaArchiveFileAccess

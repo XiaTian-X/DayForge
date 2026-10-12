@@ -104,10 +104,18 @@ internal class AccountIconRepository(
         check(context, writing)
     }
 
+    /** Includes local download/install/cleanup, even on a device without declaration permission. */
+    suspend fun reauthorizeOrdinary(context: AccountIconContext, writing: Boolean = false) = sessions.exclusive {
+        tokens.requireOrdinaryReplicaAccess()
+        check(context, writing)
+    }
+
     /** Short in-memory publication only. Never perform image I/O/rendering or suspend in block. */
     suspend fun <T> authorized(context: AccountIconContext, block: () -> T): T = sessions.exclusive {
+        tokens.requireOrdinaryReplicaAccess()
         check(context)
         val result = block()
+        tokens.requireOrdinaryReplicaAccess()
         check(context)
         result
     }
@@ -207,10 +215,12 @@ internal class AccountIconRepository(
     /** Short queue transaction only: no I/O/network, nested account locking or preference writes. */
     internal suspend fun <T> transferTransaction(context: AccountIconContext,
         block: suspend (AccountIconTransferMetadata) -> T): T = scoped(context) {
+        tokens.requireOrdinaryReplicaAccess()
         val before = catalog(context.namespace)
         val result = block(AccountIconTransferMetadata(
             Collections.unmodifiableMap(before.assets), Collections.unmodifiableMap(before.packs)))
         check(catalog(context.namespace) == before) { "ICON_TRANSFER_CHANGED_METADATA" }
+        tokens.requireOrdinaryReplicaAccess()
         check(context)
         result
     }
@@ -222,6 +232,7 @@ internal class AccountIconRepository(
         var transitioning = false
         try {
             return scoped(context) {
+                tokens.requireOrdinaryReplicaAccess()
                 val ns = context.namespace
                 val before = catalog(ns)
                 check(before.selection.generation == expectedGeneration) { "ICON_SELECTION_CHANGED" }
@@ -257,6 +268,7 @@ internal class AccountIconRepository(
     /** Short publication check; never render or do file I/O in block. */
     suspend fun <T> withSelection(context: AccountIconContext, expected: AccountIconSelection, block: () -> T): T =
         scoped(context) {
+            tokens.requireOrdinaryReplicaAccess()
             check(catalog(context.namespace).selection == expected) { "ICON_SELECTION_CHANGED" }
             block()
         }
@@ -323,6 +335,7 @@ internal class AccountIconRepository(
 
     private suspend fun ready(context: AccountIconContext, assetId: String, expected: IconReservation,
         profile: String, writing: Boolean) = scoped(context, writing) {
+            tokens.requireOrdinaryReplicaAccess()
             val ns = context.namespace
             val before = catalog(ns)
             val current = installation(before, assetId, expected.blob.sha256)
@@ -384,6 +397,7 @@ internal class AccountIconRepository(
     private suspend fun check(context: AccountIconContext, writing: Boolean = false) {
         currentCoroutineContext().ensureActive()
         check(tokens.localIconAccess() == context.access) { "ICON_SESSION_CHANGED" }
+        if (writing) tokens.requireOrdinaryReplicaAccess()
         check(!writing || context.access.canDeclare) { "ICON_DECLARATION_DENIED" }
     }
 
@@ -397,6 +411,7 @@ internal class AccountIconRepository(
     private suspend fun <T> declare(context: AccountIconContext, assets: List<IconAsset>, packs: List<IconPack>, writing: Boolean,
         block: suspend (AccountIconTransferMetadata) -> T): T =
         sessions.exclusive {
+            tokens.requireOrdinaryReplicaAccess()
             check(context, writing)
             val result = database.withTransaction {
                 val ns = context.namespace

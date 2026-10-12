@@ -14,6 +14,7 @@ import com.dayforge.data.appearance.ConfigFileFixture
 import com.dayforge.domain.model.IconReference
 import com.dayforge.domain.model.ObjectAppearance
 import com.dayforge.data.local.entity.NextSyncStateEntity
+import com.dayforge.data.local.replicaStageFixture
 import com.dayforge.domain.service.SyncManager
 import com.dayforge.sync.AutoSyncWorker
 import io.mockk.*
@@ -71,6 +72,16 @@ class BusinessSyncRepositoryTest : NextObjectEditorFixture() {
             }
             else -> error("Unexpected production route: ${input.target}")
         }
+    }
+
+    @Test fun persistentStageBlocksManualRetryAndDeviceChangesBeforeDiscoveryOrLegacyFallback() = runBlocking<Unit> {
+        register(); val (http, server) = channel { error("No ordinary discovery or sync") }; val service = driver(http)
+        val stage = tokens.replicaStageFixture(); tokens.persistReplicaStage(null, stage)
+        for (work in listOf<suspend () -> Unit>({ service.sync() }, { service.retrySync() },
+            { service.makeCurrentDevicePrimary() }, { service.setCurrentDeviceStructuralEditing(true) }))
+            assertEquals(com.dayforge.data.local.ReplicaSwitchGuard.PENDING, rejected(work).message)
+        assertTrue(server.requests.isEmpty()); coVerify(exactly = 0) { legacy.syncForAuthentication(any(), any(), any()) }
+        assertEquals(stage, tokens.activeReplicaStage())
     }
 
     @Test fun manualAndWorkerUseSameRealRegistrationAndRoundsChainAcrossColdReopen() = runBlocking<Unit> {

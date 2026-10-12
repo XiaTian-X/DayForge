@@ -75,7 +75,7 @@ class WidgetDisplayPublisher @Inject constructor(
         val scope = sessions.exclusive {
             val captured = stamp
             val access = tokens.localCoreWriteAccess()
-            if (blocked || captured !== stamp) null else Scope(captured, access)
+            if (blocked || captured !== stamp || tokens.replicaSwitchPending()) null else Scope(captured, access)
         } ?: return null
         return Publication({ display -> publish(scope, display) }, { isCurrent(scope) }, { habit ->
             if (habit.appearance != null) null else scope.access?.let { LegacyWidgetRestartClaim.displayed(habit, it) }
@@ -91,6 +91,6 @@ class WidgetDisplayPublisher @Inject constructor(
 
     private suspend fun isCurrent(scope: Scope): Boolean {
         val access = tokens.localCoreWriteAccess()
-        return !blocked && scope.stamp === stamp && access == scope.access
+        return !blocked && !tokens.replicaSwitchPending() && scope.stamp === stamp && access == scope.access
     }
 }

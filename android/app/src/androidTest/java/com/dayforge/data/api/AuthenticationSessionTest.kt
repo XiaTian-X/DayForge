@@ -8,6 +8,7 @@ import com.dayforge.data.local.AuthenticationSession
 import com.dayforge.data.local.AuthenticationSnapshot
 import com.dayforge.data.local.TokenManager
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -18,12 +19,35 @@ import okhttp3.Request
 import okhttp3.Response
 import org.junit.Assert.*
 import org.junit.Test
+import org.junit.Before
 
 @RunWith(AndroidJUnit4::class)
 class AuthenticationSessionTest {
     private val session = AuthenticationSession("account-a", "login-1")
     private val manager = mockk<TokenManager>()
     private val authenticator = TokenAuthenticator(manager, mockk(), mockk())
+
+    @Before fun ordinaryReplicaFixture() {
+        coEvery { manager.replicaSwitchPending() } returns false
+    }
+
+    @Test fun recovery_fence_never_refreshes_or_reuses_a_token_for_an_old_request() {
+        coEvery { manager.replicaSwitchPending() } returns true
+        assertNull(authenticator.authenticate(null, unauthorized(request(session))))
+        coVerify(exactly = 0) { manager.authenticationSnapshot() }
+    }
+
+    @Test fun recovery_fence_rejects_current_and_untagged_sync_before_any_transmission() {
+        coEvery { manager.replicaSwitchPending() } returns true
+        for (scope in listOf(session, null)) {
+            val chain = mockk<Interceptor.Chain>()
+            every { chain.request() } returns request(scope)
+            val error = assertThrows(IOException::class.java) { AuthInterceptor(manager).intercept(chain) }
+            assertEquals(com.dayforge.data.local.ReplicaSwitchGuard.PENDING, error.message)
+            verify(exactly = 0) { chain.proceed(any()) }
+        }
+        coVerify(exactly = 0) { manager.authenticationSnapshot() }
+    }
 
     @Test
     fun old_request_cannot_retry_under_another_account_or_new_login() {

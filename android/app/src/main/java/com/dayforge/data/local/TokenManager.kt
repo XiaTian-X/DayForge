@@ -102,7 +102,8 @@ class TokenManager @Inject constructor(
         private val DEVICE_CAPABILITIES_DEVICE_KEY = stringPreferencesKey("sync_device_capabilities_device")
         private val ICON_IDENTITY_KEYS = listOf(USER_ID_KEY, AUTH_SESSION_KEY, SYNC_ACCOUNT_ID_KEY,
             SYNC_DEVICE_ID_KEY, SERVER_INSTANCE_ID_KEY, SYNC_EPOCH_KEY, DEVICE_CAPABILITIES_KEY,
-            DEVICE_CAPABILITIES_KNOWN_KEY, DEVICE_CAPABILITY_REVISION_KEY, DEVICE_CAPABILITIES_DEVICE_KEY)
+            DEVICE_CAPABILITIES_KNOWN_KEY, DEVICE_CAPABILITY_REVISION_KEY, DEVICE_CAPABILITIES_DEVICE_KEY,
+            ReplicaSwitchGuard.POINTER)
     }
 
     internal fun registerIconCache(cache: AccountIconMemory.Cache) = iconMemory.register(cache)
@@ -181,7 +182,8 @@ class TokenManager @Inject constructor(
     }
     val canEditStructure: Flow<Boolean> = dataStore.data.map { preferences ->
         val known = preferences[DEVICE_CAPABILITIES_KNOWN_KEY] ?: false
-        !known || "structure.write" in (preferences[DEVICE_CAPABILITIES_KEY] ?: emptySet())
+        !ReplicaSwitchGuard.blocked(preferences) &&
+            (!known || "structure.write" in (preferences[DEVICE_CAPABILITIES_KEY] ?: emptySet()))
     }
 
     /**
@@ -218,6 +220,8 @@ class TokenManager @Inject constructor(
         bindLocalOwner: Boolean
     ) {
         editPreferences { preferences ->
+            if (ReplicaSwitchGuard.blocked(preferences))
+                check(preferences[SYNC_ACCOUNT_ID_KEY] == userId) { ReplicaSwitchGuard.PENDING }
             if (bindLocalOwner) prepareSyncAccount(preferences, userId)
             preferences[AUTH_SESSION_KEY] = UUID.randomUUID().toString()
             preferences[ACCESS_TOKEN_KEY] = tokenCipher.encrypt(accessToken)
@@ -250,8 +254,8 @@ class TokenManager @Inject constructor(
         if ((server == null) != (epoch == null)) return null
         return LocalFactAccess(
             LocalDataSession(authentication, server, epoch),
-            preferences[DEVICE_CAPABILITIES_KNOWN_KEY] != true ||
-                "facts.append" in (preferences[DEVICE_CAPABILITIES_KEY] ?: emptySet())
+            !ReplicaSwitchGuard.blocked(preferences) && (preferences[DEVICE_CAPABILITIES_KNOWN_KEY] != true ||
+                "facts.append" in (preferences[DEVICE_CAPABILITIES_KEY] ?: emptySet()))
         )
     }
 
@@ -261,7 +265,77 @@ class TokenManager @Inject constructor(
         coreWriteAccess(dataStore.data.first())
     }
 
+    /** Read-only recovery proof, never a ticket for an ordinary writer. */
+    internal suspend fun replicaObservationCoreAccess(): LocalCoreWriteAccess? = withContext(Dispatchers.IO) {
+        observationCoreAccess(dataStore.data.first())
+    }
+
+    internal suspend fun replicaSwitchPending(): Boolean = ReplicaSwitchGuard.blocked(dataStore.data.first())
+    internal suspend fun requireOrdinaryReplicaAccess() = ReplicaSwitchGuard.requireOpen(dataStore)
+
+    internal suspend fun activeReplicaStage(): ReplicaSwitchStage? {
+        val values = dataStore.data.first()
+        if (!ReplicaSwitchGuard.blocked(values)) return null
+        val id = requireNotNull(values[ReplicaSwitchGuard.POINTER]) { "SYNC_REPLICA_STAGE_MISSING" }
+        val stage = ReplicaSwitchStage.decode(requireNotNull(values[ReplicaSwitchStage.key(id)]) { "SYNC_REPLICA_STAGE_MISSING" })
+        check(stage.recoveryId == id && stage.phase != ReplicaSwitchPhase.ABORTED) { "SYNC_REPLICA_STAGE_CHANGED" }
+        return stage
+    }
+
+    internal suspend fun replicaStage(id: String): ReplicaSwitchStage? {
+        val raw = dataStore.data.first()[ReplicaSwitchStage.key(id)] ?: return null
+        return ReplicaSwitchStage.decode(raw).also { check(it.recoveryId == id) { "SYNC_REPLICA_STAGE_CHANGED" } }
+    }
+
+    /** Specialized durable CAS, not a general preferences writer or ordinary-write override.
+     * Only the pre-COMMIT participant calls this after checking the actual SQL phase.
+     * Pointer and row commit together and join persistence before publication reopens.
+     */
+    internal suspend fun persistReplicaStage(expected: ReplicaSwitchStage?, next: ReplicaSwitchStage): ReplicaSwitchStage {
+        val raw = ReplicaSwitchStage.encode(next)
+        val frozen = ReplicaSwitchStage.decode(raw)
+        editPreferences { values ->
+            val key = ReplicaSwitchStage.key(frozen.recoveryId)
+            if (expected == null) {
+                ReplicaSwitchGuard.requireOpen(values)
+                check(frozen.phase == ReplicaSwitchPhase.FREEZING && values[key] == null) { "SYNC_REPLICA_STAGE_CHANGED" }
+                check(syncAccess(values) == frozen.original && values[INSTALLATION_ID_KEY] == frozen.installationId) {
+                    "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED"
+                }
+            } else {
+                check(values[ReplicaSwitchGuard.POINTER] == expected.recoveryId &&
+                    values[key] == ReplicaSwitchStage.encode(expected) &&
+                    frozen == expected.transition(frozen.phase)) { "SYNC_REPLICA_STAGE_CHANGED" }
+                val actual = syncAccess(values)
+                val authenticated = actual?.let { frozen.original.copy(session = frozen.original.session.copy(
+                    authentication = it.session.authentication)) }
+                check(values[INSTALLATION_ID_KEY] == frozen.installationId &&
+                    actual != null && actual.session.authentication.userId == frozen.accountId && actual == authenticated &&
+                    (frozen.phase == ReplicaSwitchPhase.ABORTED || actual == frozen.original)) {
+                    "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED"
+                }
+            }
+            var bytes = raw.toByteArray(Charsets.UTF_8).size.toLong()
+            values.asMap().forEach { (other, value) ->
+                if (other.name.startsWith(ReplicaSwitchStage.KEY_PREFIX) && other.name != key.name) {
+                    check(value is String) { "SYNC_REPLICA_STAGE_INVALID" }
+                    bytes += value.toByteArray(Charsets.UTF_8).size
+                }
+            }
+            check(bytes <= ReplicaSwitchStage.HISTORY_LIMIT) { "SYNC_REPLICA_STAGE_HISTORY_LIMIT" }
+            values[key] = raw
+            if (frozen.phase == ReplicaSwitchPhase.ABORTED) values.remove(ReplicaSwitchGuard.POINTER)
+            else values[ReplicaSwitchGuard.POINTER] = frozen.recoveryId
+        }
+        return frozen
+    }
+
     private fun coreWriteAccess(preferences: Preferences): LocalCoreWriteAccess? {
+        if (ReplicaSwitchGuard.blocked(preferences)) return null
+        return observationCoreAccess(preferences)
+    }
+
+    private fun observationCoreAccess(preferences: Preferences): LocalCoreWriteAccess? {
         val authentication = snapshot(preferences)?.session ?: return null
         if (preferences[SYNC_ACCOUNT_ID_KEY] != authentication.userId ||
             !com.dayforge.domain.model.isContractUuid(authentication.userId) ||
@@ -315,7 +389,9 @@ class TokenManager @Inject constructor(
     }
 
     /** Canonical non-secret lifecycle signal; Keystore work never runs on Main. */
-    internal val iconAccessChanges: Flow<LocalIconAccess?> = dataStore.data.map(::iconAccess)
+    internal val iconAccessChanges: Flow<LocalIconAccess?> = dataStore.data.map {
+        if (ReplicaSwitchGuard.blocked(it)) null else iconAccess(it)
+    }
         .distinctUntilChanged().flowOn(Dispatchers.IO)
 
     /** Bind credentials and all material permissions to ONE actual persisted snapshot. */
@@ -442,7 +518,10 @@ class TokenManager @Inject constructor(
     suspend fun getOrCreateInstallationId(): String {
         // Concurrent callers must return the same committed installation, not two UUIDs.
         val saved = editPreferences { preferences ->
-            if (preferences[INSTALLATION_ID_KEY] == null) preferences[INSTALLATION_ID_KEY] = UUID.randomUUID().toString()
+            if (preferences[INSTALLATION_ID_KEY] == null) {
+                ReplicaSwitchGuard.requireOpen(preferences)
+                preferences[INSTALLATION_ID_KEY] = UUID.randomUUID().toString()
+            }
         }
         return requireNotNull(saved[INSTALLATION_ID_KEY])
     }
@@ -483,6 +562,7 @@ class TokenManager @Inject constructor(
 
     private fun prepareSyncAccount(preferences: MutablePreferences, accountId: String) {
         if (preferences[SYNC_ACCOUNT_ID_KEY] != accountId) {
+            ReplicaSwitchGuard.requireOpen(preferences)
             preferences[SYNC_ACCOUNT_ID_KEY] = accountId
             preferences.remove(SYNC_DEVICE_ID_KEY)
             preferences.remove(SYNC_CURSOR_KEY)
@@ -494,7 +574,7 @@ class TokenManager @Inject constructor(
     }
 
     suspend fun saveSyncDeviceId(deviceId: String) {
-        editPreferences { it[SYNC_DEVICE_ID_KEY] = deviceId }
+        editPreferences { ReplicaSwitchGuard.requireOpen(it); it[SYNC_DEVICE_ID_KEY] = deviceId }
     }
 
     suspend fun saveDeviceRegistration(
@@ -504,6 +584,7 @@ class TokenManager @Inject constructor(
         capabilityRevision: Int
     ) {
         editPreferences { preferences ->
+            ReplicaSwitchGuard.requireOpen(preferences)
             preferences[SYNC_DEVICE_ID_KEY] = deviceId
             if (capabilities.isNotEmpty()) {
                 preferences[DEVICE_CAPABILITIES_KEY] = capabilities
@@ -521,6 +602,7 @@ class TokenManager @Inject constructor(
     /** Fail closed after the server rejects a structural operation for this device. */
     suspend fun markStructuralEditingDenied() {
         editPreferences { preferences ->
+            ReplicaSwitchGuard.requireOpen(preferences)
             val capabilities = (preferences[DEVICE_CAPABILITIES_KEY] ?: emptySet()).toMutableSet()
             capabilities.remove("structure.write")
             preferences[DEVICE_CAPABILITIES_KEY] = capabilities
@@ -531,6 +613,7 @@ class TokenManager @Inject constructor(
 
     suspend fun saveServerIdentity(serverInstanceId: String, syncEpoch: String) {
         editPreferences {
+            ReplicaSwitchGuard.requireOpen(it)
             it[SERVER_INSTANCE_ID_KEY] = serverInstanceId
             it[SYNC_EPOCH_KEY] = syncEpoch
         }
@@ -539,6 +622,7 @@ class TokenManager @Inject constructor(
     /** Start a clean replica after the same server reports a new database epoch. */
     suspend fun resetReplicaForEpoch(serverInstanceId: String, syncEpoch: String) {
         editPreferences { preferences ->
+            ReplicaSwitchGuard.requireOpen(preferences)
             preferences[SERVER_INSTANCE_ID_KEY] = serverInstanceId
             preferences[SYNC_EPOCH_KEY] = syncEpoch
             preferences.remove(SYNC_DEVICE_ID_KEY)
@@ -550,6 +634,7 @@ class TokenManager @Inject constructor(
 
     suspend fun saveSyncCursor(cursor: Long, bootstrapped: Boolean = true) {
         editPreferences {
+            ReplicaSwitchGuard.requireOpen(it)
             it[SYNC_CURSOR_KEY] = cursor.toString()
             if (bootstrapped) it[SYNC_BOOTSTRAPPED_KEY] = true
         }
@@ -557,7 +642,7 @@ class TokenManager @Inject constructor(
 
     /** Force the next safe sync to rebuild the local cache from server state. */
     suspend fun requireSyncBootstrap() {
-        editPreferences { it[SYNC_BOOTSTRAPPED_KEY] = false }
+        editPreferences { ReplicaSwitchGuard.requireOpen(it); it[SYNC_BOOTSTRAPPED_KEY] = false }
     }
 
     /** Clear only credentials after refresh failure, retaining local-data ownership. */
@@ -575,6 +660,7 @@ class TokenManager @Inject constructor(
     /** Reset synchronization metadata after the corresponding local database is cleared. */
     suspend fun clearSyncState() {
         editPreferences { preferences ->
+            ReplicaSwitchGuard.requireOpen(preferences)
             preferences.remove(SYNC_ACCOUNT_ID_KEY)
             preferences.remove(SYNC_DEVICE_ID_KEY)
             preferences.remove(SYNC_CURSOR_KEY)
@@ -600,6 +686,7 @@ class TokenManager @Inject constructor(
      */
     suspend fun clearTokens() {
         editPreferences { preferences ->
+            ReplicaSwitchGuard.requireOpen(preferences)
             preferences.remove(AUTH_SESSION_KEY)
             preferences.remove(ACCESS_TOKEN_KEY)
             preferences.remove(REFRESH_TOKEN_KEY)

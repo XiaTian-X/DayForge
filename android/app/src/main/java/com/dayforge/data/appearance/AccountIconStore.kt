@@ -52,20 +52,22 @@ internal class AccountIconStore(private val metadata: AccountIconRepository, pri
         require(content.size in 1..2_097_152)
         val frozen = content.copyOf()
         // Authorize before creating paths; recheck after waiting for the process file lease.
+        metadata.reauthorizeOrdinary(context, writing)
         metadata.installation(context, assetId, hash, writing)
-        files.exclusive(context.namespace, create = true, beforeAccess = { metadata.reauthorize(context, writing) }) { directory ->
+        files.exclusive(context.namespace, create = true, beforeAccess = { metadata.reauthorizeOrdinary(context, writing) }) { directory ->
             val before = metadata.installation(context, assetId, hash, writing)
             val target = requireNotNull(directory)
             // A ready receipt cannot authorize silently rebuilding a missing/corrupted final file.
             before.validationProfile?.let { target.files.read(before.reservation.blob, it) }
             publishReady(context, assetId, before, frozen, target, writing)
         }
-        metadata.reauthorize(context, writing)
+        metadata.reauthorizeOrdinary(context, writing)
     }
 
     /** Caller holds the namespace lease; both single and pack installs use the same publication proof. */
     private suspend fun publishReady(context: AccountIconContext, assetId: String, before: IconInstallation,
         frozen: ByteArray, target: AccountIconFiles.Directory, writing: Boolean = true) {
+        metadata.reauthorizeOrdinary(context, writing)
         target.capacity(frozen.size, before.reservation.blob.sha256)
         val profile = target.files.publish(before.reservation.operationId, frozen, before.reservation.blob)
         target.files.read(before.reservation.blob, profile)
@@ -161,8 +163,9 @@ internal class AccountIconStore(private val metadata: AccountIconRepository, pri
     internal suspend fun recoverDownloads(context: AccountIconContext): IconFileRecovery = recover(context, writing = false)
 
     private suspend fun recover(context: AccountIconContext, writing: Boolean): IconFileRecovery {
+        metadata.reauthorizeOrdinary(context, writing)
         metadata.installations(context, writing)
-        val result = files.exclusive(context.namespace, create = false, beforeAccess = { metadata.reauthorize(context, writing) }) { directory ->
+        val result = files.exclusive(context.namespace, create = false, beforeAccess = { metadata.reauthorizeOrdinary(context, writing) }) { directory ->
             val entries = metadata.installations(context, writing)
             val names = directory?.inventory().orEmpty()
             // Validate the entire known final-file set before any cleanup, including pending publications.
@@ -178,7 +181,7 @@ internal class AccountIconStore(private val metadata: AccountIconRepository, pri
             for (entry in entries) {
                 currentCoroutineContext().ensureActive()
                 // Reauthorize every exact cleanup; no account lock spans blocking image I/O.
-                metadata.reauthorize(context, writing)
+                metadata.reauthorizeOrdinary(context, writing)
                 directory?.files?.cleanupTemporary(entry.reservation.operationId)
             }
             check(metadata.installations(context, writing) == entries) { "ICON_INSTALL_CHANGED" }
@@ -186,7 +189,7 @@ internal class AccountIconStore(private val metadata: AccountIconRepository, pri
             IconFileRecovery(entries.count { it.validationProfile != null }, entries.count { it.validationProfile == null },
                 Collections.unmodifiableList((names - known).sorted()))
         }
-        metadata.reauthorize(context, writing)
+        metadata.reauthorizeOrdinary(context, writing)
         return result
     }
 }

@@ -43,7 +43,10 @@ class BusinessSyncRepository @Inject internal constructor(
     internal suspend fun prepareRecoveryConfirmation(preview: NextRecoveryDependencyPreview,
         selected: Set<NextRecoveryKey>) = mutex.withLock { next.prepareRecoveryConfirmation(preview, selected) }
 
-    internal suspend fun confirmRecovery(ticket: NextRecoveryConfirmation) = mutex.withLock { next.confirmRecovery(ticket) }
+    internal suspend fun confirmRecovery(ticket: NextRecoveryConfirmation) = mutex.withLock {
+        tokens.requireOrdinaryReplicaAccess()
+        next.confirmRecovery(ticket)
+    }
 
     /** Existing settings actions share sync serialization, but never hold the account lock over v5 HTTP. */
     suspend fun makeCurrentDevicePrimary(): DeviceResponse = changeDevice(null)
@@ -51,6 +54,7 @@ class BusinessSyncRepository @Inject internal constructor(
     suspend fun setCurrentDeviceStructuralEditing(enabled: Boolean): DeviceResponse = changeDevice(enabled)
 
     private suspend fun changeDevice(editing: Boolean?): DeviceResponse = mutex.withLock {
+        tokens.requireOrdinaryReplicaAccess()
         val (original, installation) = sessions.exclusive {
             Triple(tokens.authenticationSnapshot()?.session, tokens.localCoreWriteAccess(), tokens.localSyncAccess()) to
                 tokens.registeredInstallationId()
@@ -101,6 +105,7 @@ class BusinessSyncRepository @Inject internal constructor(
 
     private suspend fun synchronize(progress: (SyncProgress) -> Unit, afterSync: (suspend () -> Unit)?,
         retryRejected: Boolean): Unit = mutex.withLock {
+        tokens.requireOrdinaryReplicaAccess()
         val (original, originalCore, originalSync) = sessions.exclusive {
             Triple(tokens.authenticationSnapshot()?.session, tokens.localCoreWriteAccess(), tokens.localSyncAccess())
         }

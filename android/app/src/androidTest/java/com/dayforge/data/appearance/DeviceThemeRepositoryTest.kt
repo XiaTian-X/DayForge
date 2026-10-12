@@ -56,6 +56,27 @@ class DeviceThemeRepositoryTest {
         assertTrue(parent.deleteRecursively())
     }
 
+    @Test fun coldFrozenStartLoadsOnlySavedChoiceWithoutRecoveringCatalogOrMutatingFiles() = runBlocking<Unit> {
+        val initial = repository().initialize()
+        val changed = repository().select(initial.saved.revision, initial.saved.selection.copy(mode = DeviceThemeMode.DARK))
+        preferences.edit { it[com.dayforge.data.local.ReplicaSwitchGuard.POINTER] = "missing-stage" }
+        val before = preferences.data.first()
+        val root = File(parent, "theme-definitions-v1")
+        val bytes = root.listFiles()!!.associate { it.name to it.readBytes().toList() }
+        reopen(); assertEquals(changed.saved, repository().initialize().saved)
+        val state = repository().observe().first { it !is DeviceThemeLoadState.Loading }
+        assertEquals(changed.saved, (state as DeviceThemeLoadState.Ready).theme.saved)
+        assertEquals(before, preferences.data.first()); assertEquals(bytes, root.listFiles()!!.associate { it.name to it.readBytes().toList() })
+    }
+
+    @Test fun frozenUninitializedChoiceDoesNotCreateFilesOrManufactureDefaultPreferences() = runBlocking<Unit> {
+        preferences.edit { it[com.dayforge.data.local.ReplicaSwitchGuard.POINTER] = "missing-stage" }
+        val before = preferences.data.first()
+        assertNotNull(runCatching { repository().initialize() }.exceptionOrNull())
+        assertTrue(repository().observe().first { it !is DeviceThemeLoadState.Loading } is DeviceThemeLoadState.Failed)
+        assertEquals(before, preferences.data.first()); assertFalse(File(parent, "theme-definitions-v1").exists())
+    }
+
     @Test fun concurrentColdStartsInstallAndSelectOnceWithoutChangingLegacyOrAccountPreferences() = runBlocking<Unit> {
         val oldMode = stringPreferencesKey("theme_mode")
         val account = stringPreferencesKey("synthetic_account_setting")
