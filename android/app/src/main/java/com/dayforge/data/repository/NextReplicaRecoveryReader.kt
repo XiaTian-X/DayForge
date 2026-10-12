@@ -39,6 +39,12 @@ internal class NextReplicaRecoveryRequired(val assessment: ReplicaRecoveryAssess
 internal class NextReplicaRecoveryReader(private val database: HabitDatabase, private val tokens: TokenManager,
     private val sessions: AccountSessionCoordinator) {
     suspend fun read(expected: LocalSyncAccess, identity: ServerIdentityResponse): ReplicaRecoveryAssessment = sessions.exclusive {
+        database.withTransaction { readInTransaction(expected, identity) }
+    }
+
+    /** Caller owns the account lock and Room snapshot; not a public activation entry. */
+    internal suspend fun readInTransaction(expected: LocalSyncAccess, identity: ServerIdentityResponse): ReplicaRecoveryAssessment {
+        check(database.inTransaction())
         require(identity.protocolVersion == 5 && isContractUuid(identity.serverInstanceId) && isContractUuid(identity.syncEpoch))
         Instant.parse(identity.serverTime)
         require(identity.serverInstanceId == expected.session.serverInstanceId && identity.syncEpoch != expected.session.syncEpoch) {
@@ -47,7 +53,7 @@ internal class NextReplicaRecoveryReader(private val database: HabitDatabase, pr
         check(tokens.localSyncAccess() == expected && tokens.syncAuthenticationSnapshot(expected) != null) {
             "SYNC_ACCOUNT_CHANGED"
         }
-        database.withTransaction {
+        return run {
             val sql = database.openHelper.writableDatabase
             require(sql.version == 17) { "SYNC_REPLICA_RECOVERY_SCHEMA_REVIEW_REQUIRED" }
             val tables = sql.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").use { c ->

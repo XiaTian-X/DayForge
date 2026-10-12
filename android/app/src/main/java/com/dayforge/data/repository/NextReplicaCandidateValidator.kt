@@ -27,6 +27,7 @@ internal class ValidatedReplicaCandidate internal constructor(
     val newEpoch: String,
     val cursor: Long,
     val wireHash: String,
+    val deviceProof: RecoveryDeviceProof,
     records: Map<ReplicaRecordKey, JsonElement>,
     val hasUnfinishedTimer: Boolean
 ) {
@@ -121,11 +122,22 @@ internal class NextReplicaCandidateValidator @Inject constructor(
                 }
                 snapshot.changes.forEach { add(it.entityType, it.entityUuid, it.payload) }
                 snapshot.oneTimeCheckpoints.forEach { add("one_time_checkpoint", it.activityUuid, json.encodeToJsonElement(it)) }
-                snapshot.checkpoints.forEach { add("challenge_checkpoint", it.head.activityUuid, json.encodeToJsonElement(it)) }
+                snapshot.checkpoints.forEach { checkpoint ->
+                    add("challenge_checkpoint", checkpoint.head.activityUuid,
+                        json.encodeToJsonElement(checkpoint.copy(records = checkpoint.records.sortedBy { it.head.generation })))
+                    checkpoint.records.filter { it.head.generation > 0 }.forEach { record ->
+                        val key = ReplicaRecordKey("challenge_round", record.head.roundUuid)
+                        val value = json.encodeToJsonElement(record)
+                        require(records[key]?.let { it == value } != false)
+                        records[key] = value
+                    }
+                }
                 snapshot.births.forEach { add("challenge_birth.${it.entityType}", it.entityUuid, json.encodeToJsonElement(it)) }
                 frozen.activeTimer?.let { add("active_timer", it.sessionId, json.encodeToJsonElement(it)) }
                 ValidatedReplicaCandidate(original.copy(capabilities = original.capabilities.toSet()), frozen.syncEpoch,
-                    snapshot.nextCursor, syncPayloadHash(wire), records, frozen.activeTimer != null)
+                    snapshot.nextCursor, syncPayloadHash(wire),
+                    proof.copy(capabilities = Collections.unmodifiableList(proof.capabilities.toList())),
+                    records, frozen.activeTimer != null)
             } catch (error: Throwable) {
                 failure = error
                 throw error
