@@ -48,6 +48,7 @@ class NextTimerWriter @Inject constructor(
     }.distinctUntilChanged()
 
     suspend fun capture(habitId: Long, expectedHabit: HabitEntity? = null): TimerActionAuthority? = sessions.exclusive {
+        if (!replica.isOpenWhileAccountLocked()) return@exclusive null
         database.withTransaction {
             val habit = database.habitDao().getVisibleHabitById(habitId) ?: return@withTransaction null
             if (habit.appearance == null) return@withTransaction null
@@ -243,6 +244,7 @@ class NextTimerWriter @Inject constructor(
     }
 
     internal suspend fun policy(habitId: Long, sessionUuid: String): TimerStartPolicy? = sessions.exclusive {
+        if (!replica.isOpenWhileAccountLocked()) return@exclusive null
         database.withTransaction {
             val habit = database.habitDao().getHabitById(habitId) ?: return@withTransaction null
             if (habit.appearance == null) return@withTransaction null
@@ -312,6 +314,7 @@ class NextTimerWriter @Inject constructor(
     }
 
     private suspend fun validate(habitId: Long, ticket: TimerActionAuthority?) {
+        check(replica.isOpenWhileAccountLocked()) { com.dayforge.data.local.ReplicaSwitchGuard.PENDING }
         val habit = requireNotNull(database.habitDao().getVisibleHabitById(habitId)) { "TIMER_ACTIVITY_NOT_FOUND" }
         if (habit.appearance == null) { require(ticket == null); NextChallengeStore(database).requirePlainInTransaction(); return }
         val bound = requireNotNull(ticket) { "TIMER_ACTION_TICKET_REQUIRED" }

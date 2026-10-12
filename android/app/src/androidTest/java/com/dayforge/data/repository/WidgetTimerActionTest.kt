@@ -3,6 +3,7 @@ package com.dayforge.data.repository
 import android.content.Intent
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.dayforge.domain.model.TimerStartGuard
+import com.dayforge.data.local.replicaStageFixture
 import com.dayforge.widget.timer.WidgetTimerAction
 import com.dayforge.widget.timer.WidgetTimerActionActivity
 import kotlinx.coroutines.runBlocking
@@ -15,6 +16,30 @@ import org.junit.runner.RunWith
 class WidgetTimerActionTest : NextCoreRequestFixture() {
     private fun writer() = NextTimerWriter(db, tokens, sessions)
     private suspend fun claim() = WidgetTimerAction.from(requireNotNull(writer().widgetSnapshot(timerHabit)))
+
+    @Test fun orphanSqlBlocksOriginalActionSwitchLegacyDialogAndAuthorityCaptureAcrossColdReopen() = runBlocking<Unit> {
+        register(); val original = claim()
+        val legacy = timerHabit.copy(id = 0, uuid = id(60), name = "Legacy dialog", appearance = null,
+            planMetadata = null, completionPolicy = null)
+        // Sentinel legacy cache, not a v5 local intent. The v5 producer correctly rejects
+        // a missing typed plan; no accepted/switchable replica is claimed by this fixture.
+        val legacyId = db.habitDao().insert(legacy)
+        val stage = tokens.replicaStageFixture(); NextReplicaWriteFence(db).acquire(stage.fence)
+        suspend fun verifyClosed() {
+            assertNull(writer().capture(timerHabit.id)); assertNull(writer().policy(timerHabit.id, id(20)))
+            for (read in listOf<suspend () -> Unit>(
+                { writer().requireAction(original.habitId, original.authority) },
+                { writer().requireWidgetStart(original.habitId, original.authority, original.startGuard!!) },
+                { writer().legacyWidgetSwitchDisplay(legacyId) },
+                { writer().write(original.habitId, original.authority) { fail("No action body") } },
+                { writer().write(legacyId, null) { fail("No legacy action body") } }))
+                assertEquals(com.dayforge.data.local.ReplicaSwitchGuard.PENDING, rejected(read).message)
+        }
+        verifyClosed(); storage.reopen(); verifyClosed()
+        assertFalse(tokens.replicaSwitchPending()); assertEquals(stage.fence, db.nextReplicaFenceDao().state())
+        assertNull(db.timeLogDao().getActiveTimeLog()); assertEquals(0, count("timer_command_outbox"))
+        assertEquals(legacy.copy(id = legacyId), db.habitDao().getHabitById(legacyId))
+    }
 
     @Test fun emptyStartIsExplicitAndPlanEditChangesPendingIntentIdentity() = runBlocking<Unit> {
         val before = claim()

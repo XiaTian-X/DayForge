@@ -12,6 +12,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.res.stringResource
 import com.dayforge.MainActivity
 import com.dayforge.R
@@ -21,17 +23,59 @@ import com.dayforge.ui.theme.DayForgeTheme
 import com.dayforge.ui.theme.DayForgeWindow
 import com.dayforge.ui.theme.ThemeLoadScreen
 import com.dayforge.ui.theme.themeErrorMessage
+import com.dayforge.domain.service.ReplicaPresentationController
+import com.dayforge.domain.service.ReplicaPresentationState
+import com.dayforge.domain.service.ReplicaDisplayPermit
+import com.dayforge.ui.navigation.ReplicaPresentationGate
 
 /** Cold entrypoint uses the process controller, not MainActivity or a regenerated palette. */
 @Composable
 internal fun WidgetActivityTheme(activity: ComponentActivity, translucent: Boolean = true,
     content: @Composable () -> Unit) {
-    val controller = remember(activity) { DeviceThemeControllerEntryPoint.from(activity).themeController() }
-    val state by controller.state.collectAsState()
-    WidgetActivityThemeSnapshot(activity, state, translucent, controller::retry, onManage = {
-        activity.startActivity(Intent(activity, MainActivity::class.java))
-        activity.finish()
-    }, onClose = activity::finish, content = content)
+    val entry = remember(activity) { DeviceThemeControllerEntryPoint.from(activity) }
+    WidgetReplicaGate(entry.replicaPresentation(), activity::finish) {
+        val controller = remember(activity) { entry.themeController() }
+        val state by controller.state.collectAsState()
+        WidgetActivityThemeSnapshot(activity, state, translucent, controller::retry, onManage = {
+            activity.startActivity(Intent(activity, MainActivity::class.java))
+            activity.finish()
+        }, onClose = activity::finish, content = content)
+    }
+}
+
+/** Standalone widget pages share the app draw guard. A blocked page is terminal: cancellation
+ * may open a NEW Activity, never revive this one's old intent, names or completion callbacks.
+ * Closing only finishes the Activity; it must not invoke its business dismiss/undo action.
+ */
+@Composable
+internal fun WidgetReplicaGate(controller: ReplicaPresentationController, close: () -> Unit,
+    content: @Composable () -> Unit) {
+    val state by controller.state.collectAsStateWithLifecycle()
+    val lifetime = remember { WidgetReplicaLifetime() }
+    val admitted = lifetime.admit(state)
+    LaunchedEffect(admitted) { if (!admitted) close() }
+    if (admitted) ReplicaPresentationGate(state, controller::retry) { content() }
+}
+
+/** Composition-confined and monotonic. Even a conflated freeze/cancel that skips Pending
+ * cannot replace the original permit and revive this Activity's old intent/content.
+ */
+internal class WidgetReplicaLifetime {
+    private var original: ReplicaDisplayPermit? = null
+    private var revoked = false
+    fun admit(state: ReplicaPresentationState): Boolean {
+        if (revoked) return false
+        val admitted = when (state) {
+            is ReplicaPresentationState.Pending -> false
+            ReplicaPresentationState.Checking -> original == null
+            is ReplicaPresentationState.Open -> {
+                if (original == null) original = state.permit
+                original === state.permit && state.permit.canRender()
+            }
+        }
+        if (!admitted) revoked = true
+        return admitted
+    }
 }
 
 /** Normal content is gated; recovery must never call a business confirmation/dismiss callback. */

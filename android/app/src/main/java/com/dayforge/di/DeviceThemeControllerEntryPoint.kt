@@ -17,6 +17,7 @@ import dagger.hilt.components.SingletonComponent
 @InstallIn(SingletonComponent::class)
 interface DeviceThemeControllerEntryPoint {
     fun themeController(): DeviceThemeController
+    fun replicaPresentation(): com.dayforge.domain.service.ReplicaPresentationController
 
     companion object {
         /**

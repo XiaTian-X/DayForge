@@ -19,6 +19,36 @@
 
 ## 验证层级
 
+### 独立小组件页面与计时入口屏障（2026-10-13，Issue #160）
+
+候选独立小组件Activity在主题/业务内容外复用根显示屏障，冻结或损坏时仅结束Activity，
+不调用业务撤销/完成回调。页面绑定最初的显示许可，撤销后永久关闭；即使Flow合并跳过
+Pending，也不能借用新的Open许可复活旧意图/名称。正常游标更新不关闭页面，正常
+主题、透明窗口、排版和业务内容保持原实现。计时权限捕获、策略读取及动作/切换确认
+在读取业务数据前检查实际控制状态；无指针的冻结SQL不再准入旧式对话框。
+
+首轮`5494cdee635d4f53a4dc24a31ad39fbc`：7完整类34项，33通过/1失败、0error/skipped；
+build2分钟、connected2分29秒、XML121.009秒。新夹具通过v5生产者创建缺少typed plan的
+旧式计时缓存，被NextStructureMapper正确拒绝，冻结断言尚未执行。改为直接准备测试
+哨兵缓存，不改变生产校验，也不称该哨兵为可恢复的完整副本；同时补单调页面生命周期
+和真实冻结/取消后跳过Pending的反例。失败XML保留在下一轮prior-results，不撤销历史失败。
+
+最终仅重验变化的4个完整类：WidgetTimerActionTest 5、WidgetActivityThemeTest 3、
+ReplicaWidgetEntryBarrierTest 4、ReplicaPresentationGateTest 6。授权MI6/API35运行
+`af803617ab2a4ee7bedbb256b2687599/targeted.json`为targeted_complete，18/18通过，
+0failure/error/skipped；build1分45秒、connected1分11秒、XML43.558秒。
+原计时写入9/运行4/读取4在首轮通过且此后源码未改，不重复执行，也不拼称当前35项全绿。
+两轮root62、lint/原告警预算、实际发现/APK/XML及测试包清理通过；成功轮有新非空覆盖
+输入，独立adb确认无testbed包/进程。拥有的构建/测试结束后才修改文件。
+
+成功清单SHA256为`a45541c70a36ee7a012829e8cba309c60c4c6a5e8c83860813787bb6b0a9c1b5`，
+XML为`45e4bbd1efcef243d8ac0d7ec6705cb1f74a250a9ff8914d71b803db2e2678c3`。
+新用例使用实际Room/DataStore、生产Compose屏障及许可生命周期；Hilt图仅编译，
+不代表正式Widget Activity/launcher/旋转、真实FastAPI联合或手机/平板人工验收。
+未重复后台134项、无关全量/覆盖校准或极端容量；150秒单项与25分钟批次不变。
+本批仍仅在恢复分支，正式恢复入口、确认前素材预检与最终放行、真实后端联合和精确CI
+尚未完成；不操作正式数据、部署、正式APK、默认v5或本机Docker，不计作main交付。
+
 ### 后台与小组件的实际副本门禁（2026-10-13，Issue #160）
 
 普通同步、设备管理、素材Worker、午夜缓存刷新、小组件准备/最终发布、事实确认及
