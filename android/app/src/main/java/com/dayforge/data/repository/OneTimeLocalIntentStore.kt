@@ -314,7 +314,7 @@ internal class OneTimeLocalIntentStore(
         )
     }
 
-    private fun payload(record: CompletionEntity): String = buildJsonObject {
+    internal fun payload(record: CompletionEntity): String = buildJsonObject {
         put("activity_uuid", record.habitUuid)
         put("event_type", if (record.oneTimeAction == "complete") "check_in" else "revert")
         put("occurred_at", Instant.ofEpochMilli(record.actualCompletedAt

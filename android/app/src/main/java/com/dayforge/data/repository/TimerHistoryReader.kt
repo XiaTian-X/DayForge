@@ -15,6 +15,7 @@ import com.dayforge.util.DateTimeUtils
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import java.util.Collections
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
@@ -23,6 +24,13 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
+
+/** Retained evidence has no completion/qualification getters based on today's editable target. */
+internal class TimerRecoveryEvidence(history: TimerHistory) {
+    val logs: List<TimeLogEntity> = Collections.unmodifiableList(history.logs.toList())
+    val completedMillis: Map<LocalDate, Long> = Collections.unmodifiableMap(history.completedMillis.toMap())
+    val hasUnfinishedTimer: Boolean = history.activeLog != null
+}
 
 /** One account/Room snapshot; audit ALL retained timers before projecting the displayed round. */
 @Singleton
@@ -35,13 +43,21 @@ class TimerHistoryReader @Inject constructor(private val database: HabitDatabase
         sessions.exclusive { database.withTransaction { readInTransaction(expected, today) } }
     }
 
-    internal suspend fun readInTransaction(expected: HabitEntity, today: LocalDate): TimerHistory {
+    internal suspend fun readInTransaction(expected: HabitEntity, today: LocalDate): TimerHistory =
+        readEvidenceInTransaction(expected, today, false)
+
+    /** Recovery audits all retained rounds, even after an allowed tracking-mode edit. No UI projection. */
+    internal suspend fun recoveryInTransaction(expected: HabitEntity, today: LocalDate): TimerRecoveryEvidence =
+        TimerRecoveryEvidence(readEvidenceInTransaction(expected, today, true))
+
+    private suspend fun readEvidenceInTransaction(expected: HabitEntity, today: LocalDate, recovery: Boolean): TimerHistory {
         check(database.inTransaction()) { "TIMER_READ_TRANSACTION_REQUIRED" }
         val access = requireNotNull(tokens.localCoreWriteAccess()) { "TIMER_SESSION_CHANGED" }
         val habit = requireNotNull(database.habitDao().getHabitById(expected.id))
-        check(habit == expected && habit.appearance != null && habit.habitType == HabitType.TIMER &&
+        check(habit == expected && habit.appearance != null &&
+            (if (recovery) habit.habitType != HabitType.GOAL else habit.habitType == HabitType.TIMER) &&
             habit.completionPolicy == "recurring") { "TIMER_ACTIVITY_CHANGED" }
-        require(habit.targetValue > 0 && isContractUuid(habit.uuid)) { "TIMER_ACTIVITY_INVALID" }
+        require((recovery || habit.targetValue > 0) && isContractUuid(habit.uuid)) { "TIMER_ACTIVITY_INVALID" }
         val scope = NextCoreLocalIntentStore(database, tokens, sessions).captureDisplayedRoundsInTransaction()
         val metadata = scope?.let { Json.decodeFromString(ChallengeMetadata.serializer(), it.metadataJson) }
         val checkpoint = metadata?.checkpoints?.singleOrNull { it.head.activityUuid == habit.uuid }
@@ -176,7 +192,7 @@ class TimerHistoryReader @Inject constructor(private val database: HabitDatabase
                     requireNotNull(source.context.head)
                 }
             }
-            if (birth == head) {
+            if (recovery || birth == head) {
                 visible += log
                 if (log.endTime == null) { active = log; activeSegments = segments }
                 else {

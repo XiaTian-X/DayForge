@@ -45,12 +45,20 @@ internal class RecurringCompletionEvidenceReader(
     }
 
     /** Caller must hold AccountSessionCoordinator and an active Room transaction (no nested lock). */
-    internal suspend fun readInTransaction(expected: HabitEntity, today: LocalDate): RecurringCompletionEvidence {
+    internal suspend fun readInTransaction(expected: HabitEntity, today: LocalDate): RecurringCompletionEvidence =
+        readEvidenceInTransaction(expected, today, false)
+
+    /** Audit every retained round and historical tracking mode without changing the displayed consumer. */
+    internal suspend fun recoveryInTransaction(expected: HabitEntity, today: LocalDate): RecurringCompletionEvidence =
+        readEvidenceInTransaction(expected, today, true)
+
+    private suspend fun readEvidenceInTransaction(expected: HabitEntity, today: LocalDate, recovery: Boolean): RecurringCompletionEvidence {
         check(database.inTransaction()) { "COUNT_READ_TRANSACTION_REQUIRED" }
         val access = requireNotNull(tokens.localCoreWriteAccess()) { "COUNT_SESSION_CHANGED" }
         val rounds = NextCoreLocalIntentStore(database, tokens, sessions).captureDisplayedRoundsInTransaction()
         val habit = requireNotNull(database.habitDao().getHabitById(expected.id)) { "COUNT_NOT_FOUND" }
-        check(habit == expected && habit.appearance != null && habit.habitType in setOf(HabitType.COUNTING, HabitType.CHECK_IN) &&
+        check(habit == expected && habit.appearance != null &&
+            (if (recovery) habit.habitType != HabitType.GOAL else habit.habitType in setOf(HabitType.COUNTING, HabitType.CHECK_IN)) &&
             habit.completionPolicy == "recurring") { "COUNT_ACTIVITY_CHANGED" }
         val store = NextCountDayStore(database)
         val policies = database.countDayDao().forHabit(habit.id).associate { candidate ->
@@ -94,12 +102,13 @@ internal class RecurringCompletionEvidenceReader(
         // enforce their immutable quantities/day rules and cannot hide corruption behind a new head.
         val originals = RecurringCompletionFactEvidence(database).verify(habit, facts, policies, access.session.authentication.userId)
         val (head, visible) = selectRound(habit, facts, originals, rounds)
-        val unknown = visible.mapTo(linkedSetOf()) { it.businessDate }.filterTo(linkedSetOf()) { it in unbound }
+        val retained = if (recovery) facts else visible
+        val unknown = retained.mapTo(linkedSetOf()) { it.businessDate }.filterTo(linkedSetOf()) { it in unbound }
         // The shared habit/date rule survives undo and restart, even with no current-round facts.
         if (today in unbound) unknown += today
         check(tokens.localCoreWriteAccess() == access) { "COUNT_SESSION_CHANGED" }
         check(rounds == null || tokens.localSyncAccess() == rounds.access) { "COUNT_SESSION_CHANGED" }
-        return RecurringCompletionEvidence(today, policies, unknown, visible, head)
+        return RecurringCompletionEvidence(today, policies, unknown, retained, head)
     }
 
     /** Accepted births or the actual NEW source, never dates, appearance or the current target. */

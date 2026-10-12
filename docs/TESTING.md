@@ -19,6 +19,38 @@
 
 ## 验证层级
 
+### 旧副本当前投影与保留历史核验（2026-10-12，Issue #160 / D-022）
+
+新增 NextReplicaBusinessProofReaderTest，连接实际 bootstrap、本地生产者、原请求、
+真实 TCP ACK、历史读取和六类完整投影索引。覆盖同身份内容变化/未证明编辑、冻结
+计数规则及 tracking-mode/目标变更、完整旧计时及分摊、运行中计时、指标小数与同身份
+值修改、原 SQL/JSON 越界和重复字段、非法父节点/公开 UUID 别名、指标外键、事项
+原记录、陈旧预览/授权及冷重开。完整目标—子习惯—指标关联图包含非活跃关联和实际
+待发送关联编辑，不依赖只展示活跃项的 DAO。读取区间整库文件/全部偏好/账户/网络
+调用数不变，结果不可变、不产生 ACK 或切换授权。
+
+首先新类15、NextRestartWorkflowTest39、TimerHistoryStorageTest2、
+WidgetTimerTickReadTest4，四完整类60/60通过，0failure/error/skipped、XML632.716秒；
+`82c8a319c2914382b4a33b15366e1c0d/targeted.json` 为 targeted_complete，
+build2分47秒、connected10分56秒。未运行无关 TimerHistoryIndexTest 极端容量类。
+静态复查补缺行分类，使用真实 ACK 后的缺行、实际撤销和实际父墓碑三项，
+新完整类18/18通过，`70e8642980a34967904a5d546479b700`，XML132.370秒，
+build1分47秒、connected2分38秒。相邻45项正常读取路径未改，不再次运行。
+
+最终补完整目标/非活跃关联图，并让恢复专用计时输出不提供基于当前目标的完成 getter，
+不修改正常读取消费者和共享事实/命令审查正文。仅重验完整新类20/20，
+`f0c2735a77524de0b488cb3e74270cc1/targeted.json` 为 targeted_complete；
+build2分21秒、connected2分50秒。root62、编译/lint/告警预算、发现/XML/APK/新覆盖
+输入和 testbed 清理通过。不把三次不同源码结果拼为最终65项或全量通过。
+最终 XML 为0failure/error/skipped、144.195秒。
+
+全部当前投影和已有历史证明已串联，但不是完整恢复或主分支交付。真实事项 ACK 后
+的整条新业务核验，以及无原始规则的旧服务端计数审查分支，尚未直接进行恢复联合；
+后者本批只有静态审查，不能表述为该边界真机通过。必须随实际恢复后端及全部素材、
+档案、阶段/栅栏、确认入口一起验证；精确提交 CI 随完整候选冻结后核验。未执行全量、
+全局覆盖校准、极端容量、新后端测试、人工/外网/NAS/本机 Docker；没有正式数据、
+正式 APK、部署、默认 v5、UI/schema/依赖变更，未放宽测试时限、断言或告警预算。
+
 ### 旧副本本地提交及指标草稿核验（2026-10-12，Issue #160 / D-022）
 
 新增 NextReplicaLocalFactProofReaderTest 完整类14项，使用真实事项完成、指标提示服务、

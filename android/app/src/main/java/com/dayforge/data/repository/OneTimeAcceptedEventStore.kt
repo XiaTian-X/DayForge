@@ -473,7 +473,7 @@ internal class OneTimeAcceptedEventStore(
         require(existing.copy(id = 0, createdAt = incoming.createdAt, timeMetadataSource = "server", date = incoming.date) == incoming)
     }
 
-    private fun completion(fact: OneTimeServerFact, habit: HabitEntity): CompletionEntity {
+    internal fun completion(fact: OneTimeServerFact, habit: HabitEntity): CompletionEntity {
         val proof = fact.proof
         return CompletionEntity(habitId = habit.id, habitUuid = habit.uuid, uuid = proof.publicId,
             date = fact.occurredAt.atZone(ZoneId.of(fact.timezone)).toLocalDate().atStartOfDay(ZoneId.of(fact.timezone)).toInstant().toEpochMilli(),
