@@ -34,7 +34,7 @@ class ProtocolNextActivationBarrierTest : SyncPersistenceFixture() {
     }
 
     private suspend fun orphanedCausalMetadata(statement: String, table: String, requestPresent: Boolean = true) {
-        assertEquals(17, database.openHelper.writableDatabase.version) // Materialize the lazy file before closing it.
+        assertEquals(18, database.openHelper.writableDatabase.version) // Materialize the lazy file before closing it.
         database.close()
         val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
         check(context.packageName == "com.dayforge.testbed")

@@ -86,9 +86,10 @@ import kotlinx.coroutines.withContext
         com.dayforge.data.local.entity.NextConfigImportPayloadEntity::class,
         com.dayforge.data.local.entity.NextRecoveryAuditEntity::class,
         com.dayforge.data.local.entity.NextAbandonedRequestEntity::class,
-        com.dayforge.data.local.entity.NextRecoveryAuditPayloadEntity::class
+        com.dayforge.data.local.entity.NextRecoveryAuditPayloadEntity::class,
+        com.dayforge.data.local.entity.NextReplicaFenceEntity::class
     ],
-    version = 17,
+    version = 18,
     exportSchema = true
 )
 @TypeConverters(HabitTypeConverter::class)
@@ -103,6 +104,8 @@ abstract class HabitDatabase : RoomDatabase() {
     abstract fun completionFollowUpDao(): CompletionFollowUpDao
 
     abstract fun nextRecoveryDao(): NextRecoveryDao
+
+    abstract fun nextReplicaFenceDao(): com.dayforge.data.local.dao.NextReplicaFenceDao
 
     abstract fun nextSyncStateDao(): NextSyncStateDao
 

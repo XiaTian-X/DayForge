@@ -55,7 +55,7 @@ internal class NextReplicaRecoveryReader(private val database: HabitDatabase, pr
         }
         return run {
             val sql = database.openHelper.writableDatabase
-            require(sql.version == 17) { "SYNC_REPLICA_RECOVERY_SCHEMA_REVIEW_REQUIRED" }
+            require(sql.version == 18) { "SYNC_REPLICA_RECOVERY_SCHEMA_REVIEW_REQUIRED" }
             val tables = sql.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").use { c ->
                 buildSet { while (c.moveToNext()) {
                     require(c.getType(0) == Cursor.FIELD_TYPE_STRING)
@@ -121,6 +121,6 @@ internal class NextReplicaRecoveryReader(private val database: HabitDatabase, pr
             "next_transmissions", "next_acceptances", "next_structural_dependencies", "next_structural_supersessions",
             "next_sync_state", "next_rejections", "next_challenge_rounds", "next_challenge_births", "next_challenge_state",
             "next_restart_materializations", "next_restart_plan_proofs", "next_config_imports", "next_config_import_payloads",
-            "next_recovery_audits", "next_abandoned_requests", "next_recovery_audit_payloads")
+            "next_recovery_audits", "next_abandoned_requests", "next_recovery_audit_payloads", "next_replica_fence")
     }
 }

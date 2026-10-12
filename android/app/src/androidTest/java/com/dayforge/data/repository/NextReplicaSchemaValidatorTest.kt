@@ -40,9 +40,13 @@ class NextReplicaSchemaValidatorTest : NextCoreRequestFixture() {
         val indices = sql.query("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL", arrayOf(table)).use {
             buildList { while (it.moveToNext()) add(it.getString(0)) }
         }
+        val triggers = sql.query("SELECT sql FROM sqlite_master WHERE type='trigger' AND tbl_name=? ORDER BY name", arrayOf(table)).use {
+            buildList { while (it.moveToNext()) add(it.getString(0)) }
+        }
         val changed = edit(original); require(changed != original)
         sql.execSQL("DROP TABLE $table") // This empty, isolated testbed table only.
-        sql.execSQL(changed); indices.forEach(sql::execSQL)
+        // Change only the requested constraint, not the independently owned write fences.
+        sql.execSQL(changed); indices.forEach(sql::execSQL); triggers.forEach(sql::execSQL)
     }
 
     @Test fun freshAndAnalyzedSchemaAreReadOnlyAndRemainValidAfterColdReopen() = runBlocking<Unit> {
@@ -83,8 +87,8 @@ class NextReplicaSchemaValidatorTest : NextCoreRequestFixture() {
                 }).build()).use { it.writableDatabase }
             val file = app.getDatabasePath(name)
             require(file.isFile && file.length() in 1..67_108_864L)
-            storage.restoreClosedDatabase(file.readBytes()) // Only the owned testbed DB; production migrates 1→17.
-            assertEquals(17, db.openHelper.writableDatabase.version)
+            storage.restoreClosedDatabase(file.readBytes()) // Only the owned testbed DB; production migrates 1→18.
+            assertEquals(18, db.openHelper.writableDatabase.version)
             val point = hash(); val original = access()
             unchanged { assertEquals(point, verify(point, original).storageHash) }
         } finally { assertTrue(app.deleteDatabase(name)) }

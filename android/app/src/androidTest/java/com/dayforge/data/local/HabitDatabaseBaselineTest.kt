@@ -86,7 +86,7 @@ class HabitDatabaseBaselineTest {
             "next_recovery_audit_payloads"
         )
 
-        assertEquals(17, sqlite.version)
+        assertEquals(18, sqlite.version)
         assertTrue(tables.containsAll(expectedTables))
         sqlite.query("SELECT identity_hash FROM room_master_table WHERE id=42").use { cursor ->
             assertTrue(cursor.moveToFirst())

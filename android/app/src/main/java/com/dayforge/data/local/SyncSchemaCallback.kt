@@ -13,7 +13,7 @@ internal object SyncSchemaCallback : RoomDatabase.Callback() {
 
     override fun onOpen(db: SupportSQLiteDatabase) {
         super.onOpen(db)
-        // Repair sync objects after a destructive rebuild or interrupted development install.
+        // Ensure known objects exist; never overwrite an existing definition.
         installSyncObjects(db)
     }
 
@@ -28,7 +28,7 @@ internal object SyncSchemaCallback : RoomDatabase.Callback() {
         val planChanges = if ("planMetadata" in columns) " OR OLD.planMetadata IS NOT NEW.planMetadata" else ""
         val metricAppearanceChanges = if (hasAppearance) " OR OLD.appearance IS NOT NEW.appearance" else ""
         database.execSQL(
-            "INSERT OR IGNORE INTO sync_control(id, suppressOutbox) VALUES(1, 0)"
+            "INSERT INTO sync_control(id, suppressOutbox) SELECT 1, 0 WHERE NOT EXISTS(SELECT 1 FROM sync_control WHERE id=1)"
         )
         createSyncTrigger(
             database = database,
@@ -99,6 +99,7 @@ internal object SyncSchemaCallback : RoomDatabase.Callback() {
                     "OLD.promptOnComplete IS NOT NEW.promptOnComplete OR " +
                     "OLD.isActive IS NOT NEW.isActive"
         )
+        NextReplicaFenceSql.install(database)
     }
 
     private fun createSyncTrigger(

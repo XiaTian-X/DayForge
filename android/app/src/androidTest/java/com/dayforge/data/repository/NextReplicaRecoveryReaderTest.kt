@@ -83,7 +83,7 @@ class NextReplicaRecoveryReaderTest : NextCoreRequestFixture() {
         val calls = peer.requests.size
         val report = read()
         assertEquals(NextReplicaRecoveryReader.TABLES, report.rowCounts.keys)
-        assertEquals(35, report.rowCounts.size)
+        assertEquals(36, report.rowCounts.size)
         assertEquals(original, report.original)
         assertTrue(report.reviewCounts.isEmpty()); assertFalse(report.activationAuthorized)
         assertTrue("complete_difference_preview" in report.remainingGates)

@@ -167,7 +167,7 @@ class NextReplicaArchiveTest : NextCoreRequestFixture() {
         unchanged { inspect { input, access ->
             expired = access
             assertFalse(input.activationAuthorized); assertFalse(input.hasReview); assertTrue(input.missingAssets.isEmpty())
-            assertEquals(3, input.business.records.size); assertEquals(35, input.storage.contents.getValue("tables").jsonObject.keys
+            assertEquals(3, input.business.records.size); assertEquals(36, input.storage.contents.getValue("tables").jsonObject.keys
                 .count { !it.startsWith("sqlite_") && it !in setOf("android_metadata", "room_master_table") })
             assertEquals(8, input.icons.contents.getValue("tables").jsonObject.size); assertTrue(input.iconFiles.files.isEmpty())
             assertNull(input.themes.preferences.selectionRaw); assertNull(input.themes.preferences.catalogRaw); assertTrue(input.themes.files.isEmpty())

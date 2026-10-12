@@ -59,7 +59,7 @@ class NextStructuralCausalMigrationTest {
     }
     private fun structure(db: SupportSQLiteDatabase) = rows(db,
         "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' " +
-            "AND name NOT LIKE 'room_%' AND tbl_name NOT IN ('next_recovery_audits','next_abandoned_requests','next_recovery_audit_payloads','next_config_imports','next_config_import_payloads','next_restart_materializations','next_restart_plan_proofs','next_challenge_state','next_challenge_rounds','next_challenge_births','count_days','next_sync_state','next_rejections','next_structural_dependencies','next_structural_supersessions') ORDER BY type,name")
+            "AND name NOT LIKE 'room_%' AND name NOT LIKE 'replica_fence_%' AND tbl_name NOT IN ('next_replica_fence','next_recovery_audits','next_abandoned_requests','next_recovery_audit_payloads','next_config_imports','next_config_import_payloads','next_restart_materializations','next_restart_plan_proofs','next_challenge_state','next_challenge_rounds','next_challenge_births','count_days','next_sync_state','next_rejections','next_structural_dependencies','next_structural_supersessions') ORDER BY type,name")
     private fun insert(db: SupportSQLiteDatabase, table: String, values: Map<String, Any>) {
         val content = ContentValues()
         entities.first { it.getValue("tableName").jsonPrimitive.content == table }.getValue("fields").jsonArray.forEach {
@@ -143,7 +143,7 @@ class NextStructuralCausalMigrationTest {
         before.forEach { (table, values) -> assertTrue("Missing fixture for $table", values.isNotEmpty()) }
         repeat(2) {
             val db = open(); val sql = db.openHelper.writableDatabase
-            assertEquals(17, sql.version); assertEquals(before, snapshot(sql)); assertEquals(ddl, structure(sql))
+            assertEquals(18, sql.version); assertEquals(before, snapshot(sql)); assertEquals(ddl, structure(sql))
             assertTrue(db.nextRequestDao().hasAny())
             assertTrue(rows(sql, "SELECT * FROM next_structural_dependencies").isEmpty())
             assertTrue(rows(sql, "SELECT * FROM next_structural_supersessions").isEmpty())
@@ -164,7 +164,7 @@ class NextStructuralCausalMigrationTest {
             }
             raw.execSQL("ALTER TABLE unavailable_transmissions RENAME TO one_time_transmissions")
         }
-        assertEquals(17, open().openHelper.writableDatabase.version)
+        assertEquals(18, open().openHelper.writableDatabase.version)
     }
     @Test fun forgedVersionTenIdentityCannotInitializeAncestryOrModifyFrozenRows() {
         seed { it.execSQL("UPDATE room_master_table SET identity_hash='unknown' WHERE id=42") }
@@ -189,7 +189,7 @@ class NextStructuralCausalMigrationTest {
             raw.rawQuery("SELECT hex(wireBytes) FROM next_transmissions", null).use { assertTrue(it.moveToFirst()); assertEquals("007FFF", it.getString(0)) }
             raw.execSQL("DROP TABLE next_structural_dependencies") // Only the exact obstacle injected by this test.
         }
-        assertEquals(17, open().openHelper.writableDatabase.version)
+        assertEquals(18, open().openHelper.writableDatabase.version)
     }
 
     @Test fun missingExtraOrWrongStorageTypeIdentityCannotInitializeAncestry() {
@@ -222,7 +222,7 @@ class NextStructuralCausalMigrationTest {
             raw.rawQuery("SELECT resultJson FROM next_acceptances", null).use { assertTrue(it.moveToFirst()); assertEquals("{\"stored\":true}", it.getString(0)) }
             raw.execSQL("DROP TABLE next_structural_supersessions") // Only the exact obstacle injected by this test.
         }
-        assertEquals(17, open().openHelper.writableDatabase.version)
+        assertEquals(18, open().openHelper.writableDatabase.version)
     }
 
     @Test fun occupiedIndexRejectsWholeMigrationWithoutAdoptingOtherTable() {
@@ -236,6 +236,6 @@ class NextStructuralCausalMigrationTest {
                 assertTrue(it.moveToFirst()); assertEquals("next_acceptances", it.getString(0)) }
             raw.execSQL("DROP INDEX index_next_structural_dependencies_logicalOrder") // Exact test-owned index only.
         }
-        assertEquals(17, open().openHelper.writableDatabase.version)
+        assertEquals(18, open().openHelper.writableDatabase.version)
     }
 }
