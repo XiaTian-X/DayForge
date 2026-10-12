@@ -305,13 +305,13 @@ class TokenManager @Inject constructor(
             } else {
                 check(values[ReplicaSwitchGuard.POINTER] == expected.recoveryId &&
                     values[key]?.let { ReplicaSwitchStage.decode(it) } == expected &&
-                    frozen == expected.transition(frozen.phase, frozen.archive)) { "SYNC_REPLICA_STAGE_CHANGED" }
+                    frozen == expected.transition(frozen.phase, frozen.archive, frozen.target)) { "SYNC_REPLICA_STAGE_CHANGED" }
                 val actual = syncAccess(values)
                 val authenticated = actual?.let { frozen.original.copy(session = frozen.original.session.copy(
                     authentication = it.session.authentication)) }
                 check(values[INSTALLATION_ID_KEY] == frozen.installationId &&
                     actual != null && actual.session.authentication.userId == frozen.accountId && actual == authenticated &&
-                    (frozen.phase == ReplicaSwitchPhase.ABORTED || actual == frozen.original)) {
+                    (frozen.phase in setOf(ReplicaSwitchPhase.ABORTED, ReplicaSwitchPhase.SQL_COMMITTED) || actual == frozen.original)) {
                     "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED"
                 }
             }

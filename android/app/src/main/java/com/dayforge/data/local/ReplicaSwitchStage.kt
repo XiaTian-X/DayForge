@@ -1,5 +1,6 @@
 @file:kotlinx.serialization.UseSerializers(com.dayforge.domain.model.ContractStringSerializer::class,
-    com.dayforge.domain.model.ContractIntegerSerializer::class, com.dayforge.domain.model.ContractLongSerializer::class)
+    com.dayforge.domain.model.ContractIntegerSerializer::class, com.dayforge.domain.model.ContractLongSerializer::class,
+    com.dayforge.domain.model.ContractBooleanSerializer::class)
 
 package com.dayforge.data.local
 
@@ -14,7 +15,19 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
-internal enum class ReplicaSwitchPhase { FREEZING, FROZEN, ARCHIVE_VERIFIED, ABORTED }
+internal enum class ReplicaSwitchPhase { FREEZING, FROZEN, ARCHIVE_VERIFIED, COMMITTING, SQL_COMMITTED, ABORTED }
+
+@Serializable
+internal data class ReplicaStageTarget(val projectionHash: String, val schemaHash: String, val deviceId: String,
+    val capabilityRevision: Int, val capabilities: List<String>, val isPrimaryEditor: Boolean,
+    val structuralEditEnabled: Boolean) {
+    init {
+        require(listOf(projectionHash, schemaHash).all { it.matches(Regex("[0-9a-f]{64}")) } && isContractUuid(deviceId) && capabilityRevision > 0)
+        require(capabilities.size <= 256 && capabilities == capabilities.distinct().sorted() &&
+            "sync.read" in capabilities && capabilities.all { it.isNotBlank() && it.length <= 256 })
+        require(("structure.write" in capabilities) == (isPrimaryEditor || structuralEditEnabled))
+    }
+}
 
 @Serializable
 internal data class ReplicaStageArchiveEntry(val name: String, val byteLength: Long, val contentHash: String)
@@ -33,10 +46,10 @@ internal data class ReplicaStageArchive(val archiveId: String, val inputHash: St
     }
 }
 
-/** Pre-COMMIT journal participant only. No consent, COMMIT or rollback authority.
+/** Durable journal participant only. No consent, COMMIT or rollback authority.
  * Hashes bind the complete inputs supplied by the owning workflow, not a revalidation claim.
- * A new authenticated generation invalidates continuation; explicit same-owner cancellation
- * can still close a matching pre-COMMIT fence without restoring credentials or source data.
+ * A new authenticated generation invalidates pre-COMMIT consent. Same-owner cancellation can
+ * close a proved old replica; actual committed SQL only permits controlled forward continuation.
  */
 @Serializable
 internal data class ReplicaSwitchStage(
@@ -47,7 +60,8 @@ internal data class ReplicaSwitchStage(
     val candidateHash: String, val candidateWireHash: String, val candidateCursor: Long,
     val phase: ReplicaSwitchPhase = ReplicaSwitchPhase.FREEZING,
     val generation: Long = 1, val formatVersion: Int = 1,
-    val previousFenceHash: String? = null, val archive: ReplicaStageArchive? = null
+    val previousFenceHash: String? = null, val archive: ReplicaStageArchive? = null,
+    val target: ReplicaStageTarget? = null
 ) {
     init {
         require(formatVersion == 1 && generation > 0 && capabilityRevision > 0 && candidateCursor >= 0)
@@ -61,13 +75,18 @@ internal data class ReplicaSwitchStage(
             ReplicaSwitchPhase.FREEZING -> generation == 1L
             ReplicaSwitchPhase.FROZEN -> generation == 2L
             ReplicaSwitchPhase.ARCHIVE_VERIFIED -> generation == 3L
-            ReplicaSwitchPhase.ABORTED -> generation in 2L..4L
+            ReplicaSwitchPhase.COMMITTING -> generation == 4L
+            ReplicaSwitchPhase.SQL_COMMITTED -> generation == 5L
+            ReplicaSwitchPhase.ABORTED -> generation in 2L..5L
         })
         require(when (phase) {
             ReplicaSwitchPhase.FREEZING, ReplicaSwitchPhase.FROZEN -> archive == null
-            ReplicaSwitchPhase.ARCHIVE_VERIFIED -> archive != null
-            ReplicaSwitchPhase.ABORTED -> (archive != null) == (generation == 4L)
+            ReplicaSwitchPhase.ARCHIVE_VERIFIED, ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED -> archive != null
+            ReplicaSwitchPhase.ABORTED -> (archive != null) == (generation >= 4L)
         })
+        require((target != null) == (phase in setOf(ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED) ||
+            phase == ReplicaSwitchPhase.ABORTED && generation == 5L))
+        require(target == null || target.deviceId == deviceId)
     }
     val original: LocalSyncAccess get() = LocalSyncAccess(LocalDataSession(
         AuthenticationSession(accountId, authenticationGeneration), serverInstanceId, oldEpoch),
@@ -75,15 +94,19 @@ internal data class ReplicaSwitchStage(
     val fence: NextReplicaFenceEntity get() = NextReplicaFenceEntity(recoveryId, accountId,
         serverInstanceId, oldEpoch, newEpoch, authenticationGeneration, deviceId, capabilityRevision.toLong(), sourceHash)
 
-    fun transition(next: ReplicaSwitchPhase, receipt: ReplicaStageArchive? = archive): ReplicaSwitchStage {
+    fun transition(next: ReplicaSwitchPhase, receipt: ReplicaStageArchive? = archive,
+        destination: ReplicaStageTarget? = target): ReplicaSwitchStage {
         require(generation < Long.MAX_VALUE && when (phase) {
             ReplicaSwitchPhase.FREEZING -> next == ReplicaSwitchPhase.FROZEN || next == ReplicaSwitchPhase.ABORTED
             ReplicaSwitchPhase.FROZEN -> next == ReplicaSwitchPhase.ARCHIVE_VERIFIED || next == ReplicaSwitchPhase.ABORTED
-            ReplicaSwitchPhase.ARCHIVE_VERIFIED -> next == ReplicaSwitchPhase.ABORTED
+            ReplicaSwitchPhase.ARCHIVE_VERIFIED -> next == ReplicaSwitchPhase.COMMITTING || next == ReplicaSwitchPhase.ABORTED
+            ReplicaSwitchPhase.COMMITTING -> next == ReplicaSwitchPhase.SQL_COMMITTED || next == ReplicaSwitchPhase.ABORTED
+            ReplicaSwitchPhase.SQL_COMMITTED -> false
             ReplicaSwitchPhase.ABORTED -> false
         }) { "SYNC_REPLICA_STAGE_TRANSITION_INVALID" }
         require(if (next == ReplicaSwitchPhase.ARCHIVE_VERIFIED) receipt != null else receipt == archive)
-        return copy(phase = next, generation = generation + 1, archive = receipt)
+        require(if (next == ReplicaSwitchPhase.COMMITTING) destination != null else destination == target)
+        return copy(phase = next, generation = generation + 1, archive = receipt, target = destination)
     }
 
     companion object {
@@ -106,7 +129,8 @@ internal data class ReplicaSwitchStage(
             }
             return json.decodeFromString<ReplicaSwitchStage>(text).let {
                 it.copy(capabilities = java.util.Collections.unmodifiableList(it.capabilities.toList()),
-                    archive = it.archive?.copy(entries = java.util.Collections.unmodifiableList(it.archive.entries.toList())))
+                    archive = it.archive?.copy(entries = java.util.Collections.unmodifiableList(it.archive.entries.toList())),
+                    target = it.target?.copy(capabilities = java.util.Collections.unmodifiableList(it.target.capabilities.toList())))
             }.also { caller.ensureActive() }
         }
     }

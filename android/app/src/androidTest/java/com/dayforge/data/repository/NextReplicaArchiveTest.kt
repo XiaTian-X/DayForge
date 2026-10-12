@@ -194,6 +194,219 @@ class NextReplicaArchiveTest : NextCoreRequestFixture() {
             saved.entries.map { ReplicaArchiveEntry(it.name, it.byteLength, it.contentHash) })
     }
 
+    private suspend fun commitTarget(candidate: ValidatedReplicaCandidate) = candidate.deviceProof.let {
+        ReplicaStageTarget(candidate.projection.hash, ReplicaProjection.schemaHash(db), it.deviceId,
+            it.capabilityRevision, it.capabilities.sorted(), it.isPrimaryEditor, it.structuralEditEnabled)
+    }
+    private suspend fun coldReopen() {
+        scope.coroutineContext[Job]!!.cancelAndJoin(); scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        dataStore = androidx.datastore.preferences.core.PreferenceDataStoreFactory.create(scope = scope,
+            produceFile = { File(directory, "auth.preferences_pb") })
+        tokens = TokenManager(dataStore); preferences = PreferencesManager(dataStore); storage.reopen(); configureIcons()
+        client.connectionPool.evictAll(); client.dispatcher.executorService.shutdown()
+        client = okhttp3.OkHttpClient.Builder()
+            .addInterceptor(com.dayforge.data.api.interceptor.BaseUrlInterceptor(preferences))
+            .addInterceptor(com.dayforge.data.api.interceptor.AuthInterceptor(tokens))
+            .authenticator(com.dayforge.data.api.authenticator.TokenAuthenticator(tokens, preferences,
+                com.dayforge.data.api.SelectedNetworkTransport())).build()
+        http = NextSyncHttp(client, tokens, peer.origin)
+    }
+
+    @Test fun explicitConfirmationCommitsExactProjectionAndKeepsSqlAndPublicationFrozenAfterColdReopen() = runBlocking<Unit> {
+        initialize(); completeMaterial(); initializeThemes(); startRecovery()
+        val original = access(); val themeSelection = DeviceThemeStore(dataStore, themes).read()
+        val wire = recoveryWire!!
+        recoveryWire = wire.copy(snapshot = wire.snapshot.copy(changes = wire.snapshot.changes.filterNot { it.entityType == "metric" } +
+            canonical("metric", id(200), NextStructureMapper.writeMetric(metric.copy(uuid = id(200), name = "New scope weight",
+                targetDirection = "range", targetValue = 1.25, targetValueUpper = 6.75)))))
+        val staged = workflow().prepare(differences().capture(recoveryCandidate()))
+        val evidence = workflow().verifyForConfirmation(staged); val archiveBytes = archive(receipt(staged)).readBytes()
+        // Semantic ordering/server_time changes cannot change the validated target or private row IDs.
+        val freshWire = recoveryWire!!
+        recoveryWire = freshWire.copy(snapshot = freshWire.snapshot.copy(serverTime = "2026-10-06T00:01:00Z",
+            changes = freshWire.snapshot.changes.reversed()), device = freshWire.device.copy(capabilities = freshWire.device.capabilities.reversed()))
+        val committed = workflow().confirm(evidence)
+        assertEquals(ReplicaSwitchPhase.SQL_COMMITTED, committed.phase); assertEquals(5L, committed.generation)
+        assertEquals(evidence.candidate.projection.hash, ReplicaProjection.capture(db).hash)
+        assertEquals(committed.target!!.schemaHash, ReplicaProjection.schemaHash(db))
+        val state = db.nextSyncStateDao().rows().single()
+        assertEquals(id(99), state.syncEpoch); assertEquals(committed.candidateHash, state.bootstrapHash)
+        assertEquals(state.bootstrapHash, state.batchHash); assertEquals(20L, state.cursor)
+        assertNull(db.metricDao().getMetricByUuid(metric.uuid)); assertEquals("New scope weight", db.metricDao().getMetricByUuid(id(200))!!.name)
+        assertEquals(1.25, db.metricDao().getMetricByUuid(id(200))!!.targetValue!!, 0.0)
+        assertEquals(6.75, db.metricDao().getMetricByUuid(id(200))!!.targetValueUpper!!, 0.0)
+        assertEquals(original, access()); assertEquals(id(3), tokens.syncEpoch.first())
+        assertNull(tokens.localCoreWriteAccess()); assertFalse(tokens.localFactAccess()!!.canAppend)
+        assertNull(WidgetDisplayPublisher(tokens, sessions).capturePublication())
+        assertEquals(committed.fence, db.nextReplicaFenceDao().state())
+        assertNotNull(rejected { db.habitDao().update(habit.copy(name = "ordinary write after COMMIT")) })
+        assertNotNull(rejected { workflow().cancel(committed) }); assertNotNull(rejected { workflow().confirm(evidence) })
+        assertArrayEquals(archiveBytes, archive(receipt(committed)).readBytes())
+        assertEquals(themeSelection, DeviceThemeStore(dataStore, themes).read())
+        val after = ReplicaProjection.capture(db).hash; val calls = peer.requests.size
+        coldReopen(); assertEquals(committed, workflow().resume(tokens.activeReplicaStage()!!))
+        assertEquals(after, ReplicaProjection.capture(db).hash); assertEquals(calls, peer.requests.size)
+        assertNull(tokens.localCoreWriteAccess()); assertEquals(original, access())
+    }
+
+    @Test fun sqlCommittedBeforeJournalDeliveryOnlyMovesForwardAfterActualColdProofAndSameOwnerReauthentication() = runBlocking<Unit> {
+        initialize(); startRecovery()
+        val archived = workflow().prepare(differences().capture(recoveryCandidate()))
+        val evidence = workflow().verifyForConfirmation(archived)
+        val committing = NextReplicaStageStore(db, tokens, sessions).recordCommitting(archived, commitTarget(evidence.candidate))
+        NextReplicaCommitStore(db, tokens, sessions).commit(committing, evidence.candidate)
+        val after = ReplicaProjection.capture(db).hash; val archiveBytes = archive(receipt(archived)).readBytes()
+        assertEquals(committing, tokens.activeReplicaStage()); assertEquals(id(99), db.nextSyncStateDao().rows().single().syncEpoch)
+        assertNotNull(rejected { workflow().cancel(committing) })
+        coldReopen(); tokens.clearAuthenticationTokens()
+        assertNotNull(rejected { workflow().resume(committing) }); assertEquals(after, ReplicaProjection.capture(db).hash)
+        tokens.saveLoginSession("synthetic-relogin", "synthetic-refresh", "member", id(1), false)
+        val calls = peer.requests.size; val committed = workflow().resume(committing)
+        assertEquals(ReplicaSwitchPhase.SQL_COMMITTED, committed.phase); assertEquals(after, ReplicaProjection.capture(db).hash)
+        assertEquals(calls, peer.requests.size); assertEquals("synthetic-relogin", tokens.accessToken.first())
+        assertEquals(id(3), tokens.syncEpoch.first()); assertNull(tokens.localCoreWriteAccess())
+        assertArrayEquals(archiveBytes, archive(receipt(committed)).readBytes()); assertEquals(committed.fence, db.nextReplicaFenceDao().state())
+    }
+
+    @Test fun fullNonemptySnapshotCommitsCountCompleteTimerOnceHistoryObservationAndLinkWithoutCreatingRequests() = runBlocking<Unit> {
+        initialize(); startRecovery()
+        val once = habit.copy(id = 0, uuid = id(13), name = "Recovered once", habitType = HabitType.CHECK_IN,
+            schedule = HabitSchedule.Once(), targetValue = 1, completionPolicy = "one_and_done", oneTimeConfirmedVersion = 0,
+            appearance = requireNotNull(habit.appearance).copy(icon = IconReference.Role("task.custom")))
+        val completedOnce = canonical("activity_event", id(52), buildJsonObject {
+            put("activity_uuid", once.uuid); put("event_type", "check_in"); put("value", "1.0")
+            put("occurred_at", time); put("received_at", time); put("local_date", "2026-10-06"); put("timezone", "Asia/Shanghai")
+            put("source_type", "app"); put("source_device_id", id(4)); put("note", "Original once")
+            put("metadata", buildJsonObject {})
+            for (key in listOf("duration_seconds", "duration_milliseconds", "started_at", "ended_at", "external_event_id", "reverts_event_uuid")) put(key, JsonNull)
+            put("one_time", buildJsonObject {
+                put("event_uuid", id(52)); put("action", "complete"); put("expected_version", 0)
+                put("expected_head_event_uuid", JsonNull); put("reverts_event_uuid", JsonNull)
+            })
+            put("one_time_state_after", buildJsonObject {
+                put("version", 1); put("head_event_uuid", id(52)); put("completion_event_uuid", id(52))
+            })
+        })
+        val duration = canonical("activity_event", id(53), buildJsonObject {
+            val end = java.time.Instant.ofEpochMilli(millis + 60_000).toString()
+            put("activity_uuid", timerHabit.uuid); put("event_type", "duration_session"); put("value", JsonNull)
+            put("duration_seconds", 60); put("duration_milliseconds", 60_000); put("started_at", time); put("ended_at", end)
+            put("occurred_at", end); put("received_at", time); put("local_date", "2026-10-06"); put("timezone", "Asia/Shanghai")
+            put("source_type", "app"); put("source_device_id", id(4)); put("external_event_id", id(53)); put("note", "Original timer")
+            put("reverts_event_uuid", JsonNull); put("metadata", buildJsonObject { put("timer_session_id", id(53)) })
+            put("day_allocations", buildJsonArray { add(buildJsonObject {
+                put("local_date", "2026-10-06"); put("timezone", "Asia/Shanghai"); put("duration_milliseconds", 60_000)
+            }) })
+        })
+        val observation = canonical("metric_observation", id(54), buildJsonObject {
+            put("metric_uuid", metric.uuid); put("value", "21.125"); put("unit", "kg")
+            put("occurred_at", time); put("received_at", time); put("local_date", "2026-10-06"); put("timezone", "Asia/Shanghai")
+            put("note", "Original observation"); put("source_type", "app"); put("source_device_id", id(4))
+            put("external_event_id", JsonNull); put("metadata", buildJsonObject {})
+        })
+        val link = canonical("activity_metric_link", id(55), buildJsonObject {
+            put("activity_uuid", habit.uuid); put("metric_uuid", metric.uuid); put("coefficient", "0.5")
+            put("show_in_activity_detail", true); put("prompt_on_complete", true); put("is_active", true)
+        })
+        val wire = recoveryWire!!
+        recoveryWire = wire.copy(snapshot = wire.snapshot.copy(changes = wire.snapshot.changes + listOf(
+            canonical("plan_node", once.uuid, NextStructureMapper.writePlan(once)), oldCount(), duration, completedOnce, observation, link),
+            oneTimeCheckpoints = listOf(OneTimeProjection(once.uuid, OneTimeState(1, id(52), id(52)))),
+            births = listOf(ChallengeBirth("activity_event", id(50), initialChallengeRoundHead(habit.uuid)),
+                ChallengeBirth("activity_event", id(53), initialChallengeRoundHead(timerHabit.uuid)),
+                ChallengeBirth("timer_session", id(53), initialChallengeRoundHead(timerHabit.uuid)))))
+        val archived = workflow().prepare(differences().capture(recoveryCandidate()))
+        val evidence = workflow().verifyForConfirmation(archived); val committed = workflow().confirm(evidence)
+        assertEquals(ReplicaSwitchPhase.SQL_COMMITTED, committed.phase)
+        assertEquals(evidence.candidate.projection.hash, ReplicaProjection.capture(db).hash)
+        assertEquals(3, db.completionDao().getCompletionByUuid(id(50))!!.value)
+        assertEquals(millis, db.completionDao().getCompletionByUuid(id(50))!!.actualCompletedAt)
+        assertEquals(1, db.habitDao().getHabitByUuid(once.uuid)!!.oneTimeConfirmedVersion)
+        assertEquals("complete", db.completionDao().getCompletionByUuid(id(52))!!.oneTimeAction)
+        val timer = db.timeLogDao().getTimeLogByUuid(id(53))!!
+        assertEquals(60, timer.durationSeconds); assertEquals(millis, timer.startTime); assertEquals(millis + 60_000, timer.endTime)
+        assertEquals(1, count("timelog_day_allocations")); assertEquals(1, count("habit_metric_links"))
+        val value = db.metricLogDao().getLogByUuid(id(54))!!
+        assertEquals(21.125, value.value, 0.0); assertEquals(millis, value.date); assertEquals("Asia/Shanghai", value.recordedTimezone)
+        assertEquals("Original observation", value.note); assertEquals(0, count("sync_outbox")); assertEquals(0, count("timer_command_outbox"))
+        assertFalse(db.nextRequestDao().hasAny()); assertEquals(id(3), tokens.syncEpoch.first()); assertNull(tokens.localCoreWriteAccess())
+    }
+
+    @Test fun actualSqlFullRollsBackDataAndGuardDdlAndColdOldFateRequiresExplicitRetryOrCancel() = runBlocking<Unit> {
+        initialize(); startRecovery()
+        val wire = recoveryWire!!
+        recoveryWire = wire.copy(snapshot = wire.snapshot.copy(changes = wire.snapshot.changes + (200..229).map {
+            canonical("metric", id(it), NextStructureMapper.writeMetric(metric.copy(uuid = id(it), name = "New metric $it",
+                description = "x".repeat(1000))))
+        }))
+        val archived = workflow().prepare(differences().capture(recoveryCandidate()))
+        val evidence = workflow().verifyForConfirmation(archived); val schema = ReplicaProjection.schemaHash(db)
+        val sql = db.openHelper.writableDatabase
+        fun pragma(name: String) = sql.query("PRAGMA $name").use { check(it.moveToFirst()); it.getLong(0) }
+        // Bind the fault to the primary transaction connection, not a WAL read connection.
+        val maximum = db.withTransaction {
+            val before = pragma("max_page_count"); val pages = pragma("page_count")
+            assertEquals(pages, pragma("max_page_count=$pages")); before
+        }
+        try {
+            val error = rejected { workflow().confirm(evidence) }
+            assertTrue("Must exercise actual storage-full rollback, got $error", generateSequence(error as Throwable?) { it.cause }
+                .any { it is android.database.sqlite.SQLiteFullException })
+        } finally { db.withTransaction { assertEquals(maximum, pragma("max_page_count=$maximum")) } }
+        val committing = tokens.activeReplicaStage()!!; assertEquals(ReplicaSwitchPhase.COMMITTING, committing.phase)
+        assertEquals(ReplicaCommitFate.OLD, NextReplicaCommitStore(db, tokens, sessions).fate(committing))
+        assertEquals(schema, ReplicaProjection.schemaHash(db)); assertEquals(id(3), db.nextSyncStateDao().rows().single().syncEpoch)
+        assertEquals(1, count("metrics")); assertEquals(committing.fence, db.nextReplicaFenceDao().state())
+        assertNotNull(rejected { db.metricDao().update(metric.copy(name = "still blocked")) })
+        coldReopen(); assertEquals(committing, workflow().resume(committing))
+        assertEquals(1, count("metrics")); assertEquals(id(3), tokens.syncEpoch.first()); assertNull(tokens.localCoreWriteAccess())
+        // Actual SQL cancel succeeded but its DS delivery was lost. Exact cancel must still finish forward.
+        NextReplicaWriteFence(db).closeBeforeCommit(committing.fence)
+        coldReopen(); assertEquals(committing, tokens.activeReplicaStage()); assertNull(tokens.localCoreWriteAccess())
+        val ended = workflow().cancel(committing)
+        assertEquals(ReplicaSwitchPhase.ABORTED, ended.phase); assertEquals(5L, ended.generation)
+        assertEquals(ended, workflow().cancel(committing)); assertEquals(committing.target, ended.target)
+        assertEquals(committing.archive, ended.archive); assertNotNull(tokens.localCoreWriteAccess())
+        assertEquals("Weight", db.metricDao().getMetricByUuid(metric.uuid)!!.name)
+    }
+
+    @Test fun corruptedArchiveAndChangedSnapshotRejectExplicitConfirmationBeforeAnySqlOrCommittingPhase() = runBlocking<Unit> {
+        initialize(); startRecovery(); val archived = workflow().prepare(differences().capture(recoveryCandidate()))
+        val evidence = workflow().verifyForConfirmation(archived); val before = storageHash()
+        val wire = recoveryWire!!; recoveryWire = wire.copy(snapshot = wire.snapshot.copy(nextCursor = 21))
+        assertEquals("SYNC_RECOVERY_PREVIEW_CHANGED", rejected { workflow().confirm(evidence) }.message)
+        recoveryWire = wire
+        val file = archive(receipt(archived)); val bytes = file.readBytes(); bytes[bytes.size / 2] = (bytes[bytes.size / 2].toInt() xor 1).toByte()
+        file.writeBytes(bytes)
+        assertNotNull(rejected { workflow().confirm(evidence) })
+        assertEquals(archived, tokens.activeReplicaStage()); assertEquals(before, storageHash())
+        assertEquals(id(3), db.nextSyncStateDao().rows().single().syncEpoch); assertNull(tokens.localCoreWriteAccess())
+    }
+
+    @Test fun actualPostCommitSchemaOrRowDamageCannotBeMistakenForAnOldOrCommittedReplica() = runBlocking<Unit> {
+        initialize(); startRecovery(); val archived = workflow().prepare(differences().capture(recoveryCandidate()))
+        val evidence = workflow().verifyForConfirmation(archived)
+        val committing = NextReplicaStageStore(db, tokens, sessions).recordCommitting(archived, commitTarget(evidence.candidate))
+        val store = NextReplicaCommitStore(db, tokens, sessions); store.commit(committing, evidence.candidate)
+        val sql = db.openHelper.writableDatabase
+        val guard = sql.query("SELECT sql FROM sqlite_master WHERE name='replica_fence_metrics_update'").use { check(it.moveToFirst()); it.getString(0) }
+        sql.execSQL("DROP TRIGGER replica_fence_metrics_update")
+        assertEquals("SYNC_REPLICA_FENCE_CHANGED", rejected { workflow().resume(committing) }.message)
+        sql.execSQL(guard); assertEquals(ReplicaCommitFate.COMMITTED, store.fate(committing))
+        // Deliberate corruption only in isolated testbed: same row/count/cursor, exact DDL restored.
+        sql.execSQL("DROP TRIGGER replica_fence_metrics_update")
+        // Timestamp-only corruption is not a tracked business edit, so the normal outbox trigger does
+        // not block this deliberate raw corruption after removing just the exact row guard.
+        sql.execSQL("UPDATE metrics SET updatedAt=updatedAt+1 WHERE uuid=?", arrayOf(metric.uuid))
+        sql.execSQL(guard)
+        val after = ReplicaProjection.capture(db).hash
+        assertNotEquals(committing.target!!.projectionHash, after)
+        assertEquals("SYNC_REPLICA_COMMIT_STATE_INVALID", rejected { workflow().resume(committing) }.message)
+        assertNotNull(rejected { workflow().cancel(committing) }); assertEquals(committing, tokens.activeReplicaStage())
+        assertEquals(after, ReplicaProjection.capture(db).hash); assertEquals(id(99), db.nextSyncStateDao().rows().single().syncEpoch)
+        assertNull(tokens.localCoreWriteAccess()); assertEquals(committing.fence, db.nextReplicaFenceDao().state())
+    }
+
     @Test fun completeWorkflowPersistsArchiveAndColdVerifiesFreshEvidenceWithoutSwitchingScope() = runBlocking<Unit> {
         initialize(fixed = true); completeMaterial(); initializeThemes(); startRecovery()
         val original = access(); val initial = differences().capture(recoveryCandidate())

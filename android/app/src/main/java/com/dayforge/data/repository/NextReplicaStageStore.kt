@@ -8,7 +8,7 @@ import com.dayforge.data.local.TokenManager
 import com.dayforge.data.local.entity.NextReplicaFenceEntity
 import com.dayforge.domain.service.AccountSessionCoordinator
 
-/** Pre-COMMIT journal participant, deliberately not connected to the production recovery UI.
+/** Journal participant, deliberately not connected to the production recovery UI.
  * The eventual owner must supply freshly verified full inputs, drain file/network work and bind
  * the durable archive before offering confirmation. FREEZING may persist before SQL acquisition;
  * that gap is blocked and explicit retry/cancel observes real state, never assumed atomicity.
@@ -17,7 +17,13 @@ internal class NextReplicaStageStore(private val database: HabitDatabase, privat
     private val sessions: AccountSessionCoordinator) {
     suspend fun active(): ReplicaSwitchStage? = tokens.activeReplicaStage()
 
-    suspend fun begin(stage: ReplicaSwitchStage): ReplicaSwitchStage = sessions.exclusive { database.withTransaction {
+    /** DS phases must not report rows visible only inside a caller's uncommitted outer SQL txn. */
+    private suspend fun <T> exclusive(block: suspend () -> T): T {
+        check(!database.inTransaction()) { "SYNC_REPLICA_AMBIENT_TRANSACTION" }
+        return sessions.exclusive(block)
+    }
+
+    suspend fun begin(stage: ReplicaSwitchStage): ReplicaSwitchStage = exclusive { database.withTransaction {
         require(stage.phase == ReplicaSwitchPhase.FREEZING)
         val sql = database.nextReplicaFenceDao().state()
         check(sql == null || sql == stage.fence ||
@@ -35,7 +41,7 @@ internal class NextReplicaStageStore(private val database: HabitDatabase, privat
     } }
 
     /** Does not acquire SQL from an unchecked input or assert archive verification. */
-    suspend fun recordFrozen(expected: ReplicaSwitchStage): ReplicaSwitchStage = sessions.exclusive {
+    suspend fun recordFrozen(expected: ReplicaSwitchStage): ReplicaSwitchStage = exclusive {
         database.withTransaction {
             check(database.nextReplicaFenceDao().state() == expected.fence) { "SYNC_REPLICA_FENCE_CHANGED" }
             val next = expected.transition(ReplicaSwitchPhase.FROZEN)
@@ -49,7 +55,7 @@ internal class NextReplicaStageStore(private val database: HabitDatabase, privat
 
     /** Owning workflow has verified the complete source closure and actual private archive bytes. */
     suspend fun recordArchive(expected: ReplicaSwitchStage,
-        receipt: com.dayforge.data.local.ReplicaStageArchive): ReplicaSwitchStage = sessions.exclusive {
+        receipt: com.dayforge.data.local.ReplicaStageArchive): ReplicaSwitchStage = exclusive {
         database.withTransaction {
             check(database.nextReplicaFenceDao().state() == expected.fence) { "SYNC_REPLICA_FENCE_CHANGED" }
             check(NextReplicaSourceClosure.storage(NextReplicaStorageProof(database).readInTransaction(), expected.fence) ==
@@ -58,11 +64,32 @@ internal class NextReplicaStageStore(private val database: HabitDatabase, privat
         }
     }
 
-    /** Only pre-COMMIT phases exist here. Close SQL first, then release the persistent pointer.
+    suspend fun recordCommitting(expected: ReplicaSwitchStage,
+        target: com.dayforge.data.local.ReplicaStageTarget): ReplicaSwitchStage = exclusive {
+        database.withTransaction {
+            check(database.nextReplicaFenceDao().state() == expected.fence &&
+                NextReplicaSourceClosure.storage(NextReplicaStorageProof(database).readInTransaction(), expected.fence) ==
+                expected.sourceHash) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
+            tokens.persistReplicaStage(expected, expected.transition(ReplicaSwitchPhase.COMMITTING, destination = target))
+        }
+    }
+
+    /** Caller has cold verified the retained archive; SQL fate is always checked here as well. */
+    suspend fun recordSqlCommitted(expected: ReplicaSwitchStage): ReplicaSwitchStage = exclusive {
+        database.withTransaction {
+            check(NextReplicaCommitStore(database, tokens, sessions).fateInTransaction(expected) == ReplicaCommitFate.COMMITTED) {
+                "SYNC_REPLICA_COMMIT_STATE_INVALID"
+            }
+            tokens.persistReplicaStage(expected, expected.transition(ReplicaSwitchPhase.SQL_COMMITTED))
+        }
+    }
+
+    /** Cancel only while complete actual SQL still proves the old replica. Close SQL first,
+     * then release the persistent pointer.
      * If delivery/persistence is interrupted, ordinary work stays blocked until this exact cancel
      * observes the actual closed row and finishes forward. No data or credential restoration.
      */
-    suspend fun cancel(expected: ReplicaSwitchStage): ReplicaSwitchStage = sessions.exclusive {
+    suspend fun cancel(expected: ReplicaSwitchStage): ReplicaSwitchStage = exclusive {
         val active = tokens.activeReplicaStage()
         val terminal = expected.transition(ReplicaSwitchPhase.ABORTED)
         val alreadyClosed = active == null && tokens.replicaStage(expected.recoveryId) == terminal
@@ -73,6 +100,10 @@ internal class NextReplicaStageStore(private val database: HabitDatabase, privat
             authentication = actualAccess.session.authentication)) &&
             tokens.registeredInstallationId() == expected.installationId) { "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED" }
         database.withTransaction {
+            if (expected.phase == ReplicaSwitchPhase.COMMITTING) check(
+                NextReplicaCommitStore(database, tokens, sessions).fateInTransaction(expected, allowClosedOld = true) == ReplicaCommitFate.OLD) {
+                "SYNC_REPLICA_ALREADY_COMMITTED"
+            }
             val actual = database.nextReplicaFenceDao().state()
             when {
                 actual == expected.fence && !alreadyClosed || actual == expected.fence.copy(mode = NextReplicaFenceEntity.CLOSED) ->

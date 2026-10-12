@@ -133,7 +133,12 @@ class NextReplicaStageStoreTest : NextCoreRequestFixture() {
 
     @Test fun actualSqlRollbackDoesNotManufactureFrozenJournalOrDiscardNormalSourceData() = runBlocking<Unit> {
         val stage = begin(); val before = hash()
-        reject { db.withTransaction { NextReplicaWriteFence(db).acquire(stage.fence); error("simulated actual SQL rollback") } }
+        reject { db.withTransaction {
+            NextReplicaWriteFence(db).acquire(stage.fence)
+            assertEquals("SYNC_REPLICA_AMBIENT_TRANSACTION", rejected { stages().recordFrozen(stage) }.message)
+            assertEquals(stage, stages().active())
+            error("simulated actual SQL rollback")
+        } }
         assertEquals(before, hash()); assertNull(db.nextReplicaFenceDao().state()); assertEquals(stage, stages().active())
         reject { stages().recordFrozen(stage) }; stages().cancel(stage)
         assertEquals(before, hash()); assertFalse(tokens.replicaSwitchPending())

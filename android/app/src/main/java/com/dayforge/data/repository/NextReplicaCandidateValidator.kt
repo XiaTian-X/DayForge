@@ -21,6 +21,17 @@ import kotlinx.serialization.json.*
 
 internal data class ReplicaRecordKey(val kind: String, val identity: String)
 
+private fun replicaCandidateContentHash(epoch: String, cursor: Long, proof: RecoveryDeviceProof,
+    records: Map<ReplicaRecordKey, JsonElement>, unfinished: Boolean): String =
+    syncPayloadHash(canonicalReplicaJson(buildJsonObject {
+        put("new_epoch", epoch); put("cursor", cursor); put("unfinished_timer", unfinished)
+        put("device", Json.encodeToJsonElement(proof.copy(capabilities = proof.capabilities.sorted())))
+        put("records", buildJsonArray {
+            for ((key, value) in records.entries.sortedWith(compareBy({ it.key.kind }, { it.key.identity })))
+                add(buildJsonObject { put("kind", key.kind); put("identity", key.identity); put("value", value) })
+        })
+    }).toString())
+
 /** Complete validated server contents, not a staged database or permission to replace one. */
 internal class ValidatedReplicaCandidate internal constructor(
     val original: LocalSyncAccess,
@@ -29,18 +40,12 @@ internal class ValidatedReplicaCandidate internal constructor(
     val wireHash: String,
     val deviceProof: RecoveryDeviceProof,
     records: Map<ReplicaRecordKey, JsonElement>,
-    val hasUnfinishedTimer: Boolean
+    val hasUnfinishedTimer: Boolean,
+    val projection: ReplicaProjection
 ) {
     val records: Map<ReplicaRecordKey, JsonElement> = Collections.unmodifiableMap(records.toMap())
     /** Stable business/device proof, excluding only volatile response server_time/wire bytes. */
-    val contentHash: String = syncPayloadHash(canonicalReplicaJson(buildJsonObject {
-        put("new_epoch", newEpoch); put("cursor", cursor); put("unfinished_timer", hasUnfinishedTimer)
-        put("device", Json.encodeToJsonElement(deviceProof.copy(capabilities = deviceProof.capabilities.sorted())))
-        put("records", buildJsonArray {
-            for ((key, value) in records.entries.sortedWith(compareBy({ it.key.kind }, { it.key.identity })))
-                add(buildJsonObject { put("kind", key.kind); put("identity", key.identity); put("value", value) })
-        })
-    }).toString())
+    val contentHash: String = replicaCandidateContentHash(newEpoch, cursor, deviceProof, records, hasUnfinishedTimer)
     val activationAuthorized: Boolean get() = false
 }
 
@@ -74,7 +79,15 @@ internal class NextReplicaCandidateValidator @Inject constructor(
                 proof.capabilities.all(String::isNotBlank) && "sync.read" in proof.capabilities)
             require(("structure.write" in proof.capabilities) == (proof.isPrimaryEditor || proof.structuralEditEnabled))
             Instant.parse(requireNotNull(proof.lastSeenAt))
-            val snapshot = frozen.snapshot
+            // Deterministic private row identities/JSON, independent of response transport order.
+            // Original wire and response records remain separate audit evidence.
+            val snapshot = frozen.snapshot.copy(
+                changes = frozen.snapshot.changes.sortedWith(compareBy({ it.entityType }, { it.entityUuid }))
+                    .map { it.copy(payload = canonicalReplicaJson(it.payload).jsonObject) },
+                oneTimeCheckpoints = frozen.snapshot.oneTimeCheckpoints.sortedBy { it.activityUuid },
+                checkpoints = frozen.snapshot.checkpoints.sortedBy { it.head.activityUuid }
+                    .map { it.copy(records = it.records.sortedBy { record -> record.head.generation }) },
+                births = frozen.snapshot.births.sortedWith(compareBy({ it.entityType }, { it.entityUuid })))
             require(snapshot.nextCursor >= 0)
             Instant.parse(snapshot.serverTime)
             for (change in snapshot.changes) {
@@ -143,10 +156,29 @@ internal class NextReplicaCandidateValidator @Inject constructor(
                 }
                 snapshot.births.forEach { add("challenge_birth.${it.entityType}", it.entityUuid, json.encodeToJsonElement(it)) }
                 frozen.activeTimer?.let { add("active_timer", it.sessionId, json.encodeToJsonElement(it)) }
+                // Active target checkpoints use stable validated contents, not volatile server_time.
+                val contentHash = replicaCandidateContentHash(frozen.syncEpoch, snapshot.nextCursor, proof, records, frozen.activeTimer != null)
+                candidate.withTransaction {
+                    // Existing merge helpers timestamp cache receipt locally. A fresh private
+                    // projection must instead bind those cache-only timestamps to verified
+                    // remote updated_at, without changing any business occurrence/history time.
+                    for (change in snapshot.changes.filterNot { it.entityType == "challenge_round" }) {
+                        val shadow = requireNotNull(candidate.syncOutboxDao().getState(change.entityType, change.entityUuid))
+                        val stamp = Instant.parse(change.changedAt).toEpochMilli()
+                        candidate.openHelper.writableDatabase.execSQL(
+                            "UPDATE sync_entity_state SET updatedAt=? WHERE entityType=? AND entityUuid=?",
+                            arrayOf<Any>(stamp, change.entityType, change.entityUuid))
+                        check(candidate.syncOutboxDao().getState(change.entityType, change.entityUuid) == shadow.copy(updatedAt = stamp))
+                    }
+                    val current = candidate.nextSyncStateDao().rows().single()
+                    check(candidate.nextSyncStateDao().update(current.copy(bootstrapHash = contentHash, batchHash = contentHash)) == 1)
+                    val challenge = candidate.nextChallengeDao().states().single()
+                    check(candidate.nextChallengeDao().update(challenge.copy(batchHash = contentHash)) == 1)
+                    NextChallengeStore(candidate).activeInTransaction(candidateScope)
+                }
                 ValidatedReplicaCandidate(original.copy(capabilities = original.capabilities.toSet()), frozen.syncEpoch,
-                    snapshot.nextCursor, syncPayloadHash(wire),
-                    proof.copy(capabilities = Collections.unmodifiableList(proof.capabilities.toList())),
-                    records, frozen.activeTimer != null)
+                    snapshot.nextCursor, syncPayloadHash(wire), proof.copy(capabilities = Collections.unmodifiableList(proof.capabilities.toList())),
+                    records, frozen.activeTimer != null, ReplicaProjection.capture(candidate))
             } catch (error: Throwable) {
                 failure = error
                 throw error

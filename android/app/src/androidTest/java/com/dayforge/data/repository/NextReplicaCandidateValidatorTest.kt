@@ -45,6 +45,8 @@ class NextReplicaCandidateValidatorTest : NextCoreRequestFixture() {
         unchanged {
             val candidate = validate(value)
             assertFalse(candidate.activationAuthorized); assertFalse(candidate.hasUnfinishedTimer)
+            assertEquals(candidate.projection.hash, validate(value.copy(snapshot = value.snapshot.copy(
+                changes = value.snapshot.changes.reversed(), serverTime = "2026-10-06T00:01:00Z"))).projection.hash)
             assertEquals(id(3), candidate.original.session.syncEpoch); assertEquals(id(99), candidate.newEpoch)
             assertEquals(20L, candidate.cursor); assertEquals(5, candidate.records.size)
             assertEquals("Weight", candidate.records.getValue(ReplicaRecordKey("metric", metric.uuid)).jsonObject["name"]!!.jsonPrimitive.content)
@@ -92,6 +94,7 @@ class NextReplicaCandidateValidatorTest : NextCoreRequestFixture() {
         unchanged {
             val candidate = validate(value)
             assertEquals("original note", candidate.records.getValue(ReplicaRecordKey("activity_event", id(51))).jsonObject["note"]!!.jsonPrimitive.content)
+            assertEquals(candidate.projection.hash, validate(value).projection.hash)
             assertEquals(1, candidate.records.getValue(ReplicaRecordKey("one_time_checkpoint", once.uuid)).jsonObject["state"]!!.jsonObject["version"]!!.jsonPrimitive.int)
             assertNull(db.habitDao().getHabitByUuid(once.uuid))
         }

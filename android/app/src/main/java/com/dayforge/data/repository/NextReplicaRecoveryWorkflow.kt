@@ -14,11 +14,11 @@ internal class ReplicaRecoveryConfirmationEvidence internal constructor(val stag
     val activationAuthorized: Boolean get() = false
 }
 
-/** Complete pre-COMMIT owner, deliberately not installed in the production UI or DI graph.
+/** Recovery owner through actual SQL COMMIT, not installed in the production UI or DI graph.
  * Shared sync serialization drains manual/worker requests; persistent gates stop new ordinary
  * work. Full input inspection takes the real icon/theme leases and rechecks every source byte.
  * Interrupted FREEZING/FROZEN stays blocked; no implicit cancel, orphan adoption or data rollback.
- * COMMIT/post-COMMIT stages and production consumer barriers must be delivered before activation.
+ * Scope/material publication and production consumer barriers remain required before activation.
  */
 internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSyncRepository,
     private val database: HabitDatabase, private val tokens: TokenManager,
@@ -26,6 +26,7 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
     private val candidates: NextReplicaCandidateValidator, private val differences: NextReplicaDifferenceReader,
     private val inputs: NextReplicaArchiveInputReader, private val archives: ReplicaPrivateArchiveStore) {
     private val stages = NextReplicaStageStore(database, tokens, sessions)
+    private val commits = NextReplicaCommitStore(database, tokens, sessions)
 
     suspend fun prepare(previous: ReplicaDifferencePreview): ReplicaSwitchStage = coordinator.coordinateReplicaRecovery {
         check(stages.active() == null) { ReplicaSwitchGuard.PENDING }
@@ -51,28 +52,86 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
 
     /** Cold continuation always re-reads authenticated server contents; saved hashes are not DTOs. */
     suspend fun resume(expected: ReplicaSwitchStage): ReplicaSwitchStage = coordinator.coordinateReplicaRecovery {
+        if (expected.phase in setOf(ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED))
+            return@coordinateReplicaRecovery resumeCommit(expected)
         requireCurrent(expected)
         requireCandidate(expected, candidate(expected.original, expected.newEpoch, expected.installationId))
         when (expected.phase) {
             ReplicaSwitchPhase.FREEZING -> archiveFrozen(freeze(expected))
             ReplicaSwitchPhase.FROZEN -> archiveFrozen(expected)
             ReplicaSwitchPhase.ARCHIVE_VERIFIED -> { verifiedInput(expected) { _, _ -> Unit }; expected }
+            ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED -> error("SYNC_REPLICA_STAGE_CHANGED")
             ReplicaSwitchPhase.ABORTED -> error("SYNC_REPLICA_STAGE_TRANSITION_INVALID")
         }
     }
 
     /** No confirmation survives a changed source, auth, permission, candidate or archive file. */
     suspend fun verifyForConfirmation(expected: ReplicaSwitchStage): ReplicaRecoveryConfirmationEvidence =
-        coordinator.coordinateReplicaRecovery {
-            require(expected.phase == ReplicaSwitchPhase.ARCHIVE_VERIFIED)
-            requireCurrent(expected)
-            val fresh = candidate(expected.original, expected.newEpoch, expected.installationId)
-            requireCandidate(expected, fresh)
-            val preview = verifiedInput(expected) { _, _ -> differences.capture(fresh) }
-            require(!preview.hasUnfinishedTimer && preview.unconfirmedLocalRecords.isEmpty()) { "SYNC_RECOVERY_REVIEW_REQUIRED" }
-            requireCurrent(expected)
-            ReplicaRecoveryConfirmationEvidence(expected, fresh, preview)
+        coordinator.coordinateReplicaRecovery { confirmationEvidence(expected) }
+
+    private suspend fun confirmationEvidence(expected: ReplicaSwitchStage): ReplicaRecoveryConfirmationEvidence {
+        require(expected.phase in setOf(ReplicaSwitchPhase.ARCHIVE_VERIFIED, ReplicaSwitchPhase.COMMITTING))
+        requireCurrent(expected)
+        if (expected.phase == ReplicaSwitchPhase.COMMITTING) require(commits.fate(expected) == ReplicaCommitFate.OLD) {
+            "SYNC_REPLICA_ALREADY_COMMITTED"
         }
+        val fresh = candidate(expected.original, expected.newEpoch, expected.installationId)
+        requireCandidate(expected, fresh)
+        expected.target?.let { require(it == target(fresh)) { "SYNC_RECOVERY_PREVIEW_CHANGED" } }
+        val preview = verifiedInput(expected) { _, _ -> differences.capture(fresh) }
+        require(!preview.hasUnfinishedTimer && preview.unconfirmedLocalRecords.isEmpty()) { "SYNC_RECOVERY_REVIEW_REQUIRED" }
+        requireCurrent(expected)
+        return ReplicaRecoveryConfirmationEvidence(expected, fresh, preview)
+    }
+
+    /** Only an explicit caller action invokes this, never discovery/startup/diagnostic GET.
+     * Rebuild all evidence; no DTO, stage name or old displayed preview is COMMIT permission.
+     * On SQL failure the durable COMMITTING pointer stays blocked, old data/DDL roll back together.
+     */
+    suspend fun confirm(evidence: ReplicaRecoveryConfirmationEvidence): ReplicaSwitchStage = coordinator.coordinateReplicaRecovery {
+        val fresh = confirmationEvidence(evidence.stage)
+        require(fresh.candidate.contentHash == evidence.candidate.contentHash &&
+            fresh.candidate.projection.hash == evidence.candidate.projection.hash) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
+        val committing = if (fresh.stage.phase == ReplicaSwitchPhase.COMMITTING) fresh.stage
+            else stages.recordCommitting(fresh.stage, target(fresh.candidate))
+        commits.commit(committing, fresh.candidate)
+        resumeCommit(committing)
+    }
+
+    /** Actual SQL fate distinguishes rollback from committed-but-undelivered. No automatic
+     * pre-COMMIT retry: OLD is reverified and left awaiting another explicit confirm/cancel.
+     * COMMITTED can only move forward, even after same-account reauthentication. Publication
+     * and new namespace material verification still remain gated after SQL_COMMITTED.
+     */
+    private suspend fun resumeCommit(stage: ReplicaSwitchStage): ReplicaSwitchStage {
+        requireRetainedOwner(stage)
+        return when (commits.fate(stage)) {
+            ReplicaCommitFate.OLD -> {
+                require(stage.phase == ReplicaSwitchPhase.COMMITTING) { "SYNC_REPLICA_COMMIT_STATE_INVALID" }
+                confirmationEvidence(stage)
+                stage
+            }
+            ReplicaCommitFate.COMMITTED -> {
+                archives.verify(receipt(stage, requireNotNull(stage.archive))) { requireRetainedOwner(stage) }
+                if (stage.phase == ReplicaSwitchPhase.SQL_COMMITTED) stage else stages.recordSqlCommitted(stage)
+            }
+        }
+    }
+
+    private suspend fun target(candidate: ValidatedReplicaCandidate) = candidate.deviceProof.let {
+        ReplicaStageTarget(candidate.projection.hash, sessions.exclusive { ReplicaProjection.schemaHash(database) },
+            it.deviceId, it.capabilityRevision, it.capabilities.sorted(),
+            it.isPrimaryEditor, it.structuralEditEnabled)
+    }
+
+    private suspend fun requireRetainedOwner(stage: ReplicaSwitchStage) {
+        val actual = requireNotNull(tokens.localSyncAccess()) { "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED" }
+        val sameOwner = stage.original.copy(session = stage.original.session.copy(authentication = actual.session.authentication))
+        check(tokens.activeReplicaStage() == stage && actual.session.authentication.userId == stage.accountId && actual == sameOwner &&
+            tokens.syncAuthenticationSnapshot(actual) != null && tokens.registeredInstallationId() == stage.installationId) {
+            "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED"
+        }
+    }
 
     suspend fun cancel(expected: ReplicaSwitchStage): ReplicaSwitchStage = coordinator.coordinateReplicaRecovery {
         // Same-owner reauthentication can cancel pre-COMMIT but must not continue stale consent.
