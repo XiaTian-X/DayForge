@@ -81,7 +81,16 @@ class RealBackendReplicaRecoveryJointTest {
         android.util.Log.i("RecoveryJoint", "Starting $name")
         var completed = false
         return try { withTimeout(60_000) { block() }.also { completed = true } }
-        catch (error: TimeoutCancellationException) { throw AssertionError("Recovery joint step timed out: $name", error) }
+        catch (error: TimeoutCancellationException) {
+            // Test-only diagnostics: stack locations, never credentials or record contents.
+            // Keep the original stage deadline and propagate the failure unchanged.
+            Thread.getAllStackTraces().values.filter { frames ->
+                frames.any { it.className.startsWith("com.dayforge.") }
+            }.forEach { frames ->
+                android.util.Log.i("RecoveryJoint", "Timeout stack:\n${frames.joinToString("\n")}")
+            }
+            throw AssertionError("Recovery joint step timed out: $name", error)
+        }
         finally { android.util.Log.i("RecoveryJoint", "${if (completed) "Completed" else "Failed"} $name in ${SystemClock.elapsedRealtime() - start}ms") }
     }
 

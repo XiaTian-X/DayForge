@@ -212,4 +212,39 @@ class NextReplicaStageStoreTest : NextCoreRequestFixture() {
         assertEquals(stage, stages().active()); stages().cancel(stage)
         assertFalse(tokens.replicaSwitchPending()); assertNotNull(tokens.localCoreWriteAccess())
     }
+
+    @Test fun sharedHashPatternRetainsExactLowercaseFullMatchAcrossEveryStageField() = runBlocking<Unit> {
+        register()
+        val good = tokens.replicaStageFixture()
+        val digest = "0123456789abcdef".repeat(4)
+        val target = ReplicaStageTarget(digest, digest, good.deviceId, 1, listOf("sync.read"), false, false)
+        val entries = listOf("input.json", "business.json", "icons.json").map { ReplicaStageArchiveEntry(it, 1, digest) }
+        val archive = ReplicaStageArchive(id(88), digest, 3, digest, entries)
+        val fields: List<(String) -> Any> = listOf(
+            { good.copy(sourceHash = it) }, { good.copy(inputHash = it) },
+            { good.copy(candidateHash = it) }, { good.copy(candidateWireHash = it) },
+            { good.copy(previousFenceHash = it) }, { target.copy(projectionHash = it) },
+            { target.copy(schemaHash = it) }, { ReplicaStageSnapshot(it, digest, 0, target) },
+            { ReplicaStageSnapshot(digest, it, 0, target) },
+            { ReplicaStageRelease(6, it, good.authenticationGeneration) },
+            { ReplicaStageCompletion(it, good.authenticationGeneration) },
+            { archive.copy(contentHash = it) },
+            { archive.copy(inputHash = it, entries = entries.mapIndexed { index, entry ->
+                if (index == 0) entry.copy(contentHash = it) else entry
+            }) },
+            { archive.copy(entries = entries.mapIndexed { index, entry ->
+                if (index == 1) entry.copy(contentHash = it) else entry
+            }) }
+        )
+        for (field in fields) {
+            field(digest)
+            for (invalid in listOf("", "a".repeat(63), "a".repeat(65), "A".repeat(64),
+                "g".repeat(64), digest + "\n", " " + digest, "０".repeat(64))) {
+                assertTrue(runCatching { field(invalid) }.exceptionOrNull() is IllegalArgumentException)
+            }
+        }
+        val raw = ReplicaSwitchStage.encode(good.copy(sourceHash = digest))
+        assertEquals(good.copy(sourceHash = digest), ReplicaSwitchStage.decode(raw))
+        reject { ReplicaSwitchStage.decode(raw.replace(digest, "A".repeat(64))) }
+    }
 }

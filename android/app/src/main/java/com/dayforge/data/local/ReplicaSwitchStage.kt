@@ -15,6 +15,10 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
+// Stage bodies are decoded on each fresh authority check. Share only the immutable
+// pattern, never a match, decoded stage, credential or authorization result.
+private val replicaStageHashPattern = Regex("[0-9a-f]{64}")
+
 internal enum class ReplicaSwitchPhase { FREEZING, FROZEN, ARCHIVE_VERIFIED, COMMITTING, SQL_COMMITTED,
     DESTINATION_BOUND, CATCHUP_COMMITTING, CATCHUP_BOUND, RELEASING, COMPLETED, ABORTED }
 
@@ -23,7 +27,7 @@ internal data class ReplicaStageTarget(val projectionHash: String, val schemaHas
     val capabilityRevision: Int, val capabilities: List<String>, val isPrimaryEditor: Boolean,
     val structuralEditEnabled: Boolean) {
     init {
-        require(listOf(projectionHash, schemaHash).all { it.matches(Regex("[0-9a-f]{64}")) } && isContractUuid(deviceId) && capabilityRevision > 0)
+        require(listOf(projectionHash, schemaHash).all { it.matches(replicaStageHashPattern) } && isContractUuid(deviceId) && capabilityRevision > 0)
         require(capabilities.size <= 256 && capabilities == capabilities.distinct().sorted() &&
             "sync.read" in capabilities && capabilities.all { it.isNotBlank() && it.length <= 256 })
         require(("structure.write" in capabilities) == (isPrimaryEditor || structuralEditEnabled))
@@ -34,7 +38,7 @@ internal data class ReplicaStageTarget(val projectionHash: String, val schemaHas
 @Serializable
 internal data class ReplicaStageSnapshot(val contentHash: String, val wireHash: String,
     val cursor: Long, val target: ReplicaStageTarget) {
-    init { require(cursor >= 0 && listOf(contentHash, wireHash).all { it.matches(Regex("[0-9a-f]{64}")) }) }
+    init { require(cursor >= 0 && listOf(contentHash, wireHash).all { it.matches(replicaStageHashPattern) }) }
 }
 
 /** The previous published checkpoint is retained until SQL fate proves the next one. */
@@ -55,14 +59,14 @@ internal data class ReplicaStageRelease(val fromGeneration: Long, val materialHa
     val authenticationGeneration: String) {
     init {
         require(fromGeneration >= 6 && fromGeneration % 2L == 0L && fromGeneration <= Long.MAX_VALUE - 2)
-        require(materialHash.matches(Regex("[0-9a-f]{64}")) && isContractUuid(authenticationGeneration))
+        require(materialHash.matches(replicaStageHashPattern) && isContractUuid(authenticationGeneration))
     }
 }
 
 /** Actual fresh proof at final publication, not a cached copy of the earlier release intent. */
 @Serializable
 internal data class ReplicaStageCompletion(val materialHash: String, val authenticationGeneration: String) {
-    init { require(materialHash.matches(Regex("[0-9a-f]{64}")) && isContractUuid(authenticationGeneration)) }
+    init { require(materialHash.matches(replicaStageHashPattern) && isContractUuid(authenticationGeneration)) }
 }
 
 @Serializable
@@ -74,11 +78,11 @@ internal data class ReplicaStageArchive(val archiveId: String, val inputHash: St
     val byteLength: Long, val contentHash: String, val entries: List<ReplicaStageArchiveEntry>) {
     init {
         require(isContractUuid(archiveId) && byteLength in 1..672L * 1024 * 1024 && entries.size in 3..4610)
-        require(listOf(inputHash, contentHash).all { it.matches(Regex("[0-9a-f]{64}")) })
+        require(listOf(inputHash, contentHash).all { it.matches(replicaStageHashPattern) })
         require(entries.map { it.name }.distinct().size == entries.size &&
             entries.take(3).map { it.name } == listOf("input.json", "business.json", "icons.json"))
         require(entries.first().contentHash == inputHash && entries.all { it.name.length in 1..160 &&
-            it.byteLength in 0..32L * 1024 * 1024 && it.contentHash.matches(Regex("[0-9a-f]{64}")) })
+            it.byteLength in 0..32L * 1024 * 1024 && it.contentHash.matches(replicaStageHashPattern) })
     }
 }
 
@@ -106,8 +110,8 @@ internal data class ReplicaSwitchStage(
             newEpoch, authenticationGeneration, deviceId, installationId).all(::isContractUuid))
         require(capabilities.size <= 256 && capabilities == capabilities.distinct().sorted() &&
             "sync.read" in capabilities && capabilities.all { it.isNotBlank() && it.length <= 256 })
-        require(listOf(sourceHash, inputHash, candidateHash, candidateWireHash).all { it.matches(Regex("[0-9a-f]{64}")) })
-        require(previousFenceHash == null || previousFenceHash.matches(Regex("[0-9a-f]{64}")))
+        require(listOf(sourceHash, inputHash, candidateHash, candidateWireHash).all { it.matches(replicaStageHashPattern) })
+        require(previousFenceHash == null || previousFenceHash.matches(replicaStageHashPattern))
         require(when (phase) {
             ReplicaSwitchPhase.FREEZING -> generation == 1L
             ReplicaSwitchPhase.FROZEN -> generation == 2L
