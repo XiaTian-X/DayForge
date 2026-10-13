@@ -355,20 +355,16 @@ def serve(directory: Path) -> None:
         nonlocal stopping
         stopping = True
 
-    previous = {
-        kind: signal.signal(kind, request_stop)
-        for kind in (signal.SIGTERM, signal.SIGINT)
-    }
-    try:
-        with recovery_servers(directory) as ready:
-            temporary = directory / "ready.tmp"
-            temporary.write_text(json.dumps(ready) + "\n")
-            temporary.rename(directory / "ready.json")
-            while not stopping:
-                time.sleep(0.05)
-    finally:
-        for kind, handler in previous.items():
-            signal.signal(kind, handler)
+    # Owned CLI lifetime, including the gap after serve() returns. Restoring
+    # defaults here lets a delayed wrapper relay interrupt successful teardown.
+    for kind in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(kind, request_stop)
+    with recovery_servers(directory) as ready:
+        temporary = directory / "ready.tmp"
+        temporary.write_text(json.dumps(ready) + "\n")
+        temporary.rename(directory / "ready.json")
+        while not stopping:
+            time.sleep(0.05)
 
 
 if __name__ == "__main__":

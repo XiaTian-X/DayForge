@@ -54,43 +54,40 @@ def serve(directory: Path) -> None:
         nonlocal stopping
         stopping = True
 
-    previous = {
-        kind: signal.signal(kind, request_stop)
-        for kind in (signal.SIGTERM, signal.SIGINT)
-    }
-    try:
-        with isolated_server(
-            directory,
-            database=database,
-            asset_root=assets,
-            credentials=(secrets.token_urlsafe(48), TEST_ACCOUNT_PASSWORD),
-        ) as (client, _, _):
-            ready = directory / "ready.tmp"
-            ready.write_text(json.dumps({"url": client.base_url}) + "\n")
-            ready.rename(directory / "ready.json")
-            while not stopping:
-                time.sleep(0.05)
-        inspected = inspect_database(database, asset_root=assets)
-        if not inspected.valid or inspected.active_timer_count:
-            raise ValueError("Joint backend did not finish with valid terminal data")
-        (directory / "complete.json").write_text(
-            json.dumps(
-                {
-                    "valid": inspected.valid,
-                    "active_timer_count": inspected.active_timer_count,
-                    "protocol_version": inspected.protocol_version,
-                    "server_instance_id": inspected.server_instance_id,
-                    "sync_epoch": inspected.sync_epoch,
-                    "alembic_head": inspected.alembic_head,
-                    "row_counts": inspected.row_counts,
-                },
-                indent=2,
-            )
-            + "\n"
+    # This is an owned CLI process, not an in-process fixture. Keep its handlers
+    # through interpreter exit: a late uv relay after serve() returns must not
+    # restore KeyboardInterrupt/SIGTERM between the terminal proof and exit(0).
+    for kind in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(kind, request_stop)
+    with isolated_server(
+        directory,
+        database=database,
+        asset_root=assets,
+        credentials=(secrets.token_urlsafe(48), TEST_ACCOUNT_PASSWORD),
+    ) as (client, _, _):
+        ready = directory / "ready.tmp"
+        ready.write_text(json.dumps({"url": client.base_url}) + "\n")
+        ready.rename(directory / "ready.json")
+        while not stopping:
+            time.sleep(0.05)
+    inspected = inspect_database(database, asset_root=assets)
+    if not inspected.valid or inspected.active_timer_count:
+        raise ValueError("Joint backend did not finish with valid terminal data")
+    (directory / "complete.json").write_text(
+        json.dumps(
+            {
+                "valid": inspected.valid,
+                "active_timer_count": inspected.active_timer_count,
+                "protocol_version": inspected.protocol_version,
+                "server_instance_id": inspected.server_instance_id,
+                "sync_epoch": inspected.sync_epoch,
+                "alembic_head": inspected.alembic_head,
+                "row_counts": inspected.row_counts,
+            },
+            indent=2,
         )
-    finally:
-        for kind, handler in previous.items():
-            signal.signal(kind, handler)
+        + "\n"
+    )
 
 
 if __name__ == "__main__":
