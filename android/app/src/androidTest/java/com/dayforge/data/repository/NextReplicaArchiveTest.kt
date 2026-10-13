@@ -205,7 +205,7 @@ class NextReplicaArchiveTest : NextCoreRequestFixture() {
         scope.coroutineContext[Job]!!.cancelAndJoin(); scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         dataStore = androidx.datastore.preferences.core.PreferenceDataStoreFactory.create(scope = scope,
             produceFile = { File(directory, "auth.preferences_pb") })
-        tokens = TokenManager(dataStore); preferences = PreferencesManager(dataStore); storage.reopen(); configureIcons()
+        tokens = TokenManager(dataStore); preferences = PreferencesManager(dataStore, tokens = tokens); storage.reopen(); configureIcons()
         client.connectionPool.evictAll(); client.dispatcher.executorService.shutdown()
         client = okhttp3.OkHttpClient.Builder()
             .addInterceptor(com.dayforge.data.api.interceptor.BaseUrlInterceptor(preferences))
@@ -525,7 +525,7 @@ class NextReplicaArchiveTest : NextCoreRequestFixture() {
             scope.coroutineContext[Job]!!.cancelAndJoin(); scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
             dataStore = androidx.datastore.preferences.core.PreferenceDataStoreFactory.create(scope = scope,
                 produceFile = { File(directory, "auth.preferences_pb") })
-            tokens = TokenManager(dataStore); preferences = PreferencesManager(dataStore); storage.reopen(); configureIcons()
+            tokens = TokenManager(dataStore); preferences = PreferencesManager(dataStore, tokens = tokens); storage.reopen(); configureIcons()
             client.connectionPool.evictAll(); client.dispatcher.executorService.shutdown()
             client = okhttp3.OkHttpClient.Builder()
                 .addInterceptor(com.dayforge.data.api.interceptor.BaseUrlInterceptor(preferences))

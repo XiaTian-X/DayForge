@@ -99,8 +99,6 @@ class DashboardViewModelMetricTest {
             every { hasShownBatteryGuidance } returns flowOf(false)
             every { dateChangeTrigger } returns flowOf(System.currentTimeMillis() / (24 * 60 * 60 * 1000L))
             every { filterMode } returns flowOf("all")
-            every { pendingMetricHabits } returns flowOf(emptySet())
-            every { getNeverAskAgain(any()) } returns flowOf(false)
         }
         // Create a real CheckInService that uses the repository
         checkInService = CheckInService(repository, completionDao, timeLogDao)

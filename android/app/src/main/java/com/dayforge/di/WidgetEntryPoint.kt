@@ -16,6 +16,7 @@ interface WidgetEntryPoint {
     fun activityRateRefresher(): com.dayforge.data.repository.LegacyActivityRateRefresher
     fun displayPublisher(): com.dayforge.data.repository.WidgetDisplayPublisher
     fun configurationWorkflow(): com.dayforge.domain.service.WidgetConfigurationWorkflow
+    fun preferencesManager(): com.dayforge.data.local.PreferencesManager
 
     companion object {
         fun from(context: android.content.Context): WidgetEntryPoint = dagger.hilt.android.EntryPointAccessors

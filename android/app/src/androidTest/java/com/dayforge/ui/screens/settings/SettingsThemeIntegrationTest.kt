@@ -7,6 +7,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -28,8 +30,10 @@ import com.dayforge.di.DeviceThemeControllerEntryPoint
 import com.dayforge.domain.appearance.*
 import com.dayforge.domain.service.*
 import com.dayforge.ui.theme.DayForgeTheme
+import com.dayforge.ui.screens.recovery.LocalReplicaRecoveryEntry
 import com.dayforge.widget.IsolatedWidgetRefreshRule
 import io.mockk.every
+import io.mockk.coEvery
 import io.mockk.mockk
 import java.io.File
 import java.util.UUID
@@ -74,6 +78,7 @@ class SettingsThemeIntegrationTest {
     private val ownedThemes = mutableListOf<ThemeVersionRef>()
     private var source: File? = null
     private var renderedBackground: Int? = null
+    private val recoveryEntry = mutableStateOf<(() -> Unit)?>(null)
 
     private fun text(id: Int) = context.getString(id)
     private fun click(id: Int) = compose.onNodeWithText(text(id)).performClick()
@@ -108,6 +113,8 @@ class SettingsThemeIntegrationTest {
         every { sync.observeRejectedChanges() } returns flowOf(emptyList())
         every { sync.observeConflicts() } returns flowOf(emptyList())
         every { sync.observeRejectedTimerCommands() } returns flowOf(emptyList())
+        every { sync.problemChanges() } returns flowOf(Unit)
+        coEvery { sync.readProblems() } throws IllegalStateException("Synthetic unavailable problem scan")
         val network = mockk<NetworkMonitor>()
         every { network.state } returns MutableStateFlow(NetworkMonitor.Snapshot())
         val db = storage.database
@@ -126,7 +133,9 @@ class SettingsThemeIntegrationTest {
             if (theme != null) DayForgeTheme(theme) {
                 val background = MaterialTheme.colorScheme.background.toArgb()
                 SideEffect { renderedBackground = background }
-                SettingsScreen(model, onNavigateBack = {})
+                CompositionLocalProvider(LocalReplicaRecoveryEntry provides recoveryEntry.value) {
+                    SettingsScreen(model, onNavigateBack = {})
+                }
             }
         }
     }
@@ -164,6 +173,17 @@ class SettingsThemeIntegrationTest {
             assertEquals(0xff123456.toInt(), colors.backgroundColorArgb)
         }
         assertEquals(3, widgets.requestCount)
+    }
+
+    @Test fun unavailableProblemScanDoesNotHideTheIndependentExplicitRecoveryEntry() {
+        compose.waitUntil(5_000) { model.syncProblems.value is com.dayforge.data.model.SyncProblems.Unavailable }
+        compose.onNodeWithTag("settings-replica-recovery").assertDoesNotExist()
+        var opened = 0
+        compose.runOnIdle { recoveryEntry.value = { opened++ } }
+        compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("settings-replica-recovery"))
+        compose.onNodeWithTag("settings-replica-recovery").performClick()
+        compose.runOnIdle { assertEquals(1, opened); recoveryEntry.value = null }
+        compose.onNodeWithTag("settings-replica-recovery").assertDoesNotExist()
     }
 
     @Test fun settingsPreviewConfirmationAndDeleteCancellationReachDurableCatalog() {

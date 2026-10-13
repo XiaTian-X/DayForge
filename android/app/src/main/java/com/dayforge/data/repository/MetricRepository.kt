@@ -181,6 +181,35 @@ class MetricRepository @Inject constructor(
         recordedAt = recordedAt, authority = authority, expectedMetricUuid = expectedMetricUuid
     ).single()
 
+    /** Legacy prompts have no v5 edit ticket. Hold their original account/UUID claim through
+     * the Room commit; never enter the typed writer's non-reentrant account lock from here.
+     */
+    internal suspend fun recordLegacyPromptValues(
+        values: List<MetricValueDraft>, recordedAt: Long,
+        claim: HabitPreferenceClaim, preferences: HabitPreferenceRepository,
+        habit: com.dayforge.data.local.entity.HabitEntity, metrics: List<MetricEntity>
+    ): List<Long> {
+        require(habit.appearance == null && metrics.isNotEmpty() && metrics.all { it.appearance == null }) {
+            "METRIC_PROMPT_MIXED_PROTOCOL"
+        }
+        require(claim.habitId == habit.id && claim.habitUuid == habit.uuid)
+        require(metrics.map { it.id }.toSet() == values.map { it.metricId }.toSet() &&
+            metrics.size == metrics.map { it.id }.toSet().size)
+        return preferences.publish(claim) {
+            database.withTransaction {
+                check(habitDao.getVisibleHabitById(habit.id) == habit) { "METRIC_PROMPT_ACTIVITY_CHANGED" }
+                metrics.forEach { original ->
+                    check(metricDao.getVisibleMetricById(original.id) == original) { "METRIC_PROMPT_METADATA_CHANGED" }
+                    val link = requireNotNull(linkDao.getLink(habit.id, original.id)) { "METRIC_PROMPT_LINK_CHANGED" }
+                    NextMetricDeletionStore(database).requireLinkWritable(link)
+                    check(link.isActive && link.promptOnComplete && link.habitUuid == habit.uuid &&
+                        link.metricUuid == original.uuid) { "METRIC_PROMPT_LINK_CHANGED" }
+                }
+                recordValues(values, recordedAt)
+            }
+        }
+    }
+
     suspend fun recordValues(
         values: List<MetricValueDraft>,
         recordedAt: Long = System.currentTimeMillis(),

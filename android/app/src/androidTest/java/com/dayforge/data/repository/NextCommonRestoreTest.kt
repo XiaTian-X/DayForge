@@ -196,7 +196,7 @@ class NextCommonRestoreTest {
         file = File(context.cacheDir, "structures-${UUID.randomUUID()}.preferences_pb")
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val store = PreferenceDataStoreFactory.create(scope = scope, produceFile = { file })
-        tokens = TokenManager(store); preferences = PreferencesManager(store)
+        tokens = TokenManager(store); preferences = PreferencesManager(store, tokens = tokens)
         tokens.saveLoginSession("synthetic-a", "synthetic-r", "member", account, false)
         tokens.saveServerIdentity(server, epoch)
         tokens.saveDeviceRegistration(device, setOf("sync.read", "facts.append"), false, 1)

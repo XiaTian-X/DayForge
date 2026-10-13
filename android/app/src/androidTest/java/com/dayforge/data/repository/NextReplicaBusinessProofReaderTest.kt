@@ -213,6 +213,33 @@ class NextReplicaBusinessProofReaderTest : NextCoreRequestFixture() {
         sqlWrite("UPDATE timelog_day_allocations SET durationMillis=59000 WHERE sessionUuid=?", arrayOf(id(30)))
         val local = localProof(); unchanged { rejected { reader().read(local) } }
     }
+    @Test fun sharedRecoveryScopeKeepsNonemptyCountAndTimerEvidenceAfterATrackingModeChange() = runBlocking<Unit> {
+        initialize(remoteTimer = true, changedTimerMode = true); countFact()
+        val local = localProof()
+        val original = access()
+        val day = LocalDate.of(2000, 1, 1)
+        unchanged {
+            // unchanged reopens Room before the callback; bind to that current instance.
+            val counts = RecurringCompletionEvidenceReader(db, tokens, sessions)
+            val timers = TimerHistoryReader(db, tokens, sessions)
+            val expected = sessions.exclusive { db.withTransaction {
+                counts.recoveryInTransaction(habit, day) to timers.recoveryInTransaction(timerHabit, day)
+            } }
+            val actual = ReplicaFactRecoveryReadScope.withSnapshot(db, tokens, sessions, original) {
+                counts.recoveryInTransaction(habit, day, it) to timers.recoveryInTransaction(timerHabit, day, it)
+            }
+            assertEquals(expected.first, actual.first)
+            assertEquals(listOf(6), actual.first.completions.map { it.value })
+            assertEquals(expected.second.logs, actual.second.logs)
+            assertEquals(expected.second.completedMillis, actual.second.completedMillis)
+            assertEquals(60_000L, actual.second.completedMillis[LocalDate.parse("2026-10-06")])
+            assertFalse(actual.second.hasUnfinishedTimer)
+            assertEquals(HabitType.CHECK_IN, timerHabit.habitType)
+            val proof = reader().read(local)
+            assertTrue(ReplicaRecordKey("activity_event", id(40)) in proof.unconfirmed)
+            assertTrue(ReplicaRecordKey("activity_event", id(30)) in proof.records)
+        }
+    }
     @Test fun activeTimerAndOriginalStartRemainUnconfirmedAndBlockAcrossReadOnlyPermission() = runBlocking<Unit> {
         initialize(); activeTimer(); register(permissions = setOf("sync.read"), revision = 2)
         val local = localProof()

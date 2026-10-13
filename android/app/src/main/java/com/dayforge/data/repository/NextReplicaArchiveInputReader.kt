@@ -102,7 +102,7 @@ internal class NextReplicaArchiveInputReader(private val context: Context,
         block: suspend (ReplicaArchiveInput, ReplicaArchiveFileAccess) -> T): T {
         val original = captured.copy(capabilities = Collections.unmodifiableSet(captured.capabilities.toSet()))
         suspend fun authorize() {
-            check(tokens.localSyncAccess() == original && tokens.syncAuthenticationSnapshot(original) != null) { "SYNC_ACCOUNT_CHANGED" }
+            check(tokens.isCurrentSyncAuthority(original)) { "SYNC_ACCOUNT_CHANGED" }
         }
         authorize()
         check(database.isOpen) { "SYNC_ARCHIVE_DATABASE_NOT_OPEN" }

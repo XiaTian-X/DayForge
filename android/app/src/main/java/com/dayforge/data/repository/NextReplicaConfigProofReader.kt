@@ -20,13 +20,13 @@ internal class NextReplicaConfigProofReader(private val database: HabitDatabase,
     suspend fun read(requests: ReplicaRequestProof): ReplicaConfigProof = withContext(Dispatchers.IO) {
         sessions.exclusive { database.withTransaction {
             fun unchanged(hash: String) = require(hash == requests.storageHash) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
-            check(tokens.localSyncAccess() == requests.original && tokens.syncAuthenticationSnapshot(requests.original) != null) {
+            check(tokens.isCurrentSyncAuthority(requests.original)) {
                 "SYNC_ACCOUNT_CHANGED"
             }
             unchanged(NextReplicaStorageProof(database).readInTransaction().hash)
             val journals = NextConfigImportStore(database).recoveryInTransaction(requests.original, requests.states)
             unchanged(NextReplicaStorageProof(database).readInTransaction().hash)
-            check(tokens.localSyncAccess() == requests.original && tokens.syncAuthenticationSnapshot(requests.original) != null) {
+            check(tokens.isCurrentSyncAuthority(requests.original)) {
                 "SYNC_ACCOUNT_CHANGED"
             }
             ReplicaConfigProof(requests, journals)

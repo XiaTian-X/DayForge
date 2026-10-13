@@ -275,8 +275,8 @@ fun SettingsScreen(
                 )
             }
 
-            // Explicit recovery entry only for the existing next-profile observation.
-            if (syncProblems is com.dayforge.data.model.SyncProblems.Next && openReplicaRecovery != null) item {
+            // Credential-free local profile hint, independent of the authenticated problem scan.
+            if (openReplicaRecovery != null) item {
                 TextButton(openReplicaRecovery, modifier = Modifier.testTag("settings-replica-recovery")) {
                     Text(stringResource(R.string.replica_recovery_title))
                 }

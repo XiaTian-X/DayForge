@@ -21,9 +21,7 @@ import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
-import com.dayforge.data.local.DataStoreProvider
 import com.dayforge.data.local.HabitDatabaseProvider
-import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.service.HabitPriorityCalculator
 import com.dayforge.domain.service.TimeMatchResult
@@ -145,6 +143,7 @@ class FocusWidget : GlanceAppWidget() {
                 publication {
                     Log.w(TAG, "Focus widget source unavailable", error)
                     updateAppWidgetState(appContext, glanceId) { prefs ->
+                        publication.stampFrame(prefs)
                         prefs[DATA_LOADED_KEY] = false
                         prefs[READ_FAILED_KEY] = true
                         prefs.remove(TIMER_ACTION_PROOF_KEY)
@@ -190,9 +189,11 @@ class FocusWidget : GlanceAppWidget() {
             }
 
             // Get pending metric habits (completed habits that need metric recording)
-            val dataStore = DataStoreProvider.get(appContext)
-            val preferencesManager = PreferencesManager(dataStore)
-            val pendingMetricHabits = preferencesManager.pendingMetricHabits.first()
+            val preferencesManager = com.dayforge.di.WidgetEntryPoint.from(appContext).preferencesManager()
+            val pendingMetricUuids = publication.session?.let { session ->
+                preferencesManager.pendingMetricHabitUuids(session, allActiveHabits.map { it.uuid }.toSet()).first()
+            }.orEmpty()
+            val pendingMetricHabits = allActiveHabits.filter { it.uuid in pendingMetricUuids }.map { it.id }.toSet()
 
             // Get active timer (if any) for real-time TIMER habit progress
             val activeTimeLog = database.timeLogDao().getActiveTimeLog()
@@ -263,6 +264,7 @@ class FocusWidget : GlanceAppWidget() {
                 val widgetColorResolver = WidgetColorResolver(appContext, themes)
 
                 updateAppWidgetState(appContext, glanceId) { prefs ->
+                    publication.stampFrame(prefs)
                     prefs[DATA_LOADED_KEY] = true
                     prefs[READ_FAILED_KEY] = false
                     if (primaryTimerSnapshot != null) prefs[TIMER_ACTION_PROOF_KEY] =

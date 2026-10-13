@@ -198,7 +198,7 @@ fun HabitDetailScreen(
                         Switch(
                             checked = state.notificationEnabled,
                             onCheckedChange = { enabled ->
-                                viewModel.toggleNotificationEnabled(habitId, enabled)
+                                state.preferenceClaim?.let { viewModel.toggleNotificationEnabled(it, enabled) }
                             }
                         )
                     }

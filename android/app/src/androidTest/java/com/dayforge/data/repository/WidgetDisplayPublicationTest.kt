@@ -24,6 +24,38 @@ class WidgetDisplayPublicationTest : NextCoreRequestFixture() {
     private fun reader() = WidgetFactReader(db, tokens, sessions, preferences, CountHistoryReader(db, tokens, sessions))
     private suspend fun proof() = db.withTransaction { nextRestartDatabaseProof(db) }
 
+    @Test fun frameOwnershipIsPersistentCredentialFreeAndNeverTransfersAcrossReplicaOrLogin() = runBlocking<Unit> {
+        register()
+        val publisher = WidgetDisplayPublisher(tokens, sessions, ReplicaPresentationRepository(db, tokens, sessions))
+        val original = requireNotNull(publisher.capturePublication())
+        val state = display()
+        assertTrue(original { state.edit { it[label] = habit.name; original.stampFrame(it) } })
+        assertTrue(original.ownsFrame(state.data.first()))
+        assertTrue(requireNotNull(original.frameOwner).matches(Regex("[0-9a-f]{64}")))
+        val authentication = requireNotNull(tokens.authenticationSnapshot())
+        tokens.saveSyncCursor(31)
+        assertTrue(tokens.saveRefreshedTokens(authentication, "replacement-access", "replacement-refresh", "member", id(1), false))
+        assertEquals(original.frameOwner, requireNotNull(publisher.capturePublication()).frameOwner)
+        assertTrue(original.isCurrentInMemory())
+        val cold = WidgetDisplayPublisher(tokens, sessions, ReplicaPresentationRepository(db, tokens, sessions))
+        assertTrue(requireNotNull(cold.capturePublication()).ownsFrame(state.data.first()))
+        tokens.saveServerIdentity(id(2), id(33))
+        assertFalse(original.isCurrentInMemory())
+        val destination = requireNotNull(publisher.capturePublication())
+        assertFalse(destination.ownsFrame(state.data.first()))
+        assertTrue(destination { state.edit { it[label] = "new epoch"; destination.stampFrame(it) } })
+        assertTrue(destination.ownsFrame(state.data.first()))
+        tokens.saveLoginSession("other-access", "other-refresh", "member", id(50), false)
+        assertFalse(requireNotNull(publisher.capturePublication()).ownsFrame(state.data.first()))
+        tokens.clearTokens()
+        val anonymous = requireNotNull(publisher.capturePublication())
+        assertNull(anonymous.frameOwner)
+        assertFalse(anonymous.ownsFrame(state.data.first()))
+        state.edit { anonymous.stampFrame(it) }
+        assertNull(state.data.first()[WidgetDisplayPublisher.FRAME_OWNER_KEY])
+        assertFalse(anonymous.ownsFrame(state.data.first()))
+    }
+
     @Test fun orphanSqlBlocksCapturePreparationLatePublicationAndForegroundClaims() = runBlocking<Unit> {
         register()
         val publisher = WidgetDisplayPublisher(tokens, sessions, ReplicaPresentationRepository(db, tokens, sessions))

@@ -86,7 +86,7 @@ internal class NextReplicaSchemaValidator @Inject constructor(
     }
 
     private suspend fun authorize(original: LocalSyncAccess) {
-        check(tokens.localSyncAccess() == original && tokens.syncAuthenticationSnapshot(original) != null) { "SYNC_ACCOUNT_CHANGED" }
+        check(tokens.isCurrentSyncAuthority(original)) { "SYNC_ACCOUNT_CHANGED" }
     }
 
 }

@@ -48,7 +48,7 @@ class NextReplicaCompletionTest : NextReplicaDestinationFixture() {
                 transform(before).also { effect(it) }
             }
         }
-        tokens = TokenManager(dataStore); preferences = PreferencesManager(dataStore); materialParticipants()
+        tokens = TokenManager(dataStore); preferences = PreferencesManager(dataStore, tokens = tokens); materialParticipants()
         reconnectHttp() // Every HTTP boundary must share the wrapped actual TokenManager too.
     }
 

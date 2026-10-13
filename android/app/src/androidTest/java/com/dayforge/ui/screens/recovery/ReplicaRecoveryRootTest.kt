@@ -33,19 +33,27 @@ class ReplicaRecoveryRootTest : NextCoreRequestFixture() {
     private val models = ViewModelStore()
     private var model: ReplicaRecoveryViewModel? = null
     private var businessCreated = 0; private var businessCleared = 0; private var themeComposed = 0
+    private var entryAvailable = false
+    private var entry: (() -> Unit)? = null
+    private val entryChanges = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     private class Reader(val number: Int, private val close: () -> Unit) : ViewModel() { override fun onCleared() = close() }
     private lateinit var actions: ReplicaRecoveryActions
     private suspend fun start() {
         register()
         actions = mockk()
         every { actions.observeInvalidation(any()) } answers { tokens.registerIconCache(firstArg()) }
-        coEvery { actions.control() } coAnswers { ReplicaRecoveryControl(tokens.replicaUiAuthentication(), tokens.activeReplicaStage()) }
+        every { actions.entryChanges() } returns entryChanges
+        coEvery { actions.control() } coAnswers {
+            ReplicaRecoveryControl(tokens.replicaUiAuthentication(), tokens.activeReplicaStage(), entryAvailable)
+        }
         val gate = ReplicaPresentationController(tokens, ReplicaPresentationRepository(db, tokens, sessions)).also { controller = it }
         withTimeout(10_000) { gate.state.first { it is ReplicaPresentationState.Open } }
         val recovery = withContext(Dispatchers.Main) { ReplicaRecoveryViewModel(actions).also { model = it; models.put("recovery", it) } }
         withTimeout(5_000) { recovery.state.first { it.checked && !it.busy } }
         compose.setContent {
             ReplicaRecoveryRoot(gate, recovery) {
+                val currentEntry = LocalReplicaRecoveryEntry.current
+                SideEffect { entry = currentEntry }
                 ReplicaPresentationGate(gate) { permit ->
                     SideEffect { themeComposed++ }
                     ReplicaNavigationLifetime(permit) {
@@ -94,5 +102,18 @@ class ReplicaRecoveryRootTest : NextCoreRequestFixture() {
         withContext(Dispatchers.Main) { rootModel.dismiss() }
         compose.onNodeWithText("Business 2").assertIsDisplayed()
         assertSame(rootModel, model)
+    }
+    @Test fun withdrawnMetadataHintDisablesPreviouslyCapturedRootCallbackWithoutReopeningBusiness() = runBlocking<Unit> {
+        entryAvailable = true; start()
+        var oldEntry: (() -> Unit)? = null
+        compose.runOnIdle { oldEntry = requireNotNull(entry) }
+        val originalStamp = model!!.state.value.stamp
+        entryAvailable = false; entryChanges.emit(Unit)
+        withTimeout(5_000) { model!!.state.first { !it.entryAvailable } }
+        assertSame(originalStamp, model!!.state.value.stamp)
+        compose.runOnIdle { oldEntry!!.invoke() }
+        assertFalse(model!!.state.value.visible)
+        compose.onNodeWithText("Business 1").assertIsDisplayed()
+        coVerify(exactly = 0) { actions.preview() }; coVerify(exactly = 0) { actions.reauthenticate(any(), any()) }
     }
 }

@@ -132,7 +132,7 @@ abstract class NextReplicaDestinationFixture : NextCoreRequestFixture() {
     internal suspend fun coldReopen() {
         scope.coroutineContext[Job]!!.cancelAndJoin(); scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         dataStore = PreferenceDataStoreFactory.create(scope = scope, produceFile = { File(directory, "auth.preferences_pb") })
-        tokens = TokenManager(dataStore); preferences = PreferencesManager(dataStore); storage.reopen(); materialParticipants()
+        tokens = TokenManager(dataStore); preferences = PreferencesManager(dataStore, tokens = tokens); storage.reopen(); materialParticipants()
         reconnectHttp()
     }
     internal fun reconnectHttp() {

@@ -53,9 +53,9 @@ class OneTimeAcceptedEventStoreTest {
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val store = PreferenceDataStoreFactory.create(scope = scope, produceFile = { file })
         tokens = TokenManager(store)
-        preferences = PreferencesManager(store)
-        tokens.saveLoginSession("synthetic-a", "synthetic-r", "member", "account-a", false)
-        tokens.saveServerIdentity("server", "epoch")
+        preferences = PreferencesManager(store, tokens = tokens)
+        tokens.saveLoginSession("synthetic-a", "synthetic-r", "member", "80000000-0000-4000-8000-000000000001", false)
+        tokens.saveServerIdentity("80000000-0000-4000-8000-000000000003", "80000000-0000-4000-8000-000000000004")
         tokens.saveDeviceRegistration(device, setOf("sync.read", "facts.append"), false, 1)
         habit = db.withTransaction {
             val row = HabitEntity(name = "Once", uuid = uuid(), habitType = HabitType.CHECK_IN, iconResId = 0,
@@ -280,15 +280,15 @@ class OneTimeAcceptedEventStoreTest {
         val command = append()
         val request = sync().prepare(habit.uuid)!!
         val original = queued()
-        tokens.saveServerIdentity("server", "new-epoch")
+        tokens.saveServerIdentity("80000000-0000-4000-8000-000000000003", "new-epoch")
         rejected { sync().acknowledge(request, result(command)) }
-        tokens.saveServerIdentity("server", "epoch")
+        tokens.saveServerIdentity("80000000-0000-4000-8000-000000000003", "80000000-0000-4000-8000-000000000004")
         tokens.saveSyncDeviceId(uuid())
         rejected { sync().acknowledge(request, result(command)) }
         tokens.saveSyncDeviceId(device)
-        tokens.saveLoginSession("synthetic-next", "synthetic-r", "member", "account-a", false)
+        tokens.saveLoginSession("synthetic-next", "synthetic-r", "member", "80000000-0000-4000-8000-000000000001", false)
         rejected { sync().acknowledge(request, result(command)) }
-        tokens.saveLoginSession("synthetic-other", "synthetic-r", "member", "account-b", false)
+        tokens.saveLoginSession("synthetic-other", "synthetic-r", "member", "80000000-0000-4000-8000-000000000002", false)
         rejected { sync().acknowledge(request, result(command)) }
         rule.reopen(); assertEquals(original, queued())
     }
@@ -413,7 +413,7 @@ class OneTimeAcceptedEventStoreTest {
         val command = append()
         val first = sync().prepare(habit.uuid)!!
         val binding = db.completionFollowUpDao().transmission(command.pending.operationId)!!
-        tokens.saveLoginSession("synthetic-new", "synthetic-r", "member", "account-a", false)
+        tokens.saveLoginSession("synthetic-new", "synthetic-r", "member", "80000000-0000-4000-8000-000000000001", false)
         rule.reopen()
         rejected { sync().acknowledge(first, result(command)) }
         val retry = sync().prepare(habit.uuid)!!
@@ -449,7 +449,7 @@ class OneTimeAcceptedEventStoreTest {
         append()
         sync().prepare(habit.uuid)
         val before = queued()
-        listOf("server-2" to "epoch", "server" to "epoch-2").forEach { (server, epoch) ->
+        listOf("server-2" to "80000000-0000-4000-8000-000000000004", "80000000-0000-4000-8000-000000000003" to "epoch-2").forEach { (server, epoch) ->
             tokens.saveServerIdentity(server, epoch)
             val failure = runCatching { sync().prepare(habit.uuid) }.exceptionOrNull()
             assertEquals(OneTimeLocalException.Reason.TRANSMISSION_CONTEXT_CHANGED, (failure as OneTimeLocalException).reason)
@@ -480,8 +480,8 @@ class OneTimeAcceptedEventStoreTest {
         val before = queued()
         val binding = db.completionFollowUpDao().transmission(command.pending.operationId)
         // Deliberately leave the old rows to test fail-closed defense beyond normal account cleanup.
-        tokens.saveLoginSession("synthetic-other", "synthetic-r", "member", "account-b", false)
-        tokens.saveServerIdentity("server", "epoch")
+        tokens.saveLoginSession("synthetic-other", "synthetic-r", "member", "80000000-0000-4000-8000-000000000002", false)
+        tokens.saveServerIdentity("80000000-0000-4000-8000-000000000003", "80000000-0000-4000-8000-000000000004")
         tokens.saveDeviceRegistration(device, setOf("sync.read", "facts.append"), false, 1)
         val fresh = sync().context()
         val failure = runCatching { sync().prepare(habit.uuid) }.exceptionOrNull()

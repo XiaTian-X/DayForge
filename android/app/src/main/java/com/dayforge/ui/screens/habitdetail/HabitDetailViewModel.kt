@@ -75,7 +75,8 @@ data class HabitDetailUiState(
     // Metrics for GOAL habits: aggregated from self and children
     val metrics: List<MetricDisplayInfo> = emptyList(),
     // Per NOTIFY-04: Notification enabled state for this habit
-    val notificationEnabled: Boolean = true
+    val notificationEnabled: Boolean = true,
+    val preferenceClaim: com.dayforge.data.repository.HabitPreferenceClaim? = null
 )
 
 @HiltViewModel
@@ -88,7 +89,8 @@ class HabitDetailViewModel @Inject constructor(
     private val habitDao: HabitDao,
     private val habitMetricLinkDao: HabitMetricLinkDao,
     private val metricDao: MetricDao,
-    private val metricLogDao: MetricLogDao
+    private val metricLogDao: MetricLogDao,
+    private val habitPreferences: com.dayforge.data.repository.HabitPreferenceRepository? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(HabitDetailUiState())
@@ -125,8 +127,9 @@ class HabitDetailViewModel @Inject constructor(
                 habitRepository.getHabit(habitId),
                 combine(habitRepository.getAllCompletions(), habitRepository.oneTimeChanges,
                     habitRepository.countChanges, preferencesManager.dateChangeTrigger) { rows, _, _, _ -> rows },
-                preferencesManager.getHabitNotificationEnabled(habitId)
-            ) { habit, allCompletions, notificationEnabled ->
+                habitPreferences?.changes ?: kotlinx.coroutines.flow.flowOf(Unit)
+            ) { habit, allCompletions, _ ->
+                val notificationEnabled = true
                 try {
                 val habitCompletions = allCompletions.filter { it.habitId == habitId }
                 val recurringSnapshot = habit?.takeIf { it.appearance != null && it.completionPolicy == "recurring" &&
@@ -236,6 +239,13 @@ class HabitDetailViewModel @Inject constructor(
                     return@collect
                 }
                 if (captured != null && captured.value != result.habit) return@collect
+                val preference = try { result.habit?.let { habitPreferences?.read(it) } }
+                catch (error: Exception) {
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    _uiState.value = HabitDetailUiState(habitId = habitId, isLoading = false, readError = true,
+                        errorMessage = error.message)
+                    return@collect
+                }
                 _uiState.value = _uiState.value.copy(
                     habit = result.habit,
                     writeAuthority = captured?.authority,
@@ -244,7 +254,8 @@ class HabitDetailViewModel @Inject constructor(
                     timeLogs = result.timeLogs,
                     targetProgress = result.targetProgress,
                     metrics = result.metrics,
-                    notificationEnabled = result.notificationEnabled,  // Per NOTIFY-04: From combined flow
+                    notificationEnabled = preference?.notificationEnabled ?: result.notificationEnabled,
+                    preferenceClaim = preference?.claim,
                     oneTimeStatus = result.oneTimeStatus,
                     countHistory = result.countHistory,
                     activityRate = result.recurringSnapshot?.activityRate ?: result.habit?.activityRate ?: 100,
@@ -265,10 +276,16 @@ class HabitDetailViewModel @Inject constructor(
      * @param habitId The ID of the habit
      * @param enabled True to enable notifications for this habit, false to disable
      */
-    fun toggleNotificationEnabled(habitId: Long, enabled: Boolean) {
+    fun toggleNotificationEnabled(claim: com.dayforge.data.repository.HabitPreferenceClaim, enabled: Boolean) {
         viewModelScope.launch {
-            preferencesManager.setHabitNotificationEnabled(habitId, enabled)
-            _uiState.value = _uiState.value.copy(notificationEnabled = enabled)
+            try {
+                requireNotNull(habitPreferences).setNotification(claim, enabled)
+                if (_uiState.value.preferenceClaim === claim)
+                    _uiState.value = _uiState.value.copy(notificationEnabled = enabled)
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                _uiState.value = _uiState.value.copy(errorMessage = error.message)
+            }
         }
     }
 

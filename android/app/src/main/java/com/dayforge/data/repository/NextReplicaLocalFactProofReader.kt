@@ -41,7 +41,7 @@ internal class NextReplicaLocalFactProofReader(private val database: HabitDataba
             val requests = configuration.requests
             fun unchanged(hash: String) = require(hash == requests.storageHash) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
             suspend fun authorize() {
-                check(tokens.localSyncAccess() == requests.original && tokens.syncAuthenticationSnapshot(requests.original) != null) {
+                check(tokens.isCurrentSyncAuthority(requests.original)) {
                     "SYNC_ACCOUNT_CHANGED"
                 }
             }

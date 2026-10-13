@@ -5,7 +5,6 @@ import android.util.Log
 import androidx.glance.GlanceId
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetManager
-import androidx.glance.appwidget.state.updateAppWidgetState
 import com.dayforge.widget.checkin.CheckInWidget
 import com.dayforge.widget.counting.CountingWidget
 import com.dayforge.widget.focus.FocusWidget
@@ -67,32 +66,15 @@ internal class WidgetRefresher(
                     }
                 }
 
-            fun bound(widget: GlanceAppWidget, prefsName: String, prefix: String,
-                      load: suspend (GlanceId, Long) -> Unit) = target(widget) { id ->
-                val widgetId = manager.getAppWidgetId(id)
-                val habitId = context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
-                    .getLong(prefix + widgetId, -1L)
-                // Unconfigured widgets still render their setup state. Deleted habits go
-                // through the existing loader, which writes the deleted-state marker.
-                if (habitId != -1L) load(id, habitId)
-                else {
-                    // An account clear can remove bindings but fail to clear a launcher
-                    // instance. Retry its CURRENT unconfigured state, not cached old data.
-                    com.dayforge.di.WidgetEntryPoint.from(context).displayPublisher().renderPrepared(
-                        onReadFailure = { throw it }
-                    ) { suspend { updateAppWidgetState(context, id) { it.clear() } } }
-                }
-            }
-
             return listOf(
-                bound(CheckInWidget(), CheckInWidget.PREFS_NAME, CheckInWidget.PREF_HABIT_ID_PREFIX) {
-                    id, habit -> CheckInWidget.refreshWidgetData(context, id, habit)
+                target(CheckInWidget()) {
+                    id -> CheckInWidget.refreshWidgetData(context, id)
                 },
-                bound(CountingWidget(), CountingWidget.PREFS_NAME, CountingWidget.PREF_HABIT_ID_PREFIX) {
-                    id, habit -> CountingWidget.refreshWidgetData(context, id, habit)
+                target(CountingWidget()) {
+                    id -> CountingWidget.refreshWidgetData(context, id)
                 },
-                bound(TimerWidget(), TimerWidget.PREFS_NAME, TimerWidget.PREF_HABIT_ID_PREFIX) {
-                    id, habit -> TimerWidget.refreshWidgetData(context, id, habit)
+                target(TimerWidget()) {
+                    id -> TimerWidget.refreshWidgetData(context, id)
                 },
                 target(ProgressWidget()) { ProgressWidget.refreshWidgetData(context, it) },
                 target(MotivationWidget()) { MotivationWidget.refreshWidgetData(context, it) },

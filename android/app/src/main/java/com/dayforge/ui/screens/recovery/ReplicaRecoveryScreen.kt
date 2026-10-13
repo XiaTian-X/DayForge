@@ -44,7 +44,12 @@ internal fun ReplicaRecoveryRoot(controller: ReplicaPresentationController, mode
                     isCurrent = { model.canRender(state) })
             }
         }
-    } else CompositionLocalProvider(LocalReplicaRecoveryEntry provides model::show, content = content)
+    } else {
+        val open: (() -> Unit)? = if (state.entryAvailable && model.canRender(state)) {
+            { if (model.canRender(state) && model.state.value.entryAvailable) model.show() }
+        } else null
+        CompositionLocalProvider(LocalReplicaRecoveryEntry provides open, content = content)
+    }
 }
 
 @Composable

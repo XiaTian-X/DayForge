@@ -2,9 +2,8 @@ package com.dayforge.widget.base
 
 import android.content.Context
 import android.util.Log
-import com.dayforge.data.local.DataStoreProvider
 import com.dayforge.data.local.HabitDatabaseProvider
-import com.dayforge.data.local.PreferencesManager
+import com.dayforge.di.WidgetEntryPoint
 import com.dayforge.widget.checkin.MetricPromptActivity
 import kotlinx.coroutines.flow.first
 
@@ -32,12 +31,14 @@ object MetricPromptHelper {
 
         val database = HabitDatabaseProvider.getInstance(context.applicationContext)
 
-        // Use singleton DataStore provider for consistent access
-        val dataStore = DataStoreProvider.get(context.applicationContext)
-        val preferencesManager = PreferencesManager(dataStore)
+        val entry = WidgetEntryPoint.from(context)
+        val publication = entry.displayPublisher().capturePublication() ?: return
+        val session = publication.session ?: return
+        val habit = database.habitDao().getVisibleHabitById(habitId) ?: return
+        val preferencesManager = entry.preferencesManager()
 
         // Check if user has "never ask again" set for this habit
-        val neverAsk = preferencesManager.getNeverAskAgain(habitId).first()
+        val neverAsk = preferencesManager.getNeverAskAgain(session, habit.uuid).first()
         Log.d(TAG, "neverAsk=$neverAsk")
         if (neverAsk) {
             Log.d(TAG, "Skipping prompt: neverAsk is true")
@@ -55,17 +56,13 @@ object MetricPromptHelper {
             return
         }
 
-        // Get habit name for dialog
-        val habit = database.habitDao().getVisibleHabitById(habitId)
-        if (habit == null) {
-            Log.d(TAG, "Habit not found for id=$habitId")
-            return
-        }
-
         Log.d(TAG, "Starting MetricPromptActivity for habit=${habit.name}")
 
         // Launch MetricPromptActivity
         val intent = MetricPromptActivity.createIntent(context, habitId, habit.name)
-        context.startActivity(intent)
+        publication {
+            if (database.habitDao().getVisibleHabitById(habitId)?.uuid == habit.uuid)
+                context.startActivity(intent)
+        }
     }
 }

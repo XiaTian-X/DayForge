@@ -9,7 +9,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import com.dayforge.widget.base.WidgetActivityTheme
 import androidx.compose.runtime.*
-import com.dayforge.data.local.PreferencesManager
 import com.dayforge.ui.metrics.LinkedMetricCoordinator
 import com.dayforge.ui.components.PostCheckInDialog
 import dagger.hilt.android.AndroidEntryPoint
@@ -30,8 +29,6 @@ class MetricPromptActivity : ComponentActivity() {
     @Inject
     lateinit var metricCoordinator: LinkedMetricCoordinator
 
-    @Inject
-    lateinit var preferencesManager: PreferencesManager
     @Inject lateinit var habits: com.dayforge.data.repository.HabitRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -110,9 +107,11 @@ class MetricPromptActivity : ComponentActivity() {
                         onRecord = { values, neverAskAgain ->
                             lifecycleScope.launch {
                                 try {
-                                    if (!metricCoordinator.recordMetricValues(habitId, values, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt, prompt.factPrompt)) return@launch
+                                    if (!metricCoordinator.recordMetricValues(habitId, values, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt, prompt.factPrompt,
+                                            expectedPreferenceClaim = prompt.preferenceClaim)) return@launch
                                     if (neverAskAgain) {
-                                        metricCoordinator.setNeverAskAgain(habitId, true, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt, prompt.factPrompt)
+                                        metricCoordinator.setNeverAskAgain(habitId, true, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt, prompt.factPrompt,
+                                            expectedPreferenceClaim = prompt.preferenceClaim)
                                     }
                                     finish()
                                 } catch (error: Exception) {
@@ -125,11 +124,11 @@ class MetricPromptActivity : ComponentActivity() {
                             lifecycleScope.launch {
                                 try {
                                     if (neverAskAgain) {
-                                        metricCoordinator.setNeverAskAgain(habitId, true, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt, prompt.factPrompt)
+                                        metricCoordinator.setNeverAskAgain(habitId, true, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt, prompt.factPrompt,
+                                            expectedPreferenceClaim = prompt.preferenceClaim)
                                     }
-                                    metricCoordinator.skipPrompt(habitId, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt, prompt.factPrompt)
-                                    if (prompt.timerPrompt == null && prompt.factPrompt == null && prompt.oneTimePrompt == null)
-                                        preferencesManager.removePendingMetricHabit(habitId)
+                                    metricCoordinator.skipPrompt(habitId, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt, prompt.factPrompt,
+                                        expectedPreferenceClaim = prompt.preferenceClaim)
                                     finish()
                                 } catch (error: Exception) {
                                     if (error is CancellationException) throw error

@@ -84,11 +84,9 @@ class CheckInWidget : GlanceAppWidget() {
          * Call this from any suspend context (config activity, action callback, etc.)
          * then call update() to trigger recomposition.
          */
-        suspend fun refreshWidgetData(context: Context, glanceId: GlanceId, habitId: Long) {
-            val appContext = context.applicationContext
-            val publication = com.dayforge.di.WidgetEntryPoint.from(appContext).displayPublisher()
-                .capturePublication() ?: return
-            refreshWidgetDataInScope(appContext, glanceId, habitId, publication)
+        suspend fun refreshWidgetData(context: Context, glanceId: GlanceId, habitId: Long? = null) {
+            com.dayforge.di.WidgetEntryPoint.from(context).configurationWorkflow().refresh(
+                com.dayforge.domain.service.WidgetConfigurationKind.CHECK_IN, glanceId, habitId)
         }
 
         internal suspend fun refreshWidgetDataInScope(context: Context, glanceId: GlanceId, habitId: Long,
@@ -98,6 +96,7 @@ class CheckInWidget : GlanceAppWidget() {
                 onReadFailure = { error ->
                     Log.w(TAG, "Check-in widget source unavailable", error)
                     updateAppWidgetState(appContext, glanceId) { prefs ->
+                        publication.stampFrame(prefs)
                         prefs[READ_FAILED_KEY] = true
                         prefs[DATA_LOADED_KEY] = false
                         prefs.remove(ACTION_PROOF_KEY)
@@ -117,6 +116,7 @@ class CheckInWidget : GlanceAppWidget() {
                 Log.w(TAG, "refreshWidgetData: habit $habitId not found")
                 return suspend {
                     updateAppWidgetState(appContext, glanceId) { prefs ->
+                        publication.stampFrame(prefs)
                         prefs[HABIT_ID_KEY] = habitId
                         prefs[IS_DELETED_KEY] = true
                         prefs[DATA_LOADED_KEY] = true
@@ -163,6 +163,7 @@ class CheckInWidget : GlanceAppWidget() {
                 val resolvedColors = widgetColorResolver.resolveWidgetColors(habit.colorHex)
 
                 updateAppWidgetState(appContext, glanceId) { prefs ->
+                    publication.stampFrame(prefs)
                     if (typed != null) prefs[ACTION_PROOF_KEY] = typed.claim.encode() else prefs.remove(ACTION_PROOF_KEY)
                     if (legacyProof != null) prefs[LEGACY_RESTART_PROOF_KEY] = legacyProof else prefs.remove(LEGACY_RESTART_PROOF_KEY)
                     prefs[READ_FAILED_KEY] = false

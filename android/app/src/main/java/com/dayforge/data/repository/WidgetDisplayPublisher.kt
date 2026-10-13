@@ -9,6 +9,11 @@ import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.MutablePreferences
+import androidx.datastore.preferences.core.stringPreferencesKey
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Account-scoped display publication, not business/action authority or a Room snapshot.
@@ -26,8 +31,17 @@ class WidgetDisplayPublisher @Inject constructor(
     internal class Publication(
         private val guardedPublish: suspend (suspend () -> Unit) -> Boolean,
         private val current: suspend () -> Boolean,
-        private val legacyRestart: (com.dayforge.data.local.entity.HabitEntity) -> LegacyWidgetRestartClaim?
+        private val legacyRestart: (com.dayforge.data.local.entity.HabitEntity) -> LegacyWidgetRestartClaim?,
+        val frameOwner: String?,
+        val session: com.dayforge.data.local.LocalDataSession?,
+        private val memoryCurrent: () -> Boolean
     ) {
+        /** Display provenance only, never command authority. Stamp WITH the full frame transaction. */
+        fun stampFrame(preferences: MutablePreferences) {
+            frameOwner?.let { preferences[FRAME_OWNER_KEY] = it } ?: preferences.remove(FRAME_OWNER_KEY)
+        }
+        fun ownsFrame(preferences: Preferences): Boolean = frameOwner != null && preferences[FRAME_OWNER_KEY] == frameOwner
+        fun isCurrentInMemory(): Boolean = memoryCurrent()
         suspend operator fun invoke(display: suspend () -> Unit): Boolean = guardedPublish(display)
         suspend fun renderPrepared(onReadFailure: suspend (Exception) -> Unit,
             prepare: suspend () -> (suspend () -> Unit)): Boolean {
@@ -45,10 +59,13 @@ class WidgetDisplayPublisher @Inject constructor(
     }
     @Volatile private var blocked = false
     @Volatile private var stamp = Any()
+    private val mutableInvalidations = MutableStateFlow(stamp)
+    internal val invalidations = mutableInvalidations.asStateFlow()
     private val invalidator = object : AccountIconMemory.Cache {
         override fun authenticationTransition(blocked: Boolean) {
             this@WidgetDisplayPublisher.blocked = blocked
             stamp = Any()
+            mutableInvalidations.value = stamp
         }
     }
     init { tokens.registerIconCache(invalidator) }
@@ -81,7 +98,7 @@ class WidgetDisplayPublisher @Inject constructor(
         } ?: return null
         return Publication({ display -> publish(scope, display) }, { isCurrent(scope) }, { habit ->
             if (habit.appearance != null) null else scope.access?.let { LegacyWidgetRestartClaim.displayed(habit, it) }
-        })
+        }, frameOwner(scope.access), scope.access?.session, { !blocked && scope.stamp === stamp })
     }
 
     private suspend fun publish(scope: Scope, display: suspend () -> Unit): Boolean = sessions.exclusive {
@@ -95,5 +112,24 @@ class WidgetDisplayPublisher @Inject constructor(
         val access = tokens.localCoreWriteAccess()
         return !blocked && !tokens.replicaSwitchPending() && scope.stamp === stamp && access == scope.access &&
             replica.isOpenWhileAccountLocked()
+    }
+
+    internal companion object {
+        val FRAME_OWNER_KEY = stringPreferencesKey("dayforgeFrameOwnerV1")
+
+        /** Stable across process death/cursor/token refresh; different login, replica or permissions cannot inherit a frame. */
+        private fun frameOwner(access: LocalCoreWriteAccess?): String? {
+            access ?: return null // Anonymous state can never bless persisted personal content.
+            val session = access.session
+            val fields = listOf(session.authentication.userId, session.authentication.generation,
+                session.serverInstanceId, session.syncEpoch, access.capturedDeviceId,
+                access.capabilities?.sorted()?.joinToString("\n"))
+            val value = buildString {
+                append("widget-frame-v1;")
+                fields.forEach { field -> if (field == null) append("-1:") else { append(field.length); append(':'); append(field) } }
+            }
+            return java.security.MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+        }
     }
 }

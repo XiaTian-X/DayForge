@@ -24,6 +24,6 @@ internal class NextReplicaArchiveService(private val reader: NextReplicaArchiveI
 
     private suspend fun authorize(original: LocalSyncAccess) {
         currentCoroutineContext().ensureActive()
-        check(tokens.localSyncAccess() == original && tokens.syncAuthenticationSnapshot(original) != null) { "SYNC_ACCOUNT_CHANGED" }
+        check(tokens.isCurrentSyncAuthority(original)) { "SYNC_ACCOUNT_CHANGED" }
     }
 }

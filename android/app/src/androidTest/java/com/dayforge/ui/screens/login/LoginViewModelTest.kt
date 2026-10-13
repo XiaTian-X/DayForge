@@ -3,6 +3,9 @@ package com.dayforge.ui.screens.login
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import android.content.Context
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.api.AuthApi
 import com.dayforge.data.api.EndpointResolver
@@ -50,6 +53,7 @@ class LoginViewModelTest {
     private lateinit var file: File
     private lateinit var tokenManager: TokenManager
     private lateinit var preferences: PreferencesManager
+    private lateinit var testStore: androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>
     private lateinit var repository: HabitRepository
     private lateinit var syncManager: SyncManager
     private lateinit var storeScope: CoroutineScope
@@ -75,6 +79,7 @@ class LoginViewModelTest {
         file = File(context.cacheDir, "login_vm_v2_${UUID.randomUUID()}.preferences_pb")
         storeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val store = PreferenceDataStoreFactory.create(scope = storeScope, produceFile = { file })
+        testStore = store
         tokenManager = TokenManager(store, object : TokenCipher {
             override fun encrypt(value: String): String {
                 check(!rejectCredentialWrite) { "credential storage unavailable" }
@@ -127,9 +132,7 @@ class LoginViewModelTest {
     @Test
     fun switching_account_clears_old_cache_before_credentials_become_active() = runTest(dispatcher.scheduler) {
         tokenManager.prepareSyncAccount("old-account")
-        preferences.setNeverAskAgain(42L, true)
-        preferences.setHabitNotificationEnabled(42L, false)
-        preferences.addPendingMetricHabit(42L)
+        seedLegacyHabitPreferences()
         preferences.setExpandedParentUuids(setOf("old-parent"))
         viewModel.onUsernameChange("member")
         viewModel.onPasswordChange("password123")
@@ -139,9 +142,9 @@ class LoginViewModelTest {
         coVerify(exactly = 1) { repository.clearAllData(context) }
         assertEquals("new-account", tokenManager.userId.first())
         assertEquals("new-account", tokenManager.syncAccountId.first())
-        assertFalse(preferences.getNeverAskAgain(42L).first())
-        assertTrue(preferences.getHabitNotificationEnabled(42L).first())
-        assertTrue(preferences.pendingMetricHabits.first().isEmpty())
+        assertNull(testStore.data.first()[booleanPreferencesKey("never_ask_metric_42")])
+        assertNull(testStore.data.first()[booleanPreferencesKey("habit_notification_42")])
+        assertNull(testStore.data.first()[stringPreferencesKey("pending_metric_habits")])
         assertTrue(preferences.expandedParentUuids.first().isEmpty())
     }
 
@@ -341,7 +344,7 @@ class LoginViewModelTest {
     fun failedCacheClearNeverActivatesNewCredentialsAndRetryCanComplete() = runTest(dispatcher.scheduler) {
         tokenManager.saveTokens("old-access", "old-refresh", "old-member", "old-account", false)
         tokenManager.prepareSyncAccount("old-account")
-        preferences.setNeverAskAgain(42L, true)
+        seedLegacyHabitPreferences()
         var tokenAtCacheClear: String? = "not-called"
         coEvery { repository.clearAllData(context) } coAnswers {
             tokenAtCacheClear = tokenManager.accessToken.first()
@@ -355,16 +358,23 @@ class LoginViewModelTest {
         assertNull(tokenManager.accessToken.first())
         assertNull(tokenManager.userId.first())
         assertEquals("old-account", tokenManager.syncAccountId.first())
-        assertTrue(preferences.getNeverAskAgain(42L).first())
+        assertEquals(true, testStore.data.first()[booleanPreferencesKey("never_ask_metric_42")])
         assertEquals("cache unavailable", viewModel.errorMessage.value)
         assertFalse(viewModel.showSyncPrompt.value)
         coEvery { repository.clearAllData(context) } returns Unit
         viewModel.onLoginClick()
         awaitNotLoading()
         assertEquals("new-account", tokenManager.userId.first())
-        assertFalse(preferences.getNeverAskAgain(42L).first())
+        assertNull(testStore.data.first()[booleanPreferencesKey("never_ask_metric_42")])
         assertTrue(viewModel.showSyncPrompt.value)
         coVerify(exactly = 2) { repository.clearAllData(context) }
+    }
+
+    /** The cleanup contract also removes inert, untrusted pre-UUID test preferences. */
+    private suspend fun seedLegacyHabitPreferences() = testStore.edit {
+        it[booleanPreferencesKey("never_ask_metric_42")] = true
+        it[booleanPreferencesKey("habit_notification_42")] = false
+        it[stringPreferencesKey("pending_metric_habits")] = "42"
     }
 
     private suspend fun awaitNotLoading() {

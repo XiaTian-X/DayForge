@@ -207,7 +207,7 @@ internal class NextReplicaCandidateValidator @Inject constructor(
 
     private suspend fun authorize(original: LocalSyncAccess, installation: String) {
         require(isContractUuid(installation) && original.deviceId != null)
-        check(tokens.localSyncAccess() == original && tokens.syncAuthenticationSnapshot(original) != null &&
+        check(tokens.isCurrentSyncAuthority(original) &&
             tokens.registeredInstallationId() == installation) { "SYNC_ACCOUNT_CHANGED" }
     }
 }

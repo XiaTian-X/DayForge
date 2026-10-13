@@ -8,6 +8,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.state.getAppWidgetState
+import androidx.glance.appwidget.state.updateAppWidgetState
 import androidx.room.withTransaction
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -25,6 +26,8 @@ import com.dayforge.domain.model.IconReference
 import com.dayforge.domain.model.ObjectAppearance
 import com.dayforge.domain.service.AccountSessionCoordinator
 import com.dayforge.widget.IsolatedWidgetRefreshRule
+import com.dayforge.widget.bindWidgetSelection
+import com.dayforge.widget.clearWidgetSelection
 import com.dayforge.widget.checkin.CheckInWidget
 import com.dayforge.widget.checkin.ReactivationActivity
 import com.dayforge.widget.counting.CountingWidget
@@ -46,13 +49,14 @@ import org.junit.runner.RunWith
 
 /** Real production Hilt, Glance storage, Room and confirmation; no launcher pixel claim. */
 @HiltAndroidTest
-@OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
+@OptIn(androidx.compose.ui.test.ExperimentalTestApi::class, kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 class WidgetRestartActivityTest {
     @get:Rule(order = 0) val widgets = IsolatedWidgetRefreshRule()
     @get:Rule(order = 1) val storage = PhysicalDatabaseRule()
     @get:Rule(order = 2) val hilt = HiltAndroidRule(this)
-    @get:Rule(order = 3) val compose = createEmptyComposeRule(effectContext = StandardTestDispatcher())
+    private val effects = StandardTestDispatcher()
+    @get:Rule(order = 3) val compose = createEmptyComposeRule(effectContext = effects)
     @Inject lateinit var habits: HabitRepository
     @Inject lateinit var creator: NextObjectCreator
     @Inject lateinit var tokens: TokenManager
@@ -61,6 +65,7 @@ class WidgetRestartActivityTest {
     @Inject internal lateinit var http: NextSyncHttp
     private val app get() = InstrumentationRegistry.getInstrumentation().targetContext
     private val db get() = storage.database
+    private val widgetIds = mutableListOf<androidx.glance.GlanceId>()
     private fun id(n: Int) = "ae310000-0000-4000-8000-${n.toString(16).padStart(12, '0')}"
 
     @Before fun setup() = runBlocking<Unit> {
@@ -78,9 +83,16 @@ class WidgetRestartActivityTest {
                 monitor.getActivitiesInStage(stage).toList().forEach { it.finish() }
         }
         InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+        // DESTROYED only drains Android's lifecycle. Finish queued Compose effect
+        // cancellation on Main before the rule's runTest teardown drains it off Main.
+        InstrumentationRegistry.getInstrumentation().runOnMainSync { effects.scheduler.runCurrent() }
         if (::tokens.isInitialized) sessions.exclusive { tokens.clearTokens() }
         com.dayforge.reminder.HabitReminderScheduler.cancelAllReminders(app)
         com.dayforge.widget.FocusWidgetAlarmScheduler.cancelScheduledRefresh(app)
+        widgetIds.forEach {
+            clearWidgetSelection(app, it)
+            updateAppWidgetState(app, it) { values -> values.clear() }
+        }
     }
     private suspend fun profile() {
         sessions.exclusive {
@@ -99,7 +111,7 @@ class WidgetRestartActivityTest {
         appearance = if (typed) ObjectAppearance(IconReference.Role("habit.custom"), "#123456", "theme") else null,
         completionPolicy = if (typed) "recurring" else null, creationAuthority = if (typed) creator.capture() else null)
     private fun glanceId() = requireNotNull(GlanceAppWidgetManager(app).getGlanceIdBy(Intent().putExtra(
-        AppWidgetManager.EXTRA_APPWIDGET_ID, ((System.nanoTime() and 0x1fffffff) + 1).toInt())))
+        AppWidgetManager.EXTRA_APPWIDGET_ID, ((System.nanoTime() and 0x1fffffff) + 1).toInt()))).also { widgetIds.add(it) }
     private suspend fun proof() = db.withTransaction { nextRestartDatabaseProof(db) }
     private suspend fun ended(scenario: ActivityScenario<ReactivationActivity>) = withTimeout(5000) {
         while (scenario.state != androidx.lifecycle.Lifecycle.State.DESTROYED) delay(20)
@@ -114,6 +126,7 @@ class WidgetRestartActivityTest {
             val habitId = create(type)
             val row = requireNotNull(habits.getHabitById(habitId))
             val key = glanceId()
+            bindWidgetSelection(app, key, habitId)
             val intent = when (type) {
                 HabitType.CHECK_IN -> {
                     CheckInWidget.refreshWidgetData(app, key, habitId)
@@ -164,6 +177,7 @@ class WidgetRestartActivityTest {
         profile()
         val habitId = create(HabitType.CHECK_IN)
         val key = glanceId()
+        bindWidgetSelection(app, key, habitId)
         CheckInWidget.refreshWidgetData(app, key, habitId)
         val state = CheckInWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, key)
         val encoded = requireNotNull(state[CheckInWidget.ACTION_PROOF_KEY])
@@ -184,6 +198,8 @@ class WidgetRestartActivityTest {
         val check = create(HabitType.CHECK_IN, typed = false)
         val count = create(HabitType.COUNTING, typed = false)
         val checkKey = glanceId(); val countKey = glanceId(); val focusKey = glanceId()
+        bindWidgetSelection(app, checkKey, check)
+        bindWidgetSelection(app, countKey, count)
         CheckInWidget.refreshWidgetData(app, checkKey, check)
         CountingWidget.refreshWidgetData(app, countKey, count)
         FocusWidget.refreshWidgetData(app, focusKey)
@@ -197,6 +213,7 @@ class WidgetRestartActivityTest {
         assertNull(c[CheckInWidget.ACTION_PROOF_KEY]); assertNull(n[CountingWidget.ACTION_PROOF_KEY])
         assertNull(f[FocusWidget.FACT_ACTION_PROOF_KEY]); assertNull(f[FocusWidget.TIMER_ACTION_PROOF_KEY])
         CheckInWidget.refreshWidgetData(app, checkKey, Long.MAX_VALUE)
-        assertNull(CheckInWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, checkKey)[CheckInWidget.LEGACY_RESTART_PROOF_KEY])
+        // A caller-supplied different Long is not a new selection and cannot clear/rebind this frame.
+        assertEquals(c, CheckInWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, checkKey))
     }
 }

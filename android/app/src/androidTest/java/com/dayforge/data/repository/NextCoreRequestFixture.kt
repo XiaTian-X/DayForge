@@ -73,7 +73,7 @@ abstract class NextCoreRequestFixture {
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val data = PreferenceDataStoreFactory.create(scope = scope, produceFile = { File(directory, "auth.preferences_pb") })
         dataStore = data
-        tokens = TokenManager(data); preferences = PreferencesManager(data)
+        tokens = TokenManager(data); preferences = PreferencesManager(data, tokens = tokens)
         client = OkHttpClient.Builder().addInterceptor(BaseUrlInterceptor(preferences)).addInterceptor(AuthInterceptor(tokens))
             .authenticator(TokenAuthenticator(tokens, preferences, SelectedNetworkTransport())).build()
         tokens.saveLoginSession("synthetic-first", "synthetic-refresh", "member", id(1), false)

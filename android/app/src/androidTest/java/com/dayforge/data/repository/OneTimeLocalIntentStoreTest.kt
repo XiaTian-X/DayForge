@@ -61,8 +61,8 @@ class OneTimeLocalIntentStoreTest {
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val dataStore = PreferenceDataStoreFactory.create(scope = scope, produceFile = { file })
         tokens = TokenManager(dataStore)
-        preferences = PreferencesManager(dataStore)
-        tokens.saveLoginSession("synthetic-a", "synthetic-r", "member", "account-a", false)
+        preferences = PreferencesManager(dataStore, tokens = tokens)
+        tokens.saveLoginSession("synthetic-a", "synthetic-r", "member", "80000000-0000-4000-8000-000000000001", false)
         habit = seed()
     }
 
@@ -192,16 +192,16 @@ class OneTimeLocalIntentStoreTest {
     @Test fun sameAccountReloginAndEpochChangeInvalidateCapturedIntentsButRefreshDoesNot() = runBlocking {
         val original = store().read(habit.uuid)
         val request = command(original.queue.optimisticState)
-        tokens.saveLoginSession("synthetic-a", "synthetic-r", "member", "account-a", false)
+        tokens.saveLoginSession("synthetic-a", "synthetic-r", "member", "80000000-0000-4000-8000-000000000001", false)
         expect(OneTimeLocalException.Reason.STALE_SESSION) { store().append(original.session, request) }
         val relogged = store().read(habit.uuid)
-        tokens.saveServerIdentity("server", "epoch")
+        tokens.saveServerIdentity("80000000-0000-4000-8000-000000000003", "80000000-0000-4000-8000-000000000004")
         expect(OneTimeLocalException.Reason.STALE_SESSION) { store().append(relogged.session, request) }
         val withEpoch = store().read(habit.uuid)
         val authentication = tokens.authenticationSnapshot()!!
-        assertTrue(tokens.saveRefreshedTokens(authentication, "renewed", "renewed-r", "member", "account-a", false))
+        assertTrue(tokens.saveRefreshedTokens(authentication, "renewed", "renewed-r", "member", "80000000-0000-4000-8000-000000000001", false))
         store().append(withEpoch.session, request)
-        tokens.resetReplicaForEpoch("server", "epoch-new")
+        tokens.resetReplicaForEpoch("80000000-0000-4000-8000-000000000003", "epoch-new")
         expect(OneTimeLocalException.Reason.STALE_SESSION) { store().append(withEpoch.session, request) }
         assertEquals(1, db.completionDao().countAll())
     }
@@ -212,7 +212,7 @@ class OneTimeLocalIntentStoreTest {
         sessions.exclusive {
             tokens.clearAuthenticationTokens()
             db.clearAllData()
-            tokens.saveLoginSession("other-a", "other-r", "other", "account-b", false)
+            tokens.saveLoginSession("other-a", "other-r", "other", "80000000-0000-4000-8000-000000000002", false)
             habit = seed(habit.uuid)
         }
         expect(OneTimeLocalException.Reason.STALE_SESSION) { store().append(original.session, request) }

@@ -1,7 +1,6 @@
 package com.dayforge.data.repository
 
 import android.database.Cursor
-import androidx.room.withTransaction
 import com.dayforge.data.api.NextSyncHttp
 import com.dayforge.data.api.dto.*
 import com.dayforge.data.appearance.strictAppearanceJson
@@ -39,14 +38,8 @@ internal class ReplicaBusinessProof internal constructor(val localFacts: Replica
 internal class NextReplicaBusinessProofReader(private val database: HabitDatabase, private val tokens: TokenManager,
     private val sessions: AccountSessionCoordinator, private val preferences: PreferencesManager, private val http: NextSyncHttp) {
     suspend fun read(localFacts: ReplicaLocalFactProof): ReplicaBusinessProof = withContext(Dispatchers.IO) {
-        sessions.exclusive { database.withTransaction {
-            val requests = localFacts.configuration.requests
-            suspend fun authorize() {
-                check(tokens.localSyncAccess() == requests.original && tokens.syncAuthenticationSnapshot(requests.original) != null) {
-                    "SYNC_ACCOUNT_CHANGED"
-                }
-            }
-            authorize()
+        val requests = localFacts.configuration.requests
+        ReplicaFactRecoveryReadScope.withSnapshot(database, tokens, sessions, requests.original) { factScope ->
             val storage = NextReplicaStorageProof(database).readInTransaction()
             require(storage.hash == requests.storageHash) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
             val tables = storage.contents.getValue("tables").jsonObject
@@ -118,7 +111,7 @@ internal class NextReplicaBusinessProofReader(private val database: HabitDatabas
                     }
                     require(database.timeLogDao().getAllTimeLogsForHabit(habit.id).isEmpty() && database.countDayDao().forHabit(habit.id).isEmpty())
                 } else if (habit.habitType != HabitType.GOAL) {
-                    val evidence = RecurringCompletionEvidenceReader(database, tokens, sessions).recoveryInTransaction(habit, today)
+                    val evidence = RecurringCompletionEvidenceReader(database, tokens, sessions).recoveryInTransaction(habit, today, factScope)
                     require(evidence.completions.size == completions.size)
                     for (fact in evidence.completions) {
                         val accepted = authority("activity_event", fact.uuid)
@@ -130,7 +123,7 @@ internal class NextReplicaBusinessProofReader(private val database: HabitDatabas
                         } == true
                         record("completions", "activity_event", fact.uuid, accepted != null && !unknownRule)
                     }
-                    val timers = TimerHistoryReader(database, tokens, sessions).recoveryInTransaction(habit, today)
+                    val timers = TimerHistoryReader(database, tokens, sessions).recoveryInTransaction(habit, today, factScope)
                     for (log in timers.logs) record("timelogs", "activity_event", log.uuid,
                         authority("activity_event", log.uuid) != null)
                     unfinished = unfinished || timers.hasUnfinishedTimer
@@ -190,9 +183,8 @@ internal class NextReplicaBusinessProofReader(private val database: HabitDatabas
                 if (!provenAbsence) gaps += key
             }
             require(NextReplicaStorageProof(database).readInTransaction().hash == requests.storageHash) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
-            authorize()
             ReplicaBusinessProof(localFacts, records, unconfirmed, gaps, unfinished)
-        } }
+        }
     }
 
     private suspend fun auditRaw(table: String, row: JsonObject) {

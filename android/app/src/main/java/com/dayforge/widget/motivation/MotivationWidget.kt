@@ -48,19 +48,22 @@ class MotivationWidget : GlanceAppWidget() {
             val ids = glanceId?.let { listOf(it) } ?: GlanceAppWidgetManager(appContext)
                 .getGlanceIds(MotivationWidget::class.java)
             for (id in ids) {
-                WidgetEntryPoint.from(appContext).displayPublisher().renderPrepared(
+                val publication = WidgetEntryPoint.from(appContext).displayPublisher().capturePublication() ?: continue
+                publication.renderPrepared(
                     onReadFailure = { error ->
                         Log.w(TAG, "Motivation widget source unavailable", error)
                         updateAppWidgetState(appContext, id) { prefs ->
+                            publication.stampFrame(prefs)
                             prefs[DATA_LOADED_KEY] = false
                             prefs[READ_FAILED_KEY] = true
                         }
                     }
-                ) { prepareWidgetData(appContext, id) }
+                ) { prepareWidgetData(appContext, id, publication) }
             }
         }
 
-        private suspend fun prepareWidgetData(context: Context, id: GlanceId): suspend () -> Unit {
+        private suspend fun prepareWidgetData(context: Context, id: GlanceId,
+            publication: com.dayforge.data.repository.WidgetDisplayPublisher.Publication): suspend () -> Unit {
             val database = HabitDatabaseProvider.getInstance(context.applicationContext)
             val habitDao = database.habitDao()
             val completionDao = database.completionDao()
@@ -120,6 +123,7 @@ class MotivationWidget : GlanceAppWidget() {
 
             return suspend {
                 updateAppWidgetState(context, id) { prefs ->
+                    publication.stampFrame(prefs)
                     prefs[MESSAGE_KEY] = message
                     prefs[BEST_STREAK_KEY] = bestStreak
                     prefs[COMPLETED_TODAY_KEY] = completedCount

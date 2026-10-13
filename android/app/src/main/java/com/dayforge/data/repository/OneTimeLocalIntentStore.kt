@@ -214,7 +214,7 @@ internal class OneTimeLocalIntentStore(
                     session.authentication.userId, session.serverInstanceId, session.syncEpoch, sourceHash,
                     intent)
                 database.nextRequestDao().insertOrigin(origin)
-                if (fact.oneTimeAction == "complete" && !preferences.getNeverAskAgain(loaded.habit.id).first()) {
+                if (fact.oneTimeAction == "complete" && !preferences.getNeverAskAgain(session, loaded.habit.uuid).first()) {
                     CompletionMetricPromptStore.createInTransaction(database, loaded.habit, fact.uuid)
                 }
                 check(NextRequestSql.rowHash(sqlite, "next_request_origins", "kind=? AND requestId=?",

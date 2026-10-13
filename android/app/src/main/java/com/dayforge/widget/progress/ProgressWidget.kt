@@ -44,19 +44,22 @@ class ProgressWidget : GlanceAppWidget() {
             val ids = glanceId?.let { listOf(it) } ?: GlanceAppWidgetManager(appContext)
                 .getGlanceIds(ProgressWidget::class.java)
             for (id in ids) {
-                WidgetEntryPoint.from(appContext).displayPublisher().renderPrepared(
+                val publication = WidgetEntryPoint.from(appContext).displayPublisher().capturePublication() ?: continue
+                publication.renderPrepared(
                     onReadFailure = { error ->
                         Log.w(TAG, "Progress widget source unavailable", error)
                         updateAppWidgetState(appContext, id) { prefs ->
+                            publication.stampFrame(prefs)
                             prefs[DATA_LOADED_KEY] = false
                             prefs[READ_FAILED_KEY] = true
                         }
                     }
-                ) { prepareWidgetData(appContext, id) }
+                ) { prepareWidgetData(appContext, id, publication) }
             }
         }
 
-        private suspend fun prepareWidgetData(context: Context, id: GlanceId): suspend () -> Unit {
+        private suspend fun prepareWidgetData(context: Context, id: GlanceId,
+            publication: com.dayforge.data.repository.WidgetDisplayPublisher.Publication): suspend () -> Unit {
             val database = HabitDatabaseProvider.getInstance(context.applicationContext)
             val habitDao = database.habitDao()
             val habitStatusCalculator = WidgetEntryPoint.calculator(context, database)
@@ -80,6 +83,7 @@ class ProgressWidget : GlanceAppWidget() {
             // Display I/O runs outside Room, under the original account publication lock.
             return suspend {
                 updateAppWidgetState(context, id) { prefs ->
+                    publication.stampFrame(prefs)
                     prefs[COMPLETED_COUNT_KEY] = completedCount
                     prefs[TOTAL_COUNT_KEY] = totalCount
                     prefs[PROGRESS_KEY] = progress

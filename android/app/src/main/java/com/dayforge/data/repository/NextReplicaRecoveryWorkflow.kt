@@ -351,7 +351,7 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
         val actual = requireNotNull(tokens.localSyncAccess()) { "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED" }
         val sameOwner = stage.original.copy(session = stage.original.session.copy(authentication = actual.session.authentication))
         check(tokens.activeReplicaStage() == stage && actual.session.authentication.userId == stage.accountId && actual == sameOwner &&
-            tokens.syncAuthenticationSnapshot(actual) != null && tokens.registeredInstallationId() == stage.installationId) {
+            tokens.isCurrentSyncAuthority(actual) && tokens.registeredInstallationId() == stage.installationId) {
             "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED"
         }
     }
@@ -432,8 +432,7 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
     }
 
     private suspend fun requireCurrent(stage: ReplicaSwitchStage) {
-        check(stages.active() == stage && tokens.localSyncAccess() == stage.original &&
-            tokens.syncAuthenticationSnapshot(stage.original) != null &&
+        check(stages.active() == stage && tokens.isCurrentSyncAuthority(stage.original) &&
             tokens.registeredInstallationId() == stage.installationId) { "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED" }
     }
 

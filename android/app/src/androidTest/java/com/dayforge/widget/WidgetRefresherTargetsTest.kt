@@ -12,8 +12,6 @@ import com.dayforge.widget.motivation.MotivationWidget
 import com.dayforge.widget.progress.ProgressWidget
 import com.dayforge.widget.timer.TimerWidget
 import io.mockk.*
-import com.dayforge.di.WidgetEntryPoint
-import com.dayforge.data.repository.WidgetDisplayPublisher
 import java.io.IOException
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -27,15 +25,9 @@ import org.junit.runner.RunWith
 class WidgetRefresherTargetsTest {
     private lateinit var context: Context
     private val id = mockk<GlanceId>()
-    private val publisher = mockk<WidgetDisplayPublisher>()
 
     @Before fun setup() {
         context = ApplicationProvider.getApplicationContext()
-        mockkObject(WidgetEntryPoint.Companion)
-        val entry = mockk<WidgetEntryPoint>()
-        every { WidgetEntryPoint.from(context) } returns entry
-        every { entry.displayPublisher() } returns publisher
-        coEvery { publisher.renderPrepared(any(), any()) } returns false
         mockkConstructor(GlanceAppWidgetManager::class, CheckInWidget::class, CountingWidget::class,
             TimerWidget::class, ProgressWidget::class, MotivationWidget::class, FocusWidget::class)
         mockkObject(CheckInWidget.Companion, CountingWidget.Companion, TimerWidget.Companion,
@@ -45,9 +37,9 @@ class WidgetRefresherTargetsTest {
         bind(CheckInWidget.PREFS_NAME, CheckInWidget.PREF_HABIT_ID_PREFIX, 101)
         bind(CountingWidget.PREFS_NAME, CountingWidget.PREF_HABIT_ID_PREFIX, 102)
         bind(TimerWidget.PREFS_NAME, TimerWidget.PREF_HABIT_ID_PREFIX, 103)
-        coEvery { CheckInWidget.refreshWidgetData(context, id, any()) } just Runs
-        coEvery { CountingWidget.refreshWidgetData(context, id, any()) } just Runs
-        coEvery { TimerWidget.refreshWidgetData(context, id, any()) } just Runs
+        coEvery { CheckInWidget.refreshWidgetData(context, id, null) } just Runs
+        coEvery { CountingWidget.refreshWidgetData(context, id, null) } just Runs
+        coEvery { TimerWidget.refreshWidgetData(context, id, null) } just Runs
         coEvery { ProgressWidget.refreshWidgetData(context, id) } just Runs
         coEvery { MotivationWidget.refreshWidgetData(context, id) } just Runs
         coEvery { FocusWidget.refreshWidgetData(context, id) } just Runs
@@ -61,7 +53,6 @@ class WidgetRefresherTargetsTest {
     }
 
     @After fun teardown() {
-        unmockkObject(WidgetEntryPoint.Companion)
         listOf(CheckInWidget.PREFS_NAME, CountingWidget.PREFS_NAME, TimerWidget.PREFS_NAME).forEach { name ->
             assertTrue(context.getSharedPreferences(name, Context.MODE_PRIVATE).edit().remove("habit_id_10").commit())
         }
@@ -78,11 +69,11 @@ class WidgetRefresherTargetsTest {
     @Test fun all_six_types_load_current_state_before_rendering_and_focus_alarm_is_retained() = runTest {
         assertEquals(0, WidgetRefresher(context).refresh())
         coVerifyOrder {
-            CheckInWidget.refreshWidgetData(context, id, 101)
+            CheckInWidget.refreshWidgetData(context, id, null)
             anyConstructed<CheckInWidget>().update(context, id)
-            CountingWidget.refreshWidgetData(context, id, 102)
+            CountingWidget.refreshWidgetData(context, id, null)
             anyConstructed<CountingWidget>().update(context, id)
-            TimerWidget.refreshWidgetData(context, id, 103)
+            TimerWidget.refreshWidgetData(context, id, null)
             anyConstructed<TimerWidget>().update(context, id)
             ProgressWidget.refreshWidgetData(context, id)
             anyConstructed<ProgressWidget>().update(context, id)
@@ -103,14 +94,14 @@ class WidgetRefresherTargetsTest {
         coVerify(exactly = 1) { FocusWidgetAlarmScheduler.scheduleNextRefresh(context) }
     }
 
-    @Test fun queued_refresh_resolves_latest_binding_and_renders_unconfigured_widgets() = runTest {
+    @Test fun queued_refresh_delegates_resolution_and_never_trusts_cached_numeric_bindings() = runTest {
         val refresher = WidgetRefresher(context)
         bind(CheckInWidget.PREFS_NAME, CheckInWidget.PREF_HABIT_ID_PREFIX, 999)
         bind(CountingWidget.PREFS_NAME, CountingWidget.PREF_HABIT_ID_PREFIX, -1)
         assertEquals(0, refresher.refresh())
-        // A now-deleted habit is still passed to the loader to write its deleted marker.
-        coVerify(exactly = 1) { CheckInWidget.refreshWidgetData(context, id, 999) }
-        coVerify(exactly = 0) { CountingWidget.refreshWidgetData(any(), any(), any()) }
+        // The stable resolver, not this scheduler's numeric hint, owns re-selection/deletion.
+        coVerify(exactly = 1) { CheckInWidget.refreshWidgetData(context, id, null) }
+        coVerify(exactly = 1) { CountingWidget.refreshWidgetData(context, id, null) }
         coVerify(exactly = 1) { anyConstructed<CountingWidget>().update(context, id) }
     }
 

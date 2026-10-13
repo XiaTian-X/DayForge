@@ -71,6 +71,7 @@ class HabitReminderController internal constructor(
         alarms: AndroidReminderAlarms) : this(database, tokens, sessions, counts, preferences, dataStore, alarms as ReminderAlarms)
 
     private val started = AtomicBoolean(false)
+    private val replica = com.dayforge.data.repository.ReplicaPresentationRepository(database, tokens, sessions)
     @Volatile private var publicationBlocked = false
     private val publicationGuard = Any()
     private var publicationGeneration = 0L
@@ -95,6 +96,7 @@ class HabitReminderController internal constructor(
     suspend fun openDetail(request: ReminderDetailRequest, navigate: (Long) -> Unit): Boolean =
         withContext(Dispatchers.IO) {
             sessions.exclusive {
+                if (!replica.isOpenWhileAccountLocked()) return@exclusive false
                 val generation = synchronized(publicationGuard) { publicationGeneration }
                 val access = tokens.localFactAccess() ?: return@exclusive false
                 if (publicationBlocked || reminderScope(access.session) != request.scope) return@exclusive false
@@ -104,6 +106,7 @@ class HabitReminderController internal constructor(
                 if (row.uuid != request.habitUuid) return@exclusive false
                 // Decryption may use Android Keystore: finish snapshot validation on IO.
                 val current = tokens.localFactAccess()
+                if (!replica.isOpenWhileAccountLocked()) return@exclusive false
                 // No DAO access or disk IO on Main, and no navigation inside Room's transaction.
                 withContext(Dispatchers.Main.immediate) {
                     synchronized(publicationGuard) {
@@ -120,9 +123,11 @@ class HabitReminderController internal constructor(
             try {
                 coroutineScope {
                     launch {
-                        tokens.factAccessChanges.map { it?.session }.distinctUntilChanged().collectLatest {
+                        combine(tokens.factAccessChanges.map { it?.session }.distinctUntilChanged(), replica.changes) {
+                            _, _ -> Unit
+                        }.collectLatest {
                             sessions.exclusive {
-                                val current = tokens.localFactAccess()?.session
+                                val current = tokens.localFactAccess()?.session.takeIf { replica.isOpenWhileAccountLocked() }
                                 synchronized(publicationGuard) {
                                     alarms.clearPublished(current?.let(::reminderScope)); alarms.cancelAll()
                                 }
@@ -144,8 +149,13 @@ class HabitReminderController internal constructor(
 
     suspend fun rescheduleAll() = withContext(Dispatchers.IO) {
         // Cancel tracked obsolete/deleted identities before rebuilding from current Room, not a cache.
-        sessions.exclusive { alarms.cancelAll() }
-        val ids = database.habitDao().getVisibleHabitsOnce().map { it.id }
+        val ids = sessions.exclusive {
+            alarms.cancelAll()
+            if (!replica.isOpenWhileAccountLocked()) {
+                alarms.clearPublished()
+                emptyList()
+            } else database.habitDao().getVisibleHabitsOnce().map { it.id }
+        }
         for (id in ids) try { schedule(id) } catch (error: Exception) {
             if (error is CancellationException) throw error
             android.util.Log.e("HabitReminder", "Cannot read reminder for habitId=$id", error)
@@ -154,6 +164,10 @@ class HabitReminderController internal constructor(
 
     suspend fun schedule(id: Long, now: ZonedDateTime = ZonedDateTime.now()) = withContext(Dispatchers.IO) {
         sessions.exclusive {
+            if (!replica.isOpenWhileAccountLocked()) {
+                synchronized(publicationGuard) { alarms.cancelAll(); alarms.clearPublished() }
+                return@exclusive
+            }
             val reading = database.withTransaction { read(id, now) }
             // Account lock remains held across publication, but all OS calls are after Room COMMIT.
             synchronized(publicationGuard) {
@@ -169,6 +183,10 @@ class HabitReminderController internal constructor(
     internal suspend fun deliver(delivery: ReminderDelivery, now: ZonedDateTime = ZonedDateTime.now()) =
         withContext(Dispatchers.IO) {
             sessions.exclusive {
+                if (!replica.isOpenWhileAccountLocked()) {
+                    synchronized(publicationGuard) { alarms.cancelAll(); alarms.clearPublished() }
+                    return@exclusive
+                }
                 val currentAccess = tokens.localFactAccess() ?: return@exclusive
                 val currentScope = reminderScope(currentAccess.session)
                 if (currentScope != delivery.scope) return@exclusive
@@ -203,7 +221,7 @@ class HabitReminderController internal constructor(
         val habit = database.habitDao().getVisibleHabitByIdSync(id) ?: return null
         val prefs = dataStore.data.first()
         val enabled = (prefs[booleanPreferencesKey("global_notifications_enabled")] ?: true) &&
-            (prefs[booleanPreferencesKey("habit_notification_$id")] ?: true)
+            preferences.getHabitNotificationEnabled(access.session, habit.uuid).first()
         val history = if (habit.habitType == HabitType.COUNTING && habit.appearance != null)
             counts.readInTransaction(habit, now.toLocalDate()) else null
         val quantity = if (habit.habitType == HabitType.COUNTING) history?.todayQuantity ?: run {

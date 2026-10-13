@@ -1,8 +1,10 @@
 package com.dayforge.data.repository
 
 import android.content.Context
+import android.database.Cursor
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.room.withTransaction
 import com.dayforge.data.appearance.BuiltInThemes
 import com.dayforge.data.appearance.ThemeFileRepository
 import com.dayforge.data.local.*
@@ -13,6 +15,12 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.withContext
 
 internal sealed interface ReplicaRecoveryContinuation {
@@ -20,8 +28,8 @@ internal sealed interface ReplicaRecoveryContinuation {
     class Destination(val outcome: ReplicaCompletionOutcome) : ReplicaRecoveryContinuation
 }
 
-/** Production composition for explicit user actions. Never invoked by discovery, workers or
- * startup. The existing business coordinator, account lock, icon runtime and DS remain canonical.
+/** Production composition for explicit user actions. Startup observes local control only;
+ * discovery/workers never invoke recovery work. The business coordinator, account lock, icon runtime and DS remain canonical.
  * Each operation rebuilds transport/proofs; no singleton retains consent, passwords or HTTP leases.
  */
 @Singleton
@@ -32,6 +40,38 @@ internal class ReplicaRecoveryRepository @Inject constructor(@param:ApplicationC
     private val candidates: NextReplicaCandidateValidator, private val icons: AccountIconController,
     private val connection: ReplicaRecoveryConnection) {
     private val differences get() = NextReplicaDifferenceReader(database, tokens, sessions, preferences)
+
+    /** Local entry hints only. Neither observation nor availability authorizes recovery work. */
+    fun entryChanges() = merge(tokens.replicaPresentationChanges,
+        database.invalidationTracker.createFlow("next_sync_state").map { Unit }).retryWhen { error, _ ->
+        if (error is CancellationException) throw error
+        emit(Unit); delay(1_000); true
+    }
+
+    /** Called under the account lock. Read only the active profile's scope, without decrypting
+     * old credentials or scanning business/problem queues. Full proofs remain at each action.
+     */
+    suspend fun entryAvailableWhileAccountLocked(): Boolean = try {
+        val witness = tokens.replicaLoginWitness()
+        val device = tokens.syncDeviceId.first()
+        val available = database.withTransaction {
+            database.openHelper.writableDatabase.query(
+                "SELECT id,accountId,serverInstanceId,syncEpoch,deviceId,challengeContract FROM next_sync_state LIMIT 2"
+            ).use { row ->
+                row.count == 1 && row.moveToFirst() &&
+                    row.getType(0) == Cursor.FIELD_TYPE_INTEGER && row.getLong(0) == 1L &&
+                    (1..4).all { row.getType(it) == Cursor.FIELD_TYPE_STRING } &&
+                    row.getType(5) == Cursor.FIELD_TYPE_INTEGER && row.getLong(5) == 1L &&
+                    row.getString(1) == witness.accountId && row.getString(2) == witness.serverInstanceId &&
+                    row.getString(3) == witness.currentEpoch && row.getString(4) == device
+            }
+        }
+        tokens.requireReplicaLoginWitness(witness)
+        available
+    } catch (error: Exception) {
+        if (error is CancellationException) throw error
+        false
+    }
 
     suspend fun pending(): ReplicaSwitchStage? = withContext(Dispatchers.IO) { tokens.replicaPresentationWitness().stage }
 

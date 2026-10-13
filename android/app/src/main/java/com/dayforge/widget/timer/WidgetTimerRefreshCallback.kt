@@ -24,8 +24,7 @@ class WidgetTimerRefreshCallback : ActionCallback {
                 MotivationWidget().update(context, glanceId)
             }
             "timer" -> {
-                val state = TimerWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(context, glanceId)
-                state[TimerWidget.HABIT_ID_KEY]?.let { TimerWidget.refreshWidgetData(context, glanceId, it) }
+                TimerWidget.refreshWidgetData(context, glanceId)
                 TimerWidget().update(context, glanceId)
             }
             "focus" -> {
@@ -34,14 +33,12 @@ class WidgetTimerRefreshCallback : ActionCallback {
             }
             "checkin" -> {
                 val widget = CheckInWidget()
-                val state = widget.getAppWidgetState<androidx.datastore.preferences.core.Preferences>(context, glanceId)
-                state[CheckInWidget.HABIT_ID_KEY]?.let { CheckInWidget.refreshWidgetData(context, glanceId, it) }
+                CheckInWidget.refreshWidgetData(context, glanceId)
                 widget.update(context, glanceId)
             }
             "counting" -> {
                 val widget = CountingWidget()
-                val state = widget.getAppWidgetState<androidx.datastore.preferences.core.Preferences>(context, glanceId)
-                state[CountingWidget.HABIT_ID_KEY]?.let { CountingWidget.refreshWidgetData(context, glanceId, it) }
+                CountingWidget.refreshWidgetData(context, glanceId)
                 widget.update(context, glanceId)
             }
         }

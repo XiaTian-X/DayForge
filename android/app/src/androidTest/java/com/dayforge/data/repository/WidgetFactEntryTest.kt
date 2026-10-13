@@ -46,7 +46,7 @@ import org.junit.runner.RunWith
 
 /** Actual Hilt/Glance state, foreground Activity and Compose confirmation on physical testbed. */
 @HiltAndroidTest
-@OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
+@OptIn(androidx.compose.ui.test.ExperimentalTestApi::class, kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 class WidgetFactEntryTest {
     @get:Rule(order = 0) val widgets = IsolatedWidgetRefreshRule()
@@ -54,7 +54,8 @@ class WidgetFactEntryTest {
     @get:Rule(order = 2) val hilt = HiltAndroidRule(this)
     // The v1 default is UnconfinedTestDispatcher: a Room continuation can recompose
     // Dialog on arch_disk_io. Queue recomposition on the rule-owned frame scheduler.
-    @get:Rule(order = 3) val compose = createEmptyComposeRule(effectContext = StandardTestDispatcher())
+    private val effects = StandardTestDispatcher()
+    @get:Rule(order = 3) val compose = createEmptyComposeRule(effectContext = effects)
     @Inject lateinit var habits: HabitRepository
     @Inject lateinit var creator: NextObjectCreator
     @Inject lateinit var tokens: TokenManager
@@ -63,6 +64,7 @@ class WidgetFactEntryTest {
     @Inject lateinit var publisher: WidgetDisplayPublisher
     private val app get() = InstrumentationRegistry.getInstrumentation().targetContext
     private val db get() = storage.database
+    private val boundWidgets = mutableListOf<androidx.glance.GlanceId>()
     private fun id(n: Int) = "ad310000-0000-4000-8000-${n.toString(16).padStart(12, '0')}"
     private fun appearance(role: String) = ObjectAppearance(IconReference.Role(role), "#123456", "theme")
 
@@ -81,6 +83,10 @@ class WidgetFactEntryTest {
             for (stage in androidx.test.runner.lifecycle.Stage.entries) monitor.getActivitiesInStage(stage).toList().forEach { it.finish() }
         }
         InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+        // DESTROYED only drains Android's lifecycle. Finish queued Compose effect
+        // cancellation on Main before the rule's runTest teardown drains it off Main.
+        InstrumentationRegistry.getInstrumentation().runOnMainSync { effects.scheduler.runCurrent() }
+        boundWidgets.forEach { com.dayforge.widget.clearWidgetSelection(app, it) }
         if (::tokens.isInitialized) sessions.exclusive { tokens.clearTokens() }
         com.dayforge.reminder.HabitReminderScheduler.cancelAllReminders(app)
         com.dayforge.widget.FocusWidgetAlarmScheduler.cancelScheduledRefresh(app)
@@ -98,10 +104,15 @@ class WidgetFactEntryTest {
     private suspend fun await(block: suspend () -> Boolean) = withTimeout(5_000) { while (!block()) delay(20) }
     private fun glanceId() = requireNotNull(GlanceAppWidgetManager(app).getGlanceIdBy(Intent().putExtra(
         AppWidgetManager.EXTRA_APPWIDGET_ID, ((System.nanoTime() and 0x1fffffff) + 1).toInt())))
+    private suspend fun bind(id: androidx.glance.GlanceId, habitId: Long) {
+        boundWidgets += id
+        com.dayforge.widget.bindWidgetSelection(app, id, habitId)
+    }
 
     @Test fun actualGlanceStatesCarryTheRenderedIdentityAndFrozenCountRule() = runBlocking<Unit> {
         val check = create()
         val checkId = glanceId()
+        bind(checkId, check)
         CheckInWidget.refreshWidgetData(app, checkId, check)
         val state = CheckInWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, checkId)
         val checkClaim = WidgetFactClaim.decode(requireNotNull(state[CheckInWidget.ACTION_PROOF_KEY]))
@@ -114,6 +125,7 @@ class WidgetFactEntryTest {
         habits.updateHabit(ticket.value!!.copy(targetValue = 20, isCountdown = false), editAuthority = ticket.authority)
         val countId = glanceId()
         val focusId = glanceId()
+        bind(countId, count)
         CountingWidget.refreshWidgetData(app, countId, count)
         FocusWidget.refreshWidgetData(app, focusId)
         val counter = CountingWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, countId)
@@ -130,6 +142,7 @@ class WidgetFactEntryTest {
     @Test fun realWidgetActivityCompletesAndRejectsStaleClickWithoutAnotherToggle() = runBlocking<Unit> {
         val task = create(once = true)
         val widgetId = glanceId()
+        bind(widgetId, task)
         suspend fun assertTaskDisplay(completed: Boolean) {
             CheckInWidget.refreshWidgetData(app, widgetId, task)
             val state = CheckInWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, widgetId)
@@ -165,6 +178,7 @@ class WidgetFactEntryTest {
         val count = create(HabitType.COUNTING)
         habits.logCompletion(app, check); habits.logCompletion(app, count)
         val checkId = glanceId(); val countId = glanceId(); val focusId = glanceId()
+        bind(checkId, check); bind(countId, count)
         suspend fun refresh() {
             CheckInWidget.refreshWidgetData(app, checkId, check)
             CountingWidget.refreshWidgetData(app, countId, count)
@@ -229,6 +243,7 @@ class WidgetFactEntryTest {
     @Test fun actualFactAndFocusThemeFailuresPropagateWithoutChangingDisplayOrBusiness() = runBlocking<Unit> {
         val check = create(); val count = create(HabitType.COUNTING)
         val checkId = glanceId(); val countId = glanceId(); val focusId = glanceId()
+        bind(checkId, check); bind(countId, count)
         CheckInWidget.refreshWidgetData(app, checkId, check)
         CountingWidget.refreshWidgetData(app, countId, count)
         FocusWidget.refreshWidgetData(app, focusId)

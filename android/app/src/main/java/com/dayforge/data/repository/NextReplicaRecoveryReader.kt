@@ -50,7 +50,7 @@ internal class NextReplicaRecoveryReader(private val database: HabitDatabase, pr
         require(identity.serverInstanceId == expected.session.serverInstanceId && identity.syncEpoch != expected.session.syncEpoch) {
             "SYNC_REPLICA_RECOVERY_SCOPE_INVALID"
         }
-        check(tokens.localSyncAccess() == expected && tokens.syncAuthenticationSnapshot(expected) != null) {
+        check(tokens.isCurrentSyncAuthority(expected)) {
             "SYNC_ACCOUNT_CHANGED"
         }
         return run {
@@ -104,7 +104,7 @@ internal class NextReplicaRecoveryReader(private val database: HabitDatabase, pr
             review(ReplicaRecoveryReview.SNAPSHOT_CANDIDATE,
                 count("SELECT COUNT(*) FROM next_recovery_state WHERE phase='awaiting_snapshot'"))
             check(NextChallengeStore(database).activeInTransaction(expected) == checkpoint &&
-                tokens.localSyncAccess() == expected && tokens.syncAuthenticationSnapshot(expected) != null) {
+                tokens.isCurrentSyncAuthority(expected)) {
                 "SYNC_ACCOUNT_CHANGED"
             }
             ReplicaRecoveryAssessment(expected.copy(capabilities = expected.capabilities.toSet()), identity.syncEpoch,

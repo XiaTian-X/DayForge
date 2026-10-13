@@ -190,6 +190,6 @@ internal class NextReplicaRequestProofReader(private val database: HabitDatabase
     }
 
     private suspend fun authorize(access: LocalSyncAccess) {
-        check(tokens.localSyncAccess() == access && tokens.syncAuthenticationSnapshot(access) != null) { "SYNC_ACCOUNT_CHANGED" }
+        check(tokens.isCurrentSyncAuthority(access)) { "SYNC_ACCOUNT_CHANGED" }
     }
 }

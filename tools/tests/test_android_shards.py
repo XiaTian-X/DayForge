@@ -333,11 +333,14 @@ class AndroidShardGateTest(unittest.TestCase):
         self.assertTrue(output.is_symlink())
 
     def test_lock_excludes_another_run_and_is_reusable(self):
-        with verification_lock():
-            with self.assertRaises(ValueError), verification_lock():
+        # Exercise real flock exclusion on this test's inode, not the live device
+        # gate's global lock. Root/backend checks may run beside Android tests.
+        with patch("tools.run_android_tests.Path", return_value=self.repo):
+            with verification_lock():
+                with self.assertRaises(ValueError), verification_lock():
+                    pass
+            with verification_lock():
                 pass
-        with verification_lock():
-            pass
 
     def test_process_timeout_joins_owned_child_and_retains_log(self):
         log = self.repo / "process.log"

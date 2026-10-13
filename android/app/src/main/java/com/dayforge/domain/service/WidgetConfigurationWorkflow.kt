@@ -2,6 +2,8 @@ package com.dayforge.domain.service
 
 import android.content.Context
 import androidx.glance.appwidget.GlanceAppWidgetManager
+import androidx.glance.GlanceId
+import androidx.glance.appwidget.state.updateAppWidgetState
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.WidgetConfigurationRepository
@@ -25,14 +27,35 @@ class WidgetConfigurationWorkflow @Inject constructor(
     internal val changes get() = repository.changes
     internal suspend fun current(snapshot: WidgetConfigurationSnapshot) = repository.isCurrent(snapshot)
     internal suspend fun load(kind: WidgetConfigurationKind, widgetId: Int): WidgetConfigurationSnapshot =
-        repository.load(when (kind) {
+        repository.load(spec(kind), widgetId)
+
+    internal suspend fun bound(kind: WidgetConfigurationKind, id: GlanceId) =
+        repository.bound(spec(kind), GlanceAppWidgetManager(context).getAppWidgetId(id))
+
+    /** All ordinary refreshes resolve the stable selection first, including explicit retry. */
+    internal suspend fun refresh(kind: WidgetConfigurationKind, id: GlanceId, expectedHabitId: Long? = null) {
+        val bound = bound(kind, id) ?: return
+        val habit = bound.habit
+        if (habit == null) {
+            bound.publication { updateAppWidgetState(context, id) { it.clear(); bound.publication.stampFrame(it) } }
+            return
+        }
+        if (expectedHabitId != null && habit.id != expectedHabitId) return
+        when (kind) {
+            WidgetConfigurationKind.CHECK_IN -> CheckInWidget.refreshWidgetDataInScope(context, id, habit.id, bound.publication)
+            WidgetConfigurationKind.COUNTING -> CountingWidget.refreshWidgetDataInScope(context, id, habit.id, bound.publication)
+            WidgetConfigurationKind.TIMER -> TimerWidget.refreshWidgetDataInScope(context, id, habit.id, bound.publication)
+        }
+    }
+
+    private fun spec(kind: WidgetConfigurationKind) = when (kind) {
             WidgetConfigurationKind.CHECK_IN -> WidgetConfigurationSpec(HabitType.CHECK_IN,
                 CheckInWidget.PREFS_NAME, CheckInWidget.PREF_HABIT_ID_PREFIX, CheckInWidgetReceiver::class.java)
             WidgetConfigurationKind.COUNTING -> WidgetConfigurationSpec(HabitType.COUNTING,
                 CountingWidget.PREFS_NAME, CountingWidget.PREF_HABIT_ID_PREFIX, CountingWidgetReceiver::class.java)
             WidgetConfigurationKind.TIMER -> WidgetConfigurationSpec(HabitType.TIMER,
                 TimerWidget.PREFS_NAME, TimerWidget.PREF_HABIT_ID_PREFIX, TimerWidgetReceiver::class.java)
-        }, widgetId)
+        }
 
     internal suspend fun configure(snapshot: WidgetConfigurationSnapshot, habit: HabitEntity) {
         repository.configure(snapshot, habit) { publication ->

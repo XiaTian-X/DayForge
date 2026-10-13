@@ -47,12 +47,9 @@ internal class TimerWidgetTicker(
         suspend fun refresh(context: Context, habitId: Long): Boolean {
             val manager = GlanceAppWidgetManager(context)
             val widget = TimerWidget()
-            val bindings = context.getSharedPreferences(TimerWidget.PREFS_NAME, Context.MODE_PRIVATE)
             var complete = true
             var failure: Exception? = null
             for (id in manager.getGlanceIds(TimerWidget::class.java)) {
-                val widgetId = manager.getAppWidgetId(id)
-                if (bindings.getLong(TimerWidget.PREF_HABIT_ID_PREFIX + widgetId, -1L) != habitId) continue
                 try {
                     if (!TimerWidget.refreshElapsedWidgetData(context, id, habitId)) complete = false
                     widget.update(context, id)

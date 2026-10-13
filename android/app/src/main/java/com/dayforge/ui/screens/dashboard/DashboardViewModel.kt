@@ -364,8 +364,10 @@ class DashboardViewModel @Inject constructor(
         habitId: Long,
         values: List<MetricValueInput>,
         expectedEventUuid: String? = null,
-        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null
-    ): Boolean = linkedMetricCoordinator.recordMetricValues(habitId, values, expectedEventUuid, expectedTimerPrompt)
+        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null,
+        expectedPreferenceClaim: com.dayforge.data.repository.HabitPreferenceClaim? = null
+    ): Boolean = linkedMetricCoordinator.recordMetricValues(habitId, values, expectedEventUuid, expectedTimerPrompt,
+        expectedPreferenceClaim = expectedPreferenceClaim)
 
     /**
      * Set "never ask again" preference for a habit's metric prompt.
@@ -375,8 +377,10 @@ class DashboardViewModel @Inject constructor(
      * @param value True to suppress future prompts
      */
     suspend fun setNeverAskAgain(habitId: Long, value: Boolean, expectedEventUuid: String? = null,
-        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null) {
-        linkedMetricCoordinator.setNeverAskAgain(habitId, value, expectedEventUuid, expectedTimerPrompt)
+        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null,
+        expectedPreferenceClaim: com.dayforge.data.repository.HabitPreferenceClaim? = null) {
+        linkedMetricCoordinator.setNeverAskAgain(habitId, value, expectedEventUuid, expectedTimerPrompt,
+            expectedPreferenceClaim = expectedPreferenceClaim)
     }
 
     /**
@@ -387,7 +391,9 @@ class DashboardViewModel @Inject constructor(
     }
 
     suspend fun skipPostCheckInDialog(habitId: Long, expectedEventUuid: String? = null,
-        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null) = linkedMetricCoordinator.skipPrompt(habitId, expectedEventUuid, expectedTimerPrompt)
+        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null,
+        expectedPreferenceClaim: com.dayforge.data.repository.HabitPreferenceClaim? = null) =
+        linkedMetricCoordinator.skipPrompt(habitId, expectedEventUuid, expectedTimerPrompt, expectedPreferenceClaim = expectedPreferenceClaim)
 
     fun refreshPostCheckInMetadata() {
         viewModelScope.launch {

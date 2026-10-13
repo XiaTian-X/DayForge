@@ -25,10 +25,8 @@ import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import androidx.glance.action.clickable
-import com.dayforge.data.local.DataStoreProvider
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.HabitDatabaseProvider
-import com.dayforge.data.local.PreferencesManager
 import com.dayforge.domain.service.ScheduleValidator
 import com.dayforge.domain.service.TimerElapsedCalculator
 import com.dayforge.util.DateTimeUtils
@@ -114,11 +112,9 @@ class TimerWidget : GlanceAppWidget() {
          * 7. Check completion: accumulatedSeconds >= targetMinutes * 60
          * 8. Write all values to Glance state via updateAppWidgetState
          */
-        suspend fun refreshWidgetData(context: Context, glanceId: GlanceId, habitId: Long) {
-            val appContext = context.applicationContext
-            val entry = com.dayforge.di.WidgetEntryPoint.from(appContext)
-            val publication = entry.displayPublisher().capturePublication() ?: return
-            refreshWidgetDataInScope(appContext, glanceId, habitId, publication)
+        suspend fun refreshWidgetData(context: Context, glanceId: GlanceId, habitId: Long? = null) {
+            com.dayforge.di.WidgetEntryPoint.from(context).configurationWorkflow().refresh(
+                com.dayforge.domain.service.WidgetConfigurationKind.TIMER, glanceId, habitId)
         }
 
         internal suspend fun refreshWidgetDataInScope(context: Context, glanceId: GlanceId, habitId: Long,
@@ -132,6 +128,7 @@ class TimerWidget : GlanceAppWidget() {
                     return publication {
                         publishingDisplay = true
                         updateAppWidgetState(appContext, glanceId) { prefs ->
+                            publication.stampFrame(prefs)
                             clearActionAndTickState(prefs)
                             prefs[HABIT_ID_KEY] = habitId
                             prefs[IS_DELETED_KEY] = true
@@ -144,21 +141,21 @@ class TimerWidget : GlanceAppWidget() {
                     val published = com.dayforge.di.WidgetEntryPoint.from(appContext).timerWriter()
                         .renderWidgetSnapshot(visibleHabit, publication::isCurrentWhileAccountLocked) { snapshot ->
                             publishingDisplay = true
-                            writeWidgetState(appContext, glanceId, habitId, snapshot.habit, snapshot)
+                            writeWidgetState(appContext, glanceId, habitId, snapshot.habit, snapshot, publication)
                         }
                     if (published) return true
-                    publication { publishingDisplay = true; writeReadFailure(appContext, glanceId, habitId) }
+                    publication { publishingDisplay = true; writeReadFailure(appContext, glanceId, habitId, publication) }
                     return false
                 }
                 // v4 sources are prepared outside the lock; typed healthy snapshots still
                 // keep NextTimerWriter's stronger lock through all reads and display IO.
-                val display = prepareWidgetState(appContext, glanceId, habitId, visibleHabit, null,
+                val display = prepareWidgetState(appContext, glanceId, habitId, visibleHabit, null, publication,
                     publication.legacyRestartClaim(visibleHabit)?.encode())
                 return publication { publishingDisplay = true; display() }
             } catch (error: Exception) {
                 if (error is CancellationException || publishingDisplay) throw error
                 Log.w(TAG, "Timer widget original policy unavailable", error)
-                publication { writeReadFailure(appContext, glanceId, habitId) }
+                publication { writeReadFailure(appContext, glanceId, habitId, publication) }
                 return false
             }
         }
@@ -170,8 +167,10 @@ class TimerWidget : GlanceAppWidget() {
             prefs.remove(TICK_DATE_KEY); prefs.remove(TICK_ZONE_KEY); prefs.remove(TICK_COMPLETED_SECONDS_KEY)
         }
 
-        private suspend fun writeReadFailure(context: Context, glanceId: GlanceId, habitId: Long) {
+        private suspend fun writeReadFailure(context: Context, glanceId: GlanceId, habitId: Long,
+            publication: com.dayforge.data.repository.WidgetDisplayPublisher.Publication) {
             updateAppWidgetState(context, glanceId) { prefs ->
+                publication.stampFrame(prefs)
                 clearActionAndTickState(prefs)
                 prefs[HABIT_ID_KEY] = habitId
                 prefs[DATA_LOADED_KEY] = false
@@ -183,17 +182,22 @@ class TimerWidget : GlanceAppWidget() {
         /** False requests a normal full refresh; ticks never synthesize a new action claim. */
         internal suspend fun refreshElapsedWidgetData(context: Context, glanceId: GlanceId, habitId: Long): Boolean {
             val appContext = context.applicationContext
-            val publication = com.dayforge.di.WidgetEntryPoint.from(appContext).displayPublisher()
-                .capturePublication() ?: return false
+            val bound = com.dayforge.di.WidgetEntryPoint.from(appContext).configurationWorkflow()
+                .bound(com.dayforge.domain.service.WidgetConfigurationKind.TIMER, glanceId) ?: return false
+            val selected = bound.habit ?: return false
+            // A ticker for another habit has nothing to update on this configured instance.
+            if (selected.id != habitId) return true
+            val publication = bound.publication
             val previous = TimerWidget().getAppWidgetState<Preferences>(appContext, glanceId)
+            // A partial elapsed update must never attach fresh ownership to old cached names/stats.
+            if (!publication.ownsFrame(previous)) return false
             if (previous[HABIT_ID_KEY] != habitId || previous[DATA_LOADED_KEY] != true ||
                 previous[READ_FAILED_KEY] == true || previous[IS_DELETED_KEY] == true) return false
             val database = HabitDatabaseProvider.getInstance(appContext)
             val habit = database.habitDao().getVisibleHabitById(habitId) ?: return false
             // v4 has no retained-proof audit; keep its original loader and display semantics.
             if (habit.appearance == null) {
-                refreshWidgetData(appContext, glanceId, habitId)
-                return true
+                return refreshWidgetDataInScope(appContext, glanceId, habitId, publication)
             }
             if (previous[TICK_DATE_KEY] != DateTimeUtils.today().toString() ||
                 previous[TICK_ZONE_KEY] != java.time.ZoneId.systemDefault().id) return false
@@ -208,6 +212,7 @@ class TimerWidget : GlanceAppWidget() {
                 if (claim.habitId != habitId || claim.authority.sessionUuid == null) return false
                 com.dayforge.di.WidgetEntryPoint.from(appContext).timerWriter()
                     .renderWidgetTick(habitId, plan, logHash, claim.authority) { log, original ->
+                        if (!publication.isCurrentWhileAccountLocked()) return@renderWidgetTick
                         publishingDisplay = true
                         val policy = WidgetTimerPolicy.read(habit, log, original)
                         val elapsed = policy.elapsed(TimerElapsedCalculator.elapsedSeconds(log, appContext))
@@ -243,13 +248,16 @@ class TimerWidget : GlanceAppWidget() {
 
         private suspend fun writeWidgetState(context: Context, glanceId: GlanceId, habitId: Long,
             habit: com.dayforge.data.local.entity.HabitEntity,
-            snapshot: com.dayforge.data.repository.WidgetTimerReadSnapshot?) {
-            prepareWidgetState(context, glanceId, habitId, habit, snapshot)()
+            snapshot: com.dayforge.data.repository.WidgetTimerReadSnapshot?,
+            publication: com.dayforge.data.repository.WidgetDisplayPublisher.Publication) {
+            prepareWidgetState(context, glanceId, habitId, habit, snapshot, publication)()
         }
 
         private suspend fun prepareWidgetState(context: Context, glanceId: GlanceId, habitId: Long,
             habit: com.dayforge.data.local.entity.HabitEntity,
-            snapshot: com.dayforge.data.repository.WidgetTimerReadSnapshot?, legacyProof: String? = null): suspend () -> Unit {
+            snapshot: com.dayforge.data.repository.WidgetTimerReadSnapshot?,
+            publication: com.dayforge.data.repository.WidgetDisplayPublisher.Publication,
+            legacyProof: String? = null): suspend () -> Unit {
             val appContext = context.applicationContext
             val database = HabitDatabaseProvider.getInstance(appContext)
             val timeLogDao = database.timeLogDao()
@@ -303,10 +311,11 @@ class TimerWidget : GlanceAppWidget() {
             // Check if this habit is in the pending metric set (stored in DataStore)
             // This is more reliable than calculating from database, especially when
             // app is in background or when multiple habits share the same metric.
-            val dataStore = DataStoreProvider.get(appContext)
-            val preferencesManager = PreferencesManager(dataStore)
-            val pendingHabits = preferencesManager.pendingMetricHabits.first()
-            val showMetricPrompt = isCompleted && habitId in pendingHabits
+            val preferencesManager = com.dayforge.di.WidgetEntryPoint.from(appContext).preferencesManager()
+            val pendingHabits = publication.session?.let { session ->
+                preferencesManager.pendingMetricHabitUuids(session, setOf(habit.uuid)).first()
+            }.orEmpty()
+            val showMetricPrompt = isCompleted && habit.uuid in pendingHabits
 
             // Calculate remaining seconds for countdown mode
             val remainingSeconds = policy.remaining(activeTimer, accumulatedFromCompleted, elapsedSeconds)
@@ -338,6 +347,7 @@ class TimerWidget : GlanceAppWidget() {
 
                 // Write all values to Glance state
                 updateAppWidgetState(appContext, glanceId) { prefs ->
+                    publication.stampFrame(prefs)
                     prefs[HABIT_ID_KEY] = habitId
                     // 倒计时习惯添加标签
                     prefs[HABIT_NAME_KEY] = habit.name

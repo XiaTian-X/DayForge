@@ -10,6 +10,7 @@ import io.mockk.*
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.serialization.json.*
 import org.junit.After
 import org.junit.Assert.*
@@ -23,12 +24,14 @@ import org.junit.runner.RunWith
 class ReplicaRecoveryViewModelTest {
     private val actions = mockk<ReplicaRecoveryActions>()
     private val control = AtomicReference(ReplicaRecoveryControl(AuthenticationSession(recoveryId(1), recoveryId(6)), null))
+    private val entryChanges = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     private lateinit var invalidator: AccountIconMemory.Cache
     private val stores = mutableListOf<Pair<ViewModelStore, ReplicaRecoveryViewModel>>()
     private val releases = mutableListOf<CompletableDeferred<Unit>>()
     private val key = ReplicaRecordKey("metric", recoveryId(30))
     init {
         every { actions.observeInvalidation(any()) } answers { invalidator = firstArg() }
+        every { actions.entryChanges() } returns entryChanges
         coEvery { actions.control() } answers { control.get() }
     }
     private fun stage(phase: ReplicaSwitchPhase = ReplicaSwitchPhase.ARCHIVE_VERIFIED): ReplicaSwitchStage = recoveryUiStage(phase)
@@ -83,6 +86,27 @@ class ReplicaRecoveryViewModelTest {
         coVerify(exactly = 0) { actions.preview() }; coVerify(exactly = 0) { actions.prepare(any()) }
         coVerify(exactly = 0) { actions.confirm(any()) }; coVerify(exactly = 0) { actions.resume(any()) }
         coVerify(exactly = 0) { actions.reauthenticate(any(), any()) }
+    }
+    @Test fun localEntryRefreshPreservesEvidenceConsentAndNoticeAndDismissKeepsTheDoorway() = runBlocking<Unit> {
+        control.set(control.get().copy(entryAvailable = true))
+        val model = open(); val evidence = ready(model)
+        withContext(Dispatchers.Main) { model.approve(true) }
+        control.set(control.get().copy(entryAvailable = true))
+        entryChanges.emit(Unit)
+        withTimeout(5_000) { model.state.first { it.entryAvailable } }
+        assertSame(evidence, model.state.value.evidence); assertTrue(model.state.value.approved)
+        // A local observation after a user-visible result must not run inspect() and erase it.
+        coEvery { actions.reauthenticate(any(), any()) } returns requireNotNull(control.get().authentication)
+        act(model) { model.reauthenticate("member", "synthetic") }
+        assertEquals(ReplicaRecoveryNotice.AUTHENTICATED, model.state.value.notice)
+        control.set(control.get().copy(entryAvailable = false)); entryChanges.emit(Unit)
+        withTimeout(5_000) { model.state.first { !it.entryAvailable } }
+        assertEquals(ReplicaRecoveryNotice.AUTHENTICATED, model.state.value.notice)
+        control.set(control.get().copy(entryAvailable = true)); entryChanges.emit(Unit)
+        withTimeout(5_000) { model.state.first { it.entryAvailable } }
+        withContext(Dispatchers.Main) { model.dismiss() }
+        assertTrue(model.state.value.entryAvailable)
+        coVerify(exactly = 0) { actions.confirm(any()) }; coVerify(exactly = 0) { actions.resume(any()) }
     }
     @Test fun ownFreezeRetainsFreshEvidenceButConfirmationRequiresApprovalAndDoubleClickSendsOnce() = runBlocking<Unit> {
         val model = open(); val evidence = ready(model)

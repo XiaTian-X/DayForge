@@ -60,6 +60,8 @@ class HabitDetailViewModelNotificationTest {
     private lateinit var testDataStore: DataStore<Preferences>
     private lateinit var preferencesManager: PreferencesManager
     private lateinit var habitRepository: HabitRepository
+    private lateinit var tokens: com.dayforge.data.local.TokenManager
+    private lateinit var habitPreferences: com.dayforge.data.repository.HabitPreferenceRepository
     private lateinit var context: android.content.Context
     private val testDispatcher = StandardTestDispatcher()
     private val dataStoreScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -73,7 +75,10 @@ class HabitDetailViewModelNotificationTest {
         // Create test DataStore
         dataStoreFile = File(context.cacheDir, "notification_${java.util.UUID.randomUUID()}.preferences_pb")
         testDataStore = PreferenceDataStoreFactory.create(scope = dataStoreScope, produceFile = { dataStoreFile })
-        preferencesManager = PreferencesManager(testDataStore)
+        tokens = com.dayforge.data.local.TokenManager(testDataStore)
+        runBlocking { tokens.saveLoginSession("synthetic-access", "synthetic-refresh", "member",
+            "80000000-0000-4000-8000-000000000001", false) }
+        preferencesManager = PreferencesManager(testDataStore, tokens = tokens)
 
         database = storage.database
         habitDao = database.habitDao()
@@ -84,6 +89,9 @@ class HabitDetailViewModelNotificationTest {
         habitMetricLinkDao = database.habitMetricLinkDao()
 
         habitRepository = HabitRepository(habitDao, completionDao, timeLogDao, database)
+        val sessions = com.dayforge.domain.service.AccountSessionCoordinator()
+        habitPreferences = com.dayforge.data.repository.HabitPreferenceRepository(database, tokens, sessions,
+            preferencesManager, com.dayforge.data.repository.ReplicaPresentationRepository(database, tokens, sessions))
     }
 
     @After
@@ -135,7 +143,7 @@ class HabitDetailViewModelNotificationTest {
             habitDao = habitDao,
             habitMetricLinkDao = habitMetricLinkDao,
             metricDao = metricDao,
-            metricLogDao = metricLogDao,
+            metricLogDao = metricLogDao, habitPreferences = habitPreferences,
             preferencesManager = preferencesManager
         )
 
@@ -173,7 +181,7 @@ class HabitDetailViewModelNotificationTest {
             habitDao = habitDao,
             habitMetricLinkDao = habitMetricLinkDao,
             metricDao = metricDao,
-            metricLogDao = metricLogDao,
+            metricLogDao = metricLogDao, habitPreferences = habitPreferences,
             preferencesManager = preferencesManager
         )
 
@@ -212,7 +220,7 @@ class HabitDetailViewModelNotificationTest {
             habitDao = habitDao,
             habitMetricLinkDao = habitMetricLinkDao,
             metricDao = metricDao,
-            metricLogDao = metricLogDao,
+            metricLogDao = metricLogDao, habitPreferences = habitPreferences,
             preferencesManager = preferencesManager
         )
 
@@ -220,12 +228,12 @@ class HabitDetailViewModelNotificationTest {
         awaitLoaded(habitId)
 
         // Toggle to disable
-        viewModel.toggleNotificationEnabled(habitId, false)
+        viewModel.toggleNotificationEnabled(requireNotNull(viewModel.uiState.value.preferenceClaim), false)
         val state = awaitNotificationState(false)
         assertFalse("notificationEnabled should be false after toggle", state.notificationEnabled)
 
         // Verify persisted in PreferencesManager
-        val persisted = preferencesManager.getHabitNotificationEnabled(habitId).first()
+        val persisted = habitPreferences.read(requireNotNull(habitDao.getHabitById(habitId))).notificationEnabled
         assertFalse("Notification setting should persist in PreferencesManager", persisted)
     }
 
@@ -256,7 +264,7 @@ class HabitDetailViewModelNotificationTest {
             habitDao = habitDao,
             habitMetricLinkDao = habitMetricLinkDao,
             metricDao = metricDao,
-            metricLogDao = metricLogDao,
+            metricLogDao = metricLogDao, habitPreferences = habitPreferences,
             preferencesManager = preferencesManager
         )
 
@@ -264,21 +272,21 @@ class HabitDetailViewModelNotificationTest {
         awaitLoaded(habitId)
 
         // First disable
-        viewModel.toggleNotificationEnabled(habitId, false)
+        viewModel.toggleNotificationEnabled(requireNotNull(viewModel.uiState.value.preferenceClaim), false)
         assertFalse(
             "Should be disabled",
             awaitNotificationState(false).notificationEnabled
         )
 
         // Then re-enable
-        viewModel.toggleNotificationEnabled(habitId, true)
+        viewModel.toggleNotificationEnabled(requireNotNull(viewModel.uiState.value.preferenceClaim), true)
         assertTrue(
             "notificationEnabled should be true after re-enable",
             awaitNotificationState(true).notificationEnabled
         )
 
         // Verify persisted
-        val persisted = preferencesManager.getHabitNotificationEnabled(habitId).first()
+        val persisted = habitPreferences.read(requireNotNull(habitDao.getHabitById(habitId))).notificationEnabled
         assertTrue("Notification setting should persist as enabled", persisted)
     }
 

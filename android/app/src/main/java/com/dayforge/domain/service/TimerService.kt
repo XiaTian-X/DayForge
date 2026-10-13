@@ -792,7 +792,9 @@ class TimerService : Service() {
                 val links = habitMetricLinkDao.getLinksByHabitSync(stoppedHabitId)
                 if (links.any { it.promptOnComplete }) {
                     Log.d(TAG, "Habit $stoppedHabitId has prompt metrics, adding to pending set")
-                    preferencesManager.addPendingMetricHabit(stoppedHabitId)
+                    val currentHabit = requireNotNull(habit)
+                    val preferenceSession = actionAuthority?.session() ?: requireNotNull(tokenManager.localFactAccess()).session
+                    preferencesManager.addPendingMetricHabit(preferenceSession, currentHabit.uuid)
                 }
             }
 

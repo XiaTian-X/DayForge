@@ -349,6 +349,14 @@ class TokenManager @Inject constructor(
         )
     }
 
+    /** Called inside the owning preferences actor after its caller proved the Room habit UUID.
+     * No account-lock re-entry or second DataStore snapshot; this is not a business-write grant.
+     */
+    internal fun requireHabitPreferenceSession(values: Preferences, expected: LocalDataSession) {
+        ReplicaSwitchGuard.requireOpen(values)
+        check(factAccess(values)?.session == expected) { "HABIT_PREFERENCE_SESSION_CHANGED" }
+    }
+
     internal suspend fun localIconAccess(): LocalIconAccess? = iconAccess(dataStore.data.first())
 
     internal suspend fun localCoreWriteAccess(): LocalCoreWriteAccess? = withContext(Dispatchers.IO) {
@@ -570,6 +578,16 @@ class TokenManager @Inject constructor(
 
     internal suspend fun localSyncAccess(): LocalSyncAccess? = withContext(Dispatchers.IO) { syncAccess(dataStore.data.first()) }
 
+    /** Fresh registered authority proof without exporting or decrypting unused refresh credentials.
+     * Every call reads one current snapshot and decrypts its current access ciphertext once.
+     * No successful result, plaintext, or ciphertext is cached across calls or account transitions.
+     */
+    internal suspend fun isCurrentSyncAuthority(expected: LocalSyncAccess): Boolean = withContext(Dispatchers.IO) {
+        val preferences = dataStore.data.first()
+        syncAccessMetadata(preferences) == expected &&
+            preferences[ACCESS_TOKEN_KEY]?.let(tokenCipher::decrypt) != null
+    }
+
     /** Discovery supplies the explicit replica, but never rewrites the persisted owner/replica. */
     internal suspend fun registrationSyncAccess(server: String, epoch: String): LocalSyncAccess? = withContext(Dispatchers.IO) {
         val preferences = dataStore.data.first()
@@ -585,8 +603,9 @@ class TokenManager @Inject constructor(
         snapshot(preferences)?.takeIf { it.session == expected.session.authentication }
     }
 
+    // Metadata only: each caller must ALSO authenticate snapshot()/matches() from these same values.
     private fun syncMatches(preferences: Preferences, expected: LocalSyncAccess): Boolean =
-        if (expected.deviceId == null) registrationMatches(preferences, expected) else syncAccess(preferences) == expected
+        if (expected.deviceId == null) registrationMatches(preferences, expected) else syncAccessMetadata(preferences) == expected
 
     private fun registrationMatches(preferences: Preferences, expected: LocalSyncAccess): Boolean {
         if (preferences[SYNC_ACCOUNT_ID_KEY] != expected.session.authentication.userId ||
@@ -604,6 +623,13 @@ class TokenManager @Inject constructor(
             requireNotNull(preferences[DEVICE_CAPABILITIES_KEY]).toSet())
     }
 
+    /** Private parser only; never expose a metadata-only value as an authenticated access grant. */
+    private fun syncAccessMetadata(preferences: Preferences): LocalSyncAccess? {
+        val access = iconAccessMetadata(preferences) ?: return null
+        return LocalSyncAccess(access.session, access.deviceId, access.capabilityRevision,
+            requireNotNull(preferences[DEVICE_CAPABILITIES_KEY]).toSet())
+    }
+
     /** Canonical non-secret lifecycle signal; Keystore work never runs on Main. */
     internal val iconAccessChanges: Flow<LocalIconAccess?> = dataStore.data.map {
         if (ReplicaSwitchGuard.blocked(it)) null else iconAccess(it)
@@ -613,16 +639,21 @@ class TokenManager @Inject constructor(
     /** Bind credentials and all material permissions to ONE actual persisted snapshot. */
     internal suspend fun iconAuthenticationSnapshot(expected: LocalIconAccess): AuthenticationSnapshot? {
         val preferences = dataStore.data.first()
-        if (iconAccess(preferences) != expected) return null
+        if (iconAccessMetadata(preferences) != expected) return null
         return snapshot(preferences)?.takeIf { it.session == expected.session.authentication }
     }
 
     private fun iconAccess(preferences: Preferences): LocalIconAccess? {
-        val userId = preferences[USER_ID_KEY] ?: return null
+        val access = iconAccessMetadata(preferences) ?: return null
         // Local ownership still proves the CURRENT access ciphertext on every check. Refresh
         // credentials are not part of this snapshot (a missing/invalid refresh never denied it).
         // Do not repeat hardware Keystore decryption of that unused value for each image guard.
         preferences[ACCESS_TOKEN_KEY]?.let(tokenCipher::decrypt) ?: return null
+        return access
+    }
+
+    private fun iconAccessMetadata(preferences: Preferences): LocalIconAccess? {
+        val userId = preferences[USER_ID_KEY] ?: return null
         val authentication = AuthenticationSession(userId, preferences[AUTH_SESSION_KEY] ?: "legacy")
         if (preferences[SYNC_ACCOUNT_ID_KEY] != authentication.userId ||
             preferences[DEVICE_CAPABILITIES_KNOWN_KEY] != true) return null

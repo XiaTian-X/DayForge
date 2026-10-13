@@ -105,8 +105,9 @@ abstract class DatabaseModule {
 
         @Provides
         @Singleton
-        fun providePreferencesManager(dataStore: DataStore<Preferences>, calendar: com.dayforge.domain.service.DeviceCalendar): PreferencesManager {
-            return PreferencesManager(dataStore, calendar)
+        fun providePreferencesManager(dataStore: DataStore<Preferences>, calendar: com.dayforge.domain.service.DeviceCalendar,
+            tokens: com.dayforge.data.local.TokenManager): PreferencesManager {
+            return PreferencesManager(dataStore, calendar, tokens)
         }
 
         @Provides

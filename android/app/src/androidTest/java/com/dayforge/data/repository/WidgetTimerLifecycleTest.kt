@@ -16,6 +16,8 @@ import com.dayforge.domain.model.IconReference
 import com.dayforge.domain.model.ObjectAppearance
 import com.dayforge.domain.service.AccountSessionCoordinator
 import com.dayforge.widget.IsolatedWidgetRefreshRule
+import com.dayforge.widget.bindWidgetSelection
+import com.dayforge.widget.clearWidgetSelection
 import com.dayforge.widget.timer.TimerWidget
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
@@ -41,6 +43,7 @@ class WidgetTimerLifecycleTest {
     @Inject lateinit var creator: NextObjectCreator
     @Inject lateinit var tokens: TokenManager
     @Inject lateinit var sessions: AccountSessionCoordinator
+    @Inject lateinit var publisher: WidgetDisplayPublisher
     private val app get() = InstrumentationRegistry.getInstrumentation().targetContext
     private val db get() = storage.database
     private fun id(n: Int) = "ab320000-0000-4000-8000-${n.toString(16).padStart(12, '0')}"
@@ -61,7 +64,10 @@ class WidgetTimerLifecycleTest {
     @After fun cleanup() = runBlocking<Unit> {
         HabitDatabaseProvider.setInstanceForTesting(db)
         if (::tokens.isInitialized) sessions.exclusive { tokens.clearTokens() }
-        ids.forEach { updateAppWidgetState(app, it) { prefs -> prefs.clear() } }
+        ids.forEach {
+            clearWidgetSelection(app, it)
+            updateAppWidgetState(app, it) { prefs -> prefs.clear() }
+        }
     }
 
     private suspend fun seedOldProof(key: GlanceId) = updateAppWidgetState(app, key) {
@@ -80,13 +86,16 @@ class WidgetTimerLifecycleTest {
     @Test fun deletionClearsOldErrorActionAndTickMarkersAndLegacyHealthyReadRemainsUsable() = runBlocking<Unit> {
         val key = glanceId(); seedOldProof(key)
         val before = proof()
-        TimerWidget.refreshWidgetData(app, key, Long.MAX_VALUE)
+        // Exercise the source's deleted-row branch directly; ordinary refresh now resolves
+        // an explicit stable selection and will not adopt a nonexistent numeric binding.
+        TimerWidget.refreshWidgetDataInScope(app, key, Long.MAX_VALUE, requireNotNull(publisher.capturePublication()))
         val deleted = state(key)
         assertEquals(true, deleted[TimerWidget.IS_DELETED_KEY]); assertEquals(true, deleted[TimerWidget.DATA_LOADED_KEY])
         assertEquals(false, deleted[TimerWidget.READ_FAILED_KEY]); assertNoActionOrTick(deleted)
         assertNull(deleted[TimerWidget.LEGACY_RESTART_PROOF_KEY])
         assertEquals(before, proof())
         val habitId = create(typed = false)
+        bindWidgetSelection(app, key, habitId)
         val current = proof()
         TimerWidget.refreshWidgetData(app, key, habitId)
         val loaded = state(key)
@@ -99,6 +108,7 @@ class WidgetTimerLifecycleTest {
 
     @Test fun realSourceFailureHidesActionsAndColdRetryRestoresDisplayWithoutChangingFacts() = runBlocking<Unit> {
         val habitId = create(); val key = glanceId(); val row = requireNotNull(db.habitDao().getVisibleHabitById(habitId))
+        bindWidgetSelection(app, key, habitId)
         val raw = db.habitDao()
         val gated = spyk(raw)
         val proxy = spyk(db)
@@ -130,13 +140,18 @@ class WidgetTimerLifecycleTest {
             val key = glanceId(); val before = proof()
             val entered = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
             val habitId = when (mode) { "deleted" -> Long.MAX_VALUE; "typed" -> typed; else -> legacy }
+            if (mode != "deleted") bindWidgetSelection(app, key, habitId)
+            val deletedPublication = if (mode == "deleted") requireNotNull(publisher.capturePublication()) else null
             coEvery { gated.getVisibleHabitById(habitId) } coAnswers {
                 val value = raw.getVisibleHabitById(habitId)
                 entered.complete(Unit); release.await()
                 if (mode == "error") throw IOException("old source failed")
                 value
             }
-            val reading = async(Dispatchers.IO) { TimerWidget.refreshWidgetData(app, key, habitId) }
+            val reading = async(Dispatchers.IO) {
+                if (deletedPublication != null) TimerWidget.refreshWidgetDataInScope(app, key, habitId, deletedPublication)
+                else TimerWidget.refreshWidgetData(app, key, habitId)
+            }
             try {
                 withTimeout(5000) { entered.await() }
                 sessions.exclusive {
@@ -152,6 +167,7 @@ class WidgetTimerLifecycleTest {
 
     @Test fun sourceCancellationDoesNotPublishErrorAndReleasesAccountLock() = runBlocking<Unit> {
         val habitId = create(); val key = glanceId()
+        bindWidgetSelection(app, key, habitId)
         val raw = db.habitDao(); val gated = spyk(raw); val proxy = spyk(db)
         every { proxy.habitDao() } returns gated
         HabitDatabaseProvider.setInstanceForTesting(proxy)

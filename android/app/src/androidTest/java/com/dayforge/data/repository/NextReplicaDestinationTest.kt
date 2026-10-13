@@ -182,7 +182,7 @@ class NextReplicaDestinationTest : NextReplicaDestinationFixture() {
                 after
             }
         }
-        tokens = TokenManager(dataStore); preferences = PreferencesManager(dataStore); materialParticipants()
+        tokens = TokenManager(dataStore); preferences = PreferencesManager(dataStore, tokens = tokens); materialParticipants()
         writing = async(start = CoroutineStart.LAZY) { workflow().resume(pending) }; writing.start()
         val error = runCatching { writing.await() }.exceptionOrNull()
         assertTrue("Expected cancellation at actual DS transform, got $error", error is CancellationException)

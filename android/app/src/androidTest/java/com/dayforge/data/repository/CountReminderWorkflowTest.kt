@@ -3,6 +3,7 @@ package com.dayforge.data.repository
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.room.withTransaction
 import com.dayforge.data.local.toDisplayMillis
+import com.dayforge.data.local.replicaStageFixture
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.reminder.*
@@ -208,9 +209,9 @@ class CountReminderWorkflowTest : NextObjectEditorFixture() {
         configure()
         val alarms = FakeAlarms(); val controller = controller(alarms)
         controller.schedule(habit.id, at(8)); assertNotNull(alarms.pending())
-        preferences.setHabitNotificationEnabled(habit.id, false)
+        preferences.setHabitNotificationEnabled(local(), habit.uuid, false)
         controller.schedule(habit.id, at(8)); assertTrue(alarms.state.value.alarms.isEmpty())
-        preferences.setHabitNotificationEnabled(habit.id, true); preferences.setGlobalNotificationsEnabled(false)
+        preferences.setHabitNotificationEnabled(local(), habit.uuid, true); preferences.setGlobalNotificationsEnabled(false)
         controller.schedule(habit.id, at(8)); assertTrue(alarms.state.value.alarms.isEmpty())
         preferences.setGlobalNotificationsEnabled(true)
         db.withTransaction {
@@ -279,5 +280,41 @@ class CountReminderWorkflowTest : NextObjectEditorFixture() {
         assertTrue(alarms.state.value.shown.isEmpty())
         controller.deliver(pending.delivery, pending.wake.trigger.atZone(pending.wake.zone))
         assertTrue(alarms.state.value.shown.isEmpty())
+    }
+
+    @Test fun persistentRecoveryFenceClearsAndBlocksRemindersThenReleaseReschedulesReadOnlyAccount() = runBlocking<Unit> {
+        val row = habit.copy(habitType = HabitType.CHECK_IN, appearance = null, planMetadata = null,
+            targetValue = 1, bestTime = 540)
+        db.withTransaction { db.habitDao().update(row) }
+        register(permissions = setOf("sync.read"))
+        assertFalse(requireNotNull(tokens.localFactAccess()).canAppend)
+        val alarms = FakeAlarms(); val controller = controller(alarms)
+        controller.start(scope)
+        withTimeout(5_000) { while (alarms.state.value.replacements == 0) delay(10) }
+        controller.schedule(row.id, at(8))
+        val pending = alarms.pending()
+        controller.deliver(pending.delivery, pending.wake.trigger.atZone(pending.wake.zone))
+        assertEquals(1, alarms.state.value.shown.size)
+        val session = local()
+        val stages = NextReplicaStageStore(db, tokens, sessions)
+        val stage = stages.begin(tokens.replicaStageFixture())
+        NextReplicaWriteFence(db).acquire(stage.fence)
+        val frozen = stages.recordFrozen(stage)
+        withTimeout(5_000) { while (alarms.state.value.shown.isNotEmpty() || alarms.state.value.alarms.isNotEmpty()) delay(10) }
+        controller.schedule(row.id, at(8))
+        controller.deliver(pending.delivery, pending.wake.trigger.atZone(pending.wake.zone))
+        assertFalse(controller.openDetail(ReminderDetailRequest(row.id, row.uuid, reminderScope(session))) {
+            fail("Frozen recovery must not navigate to business data")
+        })
+        assertTrue(alarms.state.value.shown.isEmpty()); assertTrue(alarms.state.value.alarms.isEmpty())
+        val aborted = stages.cancel(frozen)
+        assertEquals(com.dayforge.data.local.ReplicaSwitchPhase.ABORTED, aborted.phase)
+        assertNull(tokens.activeReplicaStage())
+        assertEquals(aborted, tokens.replicaStage(stage.recoveryId))
+        assertEquals(stage.fence.copy(mode = com.dayforge.data.local.entity.NextReplicaFenceEntity.CLOSED),
+            db.nextReplicaFenceDao().state())
+        withTimeout(5_000) { while (alarms.state.value.alarms.isEmpty()) delay(10) }
+        assertEquals(row.uuid, alarms.pending().reading.habit.uuid)
+        assertFalse(requireNotNull(tokens.localFactAccess()).canAppend)
     }
 }

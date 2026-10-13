@@ -50,16 +50,24 @@ class TimerHistoryReader @Inject constructor(private val database: HabitDatabase
     internal suspend fun recoveryInTransaction(expected: HabitEntity, today: LocalDate): TimerRecoveryEvidence =
         TimerRecoveryEvidence(readEvidenceInTransaction(expected, today, true))
 
-    private suspend fun readEvidenceInTransaction(expected: HabitEntity, today: LocalDate, recovery: Boolean): TimerHistory {
+    internal suspend fun recoveryInTransaction(expected: HabitEntity, today: LocalDate,
+        scope: ReplicaFactRecoveryReadScope): TimerRecoveryEvidence =
+        TimerRecoveryEvidence(readEvidenceInTransaction(expected, today, true, scope))
+
+    private suspend fun readEvidenceInTransaction(expected: HabitEntity, today: LocalDate, recovery: Boolean,
+        recoveryScope: ReplicaFactRecoveryReadScope? = null): TimerHistory {
         check(database.inTransaction()) { "TIMER_READ_TRANSACTION_REQUIRED" }
+        check(recoveryScope == null || recovery)
+        val borrowed = recoveryScope?.borrow(database, tokens)
         suspend fun observedAccess() = if (recovery) tokens.replicaObservationCoreAccess() else tokens.localCoreWriteAccess()
-        val access = requireNotNull(observedAccess()) { "TIMER_SESSION_CHANGED" }
+        val access = borrowed?.first ?: requireNotNull(observedAccess()) { "TIMER_SESSION_CHANGED" }
         val habit = requireNotNull(database.habitDao().getHabitById(expected.id))
         check(habit == expected && habit.appearance != null &&
             (if (recovery) habit.habitType != HabitType.GOAL else habit.habitType == HabitType.TIMER) &&
             habit.completionPolicy == "recurring") { "TIMER_ACTIVITY_CHANGED" }
         require((recovery || habit.targetValue > 0) && isContractUuid(habit.uuid)) { "TIMER_ACTIVITY_INVALID" }
-        val scope = NextCoreLocalIntentStore(database, tokens, sessions).captureDisplayedRoundsInTransaction()
+        val scope = if (borrowed != null) borrowed.second
+            else NextCoreLocalIntentStore(database, tokens, sessions).captureDisplayedRoundsInTransaction()
         val metadata = scope?.let { Json.decodeFromString(ChallengeMetadata.serializer(), it.metadataJson) }
         val checkpoint = metadata?.checkpoints?.singleOrNull { it.head.activityUuid == habit.uuid }
         val head = scope?.let { it.pendingRestarts[habit.uuid]?.head ?: checkpoint?.head ?:
@@ -204,7 +212,8 @@ class TimerHistoryReader @Inject constructor(private val database: HabitDatabase
                 }
             }
         }
-        check(observedAccess() == access && (scope == null || tokens.localSyncAccess() == scope.access)) { "TIMER_SESSION_CHANGED" }
+        if (recoveryScope != null) recoveryScope.borrow(database, tokens)
+        else check(observedAccess() == access && (scope == null || tokens.localSyncAccess() == scope.access)) { "TIMER_SESSION_CHANGED" }
         return TimerHistory(today, Math.multiplyExact(habit.targetValue.toLong(), 60L), totals, visible, active, activeSegments, head)
     }
 

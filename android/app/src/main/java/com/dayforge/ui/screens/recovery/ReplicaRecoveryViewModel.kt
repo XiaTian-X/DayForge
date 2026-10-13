@@ -11,6 +11,10 @@ import javax.inject.Inject
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.channels.Channel
 
 internal enum class ReplicaRecoveryError { AUTHENTICATION, ACCOUNT, ENDPOINT, NETWORK, CHANGED, REVIEW, MATERIAL, NOT_REQUIRED, STORAGE, DAMAGED, FAILED }
 internal enum class ReplicaRecoveryNotice { AUTHENTICATED, CANCELLED, WAITING, CHANGED, COMPLETED }
@@ -30,7 +34,8 @@ internal data class ReplicaRecoveryDetail(val key: ReplicaRecordKey, val before:
 
 /** Memory only: no SavedStateHandle, DTO export, password, bearer, lease or persisted consent. */
 internal data class ReplicaRecoveryUiState(val stamp: Any = Any(), val visible: Boolean = false,
-    val busy: Boolean = false, val checked: Boolean = false, val stage: ReplicaSwitchStage? = null,
+    val busy: Boolean = false, val checked: Boolean = false, val entryAvailable: Boolean = false,
+    val stage: ReplicaSwitchStage? = null,
     val preview: ReplicaDifferencePreview? = null, val evidence: ReplicaRecoveryConfirmationEvidence? = null,
     val approved: Boolean = false, val detail: ReplicaRecoveryDetail? = null,
     val material: ReplicaMaterialPreflight? = null, val error: ReplicaRecoveryError? = null,
@@ -56,6 +61,7 @@ internal class ReplicaRecoveryViewModel internal constructor(private val actions
     private var blocked = false
     private var cleared = false
     private var operation: Any? = null
+    private val entryReload = Channel<Unit>(Channel.CONFLATED)
     private val mutable = MutableStateFlow(ReplicaRecoveryUiState(stamp = revision))
     val state = mutable.asStateFlow()
     private val invalidator = object : AccountIconMemory.Cache {
@@ -63,10 +69,28 @@ internal class ReplicaRecoveryViewModel internal constructor(private val actions
             if (!cleared) {
                 revision = Any(); this@ReplicaRecoveryViewModel.blocked = blocked
                 mutable.value = ReplicaRecoveryUiState(revision, visible = mutable.value.visible, busy = operation != null)
+                if (!blocked) entryReload.trySend(Unit)
             }
         }
     }
-    init { actions.observeInvalidation(invalidator); inspect() }
+    init {
+        actions.observeInvalidation(invalidator)
+        viewModelScope.launch {
+            merge(actions.entryChanges(), entryReload.receiveAsFlow()).collectLatest { refreshEntry() }
+        }
+        inspect()
+    }
+
+    /** An observer may update the doorway, never the user's preview, consent or operation fate. */
+    private suspend fun refreshEntry() {
+        val stamp = synchronized(monitor) { if (cleared || blocked) return else revision }
+        val available = try { withContext(Dispatchers.IO) { actions.control().entryAvailable } }
+            catch (error: Exception) { if (error is CancellationException) throw error else false }
+        synchronized(monitor) {
+            if (!cleared && !blocked && stamp === revision)
+                mutable.value = mutable.value.copy(entryAvailable = available)
+        }
+    }
     fun canRender(value: ReplicaRecoveryUiState): Boolean = synchronized(monitor) {
         !cleared && !blocked && value.stamp === revision
     }
@@ -75,7 +99,8 @@ internal class ReplicaRecoveryViewModel internal constructor(private val actions
         inspect()
     }
     fun dismiss() = synchronized(monitor) {
-        if (operation == null && !cleared) mutable.value = ReplicaRecoveryUiState(revision, checked = mutable.value.checked)
+        if (operation == null && !cleared) mutable.value = ReplicaRecoveryUiState(revision,
+            checked = mutable.value.checked, entryAvailable = mutable.value.entryAvailable)
     }
     fun inspect() = perform { ReplicaRecoveryUiState(checked = true) }
     fun preview() = perform { ReplicaRecoveryUiState(preview = actions.preview(), checked = true) }
@@ -183,7 +208,9 @@ internal class ReplicaRecoveryViewModel internal constructor(private val actions
                                     error = if (!valid || !stageMatches) ReplicaRecoveryError.CHANGED else safeError(requireNotNull(problem)),
                                     material = if (valid) (problem as? ReplicaMaterialUnavailable)?.diagnostics else null)
                             mutable.value = view.copy(stamp = revision, visible = mutable.value.visible,
-                                busy = false, stage = control?.stage, approved = false)
+                                busy = false, stage = control?.stage, approved = false,
+                                entryAvailable = valid && control?.entryAvailable == true)
+                            entryReload.trySend(Unit)
                         }
                     }
                 }
@@ -191,7 +218,8 @@ internal class ReplicaRecoveryViewModel internal constructor(private val actions
         }
     }
     override fun onCleared() = synchronized(monitor) {
-        cleared = true; revision = Any(); mutable.value = ReplicaRecoveryUiState(revision)
+        cleared = true; revision = Any(); mutable.value = ReplicaRecoveryUiState(revision); entryReload.close()
+        Unit
     }
 }
 

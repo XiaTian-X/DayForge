@@ -31,7 +31,6 @@ class LinkedMetricCoordinatorTest {
         habitRepository = mockk()
         metricRepository = mockk()
         preferencesManager = mockk()
-        every { preferencesManager.pendingMetricHabits } returns flowOf(emptySet())
         coordinator = LinkedMetricCoordinator(
             context = mockk<Context>(relaxed = true),
             preferencesManager = preferencesManager,
@@ -47,12 +46,11 @@ class LinkedMetricCoordinatorTest {
             every { completionPolicy } returns null
         }
         coEvery { habitRepository.getHabitById(7L) } returns habit
-        every { preferencesManager.getNeverAskAgain(7L) } returns flowOf(false)
         coEvery { metricRepository.getLinkedMetricSnapshots(7L) } returns emptyList()
 
         coordinator.showPromptAfterTimerStop(7L)
 
-        coVerify(exactly = 1) { habitRepository.getHabitById(7L) }
+        coVerify(exactly = 2) { habitRepository.getHabitById(7L) }
         coVerify(exactly = 1) { metricRepository.getLinkedMetricSnapshots(7L) }
     }
 

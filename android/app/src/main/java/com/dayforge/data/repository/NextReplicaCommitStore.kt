@@ -128,12 +128,12 @@ internal class NextReplicaCommitStore(private val database: HabitDatabase, priva
         }
         sessions.exclusive { database.withTransaction {
             val actual = tokens.replicaDestinationAccess(stage)
-            check(candidate.original == actual && tokens.syncAuthenticationSnapshot(actual) != null &&
+            check(candidate.original == actual && tokens.isCurrentSyncAuthority(actual) &&
                 actual.session.authentication.generation == stage.catchup.authenticationGeneration) { "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED" }
             if (catchupFateInTransaction(stage) == ReplicaCatchupFate.COMMITTED) return@withTransaction
             replaceProjection(candidate.projection)
             require(catchupFateInTransaction(stage) == ReplicaCatchupFate.COMMITTED)
-            check(tokens.replicaDestinationAccess(stage) == actual && tokens.syncAuthenticationSnapshot(actual) != null) {
+            check(tokens.replicaDestinationAccess(stage) == actual && tokens.isCurrentSyncAuthority(actual)) {
                 "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED"
             }
             currentCoroutineContext().ensureActive()
@@ -148,8 +148,8 @@ internal class NextReplicaCommitStore(private val database: HabitDatabase, priva
             candidate.projection.hash == stage.target?.projectionHash) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
         sessions.exclusive { database.withTransaction {
             currentCoroutineContext().ensureActive()
-            check(tokens.activeReplicaStage() == stage && tokens.localSyncAccess() == stage.original &&
-                tokens.syncAuthenticationSnapshot(stage.original) != null && tokens.registeredInstallationId() == stage.installationId) {
+            check(tokens.activeReplicaStage() == stage && tokens.isCurrentSyncAuthority(stage.original) &&
+                tokens.registeredInstallationId() == stage.installationId) {
                 "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED"
             }
             if (fateInTransaction(stage) == ReplicaCommitFate.COMMITTED) return@withTransaction

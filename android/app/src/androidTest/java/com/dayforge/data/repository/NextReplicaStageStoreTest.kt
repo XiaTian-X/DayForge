@@ -56,7 +56,7 @@ class NextReplicaStageStoreTest : NextCoreRequestFixture() {
             { tokens.saveDeviceRegistration(id(4), caps, true, 2) }, { tokens.markStructuralEditingDenied() },
             { tokens.requireSyncBootstrap() }, { tokens.clearSyncState() }, { tokens.clearTokens() },
             { preferences.setServerUrl("http://example.invalid/") }, { preferences.setLastSyncTimestamp(999) },
-            { preferences.addPendingMetricHabit(habit.id) }, { preferences.clearAccountScopedPreferences() })) reject(write)
+            { preferences.addPendingMetricHabit(local(), habit.uuid) }, { preferences.clearAccountScopedPreferences() })) reject(write)
         assertEquals(data, dataStore.data.first()); assertEquals(before, hash()); assertEquals(frozen, stages().active())
         val ended = stages().cancel(frozen)
         assertEquals(ReplicaSwitchPhase.ABORTED, ended.phase); assertEquals(ended, tokens.replicaStage(ended.recoveryId))
@@ -75,7 +75,7 @@ class NextReplicaStageStoreTest : NextCoreRequestFixture() {
             scope.coroutineContext[Job]!!.cancelAndJoin()
             scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
             dataStore = PreferenceDataStoreFactory.create(scope = scope, produceFile = { File(directory, "auth.preferences_pb") })
-            tokens = TokenManager(dataStore); preferences = PreferencesManager(dataStore); storage.reopen()
+            tokens = TokenManager(dataStore); preferences = PreferencesManager(dataStore, tokens = tokens); storage.reopen()
             assertEquals(expected, stages().active()); assertTrue(tokens.replicaSwitchPending()); assertNull(tokens.localCoreWriteAccess())
             assertEquals(before, hash()); reject { preferences.setLastSyncTimestamp(999) }
             stages().cancel(expected); assertFalse(tokens.replicaSwitchPending()); assertNotNull(tokens.localCoreWriteAccess())

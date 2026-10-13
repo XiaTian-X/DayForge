@@ -415,15 +415,19 @@ class NestedViewModel @Inject constructor(
         habitId: Long,
         values: List<MetricValueInput>,
         expectedEventUuid: String? = null,
-        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null
-    ): Boolean = metricCoordinator.recordMetricValues(habitId, values, expectedEventUuid, expectedTimerPrompt)
+        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null,
+        expectedPreferenceClaim: com.dayforge.data.repository.HabitPreferenceClaim? = null
+    ): Boolean = metricCoordinator.recordMetricValues(habitId, values, expectedEventUuid, expectedTimerPrompt,
+        expectedPreferenceClaim = expectedPreferenceClaim)
 
     /**
      * Set "never ask again" preference for a habit's metric prompt.
      */
     suspend fun setNeverAskAgain(habitId: Long, value: Boolean, expectedEventUuid: String? = null,
-        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null) {
-        metricCoordinator.setNeverAskAgain(habitId, value, expectedEventUuid, expectedTimerPrompt)
+        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null,
+        expectedPreferenceClaim: com.dayforge.data.repository.HabitPreferenceClaim? = null) {
+        metricCoordinator.setNeverAskAgain(habitId, value, expectedEventUuid, expectedTimerPrompt,
+            expectedPreferenceClaim = expectedPreferenceClaim)
     }
 
     /**
@@ -434,7 +438,9 @@ class NestedViewModel @Inject constructor(
     }
 
     suspend fun skipPostCheckInDialog(habitId: Long, expectedEventUuid: String? = null,
-        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null) = metricCoordinator.skipPrompt(habitId, expectedEventUuid, expectedTimerPrompt)
+        expectedTimerPrompt: com.dayforge.ui.metrics.TimerMetricPrompt? = null,
+        expectedPreferenceClaim: com.dayforge.data.repository.HabitPreferenceClaim? = null) =
+        metricCoordinator.skipPrompt(habitId, expectedEventUuid, expectedTimerPrompt, expectedPreferenceClaim = expectedPreferenceClaim)
 
     fun refreshPostCheckInMetadata() {
         viewModelScope.launch {

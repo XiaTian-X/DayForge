@@ -93,13 +93,14 @@ class WidgetConfigurationRepositoryTest {
     @Test fun duplicatesAreRecheckedAfterSelectionWithoutChangingAnotherBinding() = runBlocking<Unit> {
         val spec = specs.first(); val row = create(spec, "Duplicate selection")
         val snapshot = repository.load(spec, widgetId)
-        val before = proof()
+        val other = repository.load(spec, 73102)
+        repository.configure(other, row) { publication -> assertTrue(publication { }) }
+        val before = proof(); val requests = widgets.requestCount
         every { platform.getAppWidgetIds(any()) } returns intArrayOf(73102)
-        assertTrue(preferences(spec).edit().putLong(spec.prefix + 73102, row.id).commit())
         try { repository.configure(snapshot, row) { fail("must not display") }; fail("must reject duplicate") }
         catch (error: IllegalStateException) { assertEquals("WIDGET_ALREADY_CONFIGURED", error.message) }
         assertEquals(-1L, binding(spec)); assertEquals(row.id, preferences(spec).getLong(spec.prefix + 73102, -1))
-        assertEquals(0, widgets.requestCount); assertEquals(before, proof())
+        assertEquals(requests, widgets.requestCount); assertEquals(before, proof())
         assertTrue(repository.load(spec, widgetId).habits.isEmpty())
     }
 
@@ -165,10 +166,12 @@ class WidgetConfigurationRepositoryTest {
         val spec = specs.first(); val row = create(spec, "Commit selection")
         assertTrue(preferences(spec).edit().putLong(spec.prefix + widgetId, 89).commit())
         val raw = preferences(spec); val proxy = mockk<SharedPreferences>(); var commits = 0
+        every { proxy.all } answers { raw.all }
         every { proxy.contains(any()) } answers { raw.contains(firstArg()) }
         every { proxy.getLong(any(), any()) } answers { raw.getLong(firstArg(), secondArg()) }
         every { proxy.edit() } answers {
             val edit = raw.edit(); val wrapper = mockk<SharedPreferences.Editor>()
+            every { wrapper.putString(any(), any()) } answers { edit.putString(firstArg(), secondArg()); wrapper }
             every { wrapper.putLong(any(), any()) } answers { edit.putLong(firstArg(), secondArg()); wrapper }
             every { wrapper.remove(any()) } answers { edit.remove(firstArg()); wrapper }
             every { wrapper.commit() } answers { val result = edit.commit(); commits++; if (commits == 1) false else result }
@@ -182,6 +185,165 @@ class WidgetConfigurationRepositoryTest {
         try { store.configure(snapshot, row) { fail("must not render") }; fail("must not succeed") }
         catch (error: IllegalStateException) { assertEquals("WIDGET_BINDING_NOT_PERSISTED", error.message) }
         assertEquals(2, commits); assertEquals(89L, binding(spec)); assertEquals(before, proof())
+    }
+
+    @Test fun restoredNumericIdsResolveSameUuidAcrossEpochForEveryFixedType() = runBlocking<Unit> {
+        sessions.exclusive { tokens.saveServerIdentity(id(2), id(3)) }
+        val selected = specs.associateWith { spec -> create(spec, "Selected ${spec.type}") }
+        val others = specs.associateWith { spec -> create(spec, "Other ${spec.type}") }
+        for (spec in specs) repository.configure(repository.load(spec, widgetId), selected.getValue(spec)) { assertTrue(it { }) }
+        // Recovery may recreate the same UUIDs with different autoincrement IDs. No history
+        // exists in this fixture; swap the local keys to reproduce exactly that identity boundary.
+        db.withTransaction {
+            for ((index, spec) in specs.withIndex()) {
+                val original = selected.getValue(spec); val other = others.getValue(spec)
+                val temporary = 100_000L + index
+                db.openHelper.writableDatabase.execSQL("UPDATE habits SET id=? WHERE id=?", arrayOf(temporary, original.id))
+                db.openHelper.writableDatabase.execSQL("UPDATE habits SET id=? WHERE id=?", arrayOf(original.id, other.id))
+                db.openHelper.writableDatabase.execSQL("UPDATE habits SET id=? WHERE id=?", arrayOf(other.id, temporary))
+            }
+        }
+        sessions.exclusive { tokens.saveServerIdentity(id(2), id(4)) }
+        val before = proof()
+        for (spec in specs) {
+            val resolved = requireNotNull(repository.bound(spec, widgetId))
+            assertEquals(selected.getValue(spec).uuid, resolved.habit?.uuid)
+            assertEquals(others.getValue(spec).id, resolved.habit?.id)
+            assertEquals(others.getValue(spec).id, binding(spec))
+            assertTrue(resolved.publication { })
+        }
+        assertEquals(before, proof())
+    }
+
+    @Test fun failedConfigurationAndRollbackCannotLeaveAnApparentlyConfirmedBinding() = runBlocking<Unit> {
+        val spec = specs.first(); val row = create(spec, "Unconfirmed configuration")
+        sessions.exclusive { tokens.saveServerIdentity(id(2), id(3)) }
+        val raw = preferences(spec); val proxy = mockk<SharedPreferences>(); var commits = 0
+        // Editor.commit has no checked exception declaration; use an unchecked fault so
+        // the interface proxy preserves the exact exception instead of wrapping it.
+        val rollbackFailure = IllegalStateException("rollback unavailable")
+        every { proxy.all } answers { raw.all }
+        every { proxy.edit() } answers {
+            val edit = raw.edit(); val wrapper = mockk<SharedPreferences.Editor>()
+            every { wrapper.putString(any(), any()) } answers { edit.putString(firstArg(), secondArg()); wrapper }
+            every { wrapper.putLong(any(), any()) } answers { edit.putLong(firstArg(), secondArg()); wrapper }
+            every { wrapper.remove(any()) } answers { edit.remove(firstArg()); wrapper }
+            every { wrapper.commit() } answers {
+                commits++
+                // The first failure changes memory; the rollback fails before it can undo
+                // that value. A later account generation must not mistake RAM for proof.
+                if (commits == 2) throw rollbackFailure
+                val result = edit.commit()
+                if (commits == 1) false else result
+            }
+            wrapper
+        }
+        val context = object : ContextWrapper(app) {
+            override fun getSharedPreferences(name: String, mode: Int): SharedPreferences =
+                if (name == spec.preferences) proxy else super.getSharedPreferences(name, mode)
+        }
+        val store = WidgetConfigurationRepository(context, db, tokens, publisher, sessions)
+        val snapshot = store.load(spec, widgetId); val before = proof()
+        try { store.configure(snapshot, row) { fail("unconfirmed configuration cannot render") }; fail("must fail") }
+        catch (error: IllegalStateException) {
+            assertEquals("WIDGET_BINDING_NOT_PERSISTED", error.message)
+            assertSame(rollbackFailure, error.suppressed.single())
+        }
+        assertEquals(2, commits); assertEquals(row.id, binding(spec))
+        sessions.exclusive {
+            tokens.saveLoginSession("synthetic-relogin", "synthetic-refresh", "member", id(1), false)
+            tokens.saveServerIdentity(id(2), id(3))
+        }
+        val bound = requireNotNull(store.bound(spec, widgetId))
+        assertEquals(3, commits); assertEquals(row.uuid, bound.habit?.uuid)
+        assertTrue(bound.publication { }); assertEquals(before, proof())
+    }
+
+    @Test fun legacyNumericSelectionAndMissingOrChangedUuidNeverAdoptReplacementRows() = runBlocking<Unit> {
+        for ((index, spec) in specs.withIndex()) {
+            val row = create(spec, "Unproven ${spec.type}")
+            assertTrue(preferences(spec).edit().putLong(spec.prefix + widgetId, row.id).commit())
+            assertNull(requireNotNull(repository.bound(spec, widgetId)).habit)
+            repository.configure(repository.load(spec, widgetId), row) { assertTrue(it { }) }
+            db.openHelper.writableDatabase.execSQL("UPDATE habits SET uuid=? WHERE id=?", arrayOf<Any>(id(101 + index), row.id))
+            val before = proof()
+            assertNull(requireNotNull(repository.bound(spec, widgetId)).habit)
+            assertEquals(before, proof())
+            assertEquals(row.id, binding(spec)) // Still only a hint; it cannot supply identity.
+        }
+    }
+
+    @Test fun firstRegistrationPromotesOnlySameAuthenticationAndKnownBindingsSurviveRelogin() = runBlocking<Unit> {
+        val spec = specs.first(); val row = create(spec, "Offline selection")
+        repository.configure(repository.load(spec, widgetId), row) { assertTrue(it { }) }
+        val original = preferences(spec).getString("binding_v1_$widgetId", null)
+        sessions.exclusive { tokens.saveServerIdentity(id(2), id(3)) }
+        assertEquals(row.uuid, requireNotNull(repository.bound(spec, widgetId)).habit?.uuid)
+        assertNotEquals(original, preferences(spec).getString("binding_v1_$widgetId", null))
+        sessions.exclusive {
+            tokens.saveLoginSession("synthetic-new", "synthetic-refresh", "member", id(1), false)
+            tokens.saveServerIdentity(id(2), id(4))
+        }
+        assertEquals(row.uuid, requireNotNull(repository.bound(spec, widgetId)).habit?.uuid)
+        sessions.exclusive { tokens.saveServerIdentity(id(5), id(4)) }
+        assertNull(requireNotNull(repository.bound(spec, widgetId)).habit)
+        // An offline selection made before a new authentication cannot identify a newly
+        // discovered server, even if that account UUID happens to be the same.
+        sessions.exclusive { tokens.clearTokens(); tokens.saveLoginSession("synthetic-offline", "synthetic-refresh", "member", id(1), false) }
+        repository.configure(repository.load(spec, widgetId), row) { assertTrue(it { }) }
+        sessions.exclusive {
+            tokens.saveLoginSession("synthetic-relogin", "synthetic-refresh", "member", id(1), false)
+            tokens.saveServerIdentity(id(2), id(3))
+        }
+        assertNull(requireNotNull(repository.bound(spec, widgetId)).habit)
+        sessions.exclusive {
+            tokens.saveLoginSession("synthetic-other", "synthetic-refresh", "other", id(6), false)
+            tokens.saveServerIdentity(id(2), id(3))
+        }
+        assertNull(requireNotNull(repository.bound(spec, widgetId)).habit)
+    }
+
+    @Test fun staleUnconfiguredRefreshCannotEraseLaterConfigurationAndDeletedBindingCannotSucceed() = runBlocking<Unit> {
+        val spec = specs.first(); val row = create(spec, "Late neutral")
+        val empty = requireNotNull(repository.bound(spec, widgetId)); assertNull(empty.habit)
+        repository.configure(repository.load(spec, widgetId), row) { assertTrue(it { }) }
+        assertFalse(empty.publication { fail("late neutral must not clear the configured frame") })
+        val snapshot = repository.load(spec, widgetId)
+        try {
+            repository.configure(snapshot, row) {
+                assertTrue(preferences(spec).edit().remove("binding_v1_$widgetId").remove(spec.prefix + widgetId).commit())
+            }
+            fail("host completion cannot bless a deleted binding")
+        } catch (_: WidgetConfigurationExpired) { }
+        assertEquals(-1L, binding(spec)); assertNull(preferences(spec).getString("binding_v1_$widgetId", null))
+    }
+
+    @Test fun failedPromotionCommitRollsBackAndNextResolutionMustPersistAgain() = runBlocking<Unit> {
+        val spec = specs.first(); val row = create(spec, "Promotion persistence")
+        repository.configure(repository.load(spec, widgetId), row) { assertTrue(it { }) }
+        val raw = preferences(spec); val original = raw.all.toMap()
+        sessions.exclusive { tokens.saveServerIdentity(id(2), id(3)) }
+        val proxy = mockk<SharedPreferences>(); var commits = 0
+        every { proxy.all } answers { raw.all }
+        every { proxy.edit() } answers {
+            val edit = raw.edit(); val wrapper = mockk<SharedPreferences.Editor>()
+            every { wrapper.putString(any(), any()) } answers { edit.putString(firstArg(), secondArg()); wrapper }
+            every { wrapper.putLong(any(), any()) } answers { edit.putLong(firstArg(), secondArg()); wrapper }
+            every { wrapper.remove(any()) } answers { edit.remove(firstArg()); wrapper }
+            every { wrapper.commit() } answers {
+                val result = edit.commit(); commits++; if (commits == 1) false else result
+            }
+            wrapper
+        }
+        val context = object : ContextWrapper(app) {
+            override fun getSharedPreferences(name: String, mode: Int): SharedPreferences = if (name == spec.preferences) proxy else super.getSharedPreferences(name, mode)
+        }
+        val store = WidgetConfigurationRepository(context, db, tokens, publisher, sessions)
+        try { store.bound(spec, widgetId); fail("unconfirmed promotion must fail") }
+        catch (error: IllegalStateException) { assertEquals("WIDGET_BINDING_NOT_PERSISTED", error.message) }
+        assertEquals(original, raw.all); assertEquals(2, commits)
+        assertEquals(row.uuid, requireNotNull(store.bound(spec, widgetId)).habit?.uuid)
+        assertEquals(3, commits); assertNotEquals(original, raw.all)
     }
 
     @Test fun initialLateSourceAndItsFailureExpireWithoutRetaggingThePage() = runBlocking<Unit> {

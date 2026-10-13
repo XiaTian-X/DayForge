@@ -514,9 +514,9 @@ fun NestedScreen(
                 onRecord = { values, neverAskAgain ->
                     scope.launch {
                         try {
-                            if (!viewModel.recordMetricValues(state.habitId, values, state.oneTimePrompt?.eventUuid, state.timerPrompt)) return@launch
+                            if (!viewModel.recordMetricValues(state.habitId, values, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim)) return@launch
                             if (neverAskAgain) {
-                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt)
+                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim)
                             }
                             viewModel.dismissPostCheckInDialog()
                         } catch (error: Exception) {
@@ -530,9 +530,9 @@ fun NestedScreen(
                     scope.launch {
                         try {
                             if (neverAskAgain) {
-                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt)
+                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim)
                             }
-                            viewModel.skipPostCheckInDialog(state.habitId, state.oneTimePrompt?.eventUuid, state.timerPrompt)
+                            viewModel.skipPostCheckInDialog(state.habitId, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim)
                         } catch (error: Exception) {
                             if (error is kotlinx.coroutines.CancellationException) throw error
                             Toast.makeText(context, context.getString(R.string.metric_error_record_failed,

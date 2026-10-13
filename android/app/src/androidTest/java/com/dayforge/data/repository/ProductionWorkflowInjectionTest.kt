@@ -239,12 +239,27 @@ class ProductionWorkflowInjectionTest {
             assertEquals(1, motivation[com.dayforge.widget.motivation.MotivationWidget.TOTAL_HABITS_KEY])
         }
         try {
+            com.dayforge.widget.bindWidgetSelection(app, timerId, rowId)
             refresh()
             assertHealthy()
             val queued = db.timeLogDao().getPendingTimerCommands()
             val active = db.timeLogDao().getActiveTimeLog()
             val beforeTick = com.dayforge.widget.timer.TimerWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, timerId)
             val tickBusiness = db.withTransaction { nextRestartDatabaseProof(db) }
+            val frameOwner = requireNotNull(beforeTick[WidgetDisplayPublisher.FRAME_OWNER_KEY])
+            for (oldOwner in listOf(null, "old-epoch-frame")) {
+                androidx.glance.appwidget.state.updateAppWidgetState(app, timerId) {
+                    if (oldOwner == null) it.remove(WidgetDisplayPublisher.FRAME_OWNER_KEY)
+                    else it[WidgetDisplayPublisher.FRAME_OWNER_KEY] = oldOwner
+                }
+                val stale = com.dayforge.widget.timer.TimerWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, timerId)
+                assertFalse(com.dayforge.widget.timer.TimerWidget.refreshElapsedWidgetData(app, timerId, rowId))
+                assertEquals(stale, com.dayforge.widget.timer.TimerWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, timerId))
+                assertEquals(tickBusiness, db.withTransaction { nextRestartDatabaseProof(db) })
+            }
+            // Only the complete current-scope refresh may repair an unowned cache.
+            refresh()
+            assertEquals(frameOwner, com.dayforge.widget.timer.TimerWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, timerId)[WidgetDisplayPublisher.FRAME_OWNER_KEY])
             assertTrue(com.dayforge.widget.timer.TimerWidget.refreshElapsedWidgetData(app, timerId, rowId))
             val afterTick = com.dayforge.widget.timer.TimerWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, timerId)
             val elapsedKeys = listOf(com.dayforge.widget.timer.TimerWidget.ELAPSED_SECONDS_KEY,
@@ -317,6 +332,9 @@ class ProductionWorkflowInjectionTest {
             refresh()
             assertHealthy()
             assertEquals(business, db.withTransaction { nextRestartDatabaseProof(db) })
-        } finally { com.dayforge.widget.FocusWidgetAlarmScheduler.cancelScheduledRefresh(app) }
+        } finally {
+            com.dayforge.widget.clearWidgetSelection(app, timerId)
+            com.dayforge.widget.FocusWidgetAlarmScheduler.cancelScheduledRefresh(app)
+        }
     }
 }

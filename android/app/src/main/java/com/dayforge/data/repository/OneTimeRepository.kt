@@ -195,7 +195,12 @@ class OneTimeRepository @Inject constructor(
     suspend fun setNeverAskAgain(prompt: OneTimeMetricPrompt, value: Boolean) = withContext(Dispatchers.IO) {
         sessions.exclusive {
             check(tokens.localFactAccess()?.session == prompt.snapshot.session) { "ONE_TIME_SESSION_CHANGED" }
-            preferences.setNeverAskAgain(prompt.habitId, value)
+            check(com.dayforge.data.repository.ReplicaPresentationRepository(database, tokens, sessions)
+                .isOpenWhileAccountLocked()) { "ONE_TIME_RECOVERY_PENDING" }
+            check(database.habitDao().getVisibleHabitByIdSync(prompt.habitId)?.uuid == prompt.snapshot.row.activityUuid) {
+                "ONE_TIME_PROMPT_EXPIRED"
+            }
+            preferences.setNeverAskAgain(prompt.snapshot.session, prompt.snapshot.row.activityUuid, value)
         }
     }
 

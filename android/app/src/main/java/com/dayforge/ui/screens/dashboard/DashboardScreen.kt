@@ -523,9 +523,9 @@ fun DashboardScreen(
                 onRecord = { values, neverAskAgain ->
                     scope.launch {
                         try {
-                            if (!viewModel.recordMetricValues(state.habitId, values, state.oneTimePrompt?.eventUuid, state.timerPrompt)) return@launch
+                            if (!viewModel.recordMetricValues(state.habitId, values, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim)) return@launch
                             if (neverAskAgain) {
-                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt)
+                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim)
                             }
                             viewModel.dismissPostCheckInDialog()
                             if (state.isTempTask) {
@@ -542,9 +542,9 @@ fun DashboardScreen(
                     scope.launch {
                         try {
                             if (neverAskAgain) {
-                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt)
+                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim)
                             }
-                            viewModel.skipPostCheckInDialog(state.habitId, state.oneTimePrompt?.eventUuid, state.timerPrompt)
+                            viewModel.skipPostCheckInDialog(state.habitId, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim)
                             if (state.isTempTask) {
                                 viewModel.deleteTempTask(state.habitId)
                             }

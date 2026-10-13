@@ -130,7 +130,7 @@ internal class NextReplicaDifferenceReader(private val database: HabitDatabase, 
     }
 
     private suspend fun authorize(original: LocalSyncAccess, installation: String) {
-        check(tokens.localSyncAccess() == original && tokens.syncAuthenticationSnapshot(original) != null &&
+        check(tokens.isCurrentSyncAuthority(original) &&
             tokens.registeredInstallationId() == installation &&
             original.deviceId != null) { "SYNC_ACCOUNT_CHANGED" }
     }
