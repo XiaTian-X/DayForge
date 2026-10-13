@@ -353,14 +353,28 @@ class NextTimerWriter @Inject constructor(
         block()
     }
 
+    /** Completion prompt publication/preferences retain the round; pending cards retain their start display. */
+    internal suspend fun publishPrompt(habitId: Long, ticket: TimerActionAuthority, block: suspend () -> Unit) = sessions.exclusive {
+        database.withTransaction {
+            if (ticket.sessionUuid != null) completionInTransaction(habitId, ticket)
+            else validate(habitId, ticket)
+        }
+        block()
+    }
+
     /** Compute history in the already-owned account/Room snapshot, never reacquire the mutex.
      * The follow-up callback still owns the account lock; it must not call lock-owning readers.
      */
     suspend fun publishCompletion(habitId: Long, ticket: TimerActionAuthority?, legacyWidget: LegacyWidgetTimerClaim? = null,
         block: suspend (HabitEntity?, Int?) -> Unit) = sessions.exclusive {
         val (habit, progress) = database.withTransaction {
+            if (ticket != null) {
+                require(legacyWidget == null)
+                val completed = completionInTransaction(habitId, ticket)
+                return@withTransaction completed.habit to completed.progress
+            }
             val habit = if (legacyWidget == null) requirePublication(habitId, ticket) else {
-                require(ticket == null && habitId == legacyWidget.identity.habitId)
+                require(habitId == legacyWidget.identity.habitId)
                 legacyWidgets.requireIdentity(legacyWidget.identity, requirePlan = false)
             }
             val progress = if (habit?.targetCycles == null) null
@@ -372,10 +386,70 @@ class NextTimerWriter @Inject constructor(
         block(habit, progress)
     }
 
+    /** Pure read participant: caller owns the account mutex AND the actual Room transaction. */
+    internal suspend fun completionInTransaction(habitId: Long, ticket: TimerActionAuthority,
+        expectedPlan: kotlinx.serialization.json.JsonObject? = null): TimerCompletionSnapshot {
+        val access = requireCompletionAccessInTransaction(ticket)
+        ticket.validate(); require(ticket.sessionUuid != null)
+        val habit = requireNotNull(database.habitDao().getVisibleHabitById(habitId)) { "TIMER_COMPLETION_NOT_FOUND" }
+        check(habit.uuid == ticket.habitUuid && habit.appearance != null &&
+            habit.habitType == com.dayforge.data.model.HabitType.TIMER && habit.completionPolicy == "recurring") {
+            "TIMER_COMPLETION_ACTIVITY_CHANGED"
+        }
+        check(expectedPlan == null || NextStructureMapper.writePlan(habit) == expectedPlan) { "TIMER_GOAL_PLAN_CHANGED" }
+        val history = timerHistoryReader.completedInTransaction(habit, ticket)
+        check(requireCompletionAccessInTransaction(ticket) == access) { "TIMER_FOLLOW_UP_STALE_ACCOUNT" }
+        return TimerCompletionSnapshot(habit, history.qualifiedDates.size, TimerCompletionFollowUpClaim.displayed(habit, ticket))
+    }
+
+    /** No history scan: final credential/permission fence after the caller's writes in this transaction. */
+    internal suspend fun requireCompletionAccessInTransaction(ticket: TimerActionAuthority,
+        permission: String? = null): com.dayforge.data.local.LocalCoreWriteAccess {
+        check(database.inTransaction())
+        check(replica.isOpenWhileAccountLocked()) { com.dayforge.data.local.ReplicaSwitchGuard.PENDING }
+        val access = requireNotNull(tokens.localCoreWriteAccess()) { "TIMER_FOLLOW_UP_STALE_ACCOUNT" }
+        check(access.session == ticket.session() && access.capturedDeviceId == ticket.deviceId) { "TIMER_FOLLOW_UP_STALE_ACCOUNT" }
+        check(permission == null || access.capabilities == null || permission in access.capabilities) { "TIMER_FOLLOW_UP_DENIED" }
+        return access
+    }
+
+    internal suspend fun goalDisplay(claim: TimerCompletionFollowUpClaim): TimerCompletionSnapshot = sessions.exclusive {
+        database.withTransaction {
+            claim.validate()
+            completionInTransaction(claim.habitId, claim.source, claim.displayedPlan).also {
+                check(it.goalReached) { "TIMER_GOAL_CHANGED" }
+            }
+        }
+    }
+
+    internal suspend fun authorizeGoal(claim: TimerCompletionFollowUpClaim): ObjectEditSnapshot<HabitEntity> = sessions.exclusive {
+        database.withTransaction {
+            val view = completionInTransaction(claim.habitId, claim.source, claim.displayedPlan)
+            check(view.goalReached) { "TIMER_GOAL_CHANGED" }
+            val access = requireCompletionAccessInTransaction(claim.source, "structure.write")
+            val rounds = producer.captureDisplayedRoundsInTransaction()
+            check(requireCompletionAccessInTransaction(claim.source, "structure.write") == access) { "TIMER_FOLLOW_UP_STALE_ACCOUNT" }
+            ObjectEditSnapshot(view.habit, ObjectEditAuthority(access.session, view.habit.uuid, "plan_node", claim.displayedPlan, rounds))
+        }
+    }
+
+    /** Last UI publication fence, not a business writer and not another history traversal. */
+    internal suspend fun publishGoal(claim: TimerCompletionFollowUpClaim, block: suspend () -> Unit) = sessions.exclusive {
+        database.withTransaction {
+            val access = requireCompletionAccessInTransaction(claim.source)
+            val habit = requireNotNull(database.habitDao().getVisibleHabitById(claim.habitId))
+            check(habit.uuid == claim.source.habitUuid && NextStructureMapper.writePlan(habit) == claim.displayedPlan)
+            check(producer.captureDisplayedRoundsInTransaction()?.let { displayedHead(habit, null, it) } == claim.source.challengeHead)
+            check(requireCompletionAccessInTransaction(claim.source) == access) { "TIMER_FOLLOW_UP_STALE_ACCOUNT" }
+        }
+        block()
+    }
+
     private suspend fun requirePublication(habitId: Long, ticket: TimerActionAuthority?): HabitEntity? {
         check(replica.isOpenWhileAccountLocked()) { com.dayforge.data.local.ReplicaSwitchGuard.PENDING }
         if (ticket != null) {
-            check(tokens.localCoreWriteAccess()?.session == ticket.session()) { "TIMER_FOLLOW_UP_STALE_ACCOUNT" }
+            val access = tokens.localCoreWriteAccess()
+            check(access?.session == ticket.session() && access?.capturedDeviceId == ticket.deviceId) { "TIMER_FOLLOW_UP_STALE_ACCOUNT" }
         }
         val habit = database.habitDao().getHabitById(habitId)
         if (ticket != null) {
@@ -385,7 +459,7 @@ class NextTimerWriter @Inject constructor(
     }
 
     /** A service dispatch is not a completed stop. Wait without holding the account/Room locks. */
-    suspend fun afterCompletion(habitId: Long, ticket: TimerActionAuthority, block: suspend () -> Unit) {
+    suspend fun afterCompletion(habitId: Long, ticket: TimerActionAuthority, block: suspend (TimerCompletionSnapshot) -> Unit) {
         val uuid = requireNotNull(ticket.sessionUuid)
         val sequence = requireNotNull(ticket.nextSequence)
         val observed = withTimeoutOrNull(10_000L) {
@@ -397,20 +471,14 @@ class NextTimerWriter @Inject constructor(
             }.first { it == null || it.endTime != null || it.timerNextCommandSequence != sequence }
         } ?: return // A failed/cancelled stop never prompts; the persisted pending card remains available.
         if (observed.endTime == null || observed.timerNextCommandSequence != sequence + 1) return
-        publish(habitId, ticket) {
-            val access = requireNotNull(tokens.localCoreWriteAccess())
-            check(access.capturedDeviceId == ticket.deviceId) { "TIMER_FOLLOW_UP_STALE_DEVICE" }
-            val completed = database.timeLogDao().getTimeLogByUuid(uuid) ?: return@publish
-            if (completed.endTime == null || completed.timerNextCommandSequence != sequence + 1) return@publish
-            val policy = database.withTransaction { NextTimerPolicyStore(database).policy(access, uuid) }
-            check(completed.durationSeconds >= policy.targetSeconds &&
-                completed.durationSeconds <= policy.maxDurationSeconds) { "TIMER_COMPLETION_REQUIRED" }
-            block()
+        sessions.exclusive {
+            val completed = database.withTransaction { completionInTransaction(habitId, ticket) }
+            block(completed)
         }
     }
 
     /** Observe the exact committed legacy stop, then leave the lock before the prompt's own guarded entry. */
-    internal suspend fun afterLegacyWidgetCompletion(claim: LegacyWidgetTimerClaim, block: suspend () -> Unit) {
+    internal suspend fun afterLegacyWidgetCompletion(claim: LegacyWidgetTimerClaim, block: suspend (Boolean) -> Unit) {
         val uuid = requireNotNull(claim.sessionUuid)
         val sequence = requireNotNull(claim.nextSequence)
         val observed = withTimeoutOrNull(10_000L) {
@@ -422,12 +490,20 @@ class NextTimerWriter @Inject constructor(
             }.first { it == null || it.endTime != null || it.timerNextCommandSequence != sequence }
         } ?: return
         if (observed.endTime == null || observed.timerNextCommandSequence != sequence + 1) return
-        val completed = sessions.exclusive { database.withTransaction {
-            legacyWidgets.requireIdentity(claim.identity, requirePlan = false)
-            database.timeLogDao().getTimeLogByUuid(uuid)?.let { it.endTime != null && it.timerNextCommandSequence == sequence + 1 } == true
+        val goalReached = sessions.exclusive { database.withTransaction {
+            val habit = legacyWidgets.requireIdentity(claim.identity, requirePlan = false)
+            check(database.timeLogDao().getTimeLogByUuid(uuid)?.let { it.endTime != null && it.timerNextCommandSequence == sequence + 1 } == true)
+            habit.targetCycles?.let { database.timeLogDao().getTargetMetDayCount(habit.id, habit.targetValue * 60) >= it } == true
         } }
-        if (completed) block()
+        block(goalReached)
     }
+
+    /** Ordinary v4 automatic prompt priority; never supplies authority to a widget callback. */
+    internal suspend fun legacyGoalReached(habitId: Long): Boolean = sessions.exclusive { database.withTransaction {
+        val habit = requireNotNull(database.habitDao().getVisibleHabitById(habitId))
+        require(habit.appearance == null)
+        habit.targetCycles?.let { database.timeLogDao().getTargetMetDayCount(habit.id, habit.targetValue * 60) >= it } == true
+    } }
 
     private suspend fun validate(habitId: Long, ticket: TimerActionAuthority?) {
         check(replica.isOpenWhileAccountLocked()) { com.dayforge.data.local.ReplicaSwitchGuard.PENDING }

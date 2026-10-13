@@ -44,6 +44,7 @@ class LinkedMetricCoordinatorTest {
         val habit = mockk<HabitEntity> {
             every { name } returns "Timer"
             every { completionPolicy } returns null
+            every { targetCycles } returns null
         }
         coEvery { habitRepository.getHabitById(7L) } returns habit
         coEvery { metricRepository.getLinkedMetricSnapshots(7L) } returns emptyList()

@@ -65,8 +65,8 @@ class TimerActionCallback : ActionCallback {
                             if (habit.isCountdown) targetSeconds - elapsed else elapsed, habit.isCountdown, legacyWidget = claim))
                     } else {
                         TimerServiceController.stopTimer(context, habitId, habit.targetValue, legacyWidget = claim)
-                        writer.afterLegacyWidgetCompletion(claim) {
-                            MetricPromptHelper.checkAndShowMetricPrompt(context, habitId, legacyIdentity = claim.identity)
+                        writer.afterLegacyWidgetCompletion(claim) { goalReached ->
+                            if (!goalReached) MetricPromptHelper.checkAndShowMetricPrompt(context, habitId, legacyIdentity = claim.identity)
                         }
                     }
                 }

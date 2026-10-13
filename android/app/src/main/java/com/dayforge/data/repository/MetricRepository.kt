@@ -41,7 +41,8 @@ class MetricRepository @Inject constructor(
     private val structuralEditGuard: StructuralEditGuard? = null,
     private val nextObjectEditor: NextObjectEditor? = null,
     private val nextObjectCreator: NextObjectCreator? = null,
-    private val widgetFactReader: WidgetFactReader? = null
+    private val widgetFactReader: WidgetFactReader? = null,
+    private val timerWriter: NextTimerWriter? = null
 ) {
     fun observeActiveMetrics(): Flow<List<MetricEntity>> = metricDao.getAllActiveMetrics()
 
@@ -222,12 +223,15 @@ class MetricRepository @Inject constructor(
         expectedMetricUuid: String? = null,
         expectedMetrics: List<MetricEntity>? = null,
         promptHabit: com.dayforge.data.local.entity.HabitEntity? = null,
-        promptFact: WidgetFactClaim? = null
+        promptFact: WidgetFactClaim? = null,
+        promptTimer: com.dayforge.domain.model.TimerActionAuthority? = null
     ): List<Long> {
         val capturedZone = java.time.ZoneId.systemDefault().id
         if (values.isEmpty()) return emptyList()
         if (promptFact != null) require(authority != null && expectedMetrics != null && promptHabit != null &&
             promptHabit.id == promptFact.habitId && promptHabit.uuid == promptFact.habitUuid) { "FACT_PROMPT_TICKET_REQUIRED" }
+        if (promptTimer != null) require(promptFact == null && authority != null && expectedMetrics != null &&
+            promptHabit?.uuid == promptTimer.habitUuid && promptTimer.sessionUuid != null) { "TIMER_PROMPT_TICKET_REQUIRED" }
         val targets = expectedMetrics ?: values.map { requireNotNull(metricDao.getMetricById(it.metricId)) {
             "Metric no longer exists: ${it.metricId}"
         } }.distinctBy { it.id }
@@ -240,6 +244,11 @@ class MetricRepository @Inject constructor(
             "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED"
         }
         return mutate(targets, authority, structural = false) {
+            val timerAccess = promptTimer?.let { source ->
+                check(authority?.session == source.session()) { "TIMER_PROMPT_STALE_ACCOUNT" }
+                requireNotNull(timerWriter).completionInTransaction(requireNotNull(promptHabit).id, source)
+                timerWriter.requireCompletionAccessInTransaction(source, "facts.append")
+            }
             if (promptFact != null) {
                 check(authority?.session == promptFact.session()) { "FACT_PROMPT_STALE_ACCOUNT" }
                 requireNotNull(widgetFactReader).requireInTransaction(promptFact, requireDay = false)
@@ -269,7 +278,11 @@ class MetricRepository @Inject constructor(
                     recordedTimezone = capturedZone
                 )
             }
-            if (logs.isEmpty()) emptyList() else metricLogDao.insertAll(logs)
+            val saved = if (logs.isEmpty()) emptyList() else metricLogDao.insertAll(logs)
+            promptTimer?.let {
+                check(requireNotNull(timerWriter).requireCompletionAccessInTransaction(it, "facts.append") == timerAccess)
+            }
+            saved
         }
     }
 

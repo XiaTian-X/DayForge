@@ -16,6 +16,8 @@ import com.dayforge.data.repository.WidgetFactReader
 import com.dayforge.data.repository.LegacyWidgetFactWorkflow
 import com.dayforge.data.repository.LegacyWidgetIdentityIntent
 import com.dayforge.data.repository.LegacyWidgetRestartClaim
+import com.dayforge.data.repository.NextTimerWriter
+import com.dayforge.data.repository.TimerCompletionFollowUpClaim
 import com.dayforge.ui.components.GoalCompletionDialog
 import dagger.hilt.android.AndroidEntryPoint
 import androidx.lifecycle.lifecycleScope
@@ -45,9 +47,11 @@ class GoalCompletionActivity : ComponentActivity() {
     @Inject
     lateinit var habitRepository: HabitRepository
     @Inject lateinit var legacyWidgets: LegacyWidgetFactWorkflow
+    @Inject lateinit var timerWriter: NextTimerWriter
     private var actionPending = false
     private data class DialogDisplay(val name: String, val progress: Int, val target: Int,
-        val legacyIdentity: LegacyWidgetRestartClaim? = null)
+        val legacyIdentity: LegacyWidgetRestartClaim? = null,
+        val timerCompletion: TimerCompletionFollowUpClaim? = null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -55,7 +59,9 @@ class GoalCompletionActivity : ComponentActivity() {
         val habitId = intent.getLongExtra(EXTRA_HABIT_ID, -1L)
         val claim = try { WidgetFactClaim.read(intent) } catch (error: Exception) { finish(); return }
         val legacy = try { LegacyWidgetIdentityIntent.read(intent) } catch (error: Exception) { finish(); return }
-        if ((claim == null) == (legacy == null) || (legacy != null && legacy.habitId != habitId)) { finish(); return }
+        val timer = try { TimerCompletionFollowUpClaim.read(intent) } catch (error: Exception) { finish(); return }
+        if (listOfNotNull(claim, legacy, timer).size != 1 || (legacy != null && legacy.habitId != habitId) ||
+            (timer != null && timer.habitId != habitId)) { finish(); return }
         if (claim != null && claim.habitId != habitId) { finish(); return }
 
         if (habitId == -1L) {
@@ -73,6 +79,11 @@ class GoalCompletionActivity : ComponentActivity() {
                 catch (error: Exception) { if (error is CancellationException) throw error; finish() }
             }
         }
+        if (timer != null) lifecycleScope.launch {
+            timerWriter.accessChanges.catch { finish() }.collect { access ->
+                if (access == null || access.session != timer.source.session() || access.capturedDeviceId != timer.source.deviceId) finish()
+            }
+        }
 
         val display = mutableStateOf<DialogDisplay?>(null)
         setContent {
@@ -82,8 +93,8 @@ class GoalCompletionActivity : ComponentActivity() {
                         habitName = value.name,
                         progress = value.progress,
                         target = value.target,
-                        onConfirm = { submitGoal(claim, value.legacyIdentity, true) },
-                        onDismiss = { submitGoal(claim, value.legacyIdentity, false) }
+                        onConfirm = { submitGoal(claim, value.legacyIdentity, value.timerCompletion, true) },
+                        onDismiss = { submitGoal(claim, value.legacyIdentity, value.timerCompletion, false) }
                     )
                 }
             }
@@ -94,7 +105,10 @@ class GoalCompletionActivity : ComponentActivity() {
         lifecycleScope.launch {
             try {
                 val value = withContext(Dispatchers.IO) {
-                    if (legacy != null) {
+                    if (timer != null) {
+                        val view = timerWriter.goalDisplay(timer)
+                        DialogDisplay(view.habit.name, view.progress, requireNotNull(view.habit.targetCycles), timerCompletion = timer)
+                    } else if (legacy != null) {
                         val view = legacyWidgets.goalDisplay(legacy)
                         DialogDisplay(view.habit.name, view.progress, requireNotNull(view.habit.targetCycles), view.identity)
                     } else {
@@ -102,7 +116,8 @@ class GoalCompletionActivity : ComponentActivity() {
                         DialogDisplay(view.habit.name, view.progress, requireNotNull(view.habit.targetCycles))
                     }
                 }
-                if (value.legacyIdentity != null) legacyWidgets.publish(value.legacyIdentity) { display.value = value }
+                if (value.timerCompletion != null) timerWriter.publishGoal(value.timerCompletion) { display.value = value }
+                else if (value.legacyIdentity != null) legacyWidgets.publish(value.legacyIdentity) { display.value = value }
                 else display.value = value
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
@@ -113,17 +128,18 @@ class GoalCompletionActivity : ComponentActivity() {
         }
     }
 
-    private fun submitGoal(claim: WidgetFactClaim?, legacy: LegacyWidgetRestartClaim?, complete: Boolean) {
+    private fun submitGoal(claim: WidgetFactClaim?, legacy: LegacyWidgetRestartClaim?, timer: TimerCompletionFollowUpClaim?, complete: Boolean) {
         if (actionPending) return
         actionPending = true
         lifecycleScope.launch {
             try {
                 withContext(Dispatchers.IO) {
-                    if (claim != null) habitRepository.applyWidgetGoal(applicationContext, claim, complete)
+                    if (timer != null) habitRepository.applyTimerGoal(applicationContext, timer, complete)
+                    else if (claim != null) habitRepository.applyWidgetGoal(applicationContext, claim, complete)
                     else legacyWidgets.applyGoal(applicationContext, requireNotNull(legacy), complete)
                 }
                 if (complete) Toast.makeText(this@GoalCompletionActivity, getString(R.string.goal_completion_toast), Toast.LENGTH_SHORT).show()
-                followUp(claim, legacy)
+                followUp(claim, legacy, timer)
                 finish()
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
@@ -136,9 +152,12 @@ class GoalCompletionActivity : ComponentActivity() {
         }
     }
 
-    private suspend fun followUp(claim: WidgetFactClaim?, legacy: LegacyWidgetRestartClaim?) {
+    private suspend fun followUp(claim: WidgetFactClaim?, legacy: LegacyWidgetRestartClaim?, timer: TimerCompletionFollowUpClaim?) {
         try {
-            if (claim != null) {
+            if (timer != null) {
+                startActivity(MetricPromptActivity.createIntent(this, timer.habitId, "", timerAuthority = timer.source,
+                    afterTimerGoal = true))
+            } else if (claim != null) {
                 val current = factReader.afterWrite(claim)
                 startActivity(MetricPromptActivity.createIntent(this, current.habit.id, current.habit.name, factClaim = current.claim))
             } else com.dayforge.widget.base.MetricPromptHelper.checkAndShowMetricPrompt(this,
@@ -172,7 +191,8 @@ class GoalCompletionActivity : ComponentActivity() {
             progress: Int,
             target: Int,
             claim: WidgetFactClaim? = null,
-            legacyIdentity: LegacyWidgetRestartClaim? = null
+            legacyIdentity: LegacyWidgetRestartClaim? = null,
+            timerCompletion: TimerCompletionFollowUpClaim? = null
         ): Intent {
             return Intent(context, GoalCompletionActivity::class.java).apply {
                 putExtra(EXTRA_HABIT_ID, habitId)
@@ -183,6 +203,7 @@ class GoalCompletionActivity : ComponentActivity() {
                 addFlags(Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
                 claim?.attach(this)
                 legacyIdentity?.let { LegacyWidgetIdentityIntent.attach(this, it) }
+                timerCompletion?.attach(this)
             }
         }
     }

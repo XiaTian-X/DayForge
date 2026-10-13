@@ -39,8 +39,10 @@ class MetricPromptActivity : ComponentActivity() {
             catch (error: Exception) { finish(); return }
         val legacy = try { com.dayforge.data.repository.LegacyWidgetIdentityIntent.read(intent) }
             catch (error: Exception) { finish(); return }
+        val afterTimerGoal = intent.getBooleanExtra(EXTRA_AFTER_TIMER_GOAL, false)
         if (listOfNotNull(timerAuthority, factClaim, legacy).size != 1 ||
-            (legacy != null && legacy.habitId != habitId)) { finish(); return }
+            (legacy != null && legacy.habitId != habitId) ||
+            (afterTimerGoal && timerAuthority?.sessionUuid == null)) { finish(); return }
 
         if (habitId == -1L) {
             finish()
@@ -50,7 +52,8 @@ class MetricPromptActivity : ComponentActivity() {
         setContent {
             val state by metricCoordinator.postCheckInState.collectAsState()
             val ownedState = state?.takeIf {
-                it.habitId == habitId && (legacy == null || it.preferenceClaim?.widgetIdentity == legacy)
+                it.habitId == habitId && (legacy == null || it.preferenceClaim?.widgetIdentity == legacy) &&
+                    (timerAuthority == null || it.timerPrompt?.source == timerAuthority)
             }
             var hadPrompt by remember { mutableStateOf(false) }
             LaunchedEffect(state) {
@@ -65,7 +68,10 @@ class MetricPromptActivity : ComponentActivity() {
                     if (factClaim != null) {
                         check(factClaim.habitId == habitId)
                         metricCoordinator.showWidgetFactPrompt(factClaim)
-                    } else if (timerAuthority?.sessionUuid != null) metricCoordinator.showPromptAfterTimerStop(habitId, timerAuthority)
+                    } else if (timerAuthority?.sessionUuid != null) {
+                        if (afterTimerGoal) metricCoordinator.showPromptAfterTimerGoal(habitId, timerAuthority)
+                        else metricCoordinator.showPromptAfterTimerStop(habitId, timerAuthority)
+                    }
                     else if (timerAuthority != null) metricCoordinator.showPendingTimerWidgetPrompt(habitId, timerAuthority)
                     else metricCoordinator.showLegacyWidgetPrompt(requireNotNull(legacy))
                     if (metricCoordinator.postCheckInState.value == null) finish()
@@ -153,6 +159,7 @@ class MetricPromptActivity : ComponentActivity() {
         private const val TAG = "MetricPromptActivity"
         const val EXTRA_HABIT_ID = "habitId"
         const val EXTRA_HABIT_NAME = "habitName"
+        private const val EXTRA_AFTER_TIMER_GOAL = "com.dayforge.timer.after_goal"
 
         /**
          * Create intent to start this activity.
@@ -160,10 +167,12 @@ class MetricPromptActivity : ComponentActivity() {
         fun createIntent(context: android.content.Context, habitId: Long, habitName: String,
             timerAuthority: com.dayforge.domain.model.TimerActionAuthority? = null,
             factClaim: com.dayforge.data.repository.WidgetFactClaim? = null,
-            legacyIdentity: com.dayforge.data.repository.LegacyWidgetRestartClaim? = null): Intent {
+            legacyIdentity: com.dayforge.data.repository.LegacyWidgetRestartClaim? = null,
+            afterTimerGoal: Boolean = false): Intent {
             return Intent(context, MetricPromptActivity::class.java).apply {
                 putExtra(EXTRA_HABIT_ID, habitId)
                 putExtra(EXTRA_HABIT_NAME, habitName)
+                putExtra(EXTRA_AFTER_TIMER_GOAL, afterTimerGoal)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 addFlags(Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
                 timerAuthority?.attach(this)

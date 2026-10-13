@@ -687,4 +687,100 @@ class TimerServicePersistenceTest {
         assertEquals(60_000L, database.timeLogDao().getDayAllocations(started.uuid).sumOf { it.durationMillis })
         assertEquals(5, habits.getHabitById(habitId)!!.targetValue); assertFalse(habits.getHabitById(habitId)!!.isCountdown)
     }
+
+    @Test fun recoveredTypedCountdownPublishesOriginalGoalBeforeExplicitMetricsAndRejectsItsLateIntent() = runBlocking {
+        typed(true)
+        val edit = habits.getHabitForEditing(habitId)
+        habits.updateHabit(requireNotNull(edit.value).copy(targetCycles = 1), editAuthority = edit.authority)
+        val metricId = metrics.createMetric(com.dayforge.data.local.entity.MetricEntity(name = "Recovered timer metric", unit = "kg",
+            iconResId = 0, colorHex = "#123456", appearance = ObjectAppearance(IconReference.Role("metric.custom"), "#123456", "theme")),
+            creationAuthority = creator.capture())
+        metrics.linkHabits(requireNotNull(database.metricDao().getMetricById(metricId)), setOf(habitId))
+        // A legitimate persisted start from before process recreation. The real service performs
+        // the first stop; no finished row, completed result, or receipt is fabricated by this fixture.
+        val began = System.currentTimeMillis() - 61_000
+        val session = UUID.randomUUID().toString()
+        val row = requireNotNull(habits.getHabitById(habitId))
+        // Keep this one-minute goal fixture away from midnight; cross-day allocation has its own suite.
+        val zone = java.time.ZoneId.of(if (java.time.Instant.ofEpochMilli(began).atZone(java.time.ZoneOffset.UTC).hour in setOf(0, 23))
+            "Asia/Shanghai" else "UTC")
+        timerWriter.write(habitId, timerWriter.capture(habitId)) {
+            database.timeLogDao().insertSyncedTimer(com.dayforge.data.local.entity.TimeLogEntity(habitId = habitId,
+                uuid = session, startTime = began, endTime = null, durationSeconds = 0,
+                date = java.time.Instant.ofEpochMilli(began).atZone(zone).toLocalDate().atStartOfDay(zone).toInstant().toEpochMilli(),
+                timerNextCommandSequence = 2, timerControlGeneration = 1, timerLastCommandAt = began, timerTimezone = zone.id),
+                com.dayforge.data.local.entity.TimerCommandEntity(sessionUuid = session, sequence = 1, commandType = "start",
+                    occurredAt = began, expectedControlGeneration = 0, activityUuid = row.uuid, timezone = zone.id),
+                com.dayforge.data.local.entity.TimerSegmentEntity(sessionUuid = session, sequence = 1, startedAt = began))
+        }
+        val originalStop = requireNotNull(timerWriter.capture(habitId))
+        val followUps = mutableSetOf<android.app.Activity>()
+        val monitor = androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry.getInstance()
+        val callback = androidx.test.runner.lifecycle.ActivityLifecycleCallback { candidate, _ ->
+            val owned = when (candidate) {
+                is com.dayforge.widget.checkin.GoalCompletionActivity ->
+                    com.dayforge.data.repository.TimerCompletionFollowUpClaim.read(candidate.intent)?.source?.sessionUuid == session
+                is com.dayforge.widget.checkin.MetricPromptActivity ->
+                    TimerActionAuthority.read(candidate.intent)?.sessionUuid == session
+                else -> false
+            }
+            if (owned) followUps += candidate
+        }
+        instrumentation.runOnMainSync { monitor.addLifecycleCallback(callback) }
+        try {
+            send(null)
+            awaitCommands(2); awaitServiceStopped()
+            val confirm = context.getString(R.string.action_confirm_complete)
+            compose.waitUntil(5000) {
+                compose.onAllNodes(androidx.compose.ui.test.hasText(confirm)).fetchSemanticsNodes(atLeastOneRootRequired = false).isNotEmpty()
+            }
+            var displayed: com.dayforge.data.repository.TimerCompletionFollowUpClaim? = null
+            instrumentation.runOnMainSync {
+                val goal = androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry.getInstance()
+                    .getActivitiesInStage(androidx.test.runner.lifecycle.Stage.RESUMED)
+                    .filterIsInstance<com.dayforge.widget.checkin.GoalCompletionActivity>().single()
+                displayed = com.dayforge.data.repository.TimerCompletionFollowUpClaim.read(goal.intent)
+            }
+            assertEquals(originalStop, requireNotNull(displayed).source)
+            assertTrue(compose.onAllNodes(androidx.compose.ui.test.hasText(context.getString(R.string.post_checkin_title)))
+                .fetchSemanticsNodes(atLeastOneRootRequired = false).isEmpty())
+            val completed = requireNotNull(database.timeLogDao().getTimeLogByUuid(session))
+            assertEquals(60_000L, completed.timerActiveElapsedMillis)
+            assertEquals(listOf("start", "stop"), database.timeLogDao().getPendingTimerCommands().map { it.commandType })
+            compose.onNodeWithText(confirm).performClick()
+            compose.waitUntil(5000) {
+                compose.onAllNodes(androidx.compose.ui.test.hasText(context.getString(R.string.post_checkin_title)))
+                    .fetchSemanticsNodes(atLeastOneRootRequired = false).isNotEmpty()
+            }
+            assertFalse(requireNotNull(habits.getHabitById(habitId)).isActive)
+            assertEquals(completed, database.timeLogDao().getTimeLogByUuid(session))
+            compose.onNodeWithText(context.getString(R.string.post_checkin_skip)).performClick()
+            compose.waitUntil(5000) {
+                compose.onAllNodes(androidx.compose.ui.test.hasText(context.getString(R.string.post_checkin_title)))
+                    .fetchSemanticsNodes(atLeastOneRootRequired = false).isEmpty()
+            }
+            val queues = database.syncOutboxDao().getAll()
+            val late = com.dayforge.widget.checkin.GoalCompletionActivity.createIntent(context, habitId, "ignored", 1, 1,
+                timerCompletion = requireNotNull(displayed))
+            ActivityScenario.launch<com.dayforge.widget.checkin.GoalCompletionActivity>(late).use { scenario ->
+                awaitState { scenario.state == androidx.lifecycle.Lifecycle.State.DESTROYED }
+            }
+            assertEquals(queues, database.syncOutboxDao().getAll())
+            assertEquals(completed, database.timeLogDao().getTimeLogByUuid(session))
+            assertEquals(0, database.metricLogDao().countAll())
+        } finally {
+            // Stop the producer before closing only this session's follow-up Activities. A failed
+            // wait must not leave their lifecycle coroutines alive when @After closes this Room DB.
+            try { stopService() } finally {
+                try {
+                    instrumentation.runOnMainSync { followUps.filterNot { it.isDestroyed }.forEach { it.finish() } }
+                    awaitState {
+                        var destroyed = false
+                        instrumentation.runOnMainSync { destroyed = followUps.all { it.isDestroyed } }
+                        destroyed
+                    }
+                } finally { instrumentation.runOnMainSync { monitor.removeLifecycleCallback(callback) } }
+            }
+        }
+    }
 }

@@ -45,7 +45,8 @@ class HabitRepository @Inject constructor(
     private val timerHistoryReader: TimerHistoryReader? = null,
     private val recurringHabitReader: RecurringHabitReader? = null,
     private val restartEntry: HabitRestartEntry? = null,
-    private val widgetRestartEntry: WidgetRestartEntry? = null
+    private val widgetRestartEntry: WidgetRestartEntry? = null,
+    private val timerWriter: NextTimerWriter? = null
 ) {
     val allHabits: Flow<List<HabitEntity>> = habitDao.getAllHabits()
 
@@ -169,6 +170,23 @@ class HabitRepository @Inject constructor(
         // Preserve updateIsActive's post-COMMIT reminder side effect. The facade re-reads the
         // current owner/row, so a late callback cannot cancel another account's reused local ID.
         if (complete && expected.bestTime != null) HabitReminderScheduler.cancelReminder(context, claim.habitId)
+        notifyWidgetUpdate(context)
+    }
+
+    /** A completed timer's goal edits the displayed plan, never the current numeric ID's new plan. */
+    suspend fun applyTimerGoal(context: Context, claim: TimerCompletionFollowUpClaim, complete: Boolean) {
+        val writer = requireNotNull(timerWriter)
+        val captured = writer.authorizeGoal(claim)
+        val expected = requireNotNull(captured.value)
+        mutate(expected, requireNotNull(captured.authority)) { habit ->
+            val view = writer.completionInTransaction(habit.id, claim.source, claim.displayedPlan)
+            check(view.goalReached) { "TIMER_GOAL_CHANGED" }
+            val access = writer.requireCompletionAccessInTransaction(claim.source, "structure.write")
+            if (complete) habitDao.updateIsActive(habit.id, false)
+            else if (habit.failMode == FailMode.STRICT) habitDao.updateFailMode(habit.id, FailMode.LOOSE)
+            check(writer.requireCompletionAccessInTransaction(claim.source, "structure.write") == access)
+        }
+        if (complete && expected.bestTime != null) HabitReminderScheduler.cancelReminder(context, expected.id)
         notifyWidgetUpdate(context)
     }
 

@@ -235,7 +235,7 @@ class LinkedMetricCoordinator @Inject constructor(
                 preferenceClaim = preference?.claim,
                 habitPrompt = habitProof
             )
-            if (timerAuthority != null) requireNotNull(timerWriter).publish(habitId, timerAuthority) { _postCheckInState.value = state }
+            if (timerAuthority != null) requireNotNull(timerWriter).publishPrompt(habitId, timerAuthority) { _postCheckInState.value = state }
             else if (preference != null) requireNotNull(habitPreferences).publish(preference.claim) { _postCheckInState.value = state }
             else _postCheckInState.value = state
         }
@@ -251,17 +251,23 @@ class LinkedMetricCoordinator @Inject constructor(
     }
 
     /** Waits for TimerService persistence; dispatch alone never creates a prompt. */
-    suspend fun showPromptAfterTimerStop(stoppedHabitId: Long?, authority: TimerActionAuthority? = null) {
+    suspend fun showPromptAfterTimerStop(stoppedHabitId: Long?, authority: TimerActionAuthority? = null) =
+        showTimerCompletionPrompt(stoppedHabitId, authority, afterGoal = false)
+
+    /** Explicit follow-up skips only dialog priority, never the original completion proof. */
+    suspend fun showPromptAfterTimerGoal(habitId: Long, authority: TimerActionAuthority) =
+        showTimerCompletionPrompt(habitId, authority, afterGoal = true)
+
+    private suspend fun showTimerCompletionPrompt(stoppedHabitId: Long?, authority: TimerActionAuthority?, afterGoal: Boolean) {
         stoppedHabitId ?: return
         if (authority != null) {
-            var confirmed = false
-            requireNotNull(timerWriter).afterCompletion(stoppedHabitId, authority) {
-                confirmed = true
+            var confirmed: com.dayforge.data.local.entity.HabitEntity? = null
+            requireNotNull(timerWriter).afterCompletion(stoppedHabitId, authority) { view ->
+                if (afterGoal || !view.goalReached) confirmed = view.habit
             }
             // afterCompletion publishes under the non-reentrant account lock. Metric tickets are
             // captured only after releasing it, then the final prompt publication rechecks ownership.
-            if (confirmed) {
-                val habit = habitRepository.getHabitById(stoppedHabitId) ?: return
+            confirmed?.let { habit ->
                 showPromptForPolicy(stoppedHabitId, habit.name, false, habit.completionPolicy, authority)
             }
             return
@@ -269,6 +275,7 @@ class LinkedMetricCoordinator @Inject constructor(
         // The inactive legacy path retains its existing behavior until coordinated v5 activation.
         delay(POST_TIMER_STOP_PROMPT_DELAY_MS)
         val habit = habitRepository.getHabitById(stoppedHabitId) ?: return
+        if (habit.targetCycles != null && requireNotNull(timerWriter).legacyGoalReached(stoppedHabitId)) return
         showPromptForPolicy(stoppedHabitId, habit.name, false, habit.completionPolicy)
     }
 
@@ -303,10 +310,11 @@ class LinkedMetricCoordinator @Inject constructor(
                         val selected = values.map { input -> expectedTimerPrompt.metrics.single { it.value?.id == input.metricId } }
                         metricRepository.recordValues(values.map { MetricValueDraft(it.metricId, it.value, it.note) },
                             recordedAt = System.currentTimeMillis(), authority = requireNotNull(selected.first().authority),
-                            expectedMetrics = selected.map { requireNotNull(it.value) }, promptHabit = expectedTimerPrompt.habit)
+                            expectedMetrics = selected.map { requireNotNull(it.value) }, promptHabit = expectedTimerPrompt.habit,
+                            promptTimer = expectedTimerPrompt.source.takeIf { it.sessionUuid != null })
                         expectedTimerPrompt.submitted = values.toList()
                     } else check(expectedTimerPrompt.submitted == values) { "TIMER_PROMPT_ALREADY_SUBMITTED" }
-                    requireNotNull(timerWriter).publish(habitId, expectedTimerPrompt.source) {
+                    requireNotNull(timerWriter).publishPrompt(habitId, expectedTimerPrompt.source) {
                         preferencesManager.removePendingMetricHabit(expectedTimerPrompt.source.session(), expectedTimerPrompt.habit.uuid)
                     }
                 }
@@ -384,7 +392,7 @@ class LinkedMetricCoordinator @Inject constructor(
             }
             if (expectedTimerPrompt != null) {
                 check(expectedTimerPrompt.habit.id == habitId && _postCheckInState.value?.timerPrompt === expectedTimerPrompt)
-                requireNotNull(timerWriter).publish(habitId, expectedTimerPrompt.source) {
+                requireNotNull(timerWriter).publishPrompt(habitId, expectedTimerPrompt.source) {
                     preferencesManager.setNeverAskAgain(expectedTimerPrompt.source.session(), expectedTimerPrompt.habit.uuid, value)
                 }
                 return@withLock
@@ -439,7 +447,7 @@ class LinkedMetricCoordinator @Inject constructor(
             }
             if (expectedTimerPrompt != null) {
                 check(expectedTimerPrompt.habit.id == habitId && _postCheckInState.value?.timerPrompt === expectedTimerPrompt)
-                requireNotNull(timerWriter).publish(habitId, expectedTimerPrompt.source) {
+                requireNotNull(timerWriter).publishPrompt(habitId, expectedTimerPrompt.source) {
                     preferencesManager.removePendingMetricHabit(expectedTimerPrompt.source.session(), expectedTimerPrompt.habit.uuid)
                 }
                 return@withLock

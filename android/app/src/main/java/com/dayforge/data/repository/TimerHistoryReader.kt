@@ -46,6 +46,70 @@ class TimerHistoryReader @Inject constructor(private val database: HabitDatabase
     internal suspend fun readInTransaction(expected: HabitEntity, today: LocalDate): TimerHistory =
         readEvidenceInTransaction(expected, today, false)
 
+    /** One history audit also supplies goal progress. A local endTime alone is not a stop proof. */
+    internal suspend fun completedInTransaction(habit: HabitEntity, source: TimerActionAuthority): TimerHistory {
+        val history = readInTransaction(habit, DateTimeUtils.today())
+        require(source.challengeContract == if (history.roundHead == null) 0 else 1)
+        check(history.roundHead == source.challengeHead) { "TIMER_COMPLETION_ROUND_CHANGED" }
+        val session = requireNotNull(source.sessionUuid)
+        val sequence = requireNotNull(source.nextSequence)
+        val log = requireNotNull(history.logs.singleOrNull { it.uuid == session }) { "TIMER_COMPLETION_REQUIRED" }
+        check(log.endTime != null && !log.isPaused && log.timerNextCommandSequence == sequence + 1) {
+            "TIMER_COMPLETION_REQUIRED"
+        }
+        val access = requireNotNull(tokens.localCoreWriteAccess())
+        val policy = NextTimerPolicyStore(database).policy(access, session)
+        check(log.timerActiveElapsedMillis in policy.targetSeconds.toLong() * 1000..policy.maxDurationSeconds.toLong() * 1000)
+        // A pulled duration shadow validates immutable fact data, but the local callback must
+        // additionally prove its exact original stop, including retained ACKs after queue drain.
+        val commands = commandOrigins(session).sortedBy { it.second.sequence }
+        require(commands.size == sequence && commands.map { it.second.sequence } == (1..sequence).toList())
+        val start = decodeNextTimerIntent(commands.first().first.intentJson)
+        check(start.command.commandType == "start" && start.command.sequence == 1 &&
+            start.capturedDeviceId == source.deviceId) { "TIMER_COMPLETION_DEVICE_CHANGED" }
+        val (origin, stop) = commands.last()
+        check(stop.commandType == "stop" && stop.sequence == sequence &&
+            Instant.parse(stop.occurredAt).toEpochMilli() == log.endTime && stop.activeElapsedMs == log.timerActiveElapsedMillis) {
+            "TIMER_STOP_PROOF_REQUIRED"
+        }
+        val pulled = accepted(log.uuid) != null
+        var previousReceipt: TimerSessionResponse? = null
+        commands.forEach { (row, command) ->
+            check(row.accountId == source.accountId && (row.serverInstanceId == null ||
+                row.serverInstanceId == source.serverInstanceId && row.syncEpoch == source.syncEpoch))
+            // Plain successors are bare commands: their device is anchored by the original
+            // start and audited control chain. Round successors retain it in the OUTER source.
+            val round = roundTimerIntent(row.intentJson)
+            check(round?.context?.head == source.challengeHead)
+            if (round != null) check(round.capturedDeviceId == source.deviceId) { "TIMER_COMPLETION_DEVICE_CHANGED" }
+            database.nextRequestDao().transmission(NEXT_TIMER, row.requestId)?.let { sent ->
+                check(sent.deviceId == source.deviceId && sent.serverInstanceId == source.serverInstanceId &&
+                    sent.syncEpoch == source.syncEpoch) { "TIMER_COMPLETION_TRANSMISSION_CHANGED" }
+            }
+            // Offline logs were already audited in readInTransaction; ACK fact projections
+            // do not traverse their local transition chain, so audit it here exactly once.
+            if (pulled) {
+                auditCommand(row, command, source.accountId)
+                val receipt = requireNotNull(database.nextRequestDao().acceptance(NEXT_TIMER, row.requestId)) {
+                    "TIMER_STOP_RECEIPT_REQUIRED"
+                }
+                val acknowledged = requireNotNull(decodeFrozenSyncRequest(receipt.resultJson.toByteArray(Charsets.UTF_8),
+                    TimerCommandResult.serializer()).session)
+                previousReceipt?.let { NextTimerResultMapper.validateAfter(it, command, acknowledged) }
+                previousReceipt = acknowledged
+            }
+        }
+        database.nextRequestDao().acceptance(NEXT_TIMER, origin.requestId)?.let { receipt ->
+            val result = decodeFrozenSyncRequest(receipt.resultJson.toByteArray(Charsets.UTF_8), TimerCommandResult.serializer())
+            val terminal = requireNotNull(result.session)
+            check(terminal.state == "completed" && terminal.sessionId == session && terminal.completedEventId == session &&
+                terminal.nextCommandSequence == sequence + 1 && terminal.controllerDeviceId == source.deviceId &&
+                terminal.activeElapsedMs == log.timerActiveElapsedMillis && terminal.targetSeconds == policy.targetSeconds &&
+                terminal.maxDurationSeconds == policy.maxDurationSeconds && terminal.isCountdown == policy.isCountdown)
+        }
+        return history
+    }
+
     /** Recovery audits all retained rounds, even after an allowed tracking-mode edit. No UI projection. */
     internal suspend fun recoveryInTransaction(expected: HabitEntity, today: LocalDate): TimerRecoveryEvidence =
         TimerRecoveryEvidence(readEvidenceInTransaction(expected, today, true))

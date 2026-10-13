@@ -864,6 +864,9 @@ class TimerService : Service() {
                                 habit.targetCycles,
                                 legacyIdentity = actionLegacyWidget?.identity ?: habit.takeIf { it.appearance == null }?.let {
                                     LegacyWidgetRestartClaim.displayed(it, requireNotNull(tokenManager.localCoreWriteAccess()))
+                                },
+                                timerCompletion = actionAuthority?.let {
+                                    com.dayforge.data.repository.TimerCompletionFollowUpClaim.displayed(habit, it)
                                 }
                             )
                         )

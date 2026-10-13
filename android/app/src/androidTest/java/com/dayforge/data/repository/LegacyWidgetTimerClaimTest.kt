@@ -148,4 +148,31 @@ class LegacyWidgetTimerClaimTest : NextCoreRequestFixture() {
         rejected { writer().write(timerHabit.id, null, original) { fail("No frozen write") } }
         assertNull(db.timeLogDao().getActiveTimeLog()); assertEquals(0, count("timer_command_outbox"))
     }
+
+    @Test fun completedGoalKeepsAutomaticMetricPriorityAfterArchiveAndTrackingModeChoice() = runBlocking<Unit> {
+        legacy()
+        db.habitDao().update(timerHabit.copy(targetCycles = 1, failMode = com.dayforge.data.model.FailMode.STRICT))
+        timerHabit = requireNotNull(db.habitDao().getHabitById(timerHabit.id))
+        val start = claim(); val log = startLegacy(start)
+        val completed = start.running(log.uuid, 2)
+        writer().write(timerHabit.id, null, completed) {
+            db.timeLogDao().finishTimerAndQueue(log.id, millis + 60_000, 60, 0, 3, 60_000,
+                TimerCommandEntity(sessionUuid = log.uuid, sequence = 2, commandType = "stop",
+                    occurredAt = millis + 60_000, expectedControlGeneration = 1, activeElapsedMillis = 60_000), false)
+            db.timeLogDao().replaceDayAllocations(log.uuid, com.dayforge.domain.service.DurationDayAllocator.allocate(
+                log.uuid, timerHabit.id, "UTC", db.timeLogDao().getTimerSegments(log.uuid), 60_000))
+        }
+        var reached: Boolean? = null
+        writer().afterLegacyWidgetCompletion(completed) { reached = it }
+        assertEquals(true, reached)
+        db.habitDao().update(timerHabit.copy(isActive = false, failMode = com.dayforge.data.model.FailMode.LOOSE))
+        val history = db.timeLogDao().getAllTimeLogsForHabit(timerHabit.id)
+        val commands = db.timeLogDao().getPendingTimerCommands()
+        reached = null
+        writer().afterLegacyWidgetCompletion(completed) { reached = it }
+        assertEquals(true, reached)
+        assertTrue(writer().legacyGoalReached(timerHabit.id))
+        assertEquals(history, db.timeLogDao().getAllTimeLogsForHabit(timerHabit.id))
+        assertEquals(commands, db.timeLogDao().getPendingTimerCommands())
+    }
 }
