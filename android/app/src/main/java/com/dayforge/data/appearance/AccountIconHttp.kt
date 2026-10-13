@@ -94,7 +94,10 @@ class AccountIconHttp private constructor(
             .let { if (context.recovery != null) it.authenticator(okhttp3.Authenticator.NONE)
                 .cache(null).cookieJar(okhttp3.CookieJar.NO_COOKIES) else it }
             // Never share pooled sockets with a mutable LAN/default-route client.
-            .connectionPool(ConnectionPool(1, 1, TimeUnit.MINUTES))
+            // Recovery's final authorization can outlast the server's idle keepalive after
+            // connection selection. Close idle recovery sockets rather than retrying a GET
+            // or weakening that authorization; ordinary material traffic retains its pool.
+            .connectionPool(ConnectionPool(if (context.recovery != null) 0 else 1, 1, TimeUnit.MINUTES))
             .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
             .connectTimeout(10, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS)
             .callTimeout(45, TimeUnit.SECONDS)
