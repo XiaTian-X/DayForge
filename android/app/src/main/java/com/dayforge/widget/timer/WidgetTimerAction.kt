@@ -10,6 +10,7 @@ import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.action.actionStartActivity
 import com.dayforge.data.api.decodeSyncReply
 import com.dayforge.data.repository.WidgetTimerReadSnapshot
+import com.dayforge.data.repository.LegacyWidgetTimerClaim
 import com.dayforge.domain.model.TimerActionAuthority
 import com.dayforge.domain.model.TimerStartGuard
 import java.security.MessageDigest
@@ -56,7 +57,8 @@ internal data class WidgetTimerAction internal constructor(
 }
 
 /** Legacy buttons remain on v4; typed buttons directly launch the non-exported foreground entry. */
-internal fun widgetTimerAction(context: Context, habitId: Long, targetMinutes: Int, action: String, proof: String?): Action =
+internal fun widgetTimerAction(context: Context, habitId: Long, targetMinutes: Int, action: String, proof: String?,
+    legacyProof: String? = null): Action =
     if (proof != null) {
         val claim = WidgetTimerAction.decode(proof)
         require(claim.habitId == habitId)
@@ -64,4 +66,5 @@ internal fun widgetTimerAction(context: Context, habitId: Long, targetMinutes: I
     } else actionRunCallback<TimerActionCallback>(actionParametersOf(
         ActionParameters.Key<Long>("habitId") to habitId,
         ActionParameters.Key<String>("action") to action,
-        ActionParameters.Key<Int>("targetMinutes") to targetMinutes))
+        ActionParameters.Key<Int>("targetMinutes") to targetMinutes,
+        ActionParameters.Key<String>(LegacyWidgetTimerClaim.PARAMETER) to (legacyProof ?: "")))

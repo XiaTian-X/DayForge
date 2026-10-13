@@ -13,6 +13,7 @@ import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.widget.timer.CountdownDiscardActivity
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -39,18 +40,34 @@ class TimerManagerTest {
 
     @Test
     fun stopTimer_derives_countdown_mode_from_habit() = runTest {
-        coEvery { habitDao.getHabitById(7L) } returns timerHabit(id = 7L, isCountdown = true)
-        coEvery { timeLogDao.getActiveTimeLog() } coAnswers {
-            activeLog(habitId = 7L, startTime = System.currentTimeMillis() - 10_000)
-        }
+        val habit = timerHabit(id = 7L, isCountdown = true)
+        val active = activeLog(habitId = 7L, startTime = System.currentTimeMillis() - 10_000).copy(timerNextCommandSequence = 2)
+        coEvery { habitDao.getHabitById(7L) } returns habit
+        coEvery { timeLogDao.getActiveTimeLog() } returns active
+        // Dispatch-only collaborator: production Room/account authorization is covered by the writer/service classes.
+        val writer = mockk<com.dayforge.data.repository.NextTimerWriter>()
+        val access = com.dayforge.data.local.LocalCoreWriteAccess(com.dayforge.data.local.LocalDataSession(
+            com.dayforge.data.local.AuthenticationSession("af350000-0000-4000-8000-000000000001",
+                "af350000-0000-4000-8000-000000000002"), null, null), null)
+        val claim = com.dayforge.data.repository.LegacyWidgetTimerClaim(
+            com.dayforge.data.repository.LegacyWidgetRestartClaim.displayed(habit, access), active.uuid, 2)
+        coEvery { writer.requireAction(7L, null) } returns Unit
+        coEvery { writer.policy(7L, active.uuid) } returns null
+        coEvery { writer.captureLegacyConfirmation(habit, active) } returns claim
+        manager = TimerManager(context, habitDao, timeLogDao, writer)
 
+        val before = System.currentTimeMillis()
         val result = manager.stopTimer(habitId = 7L, targetMinutes = 1)
+        val after = System.currentTimeMillis()
 
         assertEquals(null, result)
         val intent = requireNotNull(context.activityIntent)
         assertEquals(CountdownDiscardActivity::class.java.name, intent.component?.className)
         assertTrue(intent.getBooleanExtra(CountdownDiscardActivity.EXTRA_IS_COUNTDOWN, false))
-        assertTrue(intent.getIntExtra(CountdownDiscardActivity.EXTRA_SECONDS, 0) in 49..50)
+        assertTrue(intent.getIntExtra(CountdownDiscardActivity.EXTRA_SECONDS, 0) in
+            (60 - ((after - active.startTime) / 1000).toInt())..(60 - ((before - active.startTime) / 1000).toInt()))
+        assertEquals(claim, com.dayforge.data.repository.LegacyWidgetTimerClaim.read(intent))
+        coVerify(exactly = 1) { writer.captureLegacyConfirmation(habit, active) }
     }
 
     @Test

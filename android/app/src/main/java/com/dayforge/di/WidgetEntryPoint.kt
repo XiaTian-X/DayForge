@@ -13,6 +13,7 @@ interface WidgetEntryPoint {
     fun habitStatusCalculator(): com.dayforge.domain.service.HabitStatusCalculator
     fun timerWriter(): com.dayforge.data.repository.NextTimerWriter
     fun factReader(): com.dayforge.data.repository.WidgetFactReader
+    fun legacyFactWorkflow(): com.dayforge.data.repository.LegacyWidgetFactWorkflow
     fun activityRateRefresher(): com.dayforge.data.repository.LegacyActivityRateRefresher
     fun displayPublisher(): com.dayforge.data.repository.WidgetDisplayPublisher
     fun configurationWorkflow(): com.dayforge.domain.service.WidgetConfigurationWorkflow

@@ -646,25 +646,7 @@ class HabitRepository @Inject constructor(
                     check(!policy.isCountdown || history.todayQuantity < policy.targetValue) { "COUNT_DAY_ALREADY_COMPLETED" }
                 }
             }
-            // Auto-reactivate if habit is currently inactive
-            if (!habit.isActive) {
-                habitDao.updateIsActive(habitId, true)
-            }
-
-            val completion = CompletionEntity(
-                habitId = habitId,
-                date = occurredAt.atZone(capturedZone).toLocalDate().atStartOfDay(capturedZone)
-                    .toInstant().toEpochMilli(),
-                value = value,
-                actualCompletedAt = occurredAt.toEpochMilli(),
-                habitUuid = habit.uuid,
-                recordedTimezone = capturedZone.id
-            )
-            if (habit.appearance != null && habit.habitType == HabitType.COUNTING)
-                NextCountDayStore(database).capture(habit, completion)
-            val completionId = completionDao.insert(completion)
-            updateActivityRate(habitId)
-            completionId
+            insertCompletionInTransaction(habit, occurredAt, capturedZone, value)
         }
 
         // Notify widgets to update
@@ -714,6 +696,42 @@ class HabitRepository @Inject constructor(
 
         // Notify widgets
         notifyWidgetUpdate(context)
+    }
+
+    /** The widget workflow already owns the original-account lock and actual Room transaction. */
+    internal suspend fun insertLegacyWidgetCompletionInTransaction(habit: HabitEntity,
+        occurredAt: java.time.Instant, zone: java.time.ZoneId): Long {
+        check(database.inTransaction() && habit.appearance == null)
+        check(habitDao.getVisibleHabitById(habit.id) == habit) { "LEGACY_WIDGET_HABIT_CHANGED" }
+        return insertCompletionInTransaction(habit, occurredAt, zone, 1)
+    }
+
+    internal suspend fun undoLegacyWidgetCompletionInTransaction(completion: CompletionEntity) {
+        check(database.inTransaction() && completion.oneTimeAction == null)
+        val habit = requireNotNull(habitDao.getVisibleHabitById(completion.habitId))
+        check(habit.appearance == null && (completion.habitUuid == null || habit.uuid == completion.habitUuid)) { "LEGACY_WIDGET_HABIT_CHANGED" }
+        check(completionDao.getCompletionById(completion.id) == completion) { "LEGACY_WIDGET_FACT_CHANGED" }
+        completionDao.delete(completion)
+        updateActivityRate(habit.id)
+    }
+
+    private suspend fun insertCompletionInTransaction(habit: HabitEntity, occurredAt: java.time.Instant,
+        zone: java.time.ZoneId, value: Int): Long {
+        check(database.inTransaction())
+        if (!habit.isActive) habitDao.updateIsActive(habit.id, true)
+        val completion = CompletionEntity(
+            habitId = habit.id,
+            date = occurredAt.atZone(zone).toLocalDate().atStartOfDay(zone).toInstant().toEpochMilli(),
+            value = value,
+            actualCompletedAt = occurredAt.toEpochMilli(),
+            habitUuid = habit.uuid,
+            recordedTimezone = zone.id
+        )
+        if (habit.appearance != null && habit.habitType == HabitType.COUNTING)
+            NextCountDayStore(database).capture(habit, completion)
+        val id = completionDao.insert(completion)
+        updateActivityRate(habit.id)
+        return id
     }
 
     /**

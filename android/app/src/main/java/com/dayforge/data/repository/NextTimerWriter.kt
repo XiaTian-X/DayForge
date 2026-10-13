@@ -33,7 +33,9 @@ data class WidgetTimerReadSnapshot internal constructor(
 
 data class WidgetTimerSwitchDisplay(val incumbentName: String?, val requestedName: String)
 
-/** Production typed timer boundary. Only local state/segments/allocations belong in its callback. */
+internal data class LegacyWidgetTimerReadSnapshot(val habit: HabitEntity, val activeLog: TimeLogEntity?)
+
+/** Timer transaction boundary. Typed producers and original-scope legacy widget controls stay separate. */
 @Singleton
 class NextTimerWriter @Inject constructor(
     private val database: HabitDatabase,
@@ -43,6 +45,7 @@ class NextTimerWriter @Inject constructor(
 ) {
     private val producer = NextCoreLocalIntentStore(database, tokens, sessions)
     private val replica = ReplicaPresentationRepository(database, tokens, sessions)
+    private val legacyWidgets = LegacyWidgetIdentityVerifier(database, tokens, replica)
     internal val accessChanges = combine(tokens.factAccessChanges, tokens.iconAccessChanges) { _, _ ->
         tokens.localCoreWriteAccess()
     }.distinctUntilChanged()
@@ -58,6 +61,72 @@ class NextTimerWriter @Inject constructor(
                 NextStructureMapper.writePlan(habit) != NextStructureMapper.writePlan(expectedHabit))) return@withTransaction null
             captureInReadTransaction(habit)
         }
+    }
+
+    /** Capture from the widget's original publication scope, never from whichever account is now active. */
+    internal suspend fun captureLegacyWidget(identity: LegacyWidgetRestartClaim,
+        expectedActiveLog: TimeLogEntity?): LegacyWidgetTimerClaim = sessions.exclusive {
+        database.withTransaction {
+            val habit = legacyWidgets.requireIdentity(identity, requirePlan = true)
+            require(habit.habitType == com.dayforge.data.model.HabitType.TIMER)
+            val active = database.timeLogDao().getActiveTimeLogForHabit(habit.id)
+            check(active == expectedActiveLog) { "TIMER_WIDGET_STALE_DISPLAY" }
+            val incumbent = if (active == null) database.timeLogDao().getActiveTimeLog()?.let { log ->
+                val row = requireNotNull(database.habitDao().getVisibleHabitById(log.habitId))
+                val captured = LegacyWidgetRestartClaim.displayed(row, requireNotNull(tokens.localCoreWriteAccess()))
+                legacyWidgets.requireIdentity(captured, requirePlan = false)
+                require(captured.session() == identity.session() && captured.deviceId == identity.deviceId)
+                LegacyWidgetTimerIncumbent(captured, log.uuid, log.timerNextCommandSequence)
+            } else null
+            LegacyWidgetTimerClaim(identity, active?.uuid, active?.timerNextCommandSequence, incumbent).also {
+                validateLegacyWidget(it, control = false)
+            }
+        }
+    }
+
+    /** Ordinary App confirmation captures its scope ONCE before showing a dialog; no ID-only dialog fallback. */
+    internal suspend fun captureLegacyConfirmation(expectedHabit: HabitEntity,
+        expectedActiveLog: TimeLogEntity): LegacyWidgetTimerClaim = sessions.exclusive {
+        database.withTransaction {
+            require(expectedActiveLog.habitId == expectedHabit.id && expectedActiveLog.endTime == null)
+            val identity = LegacyWidgetRestartClaim.displayed(expectedHabit, requireNotNull(tokens.localCoreWriteAccess()))
+            legacyWidgets.requireIdentity(identity, requirePlan = true, permission = "timer.control")
+            check(database.timeLogDao().getActiveTimeLogForHabit(expectedHabit.id) == expectedActiveLog) { "TIMER_WIDGET_STALE_DISPLAY" }
+            LegacyWidgetTimerClaim(identity, expectedActiveLog.uuid, expectedActiveLog.timerNextCommandSequence).also {
+                validateLegacyWidget(it)
+            }
+        }
+    }
+
+    internal suspend fun requireLegacyWidgetAction(claim: LegacyWidgetTimerClaim): LegacyWidgetTimerReadSnapshot = sessions.exclusive {
+        database.withTransaction { validateLegacyWidget(claim) }
+    }
+
+    internal suspend fun requireLegacyWidgetStart(claim: LegacyWidgetTimerClaim): WidgetTimerSwitchDisplay = sessions.exclusive {
+        database.withTransaction {
+            require(claim.sessionUuid == null)
+            validateLegacyWidget(claim)
+            switchDisplayInTransaction(claim.identity.habitId)
+        }
+    }
+
+    private suspend fun validateLegacyWidget(claim: LegacyWidgetTimerClaim, control: Boolean = true): LegacyWidgetTimerReadSnapshot {
+        claim.validate()
+        val habit = legacyWidgets.requireIdentity(claim.identity, requirePlan = claim.sessionUuid == null,
+            permission = if (control) "timer.control" else null)
+        require(habit.habitType == com.dayforge.data.model.HabitType.TIMER) { "TIMER_ACTIVITY_CHANGED" }
+        val active = database.timeLogDao().getActiveTimeLogForHabit(habit.id)
+        check(active?.uuid == claim.sessionUuid && active?.timerNextCommandSequence == claim.nextSequence) {
+            "TIMER_ACTION_STALE_SESSION"
+        }
+        if (active == null) {
+            val incumbent = database.timeLogDao().getActiveTimeLog()
+            check(incumbent?.habitId == claim.incumbent?.identity?.habitId && incumbent?.uuid == claim.incumbent?.sessionUuid &&
+                incumbent?.timerNextCommandSequence == claim.incumbent?.nextSequence) { "TIMER_SWITCH_CHANGED" }
+            claim.incumbent?.let { legacyWidgets.requireIdentity(it.identity, requirePlan = false,
+                permission = if (control) "timer.control" else null) }
+        }
+        return LegacyWidgetTimerReadSnapshot(habit, active)
     }
 
     /** Read-only production widget consumer. Null means stale/missing display, not legacy fallback. */
@@ -178,8 +247,11 @@ class NextTimerWriter @Inject constructor(
         }
     }
 
-    suspend fun requireAction(habitId: Long, ticket: TimerActionAuthority?) = sessions.exclusive {
-        database.withTransaction { validate(habitId, ticket) }
+    suspend fun requireAction(habitId: Long, ticket: TimerActionAuthority?, legacyWidget: LegacyWidgetTimerClaim? = null) = sessions.exclusive {
+        database.withTransaction {
+            if (legacyWidget == null) validate(habitId, ticket)
+            else { require(ticket == null && legacyWidget.identity.habitId == habitId); validateLegacyWidget(legacyWidget); Unit }
+        }
     }
 
     /** Validate both ends of a widget switch in one account/read transaction; never adopt a new incumbent. */
@@ -199,18 +271,39 @@ class NextTimerWriter @Inject constructor(
         }
     }
 
-    /** Legacy dialog reads stay repository-owned; a typed object may never fall back to this path. */
-    suspend fun legacyWidgetSwitchDisplay(habitId: Long): WidgetTimerSwitchDisplay = sessions.exclusive {
-        database.withTransaction { validate(habitId, null); switchDisplayInTransaction(habitId) }
-    }
-
     private suspend fun switchDisplayInTransaction(habitId: Long): WidgetTimerSwitchDisplay {
         val requested = requireNotNull(database.habitDao().getVisibleHabitById(habitId))
         val active = database.timeLogDao().getActiveTimeLog()?.takeIf { it.habitId != habitId }
         return WidgetTimerSwitchDisplay(active?.let { database.habitDao().getVisibleHabitById(it.habitId)?.name }, requested.name)
     }
 
-    suspend fun <T> write(habitId: Long, ticket: TimerActionAuthority?, block: suspend () -> T): T {
+    suspend fun <T> write(habitId: Long, ticket: TimerActionAuthority?, legacyWidget: LegacyWidgetTimerClaim? = null,
+        legacySwitchTarget: LegacyWidgetTimerClaim? = null,
+        block: suspend () -> T): T {
+        require(legacySwitchTarget == null || legacyWidget != null)
+        if (legacyWidget != null) return sessions.exclusive { database.withTransaction {
+            require(ticket == null && legacyWidget.identity.habitId == habitId)
+            legacySwitchTarget?.let {
+                require(it.sessionUuid == null && it.incumbentClaim() == legacyWidget)
+                validateLegacyWidget(it)
+            }
+            validateLegacyWidget(legacyWidget)
+            if (legacyWidget.sessionUuid == null) check(database.timeLogDao().getActiveTimeLog() == null) { "TIMER_SWITCH_CHANGED" }
+            val sql = database.openHelper.writableDatabase
+            val watermark = NextRequestSql.watermark(sql, "timer_command_outbox")
+            val result = block()
+            val ids = sql.query("SELECT id FROM timer_command_outbox WHERE id>? ORDER BY id LIMIT 2", arrayOf(watermark))
+                .use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.getLong(0)) } }
+            check(ids.size == 1) { "TIMER_SINGLE_TRANSITION_REQUIRED" }
+            val command = requireNotNull(database.timeLogDao().getTimerCommand(ids.single()))
+            if (legacyWidget.sessionUuid == null) {
+                check(command.commandType == "start" && command.sequence == 1 && command.activityUuid == legacyWidget.identity.habitUuid &&
+                    database.timeLogDao().getActiveTimeLogForHabit(habitId)?.uuid == command.sessionUuid) { "TIMER_TRANSITION_STALE_SESSION" }
+            } else check(command.commandType != "start" && command.sessionUuid == legacyWidget.sessionUuid &&
+                command.sequence == legacyWidget.nextSequence) { "TIMER_TRANSITION_STALE_SESSION" }
+            legacyWidgets.requireIdentity(legacyWidget.identity, requirePlan = false, permission = "timer.control")
+            result
+        } }
         if (ticket == null) return sessions.exclusive {
             database.withTransaction { validate(habitId, null); block() }
         }
@@ -263,10 +356,13 @@ class NextTimerWriter @Inject constructor(
     /** Compute history in the already-owned account/Room snapshot, never reacquire the mutex.
      * The follow-up callback still owns the account lock; it must not call lock-owning readers.
      */
-    suspend fun publishCompletion(habitId: Long, ticket: TimerActionAuthority?,
+    suspend fun publishCompletion(habitId: Long, ticket: TimerActionAuthority?, legacyWidget: LegacyWidgetTimerClaim? = null,
         block: suspend (HabitEntity?, Int?) -> Unit) = sessions.exclusive {
         val (habit, progress) = database.withTransaction {
-            val habit = requirePublication(habitId, ticket)
+            val habit = if (legacyWidget == null) requirePublication(habitId, ticket) else {
+                require(ticket == null && habitId == legacyWidget.identity.habitId)
+                legacyWidgets.requireIdentity(legacyWidget.identity, requirePlan = false)
+            }
             val progress = if (habit?.targetCycles == null) null
                 else if (habit.appearance != null) timerHistoryReader.readInTransaction(habit,
                     com.dayforge.util.DateTimeUtils.today()).qualifiedDates.size
@@ -311,6 +407,26 @@ class NextTimerWriter @Inject constructor(
                 completed.durationSeconds <= policy.maxDurationSeconds) { "TIMER_COMPLETION_REQUIRED" }
             block()
         }
+    }
+
+    /** Observe the exact committed legacy stop, then leave the lock before the prompt's own guarded entry. */
+    internal suspend fun afterLegacyWidgetCompletion(claim: LegacyWidgetTimerClaim, block: suspend () -> Unit) {
+        val uuid = requireNotNull(claim.sessionUuid)
+        val sequence = requireNotNull(claim.nextSequence)
+        val observed = withTimeoutOrNull(10_000L) {
+            combine(database.timeLogDao().getTimeLogsByHabit(claim.identity.habitId), accessChanges) { logs, access ->
+                check(access != null && access.session == claim.identity.session() && access.capturedDeviceId == claim.identity.deviceId) {
+                    "TIMER_FOLLOW_UP_STALE_ACCOUNT"
+                }
+                logs.singleOrNull { it.uuid == uuid }
+            }.first { it == null || it.endTime != null || it.timerNextCommandSequence != sequence }
+        } ?: return
+        if (observed.endTime == null || observed.timerNextCommandSequence != sequence + 1) return
+        val completed = sessions.exclusive { database.withTransaction {
+            legacyWidgets.requireIdentity(claim.identity, requirePlan = false)
+            database.timeLogDao().getTimeLogByUuid(uuid)?.let { it.endTime != null && it.timerNextCommandSequence == sequence + 1 } == true
+        } }
+        if (completed) block()
     }
 
     private suspend fun validate(habitId: Long, ticket: TimerActionAuthority?) {

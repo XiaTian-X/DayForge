@@ -24,13 +24,15 @@ class WidgetTimerActionTest : NextCoreRequestFixture() {
         // Sentinel legacy cache, not a v5 local intent. The v5 producer correctly rejects
         // a missing typed plan; no accepted/switchable replica is claimed by this fixture.
         val legacyId = db.habitDao().insert(legacy)
+        val legacyClaim = LegacyWidgetTimerClaim(LegacyWidgetRestartClaim.displayed(legacy.copy(id = legacyId),
+            requireNotNull(tokens.localCoreWriteAccess())), null, null)
         val stage = tokens.replicaStageFixture(); NextReplicaWriteFence(db).acquire(stage.fence)
         suspend fun verifyClosed() {
             assertNull(writer().capture(timerHabit.id)); assertNull(writer().policy(timerHabit.id, id(20)))
             for (read in listOf<suspend () -> Unit>(
                 { writer().requireAction(original.habitId, original.authority) },
                 { writer().requireWidgetStart(original.habitId, original.authority, original.startGuard!!) },
-                { writer().legacyWidgetSwitchDisplay(legacyId) },
+                { writer().requireLegacyWidgetStart(legacyClaim) },
                 { writer().write(original.habitId, original.authority) { fail("No action body") } },
                 { writer().write(legacyId, null) { fail("No legacy action body") } }))
                 assertEquals(com.dayforge.data.local.ReplicaSwitchGuard.PENDING, rejected(read).message)

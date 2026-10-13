@@ -62,6 +62,7 @@ class WidgetFactEntryTest {
     @Inject lateinit var sessions: AccountSessionCoordinator
     @Inject lateinit var reader: WidgetFactReader
     @Inject lateinit var publisher: WidgetDisplayPublisher
+    @Inject lateinit var legacy: LegacyWidgetFactWorkflow
     private val app get() = InstrumentationRegistry.getInstrumentation().targetContext
     private val db get() = storage.database
     private val boundWidgets = mutableListOf<androidx.glance.GlanceId>()
@@ -101,7 +102,12 @@ class WidgetFactEntryTest {
             completionPolicy = if (once) "one_and_done" else "recurring", creationAuthority = creator.capture(),
             context = app.takeIf { cycles != null })
     private suspend fun claim(id: Long) = reader.read(requireNotNull(habits.getHabitById(id))).claim
-    private suspend fun await(block: suspend () -> Boolean) = withTimeout(5_000) { while (!block()) delay(20) }
+    private suspend fun await(stage: String = "widget state", block: suspend () -> Boolean) {
+        try { withTimeout(5_000) { while (!block()) delay(20) } }
+        catch (error: kotlinx.coroutines.TimeoutCancellationException) {
+            throw AssertionError("Timed out after 5000 ms waiting for $stage", error)
+        }
+    }
     private fun glanceId() = requireNotNull(GlanceAppWidgetManager(app).getGlanceIdBy(Intent().putExtra(
         AppWidgetManager.EXTRA_APPWIDGET_ID, ((System.nanoTime() and 0x1fffffff) + 1).toInt())))
     private suspend fun bind(id: androidx.glance.GlanceId, habitId: Long) {
@@ -323,5 +329,76 @@ class WidgetFactEntryTest {
         }
         assertTrue(habits.getHabitById(rowId)!!.isActive)
         assertEquals(queues, db.syncOutboxDao().getAll())
+    }
+
+    @Test fun legacyFocusPublishesOriginalFactAndDropsItAfterAuthenticationChanges() = runBlocking<Unit> {
+        val rowId = habits.createHabit("Legacy focus count", "", HabitType.COUNTING, 0, "#123456",
+            HabitSchedule.Daily, targetValue = 3, isCountdown = true, bestTime = java.time.LocalTime.now().let {
+                (it.hour * 60 + it.minute).toLong()
+            })
+        habits.logCompletion(app, rowId)
+        val focusId = glanceId()
+        boundWidgets += focusId
+        FocusWidget.refreshWidgetData(app, focusId)
+        val state = FocusWidget().getAppWidgetState<androidx.datastore.preferences.core.Preferences>(app, focusId)
+        val original = LegacyWidgetFactClaim.decode(requireNotNull(state[FocusWidget.LEGACY_FACT_ACTION_PROOF_KEY]))
+        assertEquals(rowId, original.identity.habitId)
+        assertEquals(requireNotNull(habits.getHabitById(rowId)).uuid, original.identity.habitUuid)
+        assertEquals(1L, original.todayQuantity)
+        assertEquals(original.todayQuantity, state[FocusWidget.PRIMARY_ACTUAL_COUNT_KEY])
+        val before = db.withTransaction { nextRestartDatabaseProof(db) }
+        sessions.exclusive { tokens.saveLoginSession("renewed", "renewed-refresh", "member", id(1), false) }
+        com.dayforge.widget.checkin.CheckInActionCallback().onAction(app, focusId,
+            androidx.glance.action.actionParametersOf(
+                androidx.glance.action.ActionParameters.Key<Long>("habitId") to rowId,
+                androidx.glance.action.ActionParameters.Key<String>("action") to "decrement",
+                com.dayforge.widget.checkin.CheckInActionCallback.LEGACY_PROOF to original.forAction("decrement").encode()))
+        assertEquals(before, db.withTransaction { nextRestartDatabaseProof(db) })
+    }
+
+    @Test fun legacyGoalConfirmationAndLateMetricIntentRetainOriginalAccount() = runBlocking<Unit> {
+        val rowId = habits.createHabit("Legacy goal check", "", HabitType.CHECK_IN, 0, "#123456",
+            HabitSchedule.Daily, targetCycles = 1, failMode = FailMode.STRICT)
+        suspend fun identity() = sessions.exclusive { db.withTransaction {
+            LegacyWidgetRestartClaim.displayed(requireNotNull(habits.getHabitById(rowId)), requireNotNull(tokens.localCoreWriteAccess()))
+        } }
+        val original = identity()
+        assertTrue(legacy.perform(app, legacy.capture(original).forAction("toggle")).result.goalReached)
+        fun intent(identity: LegacyWidgetRestartClaim) = GoalCompletionActivity.createIntent(app, rowId, "ignored", 1, 1,
+            legacyIdentity = identity)
+        val confirm = app.getString(R.string.action_confirm_complete)
+        fun awaitConfirm() = compose.waitUntil(5_000) {
+            compose.onAllNodes(androidx.compose.ui.test.hasText(confirm)).fetchSemanticsNodes(atLeastOneRootRequired = false).isNotEmpty()
+        }
+        ActivityScenario.launch<GoalCompletionActivity>(intent(original)).use { scenario ->
+            awaitConfirm()
+            sessions.exclusive { tokens.saveLoginSession("new-access", "new-refresh", "member", id(1), false) }
+            await("legacy goal dismissal after reauthentication") {
+                scenario.state == androidx.lifecycle.Lifecycle.State.DESTROYED
+            }
+        }
+        assertTrue(requireNotNull(habits.getHabitById(rowId)).isActive)
+        val before = db.withTransaction { nextRestartDatabaseProof(db) }
+        val staleMetric = com.dayforge.widget.checkin.MetricPromptActivity.createIntent(app, rowId, "old",
+            legacyIdentity = original)
+        ActivityScenario.launch<com.dayforge.widget.checkin.MetricPromptActivity>(staleMetric).use { scenario ->
+            await("stale legacy metric prompt dismissal") {
+                // The Activity rejects this source in LaunchedEffect. runBlocking.delay alone
+                // does not advance the Compose rule's StandardTestDispatcher; drain on Main.
+                InstrumentationRegistry.getInstrumentation().runOnMainSync { effects.scheduler.runCurrent() }
+                scenario.state == androidx.lifecycle.Lifecycle.State.DESTROYED
+            }
+        }
+        assertEquals(before, db.withTransaction { nextRestartDatabaseProof(db) })
+        ActivityScenario.launch<GoalCompletionActivity>(intent(identity())).use { scenario ->
+            awaitConfirm()
+            compose.onNodeWithText(confirm).performClick()
+            await("legacy goal dismissal after confirmed completion") {
+                scenario.state == androidx.lifecycle.Lifecycle.State.DESTROYED
+            }
+        }
+        assertFalse(requireNotNull(habits.getHabitById(rowId)).isActive)
+        assertEquals(1, db.completionDao().getByHabitOnce(rowId).size)
+        assertTrue(db.syncOutboxDao().getAll().any { it.recordType == "habit" })
     }
 }

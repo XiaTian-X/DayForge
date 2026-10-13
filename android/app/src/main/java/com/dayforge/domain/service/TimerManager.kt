@@ -138,7 +138,8 @@ class TimerManager @Inject constructor(
                 policy?.targetSeconds?.div(60) ?: targetMinutes,
                 seconds,
                 isCountdown,
-                authority
+                authority,
+                if (authority == null) requireNotNull(timerWriter).captureLegacyConfirmation(requireNotNull(habit), activeLog) else null
             )
             context.startActivity(intent)
             return null

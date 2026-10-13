@@ -75,6 +75,7 @@ class CountingWidget : GlanceAppWidget() {
         val BACKGROUND_COLOR_KEY = intPreferencesKey("backgroundColor")
         val TEXT_COLOR_KEY = intPreferencesKey("textColor")
         val ACTION_PROOF_KEY = stringPreferencesKey("factActionProof")
+        val LEGACY_ACTION_PROOF_KEY = stringPreferencesKey("legacyFactActionProof")
         val LEGACY_RESTART_PROOF_KEY = stringPreferencesKey("legacyRestartProof")
         val READ_FAILED_KEY = booleanPreferencesKey("readFailed")
 
@@ -94,6 +95,7 @@ class CountingWidget : GlanceAppWidget() {
                         prefs[READ_FAILED_KEY] = true
                         prefs[DATA_LOADED_KEY] = false
                         prefs.remove(ACTION_PROOF_KEY)
+                        prefs.remove(LEGACY_ACTION_PROOF_KEY)
                         prefs.remove(LEGACY_RESTART_PROOF_KEY)
                     }
                 }
@@ -116,11 +118,14 @@ class CountingWidget : GlanceAppWidget() {
                         prefs[DATA_LOADED_KEY] = true
                         prefs[READ_FAILED_KEY] = false
                         prefs.remove(ACTION_PROOF_KEY)
+                        prefs.remove(LEGACY_ACTION_PROOF_KEY)
                         prefs.remove(LEGACY_RESTART_PROOF_KEY)
                     }
                 }
             }
 
+            val displayZone = java.time.ZoneId.systemDefault()
+            val displayDate = java.time.LocalDate.now(displayZone)
             val stats = com.dayforge.di.WidgetEntryPoint.calculator(appContext, database).calculate(habit)
             val typed = if (habit.appearance != null) com.dayforge.di.WidgetEntryPoint.from(appContext)
                 .factReader().read(habit) else null
@@ -146,7 +151,11 @@ class CountingWidget : GlanceAppWidget() {
             // Failed status check
             val hasFailed = stats.hasFailed
 
-            val legacyProof = publication.legacyRestartClaim(habit)?.encode()
+            val legacyIdentity = publication.legacyRestartClaim(habit)
+            val legacyFact = legacyIdentity?.let { com.dayforge.di.WidgetEntryPoint.from(appContext).legacyFactWorkflow().capture(it) }
+            legacyFact?.let { check(it.todayQuantity == stats.actualTodayCount && it.date == displayDate.toString() &&
+                it.timezone == displayZone.id) { "LEGACY_WIDGET_STALE_DISPLAY" } }
+            val legacyProof = legacyIdentity?.encode()
             return suspend {
                 // Pre-compute widget colors using WidgetColorResolver
                 // Per WIDGET-COLOR-01, WIDGET-COLOR-06: Colors must be pre-calculated before rendering
@@ -157,6 +166,7 @@ class CountingWidget : GlanceAppWidget() {
                 updateAppWidgetState(appContext, glanceId) { prefs ->
                     publication.stampFrame(prefs)
                     if (typed != null) prefs[ACTION_PROOF_KEY] = typed.claim.encode() else prefs.remove(ACTION_PROOF_KEY)
+                    if (legacyFact != null) prefs[LEGACY_ACTION_PROOF_KEY] = legacyFact.encode() else prefs.remove(LEGACY_ACTION_PROOF_KEY)
                     if (legacyProof != null) prefs[LEGACY_RESTART_PROOF_KEY] = legacyProof else prefs.remove(LEGACY_RESTART_PROOF_KEY)
                     prefs[READ_FAILED_KEY] = false
                     prefs[HABIT_ID_KEY] = habitId
@@ -247,6 +257,7 @@ class CountingWidget : GlanceAppWidget() {
                         hasFailed = hasFailed,
                         isGoalReached = isGoalReached,
                         actionProof = state[ACTION_PROOF_KEY],
+                        legacyActionProof = state[LEGACY_ACTION_PROOF_KEY],
                         legacyProof = state[LEGACY_RESTART_PROOF_KEY]
                     )
                 }
@@ -272,6 +283,7 @@ class CountingWidget : GlanceAppWidget() {
         actualCount: Long = completedToday.toLong(),
         countRuleKnown: Boolean = true,
         actionProof: String? = null,
+        legacyActionProof: String? = null,
         legacyProof: String? = null
     ) {
         val context = LocalContext.current
@@ -446,7 +458,7 @@ class CountingWidget : GlanceAppWidget() {
                             Button(
                                 text = context.getString(R.string.action_check_in),
                                 onClick = com.dayforge.widget.checkin.widgetFactAction(context, habitId,
-                                    if (isCountdown) "decrement" else "increment", actionProof),
+                                    if (isCountdown) "decrement" else "increment", actionProof, legacyActionProof),
                                 modifier = GlanceModifier.height(36.dp)
                             )
                             Spacer(modifier = GlanceModifier.width(8.dp))

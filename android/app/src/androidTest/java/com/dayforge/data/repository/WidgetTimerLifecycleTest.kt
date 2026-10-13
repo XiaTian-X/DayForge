@@ -73,6 +73,7 @@ class WidgetTimerLifecycleTest {
     private suspend fun seedOldProof(key: GlanceId) = updateAppWidgetState(app, key) {
         it[TimerWidget.ACTION_PROOF_KEY] = "old proof"
         it[TimerWidget.LEGACY_RESTART_PROOF_KEY] = "old legacy proof"
+        it[TimerWidget.LEGACY_ACTION_PROOF_KEY] = "old legacy timer claim"
         it[TimerWidget.TICK_PLAN_KEY] = "old plan"; it[TimerWidget.TICK_LOG_HASH_KEY] = "old hash"
         it[TimerWidget.TICK_DATE_KEY] = "old date"; it[TimerWidget.TICK_ZONE_KEY] = "old zone"
         it[TimerWidget.TICK_COMPLETED_SECONDS_KEY] = 99; it[TimerWidget.READ_FAILED_KEY] = true
@@ -93,6 +94,7 @@ class WidgetTimerLifecycleTest {
         assertEquals(true, deleted[TimerWidget.IS_DELETED_KEY]); assertEquals(true, deleted[TimerWidget.DATA_LOADED_KEY])
         assertEquals(false, deleted[TimerWidget.READ_FAILED_KEY]); assertNoActionOrTick(deleted)
         assertNull(deleted[TimerWidget.LEGACY_RESTART_PROOF_KEY])
+        assertNull(deleted[TimerWidget.LEGACY_ACTION_PROOF_KEY])
         assertEquals(before, proof())
         val habitId = create(typed = false)
         bindWidgetSelection(app, key, habitId)
@@ -103,6 +105,11 @@ class WidgetTimerLifecycleTest {
         assertEquals(false, loaded[TimerWidget.READ_FAILED_KEY]); assertEquals(1, loaded[TimerWidget.TARGET_MINUTES_KEY])
         assertEquals(true, loaded[TimerWidget.IS_COUNTDOWN_KEY]); assertNoActionOrTick(loaded)
         assertEquals(habitId, LegacyWidgetRestartClaim.decode(requireNotNull(loaded[TimerWidget.LEGACY_RESTART_PROOF_KEY])).habitId)
+        val legacyAction = LegacyWidgetTimerClaim.decode(requireNotNull(loaded[TimerWidget.LEGACY_ACTION_PROOF_KEY]))
+        assertEquals(habitId, legacyAction.identity.habitId)
+        assertEquals(requireNotNull(tokens.localCoreWriteAccess()).session, legacyAction.identity.session())
+        assertNull(legacyAction.sessionUuid)
+        assertNull(legacyAction.incumbent)
         assertEquals(current, proof())
     }
 
@@ -121,12 +128,14 @@ class WidgetTimerLifecycleTest {
         assertEquals(true, failed[TimerWidget.READ_FAILED_KEY]); assertEquals(false, failed[TimerWidget.DATA_LOADED_KEY])
         assertEquals(false, failed[TimerWidget.IS_DELETED_KEY]); assertNoActionOrTick(failed)
         assertNull(failed[TimerWidget.LEGACY_RESTART_PROOF_KEY])
+        assertNull(failed[TimerWidget.LEGACY_ACTION_PROOF_KEY])
         assertEquals(before, proof())
         HabitDatabaseProvider.setInstanceForTesting(db)
         TimerWidget.refreshWidgetData(app, key, habitId)
         assertEquals(false, state(key)[TimerWidget.READ_FAILED_KEY]); assertEquals(row.name, state(key)[TimerWidget.HABIT_NAME_KEY])
         assertNotNull(state(key)[TimerWidget.ACTION_PROOF_KEY]); assertEquals(before, proof())
         assertNull(state(key)[TimerWidget.LEGACY_RESTART_PROOF_KEY])
+        assertNull(state(key)[TimerWidget.LEGACY_ACTION_PROOF_KEY])
     }
 
     @Test fun oldDeletedLegacyHealthyAndSourceErrorCannotOverwriteReplacementAccount() = runBlocking<Unit> {

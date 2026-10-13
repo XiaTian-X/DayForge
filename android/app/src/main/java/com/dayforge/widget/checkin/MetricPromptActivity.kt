@@ -29,18 +29,18 @@ class MetricPromptActivity : ComponentActivity() {
     @Inject
     lateinit var metricCoordinator: LinkedMetricCoordinator
 
-    @Inject lateinit var habits: com.dayforge.data.repository.HabitRepository
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         val habitId = intent.getLongExtra(EXTRA_HABIT_ID, -1L)
-        val habitName = intent.getStringExtra(EXTRA_HABIT_NAME) ?: "Habit"
         val timerAuthority = try { com.dayforge.domain.model.TimerActionAuthority.read(intent) }
             catch (error: Exception) { finish(); return }
         val factClaim = try { com.dayforge.data.repository.WidgetFactClaim.read(intent) }
             catch (error: Exception) { finish(); return }
-        if (timerAuthority != null && factClaim != null) { finish(); return }
+        val legacy = try { com.dayforge.data.repository.LegacyWidgetIdentityIntent.read(intent) }
+            catch (error: Exception) { finish(); return }
+        if (listOfNotNull(timerAuthority, factClaim, legacy).size != 1 ||
+            (legacy != null && legacy.habitId != habitId)) { finish(); return }
 
         if (habitId == -1L) {
             finish()
@@ -49,11 +49,14 @@ class MetricPromptActivity : ComponentActivity() {
 
         setContent {
             val state by metricCoordinator.postCheckInState.collectAsState()
+            val ownedState = state?.takeIf {
+                it.habitId == habitId && (legacy == null || it.preferenceClaim?.widgetIdentity == legacy)
+            }
             var hadPrompt by remember { mutableStateOf(false) }
             LaunchedEffect(state) {
                 if (state != null) {
                     hadPrompt = true
-                    if (state?.habitId != habitId) finish()
+                    if (ownedState == null) finish()
                 } else if (hadPrompt) finish()
             }
 
@@ -64,10 +67,7 @@ class MetricPromptActivity : ComponentActivity() {
                         metricCoordinator.showWidgetFactPrompt(factClaim)
                     } else if (timerAuthority?.sessionUuid != null) metricCoordinator.showPromptAfterTimerStop(habitId, timerAuthority)
                     else if (timerAuthority != null) metricCoordinator.showPendingTimerWidgetPrompt(habitId, timerAuthority)
-                    else {
-                        check(habits.getHabitById(habitId)?.appearance == null) { "FACT_WIDGET_CLAIM_REQUIRED" }
-                        metricCoordinator.showPromptIfNeeded(habitId, habitName)
-                    }
+                    else metricCoordinator.showLegacyWidgetPrompt(requireNotNull(legacy))
                     if (metricCoordinator.postCheckInState.value == null) finish()
                 } catch (error: Exception) {
                     if (error is CancellationException) throw error
@@ -78,7 +78,7 @@ class MetricPromptActivity : ComponentActivity() {
 
             // Effects stay outside the palette gate: retrying a theme cannot reopen/reset a prompt.
             WidgetActivityTheme(this) {
-                state?.takeIf { it.habitId == habitId }?.let { prompt ->
+                ownedState?.let { prompt ->
                     // PostCheckInDialog is already an AlertDialog, no need to wrap in Dialog
                     PostCheckInDialog(
                         habitName = prompt.habitName,
@@ -159,7 +159,8 @@ class MetricPromptActivity : ComponentActivity() {
          */
         fun createIntent(context: android.content.Context, habitId: Long, habitName: String,
             timerAuthority: com.dayforge.domain.model.TimerActionAuthority? = null,
-            factClaim: com.dayforge.data.repository.WidgetFactClaim? = null): Intent {
+            factClaim: com.dayforge.data.repository.WidgetFactClaim? = null,
+            legacyIdentity: com.dayforge.data.repository.LegacyWidgetRestartClaim? = null): Intent {
             return Intent(context, MetricPromptActivity::class.java).apply {
                 putExtra(EXTRA_HABIT_ID, habitId)
                 putExtra(EXTRA_HABIT_NAME, habitName)
@@ -167,6 +168,7 @@ class MetricPromptActivity : ComponentActivity() {
                 addFlags(Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
                 timerAuthority?.attach(this)
                 factClaim?.attach(this)
+                legacyIdentity?.let { com.dayforge.data.repository.LegacyWidgetIdentityIntent.attach(this, it) }
             }
         }
     }

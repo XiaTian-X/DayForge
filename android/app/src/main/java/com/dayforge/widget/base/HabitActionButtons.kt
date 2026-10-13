@@ -15,7 +15,6 @@ import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import com.dayforge.R
 import com.dayforge.widget.checkin.CheckInActionCallback
-import com.dayforge.widget.focus.TimerStartCallback
 
 /**
  * Shared action button composables for habit widgets.
@@ -47,7 +46,8 @@ object HabitActionButtons {
         habitId: Long,
         isCompleted: Boolean,
         modifier: GlanceModifier = GlanceModifier.height(40.dp),
-        actionProof: String? = null
+        actionProof: String? = null,
+        legacyActionProof: String? = null
     ) {
         val context = LocalContext.current
         Button(
@@ -56,7 +56,7 @@ object HabitActionButtons {
             } else {
                 context.getString(R.string.action_check_in)
             },
-            onClick = com.dayforge.widget.checkin.widgetFactAction(context, habitId, "toggle", actionProof),
+            onClick = com.dayforge.widget.checkin.widgetFactAction(context, habitId, "toggle", actionProof, legacyActionProof),
             modifier = modifier
         )
     }
@@ -77,14 +77,13 @@ object HabitActionButtons {
         targetMinutes: Int,
         isTimerActive: Boolean = false,
         actionProof: String? = null,
-        modifier: GlanceModifier = GlanceModifier.height(36.dp)
+        modifier: GlanceModifier = GlanceModifier.height(36.dp),
+        legacyActionProof: String? = null
     ) {
         val context = LocalContext.current
 
-        val startAction = if (actionProof != null) com.dayforge.widget.timer.widgetTimerAction(context, habitId, targetMinutes, "start", actionProof)
-            else actionRunCallback<TimerStartCallback>(actionParametersOf(
-                ActionParameters.Key<Long>("habitId") to habitId,
-                ActionParameters.Key<Int>("targetMinutes") to targetMinutes))
+        val startAction = com.dayforge.widget.timer.widgetTimerAction(
+            context, habitId, targetMinutes, "start", actionProof, legacyActionProof)
         if (isTimerActive) {
             // Timer running: show disabled "正在计时..." button
             Button(

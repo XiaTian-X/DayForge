@@ -109,6 +109,8 @@ class FocusWidget : GlanceAppWidget() {
         val READ_FAILED_KEY = booleanPreferencesKey("timerReadFailed")
         val TIMER_ACTION_PROOF_KEY = stringPreferencesKey("timerActionProof")
         val FACT_ACTION_PROOF_KEY = stringPreferencesKey("factActionProof")
+        val LEGACY_FACT_ACTION_PROOF_KEY = stringPreferencesKey("legacyFactActionProof")
+        val LEGACY_TIMER_ACTION_PROOF_KEY = stringPreferencesKey("legacyTimerActionProof")
         val LEGACY_RESTART_PROOF_KEY = stringPreferencesKey("legacyRestartProof")
 
         /**
@@ -148,6 +150,8 @@ class FocusWidget : GlanceAppWidget() {
                         prefs[READ_FAILED_KEY] = true
                         prefs.remove(TIMER_ACTION_PROOF_KEY)
                         prefs.remove(FACT_ACTION_PROOF_KEY)
+                        prefs.remove(LEGACY_FACT_ACTION_PROOF_KEY)
+                        prefs.remove(LEGACY_TIMER_ACTION_PROOF_KEY)
                         prefs.remove(LEGACY_RESTART_PROOF_KEY)
                     }
                 }
@@ -258,7 +262,19 @@ class FocusWidget : GlanceAppWidget() {
                         view.count.todayPolicy?.targetValue == stats.displayTargetValue &&
                         view.count.todayPolicy?.isCountdown == stats.displayIsCountdown))) { "FACT_WIDGET_STALE_DISPLAY" }
             }
-            val legacyProof = primaryOriginal?.let { publication.legacyRestartClaim(it)?.encode() }
+            val legacyIdentity = primaryOriginal?.let { publication.legacyRestartClaim(it) }
+            val legacyFact = legacyIdentity?.takeIf { primaryOriginal?.habitType in setOf(HabitType.CHECK_IN, HabitType.COUNTING) }
+                ?.let { com.dayforge.di.WidgetEntryPoint.from(appContext).legacyFactWorkflow().capture(it) }
+            legacyFact?.let {
+                check(it.todayQuantity == requireNotNull(primaryStats).actualTodayCount &&
+                    it.date == currentTime.toLocalDate().toString() && it.timezone == currentTime.zone.id) {
+                    "LEGACY_WIDGET_STALE_DISPLAY"
+                }
+            }
+            val legacyTimer = legacyIdentity?.takeIf { primaryOriginal?.habitType == HabitType.TIMER }
+                ?.let { com.dayforge.di.WidgetEntryPoint.from(appContext).timerWriter().captureLegacyWidget(
+                    it, activeTimeLog?.takeIf { log -> log.habitId == it.habitId }) }
+            val legacyProof = legacyIdentity?.encode()
             return PreparedDisplay(activeTimeLog != null, suspend {
                 val themes = DeviceThemeControllerEntryPoint.from(appContext).themeController()
                 val widgetColorResolver = WidgetColorResolver(appContext, themes)
@@ -272,6 +288,10 @@ class FocusWidget : GlanceAppWidget() {
                     else prefs.remove(TIMER_ACTION_PROOF_KEY)
                     if (primaryFactSnapshot != null) prefs[FACT_ACTION_PROOF_KEY] = primaryFactSnapshot.claim.encode()
                     else prefs.remove(FACT_ACTION_PROOF_KEY)
+                    if (legacyFact != null) prefs[LEGACY_FACT_ACTION_PROOF_KEY] = legacyFact.encode()
+                    else prefs.remove(LEGACY_FACT_ACTION_PROOF_KEY)
+                    if (legacyTimer != null) prefs[LEGACY_TIMER_ACTION_PROOF_KEY] = legacyTimer.encode()
+                    else prefs.remove(LEGACY_TIMER_ACTION_PROOF_KEY)
                     if (legacyProof != null) prefs[LEGACY_RESTART_PROOF_KEY] = legacyProof else prefs.remove(LEGACY_RESTART_PROOF_KEY)
 
                     if (primary != null) {
@@ -719,7 +739,7 @@ class FocusWidget : GlanceAppWidget() {
                         Button(
                             text = context.getString(com.dayforge.R.string.action_check_in),
                             onClick = com.dayforge.widget.checkin.widgetFactAction(context, habitId,
-                                if (isCountdown) "decrement" else "increment", state[FACT_ACTION_PROOF_KEY]),
+                                if (isCountdown) "decrement" else "increment", state[FACT_ACTION_PROOF_KEY], state[LEGACY_FACT_ACTION_PROOF_KEY]),
                             modifier = GlanceModifier.height(36.dp)
                         )
                         Spacer(modifier = GlanceModifier.width(8.dp))
@@ -738,14 +758,16 @@ class FocusWidget : GlanceAppWidget() {
                         habitId = habitId,
                         targetMinutes = targetValue,
                         isTimerActive = isTimerActive,
-                        actionProof = state[TIMER_ACTION_PROOF_KEY]
+                        actionProof = state[TIMER_ACTION_PROOF_KEY],
+                        legacyActionProof = state[LEGACY_TIMER_ACTION_PROOF_KEY]
                     )
                 } else if (isCheckInAllowed) {
                     // CHECK_IN type or AfterWindow (allow makeup check-in)
                     HabitActionButtons.CheckInButton(
                         habitId = habitId,
                         isCompleted = isCompleted,
-                        actionProof = state[FACT_ACTION_PROOF_KEY]
+                        actionProof = state[FACT_ACTION_PROOF_KEY],
+                        legacyActionProof = state[LEGACY_FACT_ACTION_PROOF_KEY]
                     )
                 } else if (matchType == "AfterWindow") {
                     // AfterWindow but not failed/completed and not in check-in window

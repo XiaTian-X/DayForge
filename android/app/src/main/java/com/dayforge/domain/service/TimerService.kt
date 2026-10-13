@@ -20,6 +20,8 @@ import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.data.local.entity.TimerCommandEntity
 import com.dayforge.data.local.entity.TimerSegmentEntity
 import com.dayforge.data.repository.NextTimerWriter
+import com.dayforge.data.repository.LegacyWidgetTimerClaim
+import com.dayforge.data.repository.LegacyWidgetRestartClaim
 import com.dayforge.domain.model.TimerActionAuthority
 import kotlinx.coroutines.CancellationException
 import com.dayforge.util.DateTimeUtils
@@ -135,6 +137,8 @@ class TimerService : Service() {
     private var lastHeartbeatAttemptAt: Long = 0L
     private var activeAuthority: TimerActionAuthority? = null
     private var actionAuthority: TimerActionAuthority? = null
+    private var activeLegacyWidget: LegacyWidgetTimerClaim? = null
+    private var actionLegacyWidget: LegacyWidgetTimerClaim? = null
     private var maximumDurationSeconds: Int? = null
 
     private lateinit var notificationManager: NotificationManager
@@ -153,13 +157,20 @@ class TimerService : Service() {
         // persisted state has been restored on the IO dispatcher.
         startForegroundWithNotification()
         val action = intent?.action
+        val hasLegacyWidgetClaim = LegacyWidgetTimerClaim.isPresent(intent)
         val expectedHabitId = intent?.getLongExtra(EXTRA_HABIT_ID, 0L)?.takeIf { it > 0 }
         serviceScope.launch {
             commandMutex.withLock {
                 runCatching {
+                    val knownAction = action in setOf(ACTION_START, ACTION_PAUSE, ACTION_RESUME, ACTION_STOP, ACTION_DISCARD)
+                    // A malformed or misrouted explicit claim is never a system recovery entry.
+                    require(!hasLegacyWidgetClaim || knownAction) { "LEGACY_WIDGET_TIMER_ACTION_REQUIRED" }
                     actionAuthority = TimerActionAuthority.read(intent)
-                    if (action in setOf(ACTION_START, ACTION_PAUSE, ACTION_RESUME, ACTION_STOP, ACTION_DISCARD))
-                        timerWriter.requireAction(requireNotNull(expectedHabitId), actionAuthority)
+                    actionLegacyWidget = LegacyWidgetTimerClaim.read(intent)
+                    require(!hasLegacyWidgetClaim || actionLegacyWidget != null) { "LEGACY_WIDGET_TIMER_CLAIM_REQUIRED" }
+                    require(actionAuthority == null || actionLegacyWidget == null)
+                    if (knownAction)
+                        timerWriter.requireAction(requireNotNull(expectedHabitId), actionAuthority, actionLegacyWidget)
                     when (action) {
                         ACTION_START -> handleStart(intent)
                         ACTION_PAUSE -> handlePause(expectedHabitId)
@@ -172,7 +183,16 @@ class TimerService : Service() {
                 }.onFailure { error ->
                     if (error is CancellationException) throw error
                     Log.e(TAG, "Timer command failed: $action", error)
-                    stopIfNoPersistedTimer()
+                    // A rejected widget command does not become the owner of a different persisted timer.
+                    actionAuthority = null
+                    actionLegacyWidget = null
+                    if (hasLegacyWidgetClaim) {
+                        preserveRunningTimerAfterRejectedWidgetCommand()
+                    } else if (action == null) {
+                        // Failed current-owner recovery must not fall through to an unbound recovery.
+                        clearState()
+                        stopServiceAndClearNotification()
+                    } else stopIfNoPersistedTimer()
                 }
             }
         }
@@ -257,10 +277,12 @@ class TimerService : Service() {
 
     private fun launchTerminalStop() {
         val capturedAuthority = activeAuthority
+        val capturedLegacy = activeLegacyWidget
         val capturedHabitId = habitId
         serviceScope.launch {
             commandMutex.withLock {
                 actionAuthority = capturedAuthority
+                actionLegacyWidget = capturedLegacy
                 runCatching { handleStop(capturedHabitId.takeIf { it > 0 }) }
                     .onFailure { if (it is CancellationException) throw it; Log.e(TAG, "Automatic timer stop failed", it); stopServiceAndClearNotification() }
             }
@@ -338,6 +360,7 @@ class TimerService : Service() {
         }
         val widgetGuard = com.dayforge.domain.model.TimerStartGuard.read(intent)
         if (widgetGuard != null) timerWriter.requireWidgetStart(requestedHabitId, requireNotNull(actionAuthority), widgetGuard)
+        actionLegacyWidget?.let { timerWriter.requireLegacyWidgetStart(it) }
 
         // Recovery must win over the daily-completion guard. Otherwise a
         // process-recreated timer can be orphaned merely because an earlier
@@ -383,6 +406,9 @@ class TimerService : Service() {
 
         if (existingLog != null) {
             interruptTimer(existingLog, widgetGuard?.incumbent)
+            // Only consume the incumbent after its exact original session has committed its terminal transition.
+            // Keep the original requested identity; the final START transaction still requires global absence.
+            actionLegacyWidget = actionLegacyWidget?.copy(incumbent = null)
         }
 
         habitId = requestedHabitId
@@ -404,7 +430,7 @@ class TimerService : Service() {
         val sessionUuid = UUID.randomUUID().toString()
         timerSessionUuid = sessionUuid
         val capturedTimezone = requireNotNull(timerTimezone)
-        currentLogId = timerWriter.write(habitId, actionAuthority) { timeLogDao.insertSyncedTimer(
+        currentLogId = timerWriter.write(habitId, actionAuthority, actionLegacyWidget) { timeLogDao.insertSyncedTimer(
             TimeLogEntity(
                 habitId = habitId,
                 startTime = startTime,
@@ -438,7 +464,8 @@ class TimerService : Service() {
                 startedAt = startTime
             )
         ) }
-        activeAuthority = timerWriter.capture(habitId)
+        activeAuthority = if (actionLegacyWidget != null) null else timerWriter.capture(habitId)
+        activeLegacyWidget = actionLegacyWidget?.running(sessionUuid, nextCommandSequence)
         maximumDurationSeconds = timerWriter.policy(habitId, sessionUuid)?.maxDurationSeconds
         updateNotification()
         autoSyncCoordinator.enqueueNow()
@@ -447,6 +474,13 @@ class TimerService : Service() {
 
     private suspend fun recoverPersistedTimer() {
         val existingLog = timeLogDao.getActiveTimeLog()
+        if (existingLog != null) {
+            val currentHabit = requireNotNull(habitDao.getHabitById(existingLog.habitId))
+            if (currentHabit.appearance == null) {
+                // A system restart is a distinct current-owner entry, never a retry that upgrades an old widget claim.
+                actionLegacyWidget = timerWriter.captureLegacyConfirmation(currentHabit, existingLog)
+            }
+        }
         if (existingLog == null || !restoreState(existingLog)) {
             stopServiceAndClearNotification()
             return
@@ -463,7 +497,10 @@ class TimerService : Service() {
         targetMinutes = policy?.targetSeconds?.div(60) ?: habit.targetValue
         isCountdown = policy?.isCountdown ?: habit.isCountdown
         maximumDurationSeconds = policy?.maxDurationSeconds
-        activeAuthority = timerWriter.capture(log.habitId)
+        activeLegacyWidget = (actionLegacyWidget ?: activeLegacyWidget)?.takeIf {
+            it.identity.habitId == log.habitId && it.sessionUuid == log.uuid
+        }
+        activeAuthority = if (activeLegacyWidget != null) null else timerWriter.capture(log.habitId)
         startTime = log.startTime
         isPaused = log.isPaused
         pausedAt = log.pausedAt
@@ -483,7 +520,8 @@ class TimerService : Service() {
 
     private suspend fun ensureRestoredState(expectedHabitId: Long?): Boolean {
         val inMemoryMatches = currentLogId > 0L && timerSessionUuid != null &&
-            (expectedHabitId == null || habitId == expectedHabitId)
+            (expectedHabitId == null || habitId == expectedHabitId) &&
+            (actionLegacyWidget == null || actionLegacyWidget?.sessionUuid == timerSessionUuid)
         if (inMemoryMatches) return true
 
         val active = timeLogDao.getActiveTimeLog() ?: return false
@@ -498,7 +536,9 @@ class TimerService : Service() {
         val interruptedHabit = habitDao.getHabitByIdSync(log.habitId)
         val policy = timerWriter.policy(log.habitId, log.uuid)
         val oldAction = actionAuthority
+        val oldLegacy = actionLegacyWidget
         actionAuthority = capturedIncumbent ?: timerWriter.capture(log.habitId)
+        actionLegacyWidget = oldLegacy?.incumbentClaim()
         check(oldAction == null || actionAuthority?.session() == oldAction.session()) { "TIMER_INTERRUPTION_STALE_ACCOUNT" }
         val elapsedSeconds = calculateElapsedSecondsForLog(log)
         val targetSeconds = policy?.targetSeconds ?: ((interruptedHabit?.targetValue ?: 0) * 60)
@@ -509,15 +549,16 @@ class TimerService : Service() {
             val safeElapsed = elapsedSeconds.coerceAtMost(
                 policy?.maxDurationSeconds ?: calculateSafeDurationLimit(false, interruptedHabit?.targetValue ?: 0)
             )
-            finishInterruptedTimer(log, safeElapsed)
+            finishInterruptedTimer(log, safeElapsed, oldLegacy)
         } else {
-            cancelInterruptedTimer(log)
+            cancelInterruptedTimer(log, oldLegacy)
         }
         notifyWidgetUpdate(log.habitId)
         tickerJob?.cancel()
         tickerJob = null
         clearState()
         actionAuthority = oldAction
+        actionLegacyWidget = oldLegacy
     }
 
     /**
@@ -528,7 +569,8 @@ class TimerService : Service() {
         return TimerElapsedCalculator.elapsedSeconds(log, this)
     }
 
-    private suspend fun finishInterruptedTimer(log: TimeLogEntity, durationSeconds: Int) {
+    private suspend fun finishInterruptedTimer(log: TimeLogEntity, durationSeconds: Int,
+        legacySwitchTarget: LegacyWidgetTimerClaim? = null) {
         val endTime = if (!log.isPaused) {
             val segments = timeLogDao.getTimerSegments(log.uuid)
             val closedDuration = segments.sumOf { segment ->
@@ -543,7 +585,7 @@ class TimerService : Service() {
         } else {
             maxOf(System.currentTimeMillis(), (log.timerLastCommandAt ?: log.startTime) + 1)
         }
-        timerWriter.write(log.habitId, actionAuthority) { timeLogDao.finishTimerAndQueue(
+        timerWriter.write(log.habitId, actionAuthority, actionLegacyWidget, legacySwitchTarget) { timeLogDao.finishTimerAndQueue(
             id = log.id,
             endTime = endTime,
             durationSeconds = durationSeconds,
@@ -576,12 +618,12 @@ class TimerService : Service() {
         timeLogDao.replaceDayAllocations(completed.uuid, allocations)
     }
 
-    private suspend fun cancelInterruptedTimer(log: TimeLogEntity) {
+    private suspend fun cancelInterruptedTimer(log: TimeLogEntity, legacySwitchTarget: LegacyWidgetTimerClaim? = null) {
         val commandAt = maxOf(
             System.currentTimeMillis(),
             (log.timerLastCommandAt ?: log.startTime) + 1
         )
-        timerWriter.write(log.habitId, actionAuthority) { timeLogDao.deleteTimerAndQueue(
+        timerWriter.write(log.habitId, actionAuthority, actionLegacyWidget, legacySwitchTarget) { timeLogDao.deleteTimerAndQueue(
             log,
             timerCommand(
                 log.uuid,
@@ -630,7 +672,7 @@ class TimerService : Service() {
         val commandAt = nextRunningBoundary(activeElapsed)
         val sessionUuid = requireNotNull(timerSessionUuid)
         val sequence = nextCommandSequence
-        timerWriter.write(habitId, actionAuthority) { timeLogDao.updatePauseAndQueue(
+        timerWriter.write(habitId, actionAuthority, actionLegacyWidget) { timeLogDao.updatePauseAndQueue(
             id = currentLogId,
             isPaused = true,
             pausedAt = commandAt,
@@ -652,7 +694,9 @@ class TimerService : Service() {
         isPaused = true
         pausedAt = commandAt
         nextCommandSequence = sequence + 1
-        activeAuthority = timerWriter.capture(habitId)
+        activeAuthority = if (actionLegacyWidget != null) null else timerWriter.capture(habitId)
+        // A successful ordinary App control explicitly takes over its existing v4 path.
+        activeLegacyWidget = actionLegacyWidget?.running(sessionUuid, nextCommandSequence)
         notifyWidgetUpdate()
         autoSyncCoordinator.enqueueNow()
         updateNotification()
@@ -673,7 +717,7 @@ class TimerService : Service() {
         val resumedBootCount = currentBootCount()
         val sessionUuid = requireNotNull(timerSessionUuid)
         val sequence = nextCommandSequence
-        timerWriter.write(habitId, actionAuthority) { timeLogDao.updatePauseAndQueue(
+        timerWriter.write(habitId, actionAuthority, actionLegacyWidget) { timeLogDao.updatePauseAndQueue(
             id = currentLogId,
             isPaused = false,
             pausedAt = null,
@@ -697,7 +741,8 @@ class TimerService : Service() {
         elapsedRealtimeAnchor = resumedElapsedAnchor
         timerBootCount = resumedBootCount
         nextCommandSequence = sequence + 1
-        activeAuthority = timerWriter.capture(habitId)
+        activeAuthority = if (actionLegacyWidget != null) null else timerWriter.capture(habitId)
+        activeLegacyWidget = actionLegacyWidget?.running(sessionUuid, nextCommandSequence)
         notifyWidgetUpdate()
         autoSyncCoordinator.enqueueNow()
         updateNotification()
@@ -733,7 +778,12 @@ class TimerService : Service() {
                 targetMinutes,
                 remainingOrElapsedSeconds,
                 isCountdown,
-                actionAuthority
+                actionAuthority,
+                actionLegacyWidget ?: if (actionAuthority == null) {
+                    val log = requireNotNull(timeLogDao.getById(currentLogId))
+                    check(log.uuid == timerSessionUuid)
+                    timerWriter.captureLegacyConfirmation(requireNotNull(habitDao.getHabitById(habitId)), log)
+                } else null
             )
             startActivity(intent)
             return  // Don't stop the timer, let user decide
@@ -768,7 +818,7 @@ class TimerService : Service() {
 
             val sessionUuid = requireNotNull(timerSessionUuid)
             val sequence = nextCommandSequence
-            timerWriter.write(habitId, actionAuthority) { timeLogDao.finishTimerAndQueue(
+            timerWriter.write(habitId, actionAuthority, actionLegacyWidget) { timeLogDao.finishTimerAndQueue(
                 id = logIdToStop,
                 endTime = endTime,
                 durationSeconds = durationSeconds,
@@ -783,7 +833,7 @@ class TimerService : Service() {
             )
             persistDayAllocations(logIdToStop) }
             nextCommandSequence = sequence + 1
-            timerWriter.publishCompletion(stoppedHabitId, actionAuthority) { habit, progress ->
+            timerWriter.publishCompletion(stoppedHabitId, actionAuthority, actionLegacyWidget) { habit, progress ->
             autoSyncCoordinator.enqueueNow()
 
             // Check if this habit has linked metrics with promptOnComplete=true
@@ -793,7 +843,8 @@ class TimerService : Service() {
                 if (links.any { it.promptOnComplete }) {
                     Log.d(TAG, "Habit $stoppedHabitId has prompt metrics, adding to pending set")
                     val currentHabit = requireNotNull(habit)
-                    val preferenceSession = actionAuthority?.session() ?: requireNotNull(tokenManager.localFactAccess()).session
+                    val preferenceSession = actionAuthority?.session() ?: actionLegacyWidget?.identity?.session()
+                        ?: requireNotNull(tokenManager.localFactAccess()).session
                     preferencesManager.addPendingMetricHabit(preferenceSession, currentHabit.uuid)
                 }
             }
@@ -810,7 +861,10 @@ class TimerService : Service() {
                                 stoppedHabitId,
                                 habit.name,
                                 progress,
-                                habit.targetCycles
+                                habit.targetCycles,
+                                legacyIdentity = actionLegacyWidget?.identity ?: habit.takeIf { it.appearance == null }?.let {
+                                    LegacyWidgetRestartClaim.displayed(it, requireNotNull(tokenManager.localCoreWriteAccess()))
+                                }
                             )
                         )
                     }
@@ -853,7 +907,7 @@ class TimerService : Service() {
                     System.currentTimeMillis(),
                     (logToDelete.timerLastCommandAt ?: logToDelete.startTime) + 1
                 )
-                timerWriter.write(habitId, actionAuthority) { timeLogDao.deleteTimerAndQueue(
+                timerWriter.write(habitId, actionAuthority, actionLegacyWidget) { timeLogDao.deleteTimerAndQueue(
                     logToDelete,
                     timerCommand(
                         logToDelete.uuid,
@@ -891,6 +945,29 @@ class TimerService : Service() {
         }
     }
 
+    /** Rejection may keep an already-owned timer, but must not acquire a persisted one. */
+    private suspend fun preserveRunningTimerAfterRejectedWidgetCommand() {
+        val preserved = try {
+            val persisted = timeLogDao.getActiveTimeLog()
+            val alreadyRunning = tickerJob?.isActive == true && currentLogId > 0L && timerSessionUuid != null &&
+                persisted != null && persisted.id == currentLogId && persisted.habitId == habitId &&
+                persisted.uuid == timerSessionUuid && persisted.timerNextCommandSequence == nextCommandSequence
+            if (alreadyRunning) timerWriter.requireAction(habitId, activeAuthority, activeLegacyWidget)
+            alreadyRunning
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            Log.e(TAG, "Existing timer owner no longer valid; persistent state retained", error)
+            false
+        }
+        if (preserved) {
+            updateNotification()
+            notifyWidgetUpdate()
+        } else {
+            clearState()
+            stopServiceAndClearNotification()
+        }
+    }
+
     private fun stopServiceAndClearNotification() {
         tickerJob?.cancel()
         tickerJob = null
@@ -919,6 +996,7 @@ class TimerService : Service() {
         targetReachedNotified = false
         lastHeartbeatAttemptAt = 0L
         activeAuthority = null
+        activeLegacyWidget = null
         maximumDurationSeconds = null
     }
 
@@ -933,7 +1011,8 @@ class TimerService : Service() {
             targetMinutes = targetMinutes,
             isCountdown = isCountdown,
             habitId = habitId,
-            authority = activeAuthority
+            authority = activeAuthority,
+            legacyWidget = activeLegacyWidget
         )
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -959,7 +1038,8 @@ class TimerService : Service() {
             targetMinutes = targetMinutes,
             isCountdown = isCountdown,
             habitId = habitId,
-            authority = activeAuthority
+            authority = activeAuthority,
+            legacyWidget = activeLegacyWidget
         )
         notificationManager.notify(NOTIFICATION_ID, notification)
     }

@@ -16,6 +16,7 @@ import com.dayforge.data.model.HabitType
 import com.dayforge.domain.service.DeviceThemeController
 import com.dayforge.domain.service.AccountSessionCoordinator
 import com.dayforge.data.repository.WidgetDisplayPublisher
+import com.dayforge.data.repository.LegacyWidgetFactClaim
 import com.dayforge.widget.bindWidgetSelection
 import com.dayforge.widget.clearWidgetSelection
 import com.dayforge.widget.counting.CountingWidget
@@ -75,6 +76,12 @@ class CheckInWidgetStateTest {
         assertEquals(8, state[CountingWidget.TARGET_VALUE_KEY])
         assertEquals(0, state[CountingWidget.COMPLETED_TODAY_KEY])
         assertEquals(false, state[CountingWidget.IS_COMPLETED_KEY])
+        val claim = LegacyWidgetFactClaim.decode(requireNotNull(state[CountingWidget.LEGACY_ACTION_PROOF_KEY]))
+        assertEquals(habitId, claim.identity.habitId)
+        assertEquals(requireNotNull(storage.database.habitDao().getHabitById(habitId)).uuid, claim.identity.habitUuid)
+        assertEquals(0L, claim.todayQuantity)
+        assertNull(claim.action)
+        assertEquals(requireNotNull(tokens.localCoreWriteAccess()).session, claim.identity.session())
     }
     @Test fun checkInHabitLoadsIdentityAndCompletionIntoRealWidgetState() = runTest {
         val habitId = seed(HabitType.CHECK_IN, 1)
@@ -87,6 +94,10 @@ class CheckInWidgetStateTest {
         assertEquals("Physical CHECK_IN", state[CheckInWidget.HABIT_NAME_KEY])
         assertEquals(true, state[CheckInWidget.DATA_LOADED_KEY])
         assertEquals(false, state[CheckInWidget.IS_COMPLETED_KEY])
+        val claim = LegacyWidgetFactClaim.decode(requireNotNull(state[CheckInWidget.LEGACY_ACTION_PROOF_KEY]))
+        assertEquals(habitId, claim.identity.habitId)
+        assertNull(claim.completionUuid)
+        assertEquals(requireNotNull(tokens.localCoreWriteAccess()).session, claim.identity.session())
     }
     @Test fun storedCheckInBindingLoadsTheBoundHabit() = runTest {
         val habitId = seed(HabitType.CHECK_IN, 1)
@@ -125,11 +136,13 @@ class CheckInWidgetStateTest {
         assertEquals(habitId, state[CheckInWidget.HABIT_ID_KEY])
         assertEquals(true, state[CheckInWidget.IS_DELETED_KEY])
         assertEquals(true, state[CheckInWidget.DATA_LOADED_KEY])
+        assertNull(state[CheckInWidget.LEGACY_ACTION_PROOF_KEY])
         CheckInWidget.refreshWidgetData(context, id)
         val unbound = CheckInWidget().getAppWidgetState<Preferences>(context, id)
         assertNull(unbound[CheckInWidget.HABIT_ID_KEY])
         assertNull(unbound[CheckInWidget.DATA_LOADED_KEY])
         assertNull(unbound[CheckInWidget.LEGACY_RESTART_PROOF_KEY])
+        assertNull(unbound[CheckInWidget.LEGACY_ACTION_PROOF_KEY])
         assertEquals(habitId, prefs.getLong(CheckInWidget.PREF_HABIT_ID_PREFIX + widgetId, -1))
     }
 }

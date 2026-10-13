@@ -16,6 +16,7 @@ import androidx.compose.ui.window.Dialog
 import com.dayforge.R
 import com.dayforge.widget.base.WidgetActivityTheme
 import com.dayforge.data.repository.NextTimerWriter
+import com.dayforge.data.repository.LegacyWidgetTimerClaim
 import com.dayforge.domain.service.TimerServiceController
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -40,16 +41,20 @@ class TimerConfirmationActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         val claim = try { WidgetTimerAction.read(intent) } catch (error: Exception) { finish(); return }
-        val habitId = claim?.habitId ?: intent.getLongExtra(EXTRA_HABIT_ID, -1L)
+        val legacy = try { LegacyWidgetTimerClaim.read(intent) } catch (error: Exception) { finish(); return }
+        if ((claim == null) == (legacy == null)) { finish(); return }
+        val habitId = claim?.habitId ?: requireNotNull(legacy).identity.habitId
         val targetMinutes = intent.getIntExtra(EXTRA_TARGET_MINUTES, 0)
 
         if (habitId == -1L) {
             finish()
             return
         }
-        if (claim != null) lifecycleScope.launch {
+        lifecycleScope.launch {
             writer.accessChanges.catch { finish() }.collect { access ->
-                if (access == null || access.session != claim.authority.session() || access.capturedDeviceId != claim.authority.deviceId) finish()
+                val session = claim?.authority?.session() ?: requireNotNull(legacy).identity.session()
+                val device = claim?.authority?.deviceId ?: legacy?.identity?.deviceId
+                if (access == null || access.session != session || access.capturedDeviceId != device) finish()
             }
         }
 
@@ -61,7 +66,7 @@ class TimerConfirmationActivity : ComponentActivity() {
             LaunchedEffect(Unit) {
                 try {
                     val display = if (claim != null) writer.requireWidgetStart(habitId, claim.authority, requireNotNull(claim.startGuard))
-                        else writer.legacyWidgetSwitchDisplay(habitId)
+                        else writer.requireLegacyWidgetStart(requireNotNull(legacy))
                     currentHabitName = display.incumbentName
                     newHabitName = display.requestedName
                     ready = true
@@ -123,9 +128,10 @@ class TimerConfirmationActivity : ComponentActivity() {
                                             lifecycleScope.launch {
                                                 try {
                                                     if (claim != null) writer.requireWidgetStart(habitId, claim.authority, requireNotNull(claim.startGuard))
+                                                    else writer.requireLegacyWidgetStart(requireNotNull(legacy))
                                                     TimerServiceController.startTimer(
                                                         this@TimerConfirmationActivity, habitId, targetMinutes,
-                                                        authority = claim?.authority, startGuard = claim?.startGuard
+                                                        authority = claim?.authority, startGuard = claim?.startGuard, legacyWidget = legacy
                                                     )
                                                 } catch (error: Exception) {
                                                     if (error is CancellationException) throw error

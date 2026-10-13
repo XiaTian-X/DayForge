@@ -81,7 +81,8 @@ class LinkedMetricCoordinator @Inject constructor(
     private val oneTimeRepository: OneTimeRepository? = null,
     private val timerWriter: NextTimerWriter? = null,
     private val factReader: com.dayforge.data.repository.WidgetFactReader? = null,
-    private val habitPreferences: com.dayforge.data.repository.HabitPreferenceRepository? = null
+    private val habitPreferences: com.dayforge.data.repository.HabitPreferenceRepository? = null,
+    private val legacyWidgets: com.dayforge.data.repository.LegacyWidgetFactWorkflow? = null
 ) {
     val pendingMetricHabits: Flow<Set<Long>> = combine(habitPreferences?.pendingHabitIds ?: kotlinx.coroutines.flow.flowOf(emptySet()),
         oneTimeRepository?.pendingHabitIds ?: kotlinx.coroutines.flow.flowOf(emptySet())) { old, once -> old + once }
@@ -126,6 +127,12 @@ class LinkedMetricCoordinator @Inject constructor(
             habitRepository.getHabitById(habitId)?.completionPolicy)
     }
 
+    suspend fun showLegacyWidgetPrompt(identity: com.dayforge.data.repository.LegacyWidgetRestartClaim) {
+        _postCheckInState.value = null
+        val habit = requireNotNull(legacyWidgets).requireCurrent(identity)
+        showPromptForPolicy(habit.id, habit.name, false, habit.completionPolicy, legacyIdentity = identity)
+    }
+
     suspend fun showWidgetFactPrompt(claim: com.dayforge.data.repository.WidgetFactClaim) {
         _postCheckInState.value = null
         val reader = requireNotNull(factReader)
@@ -163,7 +170,8 @@ class LinkedMetricCoordinator @Inject constructor(
         habitName: String,
         isTempTask: Boolean,
         completionPolicy: String?,
-        timerAuthority: TimerActionAuthority? = null
+        timerAuthority: TimerActionAuthority? = null,
+        legacyIdentity: com.dayforge.data.repository.LegacyWidgetRestartClaim? = null
     ) {
         if (completionPolicy == "one_and_done") {
             promptWrites.withLock {
@@ -174,7 +182,9 @@ class LinkedMetricCoordinator @Inject constructor(
             return
         }
         val actualHabit = habitRepository.getHabitById(habitId) ?: return
-        val preference = if (timerAuthority == null) habitPreferences?.read(actualHabit) else null
+        val preference = if (timerAuthority == null) habitPreferences?.read(actualHabit,
+            expectedSession = legacyIdentity?.session(), widgetIdentity = legacyIdentity) else null
+        if (legacyIdentity != null) requireNotNull(preference) { "LEGACY_WIDGET_PROMPT_OWNER_REQUIRED" }
         if (timerAuthority != null) {
             check(actualHabit.uuid == timerAuthority.habitUuid)
             if (preferencesManager.getNeverAskAgain(timerAuthority.session(), actualHabit.uuid).first()) return

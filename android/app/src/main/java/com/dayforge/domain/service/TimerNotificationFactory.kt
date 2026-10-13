@@ -35,7 +35,8 @@ internal class TimerNotificationFactory(
         targetMinutes: Int,
         isCountdown: Boolean,
         habitId: Long,
-        authority: com.dayforge.domain.model.TimerActionAuthority? = null
+        authority: com.dayforge.domain.model.TimerActionAuthority? = null,
+        legacyWidget: com.dayforge.data.repository.LegacyWidgetTimerClaim? = null
     ): Notification {
         val contentTitle = if (isPaused) {
             context.getString(R.string.timer_notification_title_paused)
@@ -49,8 +50,8 @@ internal class TimerNotificationFactory(
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setOngoing(true)
             .setContentIntent(createContentIntent())
-            .addAction(createPauseResumeAction(isPaused, habitId, targetMinutes, authority))
-            .addAction(createStopAction(habitId, targetMinutes, authority))
+            .addAction(createPauseResumeAction(isPaused, habitId, targetMinutes, authority, legacyWidget))
+            .addAction(createStopAction(habitId, targetMinutes, authority, legacyWidget))
             .build()
     }
 
@@ -117,7 +118,8 @@ internal class TimerNotificationFactory(
         isPaused: Boolean,
         habitId: Long,
         targetMinutes: Int,
-        authority: com.dayforge.domain.model.TimerActionAuthority?
+        authority: com.dayforge.domain.model.TimerActionAuthority?,
+        legacyWidget: com.dayforge.data.repository.LegacyWidgetTimerClaim?
     ): NotificationCompat.Action {
         val action = if (isPaused) TimerService.ACTION_RESUME else TimerService.ACTION_PAUSE
         val title = if (isPaused) {
@@ -130,6 +132,7 @@ internal class TimerNotificationFactory(
             putExtra(TimerService.EXTRA_HABIT_ID, habitId)
             putExtra(TimerService.EXTRA_TARGET_MINUTES, targetMinutes)
             authority?.attach(this)
+            legacyWidget?.attach(this)
         }
         val pendingIntent = PendingIntent.getService(
             context,
@@ -144,12 +147,14 @@ internal class TimerNotificationFactory(
         ).build()
     }
 
-    private fun createStopAction(habitId: Long, targetMinutes: Int, authority: com.dayforge.domain.model.TimerActionAuthority?): NotificationCompat.Action {
+    private fun createStopAction(habitId: Long, targetMinutes: Int, authority: com.dayforge.domain.model.TimerActionAuthority?,
+        legacyWidget: com.dayforge.data.repository.LegacyWidgetTimerClaim?): NotificationCompat.Action {
         val intent = Intent(context, TimerService::class.java).apply {
             action = TimerService.ACTION_STOP
             putExtra(TimerService.EXTRA_HABIT_ID, habitId)
             putExtra(TimerService.EXTRA_TARGET_MINUTES, targetMinutes)
             authority?.attach(this)
+            legacyWidget?.attach(this)
         }
         val pendingIntent = PendingIntent.getService(
             context,

@@ -26,7 +26,6 @@ import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.domain.service.ScheduleValidator
-import com.dayforge.util.DateTimeUtils
 import com.dayforge.widget.WidgetFailureChecker
 import com.dayforge.widget.base.StatusLabels
 import com.dayforge.widget.base.WidgetColorResolver
@@ -76,6 +75,7 @@ class CheckInWidget : GlanceAppWidget() {
         val BACKGROUND_COLOR_KEY = intPreferencesKey("backgroundColor")
         val TEXT_COLOR_KEY = intPreferencesKey("textColor")
         val ACTION_PROOF_KEY = stringPreferencesKey("factActionProof")
+        val LEGACY_ACTION_PROOF_KEY = stringPreferencesKey("legacyFactActionProof")
         val LEGACY_RESTART_PROOF_KEY = stringPreferencesKey("legacyRestartProof")
         val READ_FAILED_KEY = booleanPreferencesKey("readFailed")
 
@@ -100,6 +100,7 @@ class CheckInWidget : GlanceAppWidget() {
                         prefs[READ_FAILED_KEY] = true
                         prefs[DATA_LOADED_KEY] = false
                         prefs.remove(ACTION_PROOF_KEY)
+                        prefs.remove(LEGACY_ACTION_PROOF_KEY)
                         prefs.remove(LEGACY_RESTART_PROOF_KEY)
                     }
                 }
@@ -122,12 +123,14 @@ class CheckInWidget : GlanceAppWidget() {
                         prefs[DATA_LOADED_KEY] = true
                         prefs[READ_FAILED_KEY] = false
                         prefs.remove(ACTION_PROOF_KEY)
+                        prefs.remove(LEGACY_ACTION_PROOF_KEY)
                         prefs.remove(LEGACY_RESTART_PROOF_KEY)
                     }
                 }
             }
 
-            val today = DateTimeUtils.today()
+            val displayZone = java.time.ZoneId.systemDefault()
+            val today = java.time.LocalDate.now(displayZone)
             val tomorrow = today.plusDays(1)
             val completions = database.completionDao().getCompletionsInRange(habitId, today, tomorrow)
             val completedToday = completions.sumOf { it.value }
@@ -154,7 +157,13 @@ class CheckInWidget : GlanceAppWidget() {
             // 失败状态判定
             val hasFailed = typed?.hasFailed ?: WidgetFailureChecker.checkFailure(habit, database)
 
-            val legacyProof = publication.legacyRestartClaim(habit)?.encode()
+            val legacyIdentity = publication.legacyRestartClaim(habit)
+            val legacyFact = legacyIdentity?.let { com.dayforge.di.WidgetEntryPoint.from(appContext).legacyFactWorkflow().capture(it) }
+            legacyFact?.let { check(it.todayQuantity == completedToday.toLong() && it.date == today.toString() &&
+                it.timezone == displayZone.id) {
+                "LEGACY_WIDGET_STALE_DISPLAY"
+            } }
+            val legacyProof = legacyIdentity?.encode()
             return suspend {
                 // Pre-compute widget colors using WidgetColorResolver
                 // Per WIDGET-COLOR-01, WIDGET-COLOR-06: Colors must be pre-calculated before rendering
@@ -165,6 +174,7 @@ class CheckInWidget : GlanceAppWidget() {
                 updateAppWidgetState(appContext, glanceId) { prefs ->
                     publication.stampFrame(prefs)
                     if (typed != null) prefs[ACTION_PROOF_KEY] = typed.claim.encode() else prefs.remove(ACTION_PROOF_KEY)
+                    if (legacyFact != null) prefs[LEGACY_ACTION_PROOF_KEY] = legacyFact.encode() else prefs.remove(LEGACY_ACTION_PROOF_KEY)
                     if (legacyProof != null) prefs[LEGACY_RESTART_PROOF_KEY] = legacyProof else prefs.remove(LEGACY_RESTART_PROOF_KEY)
                     prefs[READ_FAILED_KEY] = false
                     prefs[HABIT_ID_KEY] = habitId
@@ -248,6 +258,7 @@ class CheckInWidget : GlanceAppWidget() {
                         hasFailed = hasFailed,
                         isGoalReached = isGoalReached,
                         actionProof = state[ACTION_PROOF_KEY],
+                        legacyActionProof = state[LEGACY_ACTION_PROOF_KEY],
                         legacyProof = state[LEGACY_RESTART_PROOF_KEY]
                     )
                 }
@@ -268,6 +279,7 @@ class CheckInWidget : GlanceAppWidget() {
         hasFailed: Boolean = false,
         isGoalReached: Boolean = false,
         actionProof: String? = null,
+        legacyActionProof: String? = null,
         legacyProof: String? = null
     ) {
         val context = androidx.glance.LocalContext.current
@@ -372,13 +384,13 @@ class CheckInWidget : GlanceAppWidget() {
                     if (isCompleted) {
                         Button(
                             text = context.getString(R.string.widget_status_completed),
-                            onClick = widgetFactAction(context, habitId, "toggle", actionProof),
+                            onClick = widgetFactAction(context, habitId, "toggle", actionProof, legacyActionProof),
                             modifier = GlanceModifier.height(40.dp)
                         )
                     } else {
                         Button(
                             text = context.getString(R.string.action_check_in),
-                            onClick = widgetFactAction(context, habitId, "toggle", actionProof),
+                            onClick = widgetFactAction(context, habitId, "toggle", actionProof, legacyActionProof),
                             modifier = GlanceModifier.height(40.dp)
                         )
                     }

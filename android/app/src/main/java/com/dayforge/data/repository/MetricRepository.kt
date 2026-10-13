@@ -197,6 +197,7 @@ class MetricRepository @Inject constructor(
             metrics.size == metrics.map { it.id }.toSet().size)
         return preferences.publish(claim) {
             database.withTransaction {
+                preferences.requireWidgetWriteInTransaction(claim)
                 check(habitDao.getVisibleHabitById(habit.id) == habit) { "METRIC_PROMPT_ACTIVITY_CHANGED" }
                 metrics.forEach { original ->
                     check(metricDao.getVisibleMetricById(original.id) == original) { "METRIC_PROMPT_METADATA_CHANGED" }
@@ -205,7 +206,11 @@ class MetricRepository @Inject constructor(
                     check(link.isActive && link.promptOnComplete && link.habitUuid == habit.uuid &&
                         link.metricUuid == original.uuid) { "METRIC_PROMPT_LINK_CHANGED" }
                 }
-                recordValues(values, recordedAt)
+                recordValues(values, recordedAt).also {
+                    // A rejected refresh can invalidate credentials without the account mutex.
+                    // Keep the actual rows and their outbox entries inside this final fence.
+                    preferences.requireWidgetWriteInTransaction(claim)
+                }
             }
         }
     }

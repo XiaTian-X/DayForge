@@ -19,7 +19,8 @@ import kotlinx.coroutines.withContext
 
 /** Short-lived UI ownership proof. Unlike a stored binding it expires on login or replica change. */
 class HabitPreferenceClaim internal constructor(internal val session: LocalDataSession,
-    val habitId: Long, val habitUuid: String)
+    val habitId: Long, val habitUuid: String,
+    internal val widgetIdentity: LegacyWidgetRestartClaim? = null)
 
 data class HabitPreferenceSnapshot(val claim: HabitPreferenceClaim, val notificationEnabled: Boolean,
     val neverAsk: Boolean)
@@ -28,7 +29,8 @@ data class HabitPreferenceSnapshot(val claim: HabitPreferenceClaim, val notifica
 @Singleton
 class HabitPreferenceRepository @Inject constructor(private val database: HabitDatabase,
     private val tokens: TokenManager, private val sessions: AccountSessionCoordinator,
-    private val preferences: PreferencesManager, private val replica: ReplicaPresentationRepository) {
+    private val preferences: PreferencesManager, private val replica: ReplicaPresentationRepository,
+    private val widgetVerifier: LegacyWidgetIdentityVerifier? = null) {
     val changes: Flow<Unit> = combine(preferences.habitPreferenceChanges, replica.changes) { _, _ -> Unit }
 
     val pendingHabitIds: Flow<Set<Long>> = combine(changes, database.habitDao().getAllHabits()) { _, _ -> Unit }
@@ -48,15 +50,21 @@ class HabitPreferenceRepository @Inject constructor(private val database: HabitD
             }
         }
 
-    suspend fun read(expected: HabitEntity): HabitPreferenceSnapshot = withContext(Dispatchers.IO) {
+    internal suspend fun read(expected: HabitEntity, expectedSession: LocalDataSession? = null,
+        widgetIdentity: LegacyWidgetRestartClaim? = null): HabitPreferenceSnapshot = withContext(Dispatchers.IO) {
         sessions.exclusive {
             check(replica.isOpenWhileAccountLocked()) { "HABIT_PREFERENCE_RECOVERY_PENDING" }
             val session = requireNotNull(tokens.localFactAccess()?.session) { "HABIT_PREFERENCE_LOGIN_REQUIRED" }
+            check(expectedSession == null || session == expectedSession) { "HABIT_PREFERENCE_SESSION_CHANGED" }
+            widgetIdentity?.let {
+                check(it.session() == session && it.habitId == expected.id && it.habitUuid == expected.uuid)
+                database.withTransaction { requireNotNull(widgetVerifier).requireIdentity(it, requirePlan = false) }
+            }
             requireRow(expected.id, expected.uuid)
             val notification = preferences.getHabitNotificationEnabled(session, expected.uuid).first()
             val neverAsk = preferences.getNeverAskAgain(session, expected.uuid).first()
             check(tokens.localFactAccess()?.session == session) { "HABIT_PREFERENCE_SESSION_CHANGED" }
-            HabitPreferenceSnapshot(HabitPreferenceClaim(session, expected.id, expected.uuid), notification, neverAsk)
+            HabitPreferenceSnapshot(HabitPreferenceClaim(session, expected.id, expected.uuid, widgetIdentity), notification, neverAsk)
         }
     }
 
@@ -78,7 +86,18 @@ class HabitPreferenceRepository @Inject constructor(private val database: HabitD
             check(replica.isOpenWhileAccountLocked()) { "HABIT_PREFERENCE_RECOVERY_PENDING" }
             check(tokens.localFactAccess()?.session == claim.session) { "HABIT_PREFERENCE_SESSION_CHANGED" }
             requireRow(claim.habitId, claim.habitUuid)
+            claim.widgetIdentity?.let {
+                database.withTransaction { requireNotNull(widgetVerifier).requireIdentity(it, requirePlan = false) }
+            }
             block()
+        }
+    }
+
+    /** Already inside publish's account mutex and the actual business write transaction. */
+    internal suspend fun requireWidgetWriteInTransaction(claim: HabitPreferenceClaim) {
+        check(database.inTransaction())
+        claim.widgetIdentity?.let {
+            requireNotNull(widgetVerifier).requireIdentity(it, requirePlan = false, permission = "facts.append")
         }
     }
 

@@ -229,7 +229,17 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
             }
             val checked = ReplicaMaterialAccess.verified(database, tokens, sessions, archives, current) { context ->
                 val outcome = round(context, transport)
-                if (outcome != IconMaterialOutcome.COMPLETE) outcome to null
+                if (outcome != IconMaterialOutcome.COMPLETE) {
+                    // Diagnose only under the existing verified lease; no ordinary-access bypass,
+                    // credentials, object identifiers, names, URLs or material contents in logs.
+                    val jobs = material.transfers.jobs(context).groupingBy {
+                        "${it.kind}/${it.state}/${it.failure}"
+                    }.eachCount().toSortedMap()
+                    val checkpoint = material.catalog.next(context).checkpoint
+                    android.util.Log.i("ReplicaMaterials", "Waiting outcome=$outcome jobs=$jobs " +
+                        "catalog=${checkpoint.cursor}/${checkpoint.through}")
+                    outcome to null
+                }
                 else outcome to inspectComplete(current, context)
             }
             val proof = checked.second ?: return@coordinateReplicaCompletion ReplicaCompletionOutcome.Waiting(current, checked.first)

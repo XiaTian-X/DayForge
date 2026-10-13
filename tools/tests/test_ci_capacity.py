@@ -79,6 +79,16 @@ class CiCapacityTest(unittest.TestCase):
         self.assertIn("每批 Android 测试任务/包装进程上限 45 分钟", testing)
         self.assertIn("真机测试单项上限 150 秒", testing)
 
+    def test_real_recovery_journey_has_only_its_approved_bounded_exception(self):
+        source = (ROOT / "android/app/src/androidTest/java/com/dayforge/data/repository/"
+                  "RealBackendReplicaRecoveryJointTest.kt").read_text()
+        self.assertEqual(["300_000"], re.findall(r"@Test\(timeout = (\d[\d_]*)\)", source))
+        self.assertIn("@Test(timeout = 300_000) fun "
+                      "restoredBackendRequiresFreshLoginAndConsentRetainsArchiveAndResumesOrdinarySync()", source)
+        self.assertIn("withTimeout(60_000) { block() }", source)
+        self.assertIn('step("explicit consent and confirmed replica switch")', source)
+        self.assertIn('step("explicit bounded material resume and final release")', source)
+
     def assert_native_task_capacity(self, gradle):
         task = re.search(
             r'tasks\.matching \{ it\.name == "connectedDeviceTestAndroidTest" \}'

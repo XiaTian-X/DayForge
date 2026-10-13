@@ -10,18 +10,23 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequest
 import androidx.work.WorkManager
 import androidx.test.core.app.ApplicationProvider
+import androidx.room.withTransaction
 import com.dayforge.data.local.HabitDatabase
-import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.local.dao.CompletionDao
 import com.dayforge.data.local.dao.HabitDao
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.HabitRepository
-import com.dayforge.domain.service.CheckInService
+import com.dayforge.data.local.TokenManager
+import com.dayforge.data.repository.LegacyWidgetFactWorkflow
+import com.dayforge.data.repository.LegacyWidgetRestartClaim
+import com.dayforge.domain.service.AccountSessionCoordinator
 import com.dayforge.widget.WidgetRefreshScheduler
 import io.mockk.*
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.runBlocking
+import javax.inject.Inject
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -30,8 +35,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.runner.RunWith
 
 /**
- * Unit tests for CheckInActionCallback.
- * Tests verify the callback correctly routes actions through CheckInService.
+ * Real callback tests: original display claims route through the account-owned fact transaction.
  *
  * Test coverage:
  * - CHECK-04: Widget can handle increment action for counting habits
@@ -39,7 +43,7 @@ import org.junit.runner.RunWith
  * - Missing habitId returns early without error
  * - Missing action defaults to "toggle"
  *
- * Production disk Room is shared with the callback; assertions inspect committed side effects.
+ * Production Hilt/Room is shared with the callback; assertions inspect committed data and outbox.
  */
 @HiltAndroidTest
 @RunWith(AndroidJUnit4::class)
@@ -54,16 +58,23 @@ class CheckInActionCallbackTest {
     private lateinit var callback: CheckInActionCallback
     private lateinit var context: Context
     private val workManager = mockk<WorkManager>(relaxed = true)
+    @Inject lateinit var tokens: TokenManager
+    @Inject lateinit var sessions: AccountSessionCoordinator
+    @Inject lateinit var workflow: LegacyWidgetFactWorkflow
 
     @Before
-    fun setup() {
+    fun setup() = runBlocking<Unit> {
         context = ApplicationProvider.getApplicationContext()
         mockkStatic(WorkManager::class)
         every { WorkManager.getInstance(context) } returns workManager
 
         database = storage.database
         hilt.inject()
-
+        sessions.exclusive {
+            tokens.clearTokens()
+            tokens.saveLoginSession("synthetic-widget", "synthetic-refresh", "member",
+                "ab410000-0000-4000-8000-000000000001", false)
+        }
 
         habitDao = database.habitDao()
         completionDao = database.completionDao()
@@ -73,9 +84,21 @@ class CheckInActionCallbackTest {
     }
 
     @After
-    fun teardown() {
+    fun teardown() = runBlocking<Unit> {
+        if (::tokens.isInitialized) sessions.exclusive { tokens.clearTokens() }
         unmockkStatic(WorkManager::class)
         database.close()
+    }
+
+    private suspend fun parameters(habitId: Long, action: String, includeAction: Boolean = true): ActionParameters {
+        val identity = sessions.exclusive { database.withTransaction {
+            LegacyWidgetRestartClaim.displayed(requireNotNull(habitDao.getVisibleHabitById(habitId)),
+                requireNotNull(tokens.localCoreWriteAccess()))
+        } }
+        val proof = workflow.capture(identity).forAction(action).encode()
+        return if (includeAction) actionParametersOf(ActionParameters.Key<Long>("habitId") to habitId,
+            ActionParameters.Key<String>("action") to action, CheckInActionCallback.LEGACY_PROOF to proof)
+        else actionParametersOf(ActionParameters.Key<Long>("habitId") to habitId, CheckInActionCallback.LEGACY_PROOF to proof)
     }
 
     // ==================== CHECK-04: Toggle action ====================
@@ -95,10 +118,7 @@ class CheckInActionCallbackTest {
 
         // Create mock GlanceId and ActionParameters
         val glanceId = mockk<GlanceId>(relaxed = true)
-        val parameters = actionParametersOf(
-            ActionParameters.Key<Long>("habitId") to habitId,
-            ActionParameters.Key<String>("action") to "toggle"
-        )
+        val parameters = parameters(habitId, "toggle")
 
         // Execute callback
         callback.onAction(context, glanceId, parameters)
@@ -126,10 +146,7 @@ class CheckInActionCallbackTest {
 
         // Create mock GlanceId and ActionParameters
         val glanceId = mockk<GlanceId>(relaxed = true)
-        val parameters = actionParametersOf(
-            ActionParameters.Key<Long>("habitId") to habitId,
-            ActionParameters.Key<String>("action") to "increment"
-        )
+        val parameters = parameters(habitId, "increment")
 
         // Execute callback
         callback.onAction(context, glanceId, parameters)
@@ -159,10 +176,7 @@ class CheckInActionCallbackTest {
 
         // Create mock GlanceId and ActionParameters
         val glanceId = mockk<GlanceId>(relaxed = true)
-        val parameters = actionParametersOf(
-            ActionParameters.Key<Long>("habitId") to habitId,
-            ActionParameters.Key<String>("action") to "decrement"
-        )
+        val parameters = parameters(habitId, "decrement")
 
         // Execute callback
         callback.onAction(context, glanceId, parameters)
@@ -207,10 +221,7 @@ class CheckInActionCallbackTest {
 
         // Create mock GlanceId and ActionParameters WITHOUT action (should default to toggle)
         val glanceId = mockk<GlanceId>(relaxed = true)
-        val parameters = actionParametersOf(
-            ActionParameters.Key<Long>("habitId") to habitId
-            // No action parameter - should default to "toggle"
-        )
+        val parameters = parameters(habitId, "toggle", includeAction = false)
 
         // Execute callback
         callback.onAction(context, glanceId, parameters)
@@ -232,10 +243,7 @@ class CheckInActionCallbackTest {
             targetValue = 1
         ))
 
-        callback.onAction(context, mockk<GlanceId>(relaxed = true), actionParametersOf(
-            ActionParameters.Key<Long>("habitId") to habitId,
-            ActionParameters.Key<String>("action") to "toggle"
-        ))
+        callback.onAction(context, mockk<GlanceId>(relaxed = true), parameters(habitId, "toggle"))
         assertEquals(1, repository.getTodayCompletionCount(habitId))
         assertEquals(2, database.syncOutboxDao().count())
         val reopened = storage.reopen()
@@ -245,5 +253,36 @@ class CheckInActionCallbackTest {
             workManager.enqueueUniqueWork(WidgetRefreshScheduler.WORK_NAME,
                 ExistingWorkPolicy.APPEND_OR_REPLACE, any<OneTimeWorkRequest>())
         }
+    }
+
+    @Test fun missingProofAndRejectedRefreshCannotWriteRetainedLegacyRows() = runTest {
+        val habitId = habitDao.insert(HabitEntity(name = "Bound check", habitType = HabitType.CHECK_IN,
+            iconResId = 1, colorHex = "#123456", schedule = HabitSchedule.Daily, targetValue = 1))
+        val original = parameters(habitId, "toggle")
+        val queued = database.syncOutboxDao().getAll()
+        callback.onAction(context, mockk(relaxed = true), actionParametersOf(ActionParameters.Key<Long>("habitId") to habitId))
+        assertEquals(0, completionDao.countAll())
+        assertEquals(queued, database.syncOutboxDao().getAll())
+        tokens.clearRejectedRefresh(requireNotNull(tokens.authenticationSnapshot()))
+        callback.onAction(context, mockk(relaxed = true), original)
+        assertEquals(0, completionDao.countAll())
+        assertEquals(queued, database.syncOutboxDao().getAll())
+        assertNotNull(habitDao.getVisibleHabitById(habitId))
+    }
+
+    @Test fun originalCallbackCannotAdoptNewAccountOrReusedNumericHabitId() = runTest {
+        val habitId = habitDao.insert(HabitEntity(name = "Original check", habitType = HabitType.CHECK_IN,
+            iconResId = 1, colorHex = "#123456", schedule = HabitSchedule.Daily, targetValue = 1))
+        val original = parameters(habitId, "toggle")
+        val before = requireNotNull(habitDao.getVisibleHabitById(habitId))
+        sessions.exclusive {
+            tokens.saveLoginSession("new-access", "new-refresh", "other",
+                "ab410000-0000-4000-8000-000000000002", false)
+            database.withTransaction { habitDao.update(before.copy(uuid = "ab410000-0000-4000-8000-000000000003")) }
+        }
+        val queued = database.syncOutboxDao().getAll()
+        callback.onAction(context, mockk(relaxed = true), original)
+        assertEquals(0, completionDao.countAll())
+        assertEquals(queued, database.syncOutboxDao().getAll())
     }
 }

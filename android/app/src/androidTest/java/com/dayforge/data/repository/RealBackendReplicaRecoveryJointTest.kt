@@ -154,7 +154,8 @@ class RealBackendReplicaRecoveryJointTest {
     private fun archive(stage: ReplicaSwitchStage) = File(app.filesDir,
         "replica-archives-v1/${stage.accountId}/${stage.serverInstanceId}/${stage.oldEpoch}/${requireNotNull(stage.archive).archiveId}.candidate")
 
-    @Test fun restoredBackendRequiresFreshLoginAndConsentRetainsArchiveAndResumesOrdinarySync() = runBlocking<Unit> {
+    // 2026-10-13: user-approved complete real recovery journey; ordinary cases stay at 150 seconds.
+    @Test(timeout = 300_000) fun restoredBackendRequiresFreshLoginAndConsentRetainsArchiveAndResumesOrdinarySync() = runBlocking<Unit> {
         assertEquals(mapOf(id(101) to "Recovery acknowledged change", id(102) to "Recovery acknowledged missing"), names())
         assertFalse(db.nextRequestDao().hasAny()); assertTrue(db.syncOutboxDao().getAll().isEmpty())
         val original = requireNotNull(tokens.localSyncAccess())

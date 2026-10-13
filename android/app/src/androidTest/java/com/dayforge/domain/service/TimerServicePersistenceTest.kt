@@ -33,6 +33,8 @@ import com.dayforge.data.local.TokenManager
 import com.dayforge.data.repository.HabitRepository
 import com.dayforge.data.repository.NextObjectCreator
 import com.dayforge.data.repository.NextTimerWriter
+import com.dayforge.data.repository.LegacyWidgetTimerClaim
+import com.dayforge.data.repository.LegacyWidgetRestartClaim
 import com.dayforge.data.repository.decodeNextTimerIntent
 import com.dayforge.data.repository.NEXT_TIMER
 import com.dayforge.domain.model.IconReference
@@ -70,6 +72,7 @@ class TimerServicePersistenceTest {
     @Inject lateinit var habits: HabitRepository
     @Inject lateinit var creator: NextObjectCreator
     @Inject lateinit var timerWriter: NextTimerWriter
+    @Inject lateinit var timerManager: TimerManager
     @Inject lateinit var metrics: com.dayforge.data.repository.MetricRepository
     @Inject lateinit var metricCoordinator: com.dayforge.ui.metrics.LinkedMetricCoordinator
 
@@ -85,6 +88,8 @@ class TimerServicePersistenceTest {
         HabitDatabaseProvider.setInstanceForTesting(database)
         hilt.inject()
         sessions.exclusive { tokens.clearTokens() }
+        sessions.exclusive { tokens.saveLoginSession("synthetic-timer", "synthetic-refresh", "member",
+            "ac350000-0000-4000-8000-000000000001", false) }
         activity = ActivityScenario.launch(ComponentActivity::class.java)
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             instrumentation.uiAutomation.grantRuntimePermission(context.packageName, "android.permission.POST_NOTIFICATIONS")
@@ -103,11 +108,13 @@ class TimerServicePersistenceTest {
         Unit
     }
 
-    private fun send(action: String?, id: Long = habitId, authority: TimerActionAuthority? = null) {
+    private fun send(action: String?, id: Long = habitId, authority: TimerActionAuthority? = null,
+        legacy: LegacyWidgetTimerClaim? = null) {
         val intent = Intent(context, TimerService::class.java).apply {
             this.action = action
             putExtra(TimerService.EXTRA_HABIT_ID, id)
             authority?.attach(this)
+            legacy?.attach(this)
         }
         if (action == TimerService.ACTION_START) context.startForegroundService(intent)
         else context.startService(intent)
@@ -119,6 +126,132 @@ class TimerServicePersistenceTest {
 
     private suspend fun awaitCommands(count: Int) = awaitState {
         database.timeLogDao().getPendingTimerCommands().size == count
+    }
+
+    private suspend fun legacyClaim(id: Long = habitId): LegacyWidgetTimerClaim {
+        val row = requireNotNull(database.habitDao().getHabitById(id))
+        return timerWriter.captureLegacyWidget(LegacyWidgetRestartClaim.displayed(row, requireNotNull(tokens.localCoreWriteAccess())),
+            database.timeLogDao().getActiveTimeLogForHabit(id))
+    }
+
+    @Test fun staleLegacyWidgetControlKeepsTheDifferentCurrentTimerAndNotification() = runBlocking {
+        send(TimerService.ACTION_START, legacy = legacyClaim())
+        awaitCommands(1)
+        val original = legacyClaim()
+        awaitState { widgetRefresh.requestCount >= 1 } // After the bound active notification replaces the FGS placeholder.
+        awaitState { context.getSystemService(NotificationManager::class.java).activeNotifications.any { it.id == TimerService.NOTIFICATION_ID } }
+        val oldNotificationPause = context.getSystemService(NotificationManager::class.java).activeNotifications
+            .single { it.id == TimerService.NOTIFICATION_ID }.notification.actions.first().actionIntent
+        send(TimerService.ACTION_DISCARD, legacy = original)
+        awaitCommands(2); awaitServiceStopped()
+        val second = database.habitDao().insert(requireNotNull(database.habitDao().getHabitById(habitId))
+            .copy(id = 0, uuid = UUID.randomUUID().toString(), name = "Different current timer"))
+        send(TimerService.ACTION_START, second, legacy = legacyClaim(second))
+        awaitCommands(3)
+        awaitState { widgetRefresh.requestCount >= 3 }
+        val current = requireNotNull(database.timeLogDao().getActiveTimeLog())
+        val commands = database.timeLogDao().getPendingTimerCommands()
+        val refreshed = widgetRefresh.requestCount
+        oldNotificationPause.send() // Immutable PendingIntent retains the old widget scope and transition.
+        // Rejection retains only the already-owned current timer, without claiming a different persisted session.
+        awaitState { widgetRefresh.requestCount > refreshed }
+        assertEquals(current, database.timeLogDao().getActiveTimeLog())
+        assertEquals(commands, database.timeLogDao().getPendingTimerCommands())
+        assertTrue(context.getSystemService(NotificationManager::class.java).activeNotifications.any {
+            it.id == TimerService.NOTIFICATION_ID &&
+                it.notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() == context.getString(R.string.timer_notification_title_running)
+        })
+        send(TimerService.ACTION_DISCARD, second, legacy = legacyClaim(second))
+        awaitCommands(4); awaitServiceStopped()
+        assertFalse(database.nextRequestDao().hasAny())
+    }
+
+    @Test fun coldRejectedLegacyCommandsNeverAcquirePersistedTimerButSystemRecoveryStillWorks() = runBlocking {
+        val oldStart = legacyClaim()
+        send(TimerService.ACTION_START, legacy = oldStart)
+        awaitCommands(1)
+        awaitState { widgetRefresh.requestCount >= 1 }
+        val current = requireNotNull(database.timeLogDao().getActiveTimeLog())
+        val currentClaim = legacyClaim()
+        val commands = database.timeLogDao().getPendingTimerCommands()
+        stopService()
+        fun explicit(action: String?, claim: LegacyWidgetTimerClaim) = Intent(context, TimerService::class.java).apply {
+            this.action = action
+            putExtra(TimerService.EXTRA_HABIT_ID, habitId)
+            claim.attach(this)
+        }
+        val invalid = listOf(
+            explicit(TimerService.ACTION_PAUSE, oldStart), // A start display cannot control the later active session.
+            explicit(TimerService.ACTION_PAUSE, currentClaim).apply {
+                putExtra("com.dayforge.widget.timer.legacy_claim", "malformed")
+            },
+            explicit(null, currentClaim), // An explicit claim cannot impersonate a system restart.
+            explicit("com.dayforge.timer.UNKNOWN", currentClaim)
+        )
+        for (intent in invalid) {
+            context.startService(intent)
+            awaitServiceStopped()
+            assertEquals(current, database.timeLogDao().getActiveTimeLog())
+            assertEquals(commands, database.timeLogDao().getPendingTimerCommands())
+            assertFalse(context.getSystemService(NotificationManager::class.java).activeNotifications.any {
+                it.id == TimerService.NOTIFICATION_ID
+            })
+        }
+        val refreshed = widgetRefresh.requestCount
+        send(null) // Independent, genuinely unclaimed system recovery is still supported.
+        awaitState { widgetRefresh.requestCount > refreshed }
+        assertEquals(current, database.timeLogDao().getActiveTimeLog())
+        assertTrue(context.getSystemService(NotificationManager::class.java).activeNotifications.any {
+            it.id == TimerService.NOTIFICATION_ID
+        })
+        send(TimerService.ACTION_DISCARD, legacy = legacyClaim())
+        awaitCommands(2); awaitServiceStopped()
+        assertFalse(database.nextRequestDao().hasAny())
+    }
+
+    @Test fun legacySwitchAndOrdinaryAppDiscardRetainExactSessionsAndRejectIdOnlyColdDialog() = runBlocking {
+        send(TimerService.ACTION_START, legacy = legacyClaim())
+        awaitCommands(1)
+        val first = requireNotNull(database.timeLogDao().getActiveTimeLog())
+        val second = database.habitDao().insert(requireNotNull(database.habitDao().getHabitById(habitId))
+            .copy(id = 0, uuid = UUID.randomUUID().toString(), name = "Second legacy timer", isCountdown = true))
+        fun switchIntent(claim: LegacyWidgetTimerClaim) = Intent(context, com.dayforge.widget.timer.TimerConfirmationActivity::class.java)
+            .apply { claim.attach(this) }
+        fun ready(text: Int) = compose.waitUntil(5000) {
+            compose.onAllNodes(androidx.compose.ui.test.hasText(context.getString(text)) and androidx.compose.ui.test.isEnabled())
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        val old = legacyClaim(second)
+        ActivityScenario.launch<com.dayforge.widget.timer.TimerConfirmationActivity>(switchIntent(old)).use { scenario ->
+            ready(R.string.action_confirm)
+            send(TimerService.ACTION_PAUSE, legacy = legacyClaim())
+            awaitCommands(2)
+            compose.onNodeWithText(context.getString(R.string.action_confirm)).performClick()
+            awaitState { scenario.state == androidx.lifecycle.Lifecycle.State.DESTROYED }
+        }
+        assertEquals(first.uuid, database.timeLogDao().getActiveTimeLog()!!.uuid)
+        assertEquals(2, database.timeLogDao().getPendingTimerCommands().size)
+        ActivityScenario.launch<com.dayforge.widget.timer.TimerConfirmationActivity>(switchIntent(legacyClaim(second))).use { scenario ->
+            ready(R.string.action_confirm)
+            compose.onNodeWithText(context.getString(R.string.action_confirm)).performClick()
+            awaitState { scenario.state == androidx.lifecycle.Lifecycle.State.DESTROYED }
+        }
+        awaitCommands(4)
+        val current = requireNotNull(database.timeLogDao().getActiveTimeLog())
+        assertEquals(second, current.habitId)
+        assertNull(database.timeLogDao().getById(first.id))
+        val unknown = com.dayforge.widget.timer.CountdownDiscardActivity.createIntent(context, second, 1, 59)
+        ActivityScenario.launch<com.dayforge.widget.timer.CountdownDiscardActivity>(unknown).use { scenario ->
+            awaitState { scenario.state == androidx.lifecycle.Lifecycle.State.DESTROYED }
+        }
+        assertEquals(current, database.timeLogDao().getActiveTimeLog())
+        assertNull(timerManager.stopTimer(second, 1)) // The legitimate App path captures a new dialog identity once.
+        ready(R.string.action_discard)
+        compose.onNodeWithText(context.getString(R.string.action_discard)).performClick()
+        awaitCommands(5); awaitServiceStopped()
+        assertNull(database.timeLogDao().getActiveTimeLog())
+        assertEquals(listOf("start", "pause", "cancel", "start", "cancel"),
+            database.timeLogDao().getPendingTimerCommands().map { it.commandType })
     }
 
     private suspend fun stopService() {

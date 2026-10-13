@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Build
 import com.dayforge.domain.model.TimerActionAuthority
 import com.dayforge.domain.model.TimerStartGuard
+import com.dayforge.data.repository.LegacyWidgetTimerClaim
 
 /** Sends explicit commands to [TimerService] without owning timer state. */
 object TimerServiceController {
@@ -14,7 +15,8 @@ object TimerServiceController {
         targetMinutes: Int,
         isCountdown: Boolean = false,
         authority: TimerActionAuthority? = null,
-        startGuard: TimerStartGuard? = null
+        startGuard: TimerStartGuard? = null,
+        legacyWidget: LegacyWidgetTimerClaim? = null
     ) {
         val intent = commandIntent(
             context = context,
@@ -22,7 +24,8 @@ object TimerServiceController {
             habitId = habitId,
             targetMinutes = targetMinutes,
             isCountdown = isCountdown,
-            authority = authority
+            authority = authority,
+            legacyWidget = legacyWidget
         )
         startGuard?.attach(intent)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -32,27 +35,31 @@ object TimerServiceController {
         }
     }
 
-    fun pauseTimer(context: Context, habitId: Long, targetMinutes: Int, authority: TimerActionAuthority? = null) {
+    fun pauseTimer(context: Context, habitId: Long, targetMinutes: Int, authority: TimerActionAuthority? = null,
+        legacyWidget: LegacyWidgetTimerClaim? = null) {
         context.startService(
-            commandIntent(context, TimerService.ACTION_PAUSE, habitId, targetMinutes, authority = authority)
+            commandIntent(context, TimerService.ACTION_PAUSE, habitId, targetMinutes, authority = authority, legacyWidget = legacyWidget)
         )
     }
 
-    fun resumeTimer(context: Context, habitId: Long, targetMinutes: Int, authority: TimerActionAuthority? = null) {
+    fun resumeTimer(context: Context, habitId: Long, targetMinutes: Int, authority: TimerActionAuthority? = null,
+        legacyWidget: LegacyWidgetTimerClaim? = null) {
         context.startService(
-            commandIntent(context, TimerService.ACTION_RESUME, habitId, targetMinutes, authority = authority)
+            commandIntent(context, TimerService.ACTION_RESUME, habitId, targetMinutes, authority = authority, legacyWidget = legacyWidget)
         )
     }
 
-    fun stopTimer(context: Context, habitId: Long, targetMinutes: Int, authority: TimerActionAuthority? = null) {
+    fun stopTimer(context: Context, habitId: Long, targetMinutes: Int, authority: TimerActionAuthority? = null,
+        legacyWidget: LegacyWidgetTimerClaim? = null) {
         context.startService(
-            commandIntent(context, TimerService.ACTION_STOP, habitId, targetMinutes, authority = authority)
+            commandIntent(context, TimerService.ACTION_STOP, habitId, targetMinutes, authority = authority, legacyWidget = legacyWidget)
         )
     }
 
-    fun discardTimer(context: Context, habitId: Long, targetMinutes: Int, authority: TimerActionAuthority? = null) {
+    fun discardTimer(context: Context, habitId: Long, targetMinutes: Int, authority: TimerActionAuthority? = null,
+        legacyWidget: LegacyWidgetTimerClaim? = null) {
         context.startService(
-            commandIntent(context, TimerService.ACTION_DISCARD, habitId, targetMinutes, authority = authority)
+            commandIntent(context, TimerService.ACTION_DISCARD, habitId, targetMinutes, authority = authority, legacyWidget = legacyWidget)
         )
     }
 
@@ -62,7 +69,8 @@ object TimerServiceController {
         habitId: Long,
         targetMinutes: Int,
         isCountdown: Boolean? = null,
-        authority: TimerActionAuthority? = null
+        authority: TimerActionAuthority? = null,
+        legacyWidget: LegacyWidgetTimerClaim? = null
     ): Intent = Intent(context, TimerService::class.java).apply {
         this.action = action
         putExtra(TimerService.EXTRA_HABIT_ID, habitId)
@@ -70,6 +78,8 @@ object TimerServiceController {
         if (isCountdown != null) {
             putExtra(TimerService.EXTRA_IS_COUNTDOWN, isCountdown)
         }
+        require(authority == null || legacyWidget == null)
         authority?.attach(this)
+        legacyWidget?.attach(this)
     }
 }
