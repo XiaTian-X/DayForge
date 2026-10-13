@@ -41,7 +41,8 @@ internal class NextSyncReplyInvalid : IOException("SYNC_RESPONSE_INVALID")
 @Singleton
 internal class NextSyncHttp private constructor(
     private val shared: OkHttpClient, private val tokens: TokenManager,
-    private val captureRoute: suspend () -> MaterialHttpRoute
+    private val captureRoute: suspend () -> MaterialHttpRoute,
+    private val requireConnection: suspend () -> Unit = {}
 ) {
     @Inject constructor(@ApplicationContext context: Context, shared: OkHttpClient, tokens: TokenManager,
         preferences: PreferencesManager, selected: SelectedNetworkTransport) : this(shared, tokens, {
@@ -56,6 +57,9 @@ internal class NextSyncHttp private constructor(
 
     internal constructor(shared: OkHttpClient, tokens: TokenManager, origin: HttpUrl) :
         this(shared, tokens, { MaterialHttpRoute(origin, null) })
+
+    internal fun onReplicaRoute(route: MaterialHttpRoute, requireOpen: suspend () -> Unit): NextSyncHttp =
+        NextSyncHttp(shared, tokens, { requireOpen(); route }, requireOpen)
 
     /** Only exact public v5 proof admits calls. Null means unsupported, never sync success. */
     suspend fun <T> session(captured: LocalSyncAccess, block: suspend (Session) -> T): T? {
@@ -105,12 +109,13 @@ internal class NextSyncHttp private constructor(
             .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
             .connectTimeout(10, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS).callTimeout(45, TimeUnit.SECONDS)
             .addNetworkInterceptor { chain ->
+                runBlocking { requireConnection() }
                 if (!route.matches(chain.request().url)) throw IOException("SYNC_ROUTE_CHANGED")
                 runBlocking { authorize(tokens, context, recoveryReadOnly = noRefresh) }
                 destinationRead?.let { runBlocking { it.authorizeRequest(tokens, chain.request()) } }
                 chain.proceed(chain.request())
             }.build()
-        val session = Session(client, tokens, context, route, requireNotNull(currentCoroutineContext()[Job]), noRefresh, destinationRead)
+        val session = Session(client, tokens, context, route, requireNotNull(currentCoroutineContext()[Job]), noRefresh, destinationRead, requireConnection)
         try {
             return block(session, context)
         } finally {
@@ -142,7 +147,8 @@ internal class NextSyncHttp private constructor(
     internal class Session internal constructor(
         private val client: OkHttpClient, private val tokens: TokenManager, private val context: LocalSyncAccess,
         private val route: MaterialHttpRoute, private val owner: Job, private val recoveryReadOnly: Boolean = false,
-        private val destinationRead: ReplicaDestinationReadAccess? = null
+        private val destinationRead: ReplicaDestinationReadAccess? = null,
+        private val requireConnection: suspend () -> Unit = {}
     ) {
         private var closed = false
         internal fun close() { closed = true }
@@ -457,6 +463,7 @@ internal class NextSyncHttp private constructor(
         }
 
         private suspend fun execute(request: Request, limit: Int): ByteArray {
+            requireConnection()
             check(!closed && currentCoroutineContext()[Job] === owner) { "SYNC_SCOPE_CHANGED" }
             check(!recoveryReadOnly || request.method == "GET") { "SYNC_RECOVERY_READ_ONLY" }
             return supervisorScope {
@@ -479,6 +486,7 @@ internal class NextSyncHttp private constructor(
                     cancellation.cancel()
                     withContext(NonCancellable) { worker.join() }
                 }
+                requireConnection()
                 authorize(tokens, context, recoveryReadOnly)
                 result
             }

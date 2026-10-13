@@ -19,6 +19,34 @@
 
 ## 验证层级
 
+### 恢复连接与生产服务组合（2026-10-13，Issue #160）
+
+恢复分支新增可注入的显式操作组合入口，复用规范业务协调器、账户锁、图标运行时和
+DataStore；尚未由正式界面调用。只读地址选择不写冻结偏好或全局网络选择，同账户
+重新认证以完整持久快照CAS仅更新凭据。提交前冷续行只返回新的确认材料；提交后有界
+向前完成，不自动重放旧工作或授权恢复。孤立日志阻止新预览/归档且不初始化素材库。
+
+保留失败记录：`e5f1d2bcecb14cab9b53a5eb7281fe96` 因私有校验函数缺少suspend而
+编译失败，没有行为执行。`d32b842a30d4493580bb0668cb87b15c` 完整133项中130通过、
+3失败（XML566.679秒）。两项发现固定路由误用于普通请求的真实回归，已将标记限定于
+显式恢复连接；另一项新增测试误用仅允许提交阶段的SQL命运API，改为核对完整旧副本、
+实际栅栏和旧检查点。没有删除业务断言或放宽生产门禁；失败不能由后续绿灯抹除。
+
+最终 `3509a51f4f69413dbd64b6724ff32c4b` 在授权MI6/API35、隔离testbed完成八个完整类：
+RecoveryConnection15、RecoveryComposition4、NextSyncHttp44、RecoveryPreviewHttp13、
+BaseUrlInterceptor2、AccountIconHttp28、TokenManager14、Presentation8，共128项，
+0失败/错误/跳过；构建/lint3分15秒，connected8分29秒，XML485.906秒，最长单项71.294秒。
+真实TCP/Room/私有档案验证规范组合、旧凭据缺失、错误账户/代次、认证迟到与取消、
+加密失败原子回滚、绑定LAN/缺失默认网络、冷续行、显式离线取消及普通路由回归。
+
+targeted.json SHA256 `cf698769df47a1ca217f7c33bfca2162863b0c1518859298717346cbfdd02bd6`；
+XML SHA256 `6c89124334dd5f081e7e7915508a0c4f3da044eaf854f54a7ee953b86a2a82ed`。
+APK SHA256 `1d38f89b0358e76c0d96a4393a7f85e276135ca6bd67e5e126222e9ab4bf40d2` /
+`126510e1fa3410ebc953863dc180d62c076dcb147e79f9e08333c8df81ec94ee`。
+发现、新EC、警告门禁及测试包清理通过；回执保存在忽略的dayforge-device运行目录。
+定向范围不代替全量、正式Hilt页面、真实FastAPI恢复联合或人工验收。普通UI、后端、
+schema及默认v5未改变；没有Docker、正式APK安装、部署或主分支交付。
+
 ### 恢复终态放行与完成日志一致性（2026-10-13，Issue #160）
 
 恢复分支现实现有界业务/素材重验→RELEASING意图CAS→实际SQL收尾→收尾后完整

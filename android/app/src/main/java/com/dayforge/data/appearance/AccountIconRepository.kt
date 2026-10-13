@@ -94,6 +94,17 @@ internal class AccountIconRepository(
         tokens === value && sessions === coordinator
     internal fun remoteCatalog(transfers: AccountIconTransfers) = AccountIconRemoteCatalog(database, this, transfers)
 
+    /** Compose recovery from this exact provider; never expose a second icon DAO/runtime. */
+    internal fun replicaInputReader(context: android.content.Context,
+        businessDatabase: com.dayforge.data.local.HabitDatabase, preferences: com.dayforge.data.local.PreferencesManager,
+        http: com.dayforge.data.api.NextSyncHttp, transfers: AccountIconTransfers, store: AccountIconStore,
+        appearancePreferences: androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>,
+        themes: ThemeFileRepository, builtIns: BuiltInThemes): com.dayforge.data.repository.NextReplicaArchiveInputReader {
+        require(store.usesMetadata(this)) { "SYNC_ARCHIVE_STORE_MISMATCH" }
+        return com.dayforge.data.repository.NextReplicaArchiveInputReader(context, businessDatabase, tokens, sessions,
+            preferences, http, database, this, transfers, store.replicaFiles(), appearancePreferences, themes, builtIns)
+    }
+
     internal fun registerCache(cache: com.dayforge.data.local.AccountIconMemory.Cache) =
         tokens.registerIconCache(cache)
 

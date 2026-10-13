@@ -1,6 +1,7 @@
 package com.dayforge.data.api.interceptor
 
 import com.dayforge.data.local.PreferencesManager
+import com.dayforge.data.api.MaterialHttpRoute
 import java.io.IOException
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -26,6 +27,13 @@ class BaseUrlInterceptor @Inject constructor(
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
+
+        // Only the explicit recovery connection owns a fixed origin independent of frozen
+        // preferences. Ordinary calls retain their existing abort-on-config-change checks.
+        request.tag(MaterialHttpRoute::class.java)?.takeIf { it.preserveReplicaOrigin }?.let { route ->
+            if (!route.matches(request.url)) throw IOException("MATERIAL_ROUTE_CHANGED")
+            return chain.proceed(request)
+        }
 
         // Use cached URL (no blocking)
         val customServerUrl = runBlocking {

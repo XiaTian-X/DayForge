@@ -7,7 +7,11 @@ import okhttp3.OkHttpClient
 import javax.net.SocketFactory
 
 /** Transient verified-at-admission routing; never credentials or a durable queue value. */
-internal class MaterialHttpRoute(val origin: HttpUrl, private val network: Network?) {
+internal class MaterialHttpRoute private constructor(val origin: HttpUrl, private val network: Network?,
+    val preserveReplicaOrigin: Boolean) {
+    constructor(origin: HttpUrl, network: Network?) : this(origin, network, false)
+    /** Routing only. Grants no auth, writable Session, COMMIT or material permission. */
+    internal fun forReplicaRecovery() = MaterialHttpRoute(origin, network, true)
     init {
         require(origin.encodedPath == "/" && origin.query == null && origin.fragment == null &&
             origin.username.isEmpty() && origin.password.isEmpty())

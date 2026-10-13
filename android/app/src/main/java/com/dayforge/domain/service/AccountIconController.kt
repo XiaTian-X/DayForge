@@ -188,6 +188,19 @@ class AccountIconController internal constructor(
         withContext(Dispatchers.IO) { block(runtime.value) }
     internal fun registerConsumer(cache: AccountIconMemory.Cache) = tokens.registerIconCache(cache)
     internal suspend fun capture() = io { it.metadata.capture() }
+
+    /** Explicit recovery owner reuses the ONE lazy runtime. Unknown authentication must not
+     * initialize storage. Establish normal owned Room baseline before archive schema reads;
+     * scoped workflow proofs, not this callback, authorize any frozen/destination mutations.
+     */
+    internal suspend fun <T> withReplicaRuntime(block: suspend (AccountIconRuntime) -> T): T = withContext(Dispatchers.IO) {
+        val access = requireNotNull(tokens.localIconAccess()) { "ICON_ACCESS_DENIED" }
+        val storage = runtime.value
+        val context = storage.metadata.capture()
+        check(context.access == access) { "ICON_SESSION_CHANGED" }
+        storage.metadata.recoveryMetadata(context)
+        block(storage)
+    }
     internal suspend fun prepareConfigExport(context: AccountIconContext, uses: List<ConfigIconUse>,
         manifest: (com.dayforge.domain.model.IconPack?, List<String>) -> com.dayforge.domain.model.ConfigBundle) =
         io { AccountConfigExport(it.metadata, it.store).prepare(context, uses, manifest) }

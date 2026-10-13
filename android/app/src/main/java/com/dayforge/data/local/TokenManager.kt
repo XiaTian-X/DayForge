@@ -67,6 +67,11 @@ class AuthenticationSnapshot(
     val refreshToken: String?
 )
 
+/** Ephemeral login witness, not replica authority. Never stringify/export its raw preferences. */
+internal class ReplicaLoginWitness internal constructor(internal val owner: TokenManager,
+    internal val values: Preferences, val accountId: String, val serverInstanceId: String,
+    val currentEpoch: String, val destinationEpoch: String?)
+
 /**
  * Manages authentication tokens using DataStore for persistent storage.
  * Provides secure storage for access and refresh tokens.
@@ -246,6 +251,71 @@ class TokenManager @Inject constructor(
     /** Read request credentials and their account generation from one DataStore snapshot. */
     suspend fun authenticationSnapshot(): AuthenticationSnapshot? =
         snapshot(dataStore.data.first())
+
+    /** Same-owner recovery login may work even when the old JWT cannot be decrypted/used.
+     * No registration, account adoption, stage repair or namespace publication is authorized.
+     */
+    internal suspend fun replicaLoginWitness(): ReplicaLoginWitness = replicaLoginWitness(dataStore.data.first())
+
+    private suspend fun replicaLoginWitness(values: Preferences): ReplicaLoginWitness {
+        val account = requireNotNull(values[SYNC_ACCOUNT_ID_KEY]) { "SYNC_RECOVERY_LOGIN_SCOPE_INVALID" }
+        val server = requireNotNull(values[SERVER_INSTANCE_ID_KEY]) { "SYNC_RECOVERY_LOGIN_SCOPE_INVALID" }
+        val epoch = requireNotNull(values[SYNC_EPOCH_KEY]) { "SYNC_RECOVERY_LOGIN_SCOPE_INVALID" }
+        val device = requireNotNull(values[SYNC_DEVICE_ID_KEY]) { "SYNC_RECOVERY_LOGIN_SCOPE_INVALID" }
+        val installation = requireNotNull(values[INSTALLATION_ID_KEY]) { "SYNC_RECOVERY_LOGIN_SCOPE_INVALID" }
+        require(listOf(account, server, epoch, device, installation).all { com.dayforge.domain.model.isContractUuid(it) })
+        require(values[USER_ID_KEY]?.let { it == account } != false &&
+            values[DEVICE_CAPABILITIES_KNOWN_KEY] == true && values[DEVICE_CAPABILITIES_DEVICE_KEY] == device &&
+            values[DEVICE_CAPABILITY_REVISION_KEY]?.toIntOrNull()?.let { it > 0 } == true &&
+            "sync.read" in values[DEVICE_CAPABILITIES_KEY].orEmpty()) { "SYNC_RECOVERY_LOGIN_SCOPE_INVALID" }
+        val stage = if (ReplicaSwitchGuard.blocked(values)) {
+            val id = requireNotNull(values[ReplicaSwitchGuard.POINTER]) { "SYNC_REPLICA_STAGE_MISSING" }
+            ReplicaSwitchStage.decode(requireNotNull(values[ReplicaSwitchStage.key(id)]) { "SYNC_REPLICA_STAGE_MISSING" }).also {
+                verifyReplicaAudits(values, it)
+                require(!it.terminal && it.recoveryId == id && it.accountId == account &&
+                    it.serverInstanceId == server && it.installationId == installation && it.deviceId == device &&
+                    epoch == if (it.destinationPending) it.newEpoch else it.oldEpoch) { "SYNC_REPLICA_STAGE_CHANGED" }
+            }
+        } else null
+        return ReplicaLoginWitness(this, values, account, server, epoch, stage?.newEpoch)
+    }
+
+    internal suspend fun requireReplicaLoginWitness(expected: ReplicaLoginWitness) {
+        requireReplicaLoginWitness(expected, dataStore.data.first())
+    }
+
+    private suspend fun requireReplicaLoginWitness(expected: ReplicaLoginWitness, values: Preferences) {
+        check(expected.owner === this && values.asMap() == expected.values.asMap()) {
+            "SYNC_RECOVERY_LOGIN_CHANGED"
+        }
+        val actual = replicaLoginWitness(values)
+        check(actual.accountId == expected.accountId && actual.serverInstanceId == expected.serverInstanceId &&
+            actual.currentEpoch == expected.currentEpoch && actual.destinationEpoch == expected.destinationEpoch) {
+            "SYNC_RECOVERY_LOGIN_CHANGED"
+        }
+    }
+
+    /** The exact pre-request witness and SAME public account must survive ONE actor CAS.
+     * Keep all sync/device/stage/installation/preferences bytes; replace credentials only.
+     */
+    internal suspend fun saveReplicaLogin(expected: ReplicaLoginWitness, accessToken: String,
+        refreshToken: String, username: String, userId: String, isAdmin: Boolean): AuthenticationSession {
+        require(userId == expected.accountId && com.dayforge.domain.model.isContractUuid(userId) &&
+            com.dayforge.data.api.materialTokenSafe(accessToken) && com.dayforge.data.api.materialTokenSafe(refreshToken)) {
+            "SYNC_RECOVERY_LOGIN_ACCOUNT_MISMATCH"
+        }
+        val generation = UUID.randomUUID().toString()
+        editPreferences { values ->
+            requireReplicaLoginWitness(expected, values)
+            values[AUTH_SESSION_KEY] = generation
+            values[ACCESS_TOKEN_KEY] = tokenCipher.encrypt(accessToken)
+            values[REFRESH_TOKEN_KEY] = tokenCipher.encrypt(refreshToken)
+            values[USER_EMAIL_KEY] = username
+            values[USER_ID_KEY] = userId
+            values[IS_ADMIN_KEY] = isAdmin
+        }
+        return AuthenticationSession(userId, generation)
+    }
 
     /** Read ownership, generation, replica and permissions from the same persisted snapshot. */
     internal suspend fun localFactAccess(): LocalFactAccess? {
