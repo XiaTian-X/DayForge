@@ -7,6 +7,9 @@ import com.dayforge.domain.model.*
 import java.util.Collections
 import kotlinx.serialization.json.*
 
+/** Keeps exact immutable gaps available for the explicit recovery page; never access authority. */
+internal class ReplicaMaterialUnavailable(val diagnostics: ReplicaMaterialPreflight, code: String) : IllegalStateException(code)
+
 /** Fresh metadata diagnostics only: no file proof, selection, consent or activation permit. */
 internal class ReplicaMaterialPreflight private constructor(val selection: AccountIconSelection,
     val missingPack: Boolean, val changedPack: Boolean, missingAssets: Set<String>,
@@ -18,10 +21,14 @@ internal class ReplicaMaterialPreflight private constructor(val selection: Accou
     val activationAuthorized: Boolean get() = false
     val nativeFilesVerified: Boolean get() = false
     fun requireAvailable() {
-        check(!missingPack) { "ICON_RECOVERY_PACK_MISSING" }
-        check(!changedPack) { "ICON_RECOVERY_PACK_CHANGED" }
-        check(missingAssets.isEmpty()) { "ICON_RECOVERY_REFERENCE_MISSING" }
-        check(pendingVariants.isEmpty()) { "ICON_RECOVERY_CONTENT_PENDING" }
+        val code = when {
+            missingPack -> "ICON_RECOVERY_PACK_MISSING"
+            changedPack -> "ICON_RECOVERY_PACK_CHANGED"
+            missingAssets.isNotEmpty() -> "ICON_RECOVERY_REFERENCE_MISSING"
+            pendingVariants.isNotEmpty() -> "ICON_RECOVERY_CONTENT_PENDING"
+            else -> null
+        }
+        if (code != null) throw ReplicaMaterialUnavailable(this, code)
     }
 
     companion object {

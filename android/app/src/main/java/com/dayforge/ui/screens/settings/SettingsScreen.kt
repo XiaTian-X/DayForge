@@ -26,6 +26,7 @@ import com.dayforge.data.model.SyncProgress
 import com.dayforge.data.local.entity.SyncOutboxEntity
 import com.dayforge.data.local.entity.SyncConflictEntity
 import com.dayforge.data.local.entity.TimerCommandEntity
+import com.dayforge.ui.screens.recovery.LocalReplicaRecoveryEntry
 import kotlinx.coroutines.launch
 import java.util.Locale
 
@@ -44,6 +45,7 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
     onNavigateToIcons: () -> Unit = {}
 ) {
+    val openReplicaRecovery = LocalReplicaRecoveryEntry.current
     val syncProgress by viewModel.syncProgress.collectAsState()
     val isOnline by viewModel.isOnline.collectAsState()
     val lastSyncTime by viewModel.lastSyncTime.collectAsState()
@@ -271,6 +273,13 @@ fun SettingsScreen(
                     onSyncClick = { viewModel.sync() },
                     onMakePrimaryClick = { viewModel.makeCurrentDevicePrimary() }
                 )
+            }
+
+            // Explicit recovery entry only for the existing next-profile observation.
+            if (syncProblems is com.dayforge.data.model.SyncProblems.Next && openReplicaRecovery != null) item {
+                TextButton(openReplicaRecovery, modifier = Modifier.testTag("settings-replica-recovery")) {
+                    Text(stringResource(R.string.replica_recovery_title))
+                }
             }
 
             // Divider

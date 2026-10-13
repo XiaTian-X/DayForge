@@ -58,6 +58,21 @@ class TokenManagerTest {
         assertTrue(persisted.contains("encrypted:refresh-secret"))
     }
 
+    @Test fun recovery_ui_generation_does_not_decrypt_tokens_or_grant_authenticated_access() = runBlocking {
+        val user = UUID.randomUUID().toString()
+        manager.saveLoginSession("synthetic-access", "synthetic-refresh", "member", user, false)
+        val expected = manager.authenticationSnapshot()!!.session
+        val unreadable = TokenManager(store, object : TokenCipher {
+            override fun encrypt(value: String): String = throw AssertionError("Read must not encrypt")
+            override fun decrypt(value: String): String = throw IllegalStateException("Synthetic Keystore failure")
+        })
+        val before = store.data.first()
+        assertEquals(expected, unreadable.replicaUiAuthentication()); assertEquals(before, store.data.first())
+        try { unreadable.authenticationSnapshot(); fail("Metadata is not authenticated access") }
+        catch (error: IllegalStateException) { assertEquals("Synthetic Keystore failure", error.message) }
+        manager.clearAuthenticationTokens(); assertNull(unreadable.replicaUiAuthentication())
+    }
+
     @Test
     fun failed_login_session_write_rolls_back_owner_credentials_and_replica_metadata() = runBlocking {
         manager.prepareSyncAccount("account-a")

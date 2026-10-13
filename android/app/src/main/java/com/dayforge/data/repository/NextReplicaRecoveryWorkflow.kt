@@ -28,7 +28,7 @@ internal sealed interface ReplicaCompletionOutcome {
     data class Completed(val stage: ReplicaSwitchStage) : ReplicaCompletionOutcome
 }
 
-/** Recovery owner through actual SQL COMMIT, not installed in the production UI or DI graph.
+/** Recovery owner composed by ReplicaRecoveryRepository for explicit production actions.
  * Shared sync serialization drains manual/worker requests; persistent gates stop new ordinary
  * work. Full input inspection takes the real icon/theme leases and rechecks every source byte.
  * Interrupted FREEZING/FROZEN stays blocked; no implicit cancel, orphan adoption or data rollback.

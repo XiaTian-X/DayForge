@@ -252,6 +252,17 @@ class TokenManager @Inject constructor(
     suspend fun authenticationSnapshot(): AuthenticationSnapshot? =
         snapshot(dataStore.data.first())
 
+    /** Credential-free UI generation only, NOT authenticated access. Allows explicit recovery
+     * login even when old Keystore ciphertext is unusable; actual operations still prove auth.
+     */
+    internal suspend fun replicaUiAuthentication(): AuthenticationSession? {
+        val values = dataStore.data.first()
+        val user = values[USER_ID_KEY] ?: return null
+        val generation = values[AUTH_SESSION_KEY] ?: return null
+        if (!com.dayforge.domain.model.isContractUuid(user) || !com.dayforge.domain.model.isContractUuid(generation)) return null
+        return AuthenticationSession(user, generation)
+    }
+
     /** Same-owner recovery login may work even when the old JWT cannot be decrypted/used.
      * No registration, account adoption, stage repair or namespace publication is authorized.
      */

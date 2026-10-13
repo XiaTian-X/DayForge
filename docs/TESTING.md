@@ -19,6 +19,42 @@
 
 ## 验证层级
 
+### Android 显式恢复页面与账户隔离
+
+2026-10-13，Issue #160 / D-022。恢复分支将Activity独立恢复ViewModel、根级页面、
+next设置入口接入生产服务组合。冷启动只读控制；显式预览/归档/勾选确认/有界续行与
+实际旧副本取消分别委托原仓库。全部差异、原表记录及精确素材缺口可查看，密码/同意
+不持久化，账户失效同时撤销独立弹窗和旧回调；状态读取不展示其他账户的档案信息。
+
+保留失败记录：`9f3b08be331d4491b6ff376fea09bb2b` 构建3分51秒后因测试显式导入
+成员扩展assertDoesNotExist失败，未执行行为；修正为现有Compose测试导入方式。
+`a28e97c926c843a3b2be2a81d81540fd` 编译完成，但lint在3分22秒拒绝两条新增计数字符串
+的PluralsCandidate，没有行为测试或成功回执。文案改用数量标签，不加入baseline或禁用lint。
+
+最终 `4f1acfb3a75c45518ea03c98dd5adb1e` 在授权MI6/API35及隔离testbed执行九完整类：
+RecoveryViewModel13、RecoveryContent6、RecoveryRoot2、RecoveryUiIntegration1、
+RecoveryHiltEntry1、PresentationGate6、MaterialPreflight8、RecoveryComposition5、
+TokenManager15，共57项，0失败/错误/跳过。构建/lint2分9秒，connected6分51秒，
+XML377.468秒，最长单项75.455秒；root62及发现/告警预算/新EC/测试包清理通过。
+
+ViewModel/Content测试用模拟动作及有效形状的UI哨兵，只证明同意、双击、失效、迟到
+发布、完整Unicode文本、逐表读取和独立弹窗回调边界，不构成SQL/档案证明。Root使用
+实际Room/DataStore/显示控制与导航生命周期，但动作边界仍模拟。UiIntegration使用
+正式Root→ViewModel→service→规范repository、Room/DataStore、私有档案及原生素材
+工作流和自有TCP，验证显式归档到最终放行、档案/主题保留及不重放旧请求。HiltEntry
+通过真实MainActivity/Hilt冷启动验证根ViewModel所有权及默认档位未打开恢复，不冒称
+设置点击旅程、真实后端恢复或人工手机/平板验收。新增账户错配和旧密文不可读用例
+分别使用真实持久控制/文件DataStore，不放宽HTTP权限或将无凭据代次当作认证。
+
+targeted.json SHA256 `3439bad373390db120b9ebfbfcdc8ff86c72f8b56b90ff492a1375cdcb87b06f`；
+XML SHA256 `2e3a9148892c96014057321606647771c06596a11249e76b2528d6f753cd5984`。
+APK SHA256 `7299bf412c6f35bc0e4e128f21c9562e1ffc307a8380c2d33d29ab80b8725fc4` /
+`154049fa11a68f1a106ce0c9bffb8a39ea840dd85b9be7bbd963be624ed6e2a2`。
+报告仅保存在忽略的运行目录；验证结束后仅整理MainActivity缩进及说明注释，未再改行为。
+本批未运行Android全量/覆盖率校准、实际FastAPI跨epoch联合、后端测试、人工/外网/NAS
+或本机Docker，未操作正式数据/部署/正式APK/默认v5，未改业务/API/schema/依赖或既有业务页面布局。
+下一批补实际后端备份恢复联合，再完成必要最终门禁、精确CI及完整依赖合并；尚非main交付。
+
 ### 恢复连接与生产服务组合（2026-10-13，Issue #160）
 
 恢复分支新增可注入的显式操作组合入口，复用规范业务协调器、账户锁、图标运行时和

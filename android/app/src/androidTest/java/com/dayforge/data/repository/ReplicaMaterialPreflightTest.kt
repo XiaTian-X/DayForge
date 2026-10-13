@@ -68,7 +68,9 @@ class ReplicaMaterialPreflightTest : NextCoreRequestFixture() {
         val direct = response(direct = asset.assetId, missing = listOf(asset.assetId))
         val proof = ReplicaMaterialPreflight.checked(direct, original())
         assertEquals(setOf(asset.assetId), proof.missingAssets)
-        assertEquals("ICON_RECOVERY_REFERENCE_MISSING", rejected { proof.requireAvailable() }.message)
+        val failure = rejected { proof.requireAvailable() }
+        assertEquals("ICON_RECOVERY_REFERENCE_MISSING", failure.message)
+        assertSame(proof, (failure as ReplicaMaterialUnavailable).diagnostics)
         assertNotNull(rejected { direct.copy(materialPreview = direct.materialPreview!!.copy(missingAssets = emptyList())) })
     }
     @Test fun declaredDarkVariantMustBeReadyAndMetadataStillIsNotByteProof() = runBlocking<Unit> {

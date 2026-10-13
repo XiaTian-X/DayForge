@@ -8,8 +8,8 @@ import com.dayforge.data.local.TokenManager
 import com.dayforge.data.local.entity.NextReplicaFenceEntity
 import com.dayforge.domain.service.AccountSessionCoordinator
 
-/** Journal participant, deliberately not connected to the production recovery UI.
- * The eventual owner must supply freshly verified full inputs, drain file/network work and bind
+/** Journal participant only; the UI invokes the owning recovery workflow, not this store.
+ * That owner must supply freshly verified full inputs, drain file/network work and bind
  * the durable archive before offering confirmation. FREEZING may persist before SQL acquisition;
  * that gap is blocked and explicit retry/cancel observes real state, never assumed atomicity.
  */

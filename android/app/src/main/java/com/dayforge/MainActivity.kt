@@ -9,6 +9,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
@@ -49,6 +50,8 @@ import com.dayforge.ui.navigation.HabitNavGraph
 import com.dayforge.ui.navigation.Screen
 import com.dayforge.ui.navigation.ReplicaPresentationGate
 import com.dayforge.ui.navigation.ReplicaNavigationLifetime
+import com.dayforge.ui.screens.recovery.ReplicaRecoveryRoot
+import com.dayforge.ui.screens.recovery.ReplicaRecoveryViewModel
 import com.dayforge.domain.service.ReplicaPresentationController
 import com.dayforge.ui.theme.DayForgeTheme
 import com.dayforge.ui.theme.DayForgeWindow
@@ -60,6 +63,9 @@ import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : AppCompatActivity() {
+
+    // Survives removal of the frozen business graph; never a business navigation store.
+    private val recoveryModel: ReplicaRecoveryViewModel by viewModels()
 
     private var reminderRequest by mutableStateOf<ReminderDetailRequest?>(null)
 
@@ -86,30 +92,32 @@ class MainActivity : AppCompatActivity() {
         enableEdgeToEdge()
 
         setContent {
-            ReplicaPresentationGate(replicaPresentation) { permit ->
-                val themeState by themeController.state.collectAsState()
+            ReplicaRecoveryRoot(replicaPresentation, recoveryModel) {
+                ReplicaPresentationGate(replicaPresentation) { permit ->
+                    val themeState by themeController.state.collectAsState()
 
-                // Calculate WindowSizeClass - auto-updates on resize/rotation
-                val windowSizeClass: WindowSizeClass = calculateWindowSizeClass(this)
+                    // Calculate WindowSizeClass - auto-updates on resize/rotation
+                    val windowSizeClass: WindowSizeClass = calculateWindowSizeClass(this)
 
-                val loaded = (themeState as? DeviceThemeLoadState.Ready)?.theme
-                if (loaded == null) {
-                    var recovering by remember { mutableStateOf(false) }
-                    if (recovering) ThemeRecoveryScreen(onBack = { recovering = false })
-                    else ThemeLoadScreen(themeState, themeController::retry, onManage = { recovering = true })
-                } else DayForgeTheme(theme = loaded) {
-                    CompositionLocalProvider(LocalAccountIcons provides iconController) {
-                        ReplicaNavigationLifetime(permit) {
-                            val navController = rememberNavController()
-                            MainScreen(
-                                activity = this@MainActivity,
-                                navController = navController,
-                                tokenManager = tokenManager,
-                                preferencesManager = preferencesManager,
-                                windowSizeClass = windowSizeClass,
-                                reminderRequest = reminderRequest,
-                                onReminderConsumed = { if (reminderRequest == it) reminderRequest = null }
-                            )
+                    val loaded = (themeState as? DeviceThemeLoadState.Ready)?.theme
+                    if (loaded == null) {
+                        var recovering by remember { mutableStateOf(false) }
+                        if (recovering) ThemeRecoveryScreen(onBack = { recovering = false })
+                        else ThemeLoadScreen(themeState, themeController::retry, onManage = { recovering = true })
+                    } else DayForgeTheme(theme = loaded) {
+                        CompositionLocalProvider(LocalAccountIcons provides iconController) {
+                            ReplicaNavigationLifetime(permit) {
+                                val navController = rememberNavController()
+                                MainScreen(
+                                    activity = this@MainActivity,
+                                    navController = navController,
+                                    tokenManager = tokenManager,
+                                    preferencesManager = preferencesManager,
+                                    windowSizeClass = windowSizeClass,
+                                    reminderRequest = reminderRequest,
+                                    onReminderConsumed = { if (reminderRequest == it) reminderRequest = null }
+                                )
+                            }
                         }
                     }
                 }

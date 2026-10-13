@@ -112,4 +112,14 @@ class ReplicaRecoveryCompositionTest : NextReplicaDestinationFixture() {
         assertEquals(projection, ReplicaProjection.capture(db).hash)
         assertEquals(ReplicaPresentationProblem.ORPHAN_STAGE, ReplicaPresentationRepository(db, tokens, sessions).inspect().problem)
     }
+
+    @Test fun recoveryServiceCannotExposeAnotherOwnersArchiveReceiptFromMismatchedPublicLoginMetadata() = runBlocking<Unit> {
+        initialize(); emptyCatalog(); val stage = committed()
+        dataStore.edit { it[androidx.datastore.preferences.core.stringPreferencesKey("user_public_id")] = id(88) }
+        val before = dataStore.data.first(); val calls = peer.requests.size
+        val service = com.dayforge.domain.service.ReplicaRecoveryService(repository(), tokens, sessions)
+        assertNotNull(rejected { service.control() })
+        assertEquals(before, dataStore.data.first()); assertEquals(calls, peer.requests.size)
+        assertEquals(0, initialized.get()); assertEquals(stage, tokens.activeReplicaStage())
+    }
 }
