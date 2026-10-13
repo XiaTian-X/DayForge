@@ -58,12 +58,13 @@ import org.junit.runner.RunWith
 /** Actual selectors/ViewModel/workflow/Hilt/Room/Glance. Only launcher discovery and host submission replaced. */
 @HiltAndroidTest
 @RunWith(AndroidJUnit4::class)
-@OptIn(ExperimentalTestApi::class)
+@OptIn(ExperimentalTestApi::class, ExperimentalCoroutinesApi::class)
 class WidgetConfigurationEntryTest {
     @get:Rule(order = 0) val widgets = IsolatedWidgetRefreshRule()
     @get:Rule(order = 1) val storage = PhysicalDatabaseRule()
     @get:Rule(order = 2) val hilt = HiltAndroidRule(this)
-    @get:Rule(order = 3) val compose = createEmptyComposeRule(effectContext = kotlinx.coroutines.test.StandardTestDispatcher())
+    private val effects = kotlinx.coroutines.test.StandardTestDispatcher()
+    @get:Rule(order = 3) val compose = createEmptyComposeRule(effectContext = effects)
     @Inject lateinit var habits: HabitRepository
     @Inject lateinit var creator: NextObjectCreator
     @Inject lateinit var tokens: TokenManager
@@ -101,6 +102,10 @@ class WidgetConfigurationEntryTest {
         coEvery { anyConstructed<TimerWidget>().update(any(), any()) } just Runs
     }
     @After fun cleanup() = runBlocking<Unit> {
+        // ActivityScenario.close() destroys Android views, but Compose effect cancellation
+        // can remain queued. Drain it on Main before the rule tears down its test scheduler.
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+        InstrumentationRegistry.getInstrumentation().runOnMainSync { effects.scheduler.runCurrent() }
         jobs.forEach { withTimeout(5000) { it.cancelAndJoin() } }
         unmockkStatic(AppWidgetManager::class)
         unmockkConstructor(GlanceAppWidgetManager::class, CheckInWidget::class, CountingWidget::class, TimerWidget::class)

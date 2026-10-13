@@ -19,6 +19,26 @@
 
 ## 验证层级
 
+### 整合候选首片失败与定向修正（2026-10-13）
+
+冻结 `ac56be9` 的 `tools/verify all`：root73通过；后端3210/3210通过（972.65秒），
+覆盖率95%，1条预算内开发JWT密钥告警，Ruff/格式/mypy255文件及OpenAPI检查通过。
+精确head的GitHub CI与双架构容器检查全部通过；托管后端独立3210项通过（1982.61秒）。
+本机没有运行Docker。Android构建/lint无新增问题，既有lint基线仍保留。
+
+真机发现2946项；run `2dbfc722eeda40b69c1ba470f39dfb69` 的第一片948项为947通过、
+1失败、0错误/跳过，connected1小时20分33秒、XML4803.326秒。唯一失败是
+`WidgetConfigurationEntryTest.allThreeActualSelectorsUseSavedOledAndBothCardStylesWithoutChangingFacts`：
+Activity关闭后Compose虚拟调度器残留生命周期取消回调，测试规则收尾在非主线程执行
+`removeObserver`。不是产品代码异常或容量超时；后两片和最终覆盖校准未执行，不能称全量通过。
+原XML及逐例日志保存在该run的`failed-results/`，XML SHA256为
+`4336ae2f78352e6f5f058d09db7311a7cc7922f06bd69309aebcca203115f070`。
+
+仅修测试清理：Activity关闭后在Main排空原effect scheduler，保留全部像素/业务断言和时限。
+完整配置类6项在 `63a2a59ab0784b83a7468c91b3e568d9` 中6/6通过，root73通过（4.208秒），
+构建/lint/告警、发现集合、新覆盖输入及testbed清理通过，connected1分40秒。
+生产代码未变；该定向结果不抹除原首片失败，也不替代尚未执行的两片及最终覆盖核验。
+
 ### 整合前完整门禁容量（2026-10-13，已批准）
 
 用户确认完整三片每片上限180分钟，定向批次仍45分钟；普通用例150秒、仅两个已批准
