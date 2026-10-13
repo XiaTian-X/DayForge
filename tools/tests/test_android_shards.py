@@ -224,7 +224,7 @@ class AndroidShardGateTest(unittest.TestCase):
         self.assertLess(names.index("shard-1"), names.index("shard-2"))
         self.assertLess(names.index("shard-2"), names.index("coverage"))
         self.assertEqual(3, SHARDS)
-        self.assertEqual(2700, SHARD_TIMEOUT_SECONDS)
+        self.assertEqual(10800, SHARD_TIMEOUT_SECONDS)
         evidence = json.loads((gate.run / "complete.json").read_text())
         self.assertEqual(3, evidence["shards"])
         self.assertEqual(3, len(evidence["coverage_inputs_sha256"]))
@@ -241,7 +241,11 @@ class AndroidShardGateTest(unittest.TestCase):
             )
         for name, argv, timeout in gate.calls:
             if name.startswith("shard-"):
-                self.assertEqual(2700, timeout)
+                self.assertEqual(SHARD_TIMEOUT_SECONDS, timeout)
+                self.assertEqual(
+                    ["-Pdayforge.deviceTestScope=full"],
+                    [arg for arg in argv if arg.startswith("-Pdayforge.deviceTestScope=")],
+                )
                 self.assertIn(
                     "-Pandroid.testInstrumentationRunnerArguments.numShards=3", argv
                 )

@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 import unittest
 
-from tools.run_android_tests import SHARDS, SHARD_TIMEOUT_SECONDS
+from tools.run_android_tests import SHARDS, SHARD_TIMEOUT_SECONDS, TARGETED_TIMEOUT_SECONDS
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -71,12 +71,14 @@ class CiCapacityTest(unittest.TestCase):
 
     def test_physical_shard_capacity_is_explicit_and_user_approved(self):
         self.assertEqual(3, SHARDS)
-        self.assertEqual(2700, SHARD_TIMEOUT_SECONDS)
+        self.assertEqual(10800, SHARD_TIMEOUT_SECONDS)
+        self.assertEqual(2700, TARGETED_TIMEOUT_SECONDS)
         runner = (ROOT / "tools/run_android_tests.py").read_text()
         self.assertRegex(runner, r"\n\s+SHARD_TIMEOUT_SECONDS,\n")
+        self.assertRegex(runner, r"\n\s+TARGETED_TIMEOUT_SECONDS,\n")
         self.assert_native_task_capacity((ROOT / "android/app/build.gradle.kts").read_text())
         testing = (ROOT / "docs/TESTING.md").read_text()
-        self.assertIn("每批 Android 测试任务/包装进程上限 45 分钟", testing)
+        self.assertIn("完整三片每片上限180分钟，定向批次仍45分钟", testing)
         self.assertIn("真机测试单项上限 150 秒", testing)
 
     def test_real_recovery_journey_has_only_its_approved_bounded_exception(self):
@@ -90,25 +92,41 @@ class CiCapacityTest(unittest.TestCase):
         self.assertIn('step("explicit bounded material resume and final release")', source)
 
     def assert_native_task_capacity(self, gradle):
+        capacity = re.search(
+            r'val physicalDeviceTestTimeoutSeconds = providers\.gradleProperty\("dayforge.deviceTestScope"\)'
+            r'\.map \{ scope ->\s*when \(scope\) \{\s*"full" -> (\d+)L\s*'
+            r'"targeted" -> (\d+)L\s*else -> error\("Unknown DayForge device test scope"\)\s*'
+            r'\}\s*\}\.orElse\((\d+)L\)',
+            gradle,
+        )
+        self.assertIsNotNone(capacity, "missing explicit full/targeted native capacities")
+        self.assertEqual(
+            (SHARD_TIMEOUT_SECONDS, TARGETED_TIMEOUT_SECONDS, TARGETED_TIMEOUT_SECONDS),
+            tuple(map(int, capacity.groups())),
+        )
+        self.assertEqual(1, gradle.count('gradleProperty("dayforge.deviceTestScope")'))
         task = re.search(
             r'tasks\.matching \{ it\.name == "connectedDeviceTestAndroidTest" \}'
-            r"\.configureEach \{\s*timeout\.set\(Duration\.ofSeconds\((\d+)\)\)\s*\}",
+            r"\.configureEach \{\s*timeout\.set\(physicalDeviceTestTimeoutSeconds\.map "
+            r"\{ Duration\.ofSeconds\(it\) \}\)\s*\}",
             gradle,
         )
         self.assertIsNotNone(task, "missing exact native task capacity")
-        self.assertEqual(SHARD_TIMEOUT_SECONDS, int(task.group(1)))
         self.assertEqual(1, gradle.count("timeout.set("))
         self.assertIn('testInstrumentationRunnerArguments["timeout_msec"] = "150000"', gradle)
 
     def test_native_task_guard_rejects_stale_or_mismatched_limits(self):
         gradle = (ROOT / "android/app/build.gradle.kts").read_text()
         for broken in (
-            gradle.replace("Duration.ofSeconds(2700)", "Duration.ofSeconds(900)"),
-            gradle.replace("Duration.ofSeconds(2700)", "Duration.ofSeconds(1200)"),
-            gradle.replace("Duration.ofSeconds(2700)", "Duration.ofSeconds(1500)"),
-            gradle.replace("Duration.ofSeconds(2700)", "Duration.ofMinutes(45)"),
+            gradle.replace('"full" -> 10800L', '"full" -> 2700L'),
+            gradle.replace('"full" -> 10800L', '"full" -> 1500L'),
+            gradle.replace('"targeted" -> 2700L', '"targeted" -> 10800L'),
+            gradle.replace('"targeted" -> 2700L', '"targeted" -> 900L'),
+            gradle.replace("orElse(2700L)", "orElse(10800L)"),
+            gradle.replace('else -> error("Unknown DayForge device test scope")', 'else -> 10800L'),
+            gradle.replace("Duration.ofSeconds(it)", "Duration.ofMinutes(it)"),
             gradle.replace("connectedDeviceTestAndroidTest", "connectedDebugAndroidTest"),
-            gradle.replace("timeout.set(Duration.ofSeconds(2700))", ""),
+            gradle.replace("timeout.set(physicalDeviceTestTimeoutSeconds.map { Duration.ofSeconds(it) })", ""),
             gradle.replace('= "150000"', '= "180000"'),
             gradle + "\ntimeout.set(Duration.ofSeconds(900))\n",
         ):

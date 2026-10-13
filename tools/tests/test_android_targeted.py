@@ -12,7 +12,7 @@ from unittest.mock import patch
 from tools.run_android_tests import (
     COVERAGE_INPUT,
     RESULTS,
-    SHARD_TIMEOUT_SECONDS,
+    TARGETED_TIMEOUT_SECONDS,
     main,
     parse_arguments,
     selected_classes,
@@ -156,7 +156,12 @@ class AndroidTargetedGateTest(unittest.TestCase):
             for name, argv, deadline in gate.calls
             if name == "targeted"
         )
-        self.assertEqual(SHARD_TIMEOUT_SECONDS, run[1])
+        self.assertEqual(2700, TARGETED_TIMEOUT_SECONDS)
+        self.assertEqual(TARGETED_TIMEOUT_SECONDS, run[1])
+        self.assertEqual(
+            ["-Pdayforge.deviceTestScope=targeted"],
+            [arg for arg in run[0] if arg.startswith("-Pdayforge.deviceTestScope=")],
+        )
         self.assertIn(
             "-Pandroid.testInstrumentationRunnerArguments.class=" + FIRST, run[0]
         )

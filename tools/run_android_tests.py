@@ -25,7 +25,8 @@ from tools.check_android_warnings import find_growth, load_budget, parse_warning
 from tools.android_joint_backend import backend_for_cases
 
 SHARDS = 3
-SHARD_TIMEOUT_SECONDS = 2700
+SHARD_TIMEOUT_SECONDS = 10800
+TARGETED_TIMEOUT_SECONDS = 2700
 TARGET = "com.dayforge.testbed"
 TEST_PACKAGE = TARGET + ".test"
 COMPONENT = TEST_PACKAGE + "/com.dayforge.HiltTestRunner"
@@ -357,6 +358,7 @@ class Gate:
                     "./gradlew",
                     "--no-daemon",
                     "connectedDeviceTestAndroidTest",
+                    "-Pdayforge.deviceTestScope=full",
                     f"-Pandroid.testInstrumentationRunnerArguments.numShards={SHARDS}",
                     f"-Pandroid.testInstrumentationRunnerArguments.shardIndex={index}",
                     "-Pandroid.testInstrumentationRunnerArguments.log=false",
@@ -445,13 +447,14 @@ class Gate:
                 "./gradlew",
                 "--no-daemon",
                 "connectedDeviceTestAndroidTest",
+                "-Pdayforge.deviceTestScope=targeted",
                 "-Pandroid.testInstrumentationRunnerArguments.log=false",
                 "-Pandroid.testInstrumentationRunnerArguments.timeout_msec=150000",
                 "-Pandroid.testInstrumentationRunnerArguments.class="
                 + ",".join(classes),
                 *self.joint_arguments,
             ],
-            SHARD_TIMEOUT_SECONDS,
+            TARGETED_TIMEOUT_SECONDS,
         )
         if hashes != [digest(path) for path in apks]:
             raise ValueError("APKs changed during scoped verification")

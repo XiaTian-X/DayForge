@@ -201,7 +201,16 @@ dependencies {
     androidTestImplementation(libs.ui.test.junit4)
 }
 
-// Bound physical-device runs too; a hung instrumentation process is a failure.
+// Only the full three-shard gate has the approved larger whole-task budget.
+// Direct/targeted runs keep the smaller default; never change per-case deadlines.
+val physicalDeviceTestTimeoutSeconds = providers.gradleProperty("dayforge.deviceTestScope").map { scope ->
+    when (scope) {
+        "full" -> 10800L
+        "targeted" -> 2700L
+        else -> error("Unknown DayForge device test scope")
+    }
+}.orElse(2700L)
+
 tasks.matching { it.name == "connectedDeviceTestAndroidTest" }.configureEach {
-    timeout.set(Duration.ofSeconds(2700))
+    timeout.set(physicalDeviceTestTimeoutSeconds.map { Duration.ofSeconds(it) })
 }
