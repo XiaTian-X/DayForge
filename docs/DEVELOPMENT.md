@@ -78,6 +78,8 @@ Android 工具链升级须同时核对 KSP 实现、Hilt 插件/处理器/运行
 
 日常按 `TESTING.md` 的风险矩阵选择 `root`、`android-build`、`android-targeted` 或相关后端模块；
 `android`、`backend` 和 `all` 保留为完整门禁，不对每个小编辑自动调用。
+已中止运行的未执行固定分片可用 `android-shards` 显式补齐；它只给出部分验证证据，
+不复用旧结果、不替代完整门禁，使用边界及失败记录要求见 `TESTING.md`。
 
 ## 开发与验证节奏
 

@@ -418,7 +418,7 @@ class AndroidShardGateTest(unittest.TestCase):
         java = java_home / "bin/java"
         java.write_text("#!/usr/bin/env bash\nexit 0\n")
         java.chmod(0o700)
-        for scope in ("android", "android-build", "android-targeted"):
+        for scope in ("android", "android-build", "android-targeted", "android-shards"):
             log = self.repo / (scope + ".log")
             environment = os.environ | {
                 "PATH": str(binary) + os.pathsep + os.defpath,
@@ -428,7 +428,10 @@ class AndroidShardGateTest(unittest.TestCase):
             root = Path(__file__).resolve().parents[2]
             executed = subprocess.run(
                 ["/bin/bash", str(root / "tools/verify"), scope]
-                + (["com.dayforge.FirstTest"] if scope == "android-targeted" else []),
+                + (
+                    ["com.dayforge.FirstTest"] if scope == "android-targeted"
+                    else ["1", "2"] if scope == "android-shards" else []
+                ),
                 cwd=self.repo,
                 env=environment,
                 capture_output=True,
@@ -444,6 +447,8 @@ class AndroidShardGateTest(unittest.TestCase):
                     if scope == "android-build"
                     else " --classes com.dayforge.FirstTest"
                     if scope == "android-targeted"
+                    else " --shards 1 2"
+                    if scope == "android-shards"
                     else ""
                 ),
                 last,

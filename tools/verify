@@ -5,14 +5,14 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 scope="${1:-all}"
 
 case "$scope" in
-  all|root|android|android-build|android-targeted|backend) ;;
+  all|root|android|android-build|android-targeted|android-shards|backend) ;;
   *)
-    echo "Usage: tools/verify [all|root|android|android-build|backend|android-targeted CLASS ...]" >&2
+    echo "Usage: tools/verify [all|root|android|android-build|backend|android-targeted CLASS ...|android-shards INDEX ...]" >&2
     exit 2
     ;;
 esac
-if [[ "$scope" != "android-targeted" && $# -gt 1 ]]; then
-  echo "Only android-targeted accepts explicit class arguments." >&2
+if [[ "$scope" != "android-targeted" && "$scope" != "android-shards" && $# -gt 1 ]]; then
+  echo "Only android-targeted or android-shards accepts explicit selection arguments." >&2
   exit 2
 fi
 
@@ -98,6 +98,8 @@ verify_android() {
     android_args+=(--build-only)
   elif [[ "$scope" == "android-targeted" ]]; then
     android_args+=(--classes "${selected_classes[@]}")
+  elif [[ "$scope" == "android-shards" ]]; then
+    android_args+=(--shards "${selected_classes[@]}")
   fi
   java_home="$(find_java_home)"
   (
@@ -130,6 +132,6 @@ case "$scope" in
     ;;
   backend) verify_backend ;;
   android|android-build) verify_android ;;
-  android-targeted) shift; verify_android "$@" ;;
+  android-targeted|android-shards) shift; verify_android "$@" ;;
   root) ;;
 esac

@@ -110,9 +110,9 @@ class AndroidTargetedGateTest(unittest.TestCase):
                 selected_classes(invalid)
 
     def test_cli_preserves_full_and_build_modes_and_rejects_ambiguous_arguments(self):
-        self.assertEqual((False, ()), parse_arguments([]))
-        self.assertEqual((True, ()), parse_arguments(["--build-only"]))
-        self.assertEqual((False, (FIRST,)), parse_arguments(["--classes", FIRST]))
+        self.assertEqual((False, (), ()), parse_arguments([]))
+        self.assertEqual((True, (), ()), parse_arguments(["--build-only"]))
+        self.assertEqual((False, (FIRST,), ()), parse_arguments(["--classes", FIRST]))
         for invalid in (
             ["--classes"],
             [FIRST],
