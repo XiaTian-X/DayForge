@@ -558,7 +558,9 @@ class NextStructuralCausalStoreTest : NextCoreRequestFixture() {
         assertEquals(NextOperationAcceptance.COMMITTED, sender(http).acceptOperation(delivery))
     }
 
-    @Test fun oneTransactionCapturesThirtyTwoOrderedOriginsWithoutGuessingIntermediateProjection() = runBlocking<Unit> {
+    // 2026-10-14: approved capacity for the complete 32-ACK chain. The retained
+    // 150s failure reached 31/32 at 148.955s; all origins and final proofs remain.
+    @Test(timeout = 180_000) fun oneTransactionCapturesThirtyTwoOrderedOriginsWithoutGuessingIntermediateProjection() = runBlocking<Unit> {
         val started = System.nanoTime()
         producer().write(local()) {
             repeat(32) { index -> metrics().updateMetric(db.metricDao().getMetricById(metric.id)!!.copy(name = "Batch $index")) }

@@ -87,9 +87,17 @@ class CiCapacityTest(unittest.TestCase):
         self.assertEqual(["300_000"], re.findall(r"@Test\(timeout = (\d[\d_]*)\)", source))
         self.assertIn("@Test(timeout = 300_000) fun "
                       "restoredBackendRequiresFreshLoginAndConsentRetainsArchiveAndResumesOrdinarySync()", source)
-        self.assertIn("withTimeout(60_000) { block() }", source)
+        self.assertIn("timeoutMillis: Long = 60_000", source)
+        self.assertIn("withTimeout(timeoutMillis) { block() }", source)
         self.assertIn('step("explicit consent and confirmed replica switch")', source)
-        self.assertIn('step("explicit bounded material resume and final release")', source)
+        self.assertIn('step("explicit bounded material resume and final release", timeoutMillis = 90_000)', source)
+        self.assertIn('click("replica-recovery-resume", timeoutMillis = 90_000)', source)
+        self.assertIn('val settled = settle(timeoutMillis)', source)
+        causal = (ROOT / "android/app/src/androidTest/java/com/dayforge/data/repository/"
+                  "NextStructuralCausalStoreTest.kt").read_text()
+        self.assertEqual(["180_000"], re.findall(r"@Test\(timeout = (\d[\d_]*)\)", causal))
+        self.assertIn("@Test(timeout = 180_000) fun "
+                      "oneTransactionCapturesThirtyTwoOrderedOriginsWithoutGuessingIntermediateProjection()", causal)
 
     def assert_native_task_capacity(self, gradle):
         capacity = re.search(

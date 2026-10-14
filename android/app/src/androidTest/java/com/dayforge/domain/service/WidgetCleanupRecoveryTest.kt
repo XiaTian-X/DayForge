@@ -15,6 +15,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.dayforge.data.local.PhysicalDatabaseRule
 import com.dayforge.data.local.TokenManager
 import com.dayforge.data.repository.nextRestartDatabaseProof
+import com.dayforge.data.repository.WidgetDisplayPublisher
 import com.dayforge.widget.*
 import com.dayforge.widget.checkin.CheckInWidget
 import com.dayforge.widget.checkin.CheckInWidgetReceiver
@@ -47,6 +48,8 @@ class WidgetCleanupRecoveryTest {
     @get:Rule(order = 2) val hilt = HiltAndroidRule(this)
     @Inject lateinit var tokens: TokenManager
     @Inject lateinit var sessions: AccountSessionCoordinator
+    @Inject lateinit var publisher: WidgetDisplayPublisher
+    private lateinit var oldFrameOwner: String
     private val app get() = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
     private val platform = mockk<AppWidgetManager>()
     private val ids = mutableMapOf<Int, GlanceId>()
@@ -56,6 +59,7 @@ class WidgetCleanupRecoveryTest {
     @Before fun setup() = runBlocking<Unit> {
         hilt.inject()
         sessions.exclusive { tokens.clearTokens(); tokens.saveLoginSession("synthetic-first", "synthetic-refresh", "member", account(1), false) }
+        oldFrameOwner = requireNotNull(publisher.capturePublication()?.frameOwner)
         val real = GlanceAppWidgetManager(app)
         for (n in listOf(10, 11, 12)) {
             ids[n] = requireNotNull(real.getGlanceIdBy(Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID,
@@ -81,7 +85,12 @@ class WidgetCleanupRecoveryTest {
         every { FocusWidgetAlarmScheduler.cancelScheduledRefresh(any()) } just Runs
         coEvery { FocusWidgetAlarmScheduler.scheduleNextRefresh(any()) } just Runs
         names.forEach { assertTrue(app.getSharedPreferences(it, Context.MODE_PRIVATE).edit().putLong("habit_id_10", 42).commit()) }
-        ids.values.forEach { updateAppWidgetState(app, it) { prefs -> prefs[CountingWidget.HABIT_NAME_KEY] = "old private name" } }
+        ids.values.forEach { updateAppWidgetState(app, it) { prefs ->
+            prefs[CountingWidget.HABIT_NAME_KEY] = "old private name"
+            prefs[CountingWidget.ACTUAL_COUNT_KEY] = 7L
+            prefs[CountingWidget.LEGACY_ACTION_PROOF_KEY] = "synthetic-old-action"
+            prefs[WidgetDisplayPublisher.FRAME_OWNER_KEY] = oldFrameOwner
+        } }
     }
     @After fun cleanup() = runBlocking<Unit> {
         unmockkStatic(AppWidgetManager::class)
@@ -119,14 +128,19 @@ class WidgetCleanupRecoveryTest {
         // Cancellation prevented later host work, so there is genuinely stale state to recover.
         assertEquals("old private name", state(11)[CountingWidget.HABIT_NAME_KEY])
         sessions.exclusive { tokens.saveLoginSession("synthetic-other", "synthetic-refresh", "other", account(50), false) }
+        val currentFrameOwner = requireNotNull(publisher.capturePublication()?.frameOwner)
+        assertNotEquals(oldFrameOwner, currentFrameOwner)
+        val emptyCurrentFrame = mapOf<Preferences.Key<*>, Any>(kotlin.Pair(WidgetDisplayPublisher.FRAME_OWNER_KEY, currentFrameOwner))
         val before = storage.database.withTransaction { nextRestartDatabaseProof(storage.database) }
         coEvery { anyConstructed<GlanceAppWidgetManager>().getGlanceIds(CountingWidget::class.java) } returns listOf(requireNotNull(ids[10]), requireNotNull(ids[11]))
         coEvery { anyConstructed<CountingWidget>().update(app, any()) } coAnswers {
             val key = secondArg<GlanceId>()
-            assertTrue(CountingWidget().getAppWidgetState<Preferences>(app, key).asMap().isEmpty())
+            // An unbound refresh publishes only CURRENT display provenance. No old
+            // name, quantity, action claim or owner may survive in that frame.
+            assertEquals(emptyCurrentFrame, CountingWidget().getAppWidgetState<Preferences>(app, key).asMap())
         }
         assertEquals(0, WidgetRefresher(app).refresh())
-        assertTrue(state(10).asMap().isEmpty()); assertTrue(state(11).asMap().isEmpty())
+        assertEquals(emptyCurrentFrame, state(10).asMap()); assertEquals(emptyCurrentFrame, state(11).asMap())
         assertEquals(account(50), tokens.authenticationSnapshot()!!.session.userId)
         assertEquals(before, storage.database.withTransaction { nextRestartDatabaseProof(storage.database) })
     }

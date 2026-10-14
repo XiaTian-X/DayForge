@@ -76,14 +76,14 @@ class RealBackendReplicaRecoveryJointTest {
     private fun id(suffix: Int) = "7c160000-0000-4000-8000-${suffix.toString().padStart(12, '0')}"
     private fun hash(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
-    private suspend fun <T> step(name: String, block: suspend () -> T): T {
+    private suspend fun <T> step(name: String, timeoutMillis: Long = 60_000, block: suspend () -> T): T {
         val start = SystemClock.elapsedRealtime()
         android.util.Log.i("RecoveryJoint", "Starting $name")
         var completed = false
-        return try { withTimeout(60_000) { block() }.also { completed = true } }
+        return try { withTimeout(timeoutMillis) { block() }.also { completed = true } }
         catch (error: TimeoutCancellationException) {
             // Test-only diagnostics: stack locations, never credentials or record contents.
-            // Keep the original stage deadline and propagate the failure unchanged.
+            // Keep the bounded stage deadline and propagate the failure unchanged.
             Thread.getAllStackTraces().values.filter { frames ->
                 frames.any { it.className.startsWith("com.dayforge.") }
             }.forEach { frames ->
@@ -140,14 +140,15 @@ class RealBackendReplicaRecoveryJointTest {
         }
     }
 
-    private suspend fun settle(): ReplicaRecoveryUiState = withTimeout(60_000) { model.state.first { it.checked && !it.busy } }
-    private suspend fun click(tag: String) {
+    private suspend fun settle(timeoutMillis: Long = 60_000): ReplicaRecoveryUiState =
+        withTimeout(timeoutMillis) { model.state.first { it.checked && !it.busy } }
+    private suspend fun click(tag: String, timeoutMillis: Long = 60_000) {
         val started = SystemClock.elapsedRealtime()
         // Fixed UI tags and phase/notice only; never log credentials or review payloads.
         android.util.Log.i("RecoveryJoint", "Click $tag started")
         compose.onNodeWithTag("replica-recovery-list").performScrollToNode(hasTestTag(tag))
         compose.onNodeWithTag(tag).performClick()
-        val settled = settle()
+        val settled = settle(timeoutMillis)
         android.util.Log.i("RecoveryJoint", "Click $tag settled in ${SystemClock.elapsedRealtime() - started}ms " +
             "notice=${settled.notice} phase=${settled.stage?.phase}")
     }
@@ -269,8 +270,10 @@ class RealBackendReplicaRecoveryJointTest {
             assertEquals(ReplicaRecoveryNotice.WAITING, model.state.value.notice)
             assertNotNull(tokens.activeReplicaStage()) // Catalog discovery does not silently loop downloads.
         }
-        step("explicit bounded material resume and final release") {
-            click("replica-recovery-resume")
+        // 2026-10-14: user-approved headroom for measured 59.268s completion and
+        // retained 60s failures; the whole real journey remains bounded at 300s.
+        step("explicit bounded material resume and final release", timeoutMillis = 90_000) {
+            click("replica-recovery-resume", timeoutMillis = 90_000)
             assertEquals(ReplicaRecoveryNotice.COMPLETED, model.state.value.notice)
             assertNull(tokens.activeReplicaStage())
             assertEquals(NextReplicaFenceEntity.CLOSED, db.nextReplicaFenceDao().state()!!.mode)
