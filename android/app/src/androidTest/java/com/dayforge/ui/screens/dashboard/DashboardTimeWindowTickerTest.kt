@@ -40,6 +40,7 @@ class DashboardTimeWindowTickerTest {
         val filterModeFlow = MutableStateFlow(FilterMode.ALL.value)
         val repository = mockk<HabitRepository> {
             every { allHabits } returns flowOf(emptyList())
+            every { countChanges } returns flowOf(Unit)
         }
         val preferencesManager = mockk<PreferencesManager> {
             every { filterMode } returns filterModeFlow

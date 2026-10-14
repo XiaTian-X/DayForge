@@ -57,7 +57,8 @@ data class MetricDetailUiState(
     val availableHabits: List<HabitForLinking> = emptyList(),
     val selectedHabitIds: Set<Long> = emptySet(),
     val isDeleted: Boolean = false,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val writeAuthority: com.dayforge.data.repository.ObjectEditAuthority? = null
 )
 
 /**
@@ -78,7 +79,7 @@ data class HabitForLinking(
  *
  * Per D-14: Save to MetricLogEntity via onConfirm callback
  * Per D-15: View history, manage links
- * Per D-16: Delete with confirmation, cascade to logs and links
+ * Per D-16: Delete with confirmation through the protocol-specific repository lifecycle
  */
 @HiltViewModel
 class MetricDetailViewModel @Inject constructor(
@@ -113,14 +114,32 @@ class MetricDetailViewModel @Inject constructor(
             metricDao.observeMetricById(metricId).collect { metric ->
                 if (metric == null) {
                     _uiState.value = _uiState.value.copy(
+                        metric = null,
+                        writeAuthority = null,
+                        showValueInput = false,
+                        showDeleteConfirm = false,
+                        showUnlinkConfirm = null,
+                        showLinkHabit = false,
+                        availableHabits = emptyList(),
+                        selectedHabitIds = emptySet(),
                         isLoading = false,
                         errorMessage = context.getString(R.string.metric_error_not_found)
                     )
                     return@collect
                 }
 
+                val captured = try {
+                    if (metric.appearance != null) metricRepository.getMetricForEditing(metric.id) else null
+                } catch (error: Exception) {
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    _uiState.value = _uiState.value.copy(isLoading = false, writeAuthority = null,
+                        errorMessage = context.getString(R.string.metric_error_record_failed, error.message.orEmpty()))
+                    return@collect
+                }
+                if (captured != null && captured.value != metric) return@collect
                 _uiState.value = _uiState.value.copy(
                     metric = metric,
+                    writeAuthority = captured?.authority,
                     isLoading = false
                 )
 
@@ -175,10 +194,13 @@ class MetricDetailViewModel @Inject constructor(
      */
     fun recordValue(value: Double, note: String) {
         val metric = _uiState.value.metric ?: return
+        val authority = _uiState.value.writeAuthority
 
         viewModelScope.launch {
             try {
-                metricRepository.recordValue(metric.id, value, note)
+                if (metric.appearance != null) metricRepository.recordValue(metric.id, value, note,
+                    authority = requireNotNull(authority), expectedMetricUuid = metric.uuid)
+                else metricRepository.recordValue(metric.id, value, note)
 
                 // Update UI state
                 _uiState.value = _uiState.value.copy(
@@ -186,6 +208,7 @@ class MetricDetailViewModel @Inject constructor(
                     latestValue = value
                 )
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 _uiState.value = _uiState.value.copy(
                     errorMessage = context.getString(R.string.metric_error_record_failed, e.message ?: "")
                 )
@@ -201,6 +224,7 @@ class MetricDetailViewModel @Inject constructor(
      */
     fun updateAggregationType(aggregationType: String) {
         val metric = _uiState.value.metric ?: return
+        val authority = _uiState.value.writeAuthority
 
         viewModelScope.launch {
             try {
@@ -208,9 +232,10 @@ class MetricDetailViewModel @Inject constructor(
                     aggregationType = aggregationType,
                     updatedAt = System.currentTimeMillis()
                 )
-                metricRepository.updateMetric(updatedMetric)
+                metricRepository.updateMetric(updatedMetric, authority)
                 // The UI will update automatically via observeMetric()
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 _uiState.value = _uiState.value.copy(
                     errorMessage = context.getString(R.string.metric_error_aggregation_failed, e.message ?: "")
                 )
@@ -238,20 +263,22 @@ class MetricDetailViewModel @Inject constructor(
 
     /**
      * Delete this metric and all associated data.
-     * Room cascades and the durable v2 outbox make this operation offline-safe.
+     * Legacy cascades or retained v5 rows and their outbox are committed atomically.
      */
     fun deleteMetric() {
         val metric = _uiState.value.metric ?: return
+        val authority = _uiState.value.writeAuthority
 
         viewModelScope.launch {
             try {
-                // Offline-safe: Room cascades and the v2 outbox are committed together.
-                metricRepository.deleteMetric(metric)
+                // The repository owns offline staging and exact-ACK retention.
+                metricRepository.deleteMetric(metric, authority)
                 _uiState.value = _uiState.value.copy(
                     isDeleted = true,
                     showDeleteConfirm = false
                 )
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 _uiState.value = _uiState.value.copy(
                     errorMessage = context.getString(R.string.metric_error_delete_failed, e.message ?: "")
                 )
@@ -281,12 +308,15 @@ class MetricDetailViewModel @Inject constructor(
      */
     fun unlinkHabit() {
         val linkId = _uiState.value.showUnlinkConfirm ?: return
+        val link = _uiState.value.links.find { it.link.id == linkId }?.link ?: return
+        val authority = _uiState.value.writeAuthority
 
         viewModelScope.launch {
             try {
-                metricRepository.unlinkHabit(linkId)
+                metricRepository.unlinkHabit(linkId, link.uuid, authority)
                 _uiState.value = _uiState.value.copy(showUnlinkConfirm = null)
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 _uiState.value = _uiState.value.copy(
                     errorMessage = context.getString(R.string.metric_error_unlink_failed, e.message ?: "")
                 )
@@ -307,7 +337,7 @@ class MetricDetailViewModel @Inject constructor(
      */
     fun showLinkHabitDialog() {
         viewModelScope.launch {
-            val allHabits = habitDao.getAllHabitsOnce()
+            val allHabits = habitDao.getVisibleHabitsOnce()
             val linkedHabitIds = _uiState.value.links.map { it.link.habitId }.toSet()
 
             val habitsForLinking = allHabits.map { habit ->
@@ -356,6 +386,7 @@ class MetricDetailViewModel @Inject constructor(
     fun linkSelectedHabits() {
         val selectedIds = _uiState.value.selectedHabitIds
         val metric = _uiState.value.metric
+        val authority = _uiState.value.writeAuthority
         if (selectedIds.isEmpty() || metric == null) {
             dismissLinkHabitDialog()
             return
@@ -363,13 +394,14 @@ class MetricDetailViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                metricRepository.linkHabits(metric, selectedIds)
+                metricRepository.linkHabits(metric, selectedIds, authority)
                 _uiState.value = _uiState.value.copy(
                     showLinkHabit = false,
                     availableHabits = emptyList(),
                     selectedHabitIds = emptySet()
                 )
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 _uiState.value = _uiState.value.copy(
                     errorMessage = context.getString(R.string.metric_error_link_failed, e.message ?: "")
                 )

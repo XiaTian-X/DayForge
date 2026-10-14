@@ -18,18 +18,27 @@ interface MetricDao {
      * Get all active metrics, ordered by creation date (newest first).
      * Used for main screen display.
      */
-    @Query("SELECT * FROM metrics WHERE isActive = 1 ORDER BY createdAt DESC")
+    @Query("SELECT * FROM metrics WHERE isActive = 1 AND" + VISIBLE_METRIC_SQL + "ORDER BY createdAt DESC")
     fun getAllActiveMetrics(): Flow<List<MetricEntity>>
 
     /**
      * Get all metrics including inactive ones.
      * Used for settings/management screens.
      */
-    @Query("SELECT * FROM metrics ORDER BY createdAt DESC")
+    @Query("SELECT * FROM metrics WHERE" + VISIBLE_METRIC_SQL + "ORDER BY createdAt DESC")
     fun getAllMetrics(): Flow<List<MetricEntity>>
 
+    @Query("SELECT * FROM metrics WHERE" + VISIBLE_METRIC_SQL + "ORDER BY createdAt DESC")
+    suspend fun getVisibleMetricsOnce(): List<MetricEntity>
+
+    @Query("SELECT * FROM metrics WHERE id=:id AND" + VISIBLE_METRIC_SQL)
+    suspend fun getVisibleMetricById(id: Long): MetricEntity?
+
+    @Query("SELECT EXISTS(SELECT 1 FROM sync_outbox q JOIN next_request_origins o ON o.kind='sync_operation' AND o.requestId=q.operationId AND o.queueId=q.id AND o.protocol=5 WHERE q.recordType='metric' AND q.action='delete' AND q.entityUuid=:uuid)")
+    suspend fun hasPendingNextDeletion(uuid: String): Boolean
+
     /**
-     * Get all metrics once (suspend version for export).
+     * Raw retained rows for sync/receipt snapshots; display and export filter explicitly.
      */
     @Query("SELECT * FROM metrics ORDER BY createdAt DESC")
     suspend fun getAllMetricsOnce(): List<MetricEntity>
@@ -43,14 +52,14 @@ interface MetricDao {
     /**
      * Get a metric by name (for duplicate check).
      */
-    @Query("SELECT * FROM metrics WHERE name = :name LIMIT 1")
+    @Query("SELECT * FROM metrics WHERE name = :name AND" + VISIBLE_METRIC_SQL + "LIMIT 1")
     suspend fun getMetricByName(name: String): MetricEntity?
 
     /**
      * Observe a single metric by its local ID.
      * Returns a Flow that emits whenever the metric changes.
      */
-    @Query("SELECT * FROM metrics WHERE id = :id LIMIT 1")
+    @Query("SELECT * FROM metrics WHERE id = :id AND" + VISIBLE_METRIC_SQL + "LIMIT 1")
     fun observeMetricById(id: Long): Flow<MetricEntity?>
 
     /**

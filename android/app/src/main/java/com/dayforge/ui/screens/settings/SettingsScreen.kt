@@ -26,6 +26,7 @@ import com.dayforge.data.model.SyncProgress
 import com.dayforge.data.local.entity.SyncOutboxEntity
 import com.dayforge.data.local.entity.SyncConflictEntity
 import com.dayforge.data.local.entity.TimerCommandEntity
+import com.dayforge.ui.screens.recovery.LocalReplicaRecoveryEntry
 import kotlinx.coroutines.launch
 import java.util.Locale
 
@@ -44,6 +45,7 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
     onNavigateToIcons: () -> Unit = {}
 ) {
+    val openReplicaRecovery = LocalReplicaRecoveryEntry.current
     val syncProgress by viewModel.syncProgress.collectAsState()
     val isOnline by viewModel.isOnline.collectAsState()
     val lastSyncTime by viewModel.lastSyncTime.collectAsState()
@@ -59,12 +61,16 @@ fun SettingsScreen(
     val showActiveTimerDialog by viewModel.showActiveTimerDialog.collectAsState()
     val activeTimerHabitName by viewModel.activeTimerHabitName.collectAsState()
     val activeTimerDuration by viewModel.activeTimerDuration.collectAsState()
-    val rejectedChanges by viewModel.rejectedChanges.collectAsState()
-    val syncConflicts by viewModel.syncConflicts.collectAsState()
-    val rejectedTimerCommands by viewModel.rejectedTimerCommands.collectAsState()
+    val syncProblems by viewModel.syncProblems.collectAsState()
+    val recoveryState by viewModel.recoveryState.collectAsState()
+    val legacyProblems = syncProblems as? com.dayforge.data.model.SyncProblems.Legacy
+    val rejectedChanges = legacyProblems?.changes.orEmpty()
+    val syncConflicts = legacyProblems?.conflicts.orEmpty()
+    val rejectedTimerCommands = legacyProblems?.timers.orEmpty()
     var showRejectedChanges by remember { mutableStateOf(false) }
     var rejectedChangeToDiscard by remember { mutableStateOf<SyncOutboxEntity?>(null) }
     var rejectedTimerToCancel by remember { mutableStateOf<TimerCommandEntity?>(null) }
+    var rejectedActionSession by remember { mutableStateOf<com.dayforge.data.local.LocalDataSession?>(null) }
 
     // Export/Import state
     val exportProgress by viewModel.exportProgress.collectAsState()
@@ -72,6 +78,7 @@ fun SettingsScreen(
     val importProgress by viewModel.importProgress.collectAsState()
     val importConfirmData by viewModel.importConfirmData.collectAsState()
     val importResult by viewModel.importResult.collectAsState()
+    val configFileState by viewModel.configFileState.collectAsState()
 
     var showLogoutDialog by remember { mutableStateOf(false) }
 
@@ -163,6 +170,25 @@ fun SettingsScreen(
         }
     }
 
+    val configV2ImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) {
+        viewModel.readConfigImport(it)
+    }
+    val configV2ExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) {
+        viewModel.writeConfigExport(it)
+    }
+    val launchConfigImport: (Boolean) -> Unit = { recover -> coroutineScope.launch {
+        if (viewModel.beginConfigImport(recover)) {
+            try { configV2ImportLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")) }
+            catch (_: Exception) { viewModel.configPickerFailed() }
+        }
+    } }
+    val launchConfigExport = { coroutineScope.launch {
+        if (viewModel.beginConfigExport()) {
+            try { configV2ExportLauncher.launch("dayforge-config-${java.time.LocalDate.now()}.zip") }
+            catch (_: Exception) { viewModel.configPickerFailed() }
+        }
+    } }
+
     // File picker for theme import
     val themeImportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -188,16 +214,12 @@ fun SettingsScreen(
         progress.isRunning()
     }
 
-    LaunchedEffect(
-        showRejectedChanges,
-        rejectedChanges.isEmpty(),
-        syncConflicts.isEmpty(),
-        rejectedTimerCommands.isEmpty()
-    ) {
-        if (showRejectedChanges && rejectedChanges.isEmpty() &&
-            syncConflicts.isEmpty() && rejectedTimerCommands.isEmpty()
-        ) {
-            showRejectedChanges = false
+    LaunchedEffect(syncProblems) {
+        if (syncProblems.count == 0) showRejectedChanges = false
+        if (legacyProblems == null || legacyProblems.session != rejectedActionSession) {
+            rejectedChangeToDiscard = null
+            rejectedTimerToCancel = null
+            rejectedActionSession = null
         }
     }
 
@@ -246,11 +268,18 @@ fun SettingsScreen(
                     syncProgress = syncProgress,
                     canEditStructure = canEditStructure,
                     isPrimaryEditor = isPrimaryEditor,
-                    rejectedCount = rejectedChanges.size + syncConflicts.size + rejectedTimerCommands.size,
+                    rejectedCount = syncProblems.count,
                     onRejectedClick = { showRejectedChanges = true },
                     onSyncClick = { viewModel.sync() },
                     onMakePrimaryClick = { viewModel.makeCurrentDevicePrimary() }
                 )
+            }
+
+            // Credential-free local profile hint, independent of the authenticated problem scan.
+            if (openReplicaRecovery != null) item {
+                TextButton(openReplicaRecovery, modifier = Modifier.testTag("settings-replica-recovery")) {
+                    Text(stringResource(R.string.replica_recovery_title))
+                }
             }
 
             // Divider
@@ -273,13 +302,26 @@ fun SettingsScreen(
 
             item {
                 ConfigManagementCard(
-                    exportProgress = exportProgress,
+                    exportProgress = exportProgress || configFileState.busy,
                     importProgress = importProgress,
                     onExportClick = {
-                        val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
-                        configExportLauncher.launch("habits-config-${dateFormat.format(java.util.Date())}.json")
+                        if (configFileState.profile == ConfigFileProfile.NEXT) viewModel.openConfigExportChoices()
+                        else if (configFileState.profile == ConfigFileProfile.LEGACY) {
+                            val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+                            configExportLauncher.launch("habits-config-${dateFormat.format(java.util.Date())}.json")
+                        }
                     },
-                    onImportClick = { importLauncher.launch(arrayOf("application/json")) }
+                    onImportClick = {
+                        if (configFileState.profile == ConfigFileProfile.NEXT) launchConfigImport(false)
+                        else if (configFileState.profile == ConfigFileProfile.LEGACY) importLauncher.launch(arrayOf("application/json"))
+                    },
+                    exportEnabled = configFileState.profile in setOf(ConfigFileProfile.LEGACY, ConfigFileProfile.NEXT) &&
+                        !configFileState.pickerPending && configFileState.preview == null && configFileState.exportChoices == null,
+                    importEnabled = (configFileState.profile == ConfigFileProfile.LEGACY || configFileState.canImport) &&
+                        !configFileState.pickerPending && configFileState.preview == null && configFileState.exportChoices == null &&
+                        (configFileState.progress == null || configFileState.progress?.phase == com.dayforge.data.repository.ConfigImportPhase.OPERATIONS_ACCEPTED),
+                    showLegacyHint = configFileState.profile == ConfigFileProfile.LEGACY,
+                    footer = { ConfigV2Status(configFileState, { launchConfigImport(true) }, viewModel::refreshConfigState) }
                 )
             }
 
@@ -587,6 +629,9 @@ fun SettingsScreen(
     }
 
     // Export Progress Dialog
+    ConfigV2Dialogs(configFileState, viewModel::confirmConfigImport, viewModel::dismissConfigPreview,
+        viewModel::abandonConfigImport, viewModel::dismissConfigMessage,
+        { launchConfigExport() }, viewModel::selectConfigItem, viewModel::selectConfigTheme)
     if (exportProgress) {
         ExportProgressDialog()
     }
@@ -948,22 +993,32 @@ fun SettingsScreen(
             changes = rejectedChanges,
             conflicts = syncConflicts,
             timerCommands = rejectedTimerCommands,
+            problems = syncProblems,
+            onPreviewRecovery = {
+                showRejectedChanges = false
+                viewModel.previewRecovery(it)
+            },
             onDismiss = { showRejectedChanges = false },
             onRetry = viewModel::retryRejectedChange,
             onRetryTimerCommand = viewModel::retryRejectedTimerCommand,
             onCancelTimerAndUseServer = {
                 showRejectedChanges = false
+                rejectedActionSession = legacyProblems?.session
                 rejectedTimerToCancel = it
             },
             onUseServer = viewModel::resolveConflictUseServer,
             onUseLocal = viewModel::resolveConflictUseLocal,
             onDiscard = {
                 showRejectedChanges = false
+                rejectedActionSession = legacyProblems?.session
                 rejectedChangeToDiscard = it
             }
         )
     }
-    rejectedChangeToDiscard?.let { change ->
+    if (recoveryState != RecoveryUiState.Hidden) RecoveryConfirmationDialog(recoveryState,
+        onDismiss = viewModel::dismissRecovery, onRefresh = viewModel::refreshRecovery,
+        onApprove = viewModel::approveRecovery, onConfirm = viewModel::confirmRecovery)
+    rejectedChangeToDiscard?.takeIf { legacyProblems != null && legacyProblems.session == rejectedActionSession }?.let { change ->
         AlertDialog(
             onDismissRequest = { rejectedChangeToDiscard = null },
             title = { Text(stringResource(R.string.sync_rejected_discard_title)) },
@@ -981,7 +1036,7 @@ fun SettingsScreen(
             }
         )
     }
-    rejectedTimerToCancel?.let { command ->
+    rejectedTimerToCancel?.takeIf { legacyProblems != null && legacyProblems.session == rejectedActionSession }?.let { command ->
         AlertDialog(
             onDismissRequest = { rejectedTimerToCancel = null },
             title = { Text(stringResource(R.string.sync_rejected_timer_cancel_title)) },

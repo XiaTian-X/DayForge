@@ -4,6 +4,7 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.lifecycle.lifecycleScope
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -13,10 +14,15 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.dayforge.R
-import com.dayforge.data.local.HabitDatabase
+import com.dayforge.widget.base.WidgetActivityTheme
+import com.dayforge.data.repository.NextTimerWriter
+import com.dayforge.data.repository.LegacyWidgetTimerClaim
 import com.dayforge.domain.service.TimerServiceController
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.launch
 
 /**
  * Transparent activity to show timer confirmation dialog from widget.
@@ -29,38 +35,50 @@ import javax.inject.Inject
 @AndroidEntryPoint
 class TimerConfirmationActivity : ComponentActivity() {
 
-    @Inject
-    lateinit var habitDatabase: HabitDatabase
+    @Inject lateinit var writer: NextTimerWriter
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val habitId = intent.getLongExtra(EXTRA_HABIT_ID, -1L)
+        val claim = try { WidgetTimerAction.read(intent) } catch (error: Exception) { finish(); return }
+        val legacy = try { LegacyWidgetTimerClaim.read(intent) } catch (error: Exception) { finish(); return }
+        if ((claim == null) == (legacy == null)) { finish(); return }
+        val habitId = claim?.habitId ?: requireNotNull(legacy).identity.habitId
         val targetMinutes = intent.getIntExtra(EXTRA_TARGET_MINUTES, 0)
 
         if (habitId == -1L) {
             finish()
             return
         }
+        lifecycleScope.launch {
+            writer.accessChanges.catch { finish() }.collect { access ->
+                val session = claim?.authority?.session() ?: requireNotNull(legacy).identity.session()
+                val device = claim?.authority?.deviceId ?: legacy?.identity?.deviceId
+                if (access == null || access.session != session || access.capturedDeviceId != device) finish()
+            }
+        }
 
         setContent {
-            MaterialTheme {
-                var currentHabitName by remember { mutableStateOf<String?>(null) }
-                var newHabitName by remember { mutableStateOf<String?>(null) }
+            var currentHabitName by remember { mutableStateOf<String?>(null) }
+            var newHabitName by remember { mutableStateOf<String?>(null) }
+            var ready by remember { mutableStateOf(false) }
 
-                LaunchedEffect(Unit) {
-                    // Get active timer info
-                    val activeLog = habitDatabase.timeLogDao().getActiveTimeLog()
-                    if (activeLog != null && activeLog.habitId != habitId) {
-                        val currentHabit = habitDatabase.habitDao().getHabitById(activeLog.habitId)
-                        currentHabitName = currentHabit?.name
-                    }
-
-                    // Get new habit name
-                    val newHabit = habitDatabase.habitDao().getHabitById(habitId)
-                    newHabitName = newHabit?.name
+            LaunchedEffect(Unit) {
+                try {
+                    val display = if (claim != null) writer.requireWidgetStart(habitId, claim.authority, requireNotNull(claim.startGuard))
+                        else writer.requireLegacyWidgetStart(requireNotNull(legacy))
+                    currentHabitName = display.incumbentName
+                    newHabitName = display.requestedName
+                    ready = true
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    android.util.Log.w("TimerConfirmation", "Stale switch confirmation", error)
+                    finish()
                 }
+            }
 
+            // Theme reload cannot recapture a different timer switch display or restart this effect.
+            WidgetActivityTheme(this) {
                 // Transparent background with centered dialog
                 Box(
                     modifier = Modifier.fillMaxSize(),
@@ -105,15 +123,23 @@ class TimerConfirmationActivity : ComponentActivity() {
                                     }
 
                                     Button(
+                                        enabled = ready,
                                         onClick = {
-                                            // Just start the new timer - TimerService.handleStart will stop the old one
-                                            TimerServiceController.startTimer(
-                                                this@TimerConfirmationActivity,
-                                                habitId,
-                                                targetMinutes
-                                            )
-
-                                            finish()
+                                            lifecycleScope.launch {
+                                                try {
+                                                    if (claim != null) writer.requireWidgetStart(habitId, claim.authority, requireNotNull(claim.startGuard))
+                                                    else writer.requireLegacyWidgetStart(requireNotNull(legacy))
+                                                    TimerServiceController.startTimer(
+                                                        this@TimerConfirmationActivity, habitId, targetMinutes,
+                                                        authority = claim?.authority, startGuard = claim?.startGuard, legacyWidget = legacy
+                                                    )
+                                                } catch (error: Exception) {
+                                                    if (error is CancellationException) throw error
+                                                    android.util.Log.w("TimerConfirmation", "Switch rejected", error)
+                                                    android.widget.Toast.makeText(this@TimerConfirmationActivity,
+                                                        getString(R.string.data_read_failed), android.widget.Toast.LENGTH_LONG).show()
+                                                } finally { finish() }
+                                            }
                                         }
                                     ) {
                                         Text(stringResource(R.string.action_confirm))

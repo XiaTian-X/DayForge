@@ -51,8 +51,8 @@ class CompletionMetricPromptStoreTest {
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val data = PreferenceDataStoreFactory.create(scope = scope, produceFile = { file })
         tokens = TokenManager(data)
-        preferences = PreferencesManager(data)
-        tokens.saveLoginSession("synthetic-a", "synthetic-r", "member", "account-a", false)
+        preferences = PreferencesManager(data, tokens = tokens)
+        tokens.saveLoginSession("synthetic-a", "synthetic-r", "member", "80000000-0000-4000-8000-000000000001", false)
         db.withTransaction {
             db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
             val row = HabitEntity(name = "One-time", habitType = HabitType.CHECK_IN, iconResId = 0,
@@ -185,10 +185,10 @@ class CompletionMetricPromptStoreTest {
     }
 
     @Test fun neverAskAndInactiveLinksDoNotGenerateOrRetroactivelyAddPrompts() = runBlocking {
-        preferences.setNeverAskAgain(habit.id, true)
+        preferences.setNeverAskAgain(requireNotNull(tokens.localFactAccess()).session, habit.uuid, true)
         val first = transition()
         assertTrue(prompts().pending().isEmpty())
-        preferences.setNeverAskAgain(habit.id, false)
+        preferences.setNeverAskAgain(requireNotNull(tokens.localFactAccess()).session, habit.uuid, false)
         val state = intents().read(habit.uuid)
         assertTrue(intents().append(state.session, first).alreadyStored)
         assertTrue(prompts().pending().isEmpty())
@@ -297,14 +297,14 @@ class CompletionMetricPromptStoreTest {
             (runCatching { prompts().submit(draft) }.exceptionOrNull() as OneTimeLocalException).reason)
         assertEquals(draft, prompts().read(draft.row.eventUuid))
         tokens.saveDeviceRegistration("device", setOf("facts.append"), false, 2)
-        tokens.saveServerIdentity("server", "epoch")
+        tokens.saveServerIdentity("80000000-0000-4000-8000-000000000003", "80000000-0000-4000-8000-000000000004")
         assertEquals(OneTimeLocalException.Reason.STALE_SESSION,
             (runCatching { prompts().submit(draft) }.exceptionOrNull() as OneTimeLocalException).reason)
         val current = prompts().read(draft.row.eventUuid)
-        tokens.saveLoginSession("other", "other-refresh", "member", "account-a", false)
+        tokens.saveLoginSession("other", "other-refresh", "member", "80000000-0000-4000-8000-000000000001", false)
         assertEquals(OneTimeLocalException.Reason.STALE_SESSION,
             (runCatching { prompts().dismiss(current) }.exceptionOrNull() as OneTimeLocalException).reason)
-        sessions.exclusive { db.clearAllData(); tokens.saveLoginSession("b", "b-r", "member", "account-b", false) }
+        sessions.exclusive { db.clearAllData(); tokens.saveLoginSession("b", "b-r", "member", "80000000-0000-4000-8000-000000000002", false) }
         assertTrue(prompts().pending().isEmpty())
         assertNull(db.completionFollowUpDao().submissionForEntity("activity_event", draft.row.eventUuid))
         assertEquals(0, db.metricLogDao().countAll())

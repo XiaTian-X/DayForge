@@ -10,6 +10,9 @@ import androidx.activity.ComponentActivity
 import androidx.room.Room
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
+import androidx.compose.ui.test.junit4.createEmptyComposeRule
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.dayforge.R
@@ -25,10 +28,24 @@ import kotlinx.serialization.json.Json
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import java.util.UUID
+import javax.inject.Inject
+import com.dayforge.data.local.TokenManager
+import com.dayforge.data.repository.HabitRepository
+import com.dayforge.data.repository.NextObjectCreator
+import com.dayforge.data.repository.NextTimerWriter
+import com.dayforge.data.repository.LegacyWidgetTimerClaim
+import com.dayforge.data.repository.LegacyWidgetRestartClaim
+import com.dayforge.data.repository.decodeNextTimerIntent
+import com.dayforge.data.repository.NEXT_TIMER
+import com.dayforge.domain.model.IconReference
+import com.dayforge.domain.model.ObjectAppearance
+import com.dayforge.domain.model.TimerActionAuthority
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.async
+import kotlinx.coroutines.CoroutineStart
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -42,6 +59,7 @@ import org.junit.runner.RunWith
 class TimerServicePersistenceTest {
     @get:Rule(order = 0) val widgetRefresh = com.dayforge.widget.IsolatedWidgetRefreshRule()
     @get:Rule(order = 1) val hilt = HiltAndroidRule(this)
+    @get:Rule(order = 2) val compose = createEmptyComposeRule()
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context: Context get() = ApplicationProvider.getApplicationContext()
     private lateinit var database: HabitDatabase
@@ -49,6 +67,14 @@ class TimerServicePersistenceTest {
     private val databaseName = "timer-test-${UUID.randomUUID()}.db"
     private val commandInsertAttempts = AtomicInteger()
     private var habitId = 0L
+    @Inject lateinit var tokens: TokenManager
+    @Inject lateinit var sessions: AccountSessionCoordinator
+    @Inject lateinit var habits: HabitRepository
+    @Inject lateinit var creator: NextObjectCreator
+    @Inject lateinit var timerWriter: NextTimerWriter
+    @Inject lateinit var timerManager: TimerManager
+    @Inject lateinit var metrics: com.dayforge.data.repository.MetricRepository
+    @Inject lateinit var metricCoordinator: com.dayforge.ui.metrics.LinkedMetricCoordinator
 
     @Before fun setup() = runBlocking {
         check(context.packageName == "com.dayforge.testbed")
@@ -61,6 +87,9 @@ class TimerServicePersistenceTest {
             }, { it.run() }).build()
         HabitDatabaseProvider.setInstanceForTesting(database)
         hilt.inject()
+        sessions.exclusive { tokens.clearTokens() }
+        sessions.exclusive { tokens.saveLoginSession("synthetic-timer", "synthetic-refresh", "member",
+            "ac350000-0000-4000-8000-000000000001", false) }
         activity = ActivityScenario.launch(ComponentActivity::class.java)
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             instrumentation.uiAutomation.grantRuntimePermission(context.packageName, "android.permission.POST_NOTIFICATIONS")
@@ -71,6 +100,7 @@ class TimerServicePersistenceTest {
 
     @After fun cleanup() = runBlocking {
         stopService()
+        if (::tokens.isInitialized) sessions.exclusive { tokens.clearTokens() }
         if (::activity.isInitialized) activity.close()
         if (::database.isInitialized) database.close()
         HabitDatabaseProvider.clearInstanceForTesting()
@@ -78,10 +108,13 @@ class TimerServicePersistenceTest {
         Unit
     }
 
-    private fun send(action: String?, id: Long = habitId) {
+    private fun send(action: String?, id: Long = habitId, authority: TimerActionAuthority? = null,
+        legacy: LegacyWidgetTimerClaim? = null) {
         val intent = Intent(context, TimerService::class.java).apply {
             this.action = action
             putExtra(TimerService.EXTRA_HABIT_ID, id)
+            authority?.attach(this)
+            legacy?.attach(this)
         }
         if (action == TimerService.ACTION_START) context.startForegroundService(intent)
         else context.startService(intent)
@@ -93,6 +126,132 @@ class TimerServicePersistenceTest {
 
     private suspend fun awaitCommands(count: Int) = awaitState {
         database.timeLogDao().getPendingTimerCommands().size == count
+    }
+
+    private suspend fun legacyClaim(id: Long = habitId): LegacyWidgetTimerClaim {
+        val row = requireNotNull(database.habitDao().getHabitById(id))
+        return timerWriter.captureLegacyWidget(LegacyWidgetRestartClaim.displayed(row, requireNotNull(tokens.localCoreWriteAccess())),
+            database.timeLogDao().getActiveTimeLogForHabit(id))
+    }
+
+    @Test fun staleLegacyWidgetControlKeepsTheDifferentCurrentTimerAndNotification() = runBlocking {
+        send(TimerService.ACTION_START, legacy = legacyClaim())
+        awaitCommands(1)
+        val original = legacyClaim()
+        awaitState { widgetRefresh.requestCount >= 1 } // After the bound active notification replaces the FGS placeholder.
+        awaitState { context.getSystemService(NotificationManager::class.java).activeNotifications.any { it.id == TimerService.NOTIFICATION_ID } }
+        val oldNotificationPause = context.getSystemService(NotificationManager::class.java).activeNotifications
+            .single { it.id == TimerService.NOTIFICATION_ID }.notification.actions.first().actionIntent
+        send(TimerService.ACTION_DISCARD, legacy = original)
+        awaitCommands(2); awaitServiceStopped()
+        val second = database.habitDao().insert(requireNotNull(database.habitDao().getHabitById(habitId))
+            .copy(id = 0, uuid = UUID.randomUUID().toString(), name = "Different current timer"))
+        send(TimerService.ACTION_START, second, legacy = legacyClaim(second))
+        awaitCommands(3)
+        awaitState { widgetRefresh.requestCount >= 3 }
+        val current = requireNotNull(database.timeLogDao().getActiveTimeLog())
+        val commands = database.timeLogDao().getPendingTimerCommands()
+        val refreshed = widgetRefresh.requestCount
+        oldNotificationPause.send() // Immutable PendingIntent retains the old widget scope and transition.
+        // Rejection retains only the already-owned current timer, without claiming a different persisted session.
+        awaitState { widgetRefresh.requestCount > refreshed }
+        assertEquals(current, database.timeLogDao().getActiveTimeLog())
+        assertEquals(commands, database.timeLogDao().getPendingTimerCommands())
+        assertTrue(context.getSystemService(NotificationManager::class.java).activeNotifications.any {
+            it.id == TimerService.NOTIFICATION_ID &&
+                it.notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() == context.getString(R.string.timer_notification_title_running)
+        })
+        send(TimerService.ACTION_DISCARD, second, legacy = legacyClaim(second))
+        awaitCommands(4); awaitServiceStopped()
+        assertFalse(database.nextRequestDao().hasAny())
+    }
+
+    @Test fun coldRejectedLegacyCommandsNeverAcquirePersistedTimerButSystemRecoveryStillWorks() = runBlocking {
+        val oldStart = legacyClaim()
+        send(TimerService.ACTION_START, legacy = oldStart)
+        awaitCommands(1)
+        awaitState { widgetRefresh.requestCount >= 1 }
+        val current = requireNotNull(database.timeLogDao().getActiveTimeLog())
+        val currentClaim = legacyClaim()
+        val commands = database.timeLogDao().getPendingTimerCommands()
+        stopService()
+        fun explicit(action: String?, claim: LegacyWidgetTimerClaim) = Intent(context, TimerService::class.java).apply {
+            this.action = action
+            putExtra(TimerService.EXTRA_HABIT_ID, habitId)
+            claim.attach(this)
+        }
+        val invalid = listOf(
+            explicit(TimerService.ACTION_PAUSE, oldStart), // A start display cannot control the later active session.
+            explicit(TimerService.ACTION_PAUSE, currentClaim).apply {
+                putExtra("com.dayforge.widget.timer.legacy_claim", "malformed")
+            },
+            explicit(null, currentClaim), // An explicit claim cannot impersonate a system restart.
+            explicit("com.dayforge.timer.UNKNOWN", currentClaim)
+        )
+        for (intent in invalid) {
+            context.startService(intent)
+            awaitServiceStopped()
+            assertEquals(current, database.timeLogDao().getActiveTimeLog())
+            assertEquals(commands, database.timeLogDao().getPendingTimerCommands())
+            assertFalse(context.getSystemService(NotificationManager::class.java).activeNotifications.any {
+                it.id == TimerService.NOTIFICATION_ID
+            })
+        }
+        val refreshed = widgetRefresh.requestCount
+        send(null) // Independent, genuinely unclaimed system recovery is still supported.
+        awaitState { widgetRefresh.requestCount > refreshed }
+        assertEquals(current, database.timeLogDao().getActiveTimeLog())
+        assertTrue(context.getSystemService(NotificationManager::class.java).activeNotifications.any {
+            it.id == TimerService.NOTIFICATION_ID
+        })
+        send(TimerService.ACTION_DISCARD, legacy = legacyClaim())
+        awaitCommands(2); awaitServiceStopped()
+        assertFalse(database.nextRequestDao().hasAny())
+    }
+
+    @Test fun legacySwitchAndOrdinaryAppDiscardRetainExactSessionsAndRejectIdOnlyColdDialog() = runBlocking {
+        send(TimerService.ACTION_START, legacy = legacyClaim())
+        awaitCommands(1)
+        val first = requireNotNull(database.timeLogDao().getActiveTimeLog())
+        val second = database.habitDao().insert(requireNotNull(database.habitDao().getHabitById(habitId))
+            .copy(id = 0, uuid = UUID.randomUUID().toString(), name = "Second legacy timer", isCountdown = true))
+        fun switchIntent(claim: LegacyWidgetTimerClaim) = Intent(context, com.dayforge.widget.timer.TimerConfirmationActivity::class.java)
+            .apply { claim.attach(this) }
+        fun ready(text: Int) = compose.waitUntil(5000) {
+            compose.onAllNodes(androidx.compose.ui.test.hasText(context.getString(text)) and androidx.compose.ui.test.isEnabled())
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        val old = legacyClaim(second)
+        ActivityScenario.launch<com.dayforge.widget.timer.TimerConfirmationActivity>(switchIntent(old)).use { scenario ->
+            ready(R.string.action_confirm)
+            send(TimerService.ACTION_PAUSE, legacy = legacyClaim())
+            awaitCommands(2)
+            compose.onNodeWithText(context.getString(R.string.action_confirm)).performClick()
+            awaitState { scenario.state == androidx.lifecycle.Lifecycle.State.DESTROYED }
+        }
+        assertEquals(first.uuid, database.timeLogDao().getActiveTimeLog()!!.uuid)
+        assertEquals(2, database.timeLogDao().getPendingTimerCommands().size)
+        ActivityScenario.launch<com.dayforge.widget.timer.TimerConfirmationActivity>(switchIntent(legacyClaim(second))).use { scenario ->
+            ready(R.string.action_confirm)
+            compose.onNodeWithText(context.getString(R.string.action_confirm)).performClick()
+            awaitState { scenario.state == androidx.lifecycle.Lifecycle.State.DESTROYED }
+        }
+        awaitCommands(4)
+        val current = requireNotNull(database.timeLogDao().getActiveTimeLog())
+        assertEquals(second, current.habitId)
+        assertNull(database.timeLogDao().getById(first.id))
+        val unknown = com.dayforge.widget.timer.CountdownDiscardActivity.createIntent(context, second, 1, 59)
+        ActivityScenario.launch<com.dayforge.widget.timer.CountdownDiscardActivity>(unknown).use { scenario ->
+            awaitState { scenario.state == androidx.lifecycle.Lifecycle.State.DESTROYED }
+        }
+        assertEquals(current, database.timeLogDao().getActiveTimeLog())
+        assertNull(timerManager.stopTimer(second, 1)) // The legitimate App path captures a new dialog identity once.
+        ready(R.string.action_discard)
+        compose.onNodeWithText(context.getString(R.string.action_discard)).performClick()
+        awaitCommands(5); awaitServiceStopped()
+        assertNull(database.timeLogDao().getActiveTimeLog())
+        assertEquals(listOf("start", "pause", "cancel", "start", "cancel"),
+            database.timeLogDao().getPendingTimerCommands().map { it.commandType })
     }
 
     private suspend fun stopService() {
@@ -117,6 +276,7 @@ class TimerServicePersistenceTest {
         awaitCommands(1)
         val startAfter = SystemClock.elapsedRealtime()
         val started = requireNotNull(database.timeLogDao().getActiveTimeLog())
+        awaitState { widgetRefresh.requestCount == 1 }
         assertEquals(habitId, started.habitId)
         assertEquals(java.time.ZoneId.systemDefault().id, started.timerTimezone)
         // Real elapsed time: no system clock changes or fabricated completed timer rows.
@@ -128,6 +288,9 @@ class TimerServicePersistenceTest {
         val paused = requireNotNull(database.timeLogDao().getById(started.id))
         assertTrue(paused.isPaused)
         assertTrue(paused.timerActiveElapsedMillis in (pauseBefore - startAfter)..(pauseAfter - startBefore))
+        // A committed command is observable before the service's post-commit invalidation.
+        // Join that boundary before deliberately destroying its owning service scope.
+        awaitState { widgetRefresh.requestCount == 2 }
         stopService()
         send(null)
         val pausedTitle = context.getString(R.string.timer_notification_title_paused)
@@ -138,6 +301,7 @@ class TimerServicePersistenceTest {
         }
         // A real pause makes accidental inclusion of paused/recreation time observable.
         delay(5_000)
+        assertEquals(3, widgetRefresh.requestCount)
         val restored = requireNotNull(database.timeLogDao().getById(started.id))
         assertTrue(restored.isPaused)
         assertEquals(paused.timerActiveElapsedMillis, restored.timerActiveElapsedMillis)
@@ -146,6 +310,7 @@ class TimerServicePersistenceTest {
         awaitCommands(3)
         val resumeAfter = SystemClock.elapsedRealtime()
         assertFalse(database.timeLogDao().getById(started.id)!!.isPaused)
+        awaitState { widgetRefresh.requestCount == 4 }
         delay(1_100)
         val stopBefore = SystemClock.elapsedRealtime()
         send(TimerService.ACTION_STOP)
@@ -193,7 +358,8 @@ class TimerServicePersistenceTest {
         instrumentation.waitForIdleSync()
         awaitServiceStopped()
         assertEquals(commands, database.timeLogDao().getPendingTimerCommands())
-        assertEquals(1, widgetRefresh.requestCount)
+        // Start, pause, cold recovery, resume and stop invalidate once each; elapsed ticks do not.
+        assertEquals(5, widgetRefresh.requestCount)
     }
 
     @Test fun countdownSurvivesParentSyncAndAutomaticallyQueuesOneStop() = runBlocking {
@@ -219,7 +385,8 @@ class TimerServicePersistenceTest {
         val completed = requireNotNull(database.timeLogDao().getById(started.id))
         assertEquals(60, completed.durationSeconds)
         assertEquals(60_000L, completed.timerActiveElapsedMillis)
-        assertEquals(1, widgetRefresh.requestCount)
+        // Start and completed stop invalidate once each, never each of the real minute's ticks.
+        assertEquals(2, widgetRefresh.requestCount)
         assertNotNull(completed.endTime)
         assertNull(database.timeLogDao().getActiveTimeLog())
         val commands = database.timeLogDao().getPendingTimerCommands()
@@ -270,5 +437,350 @@ class TimerServicePersistenceTest {
         send(TimerService.ACTION_START)
         awaitCommands(1)
         assertNotNull(database.timeLogDao().getActiveTimeLog())
+    }
+
+    private suspend fun typed(countdown: Boolean) {
+        sessions.exclusive {
+            tokens.saveLoginSession("synthetic-timer", "synthetic-refresh", "member",
+                "ac350000-0000-4000-8000-000000000001", false)
+        }
+        habitId = habits.createHabit("Typed focus", "", HabitType.TIMER, 0, "#123456", HabitSchedule.Daily,
+            targetValue = 1, isCountdown = countdown, targetCycles = 3, completionPolicy = "recurring",
+            appearance = ObjectAppearance(IconReference.Role("habit.custom"), "#123456", "theme"),
+            creationAuthority = creator.capture())
+    }
+
+    @Test fun typedCountupKeepsBirthPolicyAfterConfigEditPauseServiceRecoveryAndOldNotification() = runBlocking {
+        typed(false)
+        val metricId = metrics.createMetric(com.dayforge.data.local.entity.MetricEntity(name = "Timer measurement", unit = "kg",
+            decimalPlaces = 2, iconResId = 0, colorHex = "#123456",
+            appearance = ObjectAppearance(IconReference.Role("metric.custom"), "#123456", "theme")),
+            creationAuthority = creator.capture())
+        metrics.linkHabits(requireNotNull(database.metricDao().getMetricById(metricId)), setOf(habitId))
+        send(TimerService.ACTION_START, authority = timerWriter.capture(habitId))
+        awaitCommands(1)
+        val started = requireNotNull(database.timeLogDao().getActiveTimeLog())
+        val startCommand = database.timeLogDao().getPendingTimerCommands().single()
+        val birth = requireNotNull(database.nextRequestDao().origin(NEXT_TIMER, startCommand.commandId))
+        val policy = requireNotNull(decodeNextTimerIntent(birth.intentJson).command.startPolicy)
+        assertEquals(60, policy.targetSeconds); assertFalse(policy.isCountdown); assertEquals(180, policy.maxDurationSeconds)
+        val oldAuthority = requireNotNull(timerWriter.capture(habitId))
+        val expectedPause = TimerNotificationFactory(context).createTimerNotification(0, false, 1, false, habitId, oldAuthority).actions[0].actionIntent
+        awaitState { context.getSystemService(NotificationManager::class.java).activeNotifications.any {
+            it.id == TimerService.NOTIFICATION_ID && it.notification.actions[0].actionIntent == expectedPause
+        } }
+        val oldPause = context.getSystemService(NotificationManager::class.java).activeNotifications.single {
+            it.id == TimerService.NOTIFICATION_ID
+        }.notification.actions[0].actionIntent
+        val edit = habits.getHabitForEditing(habitId)
+        habits.updateHabit(requireNotNull(edit.value).copy(targetValue = 5, isCountdown = true), editAuthority = edit.authority)
+        delay(61_000)
+        send(TimerService.ACTION_PAUSE, authority = oldAuthority)
+        awaitCommands(2)
+        val paused = requireNotNull(database.timeLogDao().getActiveTimeLog())
+        assertTrue(paused.isPaused)
+        stopService()
+        send(null)
+        awaitState { context.getSystemService(NotificationManager::class.java).activeNotifications.any {
+            it.id == TimerService.NOTIFICATION_ID && it.notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() == context.getString(R.string.timer_notification_title_paused)
+        } }
+        val restoredNotification = context.getSystemService(NotificationManager::class.java).activeNotifications.single { it.id == TimerService.NOTIFICATION_ID }.notification
+        assertEquals(TimerNotificationFactory(context).formatTimeText(TimerElapsedCalculator.elapsedSeconds(paused, context), 1, false),
+            restoredNotification.extras.getCharSequence(Notification.EXTRA_TEXT)?.toString())
+        send(TimerService.ACTION_RESUME, authority = timerWriter.capture(habitId))
+        awaitCommands(3)
+        assertTrue(oldPause != context.getSystemService(NotificationManager::class.java).activeNotifications.single { it.id == TimerService.NOTIFICATION_ID }.notification.actions[0].actionIntent)
+        oldPause.send()
+        // A fresh valid stop is serialized after the rejected old transition; the old pause cannot consume sequence 4.
+        val stopAuthority = requireNotNull(timerWriter.capture(habitId))
+        var followUpCount = 0
+        val followUp = async(start = CoroutineStart.UNDISPATCHED) {
+            timerWriter.afterCompletion(habitId, stopAuthority) {
+                val committed = requireNotNull(database.timeLogDao().getById(started.id))
+                assertNotNull(committed.endTime)
+                assertEquals(committed.timerActiveElapsedMillis,
+                    database.timeLogDao().getDayAllocations(started.uuid).sumOf { it.durationMillis })
+                followUpCount++
+            }
+        }
+        delay(50)
+        assertFalse(followUp.isCompleted)
+        send(TimerService.ACTION_STOP, authority = stopAuthority)
+        awaitCommands(4)
+        awaitServiceStopped()
+        withTimeout(5000) { sessions.exclusive { assertNotNull(tokens.localCoreWriteAccess()) } }
+        val completed = requireNotNull(database.timeLogDao().getById(started.id))
+        assertNotNull(completed.endTime); assertTrue(completed.durationSeconds in 60..180)
+        assertEquals(listOf("start", "pause", "resume", "stop"), database.timeLogDao().getPendingTimerCommands().map { it.commandType })
+        assertEquals(birth, database.nextRequestDao().origin(NEXT_TIMER, startCommand.commandId))
+        assertEquals(completed.timerActiveElapsedMillis, database.timeLogDao().getDayAllocations(started.uuid).sumOf { it.durationMillis })
+        followUp.await()
+        assertEquals(1, followUpCount)
+        withTimeout(5000) { metricCoordinator.showPromptAfterTimerStop(habitId, stopAuthority) }
+        val prompt = requireNotNull(metricCoordinator.postCheckInState.value)
+        val metricProof = requireNotNull(prompt.timerPrompt)
+        assertEquals(metricId, prompt.linkedMetrics.single().metricId)
+        val editMetric = metrics.getMetricForEditing(metricId)
+        metrics.updateMetric(requireNotNull(editMetric.value).copy(unit = "g"), editMetric.authority)
+        val inputs = listOf(com.dayforge.ui.components.MetricValueInput(metricId, 1.25, "widget completed timer"))
+        assertFalse(kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+            metricCoordinator.recordMetricValues(habitId, inputs, expectedTimerPrompt = metricProof)
+        })
+        assertTrue(database.metricLogDao().getAllLogsForMetric(metricId).isEmpty())
+        metricCoordinator.showPromptAfterTimerStop(habitId, stopAuthority)
+        val refreshed = requireNotNull(metricCoordinator.postCheckInState.value?.timerPrompt)
+        val link = requireNotNull(database.habitMetricLinkDao().getLink(habitId, metricId))
+        assertTrue(metricCoordinator.recordMetricValues(habitId, inputs, expectedTimerPrompt = refreshed))
+        assertTrue(metricCoordinator.recordMetricValues(habitId, inputs, expectedTimerPrompt = refreshed)) // exact UI retry, not another observation
+        val metricLog = database.metricLogDao().getAllLogsForMetric(metricId).single()
+        assertEquals("g", metricLog.unit); assertEquals(1.25, metricLog.value, 0.0)
+        val recordQueue = database.syncOutboxDao().getAll().single { it.recordType == "metric_log" }
+        assertNotNull(database.nextRequestDao().origin(com.dayforge.data.repository.NEXT_OPERATION, recordQueue.operationId))
+        // A fresh, unsubmitted prompt is a new write, unlike the successful exact retry above.
+        metricCoordinator.showPromptAfterTimerStop(habitId, stopAuthority)
+        val unsubmitted = requireNotNull(metricCoordinator.postCheckInState.value?.timerPrompt)
+        assertNotSame(refreshed, unsubmitted)
+        metrics.unlinkHabit(link.id, link.uuid)
+        val pendingDelete = database.syncOutboxDao().getAll()
+        assertEquals(link, database.habitMetricLinkDao().getLinkByUuid(link.uuid))
+        assertFalse(kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+            metricCoordinator.recordMetricValues(habitId, inputs, expectedTimerPrompt = unsubmitted)
+        })
+        assertTrue(runCatching {
+            metrics.linkHabits(requireNotNull(database.metricDao().getMetricById(metricId)), setOf(habitId))
+        }.exceptionOrNull() is IllegalStateException)
+        assertEquals(pendingDelete, database.syncOutboxDao().getAll())
+        assertEquals(listOf(metricLog), database.metricLogDao().getAllLogsForMetric(metricId))
+        // A NEW association is possible after its real delete ACK, covered by the complete
+        // NextMetricDeletionWorkflowTest HTTP chain; never cancel/erase this pending source.
+        // Verify ownership independently of the now-removed link, not merely another rejection.
+        var published = 0
+        timerWriter.publish(habitId, stopAuthority) { published++ }
+        assertEquals(1, published)
+        sessions.exclusive { tokens.saveLoginSession("synthetic-other", "synthetic-refresh", "other",
+            "ac350000-0000-4000-8000-000000000099", false) }
+        assertEquals("TIMER_FOLLOW_UP_STALE_ACCOUNT", runCatching {
+            timerWriter.publish(habitId, stopAuthority) { published++ }
+        }.exceptionOrNull()?.message)
+        assertEquals(1, published)
+        assertFalse(kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+            metricCoordinator.recordMetricValues(habitId, inputs, expectedTimerPrompt = unsubmitted)
+        })
+        assertEquals(listOf(metricLog), database.metricLogDao().getAllLogsForMetric(metricId))
+    }
+
+    @Test fun actualWidgetActivityStartsPausesResumesAndDiscardsOriginalSessionWithoutFallback() = runBlocking {
+        typed(false)
+        suspend fun claim() = com.dayforge.widget.timer.WidgetTimerAction.from(requireNotNull(timerWriter.widgetSnapshot(
+            requireNotNull(database.habitDao().getHabitById(habitId)))))
+        suspend fun launch(action: String, proof: com.dayforge.widget.timer.WidgetTimerAction) {
+            ActivityScenario.launch<com.dayforge.widget.timer.WidgetTimerActionActivity>(proof.intent(context, action)).use { scenario ->
+                awaitState { scenario.state == androidx.lifecycle.Lifecycle.State.DESTROYED }
+            }
+        }
+        launch("start", claim())
+        awaitCommands(1)
+        val started = requireNotNull(database.timeLogDao().getActiveTimeLog())
+        val runningClaim = claim()
+        val edit = habits.getHabitForEditing(habitId)
+        habits.updateHabit(requireNotNull(edit.value).copy(targetValue = 2, isCountdown = true), editAuthority = edit.authority)
+        launch("pause", runningClaim)
+        awaitCommands(2)
+        assertTrue(database.timeLogDao().getActiveTimeLog()!!.isPaused)
+        // The stale widget cannot consume a later transition or silently capture a new authority.
+        launch("resume", runningClaim)
+        assertEquals(2, database.timeLogDao().getPendingTimerCommands().size)
+        launch("resume", claim())
+        awaitCommands(3)
+        val beforeStop = database.timeLogDao().getPendingTimerCommands()
+        launch("stop", claim())
+        compose.waitUntil(5000) { compose.onAllNodes(androidx.compose.ui.test.hasText(context.getString(R.string.action_discard))).fetchSemanticsNodes().isNotEmpty() }
+        assertEquals(beforeStop, database.timeLogDao().getPendingTimerCommands())
+        assertNull(metricCoordinator.postCheckInState.value)
+        compose.onNodeWithText(context.getString(R.string.action_discard)).performClick()
+        awaitCommands(4)
+        awaitServiceStopped()
+        assertNull(database.timeLogDao().getActiveTimeLog())
+        assertNull(database.timeLogDao().getById(started.id))
+        assertEquals(listOf("start", "pause", "resume", "cancel"), database.timeLogDao().getPendingTimerCommands().map { it.commandType })
+        database.timeLogDao().getPendingTimerCommands().forEach {
+            assertNotNull(database.nextRequestDao().origin(NEXT_TIMER, it.commandId))
+        }
+        val malformed = com.dayforge.widget.timer.CountdownDiscardActivity.createIntent(context, habitId, 1, 1).apply {
+            putExtra("com.dayforge.timer.authority", "{\"accountId\":1}")
+        }
+        ActivityScenario.launch<com.dayforge.widget.timer.CountdownDiscardActivity>(malformed).use { scenario ->
+            awaitState { scenario.state == androidx.lifecycle.Lifecycle.State.DESTROYED }
+        }
+    }
+
+    @Test fun widgetSwitchConfirmationCannotAdoptChangedIncumbentAndFreshConfirmationSwitchesExactlyOnce() = runBlocking {
+        typed(false)
+        val secondId = habits.createHabit("Second widget timer", "", HabitType.TIMER, 0, "#123456", HabitSchedule.Daily,
+            targetValue = 1, isCountdown = true, completionPolicy = "recurring",
+            appearance = ObjectAppearance(IconReference.Role("habit.custom"), "#123456", "theme"), creationAuthority = creator.capture())
+        send(TimerService.ACTION_START, authority = timerWriter.capture(habitId))
+        awaitCommands(1)
+        val first = requireNotNull(database.timeLogDao().getActiveTimeLog())
+        suspend fun switchClaim() = com.dayforge.widget.timer.WidgetTimerAction.from(requireNotNull(timerWriter.widgetSnapshot(
+            requireNotNull(database.habitDao().getHabitById(secondId)))))
+        val oldClaim = switchClaim()
+        fun awaitDialog() = compose.waitUntil(5000) {
+            // The visible initial button is disabled until the real Room/authority read completes.
+            // Clicking that initial node is a no-op, not a successful or rejected confirmation.
+            compose.onAllNodes(androidx.compose.ui.test.hasText(context.getString(R.string.action_confirm)) and
+                androidx.compose.ui.test.isEnabled()).fetchSemanticsNodes().isNotEmpty()
+        }
+        ActivityScenario.launch<com.dayforge.widget.timer.TimerConfirmationActivity>(oldClaim.intent(context, "start", confirmation = true)).use { scenario ->
+            awaitDialog()
+            send(TimerService.ACTION_PAUSE, authority = timerWriter.capture(habitId))
+            awaitCommands(2)
+            compose.onNodeWithText(context.getString(R.string.action_confirm)).performClick()
+            awaitState { scenario.state == androidx.lifecycle.Lifecycle.State.DESTROYED }
+        }
+        assertEquals(first.uuid, database.timeLogDao().getActiveTimeLog()!!.uuid)
+        assertTrue(database.timeLogDao().getActiveTimeLog()!!.isPaused)
+        assertEquals(2, database.timeLogDao().getPendingTimerCommands().size)
+        val fresh = switchClaim()
+        ActivityScenario.launch<com.dayforge.widget.timer.TimerConfirmationActivity>(fresh.intent(context, "start", confirmation = true)).use { scenario ->
+            awaitDialog()
+            compose.onNodeWithText(context.getString(R.string.action_confirm)).performClick()
+            awaitState { scenario.state == androidx.lifecycle.Lifecycle.State.DESTROYED }
+        }
+        awaitCommands(4)
+        assertEquals(secondId, database.timeLogDao().getActiveTimeLog()!!.habitId)
+        assertNull(database.timeLogDao().getById(first.id))
+        assertEquals(listOf("start", "pause", "cancel", "start"), database.timeLogDao().getPendingTimerCommands().map { it.commandType })
+        database.timeLogDao().getPendingTimerCommands().forEach { assertNotNull(database.nextRequestDao().origin(NEXT_TIMER, it.commandId)) }
+        send(TimerService.ACTION_DISCARD, secondId, timerWriter.capture(secondId))
+        awaitCommands(5)
+        awaitServiceStopped()
+        send(TimerService.ACTION_START, authority = timerWriter.capture(habitId))
+        awaitCommands(6)
+        val beforeAccountChange = database.timeLogDao().getActiveTimeLog()
+        val accountBound = switchClaim()
+        ActivityScenario.launch<com.dayforge.widget.timer.TimerConfirmationActivity>(accountBound.intent(context, "start", confirmation = true)).use { scenario ->
+            awaitDialog()
+            sessions.exclusive { tokens.saveLoginSession("synthetic-other", "synthetic-refresh", "other",
+                "ac350000-0000-4000-8000-000000000099", false) }
+            awaitState { scenario.state == androidx.lifecycle.Lifecycle.State.DESTROYED }
+        }
+        assertEquals(beforeAccountChange, database.timeLogDao().getActiveTimeLog())
+        assertEquals(6, database.timeLogDao().getPendingTimerCommands().size)
+    }
+
+    @Test fun typedCountdownAutoCompletesOriginalMinuteAfterTargetAndModeChange() = runBlocking {
+        typed(true)
+        val before = SystemClock.elapsedRealtime()
+        send(TimerService.ACTION_START, authority = timerWriter.capture(habitId))
+        awaitCommands(1)
+        val started = requireNotNull(database.timeLogDao().getActiveTimeLog())
+        val edit = habits.getHabitForEditing(habitId)
+        habits.updateHabit(requireNotNull(edit.value).copy(targetValue = 5, isCountdown = false), editAuthority = edit.authority)
+        withTimeout(75_000) { while (database.timeLogDao().getPendingTimerCommands().size < 2) delay(100) }
+        awaitServiceStopped()
+        withTimeout(5000) { sessions.exclusive { assertNotNull(tokens.localCoreWriteAccess()) } }
+        assertTrue(SystemClock.elapsedRealtime() - before >= 60_000)
+        val completed = requireNotNull(database.timeLogDao().getById(started.id))
+        assertEquals(60, completed.durationSeconds); assertEquals(60_000L, completed.timerActiveElapsedMillis)
+        assertEquals(listOf("start", "stop"), database.timeLogDao().getPendingTimerCommands().map { it.commandType })
+        assertEquals(60_000L, database.timeLogDao().getDayAllocations(started.uuid).sumOf { it.durationMillis })
+        assertEquals(5, habits.getHabitById(habitId)!!.targetValue); assertFalse(habits.getHabitById(habitId)!!.isCountdown)
+    }
+
+    @Test fun recoveredTypedCountdownPublishesOriginalGoalBeforeExplicitMetricsAndRejectsItsLateIntent() = runBlocking {
+        typed(true)
+        val edit = habits.getHabitForEditing(habitId)
+        habits.updateHabit(requireNotNull(edit.value).copy(targetCycles = 1), editAuthority = edit.authority)
+        val metricId = metrics.createMetric(com.dayforge.data.local.entity.MetricEntity(name = "Recovered timer metric", unit = "kg",
+            iconResId = 0, colorHex = "#123456", appearance = ObjectAppearance(IconReference.Role("metric.custom"), "#123456", "theme")),
+            creationAuthority = creator.capture())
+        metrics.linkHabits(requireNotNull(database.metricDao().getMetricById(metricId)), setOf(habitId))
+        // A legitimate persisted start from before process recreation. The real service performs
+        // the first stop; no finished row, completed result, or receipt is fabricated by this fixture.
+        val began = System.currentTimeMillis() - 61_000
+        val session = UUID.randomUUID().toString()
+        val row = requireNotNull(habits.getHabitById(habitId))
+        // Keep this one-minute goal fixture away from midnight; cross-day allocation has its own suite.
+        val zone = java.time.ZoneId.of(if (java.time.Instant.ofEpochMilli(began).atZone(java.time.ZoneOffset.UTC).hour in setOf(0, 23))
+            "Asia/Shanghai" else "UTC")
+        timerWriter.write(habitId, timerWriter.capture(habitId)) {
+            database.timeLogDao().insertSyncedTimer(com.dayforge.data.local.entity.TimeLogEntity(habitId = habitId,
+                uuid = session, startTime = began, endTime = null, durationSeconds = 0,
+                date = java.time.Instant.ofEpochMilli(began).atZone(zone).toLocalDate().atStartOfDay(zone).toInstant().toEpochMilli(),
+                timerNextCommandSequence = 2, timerControlGeneration = 1, timerLastCommandAt = began, timerTimezone = zone.id),
+                com.dayforge.data.local.entity.TimerCommandEntity(sessionUuid = session, sequence = 1, commandType = "start",
+                    occurredAt = began, expectedControlGeneration = 0, activityUuid = row.uuid, timezone = zone.id),
+                com.dayforge.data.local.entity.TimerSegmentEntity(sessionUuid = session, sequence = 1, startedAt = began))
+        }
+        val originalStop = requireNotNull(timerWriter.capture(habitId))
+        val followUps = mutableSetOf<android.app.Activity>()
+        val monitor = androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry.getInstance()
+        val callback = androidx.test.runner.lifecycle.ActivityLifecycleCallback { candidate, _ ->
+            val owned = when (candidate) {
+                is com.dayforge.widget.checkin.GoalCompletionActivity ->
+                    com.dayforge.data.repository.TimerCompletionFollowUpClaim.read(candidate.intent)?.source?.sessionUuid == session
+                is com.dayforge.widget.checkin.MetricPromptActivity ->
+                    TimerActionAuthority.read(candidate.intent)?.sessionUuid == session
+                else -> false
+            }
+            if (owned) followUps += candidate
+        }
+        instrumentation.runOnMainSync { monitor.addLifecycleCallback(callback) }
+        try {
+            send(null)
+            awaitCommands(2); awaitServiceStopped()
+            val confirm = context.getString(R.string.action_confirm_complete)
+            compose.waitUntil(5000) {
+                compose.onAllNodes(androidx.compose.ui.test.hasText(confirm)).fetchSemanticsNodes(atLeastOneRootRequired = false).isNotEmpty()
+            }
+            var displayed: com.dayforge.data.repository.TimerCompletionFollowUpClaim? = null
+            instrumentation.runOnMainSync {
+                val goal = androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry.getInstance()
+                    .getActivitiesInStage(androidx.test.runner.lifecycle.Stage.RESUMED)
+                    .filterIsInstance<com.dayforge.widget.checkin.GoalCompletionActivity>().single()
+                displayed = com.dayforge.data.repository.TimerCompletionFollowUpClaim.read(goal.intent)
+            }
+            assertEquals(originalStop, requireNotNull(displayed).source)
+            assertTrue(compose.onAllNodes(androidx.compose.ui.test.hasText(context.getString(R.string.post_checkin_title)))
+                .fetchSemanticsNodes(atLeastOneRootRequired = false).isEmpty())
+            val completed = requireNotNull(database.timeLogDao().getTimeLogByUuid(session))
+            assertEquals(60_000L, completed.timerActiveElapsedMillis)
+            assertEquals(listOf("start", "stop"), database.timeLogDao().getPendingTimerCommands().map { it.commandType })
+            compose.onNodeWithText(confirm).performClick()
+            compose.waitUntil(5000) {
+                compose.onAllNodes(androidx.compose.ui.test.hasText(context.getString(R.string.post_checkin_title)))
+                    .fetchSemanticsNodes(atLeastOneRootRequired = false).isNotEmpty()
+            }
+            assertFalse(requireNotNull(habits.getHabitById(habitId)).isActive)
+            assertEquals(completed, database.timeLogDao().getTimeLogByUuid(session))
+            compose.onNodeWithText(context.getString(R.string.post_checkin_skip)).performClick()
+            compose.waitUntil(5000) {
+                compose.onAllNodes(androidx.compose.ui.test.hasText(context.getString(R.string.post_checkin_title)))
+                    .fetchSemanticsNodes(atLeastOneRootRequired = false).isEmpty()
+            }
+            val queues = database.syncOutboxDao().getAll()
+            val late = com.dayforge.widget.checkin.GoalCompletionActivity.createIntent(context, habitId, "ignored", 1, 1,
+                timerCompletion = requireNotNull(displayed))
+            ActivityScenario.launch<com.dayforge.widget.checkin.GoalCompletionActivity>(late).use { scenario ->
+                awaitState { scenario.state == androidx.lifecycle.Lifecycle.State.DESTROYED }
+            }
+            assertEquals(queues, database.syncOutboxDao().getAll())
+            assertEquals(completed, database.timeLogDao().getTimeLogByUuid(session))
+            assertEquals(0, database.metricLogDao().countAll())
+        } finally {
+            // Stop the producer before closing only this session's follow-up Activities. A failed
+            // wait must not leave their lifecycle coroutines alive when @After closes this Room DB.
+            try { stopService() } finally {
+                try {
+                    instrumentation.runOnMainSync { followUps.filterNot { it.isDestroyed }.forEach { it.finish() } }
+                    awaitState {
+                        var destroyed = false
+                        instrumentation.runOnMainSync { destroyed = followUps.all { it.isDestroyed } }
+                        destroyed
+                    }
+                } finally { instrumentation.runOnMainSync { monitor.removeLifecycleCallback(callback) } }
+            }
+        }
     }
 }

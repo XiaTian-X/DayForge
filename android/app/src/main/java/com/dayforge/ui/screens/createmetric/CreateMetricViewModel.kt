@@ -49,6 +49,8 @@ data class CreateMetricUiState(
     // Appearance (Step 2)
     val iconResId: Int = 1,  // Default to first icon (water)
     val colorHex: String = "#2196F3",
+    val appearance: com.dayforge.domain.model.ObjectAppearance? = null,
+    val creationAuthority: com.dayforge.data.repository.ObjectCreationAuthority? = null,
 
     // Habit links (for 26-02)
     val availableHabits: List<HabitEntity> = emptyList(),
@@ -84,6 +86,20 @@ class CreateMetricViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(CreateMetricUiState())
     val uiState: StateFlow<CreateMetricUiState> = _uiState.asStateFlow()
+
+    fun beginCreation(authority: com.dayforge.data.repository.ObjectCreationAuthority) {
+        val current = _uiState.value
+        if (current.creationAuthority === authority) return
+        check(current.creationAuthority == null && !current.isSaving && current.savedMetricId == null)
+        _uiState.value = current.copy(creationAuthority = authority,
+            appearance = com.dayforge.domain.model.ObjectAppearance(com.dayforge.domain.model.IconReference.Role("metric.default"),
+                current.colorHex, "theme"))
+    }
+
+    fun updateAppearance(value: com.dayforge.domain.model.ObjectAppearance) {
+        if (_uiState.value.creationAuthority == null) return
+        _uiState.value = _uiState.value.copy(appearance = value, colorHex = value.accentColor, showIconPicker = false)
+    }
 
     // Double-click prevention flag
     @Volatile
@@ -193,6 +209,7 @@ class CreateMetricViewModel @Inject constructor(
     }
 
     fun updateIcon(iconResId: Int) {
+        if (_uiState.value.appearance != null) return
         val newState = _uiState.value.copy(
             iconResId = iconResId,
             showIconPicker = false
@@ -205,6 +222,7 @@ class CreateMetricViewModel @Inject constructor(
     fun updateColor(colorHex: String) {
         val newState = _uiState.value.copy(
             colorHex = colorHex,
+            appearance = _uiState.value.appearance?.copy(accentColor = colorHex),
             showColorPicker = false
         )
         _uiState.value = newState.copy(
@@ -279,10 +297,10 @@ class CreateMetricViewModel @Inject constructor(
 
     fun saveMetric() {
         // Prevent double-click
-        if (isSavingInProgress) return
+        if (isSavingInProgress || _uiState.value.savedMetricId != null) return
 
         val currentState = _uiState.value
-        if (!validateStep2(currentState)) return
+        if (!validateStep1(currentState) || !validateStep2(currentState)) return
 
         isSavingInProgress = true
         _uiState.value = currentState.copy(isSaving = true)
@@ -316,10 +334,11 @@ class CreateMetricViewModel @Inject constructor(
                     iconResId = currentState.iconResId,
                     colorHex = currentState.colorHex,
                     isActive = true,
-                    uuid = metricUuid
+                    uuid = metricUuid,
+                    appearance = currentState.appearance
                 )
 
-                val metricId = metricRepository.createMetric(metric, currentState.selectedHabitIds)
+                val metricId = metricRepository.createMetric(metric, currentState.selectedHabitIds, currentState.creationAuthority)
 
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,
@@ -328,6 +347,9 @@ class CreateMetricViewModel @Inject constructor(
                     showColorPicker = false,
                     showUnitPicker = false
                 )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                _uiState.value = _uiState.value.copy(isSaving = false)
+                throw e
             } catch (_: DuplicateMetricNameException) {
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,

@@ -8,8 +8,6 @@ import android.os.Build
 import android.util.Log
 import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.model.HabitType
-import com.dayforge.domain.service.HabitPriorityCalculator
-import com.dayforge.domain.service.TimeMatchResult
 import com.dayforge.domain.service.CountingSlotCalculator
 import java.time.ZonedDateTime
 
@@ -29,7 +27,6 @@ object FocusWidgetAlarmScheduler {
     private const val WINDOW_TOLERANCE_MS = 60_000L // 1 minute tolerance for setWindow fallback
     private const val MIN_DELAY_MS = 10_000L // 最小10秒延迟
     private const val COUNTDOWN_THRESHOLD_MINUTES = 15 // 15分钟内开始倒计时刷新
-    private const val COUNTDOWN_INTERVAL_MS = 60_000L // 倒计时期间每分钟刷新
 
     /**
      * Schedule next FocusWidget refresh based on nearest window boundary.
@@ -44,19 +41,46 @@ object FocusWidgetAlarmScheduler {
      */
     suspend fun scheduleNextRefresh(context: Context) {
         val appContext = context.applicationContext
-        val alarmManager = appContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val publication = com.dayforge.di.WidgetEntryPoint.from(appContext).displayPublisher()
+            .capturePublication() ?: return
+        scheduleNextRefresh(appContext, publication::invoke)
+    }
+
+    /** Preparation may call account-coordinated count readers; only platform IO owns the lock. */
+    internal suspend fun scheduleNextRefresh(context: Context, publication: suspend (suspend () -> Unit) -> Boolean) {
+        val appContext = context.applicationContext
+        val nextRefreshTime = prepareNextRefresh(appContext)
+        publication {
+            if (nextRefreshTime == null) cancelScheduledRefresh(appContext)
+            else {
+                val alarmManager = appContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+                scheduleAlarmAt(alarmManager, appContext, nextRefreshTime)
+            }
+        }
+    }
+
+    private suspend fun prepareNextRefresh(appContext: Context): ZonedDateTime? {
 
         // Get all active habits with bestTime
         val database = HabitDatabaseProvider.getInstance(appContext)
         val currentTime = ZonedDateTime.now()
         val currentMinutes = currentTime.hour * 60 + currentTime.minute
-        val activeHabits = database.habitDao().getAllHabitsOnce().filter {
+        val activeHabits = database.habitDao().getVisibleHabitsOnce().filter {
             it.isActive && it.bestTime != null && it.habitType != HabitType.GOAL
         }
 
         if (activeHabits.isEmpty()) {
-            Log.d(TAG, "No habits with bestTime - skip scheduling")
-            return
+            // Reconciliation also runs after Focus's active-timer minute refresh. An active
+            // timer need not have bestTime; do not cancel its live refresh as "no windows".
+            val active = database.timeLogDao().getActiveTimeLog()
+            val habit = active?.let { database.habitDao().getVisibleHabitById(it.habitId) }
+            if (habit != null && (habit.appearance == null ||
+                    com.dayforge.di.WidgetEntryPoint.from(appContext).timerWriter().widgetSnapshot(habit)
+                        ?.activeLog?.uuid == active?.uuid)) {
+                return currentTime.plusMinutes(1).withSecond(0).withNano(0)
+            }
+            Log.d(TAG, "No habits with bestTime - cancel scheduling")
+            return null
         }
 
         // 收集所有窗口边界时间（分钟）
@@ -66,8 +90,11 @@ object FocusWidgetAlarmScheduler {
             val bestTime = habit.bestTime!!
 
             if (habit.habitType == HabitType.COUNTING) {
+                val target = if (habit.appearance == null) habit.targetValue else
+                    com.dayforge.di.WidgetEntryPoint.from(appContext).habitRepository().getCountHistory(habit)
+                        .todayPolicy?.targetValue ?: continue
                 // COUNTING习惯：计算所有slot窗口边界
-                val slots = CountingSlotCalculator.calculateSlots(bestTime, habit.targetValue, currentTime)
+                val slots = CountingSlotCalculator.distinctSlots(bestTime, target, currentTime)
                 for (slot in slots) {
                     if (!slot.isPast) {
                         windowBoundaries.add(slot.windowStart)
@@ -100,8 +127,7 @@ object FocusWidgetAlarmScheduler {
             Log.d(TAG, "No future window boundaries - schedule for tomorrow reset")
             // 调度到明天7:00（VALID_PERIOD_START）
             val tomorrowMorning = currentTime.plusDays(1).withHour(7).withMinute(0).withSecond(0).withNano(0)
-            scheduleAlarmAt(alarmManager, appContext, tomorrowMorning)
-            return
+            return tomorrowMorning
         }
 
         val minutesUntilStart = nearestWindowStart - currentMinutes
@@ -115,8 +141,7 @@ object FocusWidgetAlarmScheduler {
                 .withNano(0)
 
             Log.d(TAG, "Countdown mode: $minutesUntilStart min until window start, scheduling refresh in ~1 min")
-            scheduleAlarmAt(alarmManager, appContext, nextMinuteRefresh)
-            return
+            return nextMinuteRefresh
         }
 
         // 超过15分钟：找最近的边界时间（开始或结束）
@@ -147,7 +172,7 @@ object FocusWidgetAlarmScheduler {
 
         Log.d(TAG, "Scheduling FocusWidget refresh at $nextRefreshTime (target=$targetBoundary min, delay=$actualDelayMs ms)")
 
-        scheduleAlarmAt(alarmManager, appContext, nextRefreshTime)
+        return nextRefreshTime
     }
 
     /**
@@ -227,9 +252,9 @@ object FocusWidgetAlarmScheduler {
      * Schedule next refresh when there's an active timer running.
      * Refresh every minute to keep timer progress synchronized in widget.
      */
-    fun scheduleNextRefreshForActiveTimer(context: Context) {
+    internal suspend fun scheduleNextRefreshForActiveTimer(context: Context,
+        publication: suspend (suspend () -> Unit) -> Boolean) {
         val appContext = context.applicationContext
-        val alarmManager = appContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val currentTime = ZonedDateTime.now()
 
         // Schedule refresh at next minute boundary
@@ -239,6 +264,9 @@ object FocusWidgetAlarmScheduler {
             .withNano(0)
 
         Log.d(TAG, "Active timer mode: scheduling refresh at next minute ($nextMinuteRefresh)")
-        scheduleAlarmAt(alarmManager, appContext, nextMinuteRefresh)
+        publication {
+            val alarmManager = appContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            scheduleAlarmAt(alarmManager, appContext, nextMinuteRefresh)
+        }
     }
 }

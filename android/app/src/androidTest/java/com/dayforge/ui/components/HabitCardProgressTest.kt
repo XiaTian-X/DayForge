@@ -61,6 +61,51 @@ class HabitCardProgressTest {
             useUnmergedTree = true).assertCountEquals(0)
     }
 
+    @Test fun countCardUsesFrozenCountdownRuleWithoutChangingEditablePlan() {
+        val today = java.time.LocalDate.now()
+        val history = mutableStateOf(com.dayforge.domain.model.CountHistory(today,
+            mapOf(today to com.dayforge.domain.model.CountDayPolicy(3, true)), mapOf(today to 2L),
+            com.dayforge.domain.model.CountDayPolicy(3, true), emptySet(), emptyList()))
+        var decrements = 0
+        compose.setContent { MaterialTheme {
+            HabitCard(habit.copy(habitType = HabitType.COUNTING, targetValue = 99, isCountdown = false),
+                {}, {}, {}, countHistory = history.value, todayCount = 2,
+                completed = history.value.completedToday, onDecrement = { decrements++ })
+        } }
+        compose.onNodeWithText(compose.activity.getString(R.string.timer_countdown_remaining, 1L)).assertIsDisplayed()
+        compose.onNodeWithText(compose.activity.getString(R.string.action_check_in)).performClick()
+        compose.runOnIdle { assertEquals(1, decrements); history.value = history.value.copy(quantities = mapOf(today to 3L)) }
+        compose.onNodeWithText(compose.activity.getString(R.string.habit_card_status_completed)).assertIsDisplayed()
+        compose.onNodeWithText(compose.activity.getString(R.string.action_check_in)).assertDoesNotExist()
+    }
+
+    @Test fun countCardShowsLongActualQuantityAndCountupRemainsActionable() {
+        val today = java.time.LocalDate.now()
+        val history = com.dayforge.domain.model.CountHistory(today,
+            mapOf(today to com.dayforge.domain.model.CountDayPolicy(10, false)), mapOf(today to 4_294_967_294L),
+            com.dayforge.domain.model.CountDayPolicy(10, false), emptySet(), emptyList())
+        var increments = 0
+        compose.setContent { MaterialTheme {
+            HabitCard(habit.copy(habitType = HabitType.COUNTING, targetValue = 1, isCountdown = true),
+                {}, {}, {}, countHistory = history, todayCount = Int.MAX_VALUE,
+                completed = true, onIncrement = { increments++ })
+        } }
+        compose.onNodeWithText(compose.activity.getString(R.string.timer_countup_progress, 4_294_967_294L, 10)).assertIsDisplayed()
+        compose.onNodeWithText(compose.activity.getString(R.string.action_check_in)).performClick()
+        compose.runOnIdle { assertEquals(1, increments) }
+    }
+
+    @Test fun unknownCountRuleShowsPreservedQuantityWithoutOfferingAnInventedTargetAction() {
+        val today = java.time.LocalDate.now()
+        val history = com.dayforge.domain.model.CountHistory(today, emptyMap(), mapOf(today to 6L),
+            null, setOf(today), emptyList())
+        compose.setContent { MaterialTheme {
+            HabitCard(habit.copy(habitType = HabitType.COUNTING, targetValue = 1), {}, {}, {}, countHistory = history)
+        } }
+        compose.onNodeWithText(compose.activity.getString(R.string.count_rule_unknown_quantity, 6L)).assertIsDisplayed()
+        compose.onNodeWithText(compose.activity.getString(R.string.action_check_in)).assertDoesNotExist()
+    }
+
     @Test fun progress_label_wraps_without_ellipsis_at_narrow_width_and_large_font() {
         compose.setContent { MaterialTheme {
             CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, fontScale = 2f)) {

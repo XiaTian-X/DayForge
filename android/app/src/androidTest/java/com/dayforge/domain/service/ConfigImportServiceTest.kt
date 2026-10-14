@@ -46,6 +46,45 @@ class ConfigImportServiceTest {
     }
 
     @Test
+    fun next_checkpoint_or_damaged_import_journal_blocks_legacy_empty_replacement_without_changing_any_rows() = runBlocking {
+        val row = HabitEntity(name = "Existing legacy habit", habitType = HabitType.CHECK_IN,
+            iconResId = 1, colorHex = "#2196F3", schedule = HabitSchedule.Daily)
+        database.habitDao().insert(row)
+        val before = database.habitDao().getAllHabitsOnce(); val outbox = database.syncOutboxDao().getAll()
+        val json = Json.encodeToString(ConfigExportDto())
+        fun id(n: Int) = "cc310000-0000-4000-8000-${n.toString(16).padStart(12, '0')}"
+        database.nextSyncStateDao().insert(com.dayforge.data.local.entity.NextSyncStateEntity(
+            id(1), id(2), id(3), id(4), 1, 0, "a".repeat(64), "b".repeat(64)))
+        assertTrue(service.importConfig(json).isFailure)
+        assertEquals(before, database.habitDao().getAllHabitsOnce()); assertEquals(outbox, database.syncOutboxDao().getAll())
+        database.openHelper.writableDatabase.execSQL("DELETE FROM next_sync_state")
+        database.openHelper.writableDatabase.execSQL("INSERT INTO next_config_imports VALUES(" +
+            "'damaged','bad','bad','bad','bad','bad','bad','bad','bad',NULL)")
+        assertTrue(service.importConfig(json).isFailure)
+        assertEquals(before, database.habitDao().getAllHabitsOnce()); assertEquals(outbox, database.syncOutboxDao().getAll())
+        database.openHelper.readableDatabase.query("SELECT COUNT(*) FROM next_config_imports").use {
+            assertTrue(it.moveToFirst()); assertEquals(1, it.getInt(0))
+        }
+    }
+
+    @Test
+    fun legacy_export_cannot_treat_hidden_typed_metric_as_empty_configuration() = runBlocking {
+        val id = database.metricDao().insert(MetricEntity(name = "Typed retained metric", unit = "kg",
+            iconResId = 1, colorHex = "#123456", appearance = com.dayforge.domain.model.ObjectAppearance(
+                com.dayforge.domain.model.IconReference.Role("metric.default"), "#123456", "theme")))
+        val before = database.metricDao().getMetricById(id); val queue = database.syncOutboxDao().getAll()
+        assertTrue(database.habitDao().getAllHabitsOnce().isEmpty())
+        // Display filtering may hide all metrics. The protocol gate must consult the raw DAO.
+        val hidden = object : com.dayforge.data.local.dao.MetricDao by database.metricDao() {
+            override suspend fun getVisibleMetricsOnce(): List<MetricEntity> = emptyList()
+        }
+        val result = ConfigExportService(database.habitDao(), hidden, database.habitMetricLinkDao()).exportConfigToJson()
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull()?.cause is com.dayforge.data.repository.ProtocolNextDataRequiresUpgradeException)
+        assertEquals(before, database.metricDao().getMetricById(id)); assertEquals(queue, database.syncOutboxDao().getAll())
+    }
+
+    @Test
     fun invalid_link_leaves_configuration_and_generated_outbox_unchanged() = runBlocking {
         database.habitDao().insert(
             HabitEntity(
@@ -235,7 +274,8 @@ class ConfigImportServiceTest {
         coEvery { guard.requireAllowed() } throws CancellationException("cancelled")
         val importer = ConfigImportService(database.habitDao(), database.metricDao(), database.habitMetricLinkDao(), database, guard)
         val dao = mockk<com.dayforge.data.local.dao.HabitDao>()
-        coEvery { dao.getAllHabitsOnce() } throws CancellationException("cancelled")
+        coEvery { dao.hasProtocolNextState() } returns false
+        coEvery { dao.getVisibleHabitsOnce() } throws CancellationException("cancelled")
         val exporter = ConfigExportService(dao, database.metricDao(), database.habitMetricLinkDao())
         var cancelled = 0
         try { importer.importConfig("{}") } catch (_: CancellationException) { cancelled++ }

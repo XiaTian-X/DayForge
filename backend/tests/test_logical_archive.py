@@ -67,6 +67,22 @@ def migrate(path: Path, *, revision: str = "head") -> str:
     return f"sqlite:///{path}"
 
 
+def _add_receipt_fixture(
+    session: Session, receipt: SyncOperation | TimerCommand
+) -> None:
+    """Seed matching historical schema, not modern ORM columns into old tables."""
+    name = "sync_operations" if isinstance(receipt, SyncOperation) else "timer_commands"
+    table = Table(name, MetaData(), autoload_with=session.connection())
+    missing = set(type(receipt).model_fields) - set(table.c.keys())
+    assert missing <= {"challenge_context_json"}
+    if not missing:
+        session.add(receipt)
+        return
+    assert receipt.challenge_context_json is None
+    values = receipt.model_dump(exclude=missing | {"id"})
+    session.execute(table.insert().values(**values))
+
+
 def seed_source(database_url: str) -> tuple[str, str]:
     engine = create_engine(database_url)
     started = datetime(2026, 8, 13, 23, 59, 30, tzinfo=UTC)
@@ -253,7 +269,8 @@ def seed_source(database_url: str) -> tuple[str, str]:
                 duration_ms=120_000,
             )
         )
-        session.add(
+        _add_receipt_fixture(
+            session,
             TimerCommand(
                 user_id=owner.id,
                 device_id=device.id,
@@ -263,7 +280,7 @@ def seed_source(database_url: str) -> tuple[str, str]:
                 command_type="start",
                 request_hash="a" * 64,
                 status="applied",
-            )
+            ),
         )
         session.add_all(
             [
@@ -281,7 +298,8 @@ def seed_source(database_url: str) -> tuple[str, str]:
                 ),
             ]
         )
-        session.add(
+        _add_receipt_fixture(
+            session,
             SyncOperation(
                 user_id=owner.id,
                 device_id=device.id,
@@ -293,7 +311,7 @@ def seed_source(database_url: str) -> tuple[str, str]:
                 action="upsert",
                 base_revision=0,
                 result_json='{"status":"applied"}',
-            )
+            ),
         )
         session.add(
             EntityRevisionSnapshot(

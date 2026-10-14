@@ -12,7 +12,7 @@ from unittest.mock import patch
 from tools.run_android_tests import (
     COVERAGE_INPUT,
     RESULTS,
-    SHARD_TIMEOUT_SECONDS,
+    TARGETED_TIMEOUT_SECONDS,
     main,
     parse_arguments,
     selected_classes,
@@ -110,9 +110,9 @@ class AndroidTargetedGateTest(unittest.TestCase):
                 selected_classes(invalid)
 
     def test_cli_preserves_full_and_build_modes_and_rejects_ambiguous_arguments(self):
-        self.assertEqual((False, ()), parse_arguments([]))
-        self.assertEqual((True, ()), parse_arguments(["--build-only"]))
-        self.assertEqual((False, (FIRST,)), parse_arguments(["--classes", FIRST]))
+        self.assertEqual((False, (), ()), parse_arguments([]))
+        self.assertEqual((True, (), ()), parse_arguments(["--build-only"]))
+        self.assertEqual((False, (FIRST,), ()), parse_arguments(["--classes", FIRST]))
         for invalid in (
             ["--classes"],
             [FIRST],
@@ -156,7 +156,12 @@ class AndroidTargetedGateTest(unittest.TestCase):
             for name, argv, deadline in gate.calls
             if name == "targeted"
         )
-        self.assertEqual(SHARD_TIMEOUT_SECONDS, run[1])
+        self.assertEqual(2700, TARGETED_TIMEOUT_SECONDS)
+        self.assertEqual(TARGETED_TIMEOUT_SECONDS, run[1])
+        self.assertEqual(
+            ["-Pdayforge.deviceTestScope=targeted"],
+            [arg for arg in run[0] if arg.startswith("-Pdayforge.deviceTestScope=")],
+        )
         self.assertIn(
             "-Pandroid.testInstrumentationRunnerArguments.class=" + FIRST, run[0]
         )

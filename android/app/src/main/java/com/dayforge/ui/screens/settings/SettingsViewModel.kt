@@ -28,10 +28,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import java.io.IOException
+import com.dayforge.domain.service.isSyncTransportFailure
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -93,6 +95,8 @@ class SettingsViewModel @Inject constructor(
     val importProgress = configWorkflow.importProgress
     val importConfirmData = configWorkflow.importConfirmData
     val importResult = configWorkflow.importResult
+    internal val configFileState = configWorkflow.v2?.state ?: MutableStateFlow(
+        ConfigV2UiState(profile = ConfigFileProfile.LEGACY)).asStateFlow()
 
     // Last sync time from SyncManager
     val lastSyncTime: StateFlow<Long?> = syncManager.getLastSyncTime()
@@ -101,15 +105,29 @@ class SettingsViewModel @Inject constructor(
     val activeServerUrl: StateFlow<String?> = preferencesManager.activeServerUrl
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
-    val rejectedChanges: StateFlow<List<SyncOutboxEntity>> = syncManager.observeRejectedChanges()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    val syncConflicts: StateFlow<List<SyncConflictEntity>> = syncManager.observeConflicts()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    val rejectedTimerCommands: StateFlow<List<TimerCommandEntity>> =
-        syncManager.observeRejectedTimerCommands()
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    private val problemMonitor = Any()
+    private var problemBlocked = false
+    private var problemStamp = Any()
+    private val problemReload = MutableStateFlow(problemStamp)
+    private val mutableProblems = MutableStateFlow<com.dayforge.data.model.SyncProblems>(com.dayforge.data.model.SyncProblems.Checking)
+    internal val syncProblems = mutableProblems.asStateFlow()
+    private val recoveryWorkflow = SettingsRecoveryWorkflow(syncManager, viewModelScope)
+    internal val recoveryState = recoveryWorkflow.state
+    internal fun previewRecovery(key: com.dayforge.data.repository.NextRecoveryKey) = recoveryWorkflow.preview(key)
+    internal fun refreshRecovery() = recoveryWorkflow.refresh()
+    internal fun approveRecovery(value: Boolean) = recoveryWorkflow.approve(value)
+    internal fun confirmRecovery() = recoveryWorkflow.confirm()
+    internal fun dismissRecovery() = recoveryWorkflow.dismiss()
+    // Strongly held; synchronous invalidation precedes any account/replica/permission transition.
+    private val problemInvalidator = object : com.dayforge.data.local.AccountIconMemory.Cache {
+        override fun authenticationTransition(blocked: Boolean) = synchronized(problemMonitor) {
+            problemBlocked = blocked
+            problemStamp = Any()
+            mutableProblems.value = com.dayforge.data.model.SyncProblems.Checking
+            recoveryWorkflow.authenticationTransition(blocked)
+            problemReload.value = problemStamp
+        }
+    }
 
     // Login state - derived from access token presence
     val isLoggedIn: StateFlow<Boolean> = tokenManager.accessToken
@@ -153,6 +171,20 @@ class SettingsViewModel @Inject constructor(
     private var manualSyncJob: Job? = null
 
     init {
+        tokenManager.registerIconCache(problemInvalidator)
+        viewModelScope.launch {
+            combine(problemReload, syncManager.problemChanges()) { ticket, _ -> ticket }.collectLatest { ticket ->
+                recoveryWorkflow.databaseChanged()
+                if (!synchronized(problemMonitor) { !problemBlocked && problemStamp === ticket }) return@collectLatest
+                val result = try { syncManager.readProblems() }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { com.dayforge.data.model.SyncProblems.Unavailable }
+                synchronized(problemMonitor) {
+                    if (!problemBlocked && problemStamp === ticket) mutableProblems.value = result
+                }
+            }
+        }
+        viewModelScope.launch { configWorkflow.v2?.observe() }
         viewModelScope.launch { themeEditor.restore() }
         viewModelScope.launch {
             themeState.collect { if (it is DeviceThemeLoadState.Ready) appearanceWorkflow.refreshLibrary(force = false) }
@@ -187,11 +219,12 @@ class SettingsViewModel @Inject constructor(
 
     fun makeCurrentDevicePrimary() {
         viewModelScope.launch {
-            runCatching { syncManager.makeCurrentDevicePrimary() }
-                .onFailure { error ->
-                    _syncErrorMessage.value = error.message ?: context.getString(R.string.sync_device_role_failed)
-                    _showSyncError.value = true
-                }
+            try { syncManager.makeCurrentDevicePrimary() }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                _syncErrorMessage.value = error.message ?: context.getString(R.string.sync_device_role_failed)
+                _showSyncError.value = true
+            }
         }
     }
 
@@ -228,13 +261,9 @@ class SettingsViewModel @Inject constructor(
         if (manualSyncJob?.isActive == true) return
         manualSyncJob = viewModelScope.launch {
             val failure = try {
-                if (retryRejected) {
-                    // A retry explicitly requested by the user also reactivates
-                    // quarantined operations; ordinary background sync leaves them
-                    // isolated so one bad row cannot block downloads.
-                    syncManager.retryRejectedChanges()
-                }
-                syncManager.sync().exceptionOrNull()?.also { error ->
+                // Version/account discovery owns the retry policy; never mutate v4 queues before dispatch.
+                val result = if (retryRejected) syncManager.retrySync() else syncManager.sync()
+                result.exceptionOrNull()?.also { error ->
                     if (error is CancellationException) throw error
                 }
             } catch (cancelled: CancellationException) {
@@ -247,7 +276,13 @@ class SettingsViewModel @Inject constructor(
     }
 
     private fun showManualSyncIssue(error: Throwable) {
-        _syncErrorMessage.value = if (error.hasIOExceptionCause()) {
+        if (error is com.dayforge.data.repository.NextMaterialPending) return
+        if (error is com.dayforge.data.repository.NextMaterialAttention) {
+            _syncErrorMessage.value = context.getString(R.string.sync_material_attention)
+            _showSyncError.value = true
+            return
+        }
+        _syncErrorMessage.value = if (error.isSyncTransportFailure()) {
             context.getString(R.string.error_network_failed)
         } else {
             error.message ?: context.getString(R.string.sync_rejected_unknown_error)
@@ -256,38 +291,42 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun retryRejectedChange(id: Long) {
-        viewModelScope.launch { syncManager.retryRejectedChange(id) }
+        runSyncIssueAction { syncManager.retryRejectedChange(id) }
     }
 
     fun retryRejectedTimerCommand(id: Long) {
-        viewModelScope.launch { syncManager.retryRejectedTimerCommand(id) }
+        runSyncIssueAction { syncManager.retryRejectedTimerCommand(id) }
     }
 
     fun cancelRejectedTimerCommandAndUseServer(id: Long) {
-        viewModelScope.launch {
-            runCatching {
-                syncManager.cancelRejectedTimerCommandAndUseServer(id)
-                syncManager.sync().getOrThrow()
-            }
-                .onFailure(::showSyncIssue)
+        runSyncIssueAction {
+            syncManager.cancelRejectedTimerCommandAndUseServer(id)
+            syncManager.sync().getOrThrow()
         }
     }
 
     fun discardRejectedChange(id: Long) {
-        viewModelScope.launch { syncManager.discardRejectedChange(id) }
+        runSyncIssueAction { syncManager.discardRejectedChange(id) }
     }
 
     fun resolveConflictUseServer(id: Long) {
-        viewModelScope.launch {
-            runCatching { syncManager.resolveConflictUseServer(id) }
-                .onFailure(::showSyncIssue)
-        }
+        runSyncIssueAction { syncManager.resolveConflictUseServer(id) }
     }
 
     fun resolveConflictUseLocal(id: Long) {
+        runSyncIssueAction { syncManager.resolveConflictUseLocal(id) }
+    }
+
+    /** A protected/stale action is feedback, not an uncaught coroutine failure; cancellation stays cancellation. */
+    private fun runSyncIssueAction(action: suspend () -> Unit) {
         viewModelScope.launch {
-            runCatching { syncManager.resolveConflictUseLocal(id) }
-                .onFailure(::showSyncIssue)
+            try {
+                action()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                showSyncIssue(error)
+            }
         }
     }
 
@@ -324,7 +363,7 @@ class SettingsViewModel @Inject constructor(
             } else {
                 // Sync failed - show error, don't logout
                 val exception = result.exceptionOrNull()
-                _syncErrorMessage.value = if (exception.hasIOExceptionCause()) {
+                _syncErrorMessage.value = if (exception.isSyncTransportFailure()) {
                     context.getString(R.string.error_network_failed)
                 } else {
                     context.getString(
@@ -335,15 +374,6 @@ class SettingsViewModel @Inject constructor(
                 _showSyncError.value = true
             }
         }
-    }
-
-    private fun Throwable?.hasIOExceptionCause(): Boolean {
-        var current = this
-        while (current != null) {
-            if (current is IOException) return true
-            current = current.cause
-        }
-        return false
     }
 
     /**
@@ -408,8 +438,29 @@ class SettingsViewModel @Inject constructor(
      * @return JSON string or null on failure
      */
     suspend fun exportConfigToJson(): String? {
-        return configWorkflow.exportConfigToJson()
+        if (configWorkflow.v2?.allowLegacy() == false) return null
+        val content = configWorkflow.exportConfigToJson()
+        return if (configWorkflow.v2?.allowLegacy() == false) null else content
     }
+
+    internal suspend fun beginConfigExport() = configWorkflow.v2?.beginExport(requireSelection = true) == true
+    internal fun openConfigExportChoices() { viewModelScope.launch { configWorkflow.v2?.openExportChoices() } }
+    internal fun selectConfigItem(id: String, checked: Boolean) { viewModelScope.launch { configWorkflow.v2?.selectItem(id, checked) } }
+    internal fun selectConfigTheme(ref: com.dayforge.domain.appearance.ThemeVersionRef, checked: Boolean) {
+        viewModelScope.launch { configWorkflow.v2?.selectTheme(ref, checked) }
+    }
+    internal suspend fun beginConfigImport(recover: Boolean = false) = configWorkflow.v2?.beginImport(recover) == true
+    internal fun writeConfigExport(uri: Uri?) { viewModelScope.launch { configWorkflow.v2?.writeExport(uri) } }
+    internal fun readConfigImport(uri: Uri?) { viewModelScope.launch { configWorkflow.v2?.readImport(uri) } }
+    internal fun confirmConfigImport() { viewModelScope.launch {
+        configWorkflow.v2?.confirmImport()
+        appearanceWorkflow.refreshLibrary(force = true)
+    } }
+    internal fun abandonConfigImport() { viewModelScope.launch { configWorkflow.v2?.abandonPrepared() } }
+    internal fun dismissConfigPreview() { viewModelScope.launch { configWorkflow.v2?.dismissPreview() } }
+    internal fun dismissConfigMessage() { viewModelScope.launch { configWorkflow.v2?.dismissMessage() } }
+    internal fun configPickerFailed() { viewModelScope.launch { configWorkflow.v2?.pickerFailed() } }
+    internal fun refreshConfigState() { viewModelScope.launch { configWorkflow.v2?.refresh() } }
 
     /**
      * Dismisses the export result dialog.
@@ -424,8 +475,10 @@ class SettingsViewModel @Inject constructor(
      */
     fun prepareImport(uri: Uri) {
         viewModelScope.launch {
+            if (configWorkflow.v2?.allowLegacy() == false) return@launch
             if (showActiveTimerWarningIfNeeded()) return@launch
             configWorkflow.prepareImport(uri)
+            if (configWorkflow.v2?.allowLegacy() == false) configWorkflow.cancelImport()
         }
     }
 
@@ -434,6 +487,9 @@ class SettingsViewModel @Inject constructor(
      */
     fun confirmImport() {
         viewModelScope.launch {
+            if (configWorkflow.v2?.allowLegacy() == false) {
+                configWorkflow.cancelImport(); return@launch
+            }
             configWorkflow.confirmImport()
         }
     }

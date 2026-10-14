@@ -6,8 +6,14 @@ import hashlib
 import bcrypt
 from datetime import datetime, timedelta, timezone
 import jwt
+from uuid import UUID
+from fastapi import HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col, select
 
 from src.config import settings
+from src.auth.models import User
+from src.v2.models import ServerInstance
 
 PASSWORD_HASH_PREFIX = "$dayforge-sha256-bcrypt$v1$"
 MAX_JWT_LENGTH = 16_384
@@ -164,3 +170,61 @@ def token_account_identity(payload: dict) -> tuple[int, int] | None:
     ):
         return None
     return user_id, version
+
+
+async def account_token_claims(
+    user: User, session: AsyncSession
+) -> dict[str, str | int]:
+    """Bind both token kinds to the account and this transaction's restore scope.
+
+    Integer subjects are retained for wire compatibility, never as sufficient
+    authorization. Restore tools rotate sync_epoch for physical and logical
+    restores; binding it also prevents restored password versions reviving JWTs.
+    No credentials are minted for a missing server identity.
+    """
+    instance = await session.get(ServerInstance, 1, populate_existing=True)
+    if instance is None:
+        raise HTTPException(status_code=503, detail="SERVER_IDENTITY_UNAVAILABLE")
+    return {
+        "sub": str(user.id),
+        "ver": user.auth_version,
+        "uid": user.public_id,
+        "sid": instance.instance_uuid,
+        "epoch": instance.sync_epoch,
+    }
+
+
+async def resolve_token_account(payload: dict, session: AsyncSession) -> User | None:
+    """Resolve VERIFIED claims in the caller-owned snapshot, failing closed.
+
+    Legacy signed tokens lack stable identity/scope and require re-login. Never
+    look up an account using a remapped integer alone, including on refresh or
+    the second authorization after a staged asset transfer.
+    """
+    identity = token_account_identity(payload)
+    if identity is None:
+        return None
+    for claim in ("uid", "sid", "epoch"):
+        value = payload.get(claim)
+        if not isinstance(value, str) or len(value) > 36:
+            return None
+        try:
+            UUID(value)
+        except ValueError:
+            return None
+    internal_id, version = identity
+    result = await session.execute(
+        select(User)
+        .join(ServerInstance, col(ServerInstance.id) == 1)
+        .where(
+            User.id == internal_id,
+            User.public_id == payload["uid"],
+            User.auth_version == version,
+            col(User.is_active).is_(True),
+            User.status == "active",
+            ServerInstance.instance_uuid == payload["sid"],
+            ServerInstance.sync_epoch == payload["epoch"],
+        )
+        .execution_options(populate_existing=True)
+    )
+    return result.scalar_one_or_none()

@@ -66,6 +66,27 @@ class IncrementalSyncRepository(
     suspend fun sync(progressCallback: (SyncProgress) -> Unit = {}) =
         accountSessionCoordinator.exclusive { syncInternal(progressCallback) }
 
+    /** Discovery outside the account lock must not retarget this attempt after another login. */
+    internal suspend fun syncForAuthentication(
+        expected: com.dayforge.data.local.AuthenticationSession?,
+        progressCallback: (SyncProgress) -> Unit,
+        afterSync: (suspend () -> Unit)?
+    ) = accountSessionCoordinator.exclusive {
+        check(tokenManager.authenticationSnapshot()?.session == expected) { "SYNC_ACCOUNT_CHANGED" }
+        syncInternal(progressCallback)
+        afterSync?.invoke()
+        Unit
+    }
+
+    /** Reactivation belongs to a verified v4 attempt, not to the UI before version/account discovery. */
+    internal suspend fun retrySyncForAuthentication(
+        expected: com.dayforge.data.local.AuthenticationSession?,
+        progressCallback: (SyncProgress) -> Unit
+    ) = accountSessionCoordinator.exclusive {
+        check(expected != null && tokenManager.authenticationSnapshot()?.session == expected) { "SYNC_ACCOUNT_CHANGED" }
+        syncInternal(progressCallback, retryRejected = true)
+    }
+
     suspend fun <T> syncAndThen(
         progressCallback: (SyncProgress) -> Unit = {},
         afterSync: suspend () -> T
@@ -74,7 +95,7 @@ class IncrementalSyncRepository(
         afterSync()
     }
 
-    private suspend fun syncInternal(progressCallback: (SyncProgress) -> Unit) {
+    private suspend fun syncInternal(progressCallback: (SyncProgress) -> Unit, retryRejected: Boolean = false) {
         requireV4LocalState()
         tokenManager.migrateLegacyTokenStorage()
         val accountId = ensureAccountId()
@@ -82,6 +103,9 @@ class IncrementalSyncRepository(
         val resolvedIdentity = endpointResolver.resolve()
         val epochChanged = verifyServerIdentity(resolvedIdentity)
         val deviceId = ensureDevice()
+
+        // Identity/replica and device checks must succeed before changing any rejected work.
+        if (retryRejected) retryAllDeadLettersInternal()
 
         // Upload first so offline-created data is part of the bootstrap snapshot.
         val uploadTotal = outboxDao.count()
@@ -176,6 +200,10 @@ class IncrementalSyncRepository(
     }
 
     suspend fun retryAllDeadLetters() = accountSessionCoordinator.exclusive {
+        retryAllDeadLettersInternal()
+    }
+
+    private suspend fun retryAllDeadLettersInternal() {
         requireV4LocalState()
         outboxDao.getDeadLetters().forEach {
             outboxDao.retryDeadLetter(it.id, UUID.randomUUID().toString())
@@ -213,6 +241,22 @@ class IncrementalSyncRepository(
             api.updateDeviceEditing(deviceId, DeviceEditingUpdate(enabled))
                 .also { saveDeviceRegistration(it) }
         }
+
+    /** Revalidate exact v4 before registration; never retarget a subsequent login after discovery. */
+    internal suspend fun changeDeviceForAuthentication(
+        expected: com.dayforge.data.local.AuthenticationSession, editing: Boolean?
+    ): DeviceResponse = accountSessionCoordinator.exclusive {
+        check(tokenManager.authenticationSnapshot()?.session == expected) { "SYNC_ACCOUNT_CHANGED" }
+        requireV4LocalState()
+        val identity = api.identity()
+        if (identity.protocolVersion != MIN_PROTOCOL_VERSION || !identity.capabilities.containsAll(REQUIRED_CAPABILITIES))
+            throw SyncProtocolException("SYNC_PROTOCOL_V4_REQUIRED")
+        check(tokenManager.serverInstanceId.first()?.let { it == identity.serverInstanceId } != false &&
+            tokenManager.syncEpoch.first()?.let { it == identity.syncEpoch } != false) { "SYNC_REPLICA_CHANGED" }
+        val deviceId = ensureDevice()
+        (if (editing == null) api.makePrimaryDevice(deviceId)
+            else api.updateDeviceEditing(deviceId, DeviceEditingUpdate(editing))).also { saveDeviceRegistration(it) }
+    }
 
     /** Staged v5 data must never be coalesced, rebased or restored by the legacy engine. */
     private suspend fun requireV4LocalState() {
@@ -272,7 +316,7 @@ class IncrementalSyncRepository(
         resolvedIdentity: com.dayforge.data.api.dto.ServerIdentityResponse?
     ): Boolean {
         val identity = resolvedIdentity ?: api.identity()
-        if (identity.protocolVersion < MIN_PROTOCOL_VERSION ||
+        if (identity.protocolVersion != MIN_PROTOCOL_VERSION ||
             !identity.capabilities.containsAll(REQUIRED_CAPABILITIES)
         ) {
             throw SyncProtocolException(

@@ -53,7 +53,8 @@ fun KanbanLayout(
 
     // KANBAN-03: 待完成 column - CHECKABLE semantics
     val pendingHabits = habitsWithStats.filter { hws ->
-        !hws.completedToday &&
+        !hws.completedForDisplay &&
+        hws.oneTimeStatus?.canChange != false &&
         hws.isCheckInAllowed &&
         hws.habit.isActive &&
         !hws.hasFailed &&
@@ -63,7 +64,7 @@ fun KanbanLayout(
 
     // KANBAN-04: 已完成 column - completedToday true
     val completedHabits = habitsWithStats.filter { hws ->
-        hws.completedToday
+        hws.completedForDisplay
     }
 
     // KANBAN-05: 已结束 column - failed or goal completed

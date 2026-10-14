@@ -59,10 +59,11 @@ fun CompletionCalendar(
     completions: List<CompletionEntity>,
     modifier: Modifier = Modifier,
     title: String? = null,
-    initialMonth: Long? = null
+    initialMonth: Long? = null,
+    qualifiedDates: Set<LocalDate>? = null
 ) {
     val cellSpacing = 4.dp
-    val completedDates = completions.map { it.businessDate }.toSet()
+    val completedDates = qualifiedDates ?: completions.map { it.businessDate }.toSet()
 
     val todayCal = Calendar.getInstance()
     todayCal.timeInMillis = DateTimeUtils.startOfDayMillis()

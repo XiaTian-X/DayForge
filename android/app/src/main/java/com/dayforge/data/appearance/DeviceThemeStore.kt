@@ -25,6 +25,12 @@ import kotlinx.serialization.json.Json
 
 internal class ThemeSelectionException(val code: String) : IllegalArgumentException(code)
 
+/** Exact appearance whitelist only; never includes login tokens or other device preferences. */
+internal data class DeviceThemeRecoveryPreferences(
+    val selectionRaw: String?, val catalogRaw: String?, val selected: SavedThemeSelection?,
+    val catalog: ThemeCatalogState?
+)
+
 /**
  * Use the app's one existing Preferences DataStore, never a second instance for its file.
  * Version files are immutable. Validate before committing references, then check catalog membership
@@ -49,6 +55,15 @@ internal class DeviceThemeStore(
     /** Used inside the same DataStore transaction as a catalog mutation, never a separate read. */
     internal suspend fun readFrom(values: Preferences): SavedThemeSelection? = decode(values[KEY])
 
+    /** Called under the theme file lease; no preference edit or catalog repair. */
+    internal suspend fun recoveryPreferences(): DeviceThemeRecoveryPreferences {
+        val values = preferences.data.first()
+        val selected = readFrom(values)
+        val catalog = ThemeCatalogState.decode(values[THEME_CATALOG_KEY])
+        selected?.let { catalog?.requireSelectable(it.selection) }
+        return DeviceThemeRecoveryPreferences(values[KEY], values[THEME_CATALOG_KEY], selected, catalog)
+    }
+
     /** Observe at the owner lifecycle, not on every recomposition/timer tick. Errors propagate. */
     fun resolvedThemes(): Flow<LoadedDeviceTheme?> = snapshots().map { (saved, catalog) -> saved?.let { load(it, catalog) } }
 
@@ -60,10 +75,12 @@ internal class DeviceThemeStore(
     suspend fun select(expectedRevision: Long, selection: DeviceThemeSelection): LoadedDeviceTheme {
         require(expectedRevision >= 0)
         currentCoroutineContext().ensureActive()
+        com.dayforge.data.local.ReplicaSwitchGuard.requireOpen(preferences)
         val light = themes.read(selection.light.themeId, selection.light.revision)
         val dark = if (selection.light == selection.dark) light
             else themes.read(selection.dark.themeId, selection.dark.revision)
         val committed = preferences.edit { values ->
+            com.dayforge.data.local.ReplicaSwitchGuard.requireOpen(values)
             currentCoroutineContext().ensureActive()
             val previous = decode(values[KEY])
             ThemeCatalogState.decode(values[THEME_CATALOG_KEY])?.let { catalog ->

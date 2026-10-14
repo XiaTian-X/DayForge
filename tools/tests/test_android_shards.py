@@ -224,7 +224,7 @@ class AndroidShardGateTest(unittest.TestCase):
         self.assertLess(names.index("shard-1"), names.index("shard-2"))
         self.assertLess(names.index("shard-2"), names.index("coverage"))
         self.assertEqual(3, SHARDS)
-        self.assertEqual(1500, SHARD_TIMEOUT_SECONDS)
+        self.assertEqual(10800, SHARD_TIMEOUT_SECONDS)
         evidence = json.loads((gate.run / "complete.json").read_text())
         self.assertEqual(3, evidence["shards"])
         self.assertEqual(3, len(evidence["coverage_inputs_sha256"]))
@@ -241,7 +241,11 @@ class AndroidShardGateTest(unittest.TestCase):
             )
         for name, argv, timeout in gate.calls:
             if name.startswith("shard-"):
-                self.assertEqual(1500, timeout)
+                self.assertEqual(SHARD_TIMEOUT_SECONDS, timeout)
+                self.assertEqual(
+                    ["-Pdayforge.deviceTestScope=full"],
+                    [arg for arg in argv if arg.startswith("-Pdayforge.deviceTestScope=")],
+                )
                 self.assertIn(
                     "-Pandroid.testInstrumentationRunnerArguments.numShards=3", argv
                 )
@@ -333,11 +337,14 @@ class AndroidShardGateTest(unittest.TestCase):
         self.assertTrue(output.is_symlink())
 
     def test_lock_excludes_another_run_and_is_reusable(self):
-        with verification_lock():
-            with self.assertRaises(ValueError), verification_lock():
+        # Exercise real flock exclusion on this test's inode, not the live device
+        # gate's global lock. Root/backend checks may run beside Android tests.
+        with patch("tools.run_android_tests.Path", return_value=self.repo):
+            with verification_lock():
+                with self.assertRaises(ValueError), verification_lock():
+                    pass
+            with verification_lock():
                 pass
-        with verification_lock():
-            pass
 
     def test_process_timeout_joins_owned_child_and_retains_log(self):
         log = self.repo / "process.log"
@@ -411,7 +418,7 @@ class AndroidShardGateTest(unittest.TestCase):
         java = java_home / "bin/java"
         java.write_text("#!/usr/bin/env bash\nexit 0\n")
         java.chmod(0o700)
-        for scope in ("android", "android-build", "android-targeted"):
+        for scope in ("android", "android-build", "android-targeted", "android-shards"):
             log = self.repo / (scope + ".log")
             environment = os.environ | {
                 "PATH": str(binary) + os.pathsep + os.defpath,
@@ -421,7 +428,10 @@ class AndroidShardGateTest(unittest.TestCase):
             root = Path(__file__).resolve().parents[2]
             executed = subprocess.run(
                 ["/bin/bash", str(root / "tools/verify"), scope]
-                + (["com.dayforge.FirstTest"] if scope == "android-targeted" else []),
+                + (
+                    ["com.dayforge.FirstTest"] if scope == "android-targeted"
+                    else ["1", "2"] if scope == "android-shards" else []
+                ),
                 cwd=self.repo,
                 env=environment,
                 capture_output=True,
@@ -437,6 +447,8 @@ class AndroidShardGateTest(unittest.TestCase):
                     if scope == "android-build"
                     else " --classes com.dayforge.FirstTest"
                     if scope == "android-targeted"
+                    else " --shards 1 2"
+                    if scope == "android-shards"
                     else ""
                 ),
                 last,

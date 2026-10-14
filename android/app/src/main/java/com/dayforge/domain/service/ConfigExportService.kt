@@ -44,10 +44,16 @@ class ConfigExportService @Inject constructor(
      */
     suspend fun exportConfigToJson(): Result<String> {
         return try {
+            // Hidden retained rows are still v5 data, not an empty legacy configuration.
+            if (habitDao.hasProtocolNextState() || metricDao.hasProtocolNextState())
+                throw com.dayforge.data.repository.ProtocolNextDataRequiresUpgradeException()
             // 1. Query all entities
-            val habits = habitDao.getAllHabitsOnce()
-            val metrics = metricDao.getAllMetricsOnce()
-            val links = linkDao.getAllActiveLinks()
+            val habits = habitDao.getVisibleHabitsOnce()
+            val metrics = metricDao.getVisibleMetricsOnce()
+            if (habits.any { it.appearance != null } || metrics.any { it.appearance != null })
+                throw com.dayforge.data.repository.ProtocolNextDataRequiresUpgradeException()
+            val visibleHabitIds = habits.map { it.id }.toSet()
+            val links = linkDao.getAllActiveLinks().filter { it.habitId in visibleHabitIds }
 
             // 2. Convert to DTOs (sorted: parents first for habit hierarchy)
             val sortedHabits = habits.sortedBy { it.parentHabitId != null }

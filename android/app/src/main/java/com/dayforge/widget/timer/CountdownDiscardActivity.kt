@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.lifecycle.lifecycleScope
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -15,8 +16,15 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.dayforge.R
+import com.dayforge.widget.base.WidgetActivityTheme
 import com.dayforge.domain.service.TimerServiceController
+import com.dayforge.data.repository.LegacyWidgetTimerClaim
+import com.dayforge.data.repository.NextTimerWriter
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.catch
 
 /**
  * Transparent activity to show discard confirmation dialog.
@@ -34,6 +42,7 @@ import dagger.hilt.android.AndroidEntryPoint
  */
 @AndroidEntryPoint
 class CountdownDiscardActivity : ComponentActivity() {
+    @Inject lateinit var writer: NextTimerWriter
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -42,14 +51,37 @@ class CountdownDiscardActivity : ComponentActivity() {
         val targetMinutes = intent.getIntExtra(EXTRA_TARGET_MINUTES, 0)
         val seconds = intent.getIntExtra(EXTRA_SECONDS, 0)
         val isCountdown = intent.getBooleanExtra(EXTRA_IS_COUNTDOWN, true)
+        val authority = try {
+            com.dayforge.domain.model.TimerActionAuthority.read(intent)
+        } catch (_: IllegalArgumentException) {
+            finish()
+            return
+        }
+        val legacy = try { LegacyWidgetTimerClaim.read(intent) } catch (_: Exception) { finish(); return }
+        // Pre-upgrade ID-only dialogs have no recoverable origin and cannot control a new account/session.
+        if ((authority == null) == (legacy == null)) { finish(); return }
+        if (legacy != null && (authority != null || legacy.identity.habitId != habitId || legacy.sessionUuid == null)) {
+            finish(); return
+        }
 
         if (habitId == -1L) {
             finish()
             return
         }
+        if (legacy != null) lifecycleScope.launch {
+            writer.accessChanges.catch { finish() }.collect { access ->
+                if (access == null || access.session != legacy.identity.session() ||
+                    access.capturedDeviceId != legacy.identity.deviceId) finish()
+            }
+        }
 
         setContent {
-            MaterialTheme {
+            var ready by remember { mutableStateOf(legacy == null) }
+            LaunchedEffect(Unit) {
+                if (legacy != null) try { writer.requireLegacyWidgetAction(legacy); ready = true }
+                catch (error: Exception) { if (error is CancellationException) throw error; finish() }
+            }
+            WidgetActivityTheme(this) {
                 val context = LocalContext.current
                 // Transparent background with centered dialog
                 Box(
@@ -91,14 +123,17 @@ class CountdownDiscardActivity : ComponentActivity() {
 
                                     // "放弃" button - discard the session
                                     Button(
+                                        enabled = ready,
                                         onClick = {
-                                            // Per TIMER-09: discard deletes TimeLogEntity
-                                            TimerServiceController.discardTimer(
-                                                this@CountdownDiscardActivity,
-                                                habitId,
-                                                targetMinutes
-                                            )
-                                            finish()
+                                            lifecycleScope.launch {
+                                                try {
+                                                    if (legacy != null) writer.requireLegacyWidgetAction(legacy)
+                                                    TimerServiceController.discardTimer(this@CountdownDiscardActivity,
+                                                        habitId, targetMinutes, authority, legacy)
+                                                } catch (error: Exception) {
+                                                    if (error is CancellationException) throw error
+                                                } finally { finish() }
+                                            }
                                         }
                                     ) {
                                         Text(stringResource(R.string.action_discard))
@@ -150,7 +185,9 @@ class CountdownDiscardActivity : ComponentActivity() {
             habitId: Long,
             targetMinutes: Int,
             seconds: Int,
-            isCountdown: Boolean = true
+            isCountdown: Boolean = true,
+            authority: com.dayforge.domain.model.TimerActionAuthority? = null,
+            legacyWidget: LegacyWidgetTimerClaim? = null
         ): Intent {
             return Intent(context, CountdownDiscardActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -158,6 +195,9 @@ class CountdownDiscardActivity : ComponentActivity() {
                 putExtra(EXTRA_TARGET_MINUTES, targetMinutes)
                 putExtra(EXTRA_SECONDS, seconds)
                 putExtra(EXTRA_IS_COUNTDOWN, isCountdown)
+                require(authority == null || legacyWidget == null)
+                authority?.attach(this)
+                legacyWidget?.attach(this)
             }
         }
     }

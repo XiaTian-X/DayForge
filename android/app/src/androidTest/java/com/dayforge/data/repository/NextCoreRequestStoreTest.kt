@@ -185,8 +185,12 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
         producer().write(session) {
             habits().updateHabit(habit.copy(name = "First name"))
             metrics().updateMetric(metric.copy(name = "First metric"))
-            db.completionDao().insertForSync(CompletionEntity(habitId = habit.id, habitUuid = habit.uuid,
-                uuid = id(50), date = millis, actualCompletedAt = millis, value = 3, recordedTimezone = "Asia/Shanghai"))
+            val fact = CompletionEntity(habitId = habit.id, habitUuid = habit.uuid,
+                uuid = id(50), date = Instant.ofEpochMilli(millis).atZone(java.time.ZoneId.of("Asia/Shanghai"))
+                    .toLocalDate().atStartOfDay(java.time.ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli(),
+                actualCompletedAt = millis, value = 3, recordedTimezone = "Asia/Shanghai")
+            NextCountDayStore(db).capture(habit, fact)
+            db.completionDao().insertForSync(fact)
             metrics().recordValue(metric.id, 21.125, "note", millis)
             db.habitMetricLinkDao().insertOrIgnore(HabitMetricLinkEntity(habitId = habit.id, habitUuid = habit.uuid,
                 metricId = metric.id, metricUuid = metric.uuid, uuid = id(51), coefficient = 0.5,
@@ -197,8 +201,9 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
             habits().updateHabit(requireNotNull(db.habitDao().getHabitById(habit.id)).copy(name = "Later name"))
             metrics().updateMetric(requireNotNull(db.metricDao().getMetricById(metric.id)).copy(name = "Later metric"))
         }
-        register(); val captured = access(); val (http, server) = channel()
-        rows.forEach { assertNotNull(sender(http).sendOperation(captured, it.operationId)) }
+        register(); val captured = access(); val (http, server) = channel { successReply(it) }
+        // A dependent first count cannot pass an unacknowledged structural predecessor.
+        rows.forEach { assertNotNull(sender(http).sendAndAcceptOperation(captured, it.operationId)) }
         val sent = server.requests.filter { it.path.endsWith("/push") }.map {
             Json.parseToJsonElement(it.body.toString(Charsets.UTF_8)).jsonObject.getValue("operations").jsonArray.single().jsonObject
         }.associateBy { it.getValue("entity_type").jsonPrimitive.content }
@@ -206,7 +211,9 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
         assertEquals(JsonPrimitive("First name"), sent.getValue("plan_node").getValue("payload").jsonObject["title"])
         assertEquals(JsonPrimitive("First metric"), sent.getValue("metric").getValue("payload").jsonObject["name"])
         assertEquals(JsonPrimitive(3), sent.getValue("activity_event").getValue("payload").jsonObject["value"])
-        assertEquals(7, db.syncOutboxDao().getAll().size); assertEquals(5, count("next_transmissions"))
+        assertEquals(2, db.syncOutboxDao().getAll().size); assertEquals(5, count("next_transmissions"))
+        assertEquals(5, count("next_acceptances"))
+        assertTrue(rows.all { db.syncOutboxDao().getByOperationId(it.operationId) == null })
     }
 
     @Test fun sameAccountReauthenticationUsesCurrentCredentialsButOriginalDurableIdentity() = runBlocking<Unit> {
@@ -476,8 +483,12 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
 
     @Test fun undoGetsStableNewEventIdentityAndCapturedTimeWithoutRewritingOldQueue() = runBlocking<Unit> {
         val session = local()
-        producer().write(session) { db.completionDao().insertForSync(CompletionEntity(habitId = habit.id, habitUuid = habit.uuid,
-            uuid = id(100), date = millis, actualCompletedAt = millis, value = 3, recordedTimezone = "Asia/Shanghai")) }
+        producer().write(session) {
+            val fact = CompletionEntity(habitId = habit.id, habitUuid = habit.uuid,
+                uuid = id(100), date = millis, actualCompletedAt = millis, value = 3, recordedTimezone = "Asia/Shanghai")
+            NextCountDayStore(db).capture(habit, fact)
+            db.completionDao().insertForSync(fact)
+        }
         val before = db.syncOutboxDao().getAll().single()
         producer().write(session) { db.completionDao().deleteByHabitId(habit.id) }
         val undo = db.syncOutboxDao().getAll().last()

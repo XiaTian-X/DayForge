@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 # Import models BEFORE creating engine to register them with SQLModel.metadata
 from src.auth.models import User  # noqa: F401
+from src.v2.models import ServerInstance
 from tests.account_fixtures import TEST_ACCOUNT_PASSWORD, account_password_hash
 
 from src.main import app
@@ -73,6 +74,8 @@ async def async_session(async_engine):
 
     # Yield session
     async with async_session_maker() as session:
+        session.add(ServerInstance())
+        await session.commit()
         yield session
 
     # tmp_path and async_engine own cleanup; no FK-unsafe DROP ordering.

@@ -1,16 +1,17 @@
 package com.dayforge.domain.service
 
+import android.annotation.SuppressLint
 import android.app.NotificationManager
 import android.appwidget.AppWidgetManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.util.Log
-import androidx.core.content.edit
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.state.updateAppWidgetState
 import com.dayforge.widget.FocusWidgetAlarmScheduler
+import com.dayforge.widget.WidgetRefreshScheduler
 import com.dayforge.widget.checkin.CheckInWidget
 import com.dayforge.widget.checkin.CheckInWidgetReceiver
 import com.dayforge.widget.counting.CountingWidget
@@ -24,6 +25,10 @@ import com.dayforge.widget.progress.ProgressWidgetReceiver
 import com.dayforge.widget.timer.TimerWidget
 import com.dayforge.widget.timer.TimerWidgetReceiver
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
 /** Clears Android state that lives outside Room when an account is removed or replaced. */
@@ -43,11 +48,17 @@ object AccountLocalStateCleaner {
         stopTimerState(appContext)
         clearLocalStores()
         try {
-            clearWidgetState(appContext)
+            if (clearWidgetState(appContext) > 0) WidgetRefreshScheduler.request(appContext)
+        } catch (error: CancellationException) {
+            // Stores may already be cleared. Recovery reads CURRENT bindings/data, never
+            // replays an old account's display or an unconditional deferred binding purge.
+            WidgetRefreshScheduler.request(appContext)
+            throw error
         } catch (error: Exception) {
             // Room and credentials are authoritative. A launcher implementation error
             // must not leave the application half-switched between two accounts.
             Log.w(TAG, "Failed to clear launcher widget state", error)
+            WidgetRefreshScheduler.request(appContext)
         }
     }
 
@@ -68,15 +79,26 @@ object AccountLocalStateCleaner {
             .onFailure { Log.w(TAG, "Failed to cancel Focus widget alarm", it) }
     }
 
-    private suspend fun clearWidgetState(context: Context) {
-        withContext(Dispatchers.IO) {
+    private suspend fun clearWidgetState(context: Context): Int {
+        var failures = 0
+        // Once authoritative stores are cleared, finish binding invalidation even when
+        // the caller is cancelled; cancellation still propagates before launcher IO.
+        withContext(NonCancellable + Dispatchers.IO) {
             listOf(
                 CheckInWidget.PREFS_NAME,
                 CountingWidget.PREFS_NAME,
                 TimerWidget.PREFS_NAME
             ).forEach { name ->
-                context.getSharedPreferences(name, Context.MODE_PRIVATE)
-                    .edit(commit = true) { clear() }
+                try {
+                    check(clearBindingPreferences(context, name)) {
+                        "Widget binding cleanup was not persisted: $name"
+                    }
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    failures++
+                    Log.w(TAG, "Failed to persist widget binding cleanup: $name", error)
+                }
             }
         }
 
@@ -92,20 +114,39 @@ object AccountLocalStateCleaner {
         val glanceManager = GlanceAppWidgetManager(context)
 
         targets.forEach { target ->
-            appWidgetManager.getAppWidgetIds(ComponentName(context, target.receiverClass))
-                .forEach { appWidgetId ->
-                    runCatching {
-                        val glanceId = glanceManager.getGlanceIdBy(appWidgetId)
-                        updateAppWidgetState(context, glanceId) { preferences ->
-                            preferences.clear()
-                        }
-                        target.widget.update(context, glanceId)
-                    }.onFailure {
-                        Log.w(TAG, "Failed to clear widget $appWidgetId", it)
+            currentCoroutineContext().ensureActive()
+            val ids = try {
+                appWidgetManager.getAppWidgetIds(ComponentName(context, target.receiverClass))
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                failures++
+                Log.w(TAG, "Failed to discover widgets for ${target.receiverClass.simpleName}", error)
+                intArrayOf()
+            }
+            ids.forEach { appWidgetId ->
+                currentCoroutineContext().ensureActive()
+                try {
+                    val glanceId = glanceManager.getGlanceIdBy(appWidgetId)
+                    updateAppWidgetState(context, glanceId) { preferences ->
+                        preferences.clear()
                     }
+                    target.widget.update(context, glanceId)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    failures++
+                    Log.w(TAG, "Failed to clear widget $appWidgetId", error)
                 }
+            }
         }
+        return failures
     }
+
+    // KTX edit(commit=true) returns Unit and discards the persistence result required here.
+    @SuppressLint("UseKtx")
+    private fun clearBindingPreferences(context: Context, name: String): Boolean =
+        context.getSharedPreferences(name, Context.MODE_PRIVATE).edit().clear().commit()
 
     private data class WidgetTarget(
         val receiverClass: Class<*>,

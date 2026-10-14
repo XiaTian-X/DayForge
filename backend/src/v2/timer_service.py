@@ -15,6 +15,9 @@ from sqlmodel import col, select
 
 from src.auth.models import User
 from src.v2.change_log import append_change
+from src.v2.challenge_storage import capture_timer_birth, inherit_completed_timer_birth
+from src.v2.challenge_models import ActivityChallengeTimerBinding
+from src.v2.challenge_recovery import require_roundless_view, require_roundless_timer
 from src.v2.encoding import canonical_json, parse_json, timer_command_hash
 from src.v2.replica_context import ReplicaIdentity, replay_replica
 from src.v2.entity_snapshots import serialize_activity_event_with_allocations
@@ -42,6 +45,16 @@ from src.v2.schemas import (
 )
 from src.v2.device_service import require_device
 from src.v2.time_utils import as_utc, elapsed_milliseconds, local_date_at
+from src.v2.challenge_sync_contract import RoundTimerCommandBatchRequest
+from src.v2.challenge_receipts import (
+    receipt_context,
+    replay_context_error,
+    require_receipt_owner,
+)
+from src.v2.challenge_profile_service import (
+    validate_timer_context,
+    validate_legacy_replay,
+)
 
 
 ACTIVE_STATES = ("running", "paused")
@@ -232,6 +245,16 @@ async def _start(
             "INVALID_ACTIVITY_MODE", "Only duration activities can start timers"
         )
     target_seconds, max_seconds = _max_duration_seconds(activity)
+    if command.start_policy is not None and (
+        command.start_policy.target_seconds != target_seconds
+        or command.start_policy.is_countdown != activity.is_countdown
+        or command.start_policy.max_duration_seconds != max_seconds
+    ):
+        raise DomainError(
+            "TIMER_START_CONFIG_CHANGED",
+            "The activity configuration no longer matches the original start",
+            conflict=True,
+        )
     timer = TimerSession(
         public_id=str(command.session_id),
         owner_user_id=user.id,
@@ -517,6 +540,11 @@ async def process_timer_commands(
     next_protocol: bool = False,
     replica: ReplicaIdentity | None = None,
 ) -> TimerCommandBatchResponse:
+    round_profile = isinstance(request, RoundTimerCommandBatchRequest)
+    if round_profile and not next_protocol:
+        raise DomainError(
+            "CLIENT_UPGRADE_REQUIRED", "Challenge profile requires protocol 5"
+        )
     replay_scope = await replay_replica(db, next_protocol, replica)
     device = await require_device(
         require_internal(user.id, "User.id"), str(request.device_id), db
@@ -525,6 +553,16 @@ async def process_timer_commands(
 
     for command in request.commands:
         request_hash = timer_command_hash(command, replica=replay_scope)
+        context = (
+            request.context_for(str(command.command_id))
+            if isinstance(request, RoundTimerCommandBatchRequest)
+            else None
+        )
+        context_json = (
+            receipt_context(command, context, replay_scope, timer=True)
+            if context is not None
+            else None
+        )
         previous_result = await db.execute(
             select(TimerCommand).where(
                 col(TimerCommand.device_id) == device.id,
@@ -533,6 +571,9 @@ async def process_timer_commands(
         )
         previous = previous_result.scalar_one_or_none()
         if previous is not None:
+            require_receipt_owner(
+                previous.user_id, require_internal(user.id, "User.id")
+            )
             if previous.request_hash != request_hash:
                 results.append(
                     TimerCommandResult(
@@ -543,8 +584,35 @@ async def process_timer_commands(
                         message="command_id was already used with a different request",
                     )
                 )
+            elif (
+                context_error := replay_context_error(
+                    previous.challenge_context_json, context_json, previous.request_hash
+                )
+            ) is not None:
+                results.append(
+                    TimerCommandResult(
+                        command_id=command.command_id,
+                        session_id=command.session_id,
+                        status="rejected",
+                        error_code=context_error,
+                        message="The original timer source context must be preserved",
+                    )
+                )
             else:
+                if context is not None and previous.challenge_context_json is None:
+                    await validate_legacy_replay(
+                        db,
+                        require_internal(user.id, "User.id"),
+                        command,
+                        context,
+                        previous.status,
+                    )
                 stored = parse_json(previous.result_json)
+                if not stored or previous.status == "processing":
+                    raise DomainError(
+                        "OPERATION_IN_PROGRESS",
+                        "The same timer command is still being processed",
+                    )
                 if stored.get("status") == "applied":
                     stored["status"] = "already_applied"
                 results.append(TimerCommandResult.model_validate(stored))
@@ -559,6 +627,7 @@ async def process_timer_commands(
             command_type=command.command_type,
             request_hash=request_hash,
             status="processing",
+            challenge_context_json=context_json,
         )
         persist_result = True
         try:
@@ -572,7 +641,43 @@ async def process_timer_commands(
 
         try:
             async with db.begin_nested():
+                if command.command_type == "start" and not round_profile:
+                    await require_roundless_view(
+                        db, require_internal(user.id, "User.id")
+                    )
+                elif not round_profile:
+                    await require_roundless_timer(
+                        db,
+                        require_internal(user.id, "User.id"),
+                        str(command.session_id),
+                    )
+                if (
+                    next_protocol
+                    and command.command_type == "start"
+                    and command.start_policy is None
+                ):
+                    raise DomainError(
+                        "TIMER_START_POLICY_REQUIRED",
+                        "Protocol 5 start requires its original policy",
+                    )
+                round_uuid = (
+                    await validate_timer_context(
+                        db, require_internal(user.id, "User.id"), command, context
+                    )
+                    if context is not None
+                    else None
+                )
                 timer = await _apply_command(db, user, device, command)
+                if next_protocol:
+                    if timer.state == "completed":
+                        if (
+                            await db.get(ActivityChallengeTimerBinding, timer.id)
+                            is None
+                        ):
+                            await capture_timer_birth(db, timer, round_uuid=round_uuid)
+                        await inherit_completed_timer_birth(db, timer)
+                    else:
+                        await capture_timer_birth(db, timer, round_uuid=round_uuid)
                 snapshot = await serialize_timer_session(db, timer)
             result = TimerCommandResult(
                 command_id=command.command_id,

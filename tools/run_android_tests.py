@@ -1,8 +1,9 @@
-"""Physical verification: full three-shard gate or explicitly scoped test classes.
+"""Physical verification: full gate, explicit classes, or selected fixed shards.
 
 Only scoped mode accepts a class selector. No external filters, retries, parallel
 devices, raised per-case deadlines, or host Android tests.
 Reports from prior runs are moved aside, never accepted as current evidence.
+Selected shards produce partial evidence only, never full-gate completion.
 """
 
 import contextlib
@@ -22,9 +23,11 @@ from pathlib import Path
 from tools.check_android_coverage import validate as validate_coverage
 from tools.check_android_results import read_cases
 from tools.check_android_warnings import find_growth, load_budget, parse_warnings
+from tools.android_joint_backend import backend_for_cases
 
 SHARDS = 3
-SHARD_TIMEOUT_SECONDS = 1500
+SHARD_TIMEOUT_SECONDS = 10800
+TARGETED_TIMEOUT_SECONDS = 2700
 TARGET = "com.dayforge.testbed"
 TEST_PACKAGE = TARGET + ".test"
 COMPONENT = TEST_PACKAGE + "/com.dayforge.HiltTestRunner"
@@ -45,14 +48,30 @@ def selected_classes(names: list[str] | tuple[str, ...]) -> tuple[str, ...]:
     return tuple(sorted(names))
 
 
-def parse_arguments(arguments: list[str]) -> tuple[bool, tuple[str, ...]]:
+def selected_shards(indices: tuple[int, ...]) -> tuple[int, ...]:
+    if (
+        not 1 <= len(indices) < SHARDS
+        or len(set(indices)) != len(indices)
+        or any(type(index) is not int or not 0 <= index < SHARDS for index in indices)
+    ):
+        raise ValueError("Select one or two distinct fixed shard indices (0, 1, 2)")
+    return tuple(sorted(indices))
+
+
+def parse_arguments(
+    arguments: list[str],
+) -> tuple[bool, tuple[str, ...], tuple[int, ...]]:
     if not arguments:
-        return False, ()
+        return False, (), ()
     if arguments == ["--build-only"]:
-        return True, ()
+        return True, (), ()
     if arguments[0] == "--classes":
-        return False, selected_classes(arguments[1:])
-    raise ValueError("Use --build-only or --classes followed by qualified classes")
+        return False, selected_classes(arguments[1:]), ()
+    if arguments[0] == "--shards" and all(
+        value in ("0", "1", "2") for value in arguments[1:]
+    ):
+        return False, (), selected_shards(tuple(map(int, arguments[1:])))
+    raise ValueError("Use --build-only, --classes CLASS ... or --shards INDEX ...")
 
 
 def discover(output: str) -> set[tuple[str, str]]:
@@ -281,11 +300,20 @@ class Gate:
             paths.append(path)
         return paths
 
-    def run_gate(self, build_only: bool = False, classes: tuple[str, ...] = ()) -> None:
-        if build_only and classes:
-            raise ValueError("Build-only and scoped device testing are separate modes")
+    def run_gate(
+        self,
+        build_only: bool = False,
+        classes: tuple[str, ...] = (),
+        shards: tuple[int, ...] = (),
+    ) -> None:
+        if sum(map(bool, (build_only, classes, shards))) > 1:
+            raise ValueError(
+                "Build-only, classes and selected shards are separate modes"
+            )
         if classes:
             classes = selected_classes(classes)
+        if shards:
+            shards = selected_shards(shards)
         check_global_arguments(self.repo)
         self.execute(
             "build",
@@ -331,7 +359,62 @@ class Gate:
             timeout=150,
         )
         expected = discover(log.read_text())
+        partitions = self.discover_shards(expected) if shards else {}
+        selected = (
+            set().union(*(partitions[index][0] for index in shards))
+            if shards
+            else expected
+        )
+        if hashes != [digest(path) for path in apks]:
+            raise ValueError("APKs changed during discovery")
         self.cleanup(prefix="discovery")
+        with backend_for_cases(self, selected) as arguments:
+            self.joint_arguments = arguments
+            self.run_discovered(
+                classes, expected, apks, hashes, log, shards, partitions
+            )
+
+    def discover_shards(self, expected):
+        # Ask the installed runner for its own partitioning; do not reimplement
+        # its hash, trust old XML, or guess which methods are in an omitted shard.
+        partitions, found = {}, set()
+        for index in range(SHARDS):
+            log = self.adb_command(
+                f"partition-{index}",
+                "shell",
+                "am",
+                "instrument",
+                "-w",
+                "-r",
+                "-e",
+                "log",
+                "true",
+                "-e",
+                "timeout_msec",
+                "150000",
+                "-e",
+                "numShards",
+                str(SHARDS),
+                "-e",
+                "shardIndex",
+                str(index),
+                COMPONENT,
+                timeout=150,
+            )
+            cases = discover(log.read_text())
+            if found & cases or not cases <= expected:
+                raise ValueError(
+                    "Shard discovery overlaps or contains unexpected cases"
+                )
+            partitions[index] = (cases, log)
+            found.update(cases)
+        if found != expected:
+            raise ValueError("Shard discovery does not cover full discovery")
+        return partitions
+
+    def run_discovered(
+        self, classes, expected, apks, hashes, log, shards=(), partitions=None
+    ):
         if classes:
             if {name for name, _ in expected} != set(classes):
                 raise ValueError(
@@ -339,22 +422,30 @@ class Gate:
                 )
             self.run_targeted(classes, expected, apks, hashes, log)
             return
-        print(
-            f"Discovered {len(expected)} cases; running {SHARDS} fixed sequential shards.",
-            flush=True,
-        )
+        if shards:
+            print(
+                f"Selected fixed shards {shards} of {SHARDS}; NOT the full gate.",
+                flush=True,
+            )
+        else:
+            print(
+                f"Discovered {len(expected)} cases; running {SHARDS} fixed sequential shards.",
+                flush=True,
+            )
         reports, inputs = [], []
-        for index in range(SHARDS):
+        for index in shards or range(SHARDS):
             self.execute(
                 f"shard-{index}",
                 [
                     "./gradlew",
                     "--no-daemon",
                     "connectedDeviceTestAndroidTest",
+                    "-Pdayforge.deviceTestScope=full",
                     f"-Pandroid.testInstrumentationRunnerArguments.numShards={SHARDS}",
                     f"-Pandroid.testInstrumentationRunnerArguments.shardIndex={index}",
                     "-Pandroid.testInstrumentationRunnerArguments.log=false",
                     "-Pandroid.testInstrumentationRunnerArguments.timeout_msec=150000",
+                    *self.joint_arguments,
                 ],
                 SHARD_TIMEOUT_SECONDS,
             )
@@ -364,6 +455,8 @@ class Gate:
             cases, errors = read_cases(reports[-1])
             if errors or not cases or not cases <= expected:
                 raise ValueError("; ".join(errors) or "Empty shard")
+            if shards and cases != partitions[index][0]:
+                raise ValueError("Selected shard discovered/executed identity mismatch")
             source = self.rotate(COVERAGE_INPUT, f"shard-{index}-coverage")
             files = sorted(source.rglob("*.ec"))
             if len(files) != 1:
@@ -375,6 +468,37 @@ class Gate:
             print(
                 f"Shard {index + 1}/{SHARDS}: {len(cases)} completed cases.", flush=True
             )
+        if shards:
+            self.check_warnings()
+            self.evidence = {
+                "format": 1,
+                "status": "partial_complete",
+                "scope": "selected_shards",
+                "selected_shards": list(shards),
+                "unexecuted_shards": sorted(set(range(SHARDS)) - set(shards)),
+                "num_shards": SHARDS,
+                "cases": sum(len(partitions[index][0]) for index in shards),
+                "apk_sha256": hashes,
+                "discovery_sha256": digest(log),
+                "discovered_cases": sorted(expected),
+                "partitions": {
+                    str(index): {
+                        "cases": sorted(cases),
+                        "discovery_sha256": digest(proof),
+                    }
+                    for index, (cases, proof) in partitions.items()
+                },
+                "coverage_inputs_sha256": [digest(path) for path in inputs],
+                "coverage_calibration": "not_run_partial_scope",
+                "test_reports_sha256": [
+                    {
+                        str(path.relative_to(self.run)): digest(path)
+                        for path in directory.glob("TEST-*.xml")
+                    }
+                    for directory in reports
+                ],
+            }
+            return
         count = validate_shards(expected, reports)
         destination = self.build / COVERAGE_INPUT
         destination.mkdir(parents=True, exist_ok=False)
@@ -438,12 +562,14 @@ class Gate:
                 "./gradlew",
                 "--no-daemon",
                 "connectedDeviceTestAndroidTest",
+                "-Pdayforge.deviceTestScope=targeted",
                 "-Pandroid.testInstrumentationRunnerArguments.log=false",
                 "-Pandroid.testInstrumentationRunnerArguments.timeout_msec=150000",
                 "-Pandroid.testInstrumentationRunnerArguments.class="
                 + ",".join(classes),
+                *self.joint_arguments,
             ],
-            SHARD_TIMEOUT_SECONDS,
+            TARGETED_TIMEOUT_SECONDS,
         )
         if hashes != [digest(path) for path in apks]:
             raise ValueError("APKs changed during scoped verification")
@@ -477,6 +603,15 @@ class Gate:
 
     def finish(self) -> None:
         if self.evidence is not None:
+            if self.evidence.get("scope") == "selected_shards":
+                (self.run / "partial.json").write_text(
+                    json.dumps(self.evidence, indent=2) + "\n"
+                )
+                print(
+                    f"Selected shards passed: {self.evidence['cases']} cases; "
+                    f"full-suite gate NOT RUN. Evidence: {self.run}"
+                )
+                return
             targeted = self.evidence.get("scope") == "targeted"
             (self.run / ("targeted.json" if targeted else "complete.json")).write_text(
                 json.dumps(self.evidence, indent=2) + "\n"
@@ -545,10 +680,10 @@ class Gate:
 
 def main() -> int:
     try:
-        build_only, classes = parse_arguments(sys.argv[1:])
+        build_only, classes, shards = parse_arguments(sys.argv[1:])
     except ValueError as error:
         print(
-            f"{error}\nUsage: python -m tools.run_android_tests [--build-only | --classes CLASS ...]",
+            f"{error}\nUsage: python -m tools.run_android_tests [--build-only | --classes CLASS ... | --shards INDEX ...]",
             file=sys.stderr,
         )
         return 2
@@ -568,7 +703,7 @@ def main() -> int:
                 ).strip()
             gate = Gate(Path(__file__).resolve().parents[1])
             try:
-                gate.run_gate(build_only=build_only, classes=classes)
+                gate.run_gate(build_only=build_only, classes=classes, shards=shards)
             except BaseException as primary:
                 try:
                     gate.cleanup()

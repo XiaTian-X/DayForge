@@ -86,6 +86,8 @@ class NestedViewModelTest {
     private lateinit var linkDao: HabitMetricLinkDao
     private lateinit var habitRepository: HabitRepository
     private lateinit var preferencesManager: PreferencesManager
+    private lateinit var tokens: com.dayforge.data.local.TokenManager
+    private lateinit var habitPreferences: com.dayforge.data.repository.HabitPreferenceRepository
     private lateinit var viewModel: NestedViewModel
     private lateinit var preferencesFile: File
     private lateinit var dataStoreScope: CoroutineScope
@@ -112,7 +114,13 @@ class NestedViewModelTest {
             scope = dataStoreScope,
             produceFile = { preferencesFile }
         )
-        preferencesManager = PreferencesManager(dataStore)
+        tokens = com.dayforge.data.local.TokenManager(dataStore)
+        runBlocking { tokens.saveLoginSession("synthetic-access", "synthetic-refresh", "member",
+            "80000000-0000-4000-8000-000000000001", false) }
+        preferencesManager = PreferencesManager(dataStore, tokens = tokens)
+        val sessions = com.dayforge.domain.service.AccountSessionCoordinator()
+        habitPreferences = com.dayforge.data.repository.HabitPreferenceRepository(database, tokens, sessions,
+            preferencesManager, com.dayforge.data.repository.ReplicaPresentationRepository(database, tokens, sessions))
 
         val metricRepository = MetricRepository(
             database,
@@ -125,7 +133,8 @@ class NestedViewModelTest {
             context = context,
             preferencesManager = preferencesManager,
             metricRepository = metricRepository,
-            habitRepository = habitRepository
+            habitRepository = habitRepository,
+            habitPreferences = habitPreferences
         )
         val checkInService = CheckInService(habitRepository, completionDao, timeLogDao)
         viewModel = NestedViewModel(
@@ -361,9 +370,10 @@ class NestedViewModelTest {
         viewModel.checkAndShowPostCheckInDialog(habitId, habit.name)
         assertEquals(habitId, viewModel.postCheckInState.value?.habitId)
 
+        viewModel.setNeverAskAgain(habitId, true,
+            expectedPreferenceClaim = requireNotNull(viewModel.postCheckInState.value).preferenceClaim)
         viewModel.dismissPostCheckInDialog()
         assertNull(viewModel.postCheckInState.value)
-        viewModel.setNeverAskAgain(habitId, true)
         viewModel.checkAndShowPostCheckInDialog(habitId, habit.name)
 
         assertNull(viewModel.postCheckInState.value)
@@ -401,29 +411,38 @@ class NestedViewModelTest {
         val otherHabitId = 12L
         val firstMetricId = metricDao.insert(metric("Weight", "kg", 1, uuid = "weight"))
         val secondMetricId = metricDao.insert(metric("Waist", "cm", 1, uuid = "waist"))
-        preferencesManager.addPendingMetricHabit(firstHabitId)
-        preferencesManager.addPendingMetricHabit(otherHabitId)
+        val firstHabit = habit(HabitType.CHECK_IN, "First", "first").copy(id = firstHabitId)
+        val otherHabit = habit(HabitType.CHECK_IN, "Other", "other").copy(id = otherHabitId)
+        habitDao.insert(firstHabit); habitDao.insert(otherHabit)
+        linkDao.insert(link(firstHabitId, firstHabit.uuid, firstMetricId, "weight", true))
+        linkDao.insert(link(firstHabitId, firstHabit.uuid, secondMetricId, "waist", true))
+        val session = requireNotNull(tokens.localFactAccess()).session
+        preferencesManager.addPendingMetricHabit(session, firstHabit.uuid)
+        preferencesManager.addPendingMetricHabit(session, otherHabit.uuid)
+        viewModel.checkAndShowPostCheckInDialog(firstHabitId, firstHabit.name)
 
         val recorded = viewModel.recordMetricValues(
             firstHabitId,
             listOf(
                 MetricValueInput(firstMetricId, 70.2, "morning"),
                 MetricValueInput(secondMetricId, 82.0)
-            )
+            ), expectedPreferenceClaim = requireNotNull(viewModel.postCheckInState.value).preferenceClaim
         )
 
         assertTrue(recorded)
         assertEquals(70.2, metricLogDao.getLatestLog(firstMetricId)?.value ?: Double.NaN, 0.0)
         assertEquals("morning", metricLogDao.getLatestLog(firstMetricId)?.note)
         assertEquals(82.0, metricLogDao.getLatestLog(secondMetricId)?.value ?: Double.NaN, 0.0)
-        assertEquals(setOf(otherHabitId), preferencesManager.pendingMetricHabits.first())
+        assertEquals(setOf(otherHabitId), habitPreferences.pendingHabitIds.first())
     }
 
     @Test
     fun invalid_linked_value_submission_saves_nothing_and_keeps_pending_habit() = runTest {
         val habitId = 11L
         val validMetricId = metricDao.insert(metric("Weight", "kg", 1, uuid = "weight"))
-        preferencesManager.addPendingMetricHabit(habitId)
+        val habit = habit(HabitType.CHECK_IN, "Pending", "pending").copy(id = habitId)
+        habitDao.insert(habit)
+        preferencesManager.addPendingMetricHabit(requireNotNull(tokens.localFactAccess()).session, habit.uuid)
 
         // This suspend UI operation displays a real Toast on failure.
         val recorded = withContext(Handler(Looper.getMainLooper()).asCoroutineDispatcher()) {
@@ -438,7 +457,7 @@ class NestedViewModelTest {
 
         assertFalse(recorded)
         assertNull(metricLogDao.getLatestLog(validMetricId))
-        assertEquals(setOf(habitId), preferencesManager.pendingMetricHabits.first())
+        assertEquals(setOf(habitId), habitPreferences.pendingHabitIds.first())
     }
 
     @Test
@@ -469,6 +488,7 @@ class NestedViewModelTest {
         assertEquals(FailMode.LOOSE, habitDao.getHabitById(childId)?.failMode)
 
         viewModel.showReactivationDialog(childId)
+        viewModel.showReactivationDialog.first { it }
         assertTrue(viewModel.showReactivationDialog.value)
         assertEquals(childId, viewModel.reactivationHabitId.value)
         assertEquals("Target child", viewModel.reactivationHabitName.value)
@@ -518,7 +538,7 @@ class NestedViewModelTest {
         colorHex = "#2196F3",
         schedule = HabitSchedule.Daily,
         targetValue = targetValue,
-        uuid = uuid,
+        uuid = java.util.UUID.nameUUIDFromBytes(uuid.toByteArray()).toString(),
         parentHabitId = parentUuid,
         targetCycles = targetCycles,
         createdAt = 1_000L,

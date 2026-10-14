@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from src.auth.dependencies import authenticate_header
 from src.auth.models import User
-from src.auth.service import create_access_token
+from src.auth.service import account_token_claims, create_access_token
 from src.tokens.models import ApiToken
 from src.tokens.service import generate_token, hash_token
 from tests.account_fixtures import account_password_hash
@@ -32,7 +32,7 @@ async def credentials(runtime_engine):
                 prefix=raw[:11],
             )
         )
-        access = create_access_token({"sub": str(user.id), "ver": user.auth_version})
+        access = create_access_token(await account_token_claims(user, session))
     return sessions, {"jwt": "Bearer " + access, "api": "Token " + raw}, user.id
 
 
@@ -99,6 +99,23 @@ async def test_api_token_expiration_is_rechecked_in_final_snapshot(credentials):
     async with sessions() as final:
         with pytest.raises(HTTPException) as caught:
             await authenticate_header(headers["api"], final)
+        assert caught.value.status_code == 401
+
+
+@pytest.mark.parametrize("field", ["sync_epoch", "instance_uuid"])
+async def test_jwt_restore_scope_is_rechecked_after_file_stage(credentials, field):
+    from uuid import uuid4
+
+    sessions, headers, _ = credentials
+    async with sessions() as initial:
+        await authenticate_header(headers["jwt"], initial, record_token_use=False)
+    async with sessions.begin() as writer:
+        await writer.execute(
+            text(f"UPDATE server_instances SET {field}=:scope"), {"scope": str(uuid4())}
+        )
+    async with sessions() as final:
+        with pytest.raises(HTTPException) as caught:
+            await authenticate_header(headers["jwt"], final, record_token_use=False)
         assert caught.value.status_code == 401
 
 

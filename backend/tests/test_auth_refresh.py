@@ -6,6 +6,7 @@ from src.auth.service import (
     create_access_token,
     create_refresh_token,
     verify_token,
+    account_token_claims,
 )
 
 
@@ -28,7 +29,7 @@ class TestRefreshTokenEndpoint:
 
         # Create refresh token for the user
         refresh_token = create_refresh_token(
-            {"sub": str(user.id), "ver": user.auth_version}
+            await account_token_claims(user, async_session)
         )
 
         # Call refresh endpoint
@@ -79,7 +80,7 @@ class TestRefreshTokenEndpoint:
 
         # Create an ACCESS token instead of refresh token
         access_token = create_access_token(
-            {"sub": str(user.id), "ver": user.auth_version}
+            await account_token_claims(user, async_session)
         )
 
         # Try to use access token for refresh
@@ -91,10 +92,16 @@ class TestRefreshTokenEndpoint:
         data = response.json()
         assert "detail" in data
 
-    async def test_refresh_token_nonexistent_user_returns_401(self, test_client):
+    async def test_refresh_token_nonexistent_user_returns_401(
+        self, test_client, async_session
+    ):
         """Test 4: Refresh token for non-existent user returns 401."""
         # Create a valid refresh token for a non-existent user ID
-        refresh_token = create_refresh_token({"sub": "99999", "ver": 1})
+        missing = User(id=99999, username="absent", password_hash="unused")
+        # Fully bound claims test an absent account, not merely old token shape.
+        refresh_token = create_refresh_token(
+            await account_token_claims(missing, async_session)
+        )
 
         response = await test_client.post(
             "/api/v1/auth/refresh", json={"refresh_token": refresh_token}

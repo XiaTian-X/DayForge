@@ -19,6 +19,8 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 
 /** Transaction-only D-015 coordinator. The caller owns the account lock and outer COMMIT. */
 internal class NextStructuralCausalStore(private val database: HabitDatabase,
@@ -30,6 +32,8 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
     // Database state belongs to one short Room transaction, never a process/network cache.
     private val capturedHeads = mutableMapOf<Pair<String, String>, NextStructuralDependencyEntity?>()
     internal data class ParsedEnvelope(val bytes: ByteArray, val value: NextSyncPushRequest)
+    internal data class EnvelopeKey(val intent: String, val device: String, val hash: String)
+    internal data class ValidatedEnvelope(val bytes: ByteArray, val operation: SyncV2Operation)
     internal data class MergeKey(val before: String, val after: String, val submitted: String,
         val result: String, val replacementId: String)
 
@@ -43,6 +47,7 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         val parsedSources = mutableMapOf<String, SyncOutboxEntity>()
         val parsedEnvelopes = mutableMapOf<String, ParsedEnvelope>()
         val mergedIntents = mutableMapOf<MergeKey, SyncV2Operation>()
+        val validatedEnvelopes = mutableMapOf<EnvelopeKey, ValidatedEnvelope>()
         private var parsedBytes = 0
         private var parsedCount = 0
         fun retain(bytes: Int, save: () -> Unit) {
@@ -104,7 +109,7 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
     private suspend fun envelope(bytes: ByteArray, hash: String): NextSyncPushRequest {
         currentCoroutineContext().ensureActive()
         parsedEnvelopes[hash]?.let { if (it.bytes.contentEquals(bytes)) return it.value }
-        return decode(bytes, NextSyncPushRequest.serializer()).also { value ->
+        return decodeNextOperationEnvelope(bytes).also { value ->
             // Digest alone is never sufficient to reuse a parse. Own and compare the complete bytes.
             if (hash !in parsedEnvelopes) retainParsing(bytes.size) {
                 parsedEnvelopes[hash] = ParsedEnvelope(bytes.copyOf(), value)
@@ -112,8 +117,27 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         }
     }
 
+    /** Pure binding only. Every live origin/journal/receipt/context audit still runs on each pass. */
+    private suspend fun validateEnvelope(origin: NextRequestOriginEntity, transmission: NextTransmissionEntity) {
+        currentCoroutineContext().ensureActive()
+        val key = EnvelopeKey(origin.intentJson, transmission.deviceId, transmission.wireHash)
+        memo.validatedEnvelopes[key]?.let { cached ->
+            if (cached.bytes.contentEquals(transmission.wireBytes)) {
+                require(cached.operation.operationId == origin.requestId)
+                return
+            }
+        }
+        val operation = validateNextOperationEnvelope(origin.intentJson, transmission.wireBytes, transmission.deviceId)
+        require(operation.operationId == origin.requestId)
+        val size = origin.intentJson.toByteArray(Charsets.UTF_8).size + transmission.wireBytes.size +
+            transmission.deviceId.toByteArray(Charsets.UTF_8).size + transmission.wireHash.length
+        memo.retain(size) {
+            memo.validatedEnvelopes[key] = ValidatedEnvelope(transmission.wireBytes.copyOf(), operation)
+        }
+    }
+
     private data class ProofKey(val table: String, val where: String, val args: List<Any>)
-    private class ReadOnlyProof {
+    private class ReadOnlyProof(val requirePermission: Boolean) {
         val hashes = mutableMapOf<ProofKey, String?>()
         val origins = mutableMapOf<String, NextRequestOriginEntity>()
         val dependencies = mutableMapOf<String, NextStructuralDependencyEntity>()
@@ -133,9 +157,9 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
     private var proof: ReadOnlyProof? = null
 
     /** SELECT-only pass in one SQLite snapshot. Never retain proofs across any write/trigger. */
-    private suspend fun <T> readOnlyProof(block: suspend () -> T): T {
+    private suspend fun <T> readOnlyProof(requirePermission: Boolean = true, block: suspend () -> T): T {
         check(database.inTransaction() && proof == null)
-        proof = ReadOnlyProof()
+        proof = ReadOnlyProof(requirePermission)
         return try { block() } finally { proof = null }
     }
 
@@ -172,10 +196,16 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         if (ids.size < 2) return
 
         suspend fun warm(table: String, column: String, keys: List<Any>, kind: String? = null): Boolean {
-            val hashes = NextRequestSql.boundedRowHashes(sql, table, column, keys, kind) ?: return false
+            fun proofKey(id: Any) = if (kind == null) ProofKey(table, "$column=?", listOf(id))
+                else ProofKey(table, "kind=? AND requestId=?", listOf(kind, id))
+            // The initial walk and earlier batches already audited some of these exact keys.
+            // Reuse presence AND absence only inside this SELECT-only snapshot; readOnlyProof
+            // discards the map before any later write, HTTP boundary or new resolve call.
+            val missing = keys.filter { !p.hashes.containsKey(proofKey(it)) }
+            if (missing.isEmpty()) return true
+            val hashes = NextRequestSql.boundedRowHashes(sql, table, column, missing, kind) ?: return false
             hashes.forEach { (id, value) ->
-                val key = if (kind == null) ProofKey(table, "$column=?", listOf(id))
-                    else ProofKey(table, "kind=? AND requestId=?", listOf(kind, id))
+                val key = proofKey(id)
                 if (p.hashes.size < 512 || key in p.hashes) p.hashes[key] = value
             }
             return true
@@ -271,9 +301,9 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         }
     }
 
-    private fun ordinary(operation: SyncV2Operation): Boolean = operation.action == "upsert" &&
-        operation.entityType in setOf("plan_node", "metric", "activity_metric_link") &&
-        (operation.payload["activity"] as? JsonObject)?.get("completion_policy") != JsonPrimitive("one_and_done")
+    private fun ordinary(operation: SyncV2Operation): Boolean =
+        operation.action == "upsert" && operation.entityType in setOf("plan_node", "metric", "activity_metric_link") ||
+            operation.action == "delete" && operation.entityType in setOf("plan_node", "metric", "activity_metric_link")
 
     private suspend fun original(id: String): NextRequestOriginEntity {
         require(isContractUuid(id))
@@ -292,7 +322,7 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         currentCoroutineContext().ensureActive()
         val value = parsedIntents[origin.intentJson] ?: run {
             val bytes = origin.intentJson.toByteArray(Charsets.UTF_8)
-            decode(bytes, SyncV2Operation.serializer()).also {
+            decodeNextOperationIntent(origin.intentJson).also {
                 require(it.operationId == origin.requestId && ordinary(it))
                 retainParsing(bytes.size) { parsedIntents[origin.intentJson] = it }
             }
@@ -346,12 +376,18 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
 
     private fun fresh(row: SyncOutboxEntity) {
         require(row.id > 0 && isContractUuid(row.operationId) && isContractUuid(row.entityUuid) &&
-            row.entityUuid == row.wireEntityUuid && row.action == "upsert" && row.recordType in setOf("habit", "metric", "link") &&
+            row.entityUuid == row.wireEntityUuid && (row.action == "upsert" ||
+                row.action == "delete" && (row.recordType == "link" ||
+                    row.recordType == "metric" && NextMetricDeletionStore.payload(row) != null ||
+                    row.recordType == "habit" && NextPlanDeletionStore.payload(row) != null)) &&
+            row.recordType in setOf("habit", "metric", "link") &&
             row.payloadJson == null && row.baseRevision == null && row.basePayloadJson == null && row.attemptedAt == null &&
             row.attemptCount == 0 && row.lastError == null && row.errorCode == null && row.deadLetteredAt == null)
         row.referenceUuid?.let {
             // Existing habit triggers store the type here, not a parent/record UUID.
-            require(if (row.recordType == "habit") it in HabitType.entries.map { type -> type.name } else isContractUuid(it))
+            require(if (row.recordType == "habit") row.action == "delete" && NextPlanDeletionStore.payload(row) != null ||
+                it in HabitType.entries.map { type -> type.name } else
+                isContractUuid(it) || NextMetricDeletionStore.payload(row) != null)
         }
     }
 
@@ -379,7 +415,12 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
     /** Only explicit NEW writes get ancestry. A migrated/unknown predecessor is never adopted. */
     suspend fun capture(origin: NextRequestOriginEntity, operation: SyncV2Operation, access: LocalCoreWriteAccess) {
         check(database.inTransaction())
-        if (!ordinary(operation)) return
+        if (!ordinary(operation) || operation.entityType == "plan_node" && operation.action == "delete" && NextPlanDeletionStore.payload(
+                requireNotNull(outbox.getById(origin.queueId))) == null) return
+        // Existing import/physical metric deletes remain exact-original-only. Only NEW retained
+        // user deletes capture their actual pending edit/create ancestry; never adopt old work.
+        if (operation.entityType == "metric" && operation.action == "delete" &&
+            NextMetricDeletionStore.payload(requireNotNull(outbox.getById(origin.queueId))) == null) return
         require(rowHash("sync_outbox", "id=?", arrayOf(origin.queueId)) == origin.sourceHash)
         val source = requireNotNull(outbox.getById(origin.queueId))
         fresh(source)
@@ -388,7 +429,11 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         val key = source.recordType to source.entityUuid
         if (!capturedHeads.containsKey(key)) capturedHeads[key] = entityIntents(source.recordType, source.entityUuid)
             .filter { it.id < source.id }.map { logical(it) }.maxByOrNull { it.logicalOrder }
-        val parent = capturedHeads[key]
+        val round = roundOperationIntent(origin.intentJson)
+        val parent = capturedHeads[key]?.takeUnless { previous ->
+            round?.restartFrontier != null &&
+                roundOperationIntent(original(previous.operationId).intentJson)?.context?.head != round.context.head
+        }
         parent?.let {
             val before = original(it.operationId)
             require(before.accountId == origin.accountId &&
@@ -410,7 +455,8 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
             origin.serverInstanceId != null && (origin.serverInstanceId != access.session.serverInstanceId || origin.syncEpoch != access.session.syncEpoch) ||
             dep?.capturedDeviceId != null && dep.capturedDeviceId != access.deviceId)
             rejectNextRequest(NextRequestException.Reason.TRANSMISSION_CONTEXT_CHANGED)
-        if ("structure.write" !in access.capabilities) rejectNextRequest(NextRequestException.Reason.PERMISSION_DENIED)
+        if (proof?.requirePermission != false && "structure.write" !in access.capabilities)
+            rejectNextRequest(NextRequestException.Reason.PERMISSION_DENIED)
     }
 
     private data class Accepted(val operation: SyncV2Operation, val result: NextSyncOperationResult,
@@ -420,6 +466,17 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
     private suspend fun merged(before: NextRequestOriginEntity, after: NextRequestOriginEntity,
         parent: Accepted, replacementId: String): SyncV2Operation {
         currentCoroutineContext().ensureActive()
+        val oldRound = roundOperationIntent(before.intentJson)
+        val newRound = roundOperationIntent(after.intentJson)
+        val acceptedRound = roundOperationIntent(parent.intentJson)
+        if (listOf(oldRound, newRound, acceptedRound).any { it != null }) {
+            require(oldRound != null && newRound != null && acceptedRound != null &&
+                oldRound.capturedDeviceId == newRound.capturedDeviceId &&
+                acceptedRound.capturedDeviceId == newRound.capturedDeviceId &&
+                oldRound.context.head == newRound.context.head && acceptedRound.context.head == newRound.context.head &&
+                oldRound.context.affectedHeads == newRound.context.affectedHeads &&
+                acceptedRound.context.affectedHeads == newRound.context.affectedHeads) { "SYNC_CHALLENGE_STRUCTURAL_CONFLICT" }
+        }
         val key = MergeKey(before.intentJson, after.intentJson, parent.intentJson, parent.resultJson, replacementId)
         mergedIntents[key]?.let { return it }
         return NextStructuralRebase.merge(intent(before), intent(after), parent.result,
@@ -430,10 +487,54 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         }
     }
 
+    /** Start uses the exact accepted structural predecessor, including controlled replacements. */
+    internal suspend fun acceptedPlan(id: String, access: LocalSyncAccess): JsonObject {
+        check(database.inTransaction())
+        val actual = resolve(id, access)
+        val proof = accepted(actual, access)
+        require(proof.operation.entityType == "plan_node" && proof.operation.action == "upsert")
+        return requireNotNull(proof.result.entity)
+    }
+
+    /** A goal's frozen child transition uses the original audited replacement chain and full ACK. */
+    internal suspend fun acceptedPlanTransition(id: String, access: LocalSyncAccess): Pair<SyncV2Operation, JsonObject> {
+        check(database.inTransaction())
+        val proof = accepted(resolve(id, access), access)
+        require(proof.operation.entityType == "plan_node")
+        return proof.operation to requireNotNull(proof.result.entity)
+    }
+
+    /** Replacement groups bind ORIGINAL IDs, never a inferred shadow or a rebased successor. */
+    internal suspend fun acceptedOperationProof(id: String, access: LocalSyncAccess): Pair<SyncV2Operation, String> {
+        check(database.inTransaction())
+        require(resolve(id, access) == id) { "CONFIG_IMPORT_OPERATION_CHANGED" }
+        val proof = accepted(id, access, metricDeleteReceipt = true)
+        return proof.operation to proof.hash
+    }
+
+    /** Cold local audit is inspection only; it never grants the sender's write permission. */
+    internal suspend fun recoveryAcceptedOperationProof(id: String, access: LocalSyncAccess): Pair<SyncV2Operation, String> =
+        readOnlyProof(requirePermission = false) {
+            require(resolveInSnapshot(id, access) == id)
+            val receipt = accepted(id, access, metricDeleteReceipt = true)
+            receipt.operation to receipt.hash
+        }
+
+    /** Separate inspection path; only a caller's fully audited group supplies its retired source. */
+    internal suspend fun recoveryRetiredReplacementProof(originalId: String, access: LocalSyncAccess,
+        source: SyncOutboxEntity) = readOnlyProof(requirePermission = false) {
+        val row = requireNotNull(byOriginal(originalId))
+        require(source.operationId == row.replacementId && source.id == row.replacementQueueId)
+        requireNotNull(rowHash("next_abandoned_requests", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, row.replacementId)))
+        auditReplacement(row, access, null, source)
+        Unit
+    }
+
     /** Full receipt proof, not a mutable shadow or inferred absence. */
-    private suspend fun accepted(id: String, access: LocalSyncAccess): Accepted {
+    private suspend fun accepted(id: String, access: LocalSyncAccess, metricDeleteReceipt: Boolean = false): Accepted {
         val origin = original(id)
         validateContext(origin, null, access)
+        NextRestartBindingStore(database).requireReady(access, origin)
         val originHash = requireNotNull(requestHash("next_request_origins", id))
         val receiptHash = requestHash("next_acceptances", id)
             ?: rejectNextRequest(NextRequestException.Reason.CAUSAL_PREDECESSOR_PENDING)
@@ -444,12 +545,23 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
             transmission.serverInstanceId == access.session.serverInstanceId && transmission.syncEpoch == access.session.syncEpoch &&
             transmission.deviceId == access.deviceId && transmission.wireHash == nextRequestHash(transmission.wireBytes))
         val envelope = envelope(transmission.wireBytes, transmission.wireHash)
-        val operation = intent(origin)
+        // Legacy import/physical metric deletes have no ancestry. Their exact original receipt
+        // and NEW retained deletes still pass the SAME frozen envelope and typed result proof.
+        val operation = if (metricDeleteReceipt) decodeNextOperationIntent(origin.intentJson).also {
+            require(it.operationId == origin.requestId && (ordinary(it) ||
+                it.entityType == "metric" && it.action == "delete"))
+        } else intent(origin)
         require(envelope.deviceId == transmission.deviceId && envelope.operations == listOf(operation))
+        validateEnvelope(origin, transmission)
+        if (roundOperationIntent(origin.intentJson) != null) NextChallengeStore(database).activeInTransaction(access)
         val receipt = proof?.acceptances?.get(id) ?: requireNotNull(requests.acceptance(NEXT_OPERATION, id))
         require(receipt.kind == NEXT_OPERATION && receipt.requestId == id && receipt.originHash == originHash &&
             receipt.transmissionHash == transmissionHash && receipt.resultHash == nextRequestHash(receipt.resultJson.toByteArray(Charsets.UTF_8)))
-        val result = validateStructuralResult(receipt.resultJson)
+        val result = if (operation.action == "delete") {
+            decode(receipt.resultJson.toByteArray(Charsets.UTF_8), NextSyncOperationResult.serializer()).also {
+                NextOrdinaryResultMapper.validate(operation, it, requireNotNull(access.deviceId))
+            }
+        } else validateStructuralResult(receipt.resultJson)
         validateTaskResultBinding(operation, result)
         require(result.status == "applied" && result.revision != null && result.revision > 0 &&
             result.revision >= (operation.baseRevision ?: 0) && result.entity != null && result.errorCode == null && result.message == null &&
@@ -468,7 +580,7 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
     }
 
     private suspend fun auditReplacement(row: NextStructuralSupersessionEntity, access: LocalSyncAccess,
-        acceptedByChild: Accepted?): Accepted {
+        acceptedByChild: Accepted?, retiredSource: SyncOutboxEntity? = null): Accepted? {
         require(row.kind == NEXT_OPERATION && row.originalId != row.replacementId && isContractUuid(row.replacementId) &&
             row.accountId == access.session.authentication.userId && row.serverInstanceId == access.session.serverInstanceId &&
             row.syncEpoch == access.session.syncEpoch && row.deviceId == access.deviceId)
@@ -483,38 +595,80 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         require(source.id == origin.queueId && source.operationId == origin.requestId && NextRequestSql.sourceHash(source) == origin.sourceHash)
         require(rowHash("sync_outbox", "id=?", arrayOf(source.id)) == null && !hasSource(row.originalId) &&
             requestHash("next_transmissions", row.originalId) == null && requestHash("next_acceptances", row.originalId) == null)
-        require(row.predecessorAcceptedRequestId == actualParent(dep))
-        val parent = accepted(row.predecessorAcceptedRequestId, access)
-        require(row.predecessorAcceptanceHash == parent.hash)
+        val restartRoot = dep.predecessorId == null && roundOperationIntent(origin.intentJson)?.restartFrontier != null
+        val bridge = if (restartRoot) restartReplacement(origin, access, row.replacementId) else null
+        val parent = if (bridge == null) {
+            require(row.predecessorAcceptedRequestId == actualParent(dep))
+            accepted(row.predecessorAcceptedRequestId, access).also { require(row.predecessorAcceptanceHash == it.hash) }
+        } else {
+            require(row.predecessorAcceptedRequestId == bridge.parentId && row.predecessorAcceptanceHash == bridge.receiptHash)
+            null
+        }
         val replacement = original(row.replacementId)
         validateContext(replacement, null, access)
         require(row.replacementOriginHash == requestHash("next_request_origins", row.replacementId) &&
             row.replacementQueueId == replacement.queueId && replacement.queueId > source.id &&
             replacement.serverInstanceId == row.serverInstanceId && replacement.syncEpoch == row.syncEpoch &&
             hash("next_structural_dependencies", "operationId", row.replacementId) == null && byOriginal(row.replacementId) == null)
-        val desired = merged(original(requireNotNull(dep.predecessorId)), origin, parent, row.replacementId)
+        val desired = bridge?.operation ?: merged(original(requireNotNull(dep.predecessorId)), origin, requireNotNull(parent), row.replacementId)
         require(intent(replacement) == desired)
+        require(replacement.intentJson == (bridge?.bytes ?: encodeNextOperationIntent(desired, origin.intentJson)).toString(Charsets.UTF_8))
         val newSource = source.copy(id = replacement.queueId, operationId = replacement.requestId)
         require(replacement.sourceHash == NextRequestSql.sourceHash(newSource))
         val receiptHash = requestHash("next_acceptances", replacement.requestId)
         if (receiptHash != null) {
+            require(retiredSource == null)
             // The immediately visited child already needed this exact complete receipt. It is
             // still the same SELECT-only snapshot and access; do not audit it a second time.
             if (acceptedByChild == null) accepted(replacement.requestId, access)
             else require(acceptedByChild.operation.operationId == replacement.requestId && acceptedByChild.hash == receiptHash)
+        } else if (retiredSource != null) {
+            require(acceptedByChild == null && retiredSource == newSource &&
+                NextRequestSql.sourceHash(retiredSource) == replacement.sourceHash &&
+                rowHash("sync_outbox", "id=?", arrayOf(replacement.queueId)) == null && !hasSource(replacement.requestId))
         } else require(acceptedByChild == null &&
             rowHash("sync_outbox", "id=?", arrayOf(replacement.queueId)) == replacement.sourceHash &&
             outbox.getById(replacement.queueId) == newSource)
         return parent
     }
 
+    private data class RestartReplacement(val operation: SyncV2Operation, val bytes: ByteArray,
+        val parentId: String, val receiptHash: String)
+
+    private suspend fun restartReplacement(origin: NextRequestOriginEntity, access: LocalSyncAccess,
+        replacementId: String): RestartReplacement {
+        val source = requireNotNull(roundOperationIntent(origin.intentJson))
+        val reference = requireNotNull(source.restartFrontier)
+        require(source.restartPlanProofHash == null && source.context.head == reference.head)
+        NextRestartBindingStore(database).captured(access, reference, origin.queueId - 1)
+        val restart = NextRestartStore(database)
+        val originalRestart = restart.original(access, reference.operationId)
+        val (plan, proofHash) = NextRestartBindingStore(database).ready(access, reference)
+        val (_, receiptHash) = restart.accepted(access, reference)
+        // The actual local projection activates the habit. It is a merge baseline, never an ACK.
+        val baseline = JsonObject(originalRestart.value.displayedPlan + ("status" to JsonPrimitive("active")))
+        val operation = NextStructuralRebase.mergeRestartPlan(baseline, source.operation, plan,
+            plan.getValue("revision").jsonPrimitive.long, replacementId)
+        val bytes = encodeSyncRequest(NextRoundOperationIntent.serializer(), source.copy(operation = operation,
+            context = source.context.copy(sourceUuid = replacementId), restartPlanProofHash = proofHash))
+        return RestartReplacement(operation, bytes, reference.operationId, receiptHash)
+    }
+
     /** Iterative, bounded ancestry audit; never recursively parse a growing chain on the stack. */
     suspend fun resolve(id: String, access: LocalSyncAccess): String = readOnlyProof {
+        resolveInSnapshot(id, access)
+    }
+
+    private suspend fun resolveInSnapshot(id: String, access: LocalSyncAccess,
+        observe: (suspend (NextStructuralDependencyEntity, NextRequestOriginEntity,
+            NextStructuralSupersessionEntity?) -> Unit)? = null): String {
         require(isContractUuid(id))
         val fromOriginal = byOriginal(id)
         val fromReplacement = byReplacement(id)
         require(fromOriginal == null || fromReplacement == null)
         val actual = fromOriginal?.replacementId ?: id
+        if (NextRecoveryAuditStore(database).source(access, NextRecoveryKey(NEXT_OPERATION, actual)) != null)
+            rejectNextRequest(NextRequestException.Reason.LOCALLY_ABANDONED)
         var current: String? = fromOriginal?.originalId ?: fromReplacement?.originalId ?: id
         warmAncestry(requireNotNull(current))
         val seen = mutableSetOf<String>()
@@ -533,9 +687,104 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
                 requireNotNull(hash("next_structural_supersessions", "originalId", current))
                 acceptedByChild = auditReplacement(supersession, access, acceptedByChild)
             } else acceptedByChild = null
+            observe?.invoke(dep, original(current), supersession)
             current = dep.predecessorId
         }
-        actual
+        return actual
+    }
+
+    /**
+     * Same complete logical/replacement audit as resolve, with original live or real ACK evidence.
+     * Caller owns account + Room snapshot. No prepare, temporary UUID, HTTP or business mutation.
+     * Facts/timers/import/CAS dependencies must still be joined by the full recovery reader.
+     */
+    internal suspend fun recoveryLineage(id: String, access: LocalSyncAccess): NextRecoveryStructuralLineage = readOnlyProof(requirePermission = false) {
+        val rounds = NextChallengeStore(database).activeInTransaction(access)
+        val knownHeads = rounds.second.checkpoints.flatMap { it.records }.map { it.head }.toSet()
+        val checkpointHash = nextRequestHash(listOf(
+            requireNotNull(rowHash("next_sync_state", "1=1", emptyArray())),
+            requireNotNull(rowHash("next_challenge_state", "1=1", emptyArray()))).joinToString(";").toByteArray(Charsets.UTF_8))
+        val links = mutableListOf<NextRecoveryStructuralLink>()
+        suspend fun capture(origin: NextRequestOriginEntity, dep: NextStructuralDependencyEntity?,
+            supersession: NextStructuralSupersessionEntity?) {
+            val logicalId = origin.requestId
+            val actualId = supersession?.replacementId ?: logicalId
+            val actualOrigin = if (actualId == logicalId) origin else original(actualId)
+            for (source in listOf(origin, actualOrigin).distinct()) {
+                val round = requireNotNull(roundOperationIntent(source.intentJson)) { "SYNC_RECOVERY_ROUND_SOURCE_REQUIRED" }
+                require(round.capturedDeviceId == access.deviceId && source.accountId == access.session.authentication.userId &&
+                    source.serverInstanceId == access.session.serverInstanceId && source.syncEpoch == access.session.syncEpoch)
+                require(!sql.query("SELECT 1 FROM next_abandoned_requests WHERE kind=? AND requestId=? LIMIT 1",
+                    arrayOf(NEXT_OPERATION, source.requestId)).use { it.moveToFirst() }) { "SYNC_RECOVERY_RETIRED_SOURCE" }
+                require(round.operation.entityType in setOf("plan_node", "metric", "activity_metric_link"))
+            }
+            val operation = decodeNextOperationIntent(actualOrigin.intentJson)
+            if (dep == null) require(supersession == null && operation.entityType == "metric" && operation.action == "delete") {
+                "SYNC_RECOVERY_STRUCTURAL_ANCESTRY_REQUIRED"
+            }
+            if (supersession != null) require(requestHash("next_rejections", logicalId) == null)
+            val acceptanceHash = requestHash("next_acceptances", actualId)
+            val resultHash: String?
+            val state: NextRecoveryRequestState
+            val actualProof: String
+            if (acceptanceHash != null) {
+                require(requestHash("next_rejections", actualId) == null) { "SYNC_RECOVERY_CONTRADICTORY_RESULT" }
+                val receipt = accepted(actualId, access, metricDeleteReceipt = true)
+                require(receipt.hash == acceptanceHash)
+                // A normalized structure receipt alone does not prove its original round survived.
+                // Include historical heads, not just current heads; pending initial births are different.
+                val acceptedRound = requireNotNull(roundOperationIntent(actualOrigin.intentJson))
+                require((listOfNotNull(acceptedRound.context.head) + acceptedRound.context.affectedHeads)
+                    .all { it in knownHeads }) { "SYNC_RECOVERY_ACCEPTED_ROUND_MISSING" }
+                resultHash = nextRequestHash(receipt.resultJson.toByteArray(Charsets.UTF_8))
+                state = NextRecoveryRequestState.ACCEPTED
+                actualProof = listOf(requireNotNull(requestHash("next_request_origins", actualId)),
+                    requireNotNull(requestHash("next_transmissions", actualId)), acceptanceHash).joinToString(";")
+            } else {
+                val pending = NextOriginalRequestProofStore(database).pending(access, NEXT_OPERATION, actualId)
+                require(pending.origin == actualOrigin)
+                resultHash = null; state = pending.state; actualProof = pending.evidenceHash
+            }
+            val dependencyHash = dep?.let { requireNotNull(hash("next_structural_dependencies", "operationId", logicalId)) }
+            val supersessionHash = supersession?.let { requireNotNull(hash("next_structural_supersessions", "originalId", logicalId)) }
+            val evidenceHash = nextRequestHash(listOf(logicalId, actualId,
+                requireNotNull(requestHash("next_request_origins", logicalId)), dependencyHash ?: "none",
+                supersessionHash ?: "none", dep?.predecessorId ?: "none", state.name, actualProof).joinToString(";").toByteArray(Charsets.UTF_8))
+            links += NextRecoveryStructuralLink(NextRecoveryKey(NEXT_OPERATION, logicalId),
+                NextRecoveryKey(NEXT_OPERATION, actualId), origin.queueId, actualOrigin.queueId,
+                operation.entityType, operation.entityUuid, dep?.predecessorId, dependencyHash,
+                supersessionHash, state, evidenceHash, acceptanceHash, resultHash)
+        }
+        val actual = resolveInSnapshot(id, access) { dep, origin, supersession -> capture(origin, dep, supersession) }
+        if (links.isEmpty()) capture(original(id), null, null) // Legacy metric delete has no ancestry.
+        check(NextChallengeStore(database).activeInTransaction(access) == rounds)
+        NextRecoveryStructuralLineage(actual, links, checkpointHash)
+    }
+
+    /** Capture only a fully audited, presently live controlled replacement, in this snapshot. */
+    internal suspend fun countPlanFrontier(actualId: String, countId: String, policy: com.dayforge.domain.model.CountDayPolicy,
+        access: LocalSyncAccess): NextCountPlanFrontier? = readOnlyProof(requirePermission = false) {
+        val replacement = byReplacement(actualId) ?: return@readOnlyProof null
+        require(resolveInSnapshot(actualId, access) == actualId)
+        val originals = NextOriginalRequestProofStore(database)
+        val actual = originals.liveOrigin(access, NEXT_OPERATION, actualId,
+            requirePermission = false)
+        require(actual.queueId == replacement.replacementQueueId)
+        if (requestHash("next_transmissions", actualId) != null)
+            originals.journal(actual, requireNotNull(requests.transmission(NEXT_OPERATION, actualId)), access)
+        val actualPlan = intent(actual)
+        val logicalPlan = intent(original(replacement.originalId))
+        require(actualPlan.entityType == "plan_node" && logicalPlan.entityType == "plan_node" &&
+            actualPlan.entityUuid == logicalPlan.entityUuid && actualPlan.action == "upsert" && logicalPlan.action == "upsert")
+        // Pending normalized intent is not necessarily the configuration still displayed locally.
+        // Freeze that exact rule; readiness must later compare the ACTUAL accepted configuration.
+        val policyId = if (NextCountDayStore.policyFromPlan(actualPlan.payload) == policy) actualId
+            else { require(NextCountDayStore.policyFromPlan(logicalPlan.payload) == policy); replacement.originalId }
+        NextCountPlanFrontier(countId, replacement.originalId, actualId, policyId,
+            requireNotNull(requestHash("next_request_origins", replacement.originalId)),
+            requireNotNull(hash("next_structural_dependencies", "operationId", replacement.originalId)),
+            requireNotNull(requestHash("next_request_origins", actualId)),
+            requireNotNull(hash("next_structural_supersessions", "originalId", replacement.originalId)))
     }
 
     internal suspend fun logicalOrder(queue: SyncOutboxEntity): Long = readOnlyProof {
@@ -555,34 +804,44 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
     }
 
     /** Called only after exact-v5 discovery. Unknown/sent originals are NEVER superseded. */
-    suspend fun prepare(id: String, access: LocalSyncAccess): String {
+    suspend fun prepare(id: String, access: LocalSyncAccess): String = prepare(id, access, inspectOnly = false)
+
+    /** Same planning proof as send, but never installs a replacement or retires its source. */
+    suspend fun inspect(id: String, access: LocalSyncAccess) { prepare(id, access, inspectOnly = true) }
+
+    private suspend fun prepare(id: String, access: LocalSyncAccess, inspectOnly: Boolean): String {
         check(database.inTransaction())
         val actual = resolve(id, access)
         if (actual != id || byReplacement(id) != null) return actual
         if (requestHash("next_transmissions", id) != null || requestHash("next_acceptances", id) != null) return id
         val origin = original(id)
-        val operation = decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
-        if (!ordinary(operation)) return id
+        val operation = decodeNextOperationIntent(origin.intentJson)
+        if (!ordinary(operation) || operation.action == "delete" &&
+            hash("next_structural_dependencies", "operationId", id) == null) return id
         require(rowHash("sync_outbox", "id=?", arrayOf(origin.queueId)) == origin.sourceHash)
         val source = requireNotNull(outbox.getById(origin.queueId))
         requireHead(source)
         if (hash("next_structural_dependencies", "operationId", id) == null) rejectNextRequest(NextRequestException.Reason.OLD_INTENT)
         val dep = dependency(id)
         validateContext(origin, dep, access)
-        if (dep.predecessorId == null) return id
+        val restartRoot = dep.predecessorId == null && roundOperationIntent(origin.intentJson)?.restartFrontier != null
+        if (dep.predecessorId == null && !restartRoot) return id
         fresh(source)
         require(rowHash("sync_outbox", "id=?", arrayOf(source.id)) == origin.sourceHash &&
             NextRequestSql.sourceHash(source) == origin.sourceHash)
-        val parentId = actualParent(dep)
-        val parent = accepted(parentId, access)
+        val parentId = if (restartRoot) requireNotNull(roundOperationIntent(origin.intentJson)?.restartFrontier).operationId else actualParent(dep)
+        val parent = if (restartRoot) null else accepted(parentId, access)
         val replacementId = UUID.randomUUID().toString()
         if (requests.origin(NEXT_OPERATION, replacementId) != null || requests.transmission(NEXT_OPERATION, replacementId) != null ||
             requests.acceptance(NEXT_OPERATION, replacementId) != null) rejectNextRequest(NextRequestException.Reason.REQUEST_ID_REUSED)
-        val replacementOperation = merged(original(dep.predecessorId), origin, parent, replacementId)
-        val intentBytes = encodeSyncRequest(SyncV2Operation.serializer(), replacementOperation)
-        decodeFrozenSyncRequest(intentBytes, SyncV2Operation.serializer())
+        val bridge = if (restartRoot) restartReplacement(origin, access, replacementId) else null
+        val replacementOperation = bridge?.operation ?: merged(original(requireNotNull(dep.predecessorId)), origin, requireNotNull(parent), replacementId)
+        val intentBytes = bridge?.bytes ?: encodeNextOperationIntent(replacementOperation, origin.intentJson)
+        decodeNextOperationIntent(intentBytes.toString(Charsets.UTF_8))
         val envelope = encodeSyncRequest(NextSyncPushRequest.serializer(), NextSyncPushRequest(requireNotNull(access.deviceId), listOf(replacementOperation)))
         decodeFrozenSyncRequest(envelope, NextSyncPushRequest.serializer())
+        // The ephemeral UUID above only validates a possible merge, never a durable identity.
+        if (inspectOnly) return id
         val before = NextRequestSql.sources(sql, "sync_outbox")
         val timers = NextRequestSql.sources(sql, "timer_command_outbox")
         val watermark = NextRequestSql.watermark(sql, "sync_outbox")
@@ -597,7 +856,7 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         val snapshot = encodeSyncRequest(SyncOutboxEntity.serializer(), source)
         val supersession = NextStructuralSupersessionEntity(id, replacementId, source.id, newQueueId, dep.originHash,
             requireNotNull(hash("next_structural_dependencies", "operationId", id)), origin.sourceHash, snapshot.toString(Charsets.UTF_8),
-            nextRequestHash(snapshot), parentId, parent.hash, requireNotNull(requestHash("next_request_origins", replacementId)),
+            nextRequestHash(snapshot), parentId, bridge?.receiptHash ?: requireNotNull(parent).hash, requireNotNull(requestHash("next_request_origins", replacementId)),
             origin.accountId, requireNotNull(access.session.serverInstanceId), requireNotNull(access.session.syncEpoch), requireNotNull(access.deviceId))
         causal.insertSupersession(supersession)
         outbox.deleteById(source.id)

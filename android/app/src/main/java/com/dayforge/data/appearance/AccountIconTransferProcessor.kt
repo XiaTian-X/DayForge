@@ -58,6 +58,7 @@ internal class AccountIconTransferProcessor(
             } catch (_: LocalContentFailure) {
                 return result(stopped = true)
             } catch (error: MaterialHttpFailure) {
+                diagnose(attempt, "http-${error.status}", error.code)
                 if (error.code in setOf("SERVER_IDENTITY_MISMATCH", "SYNC_EPOCH_MISMATCH"))
                     throw IllegalStateException("ICON_SERVER_IDENTITY_CHANGED")
                 if (attempt.job.kind == IconTransferKind.DOWNLOAD && error.status == 409 &&
@@ -79,9 +80,11 @@ internal class AccountIconTransferProcessor(
                 if (failure == null) queue.release(attempt) else queue.block(attempt, failure)
                 return result(stopped = true)
             } catch (_: MaterialReplyInvalid) {
+                diagnose(attempt, "invalid-reply", null)
                 queue.block(attempt, IconTransferFailure.REMOTE_METADATA)
                 return result(stopped = true)
-            } catch (_: IOException) {
+            } catch (error: IOException) {
+                diagnose(attempt, error.javaClass.simpleName, error.message)
                 // Reauthorization/CAS inside release rejects any changed account/replica.
                 queue.release(attempt)
                 return result(stopped = true)
@@ -99,7 +102,14 @@ internal class AccountIconTransferProcessor(
         if (error is CancellationException) throw error
         // Only file/content failures become blocked; stale authority is rejected by the queue.
         if (error !is IOException && error !is IllegalArgumentException && error !is IllegalStateException) throw error
+        diagnose(attempt, "local-${error.javaClass.simpleName}", error.message)
         queue.block(attempt, IconTransferFailure.LOCAL_CONTENT)
         throw LocalContentFailure()
+    }
+
+    /** Fixed categories and allowlisted invariant codes only, never raw exception/request text. */
+    private fun diagnose(attempt: IconTransferAttempt, category: String, message: String?) {
+        val code = materialDiagnosticCode(message)
+        android.util.Log.w("IconTransfer", "${attempt.job.kind}: $category/$code")
     }
 }

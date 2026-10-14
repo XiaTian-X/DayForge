@@ -14,6 +14,44 @@ import java.time.ZoneId
  * Extracted from FailureChecker and WidgetFailureChecker to reduce duplication.
  */
 object FailureCheckerUtils {
+    fun timerFailure(habit: HabitEntity, history: com.dayforge.domain.model.TimerHistory): StrictFailureState {
+        if (!shouldCheckFailure(habit) || !isStrictMode(habit)) return StrictFailureState.NOT_FAILED
+        var date = history.firstDate ?: return StrictFailureState.NOT_FAILED
+        var pending = false
+        val qualified = history.qualifiedDates
+        while (date < history.today) {
+            if (ScheduleValidator.isCheckInAllowedOnDate(habit.schedule, habit.createdAt, date) &&
+                date !in qualified) {
+                if (UnsettledTimerFailure.maySettle(history.failureDay(date), date, history.targetSeconds)) pending = true
+                else return StrictFailureState.FAILED
+            }
+            date = date.plusDays(1)
+        }
+        return if (pending) StrictFailureState.AWAITING_TIMER_SETTLEMENT else StrictFailureState.NOT_FAILED
+    }
+
+    fun checkHasFailed(habit: HabitEntity, history: com.dayforge.domain.model.CheckHistory): Boolean {
+        if (!shouldCheckFailure(habit) || !isStrictMode(habit)) return false
+        var date = history.firstDate ?: return false
+        val qualified = history.qualifiedDates
+        while (date < history.today) {
+            if (ScheduleValidator.isCheckInAllowedOnDate(habit.schedule, habit.createdAt, date) && date !in qualified) return true
+            date = date.plusDays(1)
+        }
+        return false
+    }
+
+    fun countHasFailed(habit: HabitEntity, history: com.dayforge.domain.model.CountHistory): Boolean {
+        if (!shouldCheckFailure(habit) || !isStrictMode(habit)) return false
+        var date = history.firstDate ?: return false
+        val qualified = history.qualifiedDates
+        while (date < history.today) {
+            if (date !in history.unknownDates &&
+                ScheduleValidator.isCheckInAllowedOnDate(habit.schedule, habit.createdAt, date) && date !in qualified) return true
+            date = date.plusDays(1)
+        }
+        return false
+    }
 
     /**
      * Checks if a habit should be evaluated for failure.
@@ -78,6 +116,7 @@ object FailureCheckerUtils {
                 completedSeconds >= targetSeconds
             }
             HabitType.COUNTING -> {
+                check(habit.appearance == null) { "COUNT_READER_REQUIRED" }
                 val completions = completionDao.getCompletionsInRange(
                     habit.id,
                     date,
@@ -107,19 +146,40 @@ object FailureCheckerUtils {
         firstCompletionDate: LocalDate,
         completionDao: CompletionDao,
         timeLogDao: TimeLogDao
-    ): Boolean {
-        val today = LocalDate.now()
+    ): Boolean = evaluateStrictFailure(habit, firstCompletionDate, completionDao, timeLogDao) == StrictFailureState.FAILED
+
+    /**
+     * A session still awaiting stop/cancel may settle a past date. Keep checking other dates:
+     * an unrelated older miss wins over pending evidence. Never publish provisional duration.
+     */
+    suspend fun evaluateStrictFailure(
+        habit: HabitEntity,
+        firstCompletionDate: LocalDate,
+        completionDao: CompletionDao,
+        timeLogDao: TimeLogDao,
+        today: LocalDate = LocalDate.now()
+    ): StrictFailureState {
         var checkDate = firstCompletionDate
+        var awaitingTimer = false
 
         while (checkDate < today) {
             if (ScheduleValidator.isCheckInAllowedOnDate(habit.schedule, habit.createdAt, checkDate)) {
-                if (!hasTargetMetOnDate(habit, completionDao, timeLogDao, checkDate)) {
-                    return true
+                if (habit.habitType == HabitType.TIMER) {
+                    val start = checkDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                    val snapshot = timeLogDao.getTimerFailureDaySnapshot(habit.id, checkDate.toString(), start,
+                        DateTimeUtils.startOfNextDayMillis(start))
+                    val targetSeconds = habit.targetValue.toLong() * 60
+                    if (snapshot.completedSeconds < targetSeconds) {
+                        if (UnsettledTimerFailure.maySettle(snapshot, checkDate, targetSeconds)) awaitingTimer = true
+                        else return StrictFailureState.FAILED
+                    }
+                } else if (!hasTargetMetOnDate(habit, completionDao, timeLogDao, checkDate)) {
+                    return StrictFailureState.FAILED
                 }
             }
             checkDate = checkDate.plusDays(1)
         }
 
-        return false
+        return if (awaitingTimer) StrictFailureState.AWAITING_TIMER_SETTLEMENT else StrictFailureState.NOT_FAILED
     }
 }

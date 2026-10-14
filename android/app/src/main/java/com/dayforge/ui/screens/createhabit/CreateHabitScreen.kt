@@ -44,9 +44,11 @@ fun CreateHabitScreen(
     viewModel: CreateHabitViewModel = hiltViewModel(),
     parentUuid: String? = null,
     onSaveDraft: ((com.dayforge.data.model.HabitDraft) -> Unit)? = null,
+    creationAuthority: com.dayforge.data.repository.ObjectCreationAuthority? = null,
     onNavigateBack: () -> Unit
 ) {
-    val uiState by viewModel.uiState.collectAsState()
+    val uiState by viewModel.uiState.collectAsState(context = kotlinx.coroutines.Dispatchers.Main)
+    LaunchedEffect(creationAuthority) { creationAuthority?.let(viewModel::beginCreation) }
 
     // Set parent UUID if provided from navigation
     LaunchedEffect(parentUuid) {
@@ -509,6 +511,8 @@ fun CreateHabitScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(stringResource(R.string.edit_habit_icon_label), style = MaterialTheme.typography.bodyLarge)
+                    uiState.appearance?.let { com.dayforge.ui.components.ObjectIcon("new-habit", it, false,
+                        0, androidx.compose.ui.graphics.Color.Unspecified, 24.dp) }
                     Icon(Icons.AutoMirrored.Filled.ArrowForward, null)
                 }
             }
@@ -657,7 +661,10 @@ fun CreateHabitScreen(
 
         // Icon picker dialog
         if (uiState.showIconPicker) {
-            IconPicker(
+            val appearance = uiState.appearance
+            if (appearance != null) com.dayforge.ui.components.ObjectAppearancePicker(appearance, false, uiState.creationAuthority,
+                viewModel::updateAppearance, viewModel::toggleIconPicker)
+            else IconPicker(
                 selectedIconId = uiState.iconResId,
                 onIconSelected = viewModel::updateIcon,
                 onDismiss = viewModel::toggleIconPicker

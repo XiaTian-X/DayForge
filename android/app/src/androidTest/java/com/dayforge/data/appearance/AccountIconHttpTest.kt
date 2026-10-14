@@ -9,6 +9,7 @@ import com.dayforge.data.api.interceptor.AuthInterceptor
 import com.dayforge.data.api.interceptor.BaseUrlInterceptor
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
+import com.dayforge.data.local.replicaStageFixture
 import com.dayforge.domain.model.*
 import com.dayforge.domain.service.AccountSessionCoordinator
 import java.io.File
@@ -92,6 +93,13 @@ class AccountIconHttpTest {
         preferences.setServerUrl(server.origin.toString())
         return AccountIconHttp(client, tokens, server.origin) to server
     }
+    @Test fun recoveryPointerRejectsMaterialHttpBeforeEvenPublicIdentityOrJobClaim() = runBlocking<Unit> {
+        val context = metadata.capture(); val (http, server) = http { _, _ -> error("No material call") }
+        val stage = tokens.replicaStageFixture(); tokens.persistReplicaStage(null, stage)
+        assertNotNull(runCatching { http.session(context) { fail("No material session") } }.exceptionOrNull())
+        assertTrue(server.requests.isEmpty()); assertEquals(stage, tokens.activeReplicaStage())
+    }
+
     private fun normal(input: MaterialSocketServer.Input): MaterialSocketServer.Reply {
         assertEquals("5", input.headers["x-dayforge-protocol"]); assertEquals("identity", input.headers["accept-encoding"])
         if (input.path == "/api/v2/system/identity") { assertNull(input.headers["authorization"]); return json(identity()) }

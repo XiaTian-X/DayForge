@@ -4,14 +4,29 @@ import androidx.room.*
 import com.dayforge.data.local.entity.HabitEntity
 import kotlinx.coroutines.flow.Flow
 
+// Raw one-shot queries remain available to authenticated sync/ACK and retained fact readers.
+private const val VISIBLE_HABIT = " NOT EXISTS (SELECT 1 FROM sync_outbox q JOIN next_request_origins o ON o.kind='sync_operation' AND o.requestId=q.operationId AND o.queueId=q.id AND o.protocol=5 WHERE q.recordType='habit' AND q.action='delete' AND q.entityUuid=habits.uuid) "
+
 @Dao
 interface HabitDao {
 
-    @Query("SELECT * FROM habits WHERE isActive = 1 ORDER BY createdAt DESC")
+    @Query("SELECT * FROM habits WHERE isActive = 1 AND" + VISIBLE_HABIT + "ORDER BY createdAt DESC")
     fun getActiveHabitsWithBestTime(): Flow<List<HabitEntity>>
 
-    @Query("SELECT * FROM habits ORDER BY createdAt DESC")
+    @Query("SELECT * FROM habits WHERE" + VISIBLE_HABIT + "ORDER BY createdAt DESC")
     fun getAllHabits(): Flow<List<HabitEntity>>
+
+    @Query("SELECT * FROM habits WHERE" + VISIBLE_HABIT + "ORDER BY createdAt DESC")
+    suspend fun getVisibleHabitsOnce(): List<HabitEntity>
+
+    @Query("SELECT * FROM habits WHERE id=:id AND" + VISIBLE_HABIT)
+    suspend fun getVisibleHabitById(id: Long): HabitEntity?
+
+    @Query("SELECT * FROM habits WHERE id=:id AND" + VISIBLE_HABIT)
+    fun getVisibleHabitByIdSync(id: Long): HabitEntity?
+
+    @Query("SELECT EXISTS(SELECT 1 FROM sync_outbox q JOIN next_request_origins o ON o.kind='sync_operation' AND o.requestId=q.operationId AND o.queueId=q.id AND o.protocol=5 WHERE q.recordType='habit' AND q.action='delete' AND q.entityUuid=:uuid)")
+    suspend fun hasPendingNextDeletion(uuid: String): Boolean
 
     @Query("SELECT * FROM habits ORDER BY createdAt DESC")
     suspend fun getAllHabitsOnce(): List<HabitEntity>
@@ -25,7 +40,7 @@ interface HabitDao {
     @Query("SELECT * FROM habits WHERE id = :id")
     fun getHabitByIdSync(id: Long): HabitEntity?
 
-    @Query("SELECT * FROM habits WHERE id = :id")
+    @Query("SELECT * FROM habits WHERE id = :id AND" + VISIBLE_HABIT)
     fun getHabitByIdFlow(id: Long): Flow<HabitEntity?>
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
@@ -65,13 +80,16 @@ interface HabitDao {
 
     // Parent-child relationship queries (Task 42-01)
 
-    @Query("SELECT * FROM habits WHERE parentHabitId = :parentUuid ORDER BY createdAt DESC")
+    @Query("SELECT * FROM habits WHERE parentHabitId = :parentUuid AND" + VISIBLE_HABIT + "ORDER BY createdAt DESC")
     fun getChildrenByParentUuid(parentUuid: String): Flow<List<HabitEntity>>
+
+    @Query("SELECT * FROM habits WHERE parentHabitId = :parentUuid AND" + VISIBLE_HABIT + "ORDER BY createdAt DESC")
+    suspend fun getVisibleChildrenByParentUuidOnce(parentUuid: String): List<HabitEntity>
 
     @Query("SELECT * FROM habits WHERE parentHabitId = :parentUuid ORDER BY createdAt DESC")
     suspend fun getChildrenByParentUuidOnce(parentUuid: String): List<HabitEntity>
 
-    @Query("SELECT * FROM habits WHERE parentHabitId IS NULL ORDER BY createdAt DESC")
+    @Query("SELECT * FROM habits WHERE parentHabitId IS NULL AND" + VISIBLE_HABIT + "ORDER BY createdAt DESC")
     fun getTopLevelHabits(): Flow<List<HabitEntity>>
 
     @Query("UPDATE habits SET parentHabitId = :parentHabitId, updatedAt = :updatedAt WHERE id = :habitId")

@@ -16,6 +16,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -24,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
 import com.dayforge.R
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.dayforge.ui.screens.recovery.LocalReplicaRecoveryEntry
 
 /**
  * Login screen with username/password inputs and post-login sync prompt.
@@ -35,6 +37,7 @@ fun LoginScreen(
     onLoginSuccess: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val openReplicaRecovery = LocalReplicaRecoveryEntry.current
     val username by viewModel.username.collectAsState()
     val password by viewModel.password.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
@@ -175,6 +178,14 @@ fun LoginScreen(
                     )
                 } else {
                     Text(stringResource(R.string.login_button))
+                }
+            }
+
+            // The old replica may still exist even when Keystore cannot decrypt its JWT.
+            if (openReplicaRecovery != null) {
+                TextButton(openReplicaRecovery, enabled = !isLoading,
+                    modifier = Modifier.testTag("login-replica-recovery")) {
+                    Text(stringResource(R.string.replica_recovery_title))
                 }
             }
 

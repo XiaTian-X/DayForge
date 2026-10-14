@@ -50,11 +50,13 @@ internal class AccountIconTransfers(
     internal fun usesStores(valueMetadata: AccountIconRepository, valueStore: AccountIconStore) =
         metadata === valueMetadata && store === valueStore
     internal fun usesMetadata(value: AccountIconRepository) = metadata === value
+    internal fun usesFiles(value: AccountIconFiles) = store.usesFiles(value)
     private val dao get() = database.transfers()
     private data class Key(val kind: String, val targetId: String, val revision: Int = 0, val variant: String = "")
     private fun AccountIconTransferRow.key() = Key(kind, targetId, revision, variant)
     private fun next(value: Long): Long { check(value < Long.MAX_VALUE) { "ICON_TRANSFER_EXHAUSTED" }; return value + 1 }
     private fun writing(context: AccountIconContext, kind: String) {
+        check(context.recovery == null || kind == IconTransferKind.DOWNLOAD.wire) { "ICON_RECOVERY_READ_ONLY" }
         check(kind == IconTransferKind.DOWNLOAD.wire || context.access.canDeclare) { "ICON_DECLARATION_DENIED" }
     }
 
@@ -109,6 +111,35 @@ internal class AccountIconTransfers(
 
     /** Called only inside the canonical metadata/catalog transaction; no nested account locking. */
     internal suspend fun catalogRows(context: AccountIconContext, catalog: AccountIconTransferMetadata) = read(context, catalog)
+
+    /** Complete old-scope receipt validation only. Does not claim/release/replay or infer remote ACK. */
+    internal suspend fun recoveryRows(context: AccountIconContext,
+        catalog: AccountIconTransferMetadata): List<AccountIconTransferRow> {
+        val rows = read(context, catalog)
+        for (row in rows.filter { it.state == "complete" }) {
+            currentCoroutineContext().ensureActive()
+            val binding = AssetSyncContext(context.namespace.serverInstanceId, context.namespace.syncEpoch,
+                requireNotNull(row.deviceId))
+            val expected = if (row.kind == "declare_pack") {
+                val pack = catalog.packs.getValue(row.targetId to row.revision)
+                json.encodeToString(PackDeclaration(binding, pack.copy(roles = pack.roles.toSortedMap())))
+            } else {
+                val asset = catalog.assets.getValue(row.targetId)
+                when (row.kind) {
+                    "declare_asset" -> json.encodeToString(AssetRecord(binding, asset,
+                        listOfNotNull("dark".takeIf { row.readyMask and 2 != 0 }, "light".takeIf { row.readyMask and 1 != 0 })))
+                    "upload", "download" -> {
+                        val blob = if (row.variant == "light") asset.light else requireNotNull(asset.dark)
+                        if (row.kind == "upload") json.encodeToString(AssetTransferReceipt(binding, asset.assetId, row.variant, blob))
+                        else "local-validated:${json.encodeToString(blob)}:${iconValidationProfile(blob)}"
+                    }
+                    else -> error("ICON_TRANSFER_CORRUPT")
+                }
+            }
+            check(row.confirmationHash == sha(expected)) { "ICON_RECOVERY_CONFIRMATION_INVALID" }
+        }
+        return Collections.unmodifiableList(rows.toList())
+    }
 
     internal suspend fun enqueueCatalogDownloads(context: AccountIconContext, catalog: AccountIconTransferMetadata,
         assetIds: Set<String>): List<AccountIconTransferRow> {
@@ -300,6 +331,7 @@ internal class AccountIconTransfers(
         check(!audit.invalidValues && audit.count <= MAX_JOBS) { "ICON_TRANSFER_CORRUPT" }
         val rows = dao.rows(ns.accountId, ns.serverInstanceId, ns.syncEpoch)
         check(rows.size.toLong() == audit.count) { "ICON_TRANSFER_CORRUPT" }
+        check(context.recovery == null || rows.all { it.kind == IconTransferKind.DOWNLOAD.wire }) { "ICON_RECOVERY_READ_ONLY" }
         val byKey = rows.associateBy { it.key() }
         check(byKey.size == rows.size) { "ICON_TRANSFER_CORRUPT" }
         val hashes = mutableMapOf<Pair<String, Int>, String>()

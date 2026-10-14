@@ -19,6 +19,7 @@ import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.graphics.Color as ComposeColor
@@ -33,6 +34,8 @@ import com.dayforge.data.model.HabitType
 import com.dayforge.ui.components.ColorPicker
 import com.dayforge.ui.components.DeleteConfirmationDialog
 import com.dayforge.ui.components.IconPicker
+import com.dayforge.ui.components.ObjectAppearancePicker
+import com.dayforge.ui.components.ObjectIcon
 import com.dayforge.ui.components.ParentHabitSelector
 import java.util.Locale
 
@@ -44,7 +47,7 @@ fun EditHabitScreen(
     onNavigateBack: () -> Unit,
     onHabitDeleted: () -> Unit
 ) {
-    val uiState by viewModel.uiState.collectAsState()
+    val uiState by viewModel.uiState.collectAsState(context = kotlinx.coroutines.Dispatchers.Main)
 
     // Load habit on first composition - only if not already loaded
     LaunchedEffect(habitId) {
@@ -182,7 +185,7 @@ fun EditHabitScreen(
                 }
 
                 // Schedule Type selection (not for GOAL type - always Daily)
-                if (uiState.habitType != HabitType.GOAL) {
+                if (uiState.habitType != HabitType.GOAL && uiState.completionPolicy != "one_and_done") {
                     Text(stringResource(R.string.edit_habit_schedule_type), style = MaterialTheme.typography.titleMedium)
 
                     // Helper function to determine if a schedule option is allowed
@@ -314,7 +317,7 @@ fun EditHabitScreen(
                 }
 
                 // Target cycles (optional for all habit types)
-                OutlinedTextField(
+                if (uiState.completionPolicy != "one_and_done") OutlinedTextField(
                     value = uiState.targetCycles?.toString() ?: "",
                     onValueChange = {
                         val filtered = it.filter { c -> c.isDigit() }
@@ -386,7 +389,7 @@ fun EditHabitScreen(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 // Best time picker button
-                Card(
+                if (uiState.completionPolicy != "one_and_done") Card(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable { viewModel.toggleTimePicker() },
@@ -438,6 +441,8 @@ fun EditHabitScreen(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(stringResource(R.string.edit_habit_icon_label), style = MaterialTheme.typography.bodyLarge)
+                        uiState.appearance?.let { ObjectIcon("edit-habit:${uiState.habitId}", it,
+                            uiState.completionPolicy == "one_and_done", 0, Color.Unspecified, 24.dp) }
                         Icon(Icons.AutoMirrored.Filled.ArrowForward, null)
                     }
                 }
@@ -580,7 +585,10 @@ fun EditHabitScreen(
 
     // Icon picker dialog
     if (uiState.showIconPicker) {
-        IconPicker(
+        val appearance = uiState.appearance
+        if (appearance != null) ObjectAppearancePicker(appearance, uiState.completionPolicy == "one_and_done",
+            uiState.editAuthority, onSelected = viewModel::updateAppearance, onDismiss = viewModel::toggleIconPicker)
+        else IconPicker(
             selectedIconId = uiState.iconResId,
             onIconSelected = viewModel::updateIcon,
             onDismiss = viewModel::toggleIconPicker

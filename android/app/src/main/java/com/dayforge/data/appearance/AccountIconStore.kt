@@ -11,13 +11,27 @@ internal data class IconFileRecovery(val ready: Int, val pending: Int, val unkno
 /** Local installation boundary. Never touches business Room, themes, UI or online queues. */
 internal class AccountIconStore(private val metadata: AccountIconRepository, private val files: AccountIconFiles) {
     internal fun usesMetadata(value: AccountIconRepository): Boolean = metadata === value
+    internal fun usesFiles(value: AccountIconFiles): Boolean = files === value
+    internal fun replicaFiles(): AccountIconFiles = files
     /** A local display choice, not a structural write. Validate the whole pack, not only visible icons. */
     suspend fun select(context: AccountIconContext, expectedGeneration: Long,
-        version: IconPackVersion?): AccountIconSelection {
+        version: IconPackVersion?): AccountIconSelection = select(context, expectedGeneration, version, restoring = false)
+
+    /** No caller-selected version or arbitrary no-pack fallback. Normal selection stays frozen. */
+    internal suspend fun restoreReplicaSelection(context: AccountIconContext): AccountIconSelection {
+        val intent = requireNotNull(context.recovery).intent
+        val current = metadata.selection(context)
+        if (current != AccountIconSelection(0, null)) intent.requireRestored(current)
+        return select(context, current.generation, intent.version, restoring = true).also { intent.requireRestored(it) }
+    }
+
+    private suspend fun select(context: AccountIconContext, expectedGeneration: Long,
+        version: IconPackVersion?, restoring: Boolean): AccountIconSelection {
         require(expectedGeneration >= 0)
         metadata.reauthorize(context)
         val result = if (version == null) {
-            metadata.selectValidated(context, expectedGeneration, null, emptyMap())
+            if (restoring) metadata.restoreReplicaSelectionValidated(context, expectedGeneration, null, emptyMap())
+            else metadata.selectValidated(context, expectedGeneration, null, emptyMap())
         } else files.exclusive(context.namespace, create = false, beforeAccess = { metadata.reauthorize(context) }) { directory ->
             val pack = requireNotNull(metadata.pack(context, version.packId, version.revision)) { "ICON_PACK_NOT_OWNED" }
             check(metadata.selection(context).generation == expectedGeneration) { "ICON_SELECTION_CHANGED" }
@@ -31,10 +45,13 @@ internal class AccountIconStore(private val metadata: AccountIconRepository, pri
                     receipts[blob.sha256] = receipt
                 } else check(receipts[blob.sha256] == receipt) { "ICON_INSTALL_CHANGED" }
             }
-            metadata.selectValidated(context, expectedGeneration, pack, receipts)
+            if (restoring) metadata.restoreReplicaSelectionValidated(context, expectedGeneration, pack, receipts)
+            else metadata.selectValidated(context, expectedGeneration, pack, receipts)
         }
         // A concurrent choice can commit while withContext queues delivery back to the caller.
-        return metadata.withSelection(context, result) { result }
+        return if (restoring) {
+            check(metadata.selection(context) == result) { "ICON_SELECTION_CHANGED" }; result
+        } else metadata.withSelection(context, result) { result }
     }
 
     suspend fun install(context: AccountIconContext, assetId: String, hash: String, content: ByteArray) {
@@ -51,20 +68,22 @@ internal class AccountIconStore(private val metadata: AccountIconRepository, pri
         require(content.size in 1..2_097_152)
         val frozen = content.copyOf()
         // Authorize before creating paths; recheck after waiting for the process file lease.
+        metadata.reauthorizeOrdinary(context, writing)
         metadata.installation(context, assetId, hash, writing)
-        files.exclusive(context.namespace, create = true, beforeAccess = { metadata.reauthorize(context, writing) }) { directory ->
+        files.exclusive(context.namespace, create = true, beforeAccess = { metadata.reauthorizeOrdinary(context, writing) }) { directory ->
             val before = metadata.installation(context, assetId, hash, writing)
             val target = requireNotNull(directory)
             // A ready receipt cannot authorize silently rebuilding a missing/corrupted final file.
             before.validationProfile?.let { target.files.read(before.reservation.blob, it) }
             publishReady(context, assetId, before, frozen, target, writing)
         }
-        metadata.reauthorize(context, writing)
+        metadata.reauthorizeOrdinary(context, writing)
     }
 
     /** Caller holds the namespace lease; both single and pack installs use the same publication proof. */
     private suspend fun publishReady(context: AccountIconContext, assetId: String, before: IconInstallation,
         frozen: ByteArray, target: AccountIconFiles.Directory, writing: Boolean = true) {
+        metadata.reauthorizeOrdinary(context, writing)
         target.capacity(frozen.size, before.reservation.blob.sha256)
         val profile = target.files.publish(before.reservation.operationId, frozen, before.reservation.blob)
         target.files.read(before.reservation.blob, profile)
@@ -160,8 +179,9 @@ internal class AccountIconStore(private val metadata: AccountIconRepository, pri
     internal suspend fun recoverDownloads(context: AccountIconContext): IconFileRecovery = recover(context, writing = false)
 
     private suspend fun recover(context: AccountIconContext, writing: Boolean): IconFileRecovery {
+        metadata.reauthorizeOrdinary(context, writing)
         metadata.installations(context, writing)
-        val result = files.exclusive(context.namespace, create = false, beforeAccess = { metadata.reauthorize(context, writing) }) { directory ->
+        val result = files.exclusive(context.namespace, create = false, beforeAccess = { metadata.reauthorizeOrdinary(context, writing) }) { directory ->
             val entries = metadata.installations(context, writing)
             val names = directory?.inventory().orEmpty()
             // Validate the entire known final-file set before any cleanup, including pending publications.
@@ -177,7 +197,7 @@ internal class AccountIconStore(private val metadata: AccountIconRepository, pri
             for (entry in entries) {
                 currentCoroutineContext().ensureActive()
                 // Reauthorize every exact cleanup; no account lock spans blocking image I/O.
-                metadata.reauthorize(context, writing)
+                metadata.reauthorizeOrdinary(context, writing)
                 directory?.files?.cleanupTemporary(entry.reservation.operationId)
             }
             check(metadata.installations(context, writing) == entries) { "ICON_INSTALL_CHANGED" }
@@ -185,7 +205,7 @@ internal class AccountIconStore(private val metadata: AccountIconRepository, pri
             IconFileRecovery(entries.count { it.validationProfile != null }, entries.count { it.validationProfile == null },
                 Collections.unmodifiableList((names - known).sorted()))
         }
-        metadata.reauthorize(context, writing)
+        metadata.reauthorizeOrdinary(context, writing)
         return result
     }
 }

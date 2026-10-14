@@ -171,6 +171,66 @@ class AccountIconImportTest {
         assertEquals(jobs, transfers.jobs(repo.capture()))
     }
 
+    @Test fun configurationCopiesNewOwnedIdentitiesAndColdMaterialRetryKeepsAllOriginalInstallWorkAndChoice() = runBlocking<Unit> {
+        val oldChoice = baseline(); val context = repo.capture()
+        val source = ConfigBundleOutput.create(ConfigFileFixture.manifest(), ConfigFileFixture::content)
+        val ids = com.dayforge.data.export.NextConfigImportPlan.allocate(source,
+            com.dayforge.data.export.ConfigImportTarget.from(context), java.time.Instant.parse("2026-10-09T00:00:00Z"))
+        val plan = com.dayforge.data.export.NextConfigImportPlan(source, ids)
+        val receipt = imports.confirmConfiguration(context, plan)
+        assertEquals(plan.iconPack, repo.pack(context, plan.iconPack!!.packId, 1))
+        assertNull(repo.pack(context, source.manifest.iconPack!!.packId, 1))
+        for (asset in plan.iconPack!!.assets) {
+            assertEquals(asset, repo.asset(context, asset.assetId))
+            for (blob in listOfNotNull(asset.light, asset.dark))
+                assertArrayEquals(source.readBlob(blob.sha256), store.read(context, asset.assetId, blob.sha256))
+        }
+        val jobs = transfers.jobs(context); val reservations = repo.reservations(context)
+        assertEquals(oldChoice, repo.selection(context))
+        db.close(); db = AccountIconDatabase.open(app); configure()
+        val restored = com.dayforge.data.export.NextConfigImportPlan(ValidatedConfigBundle.parse(source.exportBytes()),
+            com.dayforge.data.export.ConfigImportIdentities.decode(ids.encode().toByteArray()))
+        assertEquals(receipt, imports.confirmConfiguration(repo.capture(), restored))
+        assertEquals(jobs, transfers.jobs(repo.capture())); assertEquals(reservations, repo.reservations(repo.capture()))
+        assertEquals(oldChoice, repo.selection(repo.capture()))
+        // Allocation serialization + actual material cold reopen, not a business import journal.
+    }
+
+    @Test fun configurationFileFailureRetainsOriginalTransferIntentsAndUsesSameMappingOnRetryWithoutApplyingStyle() = runBlocking<Unit> {
+        val oldChoice = baseline(); val context = repo.capture()
+        val source = ConfigBundleOutput.create(ConfigFileFixture.manifest(), ConfigFileFixture::content)
+        val plan = com.dayforge.data.export.NextConfigImportPlan(source,
+            com.dayforge.data.export.NextConfigImportPlan.allocate(source,
+                com.dayforge.data.export.ConfigImportTarget.from(context), java.time.Instant.parse("2026-10-09T00:00:00Z")))
+        val lastHash = plan.iconPack!!.assets.last().light.sha256
+        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER config_ready_failure BEFORE INSERT ON icon_blob_ready " +
+            "WHEN NEW.sha256='$lastHash' BEGIN SELECT RAISE(ABORT,'configuration install fault'); END")
+        rejected { imports.confirmConfiguration(context, plan) }
+        val jobs = transfers.jobs(context); val reservations = repo.reservations(context)
+        assertTrue(jobs.isNotEmpty()); assertEquals(oldChoice, repo.selection(context))
+        db.openHelper.writableDatabase.execSQL("DROP TRIGGER config_ready_failure")
+        imports.confirmConfiguration(context, plan)
+        assertEquals(jobs, transfers.jobs(context)); assertEquals(reservations, repo.reservations(context))
+        assertEquals(oldChoice, repo.selection(context))
+        for (asset in plan.iconPack!!.assets) for (blob in listOfNotNull(asset.light, asset.dark))
+            assertArrayEquals(source.readBlob(blob.sha256), store.read(context, asset.assetId, blob.sha256))
+    }
+
+    @Test fun configurationTargetReadOnlyAndOldSessionCannotCreateAdoptedMaterial() = runBlocking<Unit> {
+        val context = repo.capture()
+        val source = ConfigBundleOutput.create(ConfigFileFixture.manifest(), ConfigFileFixture::content)
+        val plan = com.dayforge.data.export.NextConfigImportPlan(source,
+            com.dayforge.data.export.NextConfigImportPlan.allocate(source,
+                com.dayforge.data.export.ConfigImportTarget.from(context), java.time.Instant.parse("2026-10-09T00:00:00Z")))
+        login(readOnly = true)
+        assertEquals("ICON_DECLARATION_DENIED", rejected { imports.confirmConfiguration(repo.capture(), plan) }.message)
+        assertEmpty()
+        login(owner = id(9))
+        assertEquals("CONFIG_IMPORT_TARGET_CHANGED", rejected { imports.confirmConfiguration(repo.capture(), plan) }.message)
+        assertEquals("ICON_SESSION_CHANGED", rejected { imports.confirmConfiguration(context, plan) }.message)
+        assertEmpty()
+    }
+
     @Test fun reusedPackVersionWithDifferentContentCannotInstallAnotherVersion() = runBlocking<Unit> {
         imports.confirm(preview()); val before = repo.reservations(repo.capture())
         val error = rejected { imports.confirm(preview(archive(manifest(name = "different")))) }

@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.dayforge.data.local.TokenManager
+import com.dayforge.data.local.replicaStageFixture
 import com.dayforge.domain.model.IconAsset
 import com.dayforge.domain.model.IconBlob
 import com.dayforge.domain.service.AccountSessionCoordinator
@@ -107,6 +108,17 @@ class AccountIconStoreTest {
         if (::scope.isInitialized) scope.coroutineContext[Job]!!.cancelAndJoin()
         if (::parent.isInitialized) assertTrue(parent.deleteRecursively())
         assertTrue(app.deleteDatabase(AccountIconDatabase.NAME) || !app.getDatabasePath(AccountIconDatabase.NAME).exists())
+    }
+
+    @Test fun recoveryPointerStopsDownloadsAndCleanupBeforeAnyPathOrFileMutation() = runBlocking<Unit> {
+        val context = reserve(); val pending = repository().installation(context, asset().assetId, blob().sha256)
+        assertFalse(path(context).exists())
+        val stage = tokens.replicaStageFixture(); tokens.persistReplicaStage(null, stage)
+        rejected { store().install(context, asset().assetId, blob().sha256, svg) }
+        rejected { store().installDownloaded(context, asset().assetId, blob().sha256, svg) }
+        rejected { store().recover(context) }; rejected { store().recoverDownloads(context) }
+        assertFalse(path(context).exists()); assertEquals(0, readyCount())
+        assertEquals(pending, repository().installation(context, asset().assetId, blob().sha256))
     }
 
     @Test fun pngAndSvgInstallReadAndRetrySurviveColdReopen() = runBlocking<Unit> {

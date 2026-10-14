@@ -10,4 +10,26 @@ import dagger.hilt.components.SingletonComponent
 @InstallIn(SingletonComponent::class)
 interface WidgetEntryPoint {
     fun habitRepository(): HabitRepository
+    fun habitStatusCalculator(): com.dayforge.domain.service.HabitStatusCalculator
+    fun timerWriter(): com.dayforge.data.repository.NextTimerWriter
+    fun factReader(): com.dayforge.data.repository.WidgetFactReader
+    fun legacyFactWorkflow(): com.dayforge.data.repository.LegacyWidgetFactWorkflow
+    fun activityRateRefresher(): com.dayforge.data.repository.LegacyActivityRateRefresher
+    fun displayPublisher(): com.dayforge.data.repository.WidgetDisplayPublisher
+    fun configurationWorkflow(): com.dayforge.domain.service.WidgetConfigurationWorkflow
+    fun preferencesManager(): com.dayforge.data.local.PreferencesManager
+
+    companion object {
+        fun from(context: android.content.Context): WidgetEntryPoint = dagger.hilt.android.EntryPointAccessors
+            .fromApplication(context.applicationContext, WidgetEntryPoint::class.java)
+
+        fun calculator(context: android.content.Context, database: com.dayforge.data.local.HabitDatabase): com.dayforge.domain.service.HabitStatusCalculator =
+            try { from(context).habitStatusCalculator() }
+            catch (error: IllegalStateException) {
+                // Isolated legacy fixtures have no Hilt graph. Typed counters still fail closed
+                // in the calculator; production must use its account-coordinated reader.
+                com.dayforge.domain.service.HabitStatusCalculator(com.dayforge.domain.service.FailureChecker(
+                    database.completionDao(), database.timeLogDao()), database.completionDao(), database.timeLogDao())
+            }
+    }
 }

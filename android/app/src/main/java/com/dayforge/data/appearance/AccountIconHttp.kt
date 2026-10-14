@@ -60,7 +60,8 @@ internal data class MaterialServerIdentity(
 @Singleton
 class AccountIconHttp private constructor(
     private val shared: OkHttpClient, private val tokens: TokenManager,
-    private val captureRoute: suspend () -> MaterialHttpRoute
+    private val captureRoute: suspend () -> MaterialHttpRoute,
+    private val requireConnection: suspend () -> Unit = {}
 ) {
     @Inject constructor(@ApplicationContext context: Context, shared: OkHttpClient, tokens: TokenManager, preferences: PreferencesManager,
         selected: SelectedNetworkTransport) : this(shared, tokens, {
@@ -78,25 +79,36 @@ class AccountIconHttp private constructor(
     internal constructor(shared: OkHttpClient, tokens: TokenManager, origin: HttpUrl) :
         this(shared, tokens, { MaterialHttpRoute(origin, null) })
 
+    internal fun onReplicaRoute(route: MaterialHttpRoute, requireOpen: suspend () -> Unit): AccountIconHttp =
+        AccountIconHttp(shared, tokens, { requireOpen(); route }, requireOpen)
+
     /** No material job may be claimed until actual public identity admits the exact v5 replica. */
     internal suspend fun <T> session(context: AccountIconContext, block: suspend (Session) -> T): T? {
+        authorizeAccess(tokens, context)
         check(tokens.iconAuthenticationSnapshot(context.access) != null) { "ICON_SESSION_CHANGED" }
         val route = try { captureRoute() } catch (_: IllegalArgumentException) { throw IOException("MATERIAL_ROUTE_INVALID") }
         val builder = shared.newBuilder()
         builder.interceptors().removeAll { it is HttpLoggingInterceptor }
         builder.networkInterceptors().removeAll { it is HttpLoggingInterceptor }
         val client = route.bind(builder)
+            .let { if (context.recovery != null) it.authenticator(okhttp3.Authenticator.NONE)
+                .cache(null).cookieJar(okhttp3.CookieJar.NO_COOKIES) else it }
             // Never share pooled sockets with a mutable LAN/default-route client.
-            .connectionPool(ConnectionPool(1, 1, TimeUnit.MINUTES))
+            // Recovery's final authorization can outlast the server's idle keepalive after
+            // connection selection. Close idle recovery sockets rather than retrying a GET
+            // or weakening that authorization; ordinary material traffic retains its pool.
+            .connectionPool(ConnectionPool(if (context.recovery != null) 0 else 1, 1, TimeUnit.MINUTES))
             .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
             .connectTimeout(10, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS)
             .callTimeout(45, TimeUnit.SECONDS)
             .addNetworkInterceptor { chain ->
+                runBlocking { requireConnection() }
                 if (!route.matches(chain.request().url) || tokensCheck(tokens, context) == null)
                     throw IOException("ICON_SESSION_CHANGED")
+                context.recovery?.let { recovery -> runBlocking { recovery.authorizeRequest(tokens, chain.request()) } }
                 chain.proceed(chain.request())
             }.build()
-        val session = Session(client, tokens, context, route, requireNotNull(currentCoroutineContext()[Job]))
+        val session = Session(client, tokens, context, route, requireNotNull(currentCoroutineContext()[Job]), requireConnection)
         try {
             val identity = session.identity()
             check(identity.serverInstanceId == context.namespace.serverInstanceId && identity.syncEpoch == context.namespace.syncEpoch) {
@@ -113,7 +125,8 @@ class AccountIconHttp private constructor(
 
     internal class Session internal constructor(
         private val client: OkHttpClient, private val tokens: TokenManager,
-        private val context: AccountIconContext, private val route: MaterialHttpRoute, private val owner: Job
+        private val context: AccountIconContext, private val route: MaterialHttpRoute, private val owner: Job,
+        private val requireConnection: suspend () -> Unit = {}
     ) {
         private var closed = false
         internal fun close() { closed = true }
@@ -121,7 +134,9 @@ class AccountIconHttp private constructor(
         internal suspend fun identity(): MaterialServerIdentity = value(request(MaterialHttpRoute.IDENTITY_PATH))
 
         internal suspend fun authorize(expected: AccountIconContext) {
-            check(!closed && currentCoroutineContext()[Job] === owner && expected.access == context.access) { "MATERIAL_SCOPE_CHANGED" }
+            authorizeAccess(tokens, context)
+            check(!closed && currentCoroutineContext()[Job] === owner && expected.access == context.access &&
+                expected.recovery === context.recovery) { "MATERIAL_SCOPE_CHANGED" }
             check(tokens.iconAuthenticationSnapshot(context.access) != null) { "ICON_SESSION_CHANGED" }
         }
 
@@ -144,6 +159,7 @@ class AccountIconHttp private constructor(
                 .header("X-DayForge-Protocol", "5")
                 .tag(AuthenticationSession::class.java, context.access.session.authentication)
                 .tag(LocalIconAccess::class.java, context.access).tag(MaterialHttpRoute::class.java, route)
+                .tag(ReplicaMaterialAccess::class.java, context.recovery)
         }
 
         private fun checkAttempt(attempt: IconTransferAttempt, kind: IconTransferKind) {
@@ -205,8 +221,11 @@ class AccountIconHttp private constructor(
         }
 
         private suspend fun execute(request: Request, limit: Int, type: String): ByteArray {
+            requireConnection()
             check(!closed && currentCoroutineContext()[Job] === owner) { "MATERIAL_SCOPE_CHANGED" }
+            context.recovery?.authorizeRequest(tokens, request)
             return supervisorScope {
+                authorizeAccess(tokens, context)
                 check(tokens.iconAuthenticationSnapshot(context.access) != null) { "ICON_SESSION_CHANGED" }
                 val cancellation = MaterialCallCancellation()
                 val call = client.newCall(request.newBuilder().tag(MaterialCallCancellation::class.java, cancellation).build())
@@ -232,6 +251,8 @@ class AccountIconHttp private constructor(
                     cancellation.cancel()
                     withContext(NonCancellable) { worker.join() }
                 }
+                requireConnection()
+                authorizeAccess(tokens, context)
                 check(tokens.iconAuthenticationSnapshot(context.access) != null) { "ICON_SESSION_CHANGED" }
                 result
             }
@@ -271,6 +292,14 @@ class AccountIconHttp private constructor(
     }
 
     private companion object {
-        fun tokensCheck(tokens: TokenManager, context: AccountIconContext) = runBlocking { tokens.iconAuthenticationSnapshot(context.access) }
+        suspend fun authorizeAccess(tokens: TokenManager, context: AccountIconContext) {
+            context.recovery?.authorize(tokens) ?: tokens.requireOrdinaryReplicaAccess()
+        }
+        fun tokensCheck(tokens: TokenManager, context: AccountIconContext) = runBlocking {
+            if (context.recovery != null) {
+                context.recovery.authorize(tokens)
+                tokens.iconAuthenticationSnapshot(context.access)
+            } else if (tokens.replicaSwitchPending()) null else tokens.iconAuthenticationSnapshot(context.access)
+        }
     }
 }

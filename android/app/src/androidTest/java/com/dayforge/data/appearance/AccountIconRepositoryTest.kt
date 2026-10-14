@@ -99,6 +99,21 @@ class AccountIconRepositoryTest {
         }
         assertTrue("Operation must fail closed", failed)
     }
+
+    @Test fun pendingReplicaStageBlocksCatalogTransferSelectionAndPublicationButPreservesRecoveryReads() = runBlocking<Unit> {
+        val repo = repository(); val context = repo.capture(); repo.reservePack(context, pack())
+        val before = durable(); val old = repo.recoveryMetadata(context)
+        preferences.edit { it[com.dayforge.data.local.ReplicaSwitchGuard.POINTER] = "missing-stage" }
+        rejected { repo.reserveAsset(context, asset(11)) }; rejected { repo.reservePack(context, pack(revision = 2)) }
+        rejected { repo.receiveCatalogTransaction(context, listOf(asset(11)), emptyList()) { fail("Must not enter") } }
+        rejected { repo.transferTransaction(context) { fail("Must not enter") } }
+        rejected { repo.selectValidated(context, 0, null, emptyMap()) }
+        rejected { repo.authorized(context) { fail("Must not publish") } }
+        rejected { repo.withSelection(context, old.selection) { fail("Must not publish") } }
+        val receipt = repo.installation(context, asset().assetId, blob().sha256)
+        rejected { repo.markDownloadedReady(context, asset().assetId, receipt.reservation, iconValidationProfile(blob())) }
+        assertEquals(old, repo.recoveryMetadata(context)); assertEquals(before, durable())
+    }
     private fun durable(): Map<String, List<List<String?>>> = listOf("icon_assets", "icon_packs", "icon_blob_reservations").associateWith { table ->
         database.openHelper.readableDatabase.query("SELECT * FROM $table ORDER BY rowid").use { cursor ->
             buildList { while (cursor.moveToNext()) add((0 until cursor.columnCount).map {

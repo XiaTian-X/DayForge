@@ -91,8 +91,46 @@ internal class AccountIconRuntime(
 
     suspend fun install(preview: AccountIconPackPreview) = materialOwner.withLock { imports.confirm(preview) }
 
+    suspend fun installConfiguration(context: AccountIconContext, plan: com.dayforge.data.export.NextConfigImportPlan) =
+        materialOwner.withLock { imports.confirmConfiguration(context, plan) }
+
     /** One captured session/route and sole owner, including the real file recovery and all phases. */
-    suspend fun synchronize(context: AccountIconContext, http: AccountIconHttp): IconMaterialOutcome = materialOwner.withLock {
+    suspend fun synchronize(context: AccountIconContext, http: AccountIconHttp,
+        dependenciesChanged: () -> Unit = {}): IconMaterialOutcome = materialOwner.withLock {
+        synchronizeOwned(context, http, dependenciesChanged)
+    }
+
+    /** Fresh remote admission and full verification share the SAME canonical owner. The callback
+     * is never ordinary publication; its recovery lease only restores the archived exact choice.
+     */
+    internal suspend fun <T : Any> recoverAndInspect(context: AccountIconContext, http: AccountIconHttp,
+        inspect: suspend () -> T): Pair<IconMaterialOutcome, T?> = materialOwner.withLock {
+        requireNotNull(context.recovery)
+        val outcome = synchronizeOwned(context, http) {}
+        outcome to if (outcome == IconMaterialOutcome.COMPLETE) inspect() else null
+    }
+
+    /** Keeps the canonical material owner across verification leases AND final publication.
+     * This mutex is not access authority: every scoped operation still requires its verified
+     * recovery context. The supplied owned round cannot escape its job or this callback.
+     */
+    internal suspend fun <T> coordinateReplicaCompletion(block: suspend (
+        suspend (AccountIconContext, AccountIconHttp) -> IconMaterialOutcome) -> T): T = materialOwner.withLock {
+        val job = requireNotNull(kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job])
+        var open = true
+        try {
+            block { context, http ->
+                check(open && job.isActive && kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job] === job) {
+                    "ICON_RECOVERY_OWNER_CLOSED"
+                }
+                requireNotNull(context.recovery)
+                synchronizeOwned(context, http) {}
+            }
+        } finally { open = false }
+    }
+
+    private suspend fun synchronizeOwned(context: AccountIconContext, http: AccountIconHttp,
+        dependenciesChanged: () -> Unit): IconMaterialOutcome =
         withTimeoutOrNull(maximumRoundMillis) {
             http.session(context) { session ->
                 session.authorize(context)
@@ -105,8 +143,10 @@ internal class AccountIconRuntime(
                     // A local file failure is not a transient remote/network failure.
                     throw IllegalStateException("ICON_RECOVERY_REQUIRED", error)
                 }
-                processor.admitted(context, session)
+                val transferred = processor.admitted(context, session)
+                if (transferred.completed > 0) dependenciesChanged()
                 val directory = catalogProcessor.admitted(context, session)
+                if (directory.batch.entries > 0) dependenciesChanged()
                 val work = transfers.work(context)
                 when {
                     directory.retryable || directory.batch.limited || work.pending -> IconMaterialOutcome.RETRY
@@ -115,7 +155,6 @@ internal class AccountIconRuntime(
                 }
             } ?: IconMaterialOutcome.UNSUPPORTED
         } ?: IconMaterialOutcome.RETRY // Only our deadline; parent cancellation still propagates after IO joins.
-    }
 }
 
 /** Lazy process-singleton storage, using the same authoritative credentials/coordinator as login. */
@@ -137,6 +176,10 @@ class AccountIconController internal constructor(
     private val materialWakeups = MutableSharedFlow<Unit>(extraBufferCapacity = 1,
         onBufferOverflow = BufferOverflow.DROP_OLDEST)
     internal val workRequests = materialWakeups.asSharedFlow()
+    private val businessWakeups = MutableSharedFlow<Unit>(extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    internal val businessRequests = businessWakeups.asSharedFlow()
+    internal fun requestMaterialSync() { materialWakeups.tryEmit(Unit) }
     private val references = mutableListOf<WeakReference<IconImageHandle>>()
     private val imageMonitor = Any()
     private var imageCalls = 0
@@ -145,14 +188,35 @@ class AccountIconController internal constructor(
         withContext(Dispatchers.IO) { block(runtime.value) }
     internal fun registerConsumer(cache: AccountIconMemory.Cache) = tokens.registerIconCache(cache)
     internal suspend fun capture() = io { it.metadata.capture() }
+
+    /** Explicit recovery owner reuses the ONE lazy runtime. Unknown authentication must not
+     * initialize storage. Establish normal owned Room baseline before archive schema reads;
+     * scoped workflow proofs, not this callback, authorize any frozen/destination mutations.
+     */
+    internal suspend fun <T> withReplicaRuntime(block: suspend (AccountIconRuntime) -> T): T = withContext(Dispatchers.IO) {
+        val access = requireNotNull(tokens.localIconAccess()) { "ICON_ACCESS_DENIED" }
+        val storage = runtime.value
+        val context = storage.metadata.capture()
+        check(context.access == access) { "ICON_SESSION_CHANGED" }
+        storage.metadata.recoveryMetadata(context)
+        block(storage)
+    }
+    internal suspend fun prepareConfigExport(context: AccountIconContext, uses: List<ConfigIconUse>,
+        manifest: (com.dayforge.domain.model.IconPack?, List<String>) -> com.dayforge.domain.model.ConfigBundle) =
+        io { AccountConfigExport(it.metadata, it.store).prepare(context, uses, manifest) }
+    internal suspend fun <T> publishConfigExport(preview: AccountConfigExportPreview,
+        block: (ValidatedConfigBundle) -> T): T =
+        io { AccountConfigExport(it.metadata, it.store).publish(preview, block) }
     internal suspend fun transferJobs(context: AccountIconContext) = io { it.transfers.jobs(context) }
+    internal suspend fun dependencies(context: AccountIconContext, declarations: Set<String>, content: Set<String>) =
+        io { it.catalog.dependencies(context, declarations, content) }
     internal suspend fun synchronize(http: AccountIconHttp): IconMaterialOutcome = withContext(Dispatchers.IO) {
         // Incomplete/unknown authority never initializes the material DB/runtime or sends HTTP.
         val access = tokens.localIconAccess() ?: return@withContext IconMaterialOutcome.INACTIVE
         val storage = runtime.value
         val context = storage.metadata.capture()
         check(context.access == access) { "ICON_SESSION_CHANGED" }
-        val result = storage.synchronize(context, http)
+        val result = storage.synchronize(context, http) { businessWakeups.tryEmit(Unit) }
         if (result != IconMaterialOutcome.UNSUPPORTED)
             storage.metadata.authorized(context) { refreshReferences(context.namespace) }
         result
@@ -174,6 +238,28 @@ class AccountIconController internal constructor(
         it.metadata.authorized(context) { refreshReferences(context.namespace) }
         catalog
     }
+    /** New fixed references require owned immutable metadata; an unchanged missing reference is retained. */
+    internal suspend fun authorizeEditReference(session: com.dayforge.data.local.LocalDataSession,
+        reference: IconReference, previous: IconReference, oneTime: Boolean) {
+        if (reference is IconReference.Role) {
+            require(com.dayforge.domain.model.iconAllowed(reference, oneTime)) { "ICON_PURPOSE_MISMATCH" }
+            return
+        }
+        val access = tokens.localIconAccess()
+        if (access == null) {
+            check(reference == previous) { "ICON_ACCESS_DENIED" }
+            return
+        }
+        check(access.session == session) { "ICON_SESSION_CHANGED" }
+        io {
+            val context = it.metadata.capture()
+            check(context.access == access) { "ICON_SESSION_CHANGED" }
+            val asset = it.metadata.asset(context, (reference as IconReference.Asset).assetId)
+            if (asset == null) check(reference == previous) { "ICON_ASSET_NOT_OWNED" }
+            else require(com.dayforge.domain.model.iconAllowed(reference, oneTime, asset)) { "ICON_PURPOSE_MISMATCH" }
+            it.metadata.reauthorize(context)
+        }
+    }
     // Publication has no payload queued back to Main; guards + short state update share authority.
     internal suspend fun publish(context: AccountIconContext, block: () -> Unit) = io { it.metadata.authorized(context, block) }
     internal suspend fun preview(context: AccountIconContext, uri: Uri): AccountIconPackPreview = io { storage ->
@@ -193,6 +279,13 @@ class AccountIconController internal constructor(
         // Includes file-phase failure/cancellation after durable queue commit; never emits per tick/page.
         materialWakeups.tryEmit(Unit)
     }
+    internal suspend fun installConfiguration(context: AccountIconContext, plan: com.dayforge.data.export.NextConfigImportPlan) = try {
+        io {
+            val receipt = it.installConfiguration(context, plan)
+            it.metadata.authorized(context) { refreshReferences(context.namespace) }
+            receipt
+        }
+    } finally { materialWakeups.tryEmit(Unit) }
     internal suspend fun select(context: AccountIconContext, expected: Long, version: IconPackVersion?) =
         io { it.store.select(context, expected, version) }
     internal fun image(): IconImageHandle = IconImageHandle().also(::registerConsumer)

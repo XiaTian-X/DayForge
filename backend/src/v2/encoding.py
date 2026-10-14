@@ -7,8 +7,9 @@ from typing import Any
 
 from fastapi.encoders import jsonable_encoder
 
-from src.v2.schemas import SyncOperationRequest, TimerCommandRequest, utc_iso
+from src.v2.schemas import TimerCommandRequest, utc_iso
 from src.v2.replica_context import ReplicaIdentity
+from pydantic import BaseModel
 
 
 def canonical_json(value: Any) -> str:
@@ -55,7 +56,7 @@ def _request_hash(
 
 
 def operation_hash(
-    operation: SyncOperationRequest, *, replica: ReplicaIdentity | None = None
+    operation: BaseModel, *, replica: ReplicaIdentity | None = None
 ) -> str:
     return _request_hash(operation.model_dump(mode="json"), "sync_operation", replica)
 
@@ -63,4 +64,8 @@ def operation_hash(
 def timer_command_hash(
     command: TimerCommandRequest, *, replica: ReplicaIdentity | None = None
 ) -> str:
-    return _request_hash(command.model_dump(mode="json"), "timer_command", replica)
+    payload = command.model_dump(mode="json")
+    # Do not change fingerprints of old commands which never carried the new precondition.
+    if command.start_policy is None:
+        payload.pop("start_policy", None)
+    return _request_hash(payload, "timer_command", replica)

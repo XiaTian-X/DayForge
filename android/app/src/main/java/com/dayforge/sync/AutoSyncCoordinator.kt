@@ -10,6 +10,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.dayforge.data.local.dao.SyncOutboxDao
 import com.dayforge.data.local.dao.TimeLogDao
+import com.dayforge.domain.service.AccountIconController
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -22,6 +23,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -35,15 +38,17 @@ class AutoSyncCoordinator internal constructor(
     private val outboxDao: SyncOutboxDao,
     private val timeLogDao: TimeLogDao,
     private val networkMonitor: NetworkMonitor,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    private val materialChanges: Flow<Unit> = emptyFlow()
 ) {
     @Inject constructor(
         @ApplicationContext context: Context,
         outboxDao: SyncOutboxDao,
         timeLogDao: TimeLogDao,
-        networkMonitor: NetworkMonitor
+        networkMonitor: NetworkMonitor,
+        icons: AccountIconController
     ) : this(context, outboxDao, timeLogDao, networkMonitor,
-        CoroutineScope(SupervisorJob() + Dispatchers.Default))
+        CoroutineScope(SupervisorJob() + Dispatchers.Default), icons.businessRequests)
 
     private val started = AtomicBoolean(false)
     private val workManager by lazy { WorkManager.getInstance(context) }
@@ -60,6 +65,13 @@ class AutoSyncCoordinator internal constructor(
             }
         }
         enqueueNow()
+        scope.launch {
+            materialChanges.collectLatest {
+                // Wakeups carry no authority. The actual sender rechecks durable dependencies.
+                delay(OUTBOX_DEBOUNCE_MILLIS)
+                enqueueNow()
+            }
+        }
         scope.launch {
             combine(
                 outboxDao.observePendingCount(),

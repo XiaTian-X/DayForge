@@ -16,8 +16,7 @@ class AccountIconWorker internal constructor(context: Context, params: WorkerPar
     private val synchronize: suspend () -> IconMaterialOutcome
 ) : CoroutineWorker(context, params) {
     constructor(context: Context, params: WorkerParameters) : this(context, params, {
-        EntryPointAccessors.fromApplication(context.applicationContext, Dependencies::class.java)
-            .materials().synchronize()
+        AccountIconWorker.synchronize(EntryPointAccessors.fromApplication(context.applicationContext, Dependencies::class.java))
     })
 
     override suspend fun doWork(): Result {
@@ -32,7 +31,17 @@ class AccountIconWorker internal constructor(context: Context, params: WorkerPar
 
     @EntryPoint
     @InstallIn(SingletonComponent::class)
-    interface Dependencies { fun materials(): AccountIconTransferService }
+    interface Dependencies {
+        fun materials(): AccountIconTransferService
+        fun replica(): com.dayforge.data.repository.ReplicaPresentationRepository
+    }
 
-    internal companion object { const val STATUS = "material_status" }
+    internal companion object {
+        const val STATUS = "material_status"
+        /** Same entry as the default worker: no material runtime/DB/file/network initialization on a closed replica. */
+        suspend fun synchronize(dependencies: Dependencies): IconMaterialOutcome {
+            if (!dependencies.replica().isOrdinaryOpen()) return IconMaterialOutcome.ATTENTION
+            return dependencies.materials().synchronize()
+        }
+    }
 }

@@ -25,10 +25,8 @@ import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import androidx.glance.action.clickable
-import com.dayforge.data.local.DataStoreProvider
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.HabitDatabaseProvider
-import com.dayforge.data.local.PreferencesManager
 import com.dayforge.domain.service.ScheduleValidator
 import com.dayforge.domain.service.TimerElapsedCalculator
 import com.dayforge.util.DateTimeUtils
@@ -71,8 +69,17 @@ class TimerWidget : GlanceAppWidget() {
         val ACCUMULATED_SECONDS_KEY = intPreferencesKey("accumulatedSeconds")
         val TIMER_STATE_KEY = stringPreferencesKey("timerState")  // "RUNNING", "PAUSED", "NOT_RUNNING"
         val ELAPSED_SECONDS_KEY = intPreferencesKey("elapsedSeconds")
+        internal val TICK_PLAN_KEY = stringPreferencesKey("timerTickPlan")
+        internal val TICK_LOG_HASH_KEY = stringPreferencesKey("timerTickLogHash")
+        internal val TICK_DATE_KEY = stringPreferencesKey("timerTickDate")
+        internal val TICK_ZONE_KEY = stringPreferencesKey("timerTickZone")
+        internal val TICK_COMPLETED_SECONDS_KEY = intPreferencesKey("timerTickCompletedSeconds")
         val IS_COMPLETED_KEY = booleanPreferencesKey("isCompleted")
         val DATA_LOADED_KEY = booleanPreferencesKey("dataLoaded")
+        val READ_FAILED_KEY = booleanPreferencesKey("timerReadFailed")
+        val ACTION_PROOF_KEY = stringPreferencesKey("timerActionProof")
+        val LEGACY_ACTION_PROOF_KEY = stringPreferencesKey("legacyTimerActionProof")
+        val LEGACY_RESTART_PROOF_KEY = stringPreferencesKey("legacyRestartProof")
         val IS_DELETED_KEY = booleanPreferencesKey("isDeleted")
         val APP_WIDGET_ID_KEY = intPreferencesKey("appWidgetId")
         val IS_ACTIVE_KEY = booleanPreferencesKey("isActive")
@@ -94,7 +101,7 @@ class TimerWidget : GlanceAppWidget() {
          * Refreshes widget data from the database.
          *
          * Steps:
-         * 1. Query habit by ID from HabitDatabase.habitDao().getHabitById(habitId)
+         * 1. Query habit by ID from HabitDatabase.habitDao().getVisibleHabitById(habitId)
          * 2. If habit is null, set IS_DELETED_KEY = true and return
          * 3. Query active timer: timeLogDao.getActiveTimeLogForHabit(habitId)
          * 4. Calculate timer state:
@@ -106,39 +113,165 @@ class TimerWidget : GlanceAppWidget() {
          * 7. Check completion: accumulatedSeconds >= targetMinutes * 60
          * 8. Write all values to Glance state via updateAppWidgetState
          */
-        suspend fun refreshWidgetData(context: Context, glanceId: GlanceId, habitId: Long) {
+        suspend fun refreshWidgetData(context: Context, glanceId: GlanceId, habitId: Long? = null) {
+            com.dayforge.di.WidgetEntryPoint.from(context).configurationWorkflow().refresh(
+                com.dayforge.domain.service.WidgetConfigurationKind.TIMER, glanceId, habitId)
+        }
+
+        internal suspend fun refreshWidgetDataInScope(context: Context, glanceId: GlanceId, habitId: Long,
+            publication: com.dayforge.data.repository.WidgetDisplayPublisher.Publication): Boolean {
             val appContext = context.applicationContext
             val database = HabitDatabaseProvider.getInstance(appContext)
-            val habit = database.habitDao().getHabitById(habitId)
-
-            if (habit == null) {
-                Log.w(TAG, "refreshWidgetData: habit $habitId not found")
-                updateAppWidgetState(appContext, glanceId) { prefs ->
-                    prefs[HABIT_ID_KEY] = habitId
-                    prefs[IS_DELETED_KEY] = true
-                    prefs[DATA_LOADED_KEY] = true
+            var publishingDisplay = false
+            try {
+                val visibleHabit = database.habitDao().getVisibleHabitById(habitId)
+                if (visibleHabit == null) {
+                    return publication {
+                        publishingDisplay = true
+                        updateAppWidgetState(appContext, glanceId) { prefs ->
+                            publication.stampFrame(prefs)
+                            clearActionAndTickState(prefs)
+                            prefs[HABIT_ID_KEY] = habitId
+                            prefs[IS_DELETED_KEY] = true
+                            prefs[DATA_LOADED_KEY] = true
+                            prefs[READ_FAILED_KEY] = false
+                        }
+                    }
                 }
-                return
+                if (visibleHabit.appearance != null) {
+                    val published = com.dayforge.di.WidgetEntryPoint.from(appContext).timerWriter()
+                        .renderWidgetSnapshot(visibleHabit, publication::isCurrentWhileAccountLocked) { snapshot ->
+                            publishingDisplay = true
+                            writeWidgetState(appContext, glanceId, habitId, snapshot.habit, snapshot, publication)
+                        }
+                    if (published) return true
+                    publication { publishingDisplay = true; writeReadFailure(appContext, glanceId, habitId, publication) }
+                    return false
+                }
+                // v4 sources are prepared outside the lock; typed healthy snapshots still
+                // keep NextTimerWriter's stronger lock through all reads and display IO.
+                val display = prepareWidgetState(appContext, glanceId, habitId, visibleHabit, null, publication,
+                    publication.legacyRestartClaim(visibleHabit))
+                return publication { publishingDisplay = true; display() }
+            } catch (error: Exception) {
+                if (error is CancellationException || publishingDisplay) throw error
+                Log.w(TAG, "Timer widget original policy unavailable", error)
+                publication { writeReadFailure(appContext, glanceId, habitId, publication) }
+                return false
             }
+        }
 
+        private fun clearActionAndTickState(prefs: MutablePreferences) {
+            prefs.remove(ACTION_PROOF_KEY)
+            prefs.remove(LEGACY_ACTION_PROOF_KEY)
+            prefs.remove(LEGACY_RESTART_PROOF_KEY)
+            prefs.remove(TICK_PLAN_KEY); prefs.remove(TICK_LOG_HASH_KEY)
+            prefs.remove(TICK_DATE_KEY); prefs.remove(TICK_ZONE_KEY); prefs.remove(TICK_COMPLETED_SECONDS_KEY)
+        }
+
+        private suspend fun writeReadFailure(context: Context, glanceId: GlanceId, habitId: Long,
+            publication: com.dayforge.data.repository.WidgetDisplayPublisher.Publication) {
+            updateAppWidgetState(context, glanceId) { prefs ->
+                publication.stampFrame(prefs)
+                clearActionAndTickState(prefs)
+                prefs[HABIT_ID_KEY] = habitId
+                prefs[DATA_LOADED_KEY] = false
+                prefs[READ_FAILED_KEY] = true
+                prefs[IS_DELETED_KEY] = false
+            }
+        }
+
+        /** False requests a normal full refresh; ticks never synthesize a new action claim. */
+        internal suspend fun refreshElapsedWidgetData(context: Context, glanceId: GlanceId, habitId: Long): Boolean {
+            val appContext = context.applicationContext
+            val bound = com.dayforge.di.WidgetEntryPoint.from(appContext).configurationWorkflow()
+                .bound(com.dayforge.domain.service.WidgetConfigurationKind.TIMER, glanceId) ?: return false
+            val selected = bound.habit ?: return false
+            // A ticker for another habit has nothing to update on this configured instance.
+            if (selected.id != habitId) return true
+            val publication = bound.publication
+            val previous = TimerWidget().getAppWidgetState<Preferences>(appContext, glanceId)
+            // A partial elapsed update must never attach fresh ownership to old cached names/stats.
+            if (!publication.ownsFrame(previous)) return false
+            if (previous[HABIT_ID_KEY] != habitId || previous[DATA_LOADED_KEY] != true ||
+                previous[READ_FAILED_KEY] == true || previous[IS_DELETED_KEY] == true) return false
+            val database = HabitDatabaseProvider.getInstance(appContext)
+            val habit = database.habitDao().getVisibleHabitById(habitId) ?: return false
+            // v4 has no retained-proof audit; keep its original loader and display semantics.
+            if (habit.appearance == null) {
+                return refreshWidgetDataInScope(appContext, glanceId, habitId, publication)
+            }
+            if (previous[TICK_DATE_KEY] != DateTimeUtils.today().toString() ||
+                previous[TICK_ZONE_KEY] != java.time.ZoneId.systemDefault().id) return false
+            val plan = previous[TICK_PLAN_KEY] ?: return false
+            val logHash = previous[TICK_LOG_HASH_KEY] ?: return false
+            val completed = previous[TICK_COMPLETED_SECONDS_KEY] ?: return false
+            val proof = previous[ACTION_PROOF_KEY] ?: return false
+            var publishingDisplay = false
+            var written = false
+            try {
+                val claim = WidgetTimerAction.decode(proof)
+                if (claim.habitId != habitId || claim.authority.sessionUuid == null) return false
+                com.dayforge.di.WidgetEntryPoint.from(appContext).timerWriter()
+                    .renderWidgetTick(habitId, plan, logHash, claim.authority) { log, original ->
+                        if (!publication.isCurrentWhileAccountLocked()) return@renderWidgetTick
+                        publishingDisplay = true
+                        val policy = WidgetTimerPolicy.read(habit, log, original)
+                        val elapsed = policy.elapsed(TimerElapsedCalculator.elapsedSeconds(log, appContext))
+                        val accumulated = Math.addExact(completed, elapsed)
+                        updateAppWidgetState(appContext, glanceId) { prefs ->
+                            // Do not overwrite a full refresh published while awaiting the account lock.
+                            if (prefs.toPreferences() == previous &&
+                                previous[TICK_DATE_KEY] == DateTimeUtils.today().toString() &&
+                                previous[TICK_ZONE_KEY] == java.time.ZoneId.systemDefault().id) {
+                                prefs[ELAPSED_SECONDS_KEY] = elapsed
+                                prefs[ACCUMULATED_SECONDS_KEY] = accumulated
+                                prefs[REMAINING_SECONDS_KEY] = policy.remaining(log, completed, elapsed)
+                                prefs[IS_COMPLETED_KEY] = accumulated >= policy.targetSeconds
+                                written = true
+                            }
+                        }
+                    }
+            } catch (error: Exception) {
+                if (error is CancellationException || publishingDisplay) throw error
+                Log.w(TAG, "Timer tick original unavailable", error)
+                publication {
+                    updateAppWidgetState(appContext, glanceId) { prefs ->
+                        if (prefs.toPreferences() == previous) {
+                            prefs[DATA_LOADED_KEY] = false
+                            prefs[READ_FAILED_KEY] = true
+                            clearActionAndTickState(prefs)
+                        }
+                    }
+                }
+            }
+            return written
+        }
+
+        private suspend fun writeWidgetState(context: Context, glanceId: GlanceId, habitId: Long,
+            habit: com.dayforge.data.local.entity.HabitEntity,
+            snapshot: com.dayforge.data.repository.WidgetTimerReadSnapshot?,
+            publication: com.dayforge.data.repository.WidgetDisplayPublisher.Publication) {
+            prepareWidgetState(context, glanceId, habitId, habit, snapshot, publication)()
+        }
+
+        private suspend fun prepareWidgetState(context: Context, glanceId: GlanceId, habitId: Long,
+            habit: com.dayforge.data.local.entity.HabitEntity,
+            snapshot: com.dayforge.data.repository.WidgetTimerReadSnapshot?,
+            publication: com.dayforge.data.repository.WidgetDisplayPublisher.Publication,
+            legacyIdentity: com.dayforge.data.repository.LegacyWidgetRestartClaim? = null): suspend () -> Unit {
+            val appContext = context.applicationContext
+            val database = HabitDatabaseProvider.getInstance(appContext)
             val timeLogDao = database.timeLogDao()
-
-            // Query active timer for this habit
-            val activeTimer = timeLogDao.getActiveTimeLogForHabit(habitId)
-
-            // Get habit timer settings for validation
-            val targetMinutes = habit.targetValue
-            val isCountdown = habit.isCountdown
-            val targetSeconds = targetMinutes * 60
-
-            // Calculate safe duration limit (same logic as TimerService)
-            // Absolute maximum: 24 hours (prevent runaway values from system date changes)
-            val absoluteMaxSeconds = 24 * 60 * 60
-            val safeDurationLimit = if (isCountdown) {
-                targetSeconds  // Countdown: cannot exceed target
-            } else {
-                if (targetMinutes > 0) targetSeconds * 3 else absoluteMaxSeconds  // Countup: threshold or absolute max
+            val activeTimer = snapshot?.activeLog ?: if (snapshot == null) timeLogDao.getActiveTimeLogForHabit(habitId) else null
+            val legacyClaim = legacyIdentity?.let {
+                com.dayforge.di.WidgetEntryPoint.from(appContext).timerWriter().captureLegacyWidget(it, activeTimer)
             }
+            val legacyProof = legacyIdentity?.encode()
+            val policy = WidgetTimerPolicy.read(habit, activeTimer, snapshot?.policy)
+            val targetMinutes = policy.targetMinutes
+            val isCountdown = policy.isCountdown
+            val targetSeconds = policy.targetSeconds
 
             // Determine timer state
             val timerState: String
@@ -149,13 +282,13 @@ class TimerWidget : GlanceAppWidget() {
                     timerState = "RUNNING"
                     val rawElapsed = TimerElapsedCalculator.elapsedSeconds(activeTimer, context)
                     // Clamp to safe limit to prevent abnormal display from system date changes
-                    elapsedSeconds = rawElapsed.coerceAtMost(safeDurationLimit)
+                    elapsedSeconds = policy.elapsed(rawElapsed)
                 }
                 activeTimer != null && activeTimer.isPaused -> {
                     timerState = "PAUSED"
                     val rawElapsed = TimerElapsedCalculator.elapsedSeconds(activeTimer, context)
                     // Clamp to safe limit
-                    elapsedSeconds = rawElapsed.coerceAtMost(safeDurationLimit)
+                    elapsedSeconds = policy.elapsed(rawElapsed)
                 }
                 else -> {
                     timerState = "NOT_RUNNING"
@@ -169,7 +302,7 @@ class TimerWidget : GlanceAppWidget() {
             val tomorrow = DateTimeUtils.startOfNextDayMillis(today)
 
             // Add current session elapsed time to accumulated if timer is running/paused
-            val accumulatedFromCompleted = timeLogDao.getCompletedDurationSecondsForDate(
+            val accumulatedFromCompleted = snapshot?.history?.todaySeconds?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt() ?: timeLogDao.getCompletedDurationSecondsForDate(
                 habitId, java.time.LocalDate.now().toString(), today, tomorrow
             )
             val accumulatedSeconds = if (timerState != "NOT_RUNNING") {
@@ -184,17 +317,14 @@ class TimerWidget : GlanceAppWidget() {
             // Check if this habit is in the pending metric set (stored in DataStore)
             // This is more reliable than calculating from database, especially when
             // app is in background or when multiple habits share the same metric.
-            val dataStore = DataStoreProvider.get(appContext)
-            val preferencesManager = PreferencesManager(dataStore)
-            val pendingHabits = preferencesManager.pendingMetricHabits.first()
-            val showMetricPrompt = isCompleted && habitId in pendingHabits
+            val preferencesManager = com.dayforge.di.WidgetEntryPoint.from(appContext).preferencesManager()
+            val pendingHabits = publication.session?.let { session ->
+                preferencesManager.pendingMetricHabitUuids(session, setOf(habit.uuid)).first()
+            }.orEmpty()
+            val showMetricPrompt = isCompleted && habit.uuid in pendingHabits
 
             // Calculate remaining seconds for countdown mode
-            val remainingSeconds = if (isCountdown) {
-                (targetSeconds - accumulatedSeconds).coerceAtLeast(0)
-            } else {
-                0  // Not used for countup mode
-            }
+            val remainingSeconds = policy.remaining(activeTimer, accumulatedFromCompleted, elapsedSeconds)
 
             // 新增状态计算
             val isCheckInAllowed = ScheduleValidator.isCheckInAllowedToday(habit.schedule, habit.createdAt)
@@ -204,54 +334,75 @@ class TimerWidget : GlanceAppWidget() {
 
             // Target progress - count days where timer target was met
             val targetProgress = if (habit.targetCycles != null) {
-                timeLogDao.getTargetMetDayCount(habit.id, targetSeconds)
+                snapshot?.history?.qualifiedDates?.size ?: timeLogDao.getTargetMetDayCount(habit.id, targetSeconds)
             } else 0
             // 目标完成：进度达标且习惯已被停用（用户点击了"确认完成"）
             val isGoalReached = habit.targetCycles != null && targetProgress >= habit.targetCycles && !habit.isActive
 
             // 失败状态判定
-            val hasFailed = WidgetFailureChecker.checkFailure(habit, database)
+            val hasFailed = snapshot?.history?.let {
+                com.dayforge.domain.service.FailureCheckerUtils.timerFailure(habit, it) == com.dayforge.domain.service.StrictFailureState.FAILED
+            } ?: WidgetFailureChecker.checkFailure(habit, database)
 
             // Pre-compute widget colors using WidgetColorResolver
             // Per WIDGET-COLOR-01, WIDGET-COLOR-06: Colors must be pre-calculated before rendering
-            val themes = DeviceThemeControllerEntryPoint.from(appContext).themeController()
-            val widgetColorResolver = WidgetColorResolver(appContext, themes)
-            val resolvedColors = widgetColorResolver.resolveWidgetColors(habit.colorHex)
+            return suspend {
+                val themes = DeviceThemeControllerEntryPoint.from(appContext).themeController()
+                val widgetColorResolver = WidgetColorResolver(appContext, themes)
+                val resolvedColors = widgetColorResolver.resolveWidgetColors(habit.colorHex)
 
-            // Write all values to Glance state
-            updateAppWidgetState(appContext, glanceId) { prefs ->
-                prefs[HABIT_ID_KEY] = habitId
-                // 倒计时习惯添加标签
-                prefs[HABIT_NAME_KEY] = habit.name
-                prefs[COLOR_HEX_KEY] = habit.colorHex
-                prefs[TARGET_MINUTES_KEY] = targetMinutes
-                prefs[ACCUMULATED_SECONDS_KEY] = accumulatedSeconds
-                prefs[TIMER_STATE_KEY] = timerState
-                prefs[ELAPSED_SECONDS_KEY] = elapsedSeconds
-                prefs[IS_COMPLETED_KEY] = isCompleted
-                prefs[IS_ACTIVE_KEY] = habit.isActive
-                prefs[IS_COUNTDOWN_KEY] = isCountdown
-                prefs[REMAINING_SECONDS_KEY] = remainingSeconds
-                prefs[SHOW_METRIC_PROMPT_KEY] = showMetricPrompt
-                prefs[IS_DELETED_KEY] = false
-                prefs[DATA_LOADED_KEY] = true
-                // 写入新增状态
-                prefs[IS_CHECKIN_ALLOWED_KEY] = isCheckInAllowed
-                prefs[NEXT_CHECKIN_DATE_KEY] = nextCheckInDate
-                prefs[HAS_FAILED_KEY] = hasFailed
-                prefs[IS_GOAL_REACHED_KEY] = isGoalReached
-                prefs[TARGET_PROGRESS_KEY] = targetProgress
-                prefs[TARGET_CYCLES_KEY] = habit.targetCycles ?: 0
-                // Pre-computed colors (Int ARGB for Glance state)
-                prefs[BACKGROUND_COLOR_KEY] = resolvedColors.backgroundColorArgb
-                prefs[TEXT_COLOR_KEY] = resolvedColors.textColorArgb
+                // Write all values to Glance state
+                updateAppWidgetState(appContext, glanceId) { prefs ->
+                    publication.stampFrame(prefs)
+                    prefs[HABIT_ID_KEY] = habitId
+                    // 倒计时习惯添加标签
+                    prefs[HABIT_NAME_KEY] = habit.name
+                    prefs[COLOR_HEX_KEY] = habit.colorHex
+                    prefs[TARGET_MINUTES_KEY] = targetMinutes
+                    prefs[ACCUMULATED_SECONDS_KEY] = accumulatedSeconds
+                    prefs[TIMER_STATE_KEY] = timerState
+                    prefs[ELAPSED_SECONDS_KEY] = elapsedSeconds
+                    prefs[IS_COMPLETED_KEY] = isCompleted
+                    prefs[IS_ACTIVE_KEY] = habit.isActive
+                    prefs[IS_COUNTDOWN_KEY] = isCountdown
+                    prefs[REMAINING_SECONDS_KEY] = remainingSeconds
+                    prefs[SHOW_METRIC_PROMPT_KEY] = showMetricPrompt
+                    prefs[IS_DELETED_KEY] = false
+                    prefs[DATA_LOADED_KEY] = true
+                    prefs[READ_FAILED_KEY] = false
+                    if (snapshot != null) prefs[ACTION_PROOF_KEY] = WidgetTimerAction.from(snapshot).encode()
+                    else prefs.remove(ACTION_PROOF_KEY)
+                    if (legacyClaim != null) prefs[LEGACY_ACTION_PROOF_KEY] = legacyClaim.encode()
+                    else prefs.remove(LEGACY_ACTION_PROOF_KEY)
+                    if (legacyProof != null) prefs[LEGACY_RESTART_PROOF_KEY] = legacyProof else prefs.remove(LEGACY_RESTART_PROOF_KEY)
+                    if (snapshot != null) {
+                        prefs[TICK_PLAN_KEY] = com.dayforge.data.repository.NextStructureMapper.writePlan(habit).toString()
+                        snapshot.activeLogHash?.let { prefs[TICK_LOG_HASH_KEY] = it } ?: prefs.remove(TICK_LOG_HASH_KEY)
+                        prefs[TICK_DATE_KEY] = snapshot.history.today.toString()
+                        prefs[TICK_ZONE_KEY] = java.time.ZoneId.systemDefault().id
+                        prefs[TICK_COMPLETED_SECONDS_KEY] = accumulatedFromCompleted
+                    } else {
+                        prefs.remove(TICK_PLAN_KEY); prefs.remove(TICK_LOG_HASH_KEY)
+                        prefs.remove(TICK_DATE_KEY); prefs.remove(TICK_ZONE_KEY); prefs.remove(TICK_COMPLETED_SECONDS_KEY)
+                    }
+                    // 写入新增状态
+                    prefs[IS_CHECKIN_ALLOWED_KEY] = isCheckInAllowed
+                    prefs[NEXT_CHECKIN_DATE_KEY] = nextCheckInDate
+                    prefs[HAS_FAILED_KEY] = hasFailed
+                    prefs[IS_GOAL_REACHED_KEY] = isGoalReached
+                    prefs[TARGET_PROGRESS_KEY] = targetProgress
+                    prefs[TARGET_CYCLES_KEY] = habit.targetCycles ?: 0
+                    // Pre-computed colors (Int ARGB for Glance state)
+                    prefs[BACKGROUND_COLOR_KEY] = resolvedColors.backgroundColorArgb
+                    prefs[TEXT_COLOR_KEY] = resolvedColors.textColorArgb
+                }
+
+                Log.d(
+                    TAG, "refreshWidgetData: wrote state for habit '${habit.name}', " +
+                    "timerState=$timerState, elapsed=$elapsedSeconds, accumulated=$accumulatedSeconds, " +
+                    "isCompleted=$isCompleted, showMetricPrompt=$showMetricPrompt, bgColor=${resolvedColors.backgroundColorArgb}"
+                )
             }
-
-            Log.d(
-                TAG, "refreshWidgetData: wrote state for habit '${habit.name}', " +
-                "timerState=$timerState, elapsed=$elapsedSeconds, accumulated=$accumulatedSeconds, " +
-                "isCompleted=$isCompleted, showMetricPrompt=$showMetricPrompt, bgColor=${resolvedColors.backgroundColorArgb}"
-            )
         }
     }
 
@@ -260,20 +411,19 @@ class TimerWidget : GlanceAppWidget() {
 
         try {
             val appWidgetId = androidx.glance.appwidget.GlanceAppWidgetManager(context).getAppWidgetId(id)
-            val state = getAppWidgetState<Preferences>(context, id)
-            val habitId = state[HABIT_ID_KEY] ?: -1L
-
             updateAppWidgetState(context, id) { prefs ->
                 prefs[APP_WIDGET_ID_KEY] = appWidgetId
             }
 
-            if (habitId != -1L) {
-                refreshWidgetData(context, id, habitId)
-            }
+            // Passive renderer: config/worker/retry own full reads, ticks own elapsed display only.
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Error loading initial data", e)
+            updateAppWidgetState(context, id) { prefs ->
+                prefs[DATA_LOADED_KEY] = false
+                prefs[READ_FAILED_KEY] = true
+            }
         }
 
         provideContent {
@@ -300,6 +450,12 @@ class TimerWidget : GlanceAppWidget() {
                         modifier = GlanceModifier.clickable(
                             androidx.glance.appwidget.action.actionStartActivity(intent)
                         )
+                    )
+                } else if (state[READ_FAILED_KEY] == true) {
+                    WidgetEmptyStates.EmptyConfigState(
+                        context.getString(R.string.data_read_failed) + "\n" + context.getString(R.string.action_retry),
+                        GlanceModifier.clickable(actionRunCallback<WidgetTimerRefreshCallback>(
+                            actionParametersOf(ActionParameters.Key<String>("widget") to "timer")))
                     )
                 } else if (!dataLoaded) {
                     WidgetEmptyStates.EmptyConfigState(context.getString(R.string.common_loading))
@@ -331,7 +487,10 @@ class TimerWidget : GlanceAppWidget() {
                         isCheckInAllowed = isCheckInAllowed,
                         nextCheckInDate = nextCheckInDate,
                         hasFailed = hasFailed,
-                        isGoalReached = isGoalReached
+                        isGoalReached = isGoalReached,
+                        actionProof = state[ACTION_PROOF_KEY],
+                        legacyActionProof = state[LEGACY_ACTION_PROOF_KEY],
+                        legacyProof = state[LEGACY_RESTART_PROOF_KEY]
                     )
                 }
             }
@@ -356,7 +515,10 @@ class TimerWidget : GlanceAppWidget() {
         isCheckInAllowed: Boolean = true,
         nextCheckInDate: String = "",
         hasFailed: Boolean = false,
-        isGoalReached: Boolean = false
+        isGoalReached: Boolean = false,
+        actionProof: String? = null,
+        legacyActionProof: String? = null,
+        legacyProof: String? = null
     ) {
         val context = androidx.glance.LocalContext.current
         // Use pre-computed colors from WidgetColorResolver
@@ -409,7 +571,9 @@ class TimerWidget : GlanceAppWidget() {
                             isCheckInAllowed = isCheckInAllowed,
                             hasFailed = hasFailed,
                             isGoalReached = isGoalReached,
-                            textColorArgb = textColorArgb
+                            textColorArgb = textColorArgb,
+                            actionProof = actionProof,
+                            legacyActionProof = legacyActionProof
                         )
                     }
                     "PAUSED" -> {
@@ -422,7 +586,9 @@ class TimerWidget : GlanceAppWidget() {
                             isCheckInAllowed = isCheckInAllowed,
                             hasFailed = hasFailed,
                             isGoalReached = isGoalReached,
-                            textColorArgb = textColorArgb
+                            textColorArgb = textColorArgb,
+                            actionProof = actionProof,
+                            legacyActionProof = legacyActionProof
                         )
                     }
                     else -> {
@@ -437,7 +603,10 @@ class TimerWidget : GlanceAppWidget() {
                             isCheckInAllowed = isCheckInAllowed,
                             hasFailed = hasFailed,
                             isGoalReached = isGoalReached,
-                            textColorArgb = textColorArgb
+                            textColorArgb = textColorArgb,
+                            actionProof = actionProof,
+                            legacyActionProof = legacyActionProof,
+                            legacyProof = legacyProof
                         )
                     }
                 }
@@ -468,7 +637,9 @@ class TimerWidget : GlanceAppWidget() {
         isCheckInAllowed: Boolean = true,
         hasFailed: Boolean = false,
         isGoalReached: Boolean = false,
-        textColorArgb: Int = android.graphics.Color.WHITE
+        textColorArgb: Int = android.graphics.Color.WHITE,
+        actionProof: String? = null,
+        legacyActionProof: String? = null
     ) {
         val context = androidx.glance.LocalContext.current
         val textColor = Color(textColorArgb)
@@ -492,13 +663,7 @@ class TimerWidget : GlanceAppWidget() {
             // Pause button
             Button(
                 text = context.getString(R.string.action_pause),
-                onClick = actionRunCallback<TimerActionCallback>(
-                    actionParametersOf(
-                        ActionParameters.Key<Long>("habitId") to habitId,
-                        ActionParameters.Key<String>("action") to "pause",
-                        ActionParameters.Key<Int>("targetMinutes") to targetMinutes
-                    )
-                ),
+                onClick = widgetTimerAction(context, habitId, targetMinutes, "pause", actionProof, legacyActionProof),
                 modifier = GlanceModifier.height(36.dp).width(50.dp),
                 colors = ButtonDefaults.buttonColors(
                     backgroundColor = ColorProvider(Color.Gray),
@@ -524,13 +689,7 @@ class TimerWidget : GlanceAppWidget() {
             // Stop button
             Button(
                 text = context.getString(R.string.action_stop),
-                onClick = actionRunCallback<TimerActionCallback>(
-                    actionParametersOf(
-                        ActionParameters.Key<Long>("habitId") to habitId,
-                        ActionParameters.Key<String>("action") to "stop",
-                        ActionParameters.Key<Int>("targetMinutes") to targetMinutes
-                    )
-                ),
+                onClick = widgetTimerAction(context, habitId, targetMinutes, "stop", actionProof, legacyActionProof),
                 modifier = GlanceModifier.height(36.dp).width(50.dp),
                 colors = ButtonDefaults.buttonColors(
                     backgroundColor = ColorProvider(Color.Gray),
@@ -550,7 +709,9 @@ class TimerWidget : GlanceAppWidget() {
         isCheckInAllowed: Boolean = true,
         hasFailed: Boolean = false,
         isGoalReached: Boolean = false,
-        textColorArgb: Int = android.graphics.Color.WHITE
+        textColorArgb: Int = android.graphics.Color.WHITE,
+        actionProof: String? = null,
+        legacyActionProof: String? = null
     ) {
         val context = androidx.glance.LocalContext.current
         val textColor = Color(textColorArgb)
@@ -574,13 +735,7 @@ class TimerWidget : GlanceAppWidget() {
             // Resume button
             Button(
                 text = context.getString(R.string.action_resume),
-                onClick = actionRunCallback<TimerActionCallback>(
-                    actionParametersOf(
-                        ActionParameters.Key<Long>("habitId") to habitId,
-                        ActionParameters.Key<String>("action") to "resume",
-                        ActionParameters.Key<Int>("targetMinutes") to targetMinutes
-                    )
-                ),
+                onClick = widgetTimerAction(context, habitId, targetMinutes, "resume", actionProof, legacyActionProof),
                 modifier = GlanceModifier.height(36.dp).width(50.dp),
                 colors = ButtonDefaults.buttonColors(
                     backgroundColor = ColorProvider(Color.Gray),
@@ -618,13 +773,7 @@ class TimerWidget : GlanceAppWidget() {
             // Stop button
             Button(
                 text = context.getString(R.string.action_stop),
-                onClick = actionRunCallback<TimerActionCallback>(
-                    actionParametersOf(
-                        ActionParameters.Key<Long>("habitId") to habitId,
-                        ActionParameters.Key<String>("action") to "stop",
-                        ActionParameters.Key<Int>("targetMinutes") to targetMinutes
-                    )
-                ),
+                onClick = widgetTimerAction(context, habitId, targetMinutes, "stop", actionProof, legacyActionProof),
                 modifier = GlanceModifier.height(36.dp).width(50.dp),
                 colors = ButtonDefaults.buttonColors(
                     backgroundColor = ColorProvider(Color.Gray),
@@ -646,7 +795,10 @@ class TimerWidget : GlanceAppWidget() {
         isCheckInAllowed: Boolean = true,
         hasFailed: Boolean = false,
         isGoalReached: Boolean = false,
-        textColorArgb: Int = android.graphics.Color.WHITE
+        textColorArgb: Int = android.graphics.Color.WHITE,
+        actionProof: String? = null,
+        legacyActionProof: String? = null,
+        legacyProof: String? = null
     ) {
         val context = androidx.glance.LocalContext.current
         val textColor = Color(textColorArgb)
@@ -669,7 +821,9 @@ class TimerWidget : GlanceAppWidget() {
                         context,
                         habitId,
                         habitName,
-                        isFailed = true
+                        isFailed = true,
+                        timerProof = actionProof,
+                        legacyProof = legacyProof
                     )
                     Box(
                         modifier = GlanceModifier
@@ -693,7 +847,9 @@ class TimerWidget : GlanceAppWidget() {
                         context,
                         habitId,
                         habitName,
-                        isFailed = false
+                        isFailed = false,
+                        timerProof = actionProof,
+                        legacyProof = legacyProof
                     )
                     Box(
                         modifier = GlanceModifier
@@ -718,13 +874,7 @@ class TimerWidget : GlanceAppWidget() {
                 if (!isCompleted) {
                     Button(
                         text = context.getString(R.string.widget_start),
-                        onClick = actionRunCallback<TimerActionCallback>(
-                            actionParametersOf(
-                                ActionParameters.Key<Long>("habitId") to habitId,
-                                ActionParameters.Key<String>("action") to "start",
-                                ActionParameters.Key<Int>("targetMinutes") to targetMinutes
-                            )
-                        ),
+                        onClick = widgetTimerAction(context, habitId, targetMinutes, "start", actionProof, legacyActionProof),
                         modifier = GlanceModifier.height(36.dp)
                     )
 
@@ -748,10 +898,13 @@ class TimerWidget : GlanceAppWidget() {
 
                     Button(
                         text = context.getString(R.string.widget_record),
-                        onClick = actionRunCallback<RecordMetricCallback>(
+                        onClick = if (actionProof != null) actionStartActivity(com.dayforge.widget.checkin.MetricPromptActivity.createIntent(
+                            context, habitId, habitName, WidgetTimerAction.decode(actionProof).authority))
+                        else actionRunCallback<RecordMetricCallback>(
                             actionParametersOf(
                                 ActionParameters.Key<Long>("habitId") to habitId,
-                                ActionParameters.Key<String>("habitName") to habitName
+                                ActionParameters.Key<String>("habitName") to habitName,
+                                ActionParameters.Key<String>("legacyWidgetIdentity") to (legacyProof ?: "")
                             )
                         ),
                         modifier = GlanceModifier.height(36.dp),

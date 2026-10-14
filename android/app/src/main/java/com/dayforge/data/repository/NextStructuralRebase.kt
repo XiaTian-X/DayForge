@@ -11,6 +11,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 internal class NextStructuralCausalConflict(val fields: List<String>) : IllegalStateException("Structural causal conflict")
 
@@ -37,12 +38,52 @@ internal object NextStructuralRebase {
     private val linkPaths = listOf("coefficient", "show_in_activity_detail", "prompt_on_complete", "is_active")
     private val decimals = setOf("activity.target_value", "target_value", "target_value_upper", "coefficient")
 
+    /** A restart changes the Plan via its own contract and contiguous log, not a synthetic Plan ACK. */
+    fun mergeRestartPlan(baseline: JsonObject, successor: SyncV2Operation, canonical: JsonObject,
+        revision: Long, replacementId: String): SyncV2Operation {
+        require(successor.entityType == "plan_node" && successor.action in setOf("upsert", "delete") &&
+            revision > 0 && isContractUuid(replacementId) && replacementId != successor.operationId)
+        NextStructureMapper.validatePlanWrite(baseline, successor.entityUuid)
+        require(baseline["node_kind"] == JsonPrimitive("activity"))
+        val actual = NextStructureMapper.readPlan(canonical, successor.entityUuid, revision)
+        require(actual.completionPolicy == "recurring" && actual.isActive &&
+            baseline["node_kind"] == canonical["node_kind"] &&
+            Instant.parse(baseline.getValue("created_at").jsonPrimitive.content) ==
+                Instant.parse(canonical.getValue("created_at").jsonPrimitive.content))
+        if (successor.action == "delete") {
+            require(successor.payload.isEmpty())
+            return successor.copy(operationId = replacementId, baseRevision = revision)
+        }
+        NextStructureMapper.validatePlanWrite(successor.payload, successor.entityUuid)
+        require(baseline.keys == successor.payload.keys && canonical.keys.containsAll(baseline.keys) &&
+            baseline["node_kind"] == successor.payload["node_kind"] &&
+            Instant.parse(baseline.getValue("created_at").jsonPrimitive.content) ==
+                Instant.parse(successor.payload.getValue("created_at").jsonPrimitive.content))
+        var merged = JsonObject(canonical.filterKeys { it in baseline.keys })
+        NextStructureMapper.validatePlanWrite(merged, successor.entityUuid)
+        val conflicts = planPaths.filter { path ->
+            val before = value(baseline, path)
+            val local = value(successor.payload, path)
+            val server = value(merged, path)
+            !same(path, before, local) && !same(path, before, server) && !same(path, local, server)
+        }.sorted()
+        if (conflicts.isNotEmpty()) throw NextStructuralCausalConflict(conflicts)
+        for (path in planPaths) {
+            val local = value(successor.payload, path)
+            if (!same(path, value(baseline, path), local)) merged = set(merged, path.split('.'), requireNotNull(local))
+        }
+        NextStructureMapper.validatePlanWrite(merged, successor.entityUuid)
+        return successor.copy(operationId = replacementId, baseRevision = revision, payload = merged)
+    }
+
     fun merge(predecessor: SyncV2Operation, successor: SyncV2Operation,
         confirmed: NextSyncOperationResult, replacementId: String,
         submittedPredecessor: SyncV2Operation = predecessor): SyncV2Operation {
         require(isContractUuid(replacementId) && replacementId != predecessor.operationId && replacementId != successor.operationId)
         require(predecessor.operationId != successor.operationId && predecessor.entityType == successor.entityType &&
-            predecessor.entityUuid == successor.entityUuid && predecessor.action == "upsert" && successor.action == "upsert")
+            predecessor.entityUuid == successor.entityUuid && predecessor.action == "upsert" &&
+            (successor.action == "upsert" || successor.action == "delete" &&
+                successor.entityType in setOf("plan_node", "metric", "activity_metric_link")))
         val paths = when (predecessor.entityType) {
             "plan_node" -> planPaths
             "metric" -> metricPaths
@@ -50,7 +91,10 @@ internal object NextStructuralRebase {
             else -> error("Only ordinary structural upserts can be rebased")
         }
         validateWrite(predecessor.entityType, predecessor.entityUuid, predecessor.payload)
-        validateWrite(successor.entityType, successor.entityUuid, successor.payload)
+        if (successor.action == "upsert") validateWrite(successor.entityType, successor.entityUuid, successor.payload)
+        else require(if (predecessor.payload["node_kind"] == JsonPrimitive("goal"))
+            successor.payload.keys == setOf("child_policy") && successor.payload["child_policy"] in
+                setOf(JsonPrimitive("cascade_children"), JsonPrimitive("detach_children")) else successor.payload.isEmpty())
         // A preceding logical intent may itself have a replacement. Keep its ORIGINAL local
         // baseline, but bind the receipt to the actually submitted operation, never to a guessed ID.
         require(submittedPredecessor.entityType == predecessor.entityType &&
@@ -72,6 +116,22 @@ internal object NextStructuralRebase {
                 NextCommonFactMapper.validateLinkSnapshot(SyncV2Change(0, predecessor.entityType, predecessor.entityUuid,
                     "upsert", confirmed.revision, canonical, updated))
             }
+        }
+        if (successor.action == "delete") {
+            // Only an explicit NEW, never-transmitted delete can inherit its own proven predecessor ACK.
+            // Retain the exact child policy; do not infer a base from a mutable current shadow.
+            if (predecessor.entityType == "plan_node") {
+                require(predecessor.payload["node_kind"] == canonical["node_kind"] &&
+                    predecessor.payload["node_kind"] == submittedPredecessor.payload["node_kind"] &&
+                    Instant.parse(predecessor.payload.getValue("created_at").jsonPrimitive.content) ==
+                        Instant.parse(canonical.getValue("created_at").jsonPrimitive.content) &&
+                    Instant.parse(predecessor.payload.getValue("created_at").jsonPrimitive.content) ==
+                        Instant.parse(submittedPredecessor.payload.getValue("created_at").jsonPrimitive.content))
+            } else if (predecessor.entityType == "activity_metric_link") for (key in listOf("activity_uuid", "metric_uuid")) {
+                require(predecessor.payload[key] == canonical[key] &&
+                    predecessor.payload[key] == submittedPredecessor.payload[key])
+            }
+            return successor.copy(operationId = replacementId, baseRevision = confirmed.revision)
         }
         require(predecessor.payload.keys == successor.payload.keys && canonical.keys.containsAll(predecessor.payload.keys))
         var merged = JsonObject(canonical.filterKeys { it in predecessor.payload.keys })
@@ -112,8 +172,7 @@ internal object NextStructuralRebase {
         when (type) {
             "plan_node" -> {
                 NextStructureMapper.validatePlanWrite(body, uuid)
-                // Its stateful chain/strict acceptance is handled by the separate one-time path.
-                require((body["activity"] as? JsonObject)?.get("completion_policy") != JsonPrimitive("one_and_done"))
+                // This is structure only: the confirmed one-time projection is never in a write payload.
             }
             "metric" -> NextStructureMapper.validateMetricWrite(body)
             "activity_metric_link" -> NextCommonFactMapper.validateLinkWrite(body)

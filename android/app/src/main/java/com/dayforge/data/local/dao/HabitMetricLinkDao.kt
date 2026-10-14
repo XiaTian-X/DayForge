@@ -18,18 +18,21 @@ interface HabitMetricLinkDao {
     suspend fun getLinkedMetricSnapshots(habitId: Long): List<LinkedMetricSnapshot>
 
     // Queries by habit
-    @Query("SELECT * FROM habit_metric_links WHERE habitId = :habitId AND isActive = 1")
+    @Query("SELECT links.* FROM habit_metric_links links WHERE habitId = :habitId AND isActive = 1 AND" + VISIBLE_LINK_SQL)
     fun getLinksByHabit(habitId: Long): Flow<List<HabitMetricLinkEntity>>
 
     @Query("SELECT * FROM habit_metric_links WHERE habitId = :habitId")
     suspend fun getAllLinksForHabit(habitId: Long): List<HabitMetricLinkEntity>
 
+    @Query("SELECT links.* FROM habit_metric_links links WHERE habitId = :habitId AND" + VISIBLE_LINK_SQL)
+    suspend fun getVisibleLinksForHabit(habitId: Long): List<HabitMetricLinkEntity>
+
     // Synchronous version for use in widget (non-coroutine context)
-    @Query("SELECT * FROM habit_metric_links WHERE habitId = :habitId")
+    @Query("SELECT links.* FROM habit_metric_links links WHERE habitId = :habitId AND" + VISIBLE_LINK_SQL)
     fun getLinksByHabitSync(habitId: Long): List<HabitMetricLinkEntity>
 
     // Queries by metric
-    @Query("SELECT * FROM habit_metric_links WHERE metricId = :metricId AND isActive = 1")
+    @Query("SELECT links.* FROM habit_metric_links links WHERE links.metricId = :metricId AND links.isActive = 1 AND" + VISIBLE_LINK_SQL)
     fun getLinksByMetric(metricId: Long): Flow<List<HabitMetricLinkEntity>>
 
     /**
@@ -37,13 +40,13 @@ interface HabitMetricLinkDao {
      * Used as a trigger for UI refresh when links change (e.g., during sync).
      * @return Flow that emits the list of all active links
      */
-    @Query("SELECT * FROM habit_metric_links WHERE isActive = 1")
+    @Query("SELECT links.* FROM habit_metric_links links WHERE isActive = 1 AND" + VISIBLE_LINK_SQL)
     fun getAllActiveLinksFlow(): Flow<List<HabitMetricLinkEntity>>
 
     /**
      * Get all active links once (suspend version for export).
      */
-    @Query("SELECT * FROM habit_metric_links WHERE isActive = 1")
+    @Query("SELECT links.* FROM habit_metric_links links WHERE isActive = 1 AND" + VISIBLE_LINK_SQL)
     suspend fun getAllActiveLinks(): List<HabitMetricLinkEntity>
 
     @Query("SELECT * FROM habit_metric_links WHERE metricId = :metricId")
@@ -55,6 +58,9 @@ interface HabitMetricLinkDao {
 
     @Query("SELECT * FROM habit_metric_links WHERE id = :id LIMIT 1")
     suspend fun getById(id: Long): HabitMetricLinkEntity?
+
+    @Query("SELECT EXISTS(SELECT 1 FROM sync_outbox q JOIN next_request_origins o ON o.kind='sync_operation' AND o.requestId=q.operationId AND o.queueId=q.id AND o.protocol=5 WHERE q.recordType='link' AND q.action='delete' AND q.entityUuid=:uuid)")
+    suspend fun hasPendingNextDeletion(uuid: String): Boolean
 
     // Insert with ignore on conflict (unique constraint)
     @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -116,7 +122,7 @@ interface HabitMetricLinkDao {
                 ORDER BY logs.date DESC, logs.id DESC
                 LIMIT 1
             )
-            WHERE links.isActive = 1
-        """
+            WHERE links.isActive = 1 AND
+        """ + VISIBLE_LINK_SQL
     }
 }

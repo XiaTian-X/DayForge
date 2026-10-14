@@ -23,30 +23,32 @@ internal class NextTimerRequestStore(
     private val requests: NextCoreRequestStore
 ) {
     private data class Receipt(val command: TimerCommandRequest, val result: TimerCommandResult, val proof: String,
-        val transmissionProof: String)
+        val transmissionProof: String, val challengeMetadata: ChallengeMetadata? = null)
 
     suspend fun sendAndAccept(access: LocalSyncAccess, id: String): NextOperationAcceptance? {
         require(isContractUuid(id))
         val saved = sessions.exclusive {
             authorize(access)
             database.withTransaction {
+                NextRecoveryAuditStore(database).validatedMembers(access)
                 if (hash("next_acceptances", id) == null) null else receipt(access, id)
             }
         }
-        if (saved != null) return acceptResult(access, id, saved.result, saved.transmissionProof)
+        if (saved != null) return acceptResult(access, id, saved.result, saved.transmissionProof, saved.challengeMetadata)
         // Order is proved in the first journal transaction. Frozen unknown results remain exact replay.
-        val delivered = requests.sendCommand(access, id, ::requireHead) ?: return null
+        val delivered = requests.sendCommand(access, id) { requireHead(it, access) } ?: return null
         return accept(delivered)
     }
 
     suspend fun accept(delivery: NextCoreDelivery<TimerCommandBatchResponse>): NextOperationAcceptance {
         require(delivery.result.results.size == 1)
         Instant.parse(delivery.result.serverTime)
-        return acceptResult(delivery.access, delivery.requestId, delivery.result.results.single(), delivery.transmissionProof)
+        return acceptResult(delivery.access, delivery.requestId, delivery.result.results.single(), delivery.transmissionProof,
+            delivery.challengeMetadata)
     }
 
     internal suspend fun send(access: LocalSyncAccess, id: String): NextCoreDelivery<TimerCommandBatchResponse>? =
-        requests.sendCommand(access, id, ::requireHead)
+        requests.sendCommand(access, id) { requireHead(it, access) }
 
     /** Actual queue drain for the later unified scheduler; a rejection does not silently delete an intent. */
     suspend fun pushPending(access: LocalSyncAccess): Int {
@@ -55,6 +57,7 @@ internal class NextTimerRequestStore(
             val pending = sessions.exclusive {
                 authorize(access)
                 database.withTransaction {
+                    NextRecoveryAuditStore(database).validatedMembers(access)
                     NextRequestSql.sources(database.openHelper.writableDatabase, "timer_command_outbox")
                     database.timeLogDao().getPendingTimerCommands(100)
                 }
@@ -69,32 +72,55 @@ internal class NextTimerRequestStore(
     }
 
     private suspend fun acceptResult(access: LocalSyncAccess, id: String, result: TimerCommandResult,
-        transmissionProof: String): NextOperationAcceptance = sessions.exclusive {
+        transmissionProof: String, metadata: ChallengeMetadata?): NextOperationAcceptance = sessions.exclusive {
         authorize(access)
         database.withTransaction {
             val sql = database.openHelper.writableDatabase
             NextRequestSql.requireOutboxEnabled(sql)
+            val terminals = NextRecoveryAuditStore(database).validatedMembers(access)
             require(isContractUuid(id))
             val dao = database.nextRequestDao()
             val originHash = hash("next_request_origins", id) ?: rejectNextRequest(NextRequestException.Reason.OLD_INTENT)
             val transmissionHash = hash("next_transmissions", id) ?: rejectNextRequest(NextRequestException.Reason.OLD_INTENT)
             if (transmissionHash != transmissionProof) rejectNextRequest(NextRequestException.Reason.SOURCE_CHANGED)
             val origin = requireNotNull(dao.origin(NEXT_TIMER, id))
+            val restartProof = NextRestartBindingStore(database).requireReady(access, origin)
             val transmission = requireNotNull(dao.transmission(NEXT_TIMER, id))
+            val rounds = NextChallengeStore(database)
+            val roundOrigin = roundTimerIntent(origin.intentJson)
+            val checkpoint = if (roundOrigin == null) {
+                rounds.requirePlainInTransaction(); require(metadata == null); null
+            } else rounds.activeInTransaction(access)
             requests.validateTimerJournalInTransaction(origin, transmission, access)
-            val command = decodeFrozenSyncRequest(transmission.wireBytes, TimerCommandBatchRequest.serializer()).commands.single()
+            val command = validateNextTimerEnvelope(origin.intentJson, transmission.wireBytes, requireNotNull(access.deviceId))
             val timer = NextTimerResultMapper.validate(command, result, requireNotNull(access.deviceId))
             val normalized = result.copy(status = "applied")
             val previous = if (command.sequence == 1) null else findReceipt(access, command.sessionId, command.sequence - 1)
             previous?.let { NextTimerResultMapper.validateAfter(requireNotNull(it.result.session), command, timer) }
+            val merged = if (roundOrigin == null) null else {
+                val frozen = decodeFrozenSyncRequest(encodeSyncRequest(ChallengeMetadata.serializer(),
+                    requireNotNull(metadata) { "SYNC_CHALLENGE_ACK_REQUIRED" }), ChallengeMetadata.serializer())
+                validateRoundTimerBinding(decodeFrozenSyncRequest(transmission.wireBytes, RoundTimerCommandBatchRequest.serializer()),
+                    RoundTimerCommandBatchResponse(listOf(result), timer.stateChangedAt, 1, frozen.checkpoints, frozen.births))
+                rounds.acknowledgeInTransaction(access, frozen)
+            }
+            suspend fun verifyRounds() {
+                require(NextRestartBindingStore(database).requireReady(access, origin) == restartProof) { "SYNC_RESTART_PLAN_PROOF_CHANGED" }
+                if (checkpoint != null) {
+                    val actual = rounds.activeInTransaction(access)
+                    check(actual.first == checkpoint.first && actual.second == merged) { "SYNC_CHALLENGE_ACK_CHANGED" }
+                }
+                require(NextRecoveryAuditStore(database).validatedMembers(access) == terminals) { "RECOVERY_TERMINAL_CHANGED" }
+            }
             if (hash("next_acceptances", id) != null) {
                 if (receipt(access, id).result != normalized) rejectNextRequest(NextRequestException.Reason.RESULT_CHANGED)
+                verifyRounds()
                 authorize(access)
                 return@withTransaction NextOperationAcceptance.REPLAYED
             }
             require(requests.requireTimerOriginInTransaction(access, id) == origin)
             val queue = requireNotNull(database.timeLogDao().getTimerCommand(origin.queueId))
-            requireHead(queue)
+            requireHead(queue, access)
             val sources = NextRequestSql.sources(sql, "timer_command_outbox")
             val local = database.timeLogDao().getTimeLogByUuid(command.sessionId)
             val segments = database.timeLogDao().getTimerSegments(command.sessionId)
@@ -115,6 +141,7 @@ internal class NextTimerRequestStore(
                 hash("next_acceptances", id) != null && dao.acceptance(NEXT_TIMER, id) == accepted)
             if (previous != null) check(findReceipt(access, command.sessionId, command.sequence - 1)?.proof == previous.proof)
             NextRequestSql.requireOutboxEnabled(sql)
+            verifyRounds()
             authorize(access)
             NextOperationAcceptance.COMMITTED
         }
@@ -153,13 +180,19 @@ internal class NextTimerRequestStore(
         val origin = requireNotNull(dao.origin(NEXT_TIMER, id))
         val transmission = requireNotNull(dao.transmission(NEXT_TIMER, id))
         requests.validateTimerJournalInTransaction(origin, transmission, access)
-        val command = decodeFrozenSyncRequest(transmission.wireBytes, TimerCommandBatchRequest.serializer()).commands.single()
+        val command = validateNextTimerEnvelope(origin.intentJson, transmission.wireBytes, requireNotNull(access.deviceId))
         val result = decodeFrozenSyncRequest(saved.resultJson.toByteArray(Charsets.UTF_8), TimerCommandResult.serializer())
         require(result.status == "applied")
         NextTimerResultMapper.validate(command, result, requireNotNull(access.deviceId))
+        val metadata = if (roundTimerIntent(origin.intentJson) == null) null else {
+            val actual = NextChallengeStore(database).activeInTransaction(access).second
+            validateRoundTimerBinding(decodeFrozenSyncRequest(transmission.wireBytes, RoundTimerCommandBatchRequest.serializer()),
+                RoundTimerCommandBatchResponse(listOf(result), requireNotNull(result.session).stateChangedAt, 1, actual.checkpoints, actual.births))
+            actual
+        }
         require(NextRequestSql.rowHash(database.openHelper.writableDatabase, "timer_command_outbox", "id=?", arrayOf(origin.queueId)) == null &&
             NextRequestSql.rowHash(database.openHelper.writableDatabase, "timer_command_outbox", "commandId=?", arrayOf(id)) == null)
-        return Receipt(command, result, "$originHash:$transmissionHash:$receiptHash", transmissionHash)
+        return Receipt(command, result, "$originHash:$transmissionHash:$receiptHash", transmissionHash, metadata)
     }
 
     private suspend fun findReceipt(access: LocalSyncAccess, session: String, sequence: Int?): Receipt? {
@@ -182,7 +215,38 @@ internal class NextTimerRequestStore(
         return found
     }
 
-    private suspend fun requireHead(command: TimerCommandEntity) {
+    internal suspend fun hasAcceptedStartInTransaction(access: LocalSyncAccess, id: String): Boolean {
+        check(database.inTransaction())
+        if (hash("next_acceptances", id) == null) return false
+        val saved = receipt(access, id)
+        require(saved.command.commandType == "start")
+        return true
+    }
+
+    /** Complete real receipt for a referenced session transition; no queue-absence inference. */
+    internal suspend fun recoveryAcceptedProof(access: LocalSyncAccess, id: String): NextRecoveryTimerAcceptedProof {
+        check(database.inTransaction())
+        val saved = receipt(access, id)
+        require(requireNotNull(roundTimerIntent(requireNotNull(database.nextRequestDao().origin(NEXT_TIMER, id)).intentJson))
+            .capturedDeviceId == access.deviceId)
+        return NextRecoveryTimerAcceptedProof(saved.command, requireNotNull(saved.result.session),
+            nextRequestHash(saved.proof.toByteArray(Charsets.UTF_8)))
+    }
+
+    /** Restart waits for the complete real terminal receipt, not a missing queue/local end time. */
+    internal suspend fun requireAcceptedTerminalInTransaction(access: LocalSyncAccess, id: String, session: String, sequence: Int): String {
+        check(database.inTransaction())
+        if (hash("next_acceptances", id) == null) rejectNextRequest(NextRequestException.Reason.CAUSAL_PREDECESSOR_PENDING)
+        val saved = receipt(access, id)
+        require(saved.command.sessionId == session && saved.command.sequence == sequence &&
+            saved.command.commandType in setOf("stop", "cancel") &&
+            saved.result.session?.state == if (saved.command.commandType == "stop") "completed" else "cancelled")
+        return saved.proof
+    }
+
+    private suspend fun requireHead(command: TimerCommandEntity, access: LocalSyncAccess) {
+        if (command.commandType == "start")
+            NextTimerOrderingStore(database, tokens, sessions, requests).requireStartReady(command, access)
         val sql = database.openHelper.writableDatabase
         NextRequestSql.sources(sql, "timer_command_outbox")
         val ids = sql.query("SELECT id FROM timer_command_outbox WHERE sessionUuid=? AND sequence<? LIMIT 10001",

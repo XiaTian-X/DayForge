@@ -54,6 +54,7 @@ import kotlinx.coroutines.withContext
     entities = [
         HabitEntity::class,
         CompletionEntity::class,
+        com.dayforge.data.local.entity.CountDayEntity::class,
         TimeLogEntity::class,
         MetricEntity::class,
         MetricLogEntity::class,
@@ -75,9 +76,20 @@ import kotlinx.coroutines.withContext
         NextStructuralDependencyEntity::class,
         NextStructuralSupersessionEntity::class,
         NextSyncStateEntity::class,
-        NextRejectionEntity::class
+        NextRejectionEntity::class,
+        com.dayforge.data.local.entity.NextChallengeRoundEntity::class,
+        com.dayforge.data.local.entity.NextChallengeBirthEntity::class,
+        com.dayforge.data.local.entity.NextChallengeStateEntity::class,
+        com.dayforge.data.local.entity.NextRestartMaterializationEntity::class,
+        com.dayforge.data.local.entity.NextRestartPlanProofEntity::class,
+        com.dayforge.data.local.entity.NextConfigImportEntity::class,
+        com.dayforge.data.local.entity.NextConfigImportPayloadEntity::class,
+        com.dayforge.data.local.entity.NextRecoveryAuditEntity::class,
+        com.dayforge.data.local.entity.NextAbandonedRequestEntity::class,
+        com.dayforge.data.local.entity.NextRecoveryAuditPayloadEntity::class,
+        com.dayforge.data.local.entity.NextReplicaFenceEntity::class
     ],
-    version = 12,
+    version = 18,
     exportSchema = true
 )
 @TypeConverters(HabitTypeConverter::class)
@@ -87,11 +99,19 @@ abstract class HabitDatabase : RoomDatabase() {
 
     abstract fun completionDao(): CompletionDao
 
+    abstract fun countDayDao(): com.dayforge.data.local.dao.CountDayDao
+
     abstract fun completionFollowUpDao(): CompletionFollowUpDao
 
     abstract fun nextRecoveryDao(): NextRecoveryDao
 
+    abstract fun nextReplicaFenceDao(): com.dayforge.data.local.dao.NextReplicaFenceDao
+
     abstract fun nextSyncStateDao(): NextSyncStateDao
+
+    abstract fun nextChallengeDao(): com.dayforge.data.local.dao.NextChallengeDao
+
+    abstract fun nextRestartDao(): com.dayforge.data.local.dao.NextRestartDao
 
     abstract fun nextRequestDao(): NextRequestDao
 

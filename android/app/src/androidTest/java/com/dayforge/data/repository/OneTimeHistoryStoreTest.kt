@@ -53,9 +53,9 @@ class OneTimeHistoryStoreTest {
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val store = PreferenceDataStoreFactory.create(scope = scope, produceFile = { file })
         tokens = TokenManager(store)
-        preferences = PreferencesManager(store)
-        tokens.saveLoginSession("synthetic-a", "synthetic-r", "member", "account-a", false)
-        tokens.saveServerIdentity("server", "epoch")
+        preferences = PreferencesManager(store, tokens = tokens)
+        tokens.saveLoginSession("synthetic-a", "synthetic-r", "member", "80000000-0000-4000-8000-000000000001", false)
+        tokens.saveServerIdentity("80000000-0000-4000-8000-000000000003", "80000000-0000-4000-8000-000000000004")
         tokens.saveDeviceRegistration(device, setOf("sync.read", "facts.append"), false, 1)
         habit = parent()
     }
@@ -285,9 +285,9 @@ class OneTimeHistoryStoreTest {
         val response = snapshot(habit to history())
         tokens.saveSyncDeviceId(uuid()); rejected { sync().restoreHistories(context, response) }
         tokens.saveSyncDeviceId(device)
-        tokens.saveServerIdentity("server", "other"); rejected { sync().restoreHistories(context, response) }
-        tokens.saveServerIdentity("server", "epoch")
-        tokens.saveLoginSession("synthetic-next", "synthetic-r", "member", "account-a", false)
+        tokens.saveServerIdentity("80000000-0000-4000-8000-000000000003", "other"); rejected { sync().restoreHistories(context, response) }
+        tokens.saveServerIdentity("80000000-0000-4000-8000-000000000003", "80000000-0000-4000-8000-000000000004")
+        tokens.saveLoginSession("synthetic-next", "synthetic-r", "member", "80000000-0000-4000-8000-000000000001", false)
         rejected { sync().restoreHistories(context, response) }
         db.syncOutboxDao().upsertState(SyncEntityStateEntity("plan_node", habit.uuid, 2, deleted = true))
         rejected { sync().restoreHistories(sync().context(), response) }

@@ -15,6 +15,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import java.util.UUID
 import org.junit.After
 import org.junit.Assert.*
@@ -54,6 +56,21 @@ class TokenManagerTest {
         // This fake verifies wiring only; AndroidKeystoreTokenCipherTest verifies encryption.
         assertTrue(persisted.contains("encrypted:access-secret"))
         assertTrue(persisted.contains("encrypted:refresh-secret"))
+    }
+
+    @Test fun recovery_ui_generation_does_not_decrypt_tokens_or_grant_authenticated_access() = runBlocking {
+        val user = UUID.randomUUID().toString()
+        manager.saveLoginSession("synthetic-access", "synthetic-refresh", "member", user, false)
+        val expected = manager.authenticationSnapshot()!!.session
+        val unreadable = TokenManager(store, object : TokenCipher {
+            override fun encrypt(value: String): String = throw AssertionError("Read must not encrypt")
+            override fun decrypt(value: String): String = throw IllegalStateException("Synthetic Keystore failure")
+        })
+        val before = store.data.first()
+        assertEquals(expected, unreadable.replicaUiAuthentication()); assertEquals(before, store.data.first())
+        try { unreadable.authenticationSnapshot(); fail("Metadata is not authenticated access") }
+        catch (error: IllegalStateException) { assertEquals("Synthetic Keystore failure", error.message) }
+        manager.clearAuthenticationTokens(); assertNull(unreadable.replicaUiAuthentication())
     }
 
     @Test
@@ -199,5 +216,52 @@ class TokenManagerTest {
     private object TestTokenCipher : TokenCipher {
         override fun encrypt(value: String) = if (value.startsWith("encrypted:")) value else "encrypted:$value"
         override fun decrypt(value: String) = value.removePrefix("encrypted:")
+    }
+
+    private fun id(n: Int) = "aa320000-0000-4000-8000-${n.toString().padStart(12, '0')}"
+
+    @Test fun concurrent_installation_creation_returns_one_committed_identity() = runBlocking<Unit> {
+        val ids = (1..32).map { async(Dispatchers.IO) { manager.getOrCreateInstallationId() } }.awaitAll()
+        assertEquals(1, ids.toSet().size)
+        assertEquals(ids.first(), manager.getOrCreateInstallationId())
+        assertEquals(ids.first(), store.data.first()[stringPreferencesKey("sync_installation_id")])
+    }
+
+    @Test fun next_registration_atomically_saves_complete_proof_without_resetting_legacy_cursor() = runBlocking<Unit> {
+        manager.saveLoginSession("a", "r", "member", id(1), false)
+        manager.saveSyncCursor(42)
+        val original = manager.localCoreWriteAccess()!!
+        val installation = manager.getOrCreateInstallationId()
+        val result = manager.saveNextRegistration(original, null, installation, id(2), id(3), id(4),
+            setOf("sync.read", "structure.write"), true, 3)
+        assertEquals(result, manager.localSyncAccess())
+        assertEquals(original.session.authentication, result.session.authentication)
+        assertEquals(id(2), result.session.serverInstanceId); assertEquals(id(3), result.session.syncEpoch)
+        assertEquals(3, result.capabilityRevision); assertEquals(id(4), manager.localCoreWriteAccess()!!.capturedDeviceId)
+        assertEquals(42L, manager.syncCursor.first()); assertTrue(manager.isSyncBootstrapped.first())
+        assertTrue(manager.isPrimaryEditor.first())
+    }
+
+    @Test fun late_next_registration_rejects_changed_auth_replica_device_or_capability_revision() = runBlocking<Unit> {
+        for (change in 0..3) {
+            manager.saveLoginSession("a", "r", "member", id(1), false)
+            manager.saveServerIdentity(id(2), id(3))
+            manager.saveDeviceRegistration(id(4), setOf("sync.read", "structure.write"), true, 1)
+            val core = manager.localCoreWriteAccess()!!; val access = manager.localSyncAccess()!!
+            val installation = manager.getOrCreateInstallationId()
+            when (change) {
+                0 -> manager.saveLoginSession("a", "r", "again", id(1), false)
+                1 -> manager.saveServerIdentity(id(2), id(9))
+                2 -> manager.saveDeviceRegistration(id(9), setOf("sync.read"), false, 2)
+                3 -> manager.saveDeviceRegistration(id(4), setOf("sync.read"), false, 2)
+            }
+            val before = store.data.first()
+            try {
+                manager.saveNextRegistration(core, access, installation, id(2), id(3), id(4),
+                    setOf("sync.read", "structure.write"), true, 1)
+                fail("Late proof must not commit")
+            } catch (_: IllegalStateException) { }
+            assertEquals(before, store.data.first())
+        }
     }
 }

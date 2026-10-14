@@ -200,4 +200,46 @@ class CountingSlotCalculatorTest {
         // Should not throw and should return correct count
         assertEquals("Should have 4 slots", 4, slots.size)
     }
+
+    @Test fun hugeTargetsRetainAllLogicalIndicesWithoutAllocatingOrIteratingThem() {
+        val now = ZonedDateTime.of(2026, 10, 8, 9, 0, 0, 0, zoneId)
+        val slots = CountingSlotCalculator.calculateSlots(540, Int.MAX_VALUE, now)
+        assertEquals(Int.MAX_VALUE, slots.size)
+        assertEquals(Int.MAX_VALUE - 1, slots.last().index)
+        assertEquals(540, slots.last().slotTime)
+        assertEquals(0, CountingSlotCalculator.getCurrentSlot(540, Int.MAX_VALUE, now)!!.index)
+        assertEquals(Int.MAX_VALUE - 2, CountingSlotCalculator.getNextUncompletedSlot(540,
+            Int.MAX_VALUE, Int.MAX_VALUE - 2, now)!!.index)
+        assertNull(CountingSlotCalculator.getNextUncompletedSlot(540, Int.MAX_VALUE, Int.MAX_VALUE, now))
+        assertEquals(1, CountingSlotCalculator.distinctSlots(540, Int.MAX_VALUE, now).size)
+        val merged = CountingSlotCalculator.reminderWindows(540, Int.MAX_VALUE, now).single()
+        assertEquals(525, merged.minute); assertEquals(0, merged.firstIndex); assertEquals(Int.MAX_VALUE - 1, merged.lastIndex)
+        for (invalid in listOf(-1, Int.MAX_VALUE)) {
+            try { slots[invalid]; fail("Invalid slot must preserve List's bounds contract") }
+            catch (expected: IndexOutOfBoundsException) { assertTrue(expected.message!!.contains("Slot")) }
+        }
+    }
+
+    @Test fun optimizedQueriesAndGroupedWindowsMatchEveryOriginalSlotIncludingClampsAndOverlaps() {
+        for (target in listOf(1, 2, 8, 10, 100, 101, 480, 960, 961, 5000)) {
+            for (best in listOf(300, 420, 540, 1350, 1380)) {
+                for (minute in listOf(360, 420, 525, 540, 555, 780, 1380, 1381)) {
+                    val now = ZonedDateTime.of(2026, 10, 8, minute / 60, minute % 60, 0, 0, zoneId)
+                    val reference = (0 until target).map { index ->
+                        val time = minOf(best.coerceIn(420, 1380) + (960 / target) * index, 1380)
+                        val start = maxOf(time - 15, 420); val end = minOf(time + 15, 1380)
+                        CountingSlot(index, time, start, end, minute in start..end, minute > end)
+                    }
+                    assertEquals(reference.firstOrNull { it.isCurrent }, CountingSlotCalculator.getCurrentSlot(best.toLong(), target, now))
+                    for (done in listOf(0, 1, target / 2, target, target + 1))
+                        assertEquals(reference.firstOrNull { it.index >= done && !it.isPast },
+                            CountingSlotCalculator.getNextUncompletedSlot(best.toLong(), target, done, now))
+                    assertEquals(reference.distinctBy { it.slotTime }, CountingSlotCalculator.distinctSlots(best.toLong(), target, now))
+                    assertEquals(reference.groupBy { it.windowStart }.map { (start, rows) ->
+                        CountingReminderWindow(start, rows.first().index, rows.last().index)
+                    }, CountingSlotCalculator.reminderWindows(best.toLong(), target, now))
+                }
+            }
+        }
+    }
 }

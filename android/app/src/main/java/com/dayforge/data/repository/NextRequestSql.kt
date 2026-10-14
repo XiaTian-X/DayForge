@@ -3,7 +3,6 @@ package com.dayforge.data.repository
 import android.database.Cursor
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.dayforge.data.api.SYNC_REQUEST_LIMIT
-import java.nio.ByteBuffer
 import java.security.MessageDigest
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -14,7 +13,7 @@ internal const val NEXT_TIMER = "timer_command"
 internal class NextRequestException(val reason: Reason) : IllegalStateException(reason.name) {
     enum class Reason { STALE_ACCESS, PERMISSION_DENIED, INVALID_LOCAL_STATE, OLD_INTENT,
         SOURCE_CHANGED, TRANSMISSION_CONTEXT_CHANGED, REQUEST_ID_REUSED, UNSUPPORTED_ACCEPTANCE, RESULT_CHANGED,
-        CAUSAL_PREDECESSOR_PENDING }
+        CAUSAL_PREDECESSOR_PENDING, TIMER_START_CONFIG_CHANGED, COUNT_START_CONFIG_CHANGED, LOCALLY_ABANDONED }
 }
 
 internal fun rejectNextRequest(reason: NextRequestException.Reason): Nothing = throw NextRequestException(reason)
@@ -30,6 +29,44 @@ private fun digestHex(bytes: ByteArray): String = buildString(bytes.size * 2) {
     }
 }
 
+/** Original framing, buffered only to avoid a native digest call for every length/type/cell.
+ * Owns at most 4 KiB scratch per row, no SQL/authority cache and no whole-row byte allocation.
+ */
+private class RowDigest(private val checkpoint: () -> Unit = {}) {
+    private val hash = MessageDigest.getInstance("SHA-256")
+    private val buffer = ByteArray(4096)
+    private var size = 0
+
+    fun byte(value: Int) {
+        if (size == buffer.size) flush()
+        buffer[size++] = value.toByte()
+    }
+
+    fun bytes(value: ByteArray) {
+        for (shift in 24 downTo 0 step 8) byte(value.size ushr shift)
+        var offset = 0
+        while (offset < value.size) {
+            if (size == buffer.size) flush()
+            val count = minOf(buffer.size - size, value.size - offset)
+            value.copyInto(buffer, size, offset, offset + count)
+            size += count; offset += count
+        }
+    }
+
+    fun integer(value: Long) {
+        // Framed 8-byte signed integer, in the same big-endian two's-complement encoding.
+        byte(0); byte(0); byte(0); byte(8)
+        for (shift in 56 downTo 0 step 8) byte((value ushr shift).toInt())
+    }
+
+    private fun flush() {
+        checkpoint()
+        if (size != 0) { hash.update(buffer, 0, size); size = 0 }
+    }
+
+    fun finish(): String { flush(); return digestHex(hash.digest()) }
+}
+
 /** Audit original SQLite types/ranges BEFORE Room's getInt/getLong/String coercion. */
 internal object NextRequestSql {
     /** Same original SQLite row encoding; allows a retired source to remain independently auditable. */
@@ -41,21 +78,28 @@ internal object NextRequestSql {
             "attemptedAt" to row.attemptedAt, "attemptCount" to row.attemptCount.toLong(),
             "lastError" to row.lastError, "errorCode" to row.errorCode, "deadLetteredAt" to row.deadLetteredAt,
             "createdAt" to row.createdAt)
-        val hash = MessageDigest.getInstance("SHA-256")
-        fun bytes(value: ByteArray) {
-            hash.update(ByteBuffer.allocate(4).putInt(value.size).array()); hash.update(value)
-        }
-        bytes("sync_outbox".toByteArray(Charsets.UTF_8))
+        return savedRowHash("sync_outbox", values)
+    }
+
+    /** Exact raw shadow encoding, so a frozen baseline binds all seven original SQL cells. */
+    fun entityStateHash(row: com.dayforge.data.local.entity.SyncEntityStateEntity): String = savedRowHash("sync_entity_state",
+        linkedMapOf("entityType" to row.entityType, "entityUuid" to row.entityUuid, "revision" to row.revision,
+            "deleted" to if (row.deleted) 1L else 0L, "payloadJson" to row.payloadJson,
+            "payloadHash" to row.payloadHash, "updatedAt" to row.updatedAt))
+
+    private fun savedRowHash(table: String, values: Map<String, Any?>): String {
+        val hash = RowDigest()
+        hash.bytes(table.toByteArray(Charsets.UTF_8))
         values.forEach { (name, value) ->
-            bytes(name.toByteArray(Charsets.UTF_8))
-            hash.update(when (value) { null -> Cursor.FIELD_TYPE_NULL; is Long -> Cursor.FIELD_TYPE_INTEGER
-                is String -> Cursor.FIELD_TYPE_STRING; else -> error("Invalid source snapshot") }.toByte())
+            hash.bytes(name.toByteArray(Charsets.UTF_8))
+            hash.byte(when (value) { null -> Cursor.FIELD_TYPE_NULL; is Long -> Cursor.FIELD_TYPE_INTEGER
+                is String -> Cursor.FIELD_TYPE_STRING; else -> error("Invalid source snapshot") })
             when (value) {
-                is Long -> bytes(ByteBuffer.allocate(8).putLong(value).array())
-                is String -> bytes(value.toByteArray(Charsets.UTF_8))
+                is Long -> hash.integer(value)
+                is String -> hash.bytes(value.toByteArray(Charsets.UTF_8))
             }
         }
-        return digestHex(hash.digest())
+        return hash.finish()
     }
     fun requireOutboxEnabled(sql: SupportSQLiteDatabase) {
         val enabled = sql.query("SELECT id,suppressOutbox FROM sync_control").use { c ->
@@ -65,12 +109,15 @@ internal object NextRequestSql {
         if (!enabled) rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
     }
 
-    private val ints = setOf("protocol", "attemptCount", "sequence", "expectedControlGeneration", "expectedRevision")
+    private val ints = setOf("protocol", "attemptCount", "sequence", "expectedControlGeneration", "expectedRevision", "targetValue", "challengeContract", "selectedCount")
     private val longs = ints + setOf("id", "queueId", "baseRevision", "attemptedAt", "deadLetteredAt", "createdAt",
-        "occurredAt", "activeElapsedMillis", "revision", "deleted", "updatedAt", "logicalOrder", "originalQueueId", "replacementQueueId", "generation", "cursor")
+        "occurredAt", "activeElapsedMillis", "revision", "deleted", "updatedAt", "logicalOrder", "originalQueueId", "replacementQueueId", "generation", "cursor",
+        "habitId", "isCountdown", "planQueueWatermark", "logSequence", "recordedAtMillis")
     private val tables = setOf("sync_outbox", "timer_command_outbox", "next_request_origins", "next_transmissions", "next_acceptances",
         "sync_entity_state", "next_structural_dependencies", "next_structural_supersessions",
-        "local_fact_submissions", "one_time_transmissions", "next_sync_state", "next_rejections")
+        "local_fact_submissions", "completion_metric_prompts", "one_time_transmissions", "next_sync_state", "next_rejections", "count_days",
+        "next_challenge_state", "next_challenge_rounds", "next_challenge_births", "next_restart_materializations", "next_restart_plan_proofs",
+        "next_recovery_audits", "next_abandoned_requests")
     fun table(kind: String): String = when (kind) {
         NEXT_OPERATION -> "sync_outbox"
         NEXT_TIMER -> "timer_command_outbox"
@@ -111,7 +158,7 @@ internal object NextRequestSql {
         require(table in tables && column in setOf("requestId", "operationId", "originalId", "id") &&
             ids.size in 1..128 && ids.distinct().size == ids.size &&
             ids.all { if (column == "id") it is Long && it > 0 else it is String && com.dayforge.domain.model.isContractUuid(it) } &&
-            (kind == null || kind == NEXT_OPERATION && column == "requestId"))
+            (kind == null || kind in setOf(NEXT_OPERATION, NEXT_TIMER) && column == "requestId"))
         val caller = currentCoroutineContext()
         caller.ensureActive()
         val where = (if (kind == null) "" else "kind=? AND ") + "`$column` IN (${ids.joinToString(",") { "?" }})"
@@ -155,16 +202,13 @@ internal object NextRequestSql {
 
     /** Both single and bounded audits retain the identical original row byte encoding. */
     private fun hashRow(c: Cursor, table: String, checkpoint: () -> Unit): String {
-            val hash = MessageDigest.getInstance("SHA-256")
-            fun bytes(value: ByteArray) {
-                hash.update(ByteBuffer.allocate(4).putInt(value.size).array()); hash.update(value)
-            }
-            bytes(table.toByteArray(Charsets.UTF_8))
+            val hash = RowDigest(checkpoint)
+            hash.bytes(table.toByteArray(Charsets.UTF_8))
             for (i in 0 until c.columnCount) {
                 checkpoint()
                 val name = c.getColumnName(i)
                 val type = c.getType(i)
-                bytes(name.toByteArray(Charsets.UTF_8)); hash.update(type.toByte())
+                hash.bytes(name.toByteArray(Charsets.UTF_8)); hash.byte(type)
                 if (type == Cursor.FIELD_TYPE_NULL) continue
                 val expected = when { name in longs -> Cursor.FIELD_TYPE_INTEGER
                     name == "wireBytes" -> Cursor.FIELD_TYPE_BLOB
@@ -176,14 +220,18 @@ internal object NextRequestSql {
                         if (name in ints && value !in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong())
                             rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
                         if (name == "deleted" && value !in 0..1) rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
-                        bytes(ByteBuffer.allocate(8).putLong(value).array())
+                        if (table == "count_days" && (name == "isCountdown" && value !in 0..1 ||
+                            name == "targetValue" && value <= 0 || name == "habitId" && value <= 0 ||
+                            name == "planQueueWatermark" && value < 0))
+                            rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
+                        hash.integer(value)
                     }
-                    Cursor.FIELD_TYPE_BLOB -> bytes(c.getBlob(i))
-                    Cursor.FIELD_TYPE_STRING -> bytes(c.getString(i).toByteArray(Charsets.UTF_8))
+                    Cursor.FIELD_TYPE_BLOB -> hash.bytes(c.getBlob(i))
+                    Cursor.FIELD_TYPE_STRING -> hash.bytes(c.getString(i).toByteArray(Charsets.UTF_8))
                     Cursor.FIELD_TYPE_FLOAT, Cursor.FIELD_TYPE_NULL -> rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
                 }
             }
-            return digestHex(hash.digest())
+            return hash.finish()
     }
 
     /** Includes deleted historical IDs: new origins must come from a new AUTOINCREMENT allocation. */

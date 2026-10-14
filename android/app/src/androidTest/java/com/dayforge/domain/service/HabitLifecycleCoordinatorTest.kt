@@ -7,11 +7,13 @@ import com.dayforge.data.model.FailMode
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.HabitRepository
+import com.dayforge.data.repository.HabitReactivationRequest
 import io.mockk.coEvery
 import io.mockk.coJustRun
 import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.combine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -32,6 +34,9 @@ class HabitLifecycleCoordinatorTest {
     fun setUp() {
         context = mockk(relaxed = true)
         habitRepository = mockk()
+        coEvery { habitRepository.prepareReactivation(any()) } answers {
+            HabitReactivationRequest(firstArg(), null)
+        }
         coordinator = HabitLifecycleCoordinator(context, habitRepository)
     }
 
@@ -103,7 +108,7 @@ class HabitLifecycleCoordinatorTest {
     fun reactivation_success_clears_dialog_state() = runTest {
         val habit = habit(targetCycles = 1)
         coordinator.showReactivationDialog(habit)
-        coJustRun { habitRepository.clearHabitHistory(habit, context) }
+        coJustRun { habitRepository.reactivate(any(), context) }
 
         val result = coordinator.confirmReactivation(habit)
 
@@ -137,7 +142,7 @@ class HabitLifecycleCoordinatorTest {
     fun reactivation_failure_is_reported_and_clears_dialog_state() = runTest {
         val habit = habit(targetCycles = 1)
         coordinator.showReactivationDialog(habit)
-        coEvery { habitRepository.clearHabitHistory(habit, context) } throws
+        coEvery { habitRepository.reactivate(any(), context) } throws
             IllegalStateException("failed")
 
         val result = coordinator.confirmReactivation(habit)
@@ -165,11 +170,69 @@ class HabitLifecycleCoordinatorTest {
         val habit = habit(targetCycles = 1)
         coordinator.showReactivationDialog(habit)
         val cancellation = kotlinx.coroutines.CancellationException("cancelled")
-        coEvery { habitRepository.clearHabitHistory(habit, context) } throws cancellation
+        coEvery { habitRepository.reactivate(any(), context) } throws cancellation
         assertEquals(cancellation, runCatching { coordinator.confirmReactivation(habit) }.exceptionOrNull())
         assertTrue(coordinator.showReactivationDialog.value)
         assertEquals(7L, coordinator.reactivationHabitId.value)
         assertEquals("Target habit", coordinator.reactivationHabitName.value)
+    }
+
+    @Test
+    fun confirmation_uses_the_request_captured_before_the_dialog_not_a_fresh_read() = runTest {
+        val habit = habit(targetCycles = 1)
+        val request = HabitReactivationRequest(habit, null)
+        coEvery { habitRepository.prepareReactivation(habit) } returns request
+        coJustRun { habitRepository.reactivate(request, context) }
+        coordinator.showReactivationDialog(habit)
+        assertEquals(ReactivationResult.SUCCESS, coordinator.confirmReactivation(habit))
+        assertEquals(ReactivationResult.NO_HABIT, coordinator.confirmReactivation(habit))
+        coVerify(exactly = 1) { habitRepository.prepareReactivation(habit) }
+        coVerify(exactly = 1) { habitRepository.reactivate(request, context) }
+        coVerify(exactly = 0) { habitRepository.clearHabitHistory(any(), any()) }
+    }
+
+    @Test
+    fun a_reused_numeric_id_with_a_different_uuid_cannot_confirm_the_old_dialog() = runTest {
+        val habit = habit(targetCycles = 1)
+        coordinator.showReactivationDialog(habit)
+        assertEquals(ReactivationResult.NO_HABIT,
+            coordinator.confirmReactivation(habit.copy(uuid = java.util.UUID.randomUUID().toString())))
+        coVerify(exactly = 0) { habitRepository.reactivate(any(), any()) }
+        assertFalse(coordinator.showReactivationDialog.value)
+    }
+
+    @Test
+    fun dismiss_during_preparation_cannot_reopen_a_late_dialog() = runTest {
+        val started = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { habitRepository.prepareReactivation(any()) } coAnswers {
+            started.complete(Unit)
+            release.await()
+            HabitReactivationRequest(firstArg(), null)
+        }
+        val job = launch { coordinator.showReactivationDialog(habit(1)) }
+        started.await()
+        coordinator.dismissReactivationDialog()
+        release.complete(Unit)
+        job.join()
+        assertFalse(coordinator.showReactivationDialog.value)
+        assertNull(coordinator.reactivationHabitId.value)
+    }
+
+    @Test
+    fun delayed_confirmation_cannot_retarget_or_close_a_new_dialog() = runTest {
+        val first = habit(1)
+        val second = first.copy(id = 8, uuid = java.util.UUID.randomUUID().toString(), name = "Other habit")
+        coJustRun { habitRepository.reactivate(any(), context) }
+        coordinator.showReactivationDialog(first)
+        val confirmed = coordinator.captureReactivation(first)
+        coordinator.showReactivationDialog(second)
+        assertEquals(ReactivationResult.SUCCESS, confirmed())
+        coVerify(exactly = 1) { habitRepository.reactivate(match { it.habit == first }, context) }
+        coVerify(exactly = 0) { habitRepository.reactivate(match { it.habit == second }, context) }
+        assertTrue(coordinator.showReactivationDialog.value)
+        assertEquals(second.id, coordinator.reactivationHabitId.value)
+        assertEquals(second.name, coordinator.reactivationHabitName.value)
     }
 
     private fun habit(targetCycles: Int?, failMode: FailMode = FailMode.STRICT) = HabitEntity(

@@ -1,0 +1,101 @@
+{
+  "replica": {
+    "server_instance_id": "ffffffff-ffff-4fff-8fff-ffffffffffff",
+    "sync_epoch": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+  },
+  "restart_request": {
+    "challenge_contract": 1,
+    "device_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    "operations": [
+      {
+        "operation_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "entity_type": "challenge_round",
+        "entity_uuid": "33333333-3333-4333-8333-333333333333",
+        "action": "upsert",
+        "base_revision": null,
+        "payload": {
+          "activity_uuid": "11111111-1111-4111-8111-111111111111",
+          "round_uuid": "33333333-3333-4333-8333-333333333333",
+          "expected_round_uuid": "3442a3b9-6fa4-5196-83b3-570b970419c9",
+          "expected_generation": 0,
+          "expected_plan_revision": 3
+        }
+      }
+    ],
+    "contexts": [
+      {
+        "source_uuid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "head": null,
+        "legacy_initial": false,
+        "affected_heads": []
+      }
+    ]
+  },
+  "fact_request": {
+    "challenge_contract": 1,
+    "device_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    "operations": [
+      {
+        "operation_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "entity_type": "activity_event",
+        "entity_uuid": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        "action": "upsert",
+        "base_revision": null,
+        "payload": {
+          "activity_uuid": "11111111-1111-4111-8111-111111111111",
+          "event_type": "check_in",
+          "occurred_at": "2026-10-08T00:00:00.123456Z",
+          "local_date": "2026-10-08",
+          "timezone": "UTC"
+        }
+      }
+    ],
+    "contexts": [
+      {
+        "source_uuid": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "head": {
+          "activity_uuid": "11111111-1111-4111-8111-111111111111",
+          "round_uuid": "33333333-3333-4333-8333-333333333333",
+          "generation": 1
+        },
+        "legacy_initial": false,
+        "affected_heads": []
+      }
+    ]
+  },
+  "timer_request": {
+    "challenge_contract": 1,
+    "device_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    "commands": [
+      {
+        "command_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "session_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        "sequence": 1,
+        "command_type": "start",
+        "occurred_at": "2026-10-08T00:00:00.123456Z",
+        "expected_control_generation": 0,
+        "expected_revision": null,
+        "activity_uuid": "11111111-1111-4111-8111-111111111111",
+        "timezone": "UTC",
+        "active_elapsed_ms": null,
+        "start_policy": {
+          "target_seconds": 60,
+          "is_countdown": true,
+          "max_duration_seconds": 60
+        }
+      }
+    ],
+    "contexts": [
+      {
+        "source_uuid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "head": {
+          "activity_uuid": "11111111-1111-4111-8111-111111111111",
+          "round_uuid": "33333333-3333-4333-8333-333333333333",
+          "generation": 1
+        },
+        "legacy_initial": false,
+        "affected_heads": []
+      }
+    ]
+  }
+}

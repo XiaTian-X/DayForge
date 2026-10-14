@@ -16,7 +16,8 @@ internal val LocalResolvedTheme = staticCompositionLocalOf<ResolvedTheme?> { nul
 
 /** A complete atomic snapshot, including card style. No file IO or generated palettes in composition. */
 @Composable
-internal fun DayForgeTheme(theme: LoadedDeviceTheme, content: @Composable () -> Unit) {
+internal fun DayForgeTheme(theme: LoadedDeviceTheme,
+    typography: androidx.compose.material3.Typography = Typography, content: @Composable () -> Unit) {
     val systemDark = isSystemInDarkTheme()
     val resolved = remember(theme, systemDark) { theme.resolve(systemDark) }
     val colors = remember(resolved) { resolved.toComposeColors() }
@@ -25,6 +26,6 @@ internal fun DayForgeTheme(theme: LoadedDeviceTheme, content: @Composable () -> 
         DeviceCardStyle.PERSONALIZED -> CardColorStyle.PERSONALIZED
     }
     CompositionLocalProvider(LocalDeviceCardStyle provides cardStyle, LocalResolvedTheme provides resolved) {
-        MaterialTheme(colorScheme = colors, typography = Typography, content = content)
+        MaterialTheme(colorScheme = colors, typography = typography, content = content)
     }
 }

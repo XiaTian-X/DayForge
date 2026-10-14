@@ -30,5 +30,9 @@ data class CreateTempTaskUiState(
     val isValid: Boolean = false,
     val isSaving: Boolean = false,
     val savedHabitId: Long? = null,
-    val showDuplicateDialog: Boolean = false
+    val showDuplicateDialog: Boolean = false,
+    val appearance: com.dayforge.domain.model.ObjectAppearance? = null,
+    val creationAuthority: com.dayforge.data.repository.ObjectCreationAuthority? = null,
+    val showIconPicker: Boolean = false,
+    val errorMessage: String? = null
 )

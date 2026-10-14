@@ -36,6 +36,16 @@ from src.v2.schemas import (  # noqa: E402
     TimerHeartbeatResponse,
 )
 from src.v2.replica_context import INSTANCE_HEADER, EPOCH_HEADER  # noqa: E402
+from src.v2.recovery_snapshot_contract import ReplicaRecoveryPreviewResponse  # noqa: E402
+from src.v2.challenge_sync_contract import (  # noqa: E402
+    RoundSyncPushRequest,
+    RoundSyncPushResponse,
+    RoundSyncPullResponse,
+    RoundSyncBootstrapResponse,
+    RoundTimerCommandBatchRequest,
+    RoundTimerCommandBatchResponse,
+    RoundActiveTimerResponse,
+)
 
 OUTPUT = ROOT / "contracts/next/openapi.json"
 MODELS = (
@@ -59,6 +69,14 @@ MODELS = (
     NextPlanNodePayload,
     NextMetricPayload,
     NextActivityEventPayload,
+    RoundSyncPushRequest,
+    RoundSyncPushResponse,
+    RoundSyncPullResponse,
+    RoundSyncBootstrapResponse,
+    RoundTimerCommandBatchRequest,
+    RoundTimerCommandBatchResponse,
+    RoundActiveTimerResponse,
+    ReplicaRecoveryPreviewResponse,
 )
 
 
@@ -327,12 +345,108 @@ def rendered_contract():
         "put": upload,
         "get": download,
     }
+    profile_scope = [
+        parameter("device_id"),
+        parameter("challenge_contract", schema={"type": "string", "const": "1"}),
+    ]
+    for path, method, response, request, parameters in (
+        (
+            "/api/v2/sync/rounds/push",
+            "post",
+            RoundSyncPushResponse,
+            RoundSyncPushRequest,
+            [],
+        ),
+        (
+            "/api/v2/sync/rounds/bootstrap",
+            "get",
+            RoundSyncBootstrapResponse,
+            None,
+            profile_scope,
+        ),
+        (
+            "/api/v2/sync/rounds/changes",
+            "get",
+            RoundSyncPullResponse,
+            None,
+            [
+                *profile_scope,
+                parameter("cursor", required=False, schema=integer),
+                parameter(
+                    "limit",
+                    required=False,
+                    schema={"type": "integer", "minimum": 1, "maximum": 1000},
+                ),
+            ],
+        ),
+        (
+            "/api/v2/timers/rounds/commands",
+            "post",
+            RoundTimerCommandBatchResponse,
+            RoundTimerCommandBatchRequest,
+            [],
+        ),
+        (
+            "/api/v2/timers/rounds/active",
+            "get",
+            RoundActiveTimerResponse,
+            None,
+            profile_scope,
+        ),
+        (
+            "/api/v2/timers/rounds/session/{session_id}",
+            "get",
+            RoundActiveTimerResponse,
+            None,
+            [*profile_scope, parameter("session_id", "path")],
+        ),
+    ):
+        value = operation(
+            "Explicit challenge contract 1; shared original receipts and durable birth evidence; not default activation",
+            response,
+            request=request,
+            parameters=parameters,
+            replica=True,
+        )
+        value["x-dayforge-challenge-contract"] = 1
+        paths[path] = {method: value}
+    preview = operation(
+        "Read-only current-scope recovery candidate; no registration, cursor or token-use writes; never an activation ticket",
+        ReplicaRecoveryPreviewResponse,
+        parameters=[
+            *profile_scope,
+            parameter(
+                "installation_id",
+                schema={"type": "string", "minLength": 1, "maxLength": 255},
+            ),
+            parameter(
+                "include_materials",
+                required=False,
+                schema={"type": "string", "enum": ["1"]},
+            ),
+            parameter("pack_id", required=False),
+            parameter(
+                "pack_revision",
+                required=False,
+                schema={"type": "string", "pattern": "^[1-9][0-9]{0,9}$"},
+            ),
+        ],
+        replica=True,
+    )
+    preview["x-dayforge-challenge-contract"] = 1
+    preview["responses"]["200"]["description"] = (
+        "Authenticated complete snapshot and unfinished timer in one read transaction; no activation authority"
+    )
+    preview["responses"]["200"]["headers"] = {
+        "Cache-Control": {"schema": {"type": "string", "const": "private, no-store"}}
+    }
+    paths["/api/v2/sync/rounds/recovery-preview"] = {"get": preview}
     document = {
         "openapi": "3.1.0",
         "info": {
             "title": "DayForge v5 appearance and one-time delta (NOT ACTIVE)",
             "version": "5-planned",
-            "description": "Guarded production registration/sync/timer/appearance handlers are mounted, but the default and advertised server protocol remain v4. Activation requires coordinated backend/Android release and an explicitly confirmed empty baseline. Authentication remains in ../openapi.json. V5 registration and every sync/timer request require a single exact protocol header plus captured canonical server-instance/epoch headers; timer bodies are unchanged. Appearance retains its existing body/query replica context. See D-014 and APPEARANCE_CONTRACT.md. Mounted handlers do not establish coordinated v5 activation or client readiness.",
+            "description": "Guarded production registration/sync/timer/appearance handlers are mounted, but the default and advertised server protocol remain v4. Activation requires coordinated backend/Android release and an explicitly confirmed empty baseline. Authentication remains in ../openapi.json. V5 registration and every sync/timer request require a single exact protocol header plus captured canonical server-instance/epoch headers. Fresh v5 timer starts require their original start_policy; existing receipts and v4 commands retain their original fingerprints. Appearance retains its existing body/query replica context. See D-014, D-016 and APPEARANCE_CONTRACT.md. Mounted handlers do not establish coordinated v5 activation or client readiness.",
         },
         "x-activation-state": "planned",
         "paths": paths,

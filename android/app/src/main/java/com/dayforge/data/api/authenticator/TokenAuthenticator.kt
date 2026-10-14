@@ -70,6 +70,7 @@ class TokenAuthenticator @Inject constructor(
     }
 
     private fun refresh(response: Response, materialRoute: MaterialHttpRoute?): Request? {
+        if (runBlocking { tokenManager.replicaSwitchPending() }) return null
         // A concurrent request may have refreshed while this request waited.
         val originalSession = response.request.tag(AuthenticationSession::class.java) ?: return null
         val iconAccess = response.request.tag(LocalIconAccess::class.java)
@@ -85,6 +86,7 @@ class TokenAuthenticator @Inject constructor(
         if (materialRoute != null && !materialTokenSafe(currentAccessToken)) return null
         val requestToken = response.request.header("Authorization")?.removePrefix("Bearer ")
         if (requestToken != currentAccessToken) {
+            if (runBlocking { tokenManager.replicaSwitchPending() }) return null
             return response.request.newBuilder()
                 .header("Authorization", "Bearer $currentAccessToken")
                 .build()
@@ -162,6 +164,7 @@ class TokenAuthenticator @Inject constructor(
             if (!saved) return null
             if (iconAccess != null && runBlocking { tokenManager.iconAuthenticationSnapshot(iconAccess) } == null) return null
             if (syncAccess != null && runBlocking { tokenManager.syncAuthenticationSnapshot(syncAccess) } == null) return null
+            if (runBlocking { tokenManager.replicaSwitchPending() }) return null
 
             return response.request.newBuilder()
                 .header("Authorization", "Bearer ${refreshResponse.accessToken}")

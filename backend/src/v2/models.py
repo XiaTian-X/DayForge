@@ -10,10 +10,22 @@ from enum import Enum
 from typing import Optional
 import uuid
 
-from sqlalchemy import CheckConstraint, Index, UniqueConstraint, text
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKeyConstraint,
+    Index,
+    UniqueConstraint,
+    text,
+)
 from sqlmodel import Field, SQLModel
 
 from src.time_utils import utc_now
+from src.v2.challenge_models import (
+    ActivityChallengeRound as ActivityChallengeRound,
+    ActivityChallengeHead as ActivityChallengeHead,
+    ActivityChallengeEventBinding as ActivityChallengeEventBinding,
+    ActivityChallengeTimerBinding as ActivityChallengeTimerBinding,
+)
 
 
 def new_uuid() -> str:
@@ -140,6 +152,7 @@ class HouseholdMembership(SyncableFields, table=True):
 class ClientDevice(SQLModel, table=True):
     __tablename__ = "client_devices"
     __table_args__ = (
+        Index("uq_client_device_owner_identity", "user_id", "id", unique=True),
         UniqueConstraint("public_id", name="uq_client_devices_public_id"),
         UniqueConstraint(
             "user_id", "installation_id", name="uq_client_device_installation"
@@ -300,6 +313,13 @@ class ActivityDetail(SQLModel, table=True):
 class ActivityEvent(SyncableFields, table=True):
     __tablename__ = "activity_events"
     __table_args__ = (
+        Index(
+            "uq_activity_event_owner_activity_identity",
+            "owner_user_id",
+            "activity_node_id",
+            "id",
+            unique=True,
+        ),
         UniqueConstraint(
             "owner_user_id", "public_id", name="uq_activity_event_owner_public_id"
         ),
@@ -373,6 +393,37 @@ class ActivityEvent(SyncableFields, table=True):
     one_time_expected_head_event_uuid: Optional[str] = Field(
         default=None, max_length=36
     )
+    # NULL means original rule unknown (v4/development history), not current target.
+    count_policy_json: Optional[str] = Field(default=None)
+
+
+class ActivityCountDay(SQLModel, table=True):
+    """One rule per literal business date; survives undo of all original facts."""
+
+    __tablename__ = "activity_count_days"
+    __table_args__ = (
+        UniqueConstraint(
+            "activity_node_id", "local_date", name="uq_count_day_activity_date"
+        ),
+        ForeignKeyConstraint(
+            ["owner_user_id", "activity_node_id"],
+            ["plan_nodes.owner_user_id", "plan_nodes.id"],
+            name="fk_count_day_owner_activity",
+        ),
+        UniqueConstraint("first_event_id", name="uq_count_day_first_event"),
+        CheckConstraint(
+            "target_value BETWEEN 1 AND 2147483647", name="ck_count_day_target"
+        ),
+        CheckConstraint("is_countdown IN (false, true)", name="ck_count_day_direction"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    owner_user_id: int = Field(foreign_key="users.id", nullable=False, index=True)
+    activity_node_id: int = Field(foreign_key="plan_nodes.id", nullable=False)
+    local_date: date = Field(nullable=False)
+    target_value: int = Field(nullable=False)
+    is_countdown: bool = Field(nullable=False)
+    first_event_id: int = Field(foreign_key="activity_events.id", nullable=False)
 
 
 class TrackedMetric(SyncableFields, table=True):
@@ -472,6 +523,13 @@ class ActivityMetricLinkV2(SyncableFields, table=True):
 class TimerSession(SQLModel, table=True):
     __tablename__ = "timer_sessions"
     __table_args__ = (
+        Index(
+            "uq_timer_session_owner_activity_identity",
+            "owner_user_id",
+            "activity_node_id",
+            "id",
+            unique=True,
+        ),
         UniqueConstraint(
             "owner_user_id", "public_id", name="uq_timer_session_owner_public_id"
         ),
@@ -578,6 +636,7 @@ class TimerCommand(SQLModel, table=True):
     error_code: Optional[str] = Field(default=None, max_length=100)
     received_at: datetime = Field(default_factory=utc_now)
     completed_at: Optional[datetime] = Field(default=None)
+    challenge_context_json: Optional[str] = Field(default=None)
 
 
 class DurationDayAllocation(SQLModel, table=True):
@@ -620,6 +679,7 @@ class SyncOperation(SQLModel, table=True):
     error_code: Optional[str] = Field(default=None, max_length=100)
     received_at: datetime = Field(default_factory=utc_now)
     completed_at: Optional[datetime] = Field(default=None)
+    challenge_context_json: Optional[str] = Field(default=None)
 
 
 class EntityRevisionSnapshot(SQLModel, table=True):
@@ -693,6 +753,10 @@ class SyncCursor(SQLModel, table=True):
 
 
 __all__ = [
+    "ActivityChallengeRound",
+    "ActivityChallengeHead",
+    "ActivityChallengeEventBinding",
+    "ActivityChallengeTimerBinding",
     "ActivityDetail",
     "ActivityEvent",
     "ActivityEventType",

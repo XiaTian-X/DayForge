@@ -38,7 +38,10 @@ internal class NextOneTimeRequestStore(
         require(isContractUuid(id))
         val saved = sessions.exclusive {
             authorize(access)
-            database.withTransaction { savedOutcome(access, id) }
+            database.withTransaction {
+                NextRecoveryAuditStore(database).validatedMembers(access)
+                savedOutcome(access, id)
+            }
         }
         if (saved != null) return saved
         val delivery = send(access, id) ?: return null // Unsupported is not a completed synchronization.
@@ -54,7 +57,10 @@ internal class NextOneTimeRequestStore(
                 authorize(access)
                 database.withTransaction {
                     NextRequestSql.requireOutboxEnabled(database.openHelper.writableDatabase)
+                    val terminals = NextRecoveryAuditStore(database).validatedMembers(access)
                     var evidence = evidence(access, id)
+                    val profile = roundOperationIntent(evidence.origin.intentJson) != null
+                    val checkpoint = if (profile) NextChallengeStore(database).activeInTransaction(access) else null
                     if (evidence.transmission == null) {
                         // Birth is already proved. A legacy attempt/binding must never be adopted.
                         require(evidence.hashes.binding == null && hash("next_acceptances", id) == null)
@@ -63,8 +69,11 @@ internal class NextOneTimeRequestStore(
                         val original = requireNotNull(facts.prepareInTransaction(evidence.prepared.context,
                             activity(evidence.prepared.operation), journalled = true))
                         require(original == evidence.prepared)
-                        val bytes = encodeSyncRequest(NextSyncPushRequest.serializer(), NextSyncPushRequest(
+                        val round = roundOperationIntent(evidence.origin.intentJson)
+                        val bytes = if (round == null) encodeSyncRequest(NextSyncPushRequest.serializer(), NextSyncPushRequest(
                             requireNotNull(access.deviceId), listOf(original.operation)))
+                        else encodeSyncRequest(RoundSyncPushRequest.serializer(), RoundSyncPushRequest(1,
+                            requireNotNull(access.deviceId), listOf(original.operation), listOf(round.context)))
                         val transmission = NextTransmissionEntity(NEXT_OPERATION, id, evidence.origin.queueId, 5,
                             evidence.origin.accountId, requireNotNull(access.session.serverInstanceId),
                             requireNotNull(access.session.syncEpoch), requireNotNull(access.deviceId), nextRequestHash(bytes), bytes)
@@ -77,22 +86,28 @@ internal class NextOneTimeRequestStore(
                     require(savedOutcome(access, id) == null)
                     requireHead(evidence)
                     NextRequestSql.requireOutboxEnabled(database.openHelper.writableDatabase)
+                    if (checkpoint != null) check(NextChallengeStore(database).activeInTransaction(access) == checkpoint) {
+                        "SYNC_CHALLENGE_SOURCE_CHANGED"
+                    }
+                    require(NextRecoveryAuditStore(database).validatedMembers(access) == terminals) { "RECOVERY_TERMINAL_CHANGED" }
                     authorize(access)
                     evidence
                 }
             }
             val transmission = requireNotNull(prepared.transmission)
             // Both the account mutex and Room write transaction have ended before network I/O.
-            val response = channel.pushFrozen(transmission.wireBytes)
+            val round = if (roundOperationIntent(prepared.origin.intentJson) != null) channel.roundPushFrozen(transmission.wireBytes) else null
+            val response = if (round == null) channel.pushFrozen(transmission.wireBytes) else NextSyncPushResponse(round.results)
             sessions.exclusive {
                 authorize(access)
                 database.withTransaction {
+                    NextRecoveryAuditStore(database).validatedMembers(access)
                     val current = evidence(access, id, consumed = hash("next_acceptances", id) != null)
                     require(current.hashes == prepared.hashes)
                     if (hash("next_acceptances", id) != null) require(savedOutcome(access, id) is NextOneTimeOutcome.Accepted)
                 }
             }
-            NextCoreDelivery(access, id, response, requireNotNull(prepared.hashes.transmission))
+            NextCoreDelivery(access, id, response, requireNotNull(prepared.hashes.transmission), round?.metadata())
         }
     }
 
@@ -106,10 +121,30 @@ internal class NextOneTimeRequestStore(
         database.withTransaction {
             val sql = database.openHelper.writableDatabase
             NextRequestSql.requireOutboxEnabled(sql)
+            val terminals = NextRecoveryAuditStore(database).validatedMembers(access)
             val saved = savedOutcome(access, delivery.requestId)
             val evidence = evidence(access, delivery.requestId, consumed = saved is NextOneTimeOutcome.Accepted,
                 rejected = saved is NextOneTimeOutcome.Rejected)
             require(evidence.hashes.transmission == delivery.transmissionProof)
+            val rounds = NextChallengeStore(database)
+            val round = roundOperationIntent(evidence.origin.intentJson)
+            val checkpoint = if (round == null) { require(delivery.challengeMetadata == null); null } else rounds.activeInTransaction(access)
+            val merged = if (round == null) null else {
+                val metadata = decodeFrozenSyncRequest(encodeSyncRequest(ChallengeMetadata.serializer(),
+                    requireNotNull(delivery.challengeMetadata) { "SYNC_CHALLENGE_ACK_REQUIRED" }), ChallengeMetadata.serializer())
+                // Once facts have their own state/history, never a recurring challenge birth.
+                require(metadata.births.none { it.entityType == "activity_event" && it.entityUuid == evidence.prepared.operation.entityUuid })
+                validateRoundResultBinding(decodeFrozenSyncRequest(requireNotNull(evidence.transmission).wireBytes, RoundSyncPushRequest.serializer()),
+                    RoundSyncPushResponse(listOf(result), 1, metadata.checkpoints, metadata.births))
+                rounds.acknowledgeInTransaction(access, metadata)
+            }
+            suspend fun verifyRounds() {
+                if (checkpoint != null) {
+                    val actual = rounds.activeInTransaction(access)
+                    check(actual.first == checkpoint.first && actual.second == merged) { "SYNC_CHALLENGE_ACK_CHANGED" }
+                } else rounds.requirePlainInTransaction()
+                require(NextRecoveryAuditStore(database).validatedMembers(access) == terminals) { "RECOVERY_TERMINAL_CHANGED" }
+            }
             if (saved != null) {
                 when (saved) {
                     is NextOneTimeOutcome.Accepted -> {
@@ -120,7 +155,7 @@ internal class NextOneTimeRequestStore(
                     }
                     is NextOneTimeOutcome.Rejected -> require(saved.result == result)
                 }
-                authorize(access)
+                verifyRounds(); authorize(access)
                 return@withTransaction saved
             }
             requireHead(evidence)
@@ -162,6 +197,7 @@ internal class NextOneTimeRequestStore(
             if (parentProof != null) require(core.parentDeletionProofInTransaction(access,
                 activity(evidence.prepared.operation)) == parentProof)
             NextRequestSql.requireOutboxEnabled(sql)
+            verifyRounds()
             authorize(access)
             outcome
         }
@@ -174,6 +210,7 @@ internal class NextOneTimeRequestStore(
             val ids = sessions.exclusive {
                 authorize(access)
                 database.withTransaction {
+                    NextRecoveryAuditStore(database).validatedMembers(access)
                     NextRequestSql.sources(database.openHelper.writableDatabase, "sync_outbox")
                     (database.syncOutboxDao().getAll() + database.syncOutboxDao().getDeadLetters())
                         .filter { it.recordType == "one_time_completion" }.sortedBy { it.id }.take(100)
@@ -203,7 +240,13 @@ internal class NextOneTimeRequestStore(
         if (origin.accountId != access.session.authentication.userId || origin.serverInstanceId != null &&
             (origin.serverInstanceId != access.session.serverInstanceId || origin.syncEpoch != access.session.syncEpoch))
             rejectNextRequest(NextRequestException.Reason.TRANSMISSION_CONTEXT_CHANGED)
-        val operation = decodeFrozenSyncRequest(origin.intentJson.toByteArray(Charsets.UTF_8), SyncV2Operation.serializer())
+        val operation = decodeNextOperationIntent(origin.intentJson)
+        val round = roundOperationIntent(origin.intentJson)
+        if (round == null) NextChallengeStore(database).requirePlainInTransaction()
+        else {
+            NextChallengeStore(database).activeInTransaction(access)
+            require(round.capturedDeviceId == access.deviceId && round.context.head == null && round.context.affectedHeads.isEmpty())
+        }
         require(operation.operationId == id && operation.entityType == "activity_event" && operation.action == "upsert" &&
             operation.baseRevision == null && operation.payload["one_time"] is JsonObject)
         validateNextSyncOperation(operation)
@@ -217,8 +260,7 @@ internal class NextOneTimeRequestStore(
             require(it.kind == origin.kind && it.requestId == id && it.queueId == origin.queueId && it.protocol == 5 &&
                 it.accountId == origin.accountId && it.serverInstanceId == access.session.serverInstanceId &&
                 it.syncEpoch == access.session.syncEpoch && it.deviceId == access.deviceId && nextRequestHash(it.wireBytes) == it.wireHash)
-            val request = decodeFrozenSyncRequest(it.wireBytes, NextSyncPushRequest.serializer())
-            require(request.deviceId == it.deviceId && request.operations == listOf(operation))
+            require(validateNextOperationEnvelope(origin.intentJson, it.wireBytes, it.deviceId) == operation)
             requireNotNull(bindingHash)
             facts.validateTransmission(requireNotNull(database.completionFollowUpDao().transmission(id)), prepared.context, operation, sending = true)
         }
@@ -255,13 +297,66 @@ internal class NextOneTimeRequestStore(
             val result = decodeFrozenSyncRequest(receipt.resultJson.toByteArray(Charsets.UTF_8), NextSyncOperationResult.serializer())
             require(result.status == "applied")
             validateSuccess(evidence.prepared, result)
+            verifySavedMetadata(access, evidence, result)
             return NextOneTimeOutcome.Accepted(NextOperationAcceptance.REPLAYED)
         }
         if (linkedHash("one_time_transmissions", id) == null) return null
         val binding = requireNotNull(database.completionFollowUpDao().transmission(id))
         if (binding.rejectionJson == null) return null
-        evidence(access, id, rejected = true)
-        return NextOneTimeOutcome.Rejected(decodeFrozenSyncRequest(binding.rejectionJson.toByteArray(Charsets.UTF_8), NextSyncOperationResult.serializer()))
+        val evidence = evidence(access, id, rejected = true)
+        val result = decodeFrozenSyncRequest(binding.rejectionJson.toByteArray(Charsets.UTF_8), NextSyncOperationResult.serializer())
+        verifySavedMetadata(access, evidence, result)
+        return NextOneTimeOutcome.Rejected(result)
+    }
+
+    /** Reads the existing rejected proof; does not resend, adopt, consume or rewrite a fact. */
+    internal suspend fun inspectRejection(access: LocalSyncAccess, id: String): com.dayforge.data.model.NextSyncProblem {
+        check(database.inTransaction())
+        val result = (savedOutcome(access, id) as NextOneTimeOutcome.Rejected).result
+        requirePermanentProblem(result.status, result.errorCode)
+        return com.dayforge.data.model.NextSyncProblem(NEXT_OPERATION, id, "one_time_event", result.entityUuid,
+            requireNotNull(result.errorCode), result.conflictingFields)
+    }
+
+    internal suspend fun inspectPending(access: LocalSyncAccess, id: String) {
+        val source = evidence(access, id)
+        val round = requireNotNull(roundOperationIntent(source.origin.intentJson))
+        require(round.capturedDeviceId == access.deviceId)
+        if (source.transmission == null && "facts.append" !in access.capabilities)
+            rejectNextRequest(NextRequestException.Reason.PERMISSION_DENIED)
+    }
+
+    /** Shares the complete independent birth/journal/result proof, not sender readiness. */
+    internal suspend fun recoveryProof(access: LocalSyncAccess, id: String): NextRecoverySpecialProof {
+        check(database.inTransaction())
+        val sql = database.openHelper.writableDatabase
+        sql.query("SELECT 1 FROM next_abandoned_requests WHERE kind=? AND requestId=? LIMIT 1", arrayOf(NEXT_OPERATION, id)).use {
+            require(!it.moveToFirst()) { "SYNC_RECOVERY_TERMINAL_REQUIRED" }
+        }
+        require(hash("next_rejections", id) == null)
+        val saved = savedOutcome(access, id)
+        val source = evidence(access, id, consumed = saved is NextOneTimeOutcome.Accepted,
+            rejected = saved is NextOneTimeOutcome.Rejected)
+        require(source.origin.serverInstanceId == access.session.serverInstanceId && source.origin.syncEpoch == access.session.syncEpoch &&
+            requireNotNull(roundOperationIntent(source.origin.intentJson)).capturedDeviceId == access.deviceId)
+        val state = when (saved) {
+            is NextOneTimeOutcome.Accepted -> NextRecoveryRequestState.ACCEPTED
+            is NextOneTimeOutcome.Rejected -> if (saved.result.errorCode in setOf("MISSING_PREDECESSOR", "OPERATION_IN_PROGRESS"))
+                NextRecoveryRequestState.UNKNOWN_RESULT else NextRecoveryRequestState.PERMANENT_REJECTION
+            null -> if (source.transmission == null) NextRecoveryRequestState.NEVER_SENT else NextRecoveryRequestState.UNKNOWN_RESULT
+        }
+        val proof = listOf(source.hashes.origin, source.hashes.transmission ?: "none", source.hashes.submission,
+            source.hashes.binding ?: "none", hash("next_acceptances", id) ?: "none", state.name)
+        return NextRecoverySpecialProof(source.origin, state, nextRequestHash(proof.joinToString(";").toByteArray(Charsets.UTF_8)),
+            operation = source.prepared.operation)
+    }
+
+    private suspend fun verifySavedMetadata(access: LocalSyncAccess, evidence: Evidence, result: NextSyncOperationResult) {
+        if (roundOperationIntent(evidence.origin.intentJson) == null) return
+        val actual = NextChallengeStore(database).activeInTransaction(access).second
+        require(actual.births.none { it.entityType == "activity_event" && it.entityUuid == evidence.prepared.operation.entityUuid })
+        validateRoundResultBinding(decodeFrozenSyncRequest(requireNotNull(evidence.transmission).wireBytes, RoundSyncPushRequest.serializer()),
+            RoundSyncPushResponse(listOf(result), 1, actual.checkpoints, actual.births))
     }
 
     private fun validateSuccess(prepared: PreparedOneTimeSubmission, result: NextSyncOperationResult) {

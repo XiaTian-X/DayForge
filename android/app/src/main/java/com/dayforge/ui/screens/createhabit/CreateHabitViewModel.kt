@@ -61,7 +61,9 @@ data class CreateHabitUiState(
     val showDefaultScheduleDialog: Boolean = false,
     // Metric linking (optional)
     val availableMetrics: List<MetricEntity> = emptyList(),
-    val selectedMetricIds: Set<Long> = emptySet()
+    val selectedMetricIds: Set<Long> = emptySet(),
+    val appearance: com.dayforge.domain.model.ObjectAppearance? = null,
+    val creationAuthority: com.dayforge.data.repository.ObjectCreationAuthority? = null
 )
 
 @HiltViewModel
@@ -75,6 +77,22 @@ class CreateHabitViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(CreateHabitUiState())
     val uiState: StateFlow<CreateHabitUiState> = _uiState.asStateFlow()
+
+    /** Called by coordinated next navigation; the current v4 navigation never manufactures a ticket. */
+    fun beginCreation(authority: com.dayforge.data.repository.ObjectCreationAuthority) {
+        val current = _uiState.value
+        if (current.creationAuthority === authority) return
+        check(current.creationAuthority == null && !current.isSaving && current.savedHabitId == null && !current.savedDraft)
+        _uiState.value = current.copy(creationAuthority = authority,
+            appearance = com.dayforge.domain.model.ObjectAppearance(com.dayforge.domain.model.IconReference.Role("habit.default"),
+                current.colorHex, "theme"))
+    }
+
+    fun updateAppearance(value: com.dayforge.domain.model.ObjectAppearance) {
+        if (_uiState.value.creationAuthority == null) return
+        require(com.dayforge.domain.model.iconAllowed(value.icon, false) || value.icon is com.dayforge.domain.model.IconReference.Asset)
+        _uiState.value = _uiState.value.copy(appearance = value, colorHex = value.accentColor, showIconPicker = false)
+    }
 
     // Immediate debounce flag - checked synchronously before StateFlow updates
     @Volatile
@@ -134,11 +152,13 @@ class CreateHabitViewModel @Inject constructor(
     }
 
     fun updateIcon(iconResId: Int) {
+        if (_uiState.value.appearance != null) return
         _uiState.value = _uiState.value.copy(iconResId = iconResId)
     }
 
     fun updateColor(colorHex: String) {
-        _uiState.value = _uiState.value.copy(colorHex = colorHex)
+        _uiState.value = _uiState.value.copy(colorHex = colorHex,
+            appearance = _uiState.value.appearance?.copy(accentColor = colorHex))
     }
 
     fun updateSchedule(schedule: HabitSchedule) {
@@ -249,17 +269,19 @@ class CreateHabitViewModel @Inject constructor(
     }
 
     fun selectPreset(preset: com.dayforge.data.local.entity.HabitEntity) {
+        if (preset.habitType == HabitType.GOAL || preset.completionPolicy == "one_and_done" || preset.schedule is HabitSchedule.Once) return
         _uiState.value = _uiState.value.copy(
             name = preset.name,
             description = preset.description,
             habitType = preset.habitType,
             iconResId = preset.iconResId,
-            colorHex = preset.colorHex,
             schedule = preset.schedule,
             targetValue = preset.targetValue,
             isCountdown = preset.isCountdown,
             selectedPresetName = preset.name,
-            isValid = validateForm(preset.name)
+            isValid = validateForm(preset.name),
+            appearance = _uiState.value.appearance?.copy(accentColor = preset.appearance?.accentColor ?: preset.colorHex),
+            colorHex = preset.appearance?.accentColor ?: preset.colorHex
         )
     }
 
@@ -269,7 +291,7 @@ class CreateHabitViewModel @Inject constructor(
 
     fun saveHabit(predefinedUuid: String? = null, onSaveDraft: ((HabitDraft) -> Unit)? = null) {
         // Immediate synchronous check - prevents rapid clicks before StateFlow updates
-        if (isSavingInProgress || _uiState.value.savedDraft) return
+        if (isSavingInProgress || _uiState.value.savedDraft || _uiState.value.savedHabitId != null) return
 
         val currentState = _uiState.value
         if (!currentState.isValid) return
@@ -322,7 +344,9 @@ class CreateHabitViewModel @Inject constructor(
                         colorHex = currentState.colorHex, schedule = finalSchedule,
                         targetValue = currentState.targetValue ?: 1, isCountdown = currentState.isCountdown,
                         targetCycles = currentState.targetCycles, failMode = currentState.failMode,
-                        bestTime = currentState.bestTime, selectedMetricIds = currentState.selectedMetricIds
+                        bestTime = currentState.bestTime, selectedMetricIds = currentState.selectedMetricIds,
+                        appearance = currentState.appearance,
+                        completionPolicy = if (currentState.creationAuthority != null) "recurring" else null
                     ))
                     _uiState.value = _uiState.value.copy(isSaving = false, savedDraft = true)
                     return@launch
@@ -342,7 +366,10 @@ class CreateHabitViewModel @Inject constructor(
                     bestTime = currentState.bestTime,
                     predefinedUuid = predefinedUuid,
                     context = context,
-                    selectedMetricIds = currentState.selectedMetricIds
+                    selectedMetricIds = currentState.selectedMetricIds,
+                    appearance = currentState.appearance,
+                    completionPolicy = if (currentState.creationAuthority != null) "recurring" else null,
+                    creationAuthority = currentState.creationAuthority
                 )
 
                 _uiState.value = _uiState.value.copy(

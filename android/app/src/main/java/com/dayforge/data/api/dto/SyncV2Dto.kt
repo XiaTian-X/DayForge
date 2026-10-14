@@ -2,6 +2,8 @@ package com.dayforge.data.api.dto
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.JsonObject
 
 @Serializable
@@ -43,6 +45,25 @@ data class ServerIdentityResponse(
     @SerialName("server_time") val serverTime: String
 )
 
+/** A start precondition, not permission to create a manually supplied duration result. */
+@Serializable
+data class TimerStartPolicy(
+    @SerialName("target_seconds") val targetSeconds: Int,
+    @SerialName("is_countdown") val isCountdown: Boolean,
+    @SerialName("max_duration_seconds") val maxDurationSeconds: Int
+) {
+    fun validate(): TimerStartPolicy = apply {
+        require(targetSeconds in 0..86_400)
+        require(maxDurationSeconds == when {
+            targetSeconds == 0 -> 86_400
+            isCountdown -> targetSeconds
+            else -> minOf(targetSeconds.toLong() * 3, 86_400L).toInt()
+        })
+        require(!isCountdown || targetSeconds > 0)
+    }
+}
+
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class TimerCommandRequest(
     @SerialName("command_id") val commandId: String,
@@ -54,7 +75,10 @@ data class TimerCommandRequest(
     @SerialName("expected_revision") val expectedRevision: Int? = null,
     @SerialName("activity_uuid") val activityUuid: String? = null,
     val timezone: String? = null,
-    @SerialName("active_elapsed_ms") val activeElapsedMs: Long? = null
+    @SerialName("active_elapsed_ms") val activeElapsedMs: Long? = null,
+    // Omit the default to preserve all pre-existing frozen envelopes, including v4 replays.
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
+    @SerialName("start_policy") val startPolicy: TimerStartPolicy? = null
 )
 
 @Serializable

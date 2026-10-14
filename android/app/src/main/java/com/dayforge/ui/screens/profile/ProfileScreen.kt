@@ -35,6 +35,7 @@ fun ProfileScreen(
 ) {
     val progress by viewModel.todayProgress.collectAsStateWithLifecycle()
     val isInitialized by viewModel.isInitialized.collectAsStateWithLifecycle()
+    val readError by viewModel.readError.collectAsStateWithLifecycle()
     val completed = progress.first
     val total = progress.second
     val progressRatio = if (total > 0) completed.toFloat() / total else 0f
@@ -60,6 +61,8 @@ fun ProfileScreen(
                     )
                 }
             }
+        } else if (readError) {
+            com.dayforge.ui.components.DataReadFailure(viewModel::retryRead, Modifier.fillMaxSize().padding(padding))
         } else {
             LazyColumn(
             modifier = modifier

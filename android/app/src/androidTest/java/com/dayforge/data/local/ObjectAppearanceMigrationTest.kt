@@ -122,13 +122,13 @@ class ObjectAppearanceMigrationTest {
         seed { db ->
             before = snapshot(db)
             columns = tables.associateWith { rows(db, "PRAGMA table_info(`$it`)") }
-            triggers = rows(db, "SELECT name,sql FROM sqlite_master WHERE type='trigger' ORDER BY name")
+            triggers = rows(db, "SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name NOT LIKE 'replica_fence_%' ORDER BY name")
         }
         assertEquals(16, tables.size)
         repeat(2) {
             val db = open()
             val sql = db.openHelper.writableDatabase
-            assertEquals(12, sql.version)
+            assertEquals(18, sql.version)
             assertEquals(before, snapshot(sql))
             tables.forEach { table ->
                 val current = rows(sql, "PRAGMA table_info(`$table`)")
@@ -136,7 +136,7 @@ class ObjectAppearanceMigrationTest {
                 if (table in setOf("habits", "metrics")) assertEquals(
                     listOf(columns.getValue(table).size.toString(), "appearance", "TEXT", "0", null, "0"), current.single { it[1] == "appearance" })
             }
-            val currentTriggers = rows(sql, "SELECT name,sql FROM sqlite_master WHERE type='trigger' ORDER BY name")
+            val currentTriggers = rows(sql, "SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name NOT LIKE 'replica_fence_%' ORDER BY name")
                 .map { listOf(it[0], it[1]?.replace(" OR OLD.appearance IS NOT NEW.appearance OR OLD.completionPolicy IS NOT NEW.completionPolicy", "")
                     ?.replace(" OR OLD.appearance IS NOT NEW.appearance", "")
                     ?.replace(" OR OLD.planMetadata IS NOT NEW.planMetadata", "")) }
@@ -152,7 +152,7 @@ class ObjectAppearanceMigrationTest {
     @Test fun failedMigrationRollsBackBothColumnsAndTriggerReplacementThenRetries() {
         var oldTriggers = emptyList<List<String?>>()
         seed {
-            oldTriggers = rows(it, "SELECT name,sql FROM sqlite_master WHERE type='trigger' ORDER BY name")
+            oldTriggers = rows(it, "SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name NOT LIKE 'replica_fence_%' ORDER BY name")
             it.execSQL("ALTER TABLE one_time_transmissions RENAME TO unavailable_transmissions")
         }
         assertTrue(runCatching { open().openHelper.writableDatabase }.exceptionOrNull()?.message.orEmpty().contains("Migration didn't properly handle"))
@@ -162,13 +162,13 @@ class ObjectAppearanceMigrationTest {
             listOf("habits", "metrics").forEach { table ->
                 raw.rawQuery("PRAGMA table_info($table)", null).use { cursor -> while (cursor.moveToNext()) assertNotEquals("appearance", cursor.getString(1)) }
             }
-            raw.rawQuery("SELECT name,sql FROM sqlite_master WHERE type='trigger' ORDER BY name", null).use { cursor ->
+            raw.rawQuery("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name NOT LIKE 'replica_fence_%' ORDER BY name", null).use { cursor ->
                 val restored = buildList { while (cursor.moveToNext()) add(listOf(cursor.getString(0), cursor.getString(1))) }
                 assertEquals(oldTriggers, restored)
             }
             raw.execSQL("ALTER TABLE unavailable_transmissions RENAME TO one_time_transmissions")
         }
-        assertEquals(12, open().openHelper.writableDatabase.version)
+        assertEquals(18, open().openHelper.writableDatabase.version)
     }
 
     @Test fun forgedVersionFiveIdentityFailsWithoutErasingRows() {

@@ -7,6 +7,7 @@ import com.dayforge.data.local.AuthenticationSession
 import com.dayforge.data.local.LocalSyncAccess
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
+import com.dayforge.data.repository.ReplicaDestinationReadAccess
 import com.dayforge.domain.model.isContractUuid
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.ByteArrayOutputStream
@@ -21,6 +22,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.*
 import okhttp3.Call
+import okhttp3.Authenticator
 import okhttp3.ConnectionPool
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -39,7 +41,8 @@ internal class NextSyncReplyInvalid : IOException("SYNC_RESPONSE_INVALID")
 @Singleton
 internal class NextSyncHttp private constructor(
     private val shared: OkHttpClient, private val tokens: TokenManager,
-    private val captureRoute: suspend () -> MaterialHttpRoute
+    private val captureRoute: suspend () -> MaterialHttpRoute,
+    private val requireConnection: suspend () -> Unit = {}
 ) {
     @Inject constructor(@ApplicationContext context: Context, shared: OkHttpClient, tokens: TokenManager,
         preferences: PreferencesManager, selected: SelectedNetworkTransport) : this(shared, tokens, {
@@ -55,40 +58,97 @@ internal class NextSyncHttp private constructor(
     internal constructor(shared: OkHttpClient, tokens: TokenManager, origin: HttpUrl) :
         this(shared, tokens, { MaterialHttpRoute(origin, null) })
 
+    internal fun onReplicaRoute(route: MaterialHttpRoute, requireOpen: suspend () -> Unit): NextSyncHttp =
+        NextSyncHttp(shared, tokens, { requireOpen(); route }, requireOpen)
+
     /** Only exact public v5 proof admits calls. Null means unsupported, never sync success. */
     suspend fun <T> session(captured: LocalSyncAccess, block: suspend (Session) -> T): T? {
-        val context = captured.copy(capabilities = captured.capabilities.toSet())
-        authorize(tokens, context)
-        val route = try { captureRoute() } catch (_: IllegalArgumentException) { throw IOException("SYNC_ROUTE_INVALID") }
-        val builder = shared.newBuilder()
-        builder.interceptors().removeAll { it is HttpLoggingInterceptor }
-        builder.networkInterceptors().removeAll { it is HttpLoggingInterceptor }
-        val client = route.bind(builder).connectionPool(ConnectionPool(1, 1, TimeUnit.MINUTES))
-            .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
-            .connectTimeout(10, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS).callTimeout(45, TimeUnit.SECONDS)
-            .addNetworkInterceptor { chain ->
-                if (!route.matches(chain.request().url)) throw IOException("SYNC_ROUTE_CHANGED")
-                runBlocking { authorize(tokens, context) }
-                chain.proceed(chain.request())
-            }.build()
-        val session = Session(client, tokens, context, route, requireNotNull(currentCoroutineContext()[Job]))
-        try {
+        return withSession(captured) { session, context ->
             val identity = session.identity()
             if (identity.serverInstanceId != context.session.serverInstanceId)
                 throw NextSyncHttpFailure(409, "SERVER_IDENTITY_MISMATCH")
             if (identity.syncEpoch != context.session.syncEpoch)
                 throw NextSyncHttpFailure(409, "SYNC_EPOCH_MISMATCH")
-            if (identity.protocolVersion != 5) return null
-            return block(session)
+            if (identity.protocolVersion != 5) null else block(session)
+        }
+    }
+
+    /** The new scope is usable ONLY by a fixed read-only GET, never by a writable Session. */
+    suspend fun recoveryPreview(captured: LocalSyncAccess, newEpoch: String, installation: String,
+        includeMaterials: Boolean = false, requestedPack: RecoveryPackVersion? = null): ReplicaRecoveryPreviewResponse {
+        require(includeMaterials || requestedPack == null)
+        require(captured.deviceId != null && isContractUuid(newEpoch) && newEpoch != captured.session.syncEpoch && isContractUuid(installation))
+        authorize(tokens, captured, recoveryReadOnly = true)
+        if (tokens.registeredInstallationId() != installation) throw IOException("SYNC_SESSION_CHANGED")
+        val response = withSession(captured, noRefresh = true) { session, context ->
+            val identity = session.identity()
+            if (identity.serverInstanceId != context.session.serverInstanceId)
+                throw NextSyncHttpFailure(409, "SERVER_IDENTITY_MISMATCH")
+            if (identity.syncEpoch != newEpoch) throw NextSyncHttpFailure(409, "SYNC_EPOCH_MISMATCH")
+            if (identity.protocolVersion != 5) throw NextSyncHttpFailure(426, "CLIENT_UPGRADE_REQUIRED")
+            session.readRecoveryPreview(newEpoch, installation, includeMaterials, requestedPack)
+        }
+        authorize(tokens, captured, recoveryReadOnly = true)
+        if (tokens.registeredInstallationId() != installation) throw IOException("SYNC_SESSION_CHANGED")
+        return response
+    }
+
+    private suspend fun <T> withSession(captured: LocalSyncAccess, noRefresh: Boolean = false,
+        destinationRead: ReplicaDestinationReadAccess? = null,
+        block: suspend (Session, LocalSyncAccess) -> T): T {
+        val context = captured.copy(capabilities = captured.capabilities.toSet())
+        check(destinationRead == null || noRefresh && destinationRead.access == context)
+        destinationRead?.authorize(tokens)
+        authorize(tokens, context, recoveryReadOnly = noRefresh)
+        val route = try { captureRoute() } catch (_: IllegalArgumentException) { throw IOException("SYNC_ROUTE_INVALID") }
+        val builder = shared.newBuilder()
+        builder.interceptors().removeAll { it is HttpLoggingInterceptor }
+        builder.networkInterceptors().removeAll { it is HttpLoggingInterceptor }
+        if (noRefresh) builder.authenticator(Authenticator.NONE).cache(null)
+        val client = route.bind(builder).connectionPool(ConnectionPool(1, 1, TimeUnit.MINUTES))
+            .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
+            .connectTimeout(10, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS).callTimeout(45, TimeUnit.SECONDS)
+            .addNetworkInterceptor { chain ->
+                runBlocking { requireConnection() }
+                if (!route.matches(chain.request().url)) throw IOException("SYNC_ROUTE_CHANGED")
+                runBlocking { authorize(tokens, context, recoveryReadOnly = noRefresh) }
+                destinationRead?.let { runBlocking { it.authorizeRequest(tokens, chain.request()) } }
+                chain.proceed(chain.request())
+            }.build()
+        val session = Session(client, tokens, context, route, requireNotNull(currentCoroutineContext()[Job]), noRefresh, destinationRead, requireConnection)
+        try {
+            return block(session, context)
         } finally {
             session.close()
             client.connectionPool.evictAll()
         }
     }
 
+    /** Only the actual SQL/archive/destination factory supplies this lease. In particular,
+     * recoveryPreview cannot be made to accept same-epoch ordinary access via a Boolean flag.
+     */
+    internal suspend fun destinationPreview(read: ReplicaDestinationReadAccess): ReplicaRecoveryPreviewResponse {
+        read.requireOwner()
+        read.authorize(tokens)
+        val response = withSession(read.access, noRefresh = true, destinationRead = read) { session, context ->
+            val identity = session.identity()
+            if (identity.serverInstanceId != context.session.serverInstanceId)
+                throw NextSyncHttpFailure(409, "SERVER_IDENTITY_MISMATCH")
+            if (identity.syncEpoch != context.session.syncEpoch)
+                throw NextSyncHttpFailure(409, "SYNC_EPOCH_MISMATCH")
+            if (identity.protocolVersion != 5) throw NextSyncHttpFailure(426, "CLIENT_UPGRADE_REQUIRED")
+            read.authorize(tokens)
+            session.readRecoveryPreview(requireNotNull(context.session.syncEpoch), read.installationId, false, null)
+        }
+        read.authorize(tokens)
+        return response
+    }
+
     internal class Session internal constructor(
         private val client: OkHttpClient, private val tokens: TokenManager, private val context: LocalSyncAccess,
-        private val route: MaterialHttpRoute, private val owner: Job
+        private val route: MaterialHttpRoute, private val owner: Job, private val recoveryReadOnly: Boolean = false,
+        private val destinationRead: ReplicaDestinationReadAccess? = null,
+        private val requireConnection: suspend () -> Unit = {}
     ) {
         private var closed = false
         internal fun close() { closed = true }
@@ -103,6 +163,38 @@ internal class NextSyncHttp private constructor(
             }
         }
 
+        internal suspend fun readRecoveryPreview(newEpoch: String, installation: String,
+            includeMaterials: Boolean, requestedPack: RecoveryPackVersion?): ReplicaRecoveryPreviewResponse {
+            val builder = request("/api/v2/sync/rounds/recovery-preview").queryRoundDevice()
+                .header("X-DayForge-Sync-Epoch", newEpoch)
+            val url = builder.build().url.newBuilder().addQueryParameter("installation_id", installation)
+            if (includeMaterials) url.addQueryParameter("include_materials", "1")
+            requestedPack?.let { url.addQueryParameter("pack_id", it.packId).addQueryParameter("pack_revision", it.revision.toString()) }
+            val response = value(builder.url(url.build()),
+                ReplicaRecoveryPreviewResponse.serializer(), BOOTSTRAP_REPLY)
+            valid {
+                if (includeMaterials) require(requireNotNull(response.materialPreview).requestedPack == requestedPack)
+                else require(response.materialPreview == null)
+                require(response.accountId == context.session.authentication.userId &&
+                    response.serverInstanceId == context.session.serverInstanceId && response.syncEpoch == newEpoch)
+                val proof = response.device
+                require(proof.deviceId == device() && proof.installationId == installation &&
+                    proof.platform == "android" && proof.deviceClass == "interactive" && proof.capabilityRevision > 0)
+                require(proof.capabilities.distinct().size == proof.capabilities.size &&
+                    proof.capabilities.all(String::isNotBlank) && "sync.read" in proof.capabilities)
+                require(("structure.write" in proof.capabilities) == (proof.isPrimaryEditor || proof.structuralEditEnabled))
+                Instant.parse(requireNotNull(proof.lastSeenAt))
+                require(response.snapshot.nextCursor >= 0)
+                Instant.parse(response.snapshot.serverTime)
+                response.snapshot.changes.forEach { change ->
+                    validateChange(change, roundProfile = true)
+                    require(change.sequence == 0L && change.operation == "upsert")
+                }
+                response.activeTimer?.let(::validateTimer)
+            }
+            return response
+        }
+
         suspend fun register(body: DeviceRegisterRequest): DeviceResponse {
             require(context.deviceId == null && body.protocolVersion == 5)
             val response = value(post("/api/v2/devices/register", DeviceRegisterRequest.serializer(), body),
@@ -113,6 +205,38 @@ internal class NextSyncHttp private constructor(
                     response.platform == body.platform && response.deviceClass == body.deviceClass && response.capabilityRevision > 0)
                 require(response.capabilities.distinct().size == response.capabilities.size &&
                     response.capabilities.all(String::isNotBlank) && "sync.read" in response.capabilities)
+                Instant.parse(requireNotNull(response.lastSeenAt))
+            }
+            return response
+        }
+
+        suspend fun makePrimary(installation: String): DeviceResponse = managedDevice(
+            request("/api/v2/devices/${device()}/make-primary").post(ByteArray(0).toRequestBody(JSON_TYPE)),
+            installation, primary = true)
+
+        suspend fun updateEditing(installation: String, enabled: Boolean): DeviceResponse = managedDevice(
+            request("/api/v2/devices/${device()}/editing").patch(
+                encodeSyncRequest(DeviceEditingUpdate.serializer(), DeviceEditingUpdate(enabled)).toRequestBody(JSON_TYPE)),
+            installation, editing = enabled)
+
+        private suspend fun managedDevice(builder: Request.Builder, installation: String,
+            primary: Boolean = false, editing: Boolean? = null): DeviceResponse {
+            require(isContractUuid(installation))
+            val response = value(builder, DeviceResponse.serializer(), SMALL_REPLY,
+                setOf("device_class", "capability_revision", "capabilities", "is_primary_editor",
+                    "structural_edit_enabled", "last_seen_at"))
+            valid {
+                require(response.deviceId == device() && response.installationId == installation &&
+                    response.platform == "android" && response.deviceClass == "interactive" &&
+                    response.capabilityRevision >= requireNotNull(context.capabilityRevision))
+                require(response.capabilities.distinct().size == response.capabilities.size &&
+                    response.capabilities.all(String::isNotBlank) && "sync.read" in response.capabilities)
+                require(response.capabilityRevision != context.capabilityRevision ||
+                    response.capabilities.toSet() == context.capabilities)
+                require(("structure.write" in response.capabilities) ==
+                    (response.isPrimaryEditor || response.structuralEditEnabled))
+                require(!primary || response.isPrimaryEditor)
+                require(editing == null || response.structuralEditEnabled == editing)
                 Instant.parse(requireNotNull(response.lastSeenAt))
             }
             return response
@@ -146,7 +270,7 @@ internal class NextSyncHttp private constructor(
 
         suspend fun bootstrap(): NextSyncBootstrapResponse = value(
             request("/api/v2/sync/bootstrap").queryDevice(), NextSyncBootstrapResponse.serializer(), BOOTSTRAP_REPLY
-        ).also { valid { require(it.nextCursor >= 0); Instant.parse(it.serverTime); it.changes.forEach(::validateChange) } }
+        ).also { valid { require(it.nextCursor >= 0); Instant.parse(it.serverTime); it.changes.forEach { change -> validateChange(change) } } }
 
         suspend fun pull(cursor: Long, limit: Int = 500): NextSyncPullResponse {
             require(cursor >= 0 && limit in 1..1000)
@@ -218,12 +342,97 @@ internal class NextSyncHttp private constructor(
             return response
         }
 
+        /** Explicit challenge profile. Existing envelopes/routes and journal bytes are unchanged. */
+        suspend fun roundPush(body: RoundSyncPushRequest): RoundSyncPushResponse {
+            require(body.deviceId == device())
+            val frozen = freeze(RoundSyncPushRequest.serializer(), body)
+            return roundPushBytes(frozen, encodeSyncRequest(RoundSyncPushRequest.serializer(), frozen))
+        }
+
+        suspend fun roundPushFrozen(body: ByteArray): RoundSyncPushResponse {
+            val bytes = snapshotSyncRequest(body)
+            return roundPushBytes(decodeFrozenSyncRequest(bytes, RoundSyncPushRequest.serializer()), bytes)
+        }
+
+        private suspend fun roundPushBytes(frozen: RoundSyncPushRequest, bytes: ByteArray): RoundSyncPushResponse {
+            require(frozen.deviceId == device())
+            return value(request("/api/v2/sync/rounds/push").post(bytes.toRequestBody(JSON_TYPE)),
+                RoundSyncPushResponse.serializer()).also { response -> valid { validateRoundResultBinding(frozen, response) } }
+        }
+
+        suspend fun roundBootstrap(): RoundSyncBootstrapResponse = value(
+            request("/api/v2/sync/rounds/bootstrap").queryRoundDevice(), RoundSyncBootstrapResponse.serializer(), BOOTSTRAP_REPLY
+        ).also { response -> valid {
+            require(response.nextCursor >= 0); Instant.parse(response.serverTime)
+            response.changes.forEach { validateChange(it, roundProfile = true) }
+        } }
+
+        suspend fun roundPull(cursor: Long, limit: Int = 500): RoundSyncPullResponse {
+            require(cursor >= 0 && limit in 1..1000)
+            val builder = request("/api/v2/sync/rounds/changes").queryRoundDevice()
+            val response = value(builder.url(builder.build().url.newBuilder().addQueryParameter("cursor", cursor.toString())
+                .addQueryParameter("limit", limit.toString()).build()), RoundSyncPullResponse.serializer())
+            valid {
+                require(response.nextCursor >= cursor && response.changes.size <= limit)
+                var previous = cursor
+                response.changes.forEach { change ->
+                    validateChange(change, roundProfile = true)
+                    require(change.sequence > previous && change.sequence <= response.nextCursor)
+                    previous = change.sequence
+                }
+                if (response.hasMore) require(response.changes.isNotEmpty() && previous == response.nextCursor)
+                Instant.parse(response.serverTime)
+            }
+            return response
+        }
+
+        suspend fun roundCommands(body: RoundTimerCommandBatchRequest): RoundTimerCommandBatchResponse {
+            require(body.deviceId == device())
+            val frozen = freeze(RoundTimerCommandBatchRequest.serializer(), body)
+            return roundCommandBytes(frozen, encodeSyncRequest(RoundTimerCommandBatchRequest.serializer(), frozen))
+        }
+
+        suspend fun roundCommandsFrozen(body: ByteArray): RoundTimerCommandBatchResponse {
+            val bytes = snapshotSyncRequest(body)
+            return roundCommandBytes(decodeFrozenSyncRequest(bytes, RoundTimerCommandBatchRequest.serializer()), bytes)
+        }
+
+        private suspend fun roundCommandBytes(frozen: RoundTimerCommandBatchRequest, bytes: ByteArray): RoundTimerCommandBatchResponse {
+            require(frozen.deviceId == device())
+            return value(request("/api/v2/timers/rounds/commands").post(bytes.toRequestBody(JSON_TYPE)),
+                RoundTimerCommandBatchResponse.serializer()).also { response -> valid {
+                validateRoundTimerBinding(frozen, response)
+                response.results.mapNotNull { it.session }.forEach(::validateTimer)
+                Instant.parse(response.serverTime)
+            } }
+        }
+
+        suspend fun roundActive(): RoundActiveTimerResponse = value(request("/api/v2/timers/rounds/active").queryRoundDevice(),
+            RoundActiveTimerResponse.serializer()).also { response -> valid {
+            response.session?.let(::validateTimer); Instant.parse(response.serverTime)
+        } }
+
+        suspend fun roundStatus(sessionId: String): RoundActiveTimerResponse {
+            require(isContractUuid(sessionId))
+            return value(request("/api/v2/timers/rounds/session/$sessionId").queryRoundDevice(),
+                RoundActiveTimerResponse.serializer()).also { response -> valid {
+                response.session?.let { validateTimer(it); require(it.sessionId == sessionId) }; Instant.parse(response.serverTime)
+            } }
+        }
+
         private fun device(): String = requireNotNull(context.deviceId)
         private fun Request.Builder.queryDevice(): Request.Builder = url(build().url.newBuilder().addQueryParameter("device_id", device()).build())
+        private fun Request.Builder.queryRoundDevice(): Request.Builder = queryDevice().let {
+            it.url(it.build().url.newBuilder().addQueryParameter("challenge_contract", "1").build())
+        }
         private fun request(path: String, public: Boolean = false): Request.Builder {
+            check(!recoveryReadOnly || path in setOf(MaterialHttpRoute.IDENTITY_PATH, "/api/v2/sync/rounds/recovery-preview")) {
+                "SYNC_RECOVERY_READ_ONLY"
+            }
             val builder = Request.Builder().url(route.origin.newBuilder().encodedPath(path).build()).header("Accept-Encoding", "identity")
                 .tag(AuthenticationSession::class.java, context.session.authentication).tag(LocalSyncAccess::class.java, context)
                 .tag(MaterialHttpRoute::class.java, route)
+                .tag(ReplicaDestinationReadAccess::class.java, destinationRead)
             if (!public) builder.header("X-DayForge-Protocol", "5")
                 .header("X-DayForge-Server-Instance", requireNotNull(context.session.serverInstanceId))
                 .header("X-DayForge-Sync-Epoch", requireNotNull(context.session.syncEpoch))
@@ -249,14 +458,16 @@ internal class NextSyncHttp private constructor(
                 val caller = currentCoroutineContext()
                 decodeSyncReply(bytes, limit, serializer, { caller.ensureActive() }, requiredFields)
             }
-            authorize(tokens, context)
+            authorize(tokens, context, recoveryReadOnly)
             return result
         }
 
         private suspend fun execute(request: Request, limit: Int): ByteArray {
+            requireConnection()
             check(!closed && currentCoroutineContext()[Job] === owner) { "SYNC_SCOPE_CHANGED" }
+            check(!recoveryReadOnly || request.method == "GET") { "SYNC_RECOVERY_READ_ONLY" }
             return supervisorScope {
-                authorize(tokens, context)
+                authorize(tokens, context, recoveryReadOnly)
                 val cancellation = MaterialCallCancellation()
                 val call = client.newCall(request.newBuilder().tag(MaterialCallCancellation::class.java, cancellation).build())
                 cancellation.register(call)
@@ -275,7 +486,8 @@ internal class NextSyncHttp private constructor(
                     cancellation.cancel()
                     withContext(NonCancellable) { worker.join() }
                 }
-                authorize(tokens, context)
+                requireConnection()
+                authorize(tokens, context, recoveryReadOnly)
                 result
             }
         }
@@ -304,9 +516,9 @@ internal class NextSyncHttp private constructor(
             code?.takeIf { it.isString && it.content.matches(Regex("[A-Z][A-Z0-9_]{0,63}")) }?.content
         } catch (_: IOException) { null } catch (_: IllegalArgumentException) { null } catch (_: IllegalStateException) { null }
 
-        private fun validateChange(change: SyncV2Change) {
+        private fun validateChange(change: SyncV2Change, roundProfile: Boolean = false) {
             require(isContractUuid(change.entityUuid) && change.revision > 0 && change.sequence >= 0 &&
-                change.entityType in setOf("plan_node", "metric", "activity_event", "metric_observation", "activity_metric_link") &&
+                (change.entityType in ORDINARY_ROUND_ENTITIES || roundProfile && change.entityType == "challenge_round") &&
                 change.operation in setOf("upsert", "delete"))
             change.originDeviceId?.let { require(isContractUuid(it)) }
             Instant.parse(change.changedAt)
@@ -331,7 +543,7 @@ internal class NextSyncHttp private constructor(
                 catch (_: NoSuchElementException) { throw NextSyncReplyInvalid() }
                 catch (_: java.time.DateTimeException) { throw NextSyncReplyInvalid() }
             }
-            authorize(tokens, context)
+            authorize(tokens, context, recoveryReadOnly)
             return result
         }
     }
@@ -341,7 +553,9 @@ internal class NextSyncHttp private constructor(
         const val SMALL_REPLY = 65_536
         const val NORMAL_REPLY = 8 * 1024 * 1024
         const val BOOTSTRAP_REPLY = 32 * 1024 * 1024
-        suspend fun authorize(tokens: TokenManager, context: LocalSyncAccess) {
+        suspend fun authorize(tokens: TokenManager, context: LocalSyncAccess, recoveryReadOnly: Boolean = false) {
+            if (!recoveryReadOnly && tokens.replicaSwitchPending())
+                throw IOException(com.dayforge.data.local.ReplicaSwitchGuard.PENDING)
             if (tokens.syncAuthenticationSnapshot(context) == null) throw IOException("SYNC_SESSION_CHANGED")
         }
     }

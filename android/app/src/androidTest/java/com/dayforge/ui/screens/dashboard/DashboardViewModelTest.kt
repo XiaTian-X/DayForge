@@ -36,6 +36,7 @@ import com.dayforge.util.DateTimeUtils
 import com.dayforge.widget.WidgetRefreshScheduler
 import app.cash.turbine.test
 import io.mockk.every
+import io.mockk.coEvery
 import io.mockk.mockk
 import io.mockk.mockkObject
 import io.mockk.unmockkObject
@@ -109,8 +110,6 @@ class DashboardViewModelTest {
             every { hasShownBatteryGuidance } returns flowOf(false)
             every { dateChangeTrigger } returns flowOf(System.currentTimeMillis() / (24 * 60 * 60 * 1000L))
             every { filterMode } returns filterModeFlow
-            every { pendingMetricHabits } returns pendingMetricHabitsFlow
-            every { getNeverAskAgain(any()) } returns flowOf(false)
         }
         // Create a real CheckInService that uses the repository
         checkInService = CheckInService(repository, completionDao, timeLogDao)
@@ -125,8 +124,20 @@ class DashboardViewModelTest {
             habitMetricLinkDao,
             mockk<StructuralEditGuard>(relaxed = true)
         )
+        val habitPreferences = mockk<com.dayforge.data.repository.HabitPreferenceRepository> {
+            every { pendingHabitIds } returns pendingMetricHabitsFlow
+            coEvery { read(any()) } coAnswers {
+                val habit = firstArg<com.dayforge.data.local.entity.HabitEntity>()
+                com.dayforge.data.repository.HabitPreferenceSnapshot(
+                    com.dayforge.data.repository.HabitPreferenceClaim(com.dayforge.data.local.LocalDataSession(
+                        com.dayforge.data.local.AuthenticationSession("80000000-0000-4000-8000-000000000001",
+                            "80000000-0000-4000-8000-000000000002"), null, null), habit.id, habit.uuid), true, false)
+            }
+            coEvery { publish<Unit>(any(), any()) } coAnswers { secondArg<suspend () -> Unit>().invoke() }
+        }
         val linkedMetricCoordinator =
-            LinkedMetricCoordinator(context, mockPreferencesManager, metricRepository, repository)
+            LinkedMetricCoordinator(context, mockPreferencesManager, metricRepository, repository,
+                habitPreferences = habitPreferences)
         val completionCoordinator =
             HabitCompletionCoordinator(context, checkInService, repository, metricRepository)
         viewModel = DashboardViewModel(
@@ -567,6 +578,7 @@ class DashboardViewModelTest {
             assertEquals(FailMode.LOOSE, repository.getHabitById(habitId)?.failMode)
 
             viewModel.showReactivationDialog(habitId)
+            viewModel.showReactivationDialog.first { it }
             assertTrue(viewModel.showReactivationDialog.value)
             assertEquals(habitId, viewModel.reactivationHabitId.value)
             assertEquals("Target habit", viewModel.reactivationHabitName.value)

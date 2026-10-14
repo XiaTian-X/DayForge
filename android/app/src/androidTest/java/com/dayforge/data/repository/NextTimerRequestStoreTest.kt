@@ -25,7 +25,8 @@ class NextTimerRequestStoreTest : NextCoreRequestFixture() {
     @Before fun configureFullTimerTarget() = runBlocking<Unit> {
         db.withTransaction {
             db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
-            timerHabit = timerHabit.copy(targetValue = 60)
+            // Android stores minutes; the authoritative fixture's targetSeconds=60 is one minute.
+            timerHabit = timerHabit.copy(targetValue = 1)
             db.habitDao().update(timerHabit)
             db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
         }

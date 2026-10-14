@@ -66,25 +66,15 @@ internal class WidgetRefresher(
                     }
                 }
 
-            fun bound(widget: GlanceAppWidget, prefsName: String, prefix: String,
-                      load: suspend (GlanceId, Long) -> Unit) = target(widget) { id ->
-                val widgetId = manager.getAppWidgetId(id)
-                val habitId = context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
-                    .getLong(prefix + widgetId, -1L)
-                // Unconfigured widgets still render their setup state. Deleted habits go
-                // through the existing loader, which writes the deleted-state marker.
-                if (habitId != -1L) load(id, habitId)
-            }
-
             return listOf(
-                bound(CheckInWidget(), CheckInWidget.PREFS_NAME, CheckInWidget.PREF_HABIT_ID_PREFIX) {
-                    id, habit -> CheckInWidget.refreshWidgetData(context, id, habit)
+                target(CheckInWidget()) {
+                    id -> CheckInWidget.refreshWidgetData(context, id)
                 },
-                bound(CountingWidget(), CountingWidget.PREFS_NAME, CountingWidget.PREF_HABIT_ID_PREFIX) {
-                    id, habit -> CountingWidget.refreshWidgetData(context, id, habit)
+                target(CountingWidget()) {
+                    id -> CountingWidget.refreshWidgetData(context, id)
                 },
-                bound(TimerWidget(), TimerWidget.PREFS_NAME, TimerWidget.PREF_HABIT_ID_PREFIX) {
-                    id, habit -> TimerWidget.refreshWidgetData(context, id, habit)
+                target(TimerWidget()) {
+                    id -> TimerWidget.refreshWidgetData(context, id)
                 },
                 target(ProgressWidget()) { ProgressWidget.refreshWidgetData(context, it) },
                 target(MotivationWidget()) { MotivationWidget.refreshWidgetData(context, it) },

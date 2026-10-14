@@ -16,6 +16,7 @@ import com.dayforge.data.model.HabitDraft
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.model.StreakStats
+import com.dayforge.domain.model.OneTimeStatus
 import com.dayforge.domain.service.ActivityRateCalculator
 import com.dayforge.domain.service.StreakCalculator
 import com.dayforge.domain.service.StructuralEditGuard
@@ -34,16 +35,160 @@ class HabitRepository @Inject constructor(
     private val completionDao: CompletionDao,
     private val timeLogDao: TimeLogDao,
     private val database: HabitDatabase,
-    private val structuralEditGuard: StructuralEditGuard? = null
+    private val structuralEditGuard: StructuralEditGuard? = null,
+    private val nextObjectEditor: NextObjectEditor? = null,
+    private val nextObjectCreator: NextObjectCreator? = null,
+    private val oneTimeRepository: OneTimeRepository? = null,
+    private val countHistoryReader: CountHistoryReader? = null,
+    private val widgetFactReader: WidgetFactReader? = null,
+    private val checkHistoryReader: CheckHistoryReader? = null,
+    private val timerHistoryReader: TimerHistoryReader? = null,
+    private val recurringHabitReader: RecurringHabitReader? = null,
+    private val restartEntry: HabitRestartEntry? = null,
+    private val widgetRestartEntry: WidgetRestartEntry? = null,
+    private val timerWriter: NextTimerWriter? = null
 ) {
     val allHabits: Flow<List<HabitEntity>> = habitDao.getAllHabits()
+
+    val oneTimeChanges: Flow<Unit> = oneTimeRepository?.changes ?: kotlinx.coroutines.flow.flowOf(Unit)
+
+    val countChanges: Flow<Unit> = kotlinx.coroutines.flow.combine(
+        countHistoryReader?.changes ?: kotlinx.coroutines.flow.flowOf(Unit),
+        checkHistoryReader?.changes ?: kotlinx.coroutines.flow.flowOf(Unit),
+        timerHistoryReader?.changes ?: kotlinx.coroutines.flow.flowOf(Unit)) { _, _, _ -> Unit }
+
+    suspend fun getCountHistory(habit: HabitEntity): com.dayforge.domain.model.CountHistory =
+        requireNotNull(countHistoryReader) { "COUNT_READER_REQUIRED" }.read(habit)
+
+    suspend fun getCheckHistory(habit: HabitEntity): com.dayforge.domain.model.CheckHistory =
+        requireNotNull(checkHistoryReader) { "CHECK_READER_REQUIRED" }.read(habit)
+
+    suspend fun getTimerHistory(habit: HabitEntity): com.dayforge.domain.model.TimerHistory =
+        requireNotNull(timerHistoryReader) { "TIMER_READER_REQUIRED" }.read(habit)
+
+    suspend fun getRecurringSnapshot(habit: HabitEntity): RecurringHabitSnapshot =
+        requireNotNull(recurringHabitReader) { "RECURRING_READER_REQUIRED" }.read(habit)
+
+    /** Capture BEFORE confirmation; typed plans never fall back to destructive history clearing. */
+    suspend fun prepareReactivation(habit: HabitEntity): HabitReactivationRequest {
+        if (habit.appearance == null) return HabitReactivationRequest(habit, null)
+        require(habit.completionPolicy == "recurring" && habit.habitType != HabitType.GOAL &&
+            (habit.targetCycles ?: 0) > 0) { "SYNC_RESTART_ACTIVITY_REQUIRED" }
+        val displayed = getRecurringSnapshot(habit)
+        require(displayed.authority.rounds != null) { "SYNC_RESTART_PROFILE_REQUIRED" }
+        return HabitReactivationRequest(displayed.habit, displayed.authority)
+    }
+
+    suspend fun reactivate(request: HabitReactivationRequest, context: Context) {
+        val committed = request.commit {
+            if (request.preservesHistory) requireNotNull(restartEntry) { "SYNC_RESTART_ENTRY_REQUIRED" }
+                .commit(request.habit, requireNotNull(request.authority))
+            else if (request.legacyAccess != null) requireNotNull(widgetRestartEntry)
+                .commitLegacy(request.habit, request.legacyAccess)
+            else {
+                check(request.habit.appearance == null) { "SYNC_RESTART_PROFILE_REQUIRED" }
+                clearHabitHistory(request.habit, context)
+            }
+        }
+        if (committed && (request.preservesHistory || request.legacyAccess != null)) notifyWidgetUpdate(context)
+    }
+
+    suspend fun prepareWidgetReactivation(id: Long, fact: WidgetFactClaim?,
+        timer: com.dayforge.domain.model.TimerActionAuthority?, legacy: LegacyWidgetRestartClaim?): HabitReactivationRequest =
+        requireNotNull(widgetRestartEntry).prepare(id, fact, timer, legacy)
+
+    suspend fun getOneTimeStatus(id: Long, expectedUuid: String? = null): OneTimeStatus = requireNotNull(oneTimeRepository) {
+        "ONE_TIME_REPOSITORY_REQUIRED"
+    }.read(id, expectedUuid)
+
+    suspend fun toggleOneTime(context: Context, id: Long, expectedUuid: String? = null,
+        authority: com.dayforge.domain.model.OneTimeActionAuthority? = null): Boolean {
+        val completed = requireNotNull(oneTimeRepository).toggle(id, expectedUuid, authority)
+        notifyWidgetUpdate(context)
+        return completed
+    }
 
     // Flow of all completions for reactive UI updates
     fun getAllCompletions(): Flow<List<CompletionEntity>> = completionDao.getAllCompletions()
 
     fun getHabit(id: Long): Flow<HabitEntity?> = habitDao.getHabitByIdFlow(id)
 
-    suspend fun getHabitById(id: Long): HabitEntity? = habitDao.getHabitById(id)
+    suspend fun getHabitById(id: Long): HabitEntity? = habitDao.getVisibleHabitById(id)
+
+    suspend fun getHabitForEditing(id: Long): ObjectEditSnapshot<HabitEntity> =
+        nextObjectEditor?.habit(id) ?: ObjectEditSnapshot(habitDao.getHabitById(id), null)
+
+    /** Explicit display-time operation; a stale click must never become a fresh toggle. */
+    internal suspend fun performWidgetFact(context: Context, claim: WidgetFactClaim, action: String): WidgetFactSnapshot {
+        val reader = requireNotNull(widgetFactReader)
+        val before = reader.authorize(claim, exactFact = action != "increment")
+        val habit = requireNotNull(before.value)
+        if (habit.completionPolicy == "one_and_done") {
+            require(action == "toggle")
+            val complete = requireNotNull(claim.oneTimeState).completionEventUuid == null
+            requireNotNull(oneTimeRepository).change(habit.id, complete, expectedUuid = habit.uuid,
+                widgetClaim = claim, widgetReader = reader)
+            notifyWidgetUpdate(context)
+            return reader.afterWrite(claim)
+        }
+        when (action) {
+            "toggle" -> {
+                require(habit.habitType == HabitType.CHECK_IN)
+                if (claim.completionUuid == null) logCompletion(context, habit.id, authority = before.authority,
+                    expectedHabitUuid = habit.uuid, widgetClaim = claim)
+                else undoCompletion(context, requireNotNull(completionDao.getCompletionByUuid(claim.completionUuid)).id,
+                    authority = before.authority, widgetClaim = claim)
+            }
+            "increment" -> {
+                require(habit.habitType == HabitType.COUNTING)
+                logCompletion(context, habit.id, authority = before.authority, expectedHabitUuid = habit.uuid, widgetClaim = claim)
+            }
+            "undo" -> {
+                require(habit.habitType == HabitType.COUNTING && claim.completionUuid != null)
+                undoCompletion(context, requireNotNull(completionDao.getCompletionByUuid(claim.completionUuid)).id,
+                    authority = before.authority, widgetClaim = claim)
+            }
+            else -> error("FACT_WIDGET_UNKNOWN_ACTION")
+        }
+        return reader.afterWrite(claim)
+    }
+
+    /** Goal confirmation uses the post-write display claim, not a newly selected owner or plan. */
+    suspend fun applyWidgetGoal(context: Context, claim: WidgetFactClaim, complete: Boolean) {
+        val reader = requireNotNull(widgetFactReader)
+        val before = reader.authorize(claim)
+        val expected = requireNotNull(before.value)
+        mutate(expected, before.authority) { habit ->
+            val view = reader.requireInTransaction(claim)
+            val progress = view.targetProgress
+            check(habit.completionPolicy == "recurring" && habit.targetCycles != null && progress >= habit.targetCycles) {
+                "FACT_WIDGET_GOAL_CHANGED"
+            }
+            if (complete) habitDao.updateIsActive(habit.id, false)
+            else if (habit.failMode == FailMode.STRICT) habitDao.updateFailMode(habit.id, FailMode.LOOSE)
+        }
+        // Preserve updateIsActive's post-COMMIT reminder side effect. The facade re-reads the
+        // current owner/row, so a late callback cannot cancel another account's reused local ID.
+        if (complete && expected.bestTime != null) HabitReminderScheduler.cancelReminder(context, claim.habitId)
+        notifyWidgetUpdate(context)
+    }
+
+    /** A completed timer's goal edits the displayed plan, never the current numeric ID's new plan. */
+    suspend fun applyTimerGoal(context: Context, claim: TimerCompletionFollowUpClaim, complete: Boolean) {
+        val writer = requireNotNull(timerWriter)
+        val captured = writer.authorizeGoal(claim)
+        val expected = requireNotNull(captured.value)
+        mutate(expected, requireNotNull(captured.authority)) { habit ->
+            val view = writer.completionInTransaction(habit.id, claim.source, claim.displayedPlan)
+            check(view.goalReached) { "TIMER_GOAL_CHANGED" }
+            val access = writer.requireCompletionAccessInTransaction(claim.source, "structure.write")
+            if (complete) habitDao.updateIsActive(habit.id, false)
+            else if (habit.failMode == FailMode.STRICT) habitDao.updateFailMode(habit.id, FailMode.LOOSE)
+            check(writer.requireCompletionAccessInTransaction(claim.source, "structure.write") == access)
+        }
+        if (complete && expected.bestTime != null) HabitReminderScheduler.cancelReminder(context, expected.id)
+        notifyWidgetUpdate(context)
+    }
 
     suspend fun createHabit(
         name: String,
@@ -60,11 +205,20 @@ class HabitRepository @Inject constructor(
         bestTime: Long? = null,  // Best execution time (minutes since midnight)
         predefinedUuid: String? = null,  // Pre-allocated UUID for goal creation flow
         context: Context? = null,
-        selectedMetricIds: Set<Long> = emptySet()
+        selectedMetricIds: Set<Long> = emptySet(),
+        appearance: com.dayforge.domain.model.ObjectAppearance? = null,
+        completionPolicy: String? = null,
+        creationAuthority: ObjectCreationAuthority? = null
     ): Long {
-        structuralEditGuard?.requireAllowed()
-        val habit = HabitEntity(
-            uuid = predefinedUuid ?: java.util.UUID.randomUUID().toString(),  // Use predefined or generate new
+        if (creationAuthority == null) structuralEditGuard?.requireAllowed()
+        val draft = HabitDraft(id = predefinedUuid ?: java.util.UUID.randomUUID().toString(),
+            name = name, description = description, habitType = habitType, iconResId = iconResId,
+            colorHex = colorHex, schedule = schedule, targetValue = targetValue, isCountdown = isCountdown,
+            targetCycles = targetCycles, failMode = failMode, bestTime = bestTime,
+            selectedMetricIds = selectedMetricIds, appearance = appearance, completionPolicy = completionPolicy)
+        val habit = if (creationAuthority != null) requireNotNull(nextObjectCreator)
+            .habit(draft, parentHabitId, creationAuthority) else HabitEntity(
+            uuid = draft.id,
             name = name,
             description = description,
             habitType = habitType,
@@ -78,11 +232,29 @@ class HabitRepository @Inject constructor(
             failMode = failMode,
             bestTime = bestTime
         )
-        val id = database.withTransaction {
-            requireValidHierarchy(habit)
-            val habitId = habitDao.insert(habit)
-            selectedMetricIds.forEach { metricId ->
-                val metric = requireNotNull(database.metricDao().getMetricById(metricId)) {
+        if (creationAuthority == null) require(appearance == null && completionPolicy == null && schedule !is HabitSchedule.Once) {
+            "OBJECT_CREATE_REQUIRES_COORDINATED_SWITCH"
+        }
+        val id = if (creationAuthority != null) requireNotNull(nextObjectCreator).habits(listOf(habit), creationAuthority) {
+            insertHabit(habit, selectedMetricIds)
+        } else database.withTransaction {
+            if (nextObjectCreator != null) NextProtocolAdmission.requireLegacyCreation(database)
+            insertHabit(habit, selectedMetricIds)
+        }
+        // Side effects only after the complete business/original intent transaction commits.
+        context?.let { notifyWidgetUpdate(it) }
+        if (habit.bestTime != null && habit.habitType != HabitType.GOAL) {
+            context?.let { HabitReminderScheduler.scheduleReminder(it, id) }
+        }
+        return id
+    }
+
+    private suspend fun insertHabit(habit: HabitEntity, selectedMetricIds: Set<Long>): Long {
+        requireValidHierarchy(habit)
+        require(habitDao.getHabitByUuid(habit.uuid) == null) { "OBJECT_CREATE_ID_REUSED" }
+        val habitId = habitDao.insert(habit)
+        selectedMetricIds.forEach { metricId ->
+                val metric = requireNotNull(database.metricDao().getVisibleMetricById(metricId)) {
                     "Selected metric no longer exists: $metricId"
                 }
                 database.habitMetricLinkDao().insertOrIgnore(
@@ -96,55 +268,69 @@ class HabitRepository @Inject constructor(
                         promptOnComplete = true
                     )
                 )
-            }
-            habitId
         }
-        // Notify widgets to update (Progress/Motivation show total habits count)
-        context?.let { notifyWidgetUpdate(it) }
-        // Schedule reminder if bestTime is set (NOTIFY-01)
-        if (habit.bestTime != null && habit.habitType != HabitType.GOAL) {
-            context?.let {
-                HabitReminderScheduler.scheduleReminder(it, id, habit.bestTime, habit.habitType, habit.targetValue)
-            }
-        }
-        return id
+        return habitId
     }
 
     /** Parent, children, metric links and their outbox entries commit together. */
-    suspend fun createGoal(goal: HabitDraft, children: List<HabitDraft>, context: Context? = null): Long {
-        structuralEditGuard?.requireAllowed()
+    suspend fun createGoal(goal: HabitDraft, children: List<HabitDraft>, context: Context? = null,
+        creationAuthority: ObjectCreationAuthority? = null): Long {
+        if (creationAuthority == null) structuralEditGuard?.requireAllowed()
         require(goal.habitType == HabitType.GOAL && goal.selectedMetricIds.isEmpty())
         require(children.all { it.habitType != HabitType.GOAL })
         require((listOf(goal.id) + children.map { it.id }).distinct().size == children.size + 1)
-        val saved = database.withTransaction {
+        fun row(draft: HabitDraft, parent: String?): HabitEntity = if (creationAuthority != null)
+            requireNotNull(nextObjectCreator).habit(draft, parent, creationAuthority) else {
+                require(draft.appearance == null && draft.completionPolicy == null && draft.schedule !is HabitSchedule.Once)
+                HabitEntity(uuid = draft.id, name = draft.name, description = draft.description, habitType = draft.habitType,
+                    iconResId = draft.iconResId, colorHex = draft.colorHex, schedule = draft.schedule,
+                    targetValue = draft.targetValue, isCountdown = draft.isCountdown, parentHabitId = parent,
+                    targetCycles = draft.targetCycles, failMode = draft.failMode, bestTime = draft.bestTime)
+            }
+        val rows = listOf(row(goal, null)) + children.map { row(it, goal.id) }
+        suspend fun commit(): List<HabitEntity> {
             // A restored draft may have committed immediately before process death.
             // Stable UUIDs make retrying the complete save safe without replacing rows.
             val existing = habitDao.getHabitByUuid(goal.id)
             if (existing != null) {
                 require(existing.habitType == HabitType.GOAL && existing.parentHabitId == null)
                 require(children.all { habitDao.getHabitByUuid(it.id)?.parentHabitId == goal.id })
-                return@withTransaction listOf(existing) + habitDao.getChildrenByParentUuidOnce(goal.id)
+                if (creationAuthority != null) {
+                    val actual = listOf(existing) + habitDao.getChildrenByParentUuidOnce(goal.id)
+                    require(actual.map { it.uuid }.toSet() == rows.map { it.uuid }.toSet()) { "OBJECT_CREATE_ID_REUSED" }
+                    for (expected in rows) {
+                        val old = actual.single { it.uuid == expected.uuid }
+                        require(old.copy(id = 0, createdAt = expected.createdAt, updatedAt = expected.updatedAt,
+                            activityRateUpdatedAt = expected.activityRateUpdatedAt,
+                            planMetadata = old.planMetadata?.copy(creationTimestamp = expected.planMetadata!!.creationTimestamp)) == expected) {
+                            "OBJECT_CREATE_ID_REUSED"
+                        }
+                        val links = database.habitMetricLinkDao().getAllLinksForHabit(old.id).map { it.metricId }
+                        require(links.toSet() == (listOf(goal) + children).single { it.id == old.uuid }.selectedMetricIds) {
+                            "OBJECT_CREATE_ID_REUSED"
+                        }
+                    }
+                    return actual
+                }
+                return listOf(existing) + habitDao.getChildrenByParentUuidOnce(goal.id)
             }
             suspend fun insert(draft: HabitDraft, parent: String?): HabitEntity {
-                val id = createHabit(
-                    name = draft.name, description = draft.description, habitType = draft.habitType,
-                    iconResId = draft.iconResId, colorHex = draft.colorHex, schedule = draft.schedule,
-                    targetValue = draft.targetValue, isCountdown = draft.isCountdown,
-                    parentHabitId = parent, targetCycles = draft.targetCycles, failMode = draft.failMode,
-                    bestTime = draft.bestTime, predefinedUuid = draft.id,
-                    selectedMetricIds = draft.selectedMetricIds
-                )
+                val id = insertHabit(rows.single { it.uuid == draft.id && it.parentHabitId == parent }, draft.selectedMetricIds)
                 return requireNotNull(habitDao.getHabitById(id))
             }
-            listOf(insert(goal, null)) + children.map { insert(it, goal.id) }
+            return listOf(insert(goal, null)) + children.map { insert(it, goal.id) }
         }
+        val saved = if (creationAuthority != null) requireNotNull(nextObjectCreator).habits(rows, creationAuthority, ::commit)
+            else database.withTransaction {
+                if (nextObjectCreator != null) NextProtocolAdmission.requireLegacyCreation(database)
+                commit()
+            }
         // No externally visible side effects until the outer transaction commits.
         context?.let { appContext ->
             notifyWidgetUpdate(appContext)
             saved.forEach { habit ->
                 if (habit.bestTime != null && habit.habitType != HabitType.GOAL) {
-                    HabitReminderScheduler.scheduleReminder(appContext, habit.id, habit.bestTime,
-                        habit.habitType, habit.targetValue)
+                    HabitReminderScheduler.scheduleReminder(appContext, habit.id)
                 }
             }
         }
@@ -154,19 +340,26 @@ class HabitRepository @Inject constructor(
     suspend fun updateHabit(
         habit: HabitEntity,
         context: Context? = null,
-        selectedMetricIds: Set<Long>? = null
+        selectedMetricIds: Set<Long>? = null,
+        editAuthority: ObjectEditAuthority? = null
     ) {
-        structuralEditGuard?.requireAllowed()
-        val persistedHabit = habit.copy(updatedAt = System.currentTimeMillis())
-        val previousHabit = database.withTransaction {
+        if (habit.appearance == null) structuralEditGuard?.requireAllowed()
+        var persistedHabit = habit.copy(updatedAt = System.currentTimeMillis())
+        suspend fun commit(saved: HabitEntity): HabitEntity {
             val previous = requireNotNull(habitDao.getHabitById(habit.id)) {
                 "Habit no longer exists: ${habit.id}"
             }
-            requireValidHierarchy(persistedHabit)
-            habitDao.update(persistedHabit)
-            selectedMetricIds?.let { reconcileMetricLinks(persistedHabit, it) }
-            previous
+            check((previous.appearance == null) == (saved.appearance == null)) { "OBJECT_EDIT_REQUIRES_COORDINATED_SWITCH" }
+            requireValidHierarchy(saved)
+            habitDao.update(saved)
+            selectedMetricIds?.let { reconcileMetricLinks(saved, it) }
+            persistedHabit = saved
+            return previous
         }
+        val previousHabit = if (habit.appearance != null && nextObjectEditor != null) {
+            nextObjectEditor.editHabit(habit,
+                requireNotNull(editAuthority) { "OBJECT_EDIT_TICKET_REQUIRED" }, ::commit)
+        } else database.withTransaction { commit(persistedHabit) }
         // Notify widgets to update
         context?.let { notifyWidgetUpdate(it) }
         // Handle reminder scheduling changes (NOTIFY-01)
@@ -187,17 +380,14 @@ class HabitRepository @Inject constructor(
 
             // Cancel existing reminder if needed
             if (needsCancel) {
-                HabitReminderScheduler.cancelReminder(it, habit.id, previousHabitType, previousTargetValue)
+                HabitReminderScheduler.cancelReminder(it, habit.id)
             }
 
             // Schedule new reminder if needed
             if (needsSchedule) {
                 HabitReminderScheduler.scheduleReminder(
                     it,
-                    persistedHabit.id,
-                    newBestTime,
-                    persistedHabit.habitType,
-                    persistedHabit.targetValue
+                    persistedHabit.id
                 )
             }
         }
@@ -226,13 +416,20 @@ class HabitRepository @Inject constructor(
         val existingLinks = linkDao.getAllLinksForHabit(habit.id)
         existingLinks
             .filter { it.metricId !in selectedMetricIds }
-            .forEach { linkDao.delete(it) }
+            .forEach {
+                if (habit.appearance != null) NextMetricDeletionStore(database).stageLink(it)
+                else linkDao.delete(it)
+            }
+
+        existingLinks.filter { it.metricId in selectedMetricIds }.forEach {
+            NextMetricDeletionStore(database).requireLinkWritable(it)
+        }
 
         val existingMetricIds = existingLinks.mapTo(mutableSetOf()) { it.metricId }
         selectedMetricIds
             .filterNot { it in existingMetricIds }
             .forEach { metricId ->
-                val metric = requireNotNull(database.metricDao().getMetricById(metricId)) {
+                val metric = requireNotNull(database.metricDao().getVisibleMetricById(metricId)) {
                     "Selected metric no longer exists: $metricId"
                 }
                 linkDao.insertOrIgnore(
@@ -252,20 +449,20 @@ class HabitRepository @Inject constructor(
     suspend fun deleteHabit(
         habit: HabitEntity,
         context: Context? = null,
-        factDerivedTaskFinalization: Boolean = false
+        factDerivedTaskFinalization: Boolean = false,
+        authority: ObjectEditAuthority? = null
     ) {
-        if (!factDerivedTaskFinalization) structuralEditGuard?.requireAllowed()
-        // Cancel any pending reminder for this habit
-        if (habit.bestTime != null) {
-            context?.let {
-                HabitReminderScheduler.cancelReminder(it, habit.id, habit.habitType, habit.targetValue)
-            }
+        if (habit.appearance != null) {
+            require(!factDerivedTaskFinalization) { "ONE_TIME_COMPLETION_MUST_BE_RETAINED" }
+            val deleted = requireNotNull(nextObjectEditor).deleteHabit(habit,
+                if (habit.habitType == HabitType.GOAL) "detach_children" else null, authority)
+            afterHabitDeletion(deleted, context)
+            return
         }
+        if (!factDerivedTaskFinalization) structuralEditGuard?.requireAllowed()
         // The local delete and its cascades are captured atomically by the v2 outbox.
         habitDao.delete(habit)
-
-        // Notify widgets to update progress and motivation, and mark checkin/counting widgets as deleted
-        context?.let { notifyWidgetUpdate(it) }
+        afterHabitDeletion(listOf(habit), context)
     }
 
     /**
@@ -274,7 +471,11 @@ class HabitRepository @Inject constructor(
      * @param habit The parent habit to delete with all children
      * @param context Context for widget notification
      */
-    suspend fun deleteHabitWithChildren(habit: HabitEntity, context: Context? = null) {
+    suspend fun deleteHabitWithChildren(habit: HabitEntity, context: Context? = null, authority: ObjectEditAuthority? = null) {
+        if (habit.appearance != null) {
+            afterHabitDeletion(requireNotNull(nextObjectEditor).deleteHabit(habit, "cascade_children", authority), context)
+            return
+        }
         structuralEditGuard?.requireAllowed()
         val deletedHabits = database.withTransaction {
             val descendants = collectDescendants(habit.uuid, mutableSetOf(habit.uuid))
@@ -288,9 +489,7 @@ class HabitRepository @Inject constructor(
                 if (deleted.bestTime != null) {
                     HabitReminderScheduler.cancelReminder(
                         appContext,
-                        deleted.id,
-                        deleted.habitType,
-                        deleted.targetValue
+                        deleted.id
                     )
                 }
             }
@@ -305,7 +504,11 @@ class HabitRepository @Inject constructor(
      * @param habit The parent habit to delete
      * @param context Context for widget notification
      */
-    suspend fun deleteHabitOrphanChildren(habit: HabitEntity, context: Context? = null) {
+    suspend fun deleteHabitOrphanChildren(habit: HabitEntity, context: Context? = null, authority: ObjectEditAuthority? = null) {
+        if (habit.appearance != null) {
+            afterHabitDeletion(requireNotNull(nextObjectEditor).deleteHabit(habit, "detach_children", authority), context)
+            return
+        }
         structuralEditGuard?.requireAllowed()
         database.withTransaction {
             val children = habitDao.getChildrenByParentUuidOnce(habit.uuid)
@@ -319,9 +522,7 @@ class HabitRepository @Inject constructor(
             if (habit.bestTime != null) {
                 HabitReminderScheduler.cancelReminder(
                     appContext,
-                    habit.id,
-                    habit.habitType,
-                    habit.targetValue
+                    habit.id
                 )
             }
             notifyWidgetUpdate(appContext)
@@ -334,7 +535,17 @@ class HabitRepository @Inject constructor(
      * @return List of child habits
      */
     suspend fun getHabitChildren(habitUuid: String): List<HabitEntity> {
-        return habitDao.getChildrenByParentUuidOnce(habitUuid)
+        return habitDao.getVisibleChildrenByParentUuidOnce(habitUuid)
+    }
+
+    private suspend fun afterHabitDeletion(deleted: List<HabitEntity>, context: Context?) {
+        if (deleted.isEmpty()) return
+        context?.let { appContext ->
+            deleted.forEach { habit -> if (habit.bestTime != null) {
+                HabitReminderScheduler.cancelReminder(appContext, habit.id)
+            } }
+            notifyWidgetUpdate(appContext)
+        }
     }
 
     /**
@@ -368,18 +579,26 @@ class HabitRepository @Inject constructor(
         isActive: Boolean,
         context: Context
     ) {
-        structuralEditGuard?.requireAllowed()
         val habit = habitDao.getHabitById(habitId)
-        habitDao.updateIsActive(habitId, isActive)
+        if (habit?.appearance != null && nextObjectEditor != null) {
+            val captured = nextObjectEditor.habit(habitId)
+            val row = requireNotNull(captured.value) { "OBJECT_EDIT_NOT_FOUND" }
+            nextObjectEditor.editHabit(row.copy(isActive = isActive), requireNotNull(captured.authority)) {
+                habitDao.update(it)
+            }
+        } else {
+            structuralEditGuard?.requireAllowed()
+            habitDao.updateIsActive(habitId, isActive)
+        }
 
         // Handle reminder scheduling based on active status
         if (habit != null && habit.bestTime != null && habit.habitType != HabitType.GOAL) {
             if (!isActive) {
                 // Habit deactivated: cancel reminder
-                HabitReminderScheduler.cancelReminder(context, habitId, habit.habitType, habit.targetValue)
+                HabitReminderScheduler.cancelReminder(context, habitId)
             } else {
                 // Habit reactivated: schedule reminder
-                HabitReminderScheduler.scheduleReminder(context, habitId, habit.bestTime, habit.habitType, habit.targetValue)
+                HabitReminderScheduler.scheduleReminder(context, habitId)
             }
         }
 
@@ -402,8 +621,8 @@ class HabitRepository @Inject constructor(
         failMode: com.dayforge.data.model.FailMode,
         context: Context
     ) {
-        structuralEditGuard?.requireAllowed()
-        habitDao.updateFailMode(habitId, failMode)
+        val habit = requireNotNull(habitDao.getHabitById(habitId))
+        mutate(habit) { habitDao.updateFailMode(it.id, failMode) }
 
         // Notify widgets to update
         notifyWidgetUpdate(context)
@@ -417,31 +636,35 @@ class HabitRepository @Inject constructor(
      * @param value The completion value (default 1 for check-in habits)
      * @return The ID of the inserted completion
      */
-    suspend fun logCompletion(context: Context, habitId: Long, value: Int = 1): Long {
+    suspend fun logCompletion(context: Context, habitId: Long, value: Int = 1,
+        authority: ObjectEditAuthority? = null, expectedHabitUuid: String? = null,
+        widgetClaim: WidgetFactClaim? = null): Long {
+        val capturedHabit = habitDao.getHabitById(habitId)
+        if (expectedHabitUuid != null) check(capturedHabit?.uuid == expectedHabitUuid) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
+        if (capturedHabit?.completionPolicy == "one_and_done") {
+            require(value == 1) { "ONE_TIME_VALUE_MUST_BE_ONE" }
+            val id = requireNotNull(oneTimeRepository).change(habitId, complete = true, expectedUuid = capturedHabit.uuid,
+                widgetClaim = widgetClaim, widgetReader = widgetFactReader)
+            notifyWidgetUpdate(context)
+            return id
+        }
         val occurredAt = java.time.Instant.now()
         val capturedZone = java.time.ZoneId.systemDefault()
-        if (habitDao.getHabitById(habitId)?.isActive == false) {
-            structuralEditGuard?.requireAllowed()
-        }
-        val id = database.withTransaction {
-            // Auto-reactivate if habit is currently inactive
-            val habit = habitDao.getHabitById(habitId)
-            if (habit != null && !habit.isActive) {
-                habitDao.updateIsActive(habitId, true)
+        val id = mutate(requireNotNull(capturedHabit), authority, structural = !capturedHabit.isActive) { habit ->
+            if (widgetClaim != null) {
+                val view = requireNotNull(widgetFactReader).requireInTransaction(widgetClaim,
+                    exactFact = habit.habitType != HabitType.COUNTING)
+                check(com.dayforge.domain.service.ScheduleValidator.isCheckInAllowedToday(habit.schedule, habit.createdAt)) {
+                    "FACT_WIDGET_NOT_SCHEDULED"
+                }
+                check(occurredAt.atZone(capturedZone).toLocalDate().toString() == widgetClaim.date &&
+                    capturedZone.id == widgetClaim.timezone) { "FACT_WIDGET_DAY_CHANGED" }
+                view.count?.let { history ->
+                    val policy = requireNotNull(history.todayPolicy)
+                    check(!policy.isCountdown || history.todayQuantity < policy.targetValue) { "COUNT_DAY_ALREADY_COMPLETED" }
+                }
             }
-
-            val completion = CompletionEntity(
-                habitId = habitId,
-                date = occurredAt.atZone(capturedZone).toLocalDate().atStartOfDay(capturedZone)
-                    .toInstant().toEpochMilli(),
-                value = value,
-                actualCompletedAt = occurredAt.toEpochMilli(),
-                habitUuid = habit?.uuid,
-                recordedTimezone = capturedZone.id
-            )
-            val completionId = completionDao.insert(completion)
-            updateActivityRate(habitId)
-            completionId
+            insertCompletionInTransaction(habit, occurredAt, capturedZone, value)
         }
 
         // Notify widgets to update
@@ -457,20 +680,76 @@ class HabitRepository @Inject constructor(
      * @param context Context for scheduling widget refresh
      * @param completionId The ID of the completion to delete
      */
-    suspend fun undoCompletion(context: Context, completionId: Long) {
-        database.withTransaction {
+    suspend fun undoCompletion(context: Context, completionId: Long,
+        oneTimeAuthority: com.dayforge.domain.model.OneTimeActionAuthority? = null,
+        authority: ObjectEditAuthority? = null, widgetClaim: WidgetFactClaim? = null) {
+        val initial = completionDao.getCompletionById(completionId)
+        if (oneTimeAuthority != null) check(initial?.oneTimeAction == "complete") { "ONE_TIME_ACTION_EXPIRED" }
+        if (initial?.oneTimeAction != null) {
+            require(initial.oneTimeAction == "complete") { "ONE_TIME_ONLY_COMPLETION_CAN_BE_UNDONE" }
+            requireNotNull(oneTimeRepository).change(initial.habitId, complete = false,
+                expectedCompletionId = completionId, expectedUuid = initial.habitUuid, authority = oneTimeAuthority,
+                widgetClaim = widgetClaim, widgetReader = widgetFactReader)
+            notifyWidgetUpdate(context)
+            return
+        }
+        if (initial == null) { check(widgetClaim == null) { "FACT_WIDGET_FACT_CHANGED" }; return }
+        val expected = requireNotNull(habitDao.getHabitById(initial.habitId))
+        if (expected.appearance != null) check(initial.habitUuid == expected.uuid) { "OBJECT_WRITE_FACT_CHANGED" }
+        mutate(expected, authority, structural = false) {
+            if (widgetClaim != null) {
+                requireNotNull(widgetFactReader).requireInTransaction(widgetClaim)
+                check(initial.uuid == widgetClaim.completionUuid) { "FACT_WIDGET_FACT_CHANGED" }
+            }
             val completion = completionDao.getCompletionById(completionId)
-                ?: return@withTransaction null
+            // Ordinary undo has always been a no-op when another click already removed it.
+            if (completion == null) return@mutate
+            check(completion == initial) { "OBJECT_WRITE_FACT_CHANGED" }
 
             // A fact cannot be mutated remotely; the outbox converts this delete to a
             // new immutable revert event when the original event was already synced.
-            completionDao.delete(completion)
-            updateActivityRate(completion.habitId)
-            completion.habitId
-        } ?: return
+            completionDao.delete(initial)
+            updateActivityRate(initial.habitId)
+        }
 
         // Notify widgets
         notifyWidgetUpdate(context)
+    }
+
+    /** The widget workflow already owns the original-account lock and actual Room transaction. */
+    internal suspend fun insertLegacyWidgetCompletionInTransaction(habit: HabitEntity,
+        occurredAt: java.time.Instant, zone: java.time.ZoneId): Long {
+        check(database.inTransaction() && habit.appearance == null)
+        check(habitDao.getVisibleHabitById(habit.id) == habit) { "LEGACY_WIDGET_HABIT_CHANGED" }
+        return insertCompletionInTransaction(habit, occurredAt, zone, 1)
+    }
+
+    internal suspend fun undoLegacyWidgetCompletionInTransaction(completion: CompletionEntity) {
+        check(database.inTransaction() && completion.oneTimeAction == null)
+        val habit = requireNotNull(habitDao.getVisibleHabitById(completion.habitId))
+        check(habit.appearance == null && (completion.habitUuid == null || habit.uuid == completion.habitUuid)) { "LEGACY_WIDGET_HABIT_CHANGED" }
+        check(completionDao.getCompletionById(completion.id) == completion) { "LEGACY_WIDGET_FACT_CHANGED" }
+        completionDao.delete(completion)
+        updateActivityRate(habit.id)
+    }
+
+    private suspend fun insertCompletionInTransaction(habit: HabitEntity, occurredAt: java.time.Instant,
+        zone: java.time.ZoneId, value: Int): Long {
+        check(database.inTransaction())
+        if (!habit.isActive) habitDao.updateIsActive(habit.id, true)
+        val completion = CompletionEntity(
+            habitId = habit.id,
+            date = occurredAt.atZone(zone).toLocalDate().atStartOfDay(zone).toInstant().toEpochMilli(),
+            value = value,
+            actualCompletedAt = occurredAt.toEpochMilli(),
+            habitUuid = habit.uuid,
+            recordedTimezone = zone.id
+        )
+        if (habit.appearance != null && habit.habitType == HabitType.COUNTING)
+            NextCountDayStore(database).capture(habit, completion)
+        val id = completionDao.insert(completion)
+        updateActivityRate(habit.id)
+        return id
     }
 
     /**
@@ -480,16 +759,30 @@ class HabitRepository @Inject constructor(
      * @param context Context for widget notification
      */
     suspend fun clearHabitHistory(habit: HabitEntity, context: Context) {
+        require(habit.completionPolicy != "one_and_done") { "ONE_TIME_HISTORY_IS_IMMUTABLE" }
         structuralEditGuard?.requireAllowed()
         database.withTransaction {
-            // Local deletes become fact tombstones/revert events through the outbox.
-            completionDao.deleteByHabitId(habit.id)
-            timeLogDao.deleteByHabitId(habit.id)
-            habitDao.updateIsActive(habit.id, true)
+            // A profile cache may already contain another round. Physical history deletion is
+            // never a challenge restart; leave all facts/requests intact until its new entry is ready.
+            clearLegacyHabitHistoryInTransaction(database, habit)
         }
 
         // Notify widgets
         notifyWidgetUpdate(context)
+    }
+
+    private suspend fun <T> mutate(expected: HabitEntity, authority: ObjectEditAuthority? = null,
+        structural: Boolean = true, commit: suspend (HabitEntity) -> T): T {
+        if (expected.appearance != null && nextObjectEditor != null) {
+            return nextObjectEditor.mutateHabit(expected, authority, commit)
+        }
+        check(authority == null) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
+        if (structural) structuralEditGuard?.requireAllowed()
+        return database.withTransaction {
+            val current = requireNotNull(habitDao.getHabitById(expected.id)) { "OBJECT_WRITE_NOT_FOUND" }
+            check(current.uuid == expected.uuid) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
+            commit(current)
+        }
     }
 
     /**
@@ -498,6 +791,11 @@ class HabitRepository @Inject constructor(
      * @return Sum of completion values for today
      */
     suspend fun getTodayCompletionCount(habitId: Long): Int {
+        val habit = habitDao.getHabitById(habitId)
+        if (habit?.habitType == HabitType.COUNTING && habit.appearance != null)
+            return getCountHistory(habit).todayQuantity.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        if (habit?.habitType == HabitType.CHECK_IN && habit.appearance != null && habit.completionPolicy == "recurring")
+            return getCheckHistory(habit).todayQuantity.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
         val today = DateTimeUtils.today()
         val tomorrow = today.plusDays(1)
         val completions = completionDao.getCompletionsInRange(habitId, today, tomorrow)
@@ -510,8 +808,28 @@ class HabitRepository @Inject constructor(
      * @return Flow of StreakStats with current and best streak
      */
     fun getStreakStats(habitId: Long): Flow<StreakStats> {
-        return completionDao.getCompletionsByHabit(habitId)
+        return kotlinx.coroutines.flow.combine(completionDao.getCompletionsByHabit(habitId), countChanges,
+            habitDao.getHabitByIdFlow(habitId)) { rows, _, _ -> rows }
             .map { completions ->
+                val habit = habitDao.getHabitById(habitId)
+                if (habit?.completionPolicy == "one_and_done") {
+                    return@map StreakStats(0, 0, null)
+                }
+                if (habit?.habitType == HabitType.COUNTING && habit.appearance != null) {
+                    val history = getCountHistory(habit)
+                    return@map StreakStats(StreakCalculator.currentFromBusinessDates(history.qualifiedDates, history.today),
+                        StreakCalculator.bestFromBusinessDates(history.qualifiedDates), history.qualifiedDates.maxOrNull()?.toDisplayMillis())
+                }
+                if (habit?.habitType == HabitType.CHECK_IN && habit.appearance != null) {
+                    val history = getCheckHistory(habit)
+                    return@map StreakStats(StreakCalculator.currentFromBusinessDates(history.qualifiedDates, history.today),
+                        StreakCalculator.bestFromBusinessDates(history.qualifiedDates), history.qualifiedDates.maxOrNull()?.toDisplayMillis())
+                }
+                if (habit?.habitType == HabitType.TIMER && habit.appearance != null) {
+                    val history = getTimerHistory(habit)
+                    return@map StreakStats(StreakCalculator.currentFromBusinessDates(history.qualifiedDates, history.today),
+                        StreakCalculator.bestFromBusinessDates(history.qualifiedDates), history.qualifiedDates.maxOrNull()?.toDisplayMillis())
+                }
                 val currentStreak = StreakCalculator.calculateCurrentStreak(completions)
                 val bestStreak = StreakCalculator.calculateBestStreak(completions)
                 val lastCompletionDate = completions.maxOfOrNull { it.businessDate }?.toDisplayMillis()
@@ -541,6 +859,13 @@ class HabitRepository @Inject constructor(
      * @return Completion ID if completed today, null otherwise
      */
     suspend fun getTodayCompletionId(habitId: Long): Long? {
+        val habit = habitDao.getHabitById(habitId)
+        if (habit?.habitType == HabitType.COUNTING && habit.appearance != null) {
+            val history = getCountHistory(habit)
+            return history.completions.filter { it.recordedLocalDate == history.today.toString() }.maxByOrNull { it.id }?.id
+        }
+        if (habit?.habitType == HabitType.CHECK_IN && habit.appearance != null && habit.completionPolicy == "recurring")
+            return getCheckHistory(habit).todayCompletions.maxByOrNull { it.id }?.id
         val today = DateTimeUtils.today()
         val tomorrow = today.plusDays(1)
         return completionDao.getTodayCompletionId(habitId, today, tomorrow)
@@ -551,17 +876,13 @@ class HabitRepository @Inject constructor(
      * Called when user logs out or a new user logs in.
      */
     suspend fun clearAllData(context: Context? = null) {
-        // Cancel all habit reminders before clearing database
-        context?.let {
-            val allHabits = habitDao.getAllHabitsOnce()
-            for (habit in allHabits) {
-                if (habit.bestTime != null) {
-                    HabitReminderScheduler.cancelReminder(it, habit.id, habit.habitType, habit.targetValue)
-                }
-            }
-        }
         database.clearAllData()
-        context?.let { notifyWidgetUpdate(it) }
+        context?.let {
+            // Login/logout owns the account lock here. Cancel only after the clear commits;
+            // never call a scheduler that attempts to reacquire the same non-reentrant lock.
+            HabitReminderScheduler.cancelAllReminders(it)
+            notifyWidgetUpdate(it)
+        }
     }
 
     /**

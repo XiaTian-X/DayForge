@@ -13,16 +13,33 @@ import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
+import dagger.hilt.android.testing.HiltAndroidRule
+import dagger.hilt.android.testing.HiltAndroidTest
 import org.junit.Assert.*
 import org.junit.Rule
+import org.junit.Before
+import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
+@HiltAndroidTest
+@OptIn(ExperimentalTestApi::class, ExperimentalCoroutinesApi::class)
 class CheckInWidgetConfigActivityTest {
     @get:Rule(order = 0) val storage = PhysicalDatabaseRule()
-    @get:Rule(order = 1) val compose = createEmptyComposeRule()
+    @get:Rule(order = 1) val hilt = HiltAndroidRule(this)
+    private val effects = StandardTestDispatcher()
+    @get:Rule(order = 2) val compose = createEmptyComposeRule(effectContext = effects)
     private val context: Context = ApplicationProvider.getApplicationContext()
+    @Before fun setup() { hilt.inject() }
+    @After fun drainClosedActivityEffectsOnMain() {
+        compose.waitForIdle()
+        androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            effects.scheduler.runCurrent()
+        }
+    }
 
     @Test fun testFilterOnlyCheckInHabits() {
         runBlocking {
@@ -35,7 +52,7 @@ class CheckInWidgetConfigActivityTest {
         val intent = Intent(context, CheckInWidgetConfigActivity::class.java)
             .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, 71001)
         ActivityScenario.launch<CheckInWidgetConfigActivity>(intent).use {
-            compose.waitUntil(5_000) { compose.onAllNodesWithText("Daily Exercise").fetchSemanticsNodes().size == 1 }
+            compose.waitUntil(5_000) { compose.onAllNodesWithText("Daily Exercise").fetchSemanticsNodes(atLeastOneRootRequired = false).size == 1 }
             compose.onNodeWithText("Daily Exercise").assertIsDisplayed().assertHasClickAction()
             compose.onNodeWithText("Water Glasses").assertDoesNotExist()
         }

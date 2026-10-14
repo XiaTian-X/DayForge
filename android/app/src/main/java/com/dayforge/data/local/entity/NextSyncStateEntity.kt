@@ -1,6 +1,7 @@
 package com.dayforge.data.local.entity
 
 import androidx.room.Entity
+import androidx.room.ColumnInfo
 import androidx.room.PrimaryKey
 import com.dayforge.domain.model.isContractUuid
 
@@ -15,10 +16,12 @@ data class NextSyncStateEntity(
     val cursor: Long,
     val bootstrapHash: String,
     val batchHash: String,
-    @PrimaryKey val id: Int = 1
+    @PrimaryKey val id: Int = 1,
+    @ColumnInfo(defaultValue = "0") val challengeContract: Int = 0
 ) {
     init {
         require(id == 1 && generation > 0 && cursor >= 0)
+        require(challengeContract in 0..1)
         require(listOf(accountId, serverInstanceId, syncEpoch, deviceId).all(::isContractUuid))
         require(listOf(bootstrapHash, batchHash).all { hash ->
             hash.length == 64 && hash.all { it in "0123456789abcdef" }

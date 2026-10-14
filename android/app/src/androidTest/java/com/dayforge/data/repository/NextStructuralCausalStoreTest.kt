@@ -22,6 +22,73 @@ import org.junit.runner.RunWith
 /** D-015 file Room/DataStore + actual HTTP causal-successor regressions. */
 @RunWith(AndroidJUnit4::class)
 class NextStructuralCausalStoreTest : NextCoreRequestFixture() {
+    /** Independent original encoder; do not compare two calls sharing the new buffered encoder. */
+    private fun originalSqlRowHash(table: String, cursor: android.database.Cursor): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        fun bytes(value: ByteArray) {
+            digest.update(java.nio.ByteBuffer.allocate(4).putInt(value.size).array())
+            digest.update(value)
+        }
+        bytes(table.toByteArray(Charsets.UTF_8))
+        for (column in 0 until cursor.columnCount) {
+            bytes(cursor.getColumnName(column).toByteArray(Charsets.UTF_8))
+            val type = cursor.getType(column); digest.update(type.toByte())
+            when (type) {
+                android.database.Cursor.FIELD_TYPE_NULL -> Unit
+                android.database.Cursor.FIELD_TYPE_INTEGER -> bytes(java.nio.ByteBuffer.allocate(8).putLong(cursor.getLong(column)).array())
+                android.database.Cursor.FIELD_TYPE_STRING -> bytes(cursor.getString(column).toByteArray(Charsets.UTF_8))
+                android.database.Cursor.FIELD_TYPE_BLOB -> bytes(cursor.getBlob(column))
+                else -> error("Unexpected fixture SQL type")
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    @Test fun bufferedSourceHashesKeepOriginalFramingAcrossChunkBoundariesAndSignedIntegers() = runBlocking<Unit> {
+        val rows = listOf(0, 1, 4067, 4095, 4096, 4097, 8192, 65_536, 262_144).mapIndexed { index, length ->
+            val payload = "中\u0000😄" + "x".repeat(length)
+            val row = SyncOutboxEntity(operationId = id(950 + index), recordType = "metric", entityUuid = metric.uuid,
+                wireEntityUuid = metric.uuid, action = "upsert", payloadJson = payload, referenceUuid = null,
+                baseRevision = Long.MAX_VALUE, attemptedAt = Long.MIN_VALUE,
+                attemptCount = listOf(Int.MIN_VALUE, -1, 0, Int.MAX_VALUE)[index % 4],
+                createdAt = if (index % 2 == 0) Long.MIN_VALUE else Long.MAX_VALUE)
+            row.copy(id = db.syncOutboxDao().insert(row))
+        }
+        db.withTransaction {
+            val sql = db.openHelper.writableDatabase
+            val expected = rows.associate { row ->
+                val old = sql.query("SELECT * FROM sync_outbox WHERE id=?", arrayOf(row.id)).use {
+                    assertTrue(it.moveToFirst()); originalSqlRowHash("sync_outbox", it)
+                }
+                assertEquals(old, NextRequestSql.sourceHash(row))
+                assertEquals(old, NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(row.id)))
+                row.id to old
+            }
+            assertEquals(expected, NextRequestSql.boundedRowHashes(sql, "sync_outbox", "id", rows.map { it.id }))
+        }
+    }
+
+    @Test fun bufferedHashKeepsActualBlobJournalsAcceptancesAndReplacementProofsByteCompatible() = runBlocking<Unit> {
+        val a = editMetric("Original"); val b = editMetric("Successor"); register()
+        val (http, _) = channel { successReply(it, if (wireOrIdentity(it) == a.operationId) 1 else 2) }
+        val store = sender(http)
+        assertEquals(NextOperationAcceptance.COMMITTED, store.sendAndAcceptOperation(access(), a.operationId))
+        assertEquals(NextOperationAcceptance.COMMITTED, store.sendAndAcceptOperation(access(), b.operationId))
+        db.withTransaction {
+            val sql = db.openHelper.writableDatabase
+            for ((table, column) in listOf("next_request_origins" to "requestId", "next_transmissions" to "requestId",
+                "next_acceptances" to "requestId", "next_structural_dependencies" to "operationId",
+                "next_structural_supersessions" to "originalId", "sync_entity_state" to "entityUuid")) {
+                val expected = sql.query("SELECT * FROM $table").use { c -> buildList {
+                    while (c.moveToNext()) add(c.getString(c.getColumnIndexOrThrow(column)) to originalSqlRowHash(table, c))
+                } }
+                assertTrue(table, expected.isNotEmpty())
+                for ((id, old) in expected) assertEquals(table, old,
+                    NextRequestSql.rowHash(sql, table, "$column=?", arrayOf(id)))
+            }
+        }
+    }
+
     @Test fun digestAndSourceSnapshotKeepTheOriginalLowercaseSqliteHashEncoding() = runBlocking<Unit> {
         assertEquals("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
             nextRequestHash("abc".toByteArray(Charsets.UTF_8)))
@@ -491,7 +558,9 @@ class NextStructuralCausalStoreTest : NextCoreRequestFixture() {
         assertEquals(NextOperationAcceptance.COMMITTED, sender(http).acceptOperation(delivery))
     }
 
-    @Test fun oneTransactionCapturesThirtyTwoOrderedOriginsWithoutGuessingIntermediateProjection() = runBlocking<Unit> {
+    // 2026-10-14: approved capacity for the complete 32-ACK chain. The retained
+    // 150s failure reached 31/32 at 148.955s; all origins and final proofs remain.
+    @Test(timeout = 180_000) fun oneTransactionCapturesThirtyTwoOrderedOriginsWithoutGuessingIntermediateProjection() = runBlocking<Unit> {
         val started = System.nanoTime()
         producer().write(local()) {
             repeat(32) { index -> metrics().updateMetric(db.metricDao().getMetricById(metric.id)!!.copy(name = "Batch $index")) }
@@ -582,6 +651,59 @@ class NextStructuralCausalStoreTest : NextCoreRequestFixture() {
         assertEquals(sup, db.nextStructuralCausalDao().supersession(b.operationId))
         assertEquals(origin, originalIntent(b))
         assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
+    }
+
+    @Test fun warmedAncestryPresenceAndAbsenceAreReauditedAfterWritesAndFailedPasses() = runBlocking<Unit> {
+        val a = editMetric("A"); val b = editMetric("B"); val c = editMetric("C"); register()
+        var revision = 0L
+        val (http, server) = channel { input ->
+            if (input.path.endsWith("/identity")) reply(input) else successReply(input, ++revision)
+        }
+        val store = sender(http)
+        assertEquals(NextOperationAcceptance.COMMITTED, store.sendAndAcceptOperation(access(), a.operationId))
+        assertEquals(NextOperationAcceptance.COMMITTED, store.sendAndAcceptOperation(access(), b.operationId))
+        val delivery = requireNotNull(store.sendOperation(access(), c.operationId))
+        val replacement = db.nextStructuralCausalDao().supersession(c.operationId)!!
+        val captured = access()
+        val networkBefore = server.requests.size
+        val receipt = db.nextRequestDao().acceptance(NEXT_OPERATION, a.operationId)!!
+        val dependency = db.nextStructuralCausalDao().dependency(a.operationId)!!
+        db.withTransaction {
+            val coordinator = NextStructuralCausalStore(db)
+            val sql = db.openHelper.writableDatabase
+            assertEquals(replacement.replacementId, coordinator.resolve(c.operationId, captured))
+            // A retired logical source was absent in the prior warm pass. Reintroducing its
+            // exact original row must invalidate that absence, even on the same coordinator.
+            assertEquals(b.id, db.syncOutboxDao().insert(b))
+            assertNotNull(rejected { coordinator.resolve(c.operationId, captured) })
+            sql.execSQL("DELETE FROM sync_outbox WHERE id=?", arrayOf<Any>(b.id))
+            assertEquals(replacement.replacementId, coordinator.resolve(c.operationId, captured))
+            // Keep the old value's bytes but corrupt the earliest ancestor's actual SQL type.
+            // A failed pass cannot retain its previously validated receipt/dependency either.
+            sql.execSQL("UPDATE next_acceptances SET resultHash=CAST(resultHash AS BLOB) WHERE kind=? AND requestId=?",
+                arrayOf<Any>(NEXT_OPERATION, a.operationId))
+            assertEquals(NextRequestException.Reason.INVALID_LOCAL_STATE,
+                (rejected { coordinator.resolve(c.operationId, captured) } as NextRequestException).reason)
+            sql.execSQL("UPDATE next_acceptances SET resultHash=? WHERE kind=? AND requestId=?",
+                arrayOf<Any>(receipt.resultHash, NEXT_OPERATION, a.operationId))
+            assertEquals(replacement.replacementId, coordinator.resolve(c.operationId, captured))
+            sql.execSQL("UPDATE next_structural_dependencies SET logicalOrder='bad' WHERE operationId=?",
+                arrayOf<Any>(a.operationId))
+            assertEquals(NextRequestException.Reason.INVALID_LOCAL_STATE,
+                (rejected { coordinator.resolve(c.operationId, captured) } as NextRequestException).reason)
+            sql.execSQL("UPDATE next_structural_dependencies SET logicalOrder=? WHERE operationId=?",
+                arrayOf<Any>(dependency.logicalOrder, a.operationId))
+            assertEquals(replacement.replacementId, coordinator.resolve(c.operationId, captured))
+        }
+        assertEquals(networkBefore, server.requests.size)
+        assertEquals(receipt, db.nextRequestDao().acceptance(NEXT_OPERATION, a.operationId))
+        assertEquals(dependency, db.nextStructuralCausalDao().dependency(a.operationId))
+        assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
+        storage.reopen()
+        assertEquals(NextOperationAcceptance.REPLAYED, sender(http).acceptOperation(delivery))
+        assertEquals(networkBefore, server.requests.size)
+        assertEquals(3, count("next_acceptances")); assertEquals(2, count("next_structural_supersessions"))
+        assertEquals(0, count("sync_outbox")); assertEquals("C", db.metricDao().getMetricById(metric.id)!!.name)
     }
 
     @Test fun pureMemoNeverReusesDatabaseProofsAcrossTransactions() = runBlocking<Unit> {

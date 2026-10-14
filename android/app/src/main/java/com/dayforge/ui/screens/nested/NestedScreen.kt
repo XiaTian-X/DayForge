@@ -68,6 +68,7 @@ fun NestedScreen(
 ) {
     val topLevelHabitsWithChildren by viewModel.topLevelHabitsWithChildren.collectAsState()
     val isInitialized by viewModel.isInitialized.collectAsState()
+    val readError by viewModel.readError.collectAsState()
     val activeTimer by viewModel.activeTimerState.collectAsState()
     val pendingMetricHabits by viewModel.pendingMetricHabits.collectAsState()
     val linkedMetricsByHabit by viewModel.linkedMetricsByHabit.collectAsState()
@@ -82,6 +83,7 @@ fun NestedScreen(
     // Reactivation dialog states
     val showReactivationDialog by viewModel.showReactivationDialog.collectAsState()
     val reactivationHabitName by viewModel.reactivationHabitName.collectAsState()
+    val reactivationPreservesHistory by viewModel.reactivationPreservesHistory.collectAsState()
     // Children deletion dialog state
     val showChildrenDialog by viewModel.showChildrenDialog.collectAsState()
     val scope = rememberCoroutineScope()
@@ -191,6 +193,9 @@ fun NestedScreen(
                     )
                 }
             }
+        } else if (readError) {
+            com.dayforge.ui.components.DataReadFailure(viewModel::retryRead,
+                Modifier.fillMaxSize().padding(padding))
         } else if (topLevelHabitsWithChildren.isEmpty()) {
             // Empty state
             Column(
@@ -267,7 +272,7 @@ fun NestedScreen(
                             },
                             onChildDecrement = { habitId ->
                                 val child = parentWithChildren.children.find { it.habit.id == habitId }
-                                if (child != null && child.habit.isCountdown) {
+                                if (child != null && child.displayIsCountdown) {
                                     viewModel.incrementCount(habitId)
                                 } else {
                                     viewModel.decrementCount(habitId)
@@ -347,7 +352,7 @@ fun NestedScreen(
                             },
                             onChildDecrement = { habitId ->
                                 val child = parentWithChildren.children.find { it.habit.id == habitId }
-                                if (child != null && child.habit.isCountdown) {
+                                if (child != null && child.displayIsCountdown) {
                                     viewModel.incrementCount(habitId)
                                 } else {
                                     viewModel.decrementCount(habitId)
@@ -501,21 +506,38 @@ fun NestedScreen(
             PostCheckInDialog(
                 habitName = state.habitName,
                 linkedMetrics = state.linkedMetrics,
+                promptIdentity = state.oneTimePrompt?.eventUuid,
+                missingTargets = state.oneTimePrompt?.entries?.filterNot { it.available }?.map { it.name }.orEmpty(),
+                onRefreshMetadata = if (state.oneTimePrompt != null) viewModel::refreshPostCheckInMetadata else null,
+                initialInputs = state.oneTimePrompt?.entries?.associate { it.metricId to (it.input to it.note) }.orEmpty(),
+                onDraftChange = { inputs -> state.oneTimePrompt?.let { viewModel.savePostCheckInDraft(it.eventUuid, inputs) } },
                 onRecord = { values, neverAskAgain ->
                     scope.launch {
-                        if (!viewModel.recordMetricValues(state.habitId, values)) return@launch
-                        if (neverAskAgain) {
-                            viewModel.setNeverAskAgain(state.habitId, true)
+                        try {
+                            if (!viewModel.recordMetricValues(state.habitId, values, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim)) return@launch
+                            if (neverAskAgain) {
+                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim)
+                            }
+                            viewModel.dismissPostCheckInDialog()
+                        } catch (error: Exception) {
+                            if (error is kotlinx.coroutines.CancellationException) throw error
+                            Toast.makeText(context, context.getString(R.string.metric_error_record_failed,
+                                error.message.orEmpty()), Toast.LENGTH_LONG).show()
                         }
-                        viewModel.dismissPostCheckInDialog()
                     }
                 },
                 onSkip = { neverAskAgain ->
                     scope.launch {
-                        if (neverAskAgain) {
-                            viewModel.setNeverAskAgain(state.habitId, true)
+                        try {
+                            if (neverAskAgain) {
+                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim)
+                            }
+                            viewModel.skipPostCheckInDialog(state.habitId, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim)
+                        } catch (error: Exception) {
+                            if (error is kotlinx.coroutines.CancellationException) throw error
+                            Toast.makeText(context, context.getString(R.string.metric_error_record_failed,
+                                error.message.orEmpty()), Toast.LENGTH_LONG).show()
                         }
-                        viewModel.dismissPostCheckInDialog()
                     }
                 },
                 onDismiss = { viewModel.dismissPostCheckInDialog() }
@@ -540,7 +562,8 @@ fun NestedScreen(
             onDismissRequest = { viewModel.dismissReactivationDialog() },
             title = { Text(stringResource(R.string.dialog_reactivate_confirm)) },
             text = {
-                Text(stringResource(R.string.nested_reactivation_message, reactivationHabitName))
+                Text(stringResource(if (reactivationPreservesHistory) R.string.restart_message
+                    else R.string.nested_reactivation_message, reactivationHabitName))
             },
             confirmButton = {
                 TextButton(onClick = { viewModel.confirmReactivation() }) {

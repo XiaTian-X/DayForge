@@ -15,6 +15,34 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class NextCommonFactMapperTest {
+    @Test fun countPolicyIsStrictAndCannotHideOnOtherFactTypes() {
+        val policy = buildJsonObject { put("target_value", 10); put("is_countdown", true) }
+        val counted = mutate(event("count_snapshot", JsonPrimitive(6)), "count_policy" to policy)
+        assertEquals(6, NextCommonFactMapper.completion(counted, habit(HabitType.COUNTING)).value)
+        assertEquals(com.dayforge.domain.model.CountDayPolicy(10, true), NextCommonFactMapper.countPolicy(counted.payload))
+        assertNull(NextCommonFactMapper.countPolicy(event("count_snapshot").payload))
+        for (bad in listOf(JsonNull, JsonPrimitive("policy"),
+            buildJsonObject { put("target_value", "10"); put("is_countdown", true) },
+            buildJsonObject { put("target_value", 10.0); put("is_countdown", true) },
+            buildJsonObject { put("target_value", 10); put("is_countdown", 1) },
+            buildJsonObject { put("target_value", 0); put("is_countdown", false) },
+            buildJsonObject { put("target_value", 10); put("is_countdown", false); put("extra", 1) }))
+            assertTrue(runCatching { NextCommonFactMapper.completion(mutate(counted, "count_policy" to bad), habit(HabitType.COUNTING)) }.isFailure)
+        for (other in listOf(event(), event("revert", JsonNull), duration()))
+            assertTrue(runCatching { NextCommonFactMapper.countPolicy(mutate(other, "count_policy" to policy).payload) }.isFailure)
+    }
+
+    @Test fun countReceiptMustMatchOriginalRuleNotTodaysPlanOrAnAbsentLegacyProof() {
+        val policy = buildJsonObject { put("target_value", 10); put("is_countdown", false) }
+        val counted = mutate(event("count_delta", JsonPrimitive(6)), "count_policy" to policy)
+        val common = setOf("activity_uuid", "event_type", "value", "occurred_at", "local_date", "timezone", "note", "source_type",
+            "source_device_id", "external_event_id", "metadata", "count_policy")
+        val request = JsonObject(counted.payload.filterKeys { it in common })
+        NextCommonFactProof.requireOriginalPayload(request, counted, device)
+        assertTrue(runCatching { NextCommonFactProof.requireOriginalPayload(JsonObject(request - "count_policy"), counted, device) }.isFailure)
+        val changed = mutate(counted, "count_policy" to buildJsonObject { put("target_value", 5); put("is_countdown", false) })
+        assertTrue(runCatching { NextCommonFactProof.requireOriginalPayload(request, changed, device) }.isFailure)
+    }
     private val id = "83000000-0000-4000-8000-000000000001"
     private val activity = "83000000-0000-4000-8000-000000000002"
     private val metricId = "83000000-0000-4000-8000-000000000003"

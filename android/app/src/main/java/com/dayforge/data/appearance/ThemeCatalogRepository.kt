@@ -77,6 +77,7 @@ internal class ThemeCatalogRepository(
     }
 
     suspend fun initialize(): ThemeCatalogState = serialized {
+        com.dayforge.data.local.ReplicaSwitchGuard.requireOpen(preferences)
         // Reject corrupt metadata before attempting to install anything.
         val previous = state()
         // Existing catalog: validate its fixed APK identities without silently repairing files.
@@ -87,6 +88,7 @@ internal class ThemeCatalogRepository(
             ThemeCatalogSlot(theme.ref(), theme.definitionDigest(), theme.definition.themeId, ThemeInstallPhase.ACTIVE)
         }))
         val committed = preferences.edit { values ->
+            com.dayforge.data.local.ReplicaSwitchGuard.requireOpen(values)
             val existing = ThemeCatalogState.decode(values[THEME_CATALOG_KEY])
             if (existing == null) {
                 selection.readFrom(values)?.let { initial.requireSelectable(it.selection) }
@@ -105,6 +107,7 @@ internal class ThemeCatalogRepository(
 
     /** Frozen validated preview only; no URI reopen and no selection change. */
     suspend fun install(preview: ValidatedTheme, expectedRevision: Long? = null): ThemeCatalogState = serialized {
+        com.dayforge.data.local.ReplicaSwitchGuard.requireOpen(preferences)
         val ref = preview.ref()
         if (BuiltInTheme.entries.any { it.themeId == ref.themeId }) throw ThemeCatalogException("THEME_BUILTIN_RESERVED")
         val digest = preview.definitionDigest()
@@ -151,6 +154,7 @@ internal class ThemeCatalogRepository(
     }
 
     suspend fun delete(ref: ThemeVersionRef, expectedRevision: Long): ThemeCatalogState = serialized {
+        com.dayforge.data.local.ReplicaSwitchGuard.requireOpen(preferences)
         if (BuiltInTheme.entries.any { it.themeId == ref.themeId }) throw ThemeCatalogException("THEME_BUILTIN_RESERVED")
         var deleting: ThemeCatalogSlot? = null
         mutate { catalog, values ->
@@ -175,6 +179,7 @@ internal class ThemeCatalogRepository(
 
     /** Only confirmed journal operations recover; unknown files are never discovered as imports. */
     suspend fun recover(): ThemeCatalogState = serialized {
+        com.dayforge.data.local.ReplicaSwitchGuard.requireOpen(preferences)
         for (slot in requireState().slots.filter { it.phase != ThemeInstallPhase.ACTIVE }) {
             currentCoroutineContext().ensureActive()
             files.discardOperation(slot.operationId)
@@ -207,6 +212,7 @@ internal class ThemeCatalogRepository(
 
     private suspend fun mutate(transform: suspend (ThemeCatalogState, Preferences) -> ThemeCatalogState): ThemeCatalogState {
         val committed = preferences.edit { values ->
+            com.dayforge.data.local.ReplicaSwitchGuard.requireOpen(values)
             val catalog = ThemeCatalogState.decode(values[THEME_CATALOG_KEY]) ?: throw ThemeCatalogException("THEME_CATALOG_UNINITIALIZED")
             val selected = selection.readFrom(values)
             selected?.let { catalog.requireSelectable(it.selection) }

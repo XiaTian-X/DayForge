@@ -30,7 +30,7 @@ import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 
-/** MainActivity owns its window; the reusable theme must not mutate an arbitrary Context. */
+/** An opaque Activity explicitly owns its window; never apply to a translucent dialog bridge. */
 @Composable
 internal fun DayForgeWindow(
     activity: ComponentActivity,

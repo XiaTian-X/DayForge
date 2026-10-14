@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import StrictBool, field_validator, model_validator
 
 from src.v2.appearance import ObjectAppearance, RoleIcon, icon_allowed
+from src.v2.count_policy import event_count_policy
 from src.v2.one_time import OneTimeIntent
 from src.v2.one_time_sync import (
     NextActivityEventPayload,
@@ -163,6 +164,7 @@ class NextSyncOperationResult(SyncOperationResult):
                 "a rejected new task event has no successful entity/revision"
             )
         if self.entity_type == "activity_event" and self.entity is not None:
+            event_count_policy(self.entity)
             event_proof(self.entity, str(self.entity_uuid))
         return self
 
@@ -176,6 +178,15 @@ def validate_task_result_binding(
         result.entity_uuid,
     ):
         raise ValueError("response does not acknowledge this operation")
+    if (
+        operation.entity_type == "activity_event"
+        and result.status in {"applied", "already_applied"}
+        and (
+            event_count_policy(result.entity or {})
+            != event_count_policy(operation.payload)
+        )
+    ):
+        raise ValueError("successful result does not prove the submitted count rule")
     if result.one_time_conflict is not None and (
         result.one_time_conflict.activity_uuid != operation.payload.get("activity_uuid")
         or operation.payload.get("one_time") is None
@@ -201,6 +212,7 @@ class NextSyncPushResponse(ApiModel):
 
 def validate_change_proof(change: SyncChangeResponse) -> OneTimeEventProof | None:
     if change.entity_type == "activity_event" and change.operation == "upsert":
+        event_count_policy(change.payload)
         return event_proof(change.payload, str(change.entity_uuid))
     return None
 
@@ -271,12 +283,19 @@ class NextSyncBootstrapResponse(SyncBootstrapResponse):
                 "every visible one-time item requires exactly one checkpoint"
             )
         histories: dict[str, list[OneTimeEventProof]] = {key: [] for key in once}
+        count_days: dict[tuple[str, str], object] = {}
         for change in self.changes:
             if change.entity_type != "activity_event":
                 continue
             activity_id = change.payload.get("activity_uuid")
             if activity_id not in activities:
                 raise ValueError("bootstrap fact has no visible activity")
+            policy = event_count_policy(change.payload)
+            if policy is not None:
+                key = (activity_id, change.payload["local_date"])
+                if key in count_days and count_days[key] != policy:
+                    raise ValueError("bootstrap contains conflicting count day rules")
+                count_days[key] = policy
             proof = validate_change_proof(change)
             if (activity_id in once) != (proof is not None):
                 raise ValueError("fact intent does not match stored activity policy")
@@ -284,4 +303,13 @@ class NextSyncBootstrapResponse(SyncBootstrapResponse):
                 histories[proof.activity_uuid].append(proof)
         for activity_identity, checkpoint in checkpoints.items():
             rebuild_one_time_history(checkpoint, histories[activity_identity])
+        for change in self.changes:
+            if change.entity_type == "activity_event" and change.payload.get(
+                "event_type"
+            ) in {"count_delta", "count_snapshot"}:
+                key = (change.payload["activity_uuid"], change.payload["local_date"])
+                if key in count_days and event_count_policy(change.payload) is None:
+                    raise ValueError(
+                        "bootstrap contains unknown facts in a captured count day"
+                    )
         return self

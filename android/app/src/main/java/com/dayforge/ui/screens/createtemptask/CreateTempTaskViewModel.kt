@@ -33,6 +33,22 @@ class CreateTempTaskViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(CreateTempTaskUiState())
     val uiState: StateFlow<CreateTempTaskUiState> = _uiState.asStateFlow()
 
+    fun beginCreation(authority: com.dayforge.data.repository.ObjectCreationAuthority) {
+        val current = _uiState.value
+        if (current.creationAuthority === authority) return
+        check(current.creationAuthority == null && !current.isSaving && current.savedHabitId == null)
+        _uiState.value = current.copy(creationAuthority = authority,
+            appearance = com.dayforge.domain.model.ObjectAppearance(com.dayforge.domain.model.IconReference.Role("task.default"),
+                "#2196F3", "theme"))
+    }
+
+    fun updateAppearance(value: com.dayforge.domain.model.ObjectAppearance) {
+        if (_uiState.value.creationAuthority == null) return
+        _uiState.value = _uiState.value.copy(appearance = value, showIconPicker = false)
+    }
+
+    fun toggleIconPicker() { _uiState.value = _uiState.value.copy(showIconPicker = !_uiState.value.showIconPicker) }
+
     @Volatile
     private var isSavingInProgress = false
 
@@ -119,7 +135,7 @@ class CreateTempTaskViewModel @Inject constructor(
      * - bestTime = null
      */
     fun saveTempTask() {
-        if (isSavingInProgress) return
+        if (isSavingInProgress || _uiState.value.savedHabitId != null) return
 
         val currentState = _uiState.value
         if (!currentState.isValid) return
@@ -134,23 +150,29 @@ class CreateTempTaskViewModel @Inject constructor(
                     name = currentState.name,
                     description = "", // D-08: no description for temp tasks
                     habitType = HabitType.CHECK_IN, // D-09: hardcoded
-                    iconResId = 53, // D-12: task icon from Phase 88
-                    colorHex = "#2196F3", // D-14: first preset color
-                    schedule = HabitSchedule.Daily, // D-13: default
+                    iconResId = if (currentState.creationAuthority != null) 0 else 53,
+                    colorHex = currentState.appearance?.accentColor ?: "#2196F3",
+                    schedule = if (currentState.creationAuthority != null) HabitSchedule.Once(null) else HabitSchedule.Daily,
                     targetValue = 1,
                     isCountdown = false,
                     parentHabitId = currentState.parentHabitUuid,
-                    targetCycles = 1, // D-10: hardcoded
+                    targetCycles = if (currentState.creationAuthority != null) null else 1,
                     failMode = FailMode.LOOSE, // D-11: hardcoded (loose mode for temp tasks)
                     bestTime = null,
                     context = context,
-                    selectedMetricIds = currentState.selectedMetricIds
+                    selectedMetricIds = currentState.selectedMetricIds,
+                    appearance = currentState.appearance,
+                    completionPolicy = if (currentState.creationAuthority != null) "one_and_done" else null,
+                    creationAuthority = currentState.creationAuthority
                 )
 
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,
                     savedHabitId = habitId
                 )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                _uiState.value = _uiState.value.copy(isSaving = false)
+                throw e
             } catch (e: SQLiteConstraintException) {
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,
@@ -158,7 +180,8 @@ class CreateTempTaskViewModel @Inject constructor(
                 )
             } catch (e: Exception) {
                 Log.e("CreateTempTaskViewModel", "Failed to save temp task", e)
-                _uiState.value = _uiState.value.copy(isSaving = false)
+                _uiState.value = _uiState.value.copy(isSaving = false,
+                    errorMessage = context.getString(R.string.toast_save_failed, e.message))
             } finally {
                 isSavingInProgress = false
             }

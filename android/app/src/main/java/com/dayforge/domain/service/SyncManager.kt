@@ -5,24 +5,45 @@ import com.dayforge.data.local.entity.SyncOutboxEntity
 import com.dayforge.data.local.entity.SyncConflictEntity
 import com.dayforge.data.local.entity.TimerCommandEntity
 import com.dayforge.data.repository.IncrementalSyncRepository
-import java.io.IOException
+import com.dayforge.data.repository.BusinessSyncRepository
+import com.dayforge.data.repository.NextMaterialPending
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import com.dayforge.data.local.LocalDataSession
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
  * Manages the synchronization flow between local database and server.
- * Exposes V2 incremental synchronization and durable-queue controls to the UI.
+ * Exposes the shared version dispatcher and existing v4 durable-queue controls to the UI.
  */
 @Singleton
 class SyncManager @Inject constructor(
-    private val syncRepository: IncrementalSyncRepository
+    private val syncRepository: IncrementalSyncRepository,
+    private val businessSyncRepository: BusinessSyncRepository
 ) {
     private val _syncProgress = MutableStateFlow<SyncProgress>(SyncProgress.Idle)
-    val syncProgress: Flow<SyncProgress> = _syncProgress.asStateFlow()
+    private data class MaterialWait(val session: LocalDataSession?, val after: Long)
+    private val materialWait = MutableStateFlow<MaterialWait?>(null)
+    val syncProgress: Flow<SyncProgress> = combine(_syncProgress.asStateFlow(), materialWait,
+        businessSyncRepository.completions) { progress, waiting, completion ->
+        if (progress == SyncProgress.WaitingForMaterials && waiting?.session != null &&
+            waiting.session == completion.session && completion.sequence > waiting.after) SyncProgress.Success
+        else progress
+    }
+    internal fun problemChanges() = businessSyncRepository.problemChanges()
+    internal suspend fun readProblems() = businessSyncRepository.readProblems()
+    internal suspend fun readRecoveryPreview(root: com.dayforge.data.repository.NextRecoveryKey) =
+        businessSyncRepository.readRecoveryPreview(root)
+    internal suspend fun prepareRecoveryConfirmation(preview: com.dayforge.data.repository.NextRecoveryDependencyPreview,
+        selected: Set<com.dayforge.data.repository.NextRecoveryKey>) =
+        businessSyncRepository.prepareRecoveryConfirmation(preview, selected)
+    // Local recovery is not a sync success and must not change global progress or last-sync time.
+    internal suspend fun confirmRecovery(ticket: com.dayforge.data.repository.NextRecoveryConfirmation) =
+        businessSyncRepository.confirmRecovery(ticket)
 
     /**
      * Pushes pending V2 operations, then pulls and merges remote changes.
@@ -31,21 +52,36 @@ class SyncManager @Inject constructor(
      * @return Result.success if sync completed, Result.failure if an error occurred
      */
     suspend fun sync(progressCallback: (SyncProgress) -> Unit = {}): Result<Unit> {
+        return synchronize(progressCallback, retryRejected = false)
+    }
+
+    suspend fun retrySync(progressCallback: (SyncProgress) -> Unit = {}): Result<Unit> {
+        return synchronize(progressCallback, retryRejected = true)
+    }
+
+    private suspend fun synchronize(progressCallback: (SyncProgress) -> Unit, retryRejected: Boolean): Result<Unit> {
         return try {
-            syncRepository.sync { progress ->
+            val report: (SyncProgress) -> Unit = { progress ->
                 _syncProgress.value = progress
                 progressCallback(progress)
             }
+            if (retryRejected) businessSyncRepository.retrySync(report) else businessSyncRepository.sync(progress = report)
 
             _syncProgress.value = SyncProgress.Success
             progressCallback(SyncProgress.Success)
             Result.success(Unit)
         } catch (cancelled: CancellationException) {
             throw cancelled
+        } catch (pending: NextMaterialPending) {
+            materialWait.value = MaterialWait(pending.session,
+                pending.completedAfter ?: businessSyncRepository.completions.value.sequence)
+            _syncProgress.value = SyncProgress.WaitingForMaterials
+            progressCallback(SyncProgress.WaitingForMaterials)
+            Result.failure(pending)
         } catch (e: Exception) {
             val errorProgress = SyncProgress.Error(
                 message = e.message ?: "Unknown error",
-                isNetworkFailure = e.hasIOExceptionCause()
+                isNetworkFailure = e.isSyncTransportFailure()
             )
             _syncProgress.value = errorProgress
             progressCallback(errorProgress)
@@ -56,18 +92,23 @@ class SyncManager @Inject constructor(
     /** Runs cleanup while the sync/account lock is still held. */
     suspend fun syncAndThen(afterSync: suspend () -> Unit): Result<Unit> {
         return try {
-            syncRepository.syncAndThen(
-                progressCallback = { _syncProgress.value = it },
+            businessSyncRepository.sync(
+                progress = { _syncProgress.value = it },
                 afterSync = afterSync
             )
             _syncProgress.value = SyncProgress.Success
             Result.success(Unit)
         } catch (cancelled: CancellationException) {
             throw cancelled
+        } catch (pending: NextMaterialPending) {
+            materialWait.value = MaterialWait(pending.session,
+                pending.completedAfter ?: businessSyncRepository.completions.value.sequence)
+            _syncProgress.value = SyncProgress.WaitingForMaterials
+            Result.failure(pending)
         } catch (e: Exception) {
             _syncProgress.value = SyncProgress.Error(
                 message = e.message ?: "Unknown error",
-                isNetworkFailure = e.hasIOExceptionCause()
+                isNetworkFailure = e.isSyncTransportFailure()
             )
             Result.failure(e)
         }
@@ -78,11 +119,6 @@ class SyncManager @Inject constructor(
      */
     suspend fun hasLocalData(): Boolean =
         syncRepository.hasPendingChanges()
-
-    /** Move quarantined operations back to the active queue before a user retry. */
-    suspend fun retryRejectedChanges() {
-        syncRepository.retryAllDeadLetters()
-    }
 
     fun observeRejectedChanges(): Flow<List<SyncOutboxEntity>> =
         syncRepository.observeDeadLetters()
@@ -129,11 +165,11 @@ class SyncManager @Inject constructor(
     fun isPrimaryEditor(): Flow<Boolean> = syncRepository.isPrimaryEditor()
 
     suspend fun makeCurrentDevicePrimary() {
-        syncRepository.makeCurrentDevicePrimary()
+        businessSyncRepository.makeCurrentDevicePrimary()
     }
 
     suspend fun setCurrentDeviceStructuralEditing(enabled: Boolean) {
-        syncRepository.setCurrentDeviceStructuralEditing(enabled)
+        businessSyncRepository.setCurrentDeviceStructuralEditing(enabled)
     }
 
     /**
@@ -144,12 +180,4 @@ class SyncManager @Inject constructor(
         _syncProgress.value = SyncProgress.Idle
     }
 
-    private fun Throwable.hasIOExceptionCause(): Boolean {
-        var current: Throwable? = this
-        while (current != null) {
-            if (current is IOException) return true
-            current = current.cause
-        }
-        return false
-    }
 }

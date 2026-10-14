@@ -16,6 +16,10 @@ from src.v2.object_appearance_recovery import (
     read_object_appearances,
 )
 from src.v2.one_time_recovery import OneTimeRecoveryError, read_one_time_history
+from src.v2.count_recovery import CountRecoveryError, read_count_history
+from src.v2.challenge_recovery import ChallengeRecoveryError, read_challenge_history
+from src.v2.challenge_receipt_recovery import validate_challenge_receipts
+from src.v2.errors import DomainError
 
 
 @dataclass(frozen=True)
@@ -191,6 +195,32 @@ def _inspect_database(
                     )
                 except OneTimeRecoveryError as error:
                     domain_errors.append(f"invalid one-time history: {error}")
+        if "activity_count_days" in tables:
+            try:
+                read_count_history(
+                    lambda statement, parameters: [
+                        dict(row) for row in connection.execute(statement, parameters)
+                    ]
+                )
+            except CountRecoveryError as error:
+                domain_errors.append(f"invalid count history: {error}")
+        if "activity_challenge_rounds" in tables:
+            try:
+                read_challenge_history(
+                    lambda statement, parameters: [
+                        dict(row) for row in connection.execute(statement, parameters)
+                    ]
+                )
+            except ChallengeRecoveryError as error:
+                domain_errors.append(f"invalid challenge history: {error}")
+            try:
+                validate_challenge_receipts(
+                    lambda statement, parameters: [
+                        dict(row) for row in connection.execute(statement, parameters)
+                    ]
+                )
+            except DomainError as error:
+                domain_errors.append(f"invalid challenge receipt: {error.code}")
         if "server_instances" in tables and row_counts["server_instances"] != 1:
             domain_errors.append("server_instances must contain exactly one row")
         if "plan_nodes" in tables:

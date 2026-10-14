@@ -30,11 +30,11 @@ interface SyncOutboxDao {
     suspend fun hasOneTimeIntents(): Boolean
 
     /** Even an orphaned/damaged staged checkpoint must block legacy recovery and mutation. */
-    @Query("SELECT EXISTS(SELECT 1 FROM next_recovery_state) OR EXISTS(SELECT 1 FROM next_sync_state) OR EXISTS(SELECT 1 FROM next_rejections)")
+    @Query("SELECT EXISTS(SELECT 1 FROM next_recovery_state) OR EXISTS(SELECT 1 FROM next_sync_state) OR EXISTS(SELECT 1 FROM next_rejections) OR EXISTS(SELECT 1 FROM next_challenge_state) OR EXISTS(SELECT 1 FROM next_challenge_rounds) OR EXISTS(SELECT 1 FROM next_challenge_births)")
     suspend fun hasProtocolNextRecovery(): Boolean
 
     /** Origins/journals block v4 even if their source was removed or malformed. */
-    @Query("SELECT EXISTS(SELECT 1 FROM next_request_origins) OR EXISTS(SELECT 1 FROM next_transmissions) OR EXISTS(SELECT 1 FROM next_acceptances) OR EXISTS(SELECT 1 FROM next_structural_dependencies) OR EXISTS(SELECT 1 FROM next_structural_supersessions)")
+    @Query("SELECT EXISTS(SELECT 1 FROM next_request_origins) OR EXISTS(SELECT 1 FROM next_transmissions) OR EXISTS(SELECT 1 FROM next_acceptances) OR EXISTS(SELECT 1 FROM next_structural_dependencies) OR EXISTS(SELECT 1 FROM next_structural_supersessions) OR EXISTS(SELECT 1 FROM next_restart_materializations) OR EXISTS(SELECT 1 FROM next_restart_plan_proofs) OR EXISTS(SELECT 1 FROM next_config_imports) OR EXISTS(SELECT 1 FROM next_config_import_payloads) OR EXISTS(SELECT 1 FROM next_recovery_audits) OR EXISTS(SELECT 1 FROM next_abandoned_requests) OR EXISTS(SELECT 1 FROM next_recovery_audit_payloads)")
     suspend fun hasProtocolNextRequests(): Boolean
 
     @Query("SELECT * FROM sync_outbox WHERE recordType=:recordType AND entityUuid=:entityUuid ORDER BY id LIMIT 10001")

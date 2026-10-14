@@ -18,6 +18,84 @@ import org.junit.runner.RunWith
 /** Real client persistence and wire encoding. Scripted transport is not server idempotency evidence. */
 @RunWith(AndroidJUnit4::class)
 class SyncDurabilityTest : SyncPersistenceFixture() {
+    @Test fun user_v4_retry_checks_account_and_exact_protocol_before_reactivating_rejected_work() = runBlocking<Unit> {
+        insertGoal("Rejected")
+        val original = tokens.authenticationSnapshot()!!.session
+        val pending = database.syncOutboxDao().getAll().single()
+        database.syncOutboxDao().markDeadLetter(pending.id, "INVALID_PAYLOAD", "Needs correction", 1)
+        val rejected = database.syncOutboxDao().getDeadLetters().single()
+        for (version in listOf(5, 6)) {
+            identityProtocol = version
+            assertTrue(runCatching { repository.retrySyncForAuthentication(original, {}) }.exceptionOrNull() is SyncProtocolException)
+            assertEquals(listOf(rejected), database.syncOutboxDao().getDeadLetters())
+            assertEquals(0, database.syncOutboxDao().count())
+        }
+        paths.clear(); tokens.saveLoginSession("new", "new-refresh", "again", original.userId, false)
+        assertEquals("SYNC_ACCOUNT_CHANGED", runCatching { repository.retrySyncForAuthentication(original, {}) }.exceptionOrNull()!!.message)
+        assertTrue(paths.isEmpty()); assertEquals(listOf(rejected), database.syncOutboxDao().getDeadLetters())
+    }
+
+    @Test fun user_v4_retry_retains_original_reactivation_and_upload_policy_after_verified_identity() = runBlocking<Unit> {
+        insertGoal("Rejected")
+        val source = database.syncOutboxDao().getAll().single()
+        database.syncOutboxDao().markDeadLetter(source.id, "INVALID_PAYLOAD", "Needs correction", 1)
+        repository.retrySyncForAuthentication(tokens.authenticationSnapshot()!!.session, {})
+        assertTrue(database.syncOutboxDao().getDeadLetters().isEmpty())
+        assertEquals(0, database.syncOutboxDao().count()); assertEquals(1, pushes.size)
+        assertNotEquals(source.operationId, operation(pushes.single()).getValue("operation_id").jsonPrimitive.content)
+        reopen(); assertEquals("Rejected", database.habitDao().getHabitByUuid(source.entityUuid)!!.name)
+    }
+    @Test fun guarded_v4_device_controls_revalidate_exact_protocol_without_upload_or_cursor_change() = runBlocking<Unit> {
+        val original = tokens.authenticationSnapshot()!!.session
+        assertTrue(repository.changeDeviceForAuthentication(original, null).isPrimaryEditor)
+        assertFalse(repository.changeDeviceForAuthentication(original, false).structuralEditEnabled)
+        assertEquals(2, paths.count { it == "/api/v2/devices/register" })
+        assertTrue(pushes.isEmpty()); assertTrue(cursors.isEmpty()); assertEquals(0L, tokens.syncCursor.first())
+        paths.clear()
+        for (version in listOf(5, 6)) {
+            identityProtocol = version
+            assertTrue(runCatching { repository.changeDeviceForAuthentication(original, null) }.exceptionOrNull() is SyncProtocolException)
+        }
+        assertTrue(paths.all { it == "/api/v2/system/identity" })
+    }
+
+    @Test fun guarded_v4_device_control_rejects_reauthentication_and_changed_replica_before_registration() = runBlocking<Unit> {
+        val original = tokens.authenticationSnapshot()!!.session
+        epoch = "other-epoch"
+        assertEquals("SYNC_REPLICA_CHANGED", runCatching { repository.changeDeviceForAuthentication(original, false) }.exceptionOrNull()!!.message)
+        assertEquals(listOf("/api/v2/system/identity"), paths.toList()); paths.clear()
+        tokens.saveLoginSession("new", "new-refresh", "again", original.userId, false)
+        assertEquals("SYNC_ACCOUNT_CHANGED", runCatching { repository.changeDeviceForAuthentication(original, null) }.exceptionOrNull()!!.message)
+        assertTrue(paths.isEmpty()); assertEquals("new", tokens.accessToken.first())
+    }
+
+    @Test fun legacy_verification_rejects_v5_or_unknown_upgrade_without_register_or_upload() = runBlocking<Unit> {
+        for (version in listOf(5, 6)) {
+            identityProtocol = version
+            assertTrue(runCatching { repository.sync() }.exceptionOrNull() is SyncProtocolException)
+        }
+        assertTrue(paths.all { it == "/api/v2/system/identity" })
+        assertTrue(pushes.isEmpty()); assertTrue(cursors.isEmpty())
+    }
+    @Test fun shared_discovery_cannot_retarget_legacy_attempt_after_reauthentication() = runBlocking<Unit> {
+        val original = tokens.authenticationSnapshot()!!.session
+        tokens.saveLoginSession("new", "new-refresh", "again", original.userId, false)
+        var cleaned = false
+        try { repository.syncForAuthentication(original, {}, { cleaned = true }); fail("Stale attempt must stop") }
+        catch (error: IllegalStateException) { assertEquals("SYNC_ACCOUNT_CHANGED", error.message) }
+        assertFalse(cleaned); assertTrue(paths.isEmpty()); assertEquals("new", tokens.accessToken.first())
+    }
+
+    @Test fun matching_legacy_attempt_keeps_guarded_cleanup_after_real_sync() = runBlocking<Unit> {
+        val original = tokens.authenticationSnapshot()!!.session
+        var cleaned = false
+        repository.syncForAuthentication(original, {}, {
+            assertEquals(original, tokens.authenticationSnapshot()!!.session)
+            assertTrue(paths.contains("/api/v2/sync/changes"))
+            cleaned = true
+        })
+        assertTrue(cleaned)
+    }
     @Test fun bootstrap_persists_rows_and_cursor_without_echoing_server_data() = runBlocking {
         tokens.requireSyncBootstrap()
         val uuid = UUID.randomUUID().toString()

@@ -5,7 +5,9 @@ import android.util.Log
 import androidx.glance.GlanceId
 import androidx.glance.action.ActionParameters
 import androidx.glance.appwidget.action.ActionCallback
-import com.dayforge.widget.checkin.MetricPromptActivity
+import com.dayforge.data.repository.LegacyWidgetRestartClaim
+import com.dayforge.widget.base.MetricPromptHelper
+import kotlinx.coroutines.CancellationException
 
 /**
  * Action callback for record metric button in timer widget.
@@ -23,14 +25,14 @@ class RecordMetricCallback : ActionCallback {
         parameters: ActionParameters
     ) {
         val habitId = parameters[ActionParameters.Key<Long>("habitId")] ?: return
-        val habitName = parameters[ActionParameters.Key<String>("habitName")] ?: "Habit"
-
-        Log.d(TAG, "onAction: habitId=$habitId, habitName=$habitName")
-
-        // Launch MetricPromptActivity
-        val intent = MetricPromptActivity.createIntent(context, habitId, habitName)
-        context.startActivity(intent)
-
-        // Widget will be refreshed by MetricPromptActivity after metric is recorded
+        try {
+            val identity = LegacyWidgetRestartClaim.decode(requireNotNull(parameters[ActionParameters.Key<String>("legacyWidgetIdentity")]))
+            require(identity.habitId == habitId)
+            MetricPromptHelper.checkAndShowMetricPrompt(context, habitId, identity)
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            Log.w(TAG, "Expired legacy metric button", error)
+            com.dayforge.widget.WidgetRefreshScheduler.request(context)
+        }
     }
 }

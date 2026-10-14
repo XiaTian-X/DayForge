@@ -20,10 +20,13 @@ class HabitCompletionCoordinator @Inject constructor(
     suspend fun checkIn(
         habitId: Long,
         finalizeTemporaryTasks: Boolean,
+        oneTimeAuthority: com.dayforge.domain.model.OneTimeActionAuthority? = null,
         displayedHabit: () -> HabitEntity?
     ): HabitCompletionOutcome {
-        val result = checkInService.toggleCheckIn(context, habitId)
         val habit = displayedHabit()
+        val result = if (habit?.completionPolicy == "one_and_done")
+            checkInService.toggleCheckIn(context, habitId, habit.uuid, oneTimeAuthority)
+        else checkInService.toggleCheckIn(context, habitId)
         val success = result as? CheckInResult.Success ?: return HabitCompletionOutcome.NONE
         val isTemporaryTask = finalizeTemporaryTasks && habit.isTemporaryTask()
 
@@ -53,8 +56,8 @@ class HabitCompletionCoordinator @Inject constructor(
         habitRepository.logCompletion(context, habitId, value)
     }
 
-    suspend fun undoCompletion(completionId: Long) {
-        habitRepository.undoCompletion(context, completionId)
+    suspend fun undoCompletion(completionId: Long, oneTimeAuthority: com.dayforge.domain.model.OneTimeActionAuthority? = null) {
+        habitRepository.undoCompletion(context, completionId, oneTimeAuthority)
     }
 
     suspend fun incrementCount(
@@ -84,6 +87,7 @@ class HabitCompletionCoordinator @Inject constructor(
 
     private fun HabitEntity?.isTemporaryTask(): Boolean =
         this != null &&
+            completionPolicy == null &&
             targetCycles == 1 &&
             failMode == FailMode.LOOSE &&
             habitType == HabitType.CHECK_IN &&

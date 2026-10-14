@@ -21,7 +21,8 @@ import app.cash.turbine.test
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -379,14 +380,12 @@ class CreateHabitViewModelTest {
     }
 
     private suspend fun awaitSaveResult(): CreateHabitUiState {
-        repeat(200) {
-            testDispatcher.scheduler.advanceUntilIdle()
-            val state = viewModel.uiState.value
-            if (!state.isSaving && (state.savedHabitId != null || state.errorMessage != null)) {
-                return state
+        // Room and DataStore use real IO on the physical device. Observe the terminal
+        // state instead of treating 200 short scheduler polls as a save deadline.
+        return withTimeout(10_000) {
+            viewModel.uiState.first { state ->
+                !state.isSaving && (state.savedHabitId != null || state.errorMessage != null)
             }
-            delay(10)
         }
-        error("Timed out waiting for habit save result")
     }
 }

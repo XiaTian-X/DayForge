@@ -23,6 +23,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.dayforge.R
 import com.dayforge.ui.components.ColorPicker
 import com.dayforge.ui.components.IconPicker
+import com.dayforge.ui.components.ObjectAppearancePicker
+import com.dayforge.ui.components.ObjectIcon
 import com.dayforge.ui.components.UnitPicker
 
 /**
@@ -50,7 +52,7 @@ fun EditMetricScreen(
     onNavigateBack: () -> Unit,
     onMetricDeleted: () -> Unit = {}
 ) {
-    val uiState by viewModel.uiState.collectAsState()
+    val uiState by viewModel.uiState.collectAsState(context = kotlinx.coroutines.Dispatchers.Main)
 
     // Navigate back after save
     LaunchedEffect(uiState.isSaved) {
@@ -113,6 +115,8 @@ fun EditMetricScreen(
                     singleLine = true,
                     isError = uiState.errorMessage != null && uiState.errorMessage != stringResource(R.string.toast_metric_not_found)
                 )
+                uiState.errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall) }
 
                 Spacer(modifier = Modifier.height(16.dp))
 
@@ -321,6 +325,8 @@ fun EditMetricScreen(
                             text = stringResource(R.string.edit_metric_icon_label),
                             style = MaterialTheme.typography.bodyLarge
                         )
+                        uiState.appearance?.let { ObjectIcon("edit-metric:${uiState.metricId}", it,
+                            false, 0, Color.Unspecified, 24.dp) }
                         Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = stringResource(R.string.edit_metric_select_icon))
                     }
                 }
@@ -427,7 +433,10 @@ fun EditMetricScreen(
     }
 
     if (uiState.showIconPicker) {
-        IconPicker(
+        val appearance = uiState.appearance
+        if (appearance != null) ObjectAppearancePicker(appearance, false, uiState.editAuthority,
+            onSelected = viewModel::updateAppearance, onDismiss = viewModel::toggleIconPicker)
+        else IconPicker(
             selectedIconId = uiState.iconResId,
             onIconSelected = viewModel::updateIcon,
             onDismiss = viewModel::toggleIconPicker

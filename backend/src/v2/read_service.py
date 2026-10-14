@@ -35,6 +35,8 @@ from src.v2.models import (
 from src.v2.schemas import SyncBootstrapResponse, SyncChangeResponse, SyncPullResponse
 from src.v2.next_sync_contract import NextSyncBootstrapResponse, NextSyncPullResponse
 from src.v2.one_time_recovery import read_one_time_checkpoints
+from src.v2.count_recovery import require_count_history
+from src.v2.challenge_recovery import require_roundless_view, require_challenge_history
 
 
 def _change_response(
@@ -64,6 +66,7 @@ async def pull_changes(
     session: AsyncSession,
     *,
     next_protocol: Literal[False] = False,
+    round_profile: bool = False,
 ) -> SyncPullResponse: ...
 
 
@@ -76,6 +79,7 @@ async def pull_changes(
     session: AsyncSession,
     *,
     next_protocol: Literal[True],
+    round_profile: bool = False,
 ) -> NextSyncPullResponse: ...
 
 
@@ -87,10 +91,19 @@ async def pull_changes(
     session: AsyncSession,
     *,
     next_protocol: bool = False,
+    round_profile: bool = False,
 ) -> SyncPullResponse:
     device = await require_device(
         require_internal(user.id, "User.id"), device_public_id, session
     )
+    if round_profile and not next_protocol:
+        raise DomainError(
+            "CLIENT_UPGRADE_REQUIRED", "Challenge profile requires protocol 5"
+        )
+    if not round_profile:
+        await require_roundless_view(session, require_internal(user.id, "User.id"))
+    if next_protocol:
+        await require_challenge_history(session, require_internal(user.id, "User.id"))
     max_result: Result[tuple[int]] = await session.execute(
         select(func.coalesce(func.max(col(SyncChange.sequence)), 0)).where(
             col(SyncChange.recipient_user_id) == user.id
@@ -147,6 +160,7 @@ async def bootstrap(
     session: AsyncSession,
     *,
     next_protocol: Literal[False] = False,
+    round_profile: bool = False,
 ) -> SyncBootstrapResponse: ...
 
 
@@ -157,6 +171,7 @@ async def bootstrap(
     session: AsyncSession,
     *,
     next_protocol: Literal[True],
+    round_profile: bool = False,
 ) -> NextSyncBootstrapResponse: ...
 
 
@@ -166,10 +181,50 @@ async def bootstrap(
     session: AsyncSession,
     *,
     next_protocol: bool = False,
+    round_profile: bool = False,
 ) -> SyncBootstrapResponse:
     device = await require_device(
         require_internal(user.id, "User.id"), device_public_id, session
     )
+    response = await read_bootstrap_snapshot(
+        user, session, next_protocol=next_protocol, round_profile=round_profile
+    )
+    cursor_result = await session.execute(
+        select(SyncCursor).where(
+            SyncCursor.user_id == user.id,
+            SyncCursor.device_id == device.id,
+        )
+    )
+    cursor = cursor_result.scalar_one_or_none()
+    if cursor is None:
+        cursor = SyncCursor(user_id=user.id, device_id=device.id)
+        session.add(cursor)
+    cursor.last_pulled_sequence = response.next_cursor
+    cursor.last_pull_at = utc_now()
+    return response
+
+
+async def read_bootstrap_snapshot(
+    user: User,
+    session: AsyncSession,
+    *,
+    next_protocol: bool = False,
+    round_profile: bool = False,
+) -> SyncBootstrapResponse:
+    """Pure projection within the caller's authenticated transaction.
+
+    Unlike bootstrap this does not register/touch a device or advance a cursor.
+    Admission belongs to the caller; this helper is not an HTTP authority gate.
+    """
+    if next_protocol:
+        await require_count_history(session, require_internal(user.id, "User.id"))
+        await require_challenge_history(session, require_internal(user.id, "User.id"))
+    if round_profile and not next_protocol:
+        raise DomainError(
+            "CLIENT_UPGRADE_REQUIRED", "Challenge profile requires protocol 5"
+        )
+    if not round_profile:
+        await require_roundless_view(session, require_internal(user.id, "User.id"))
     max_result: Result[tuple[int]] = await session.execute(
         select(func.coalesce(func.max(col(SyncChange.sequence)), 0)).where(
             col(SyncChange.recipient_user_id) == user.id
@@ -331,18 +386,6 @@ async def bootstrap(
             )
         )
 
-    cursor_result = await session.execute(
-        select(SyncCursor).where(
-            SyncCursor.user_id == user.id,
-            SyncCursor.device_id == device.id,
-        )
-    )
-    cursor = cursor_result.scalar_one_or_none()
-    if cursor is None:
-        cursor = SyncCursor(user_id=user.id, device_id=device.id)
-        session.add(cursor)
-    cursor.last_pulled_sequence = high_watermark
-    cursor.last_pull_at = utc_now()
     if next_protocol:
         return NextSyncBootstrapResponse(
             changes=synthetic,
@@ -359,4 +402,4 @@ async def bootstrap(
     )
 
 
-__all__ = ["bootstrap", "pull_changes"]
+__all__ = ["bootstrap", "pull_changes", "read_bootstrap_snapshot"]

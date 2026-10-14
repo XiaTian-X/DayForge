@@ -13,6 +13,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
@@ -23,18 +24,23 @@ class DashboardTimeWindowTicker @Inject constructor(
     private val preferencesManager: PreferencesManager
 ) {
     @OptIn(ExperimentalCoroutinesApi::class)
-    fun observe(): Flow<Unit> = preferencesManager.filterMode
-        .flatMapLatest { filterMode ->
-            if (filterMode != FilterMode.TIME_WINDOW.value) {
-                flowOf(Unit)
-            } else {
-                timeWindowTicks()
-            }
+    fun observe(): Flow<Unit> = preferencesManager.filterMode.flatMapLatest { filterMode ->
+            if (filterMode == FilterMode.TIME_WINDOW.value) combine(habitRepository.allHabits,
+                habitRepository.countChanges) { rows, _ -> rows }.flatMapLatest { timeWindowTicks(it, true) }
+            else timeWindowTicks(emptyList(), false)
         }
 
-    private fun timeWindowTicks(): Flow<Unit> = flow {
+    private fun timeWindowTicks(originalHabits: List<HabitEntity>, useWindows: Boolean): Flow<Unit> = flow {
         while (true) {
-            val habits = habitRepository.allHabits.first()
+            val habits = originalHabits.mapNotNull { habit ->
+                if (habit.habitType != HabitType.COUNTING || habit.appearance == null) habit
+                else try { habitRepository.getCountHistory(habit).todayPolicy?.let {
+                    habit.copy(targetValue = it.targetValue, isCountdown = it.isCountdown)
+                } } catch (error: Exception) {
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    null
+                }
+            }
             val currentTime = ZonedDateTime.now(ZoneId.systemDefault())
             val refreshDelay = DashboardTimeWindowRefreshCalculator.calculateDelayMillis(
                 habits,
@@ -42,7 +48,9 @@ class DashboardTimeWindowTicker @Inject constructor(
             )
 
             emit(Unit)
-            delay(refreshDelay)
+            val midnightDelay = java.time.Duration.between(currentTime.toInstant(),
+                currentTime.toLocalDate().plusDays(1).atStartOfDay(currentTime.zone).toInstant()).toMillis().coerceAtLeast(1L)
+            delay(if (useWindows) minOf(refreshDelay, midnightDelay) else midnightDelay)
         }
     }
 }
@@ -74,7 +82,7 @@ internal object DashboardTimeWindowRefreshCalculator {
 
     private fun boundaries(habit: HabitEntity, currentTime: ZonedDateTime): List<Int> {
         if (habit.habitType == HabitType.COUNTING) {
-            return CountingSlotCalculator.calculateSlots(
+            return CountingSlotCalculator.distinctSlots(
                 requireNotNull(habit.bestTime),
                 habit.targetValue,
                 currentTime

@@ -51,6 +51,7 @@ class HabitDatabaseBaselineTest {
         val expectedTables = setOf(
             "habits",
             "completions",
+            "count_days",
             "timelogs",
             "metrics",
             "metric_logs",
@@ -72,14 +73,24 @@ class HabitDatabaseBaselineTest {
             "next_structural_dependencies",
             "next_structural_supersessions",
             "next_sync_state",
-            "next_rejections"
+            "next_rejections",
+            "next_challenge_state",
+            "next_challenge_rounds",
+            "next_challenge_births",
+            "next_restart_materializations",
+            "next_restart_plan_proofs",
+            "next_config_imports",
+            "next_config_import_payloads",
+            "next_recovery_audits",
+            "next_abandoned_requests",
+            "next_recovery_audit_payloads"
         )
 
-        assertEquals(12, sqlite.version)
+        assertEquals(18, sqlite.version)
         assertTrue(tables.containsAll(expectedTables))
         sqlite.query("SELECT identity_hash FROM room_master_table WHERE id=42").use { cursor ->
             assertTrue(cursor.moveToFirst())
-            assertEquals("b1550ba4b5c0f0bb60bb638e6ad1a168", cursor.getString(0))
+            assertEquals(currentHabitIdentity(), cursor.getString(0))
         }
         sqlite.query("SELECT suppressOutbox FROM sync_control WHERE id = 1").use { cursor ->
             assertTrue(cursor.moveToFirst())

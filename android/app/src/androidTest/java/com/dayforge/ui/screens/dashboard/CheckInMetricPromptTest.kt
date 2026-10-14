@@ -68,6 +68,8 @@ class CheckInMetricPromptTest {
     private lateinit var context: Context
     private lateinit var checkInService: CheckInService
     private lateinit var preferencesManager: PreferencesManager
+    private lateinit var tokens: com.dayforge.data.local.TokenManager
+    private lateinit var habitPreferences: com.dayforge.data.repository.HabitPreferenceRepository
     @get:Rule val temporary = TemporaryFolder()
     private lateinit var preferenceScope: CoroutineScope
 
@@ -91,10 +93,15 @@ class CheckInMetricPromptTest {
         habitMetricLinkDao = database.habitMetricLinkDao()
         repository = HabitRepository(habitDao, completionDao, timeLogDao, database)
         preferenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        preferencesManager = PreferencesManager(PreferenceDataStoreFactory.create(
+        val dataStore = PreferenceDataStoreFactory.create(
             scope = preferenceScope,
             produceFile = { temporary.root.resolve("prompt.preferences_pb") }
-        ))
+        )
+        tokens = com.dayforge.data.local.TokenManager(dataStore)
+        runBlocking { tokens.saveLoginSession("synthetic-access", "synthetic-refresh", "member",
+            "80000000-0000-4000-8000-000000000001", false) }
+        preferencesManager = PreferencesManager(dataStore, tokens = tokens)
+        habitPreferences = preferenceRepository(tokens, preferencesManager)
         // Create a real CheckInService that uses the repository
         checkInService = CheckInService(repository, completionDao, timeLogDao)
         // Create HabitStatusCalculator
@@ -108,7 +115,7 @@ class CheckInMetricPromptTest {
             habitMetricLinkDao
         )
         val linkedMetricCoordinator =
-            LinkedMetricCoordinator(context, preferencesManager, metricRepository, repository)
+            LinkedMetricCoordinator(context, preferencesManager, metricRepository, repository, habitPreferences = habitPreferences)
         val completionCoordinator =
             HabitCompletionCoordinator(context, checkInService, repository, metricRepository)
         viewModel = DashboardViewModel(
@@ -171,12 +178,14 @@ class CheckInMetricPromptTest {
         assertEquals(listOf(metricId), prompt.linkedMetrics.map { it.metricId })
         assertEquals(1, completionDao.getAllCompletionsOnce().size)
         assertEquals(1, widgetRefresh.requestCount)
-        assertTrue(viewModel.recordMetricValues(habitId, listOf(MetricValueInput(metricId, 68.5))))
+        assertTrue(viewModel.recordMetricValues(habitId, listOf(MetricValueInput(metricId, 68.5)),
+            expectedPreferenceClaim = requireNotNull(prompt.preferenceClaim)))
         assertEquals(68.5, metricLogDao.getLatestLog(metricId)!!.value, 0.0)
         database.openHelper.readableDatabase.query(
             "SELECT COUNT(*) FROM sync_outbox WHERE recordType = 'metric_log'"
         ).use { assertTrue(it.moveToFirst()); assertEquals(1, it.getInt(0)) }
         viewModel.dismissPostCheckInDialog()
+        awaitCondition { viewModel.postCheckInState.value == null }
         assertNull(viewModel.postCheckInState.value)
         subscription.cancelAndJoin()
     }
@@ -184,21 +193,32 @@ class CheckInMetricPromptTest {
     @Test fun never_ask_again_survives_datastore_reopen_and_is_scoped_to_the_selected_habit() = runBlocking {
         val (first, _) = seedHabit("Walk")
         val (second, _) = seedHabit("Run")
-        viewModel.setNeverAskAgain(first, true)
+        val claim = habitPreferences.read(requireNotNull(habitDao.getHabitById(first))).claim
+        habitPreferences.setNeverAskAgain(claim, true)
         preferenceScope.coroutineContext[Job]!!.cancelAndJoin()
         preferenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        val reopened = PreferencesManager(PreferenceDataStoreFactory.create(
+        val reopenedStore = PreferenceDataStoreFactory.create(
             scope = preferenceScope,
             produceFile = { temporary.root.resolve("prompt.preferences_pb") }
-        ))
-        assertTrue(reopened.getNeverAskAgain(first).first())
-        assertFalse(reopened.getNeverAskAgain(second).first())
+        )
+        val reopenedTokens = com.dayforge.data.local.TokenManager(reopenedStore)
+        val reopened = PreferencesManager(reopenedStore, tokens = reopenedTokens)
+        val reopenedHabits = preferenceRepository(reopenedTokens, reopened)
+        assertTrue(reopenedHabits.read(requireNotNull(habitDao.getHabitById(first))).neverAsk)
+        assertFalse(reopenedHabits.read(requireNotNull(habitDao.getHabitById(second))).neverAsk)
         val metrics = MetricRepository(database, metricDao, metricLogDao, habitDao,
             habitMetricLinkDao)
-        val coordinator = LinkedMetricCoordinator(context, reopened, metrics, repository)
+        val coordinator = LinkedMetricCoordinator(context, reopened, metrics, repository, habitPreferences = reopenedHabits)
         coordinator.showPromptIfNeeded(first, "Walk")
         assertNull(coordinator.postCheckInState.value)
         coordinator.showPromptIfNeeded(second, "Run")
         assertEquals(second, coordinator.postCheckInState.value!!.habitId)
+    }
+
+    private fun preferenceRepository(tokens: com.dayforge.data.local.TokenManager, prefs: PreferencesManager):
+        com.dayforge.data.repository.HabitPreferenceRepository {
+        val sessions = com.dayforge.domain.service.AccountSessionCoordinator()
+        return com.dayforge.data.repository.HabitPreferenceRepository(database, tokens, sessions, prefs,
+            com.dayforge.data.repository.ReplicaPresentationRepository(database, tokens, sessions))
     }
 }

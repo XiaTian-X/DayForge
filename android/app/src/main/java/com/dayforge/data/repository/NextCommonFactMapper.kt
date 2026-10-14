@@ -6,6 +6,7 @@ import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.model.isContractUuid
 import com.dayforge.domain.model.contractLongOrNull
+import com.dayforge.domain.model.CountDayPolicy
 import java.math.BigDecimal
 import java.time.Duration
 import java.time.Instant
@@ -51,7 +52,7 @@ internal object NextCommonFactMapper {
             require(change.operation == "upsert") // Undo is a new event; direct event deletion is forbidden.
             val optionalOnce = change.payload.keys.intersect(setOf("one_time", "one_time_state_after"))
             require(optionalOnce.all { change.payload[it] == JsonNull })
-            val body = header(change, "activity_event", eventFields + optionalOnce)
+            val body = header(change, "activity_event", eventFields + optionalOnce + policyFields(change.payload))
             require(isContractUuid(body.text("activity_uuid")))
             ancillaryDuration(body)
             source(body, body.instant("occurred_at"))
@@ -134,7 +135,7 @@ internal object NextCommonFactMapper {
     private fun durationData(change: SyncV2Change): DurationData {
         val optionalOnce = change.payload.keys.intersect(setOf("one_time", "one_time_state_after"))
         require(optionalOnce.all { change.payload[it] == JsonNull })
-        val body = header(change, "activity_event", eventFields + optionalOnce + "day_allocations")
+        val body = header(change, "activity_event", eventFields + optionalOnce + "day_allocations" + policyFields(change.payload))
         require(isContractUuid(body.text("activity_uuid")))
         require(body.text("event_type") == "duration_session" && body.getValue("value") == JsonNull &&
             body.getValue("reverts_event_uuid") == JsonNull)
@@ -203,11 +204,23 @@ internal object NextCommonFactMapper {
             habit.completionPolicy == "recurring" && habit.schedule !is HabitSchedule.Once)
         val optionalOnce = change.payload.keys.intersect(setOf("one_time", "one_time_state_after"))
         require(optionalOnce.all { change.payload[it] == JsonNull })
-        val body = header(change, "activity_event", eventFields + optionalOnce + if (duration) setOf("day_allocations") else emptySet())
+        val body = header(change, "activity_event", eventFields + optionalOnce + policyFields(change.payload) +
+            if (duration) setOf("day_allocations") else emptySet())
         require(body.text("activity_uuid") == habit.uuid)
         // Historical tracking mode may differ from today's editable habit type; do not discard old facts.
         return body
     }
+
+    /** Absent means legacy unknown, never today's configuration. Null/coerced proofs are invalid. */
+    fun countPolicy(body: JsonObject): CountDayPolicy? {
+        if ("count_policy" !in body) return null
+        require(body.text("event_type") in setOf("count_delta", "count_snapshot") &&
+            body["one_time"].let { it == null || it == JsonNull })
+        return CountDayPolicy.fromJson(body.getValue("count_policy"))
+    }
+
+    private fun policyFields(body: JsonObject): Set<String> =
+        if (countPolicy(body) == null) emptySet() else setOf("count_policy")
 
     private fun observationBody(change: SyncV2Change, deleted: Boolean = false): JsonObject {
         val body = header(change, "metric_observation", observationFields, deleted)

@@ -113,6 +113,36 @@ class NextSyncRuntimeTest : NextCoreRequestFixture() {
         storage.reopen(); assertEquals(next, merger(http).state(access()))
     }
 
+    @Test fun incrementalLogTimestampDoesNotRewriteEntityTimeOrOrderCursor() = runBlocking {
+        register(); val (http, _) = channel(); val store = merger(http); val state = initial(http)
+        val first = renamed(21, 2, "Offline revision").copy(changedAt = "2026-10-07T01:00:00.123456Z")
+        val second = renamed(22, 3, "Clock-independent log").copy(changedAt = "2026-10-05T01:00:00Z")
+        val next = store.page(access(), state, NextSyncPullResponse(listOf(first, second), 22, false, time))
+        assertEquals(22L, next.cursor)
+        val saved = requireNotNull(db.metricDao().getMetricByUuid(metric.uuid))
+        assertEquals("Clock-independent log", saved.name)
+        assertEquals(Instant.parse(time).toEpochMilli(), saved.updatedAt)
+        assertEquals(second.payload.toString(), db.syncOutboxDao().getState("metric", metric.uuid)!!.payloadJson)
+        assertTrue(db.syncOutboxDao().getAll().isEmpty())
+        storage.reopen(); assertEquals(next, merger(http).state(access()))
+    }
+
+    @Test fun malformedEntityOrTransportTimeStillRollsBackTheWholeIncrementalPage() = runBlocking {
+        register(); val (http, _) = channel(); val store = merger(http); val state = initial(http)
+        val valid = renamed(21, 2, "Must roll back")
+        val last = renamed(22, 3, "Invalid second revision")
+        val invalid = listOf(JsonNull, JsonPrimitive(123), JsonPrimitive("not-an-instant")).map { value ->
+            last.copy(payload = JsonObject(last.payload + ("updated_at" to value)))
+        } + listOf(last.copy(payload = JsonObject(last.payload - "updated_at")), last.copy(changedAt = "not-an-instant"))
+        for (change in invalid) {
+            rejected { store.page(access(), state, NextSyncPullResponse(listOf(valid, change), 22, false, time)) }
+            assertEquals(state, store.state(access()))
+            assertEquals(metric.name, db.metricDao().getMetricByUuid(metric.uuid)!!.name)
+            assertEquals(1L, db.syncOutboxDao().getState("metric", metric.uuid)!!.revision)
+            assertTrue(db.syncOutboxDao().getAll().isEmpty())
+        }
+    }
+
     @Test fun cursorAbortIgnoreAndLateCacheMutationRollBackWholePageThenExactRetryWorks() = runBlocking {
         register(); val (http, _) = channel(); val store = merger(http); val state = initial(http)
         val page = NextSyncPullResponse(listOf(renamed(21, 2, "Must commit together")), 21, false, time)
@@ -128,6 +158,30 @@ class NextSyncRuntimeTest : NextCoreRequestFixture() {
         val next = store.page(access(), state, page)
         assertEquals(21L, next.cursor); assertEquals("Must commit together", db.metricDao().getMetricByUuid(metric.uuid)!!.name)
         assertEquals(next, store.page(access(), state, page))
+    }
+
+    @Test fun lateCursorTriggerCannotChangeOrDeleteOriginalCountDayWhileCommittingAnotherEntity() = runBlocking {
+        register(); val (http, _) = channel { successReply(it) }
+        val state = initial(http)
+        val first = completion()
+        assertEquals(NextOperationAcceptance.COMMITTED, sender(http).sendAndAcceptOperation(access(), first.operationId))
+        val day = requireNotNull(db.countDayDao().get(habit.id, "2026-10-06"))
+        val origin = originalIntent(first)
+        val page = NextSyncPullResponse(listOf(renamed(21, 2, "Together with count rule")), 21, false, time)
+        for (fault in listOf("UPDATE count_days SET targetValue=11;", "DELETE FROM count_days;")) {
+            db.openHelper.writableDatabase.execSQL("CREATE TRIGGER damage_day_cursor AFTER UPDATE ON next_sync_state BEGIN $fault END")
+            rejected { merger(http).page(access(), state, page) }
+            db.openHelper.writableDatabase.execSQL("DROP TRIGGER damage_day_cursor")
+            storage.reopen()
+            assertEquals(state, merger(http).state(access()))
+            assertEquals(day, db.countDayDao().get(habit.id, day.localDate))
+            assertEquals(origin, originalIntent(first))
+            assertEquals(3, db.completionDao().getCompletionByUuid(first.entityUuid)!!.value)
+            assertEquals(metric.name, db.metricDao().getMetricByUuid(metric.uuid)!!.name)
+            assertNotNull(db.nextRequestDao().acceptance(NEXT_OPERATION, first.operationId))
+        }
+        assertEquals(21L, merger(http).page(access(), state, page).cursor)
+        assertEquals(day, db.countDayDao().get(habit.id, day.localDate))
     }
 
     @Test fun malformedLatePageEntryCannotCommitEarlierValidEntryOrCursor() = runBlocking {
@@ -228,7 +282,7 @@ class NextSyncRuntimeTest : NextCoreRequestFixture() {
             habit = habit.copy(habitType = HabitType.CHECK_IN, schedule = HabitSchedule.Once(), targetValue = 1,
                 completionPolicy = "one_and_done", oneTimeConfirmedVersion = 0,
                 appearance = ObjectAppearance(IconReference.Role("task.custom"), "#123456", "object"))
-            timerHabit = timerHabit.copy(targetValue = 60)
+            timerHabit = timerHabit.copy(targetValue = 1)
             db.habitDao().update(habit); db.habitDao().update(timerHabit)
             db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
         }
@@ -339,7 +393,7 @@ class NextSyncRuntimeTest : NextCoreRequestFixture() {
                     TimerCommandResult(command.commandId, command.sessionUuid, "rejected", errorCode = "MISSING_PREDECESSOR")
                 } else TimerCommandResult(command.commandId, command.sessionUuid, "applied", session = TimerSessionResponse(
                     command.sessionUuid, timerHabit.uuid, "running", id(4), 1, 1, 2, time, time,
-                    timezone = "Asia/Shanghai", isCountdown = false, targetSeconds = 1,
+                    timezone = "Asia/Shanghai", isCountdown = false, targetSeconds = 60,
                     maxDurationSeconds = 180, activeElapsedMs = 0))
                 MaterialSocketServer.Reply(json.encodeToString(TimerCommandBatchResponse(listOf(result), time)).toByteArray())
             }

@@ -49,6 +49,7 @@ from tests.test_http_commit_boundary import database_state, runtime_http as runt
 from tests.test_next_structural_sync import metric, node, operation
 from tests.test_push_orchestration import hide_initial_operation_lookup
 from tests.test_timer_sync import timer_command
+from tests.runtime_auth_fixtures import relogin_runtime_headers
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -290,7 +291,7 @@ async def test_http_admission_rejects_context_before_any_receipt_or_business_mut
 async def test_discovery_then_restore_epoch_change_rejects_old_context_and_no_retarget(
     replica_http, kind
 ):
-    client, _, engine, _, headers, device, _ = replica_http
+    client, production, engine, _, headers, device, _ = replica_http
     body = (
         metric_request(device)
         if kind == "sync"
@@ -308,6 +309,15 @@ async def test_discovery_then_restore_epoch_change_rejects_old_context_and_no_re
         headers=headers,
         json=body,
     )
+    if headers["Authorization"].startswith("Bearer "):
+        assert response.status_code == 401
+        assert await database_state(engine) == before and body == frozen
+        authenticated = await relogin_runtime_headers(production, headers)
+        response = await client.post(
+            "/__test/v5/push" if kind == "sync" else "/__test/v5/timers",
+            headers=authenticated,
+            json=body,
+        )
     assert (
         response.status_code == 409
         and response.json()["detail"]["code"] == "SYNC_EPOCH_MISMATCH"
@@ -389,6 +399,12 @@ async def test_timer_receipt_namespaces_reject_cross_protocol_and_cross_restore_
             text("UPDATE server_instances SET sync_epoch=:epoch"), {"epoch": epoch}
         )
     headers = headers | {EPOCH_HEADER: epoch}
+    before = await database_state(engine)
+    if headers["Authorization"].startswith("Bearer "):
+        stale = await client.post("/__test/v5/timers", headers=headers, json=body)
+        assert stale.status_code == 401
+        assert await database_state(engine) == before
+    headers = await relogin_runtime_headers(production, headers)
     response = await client.post("/__test/v5/timers", headers=headers, json=body)
     assert response.json()["results"][0]["error_code"] == "COMMAND_ID_REUSED"
 
@@ -397,7 +413,7 @@ async def test_timer_receipt_namespaces_reject_cross_protocol_and_cross_restore_
 async def test_new_sync_exact_replay_commit_failure_and_epoch_namespace(
     replica_http, failure
 ):
-    client, _, engine, _, headers, device, _ = replica_http
+    client, production, engine, _, headers, device, _ = replica_http
     body = metric_request(device)
     if failure == "commit":
         async with engine.begin() as connection:
@@ -429,9 +445,14 @@ async def test_new_sync_exact_replay_commit_failure_and_epoch_namespace(
         await connection.execute(
             text("UPDATE server_instances SET sync_epoch=:epoch"), {"epoch": epoch}
         )
-    response = await client.post(
-        "/__test/v5/push", headers=headers | {EPOCH_HEADER: epoch}, json=body
-    )
+    headers = headers | {EPOCH_HEADER: epoch}
+    before = await database_state(engine)
+    if headers["Authorization"].startswith("Bearer "):
+        stale = await client.post("/__test/v5/push", headers=headers, json=body)
+        assert stale.status_code == 401
+        assert await database_state(engine) == before
+    headers = await relogin_runtime_headers(production, headers)
+    response = await client.post("/__test/v5/push", headers=headers, json=body)
     assert response.json()["results"][0]["error_code"] == "OPERATION_ID_REUSED"
 
 
@@ -476,6 +497,9 @@ async def test_full_timer_state_machine_lost_response_replay_uses_new_namespace(
             active_elapsed_ms=60000,
         ),
     ]
+    commands[0]["start_policy"] = dict(
+        target_seconds=60, is_countdown=False, max_duration_seconds=180
+    )
     body = dict(device_id=device, commands=commands)
     first = await client.post("/__test/v5/timers", headers=headers, json=body)
     again = await client.post("/__test/v5/timers", headers=headers, json=body)

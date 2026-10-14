@@ -270,6 +270,106 @@ class LocalIconFilesTest {
         assertEquals(before, opened())
     }
 
+    @Test fun archiveTemporaryReadsEmptyPartialAndCompleteBytesWithoutPublicationOrCleanup() {
+        LocalIconFiles(root).use { files ->
+            for (bytes in listOf(byteArrayOf(), svg.copyOf(3), svg)) {
+                temporary().writeBytes(bytes)
+                val inode = Os.lstat(temporary().path).st_ino
+                assertArrayEquals(bytes, files.readRecoveryTemporary(op, svg.size) {})
+                assertEquals(inode, Os.lstat(temporary().path).st_ino)
+                assertArrayEquals(bytes, temporary().readBytes())
+                assertFalse(File(root, blob(svg).sha256).exists())
+            }
+        }
+    }
+
+    @Test fun archiveTemporaryRequiresJournalIdentityAndBoundedLengthWithoutTruncation() {
+        temporary().writeBytes(svg + 0)
+        LocalIconFiles(root).use { files ->
+            for (bad in listOf("../bad", "", ".install-$op.part")) {
+                assertThrows(IllegalArgumentException::class.java) { files.readRecoveryTemporary(bad, svg.size) {} }
+            }
+            for (bound in listOf(0, -1, 2_097_153)) {
+                assertThrows(IllegalArgumentException::class.java) { files.readRecoveryTemporary(op, bound) {} }
+            }
+            assertThrows(IllegalArgumentException::class.java) { files.readRecoveryTemporary(op, svg.size) {} }
+            assertArrayEquals(svg + 0, temporary().readBytes())
+        }
+    }
+
+    @Test fun archiveTemporaryDoesNotFollowSymlinksOrBlockOnFifos() {
+        val outside = File(parent, "outside").apply { writeBytes(svg) }
+        LocalIconFiles(root).use { files ->
+            Os.symlink(outside.path, temporary().path)
+            errno(OsConstants.ELOOP) { files.readRecoveryTemporary(op, svg.size) {} }
+            assertArrayEquals(svg, outside.readBytes()); Os.remove(temporary().path)
+            assertTrue(temporary().mkdir())
+            assertThrows(IllegalArgumentException::class.java) { files.readRecoveryTemporary(op, svg.size) {} }
+            assertTrue(temporary().delete()); Os.mkfifo(temporary().path, 384)
+            assertThrows(IllegalArgumentException::class.java) { files.readRecoveryTemporary(op, svg.size) {} }
+            assertTrue(OsConstants.S_ISFIFO(Os.lstat(temporary().path).st_mode)); Os.remove(temporary().path)
+        }
+    }
+
+    @Test fun archiveTemporaryDetectsReplacingItsPathEvenWhenHeldBytesAreIdentical() {
+        temporary().writeBytes(svg)
+        val original = File(root, "held-original")
+        var changed = false
+        LocalIconFiles(root, object : IconFileIo() {
+            override fun read(fd: FileDescriptor, bytes: ByteArray, offset: Int, length: Int): Int {
+                if (!changed) {
+                    changed = true; Os.rename(temporary().path, original.path); temporary().writeBytes(svg)
+                }
+                return super.read(fd, bytes, offset, length)
+            }
+        }).use { files ->
+            assertThrows(IllegalStateException::class.java) { files.readRecoveryTemporary(op, svg.size) {} }
+        }
+        assertArrayEquals(svg, original.readBytes()); assertArrayEquals(svg, temporary().readBytes())
+    }
+
+    @Test fun archiveTemporaryRejectsShortEofGrowthAndInvalidReadCounts() {
+        temporary().writeBytes(svg)
+        for (count in listOf(0, -1, 65_537)) {
+            LocalIconFiles(root, object : IconFileIo() {
+                override fun read(fd: FileDescriptor, bytes: ByteArray, offset: Int, length: Int) = count
+            }).use { files ->
+                assertThrows(Exception::class.java) { files.readRecoveryTemporary(op, svg.size) {} }
+            }
+            assertArrayEquals(svg, temporary().readBytes())
+        }
+        var changed = false
+        LocalIconFiles(root, object : IconFileIo() {
+            override fun read(fd: FileDescriptor, bytes: ByteArray, offset: Int, length: Int): Int {
+                if (!changed) { changed = true; temporary().writeBytes(svg + 0) }
+                return super.read(fd, bytes, offset, length)
+            }
+        }).use { files ->
+            assertThrows(IllegalStateException::class.java) { files.readRecoveryTemporary(op, svg.size + 1) {} }
+        }
+        assertArrayEquals(svg + 0, temporary().readBytes())
+    }
+
+    @Test fun archiveTemporaryChecksCancellationBetweenBoundedReadsAndReleasesDescriptor() {
+        val bytes = ByteArray(131_072) { 1 }
+        temporary().writeBytes(bytes)
+        val failure = kotlinx.coroutines.CancellationException("synthetic checkpoint")
+        var reads = 0
+        LocalIconFiles(root, object : IconFileIo() {
+            override fun read(fd: FileDescriptor, bytes: ByteArray, offset: Int, length: Int): Int {
+                reads++
+                return super.read(fd, bytes, offset, length)
+            }
+        }).use { files ->
+            assertSame(failure, assertThrows(kotlinx.coroutines.CancellationException::class.java) {
+                files.readRecoveryTemporary(op, bytes.size) { if (reads == 1) throw failure }
+            })
+            assertEquals(1, reads)
+            assertArrayEquals(bytes, files.readRecoveryTemporary(op, bytes.size) {})
+            assertArrayEquals(bytes, temporary().readBytes())
+        }
+    }
+
     @Test fun directoryAndFileDescriptorsAreOpenedWithAtomicCloseOnExec() {
         if (android.os.Build.VERSION.SDK_INT >= 27) assertEquals(OsConstants.O_CLOEXEC, ICON_OPEN_CLOEXEC)
         var sawFile = false; var sawDirectory = false

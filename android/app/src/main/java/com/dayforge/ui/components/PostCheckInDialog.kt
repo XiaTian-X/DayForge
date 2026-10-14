@@ -63,19 +63,26 @@ fun PostCheckInDialog(
     linkedMetrics: List<LinkedMetricInfo>,
     onRecord: (values: List<MetricValueInput>, neverAskAgain: Boolean) -> Unit,
     onSkip: (neverAskAgain: Boolean) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    initialInputs: Map<Long, Pair<String, String>> = emptyMap(),
+    promptIdentity: String? = null,
+    onDraftChange: (List<MetricInputState>) -> Unit = {},
+    onRefreshMetadata: (() -> Unit)? = null,
+    missingTargets: List<String> = emptyList()
 ) {
-    var neverAskAgain by remember { mutableStateOf(false) }
+    var neverAskAgain by remember(promptIdentity) { mutableStateOf(false) }
 
     // State for each metric's input
-    val inputStates = remember(linkedMetrics) {
+    val inputStates = remember(promptIdentity, linkedMetrics) {
         linkedMetrics.map { info ->
             mutableStateOf(
                 MetricInputState(
                     metricId = info.metricId,
                     name = info.metricName,
                     unit = info.unit,
-                    decimalPlaces = info.decimalPlaces
+                    decimalPlaces = info.decimalPlaces,
+                    inputValue = initialInputs[info.metricId]?.first.orEmpty(),
+                    note = initialInputs[info.metricId]?.second.orEmpty()
                 )
             )
         }
@@ -100,6 +107,10 @@ fun PostCheckInDialog(
                 )
 
                 Spacer(modifier = Modifier.height(16.dp))
+                if (missingTargets.isNotEmpty()) {
+                    Text(stringResource(R.string.once_metrics_missing, missingTargets.joinToString()),
+                        color = MaterialTheme.colorScheme.error)
+                }
 
                 // Inline input for each metric (D-17)
                 linkedMetrics.forEachIndexed { index, info ->
@@ -111,6 +122,7 @@ fun PostCheckInDialog(
                             state.value = state.value.copy(
                                 inputValue = NumericInputUtils.filterNumericInput(newValue, state.value.decimalPlaces)
                             )
+                            onDraftChange(inputStates.map { it.value })
                         },
                         label = { Text("${info.metricName} (${info.unit})") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -122,6 +134,10 @@ fun PostCheckInDialog(
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
+
+                onRefreshMetadata?.let { refresh ->
+                    TextButton(onClick = refresh) { Text(stringResource(R.string.once_refresh_metrics)) }
+                }
 
                 // Never ask again checkbox (D-18)
                 Row(

@@ -45,9 +45,18 @@ internal class AccountIconImport(
         return metadata.authorized(context) { AccountIconPackPreview(context, archive) }
     }
 
-    suspend fun confirm(preview: AccountIconPackPreview): LocalIconPackReceipt {
-        val context = preview.context
-        val pack = preview.manifest
+    suspend fun confirm(preview: AccountIconPackPreview): LocalIconPackReceipt =
+        install(preview.context, preview.manifest, preview.archive::readBlob)
+
+    /** Configuration caller owns validated source bytes and its durably saved new identity plan. */
+    internal suspend fun confirmConfiguration(context: AccountIconContext,
+        plan: com.dayforge.data.export.NextConfigImportPlan): LocalIconPackReceipt {
+        plan.requireTarget(context)
+        return install(context, requireNotNull(plan.iconPack), plan.source::readBlob)
+    }
+
+    private suspend fun install(context: AccountIconContext, pack: IconPack,
+        readBlob: suspend (String) -> ByteArray): LocalIconPackReceipt {
         metadata.reauthorize(context, writing = true)
         // Whole metadata/quota/intent reservation is one transaction, before any file publication.
         transfers.reserveAndEnqueuePack(context, pack)
@@ -56,7 +65,7 @@ internal class AccountIconImport(
         }.distinctBy { it.second.sha256 }
         // A successful earlier ready transaction is not a final integrity proof. Read all actual
         // variants again under the pack lease, including unused assets, before returning success.
-        store.installPack(context, pack, preview.archive::readBlob)
+        store.installPack(context, pack, readBlob)
         check(metadata.pack(context, pack.packId, pack.revision) == pack) { "ICON_PACK_NOT_OWNED" }
         metadata.reauthorize(context, writing = true)
         return metadata.authorized(context) {

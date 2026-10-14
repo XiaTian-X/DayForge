@@ -23,7 +23,8 @@ internal data class AccountIconNamespace(val accountId: String, val serverInstan
 }
 
 /** Captured request lifetime, not credentials. A caller cannot choose its own owner. */
-internal class AccountIconContext internal constructor(internal val access: LocalIconAccess) {
+internal class AccountIconContext internal constructor(internal val access: LocalIconAccess,
+    internal val recovery: ReplicaMaterialAccess? = null) {
     val namespace = AccountIconNamespace(
         access.session.authentication.userId,
         requireNotNull(access.session.serverInstanceId), requireNotNull(access.session.syncEpoch)
@@ -48,9 +49,22 @@ internal data class AccountIconTransferMetadata(
     val assets: Map<String, IconAsset>, val packs: Map<Pair<String, Int>, IconPack>
 )
 
+internal data class ConfigIconUse(val reference: IconReference, val oneTime: Boolean)
+internal data class ConfigOwnedBlob(val assetId: String, val installation: IconInstallation)
+internal data class ConfigIconDependencies(
+    val selection: AccountIconSelection, val assets: List<IconAsset>, val roles: Map<String, String>,
+    val unresolvedRoles: List<String>, val blobs: Map<String, ConfigOwnedBlob>
+)
+
 /** Readiness is an advisory local receipt, not a fresh file proof or server acknowledgement. */
 internal data class AccountIconCatalog(
     val packs: List<IconPack>, val selection: AccountIconSelection, val readyVersions: Set<IconPackVersion>
+)
+
+/** Full owned catalog, not only selected/referenced configuration dependencies. No file proof. */
+internal data class AccountIconRecoveryMetadata(
+    val selection: AccountIconSelection, val assets: List<IconAsset>, val packs: List<IconPack>,
+    val installations: List<IconInstallation>
 )
 
 /** Local safety ceilings; lower limits retain existing data and permit exact replay. */
@@ -76,7 +90,20 @@ internal class AccountIconRepository(
     private var parsedMetadata: ParsedMetadata? = null
 
     internal fun usesDatabase(value: AccountIconDatabase): Boolean = database === value
+    internal fun usesAccess(value: TokenManager, coordinator: AccountSessionCoordinator): Boolean =
+        tokens === value && sessions === coordinator
     internal fun remoteCatalog(transfers: AccountIconTransfers) = AccountIconRemoteCatalog(database, this, transfers)
+
+    /** Compose recovery from this exact provider; never expose a second icon DAO/runtime. */
+    internal fun replicaInputReader(context: android.content.Context,
+        businessDatabase: com.dayforge.data.local.HabitDatabase, preferences: com.dayforge.data.local.PreferencesManager,
+        http: com.dayforge.data.api.NextSyncHttp, transfers: AccountIconTransfers, store: AccountIconStore,
+        appearancePreferences: androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>,
+        themes: ThemeFileRepository, builtIns: BuiltInThemes): com.dayforge.data.repository.NextReplicaArchiveInputReader {
+        require(store.usesMetadata(this)) { "SYNC_ARCHIVE_STORE_MISMATCH" }
+        return com.dayforge.data.repository.NextReplicaArchiveInputReader(context, businessDatabase, tokens, sessions,
+            preferences, http, database, this, transfers, store.replicaFiles(), appearancePreferences, themes, builtIns)
+    }
 
     internal fun registerCache(cache: com.dayforge.data.local.AccountIconMemory.Cache) =
         tokens.registerIconCache(cache)
@@ -89,10 +116,25 @@ internal class AccountIconRepository(
         check(context, writing)
     }
 
+    /** Includes local download/install/cleanup, even on a device without declaration permission. */
+    suspend fun reauthorizeOrdinary(context: AccountIconContext, writing: Boolean = false) = sessions.exclusive {
+        if (writing) tokens.requireOrdinaryReplicaAccess() else requireDownloadAccess(context)
+        check(context, writing)
+    }
+
+    /** Only catalog/download journal and local readiness mutations use the recovery lease.
+     * Structural declaration, selection and all image publication still require ordinary access.
+     */
+    private suspend fun requireDownloadAccess(context: AccountIconContext) {
+        context.recovery?.authorize(tokens) ?: tokens.requireOrdinaryReplicaAccess()
+    }
+
     /** Short in-memory publication only. Never perform image I/O/rendering or suspend in block. */
     suspend fun <T> authorized(context: AccountIconContext, block: () -> T): T = sessions.exclusive {
+        tokens.requireOrdinaryReplicaAccess()
         check(context)
         val result = block()
+        tokens.requireOrdinaryReplicaAccess()
         check(context)
         result
     }
@@ -120,27 +162,113 @@ internal class AccountIconRepository(
         AccountIconCatalog(Collections.unmodifiableList(packs), state.selection, Collections.unmodifiableSet(ready))
     }
 
+    /** Short read-only transaction; the file lease must be acquired before this account lock. */
+    internal suspend fun recoveryMetadata(context: AccountIconContext): AccountIconRecoveryMetadata = scoped(context) {
+        catalog(context.namespace).recoveryMetadata()
+    }
+
+    /** Short archival metadata read, not file/network/preference I/O or a new-scope authorization. */
+    internal suspend fun <T> recoveryTransaction(context: AccountIconContext,
+        block: suspend (AccountIconRecoveryMetadata, AccountIconTransferMetadata) -> T): T = scoped(context) {
+        val before = catalog(context.namespace)
+        val result = block(before.recoveryMetadata(), AccountIconTransferMetadata(
+            Collections.unmodifiableMap(before.assets), Collections.unmodifiableMap(before.packs)))
+        check(catalog(context.namespace) == before) { "ICON_RECOVERY_METADATA_CHANGED" }
+        check(context)
+        result
+    }
+
+    private fun Catalog.recoveryMetadata(): AccountIconRecoveryMetadata {
+        val state = this
+        return AccountIconRecoveryMetadata(state.selection,
+            Collections.unmodifiableList(state.assets.values.sortedBy { it.assetId }),
+            Collections.unmodifiableList(state.packs.values.sortedWith(compareBy<IconPack> { it.packId }.thenBy { it.revision })),
+            Collections.unmodifiableList(state.blobs.toSortedMap().map { (hash, reservation) ->
+                IconInstallation(reservation, state.ready[hash]?.validationProfile)
+            }))
+    }
+
+    /** One owned metadata/receipt snapshot, not the display resolver's placeholder fallback. */
+    internal suspend fun configDependencies(context: AccountIconContext,
+        uses: List<ConfigIconUse>): ConfigIconDependencies = scoped(context) {
+        require(uses.size <= 2000)
+        val state = catalog(context.namespace)
+        val selected = state.selection.pack?.let { state.packs.getValue(it.packId to it.revision) }
+        val assets = linkedMapOf<String, IconAsset>()
+        val roles = sortedMapOf<String, String>()
+        val unresolved = sortedSetOf<String>()
+        val blobs = sortedMapOf<String, ConfigOwnedBlob>()
+        for (use in uses) {
+            val asset = when (val reference = use.reference) {
+                is IconReference.Role -> {
+                    require(iconAllowed(reference, use.oneTime)) { "ICON_PURPOSE_MISMATCH" }
+                    val assetId = selected?.roles?.get(reference.role)
+                    if (assetId == null) { unresolved.add(reference.role); null }
+                    else { roles[reference.role] = assetId; state.assets.getValue(assetId) }
+                }
+                is IconReference.Asset -> requireNotNull(state.assets[reference.assetId]) { "ICON_ASSET_NOT_OWNED" }
+            }
+            if (asset != null) {
+                require(iconAllowed(use.reference, use.oneTime, asset)) { "ICON_PURPOSE_MISMATCH" }
+                assets[asset.assetId] = asset
+                // Prove every referring asset before deduplicating bytes. A shared hash is not ownership.
+                for (blob in listOfNotNull(asset.light, asset.dark)) {
+                    val receipt = installation(state, asset.assetId, blob.sha256)
+                    check(receipt.validationProfile != null) { "ICON_NOT_READY" }
+                    val previous = blobs[blob.sha256]
+                    check(previous == null || previous.installation == receipt) { "ICON_INSTALL_CHANGED" }
+                    if (previous == null || asset.assetId < previous.assetId)
+                        blobs[blob.sha256] = ConfigOwnedBlob(asset.assetId, receipt)
+                }
+            }
+        }
+        check(assets.size <= 128 && unresolved.size <= 256) { "CONFIG_ICON_DEPENDENCY_LIMIT" }
+        check(blobs.values.sumOf { it.installation.reservation.blob.byteLength.toLong() } <= 67_108_864L) {
+            "CONFIG_ICON_DEPENDENCY_LIMIT"
+        }
+        ConfigIconDependencies(state.selection, Collections.unmodifiableList(assets.values.sortedBy { it.assetId }),
+            Collections.unmodifiableMap(roles), Collections.unmodifiableList(unresolved.toList()),
+            Collections.unmodifiableMap(blobs))
+    }
+
     /** Short queue transaction only: no I/O/network, nested account locking or preference writes. */
     internal suspend fun <T> transferTransaction(context: AccountIconContext,
         block: suspend (AccountIconTransferMetadata) -> T): T = scoped(context) {
+        requireDownloadAccess(context)
         val before = catalog(context.namespace)
         val result = block(AccountIconTransferMetadata(
             Collections.unmodifiableMap(before.assets), Collections.unmodifiableMap(before.packs)))
         check(catalog(context.namespace) == before) { "ICON_TRANSFER_CHANGED_METADATA" }
+        requireDownloadAccess(context)
         check(context)
         result
     }
 
     /** Only the file store may activate a pack, after proving all its real ready variants. */
     suspend fun selectValidated(context: AccountIconContext, expectedGeneration: Long,
-        pack: IconPack?, receipts: Map<String, IconInstallation>): AccountIconSelection {
+        pack: IconPack?, receipts: Map<String, IconInstallation>): AccountIconSelection =
+        selectValidated(context, expectedGeneration, pack, receipts, restoring = false)
+
+    /** Only the archived exact preference is accepted, after the store's real file verification. */
+    internal suspend fun restoreReplicaSelectionValidated(context: AccountIconContext, expectedGeneration: Long,
+        pack: IconPack?, receipts: Map<String, IconInstallation>): AccountIconSelection =
+        selectValidated(context, expectedGeneration, pack, receipts, restoring = true)
+
+    private suspend fun selectValidated(context: AccountIconContext, expectedGeneration: Long,
+        pack: IconPack?, receipts: Map<String, IconInstallation>, restoring: Boolean): AccountIconSelection {
         require(expectedGeneration >= 0)
         var transitioning = false
         try {
             return scoped(context) {
+                val intent = if (restoring) requireNotNull(context.recovery).also { it.authorize(tokens) }.intent
+                    else { tokens.requireOrdinaryReplicaAccess(); null }
                 val ns = context.namespace
                 val before = catalog(ns)
                 check(before.selection.generation == expectedGeneration) { "ICON_SELECTION_CHANGED" }
+                intent?.let {
+                    it.requirePack(pack)
+                    if (before.selection != AccountIconSelection(0, null)) it.requireRestored(before.selection)
+                }
                 val version = pack?.let { IconPackVersion(it.packId, it.revision) }
                 if (pack != null) {
                     check(before.packs[pack.packId to pack.revision] == pack) { "ICON_PACK_NOT_OWNED" }
@@ -149,7 +277,8 @@ internal class AccountIconRepository(
                     }.associateBy { it.reservation.blob.sha256 }
                     check(variants == receipts && variants.values.all { it.validationProfile != null }) { "ICON_NOT_READY" }
                 } else require(receipts.isEmpty())
-                if (before.selection.pack == version) return@scoped before.selection
+                if (before.selection.pack == version &&
+                    !(intent != null && intent.originalGeneration > 0 && before.selection.generation == 0L)) return@scoped before.selection
                 check(expectedGeneration < Long.MAX_VALUE) { "ICON_SELECTION_EXHAUSTED" }
                 val next = AccountIconSelection(expectedGeneration + 1, version)
                 tokens.beginIconSelectionTransition(); transitioning = true
@@ -173,6 +302,7 @@ internal class AccountIconRepository(
     /** Short publication check; never render or do file I/O in block. */
     suspend fun <T> withSelection(context: AccountIconContext, expected: AccountIconSelection, block: () -> T): T =
         scoped(context) {
+            tokens.requireOrdinaryReplicaAccess()
             check(catalog(context.namespace).selection == expected) { "ICON_SELECTION_CHANGED" }
             block()
         }
@@ -239,6 +369,7 @@ internal class AccountIconRepository(
 
     private suspend fun ready(context: AccountIconContext, assetId: String, expected: IconReservation,
         profile: String, writing: Boolean) = scoped(context, writing) {
+            if (writing) tokens.requireOrdinaryReplicaAccess() else requireDownloadAccess(context)
             val ns = context.namespace
             val before = catalog(ns)
             val current = installation(before, assetId, expected.blob.sha256)
@@ -299,7 +430,9 @@ internal class AccountIconRepository(
 
     private suspend fun check(context: AccountIconContext, writing: Boolean = false) {
         currentCoroutineContext().ensureActive()
+        context.recovery?.authorize(tokens)
         check(tokens.localIconAccess() == context.access) { "ICON_SESSION_CHANGED" }
+        if (writing) tokens.requireOrdinaryReplicaAccess()
         check(!writing || context.access.canDeclare) { "ICON_DECLARATION_DENIED" }
     }
 
@@ -313,6 +446,7 @@ internal class AccountIconRepository(
     private suspend fun <T> declare(context: AccountIconContext, assets: List<IconAsset>, packs: List<IconPack>, writing: Boolean,
         block: suspend (AccountIconTransferMetadata) -> T): T =
         sessions.exclusive {
+            if (writing) tokens.requireOrdinaryReplicaAccess() else requireDownloadAccess(context)
             check(context, writing)
             val result = database.withTransaction {
                 val ns = context.namespace

@@ -21,8 +21,8 @@ class FormattedStringResourceTest {
             context.getString(R.string.widget_focus_next_in, "Habit", "5 min")
         )
         assertEquals(
-            "第2次/共4次 (已完成1次)",
-            context.getString(R.string.notification_slot_progress, 2, 4, 1)
+            "Today: 1 / 4",
+            context.getString(R.string.notification_count_progress, 1L, 4)
         )
         // User-approved compact copy omits a paused suffix; numeric meaning remains unchanged.
         assertEquals(
@@ -43,6 +43,8 @@ class FormattedStringResourceTest {
         assertEquals("已完成 7 / 目标 30", chinese.getString(R.string.habit_target_progress_format, 7, 30))
         assertEquals("Unit: kg · Decimal places: 1", english.getString(R.string.metric_configuration_summary, "kg", 1))
         assertEquals("单位：kg · 小数位数：1", chinese.getString(R.string.metric_configuration_summary, "kg", 1))
+        assertEquals("Today: 4294967294 / 2147483647", english.getString(R.string.notification_count_progress, 4_294_967_294L, Int.MAX_VALUE))
+        assertEquals("今日进度：4294967294 / 2147483647", chinese.getString(R.string.notification_count_progress, 4_294_967_294L, Int.MAX_VALUE))
     }
 
     @Test
@@ -54,8 +56,8 @@ class FormattedStringResourceTest {
             context.getString(R.string.widget_focus_next_in, "习惯", "5 分钟")
         )
         assertEquals(
-            "第2次/共4次 (已完成1次)",
-            context.getString(R.string.notification_slot_progress, 2, 4, 1)
+            "今日进度：1 / 4",
+            context.getString(R.string.notification_count_progress, 1L, 4)
         )
         assertEquals(
             "还剩 03:07，是否放弃本次计时？",

@@ -8,6 +8,10 @@ import java.time.LocalDate
 import java.time.ZoneId
 
 object StreakCalculator {
+    fun currentFromBusinessDates(dates: Collection<LocalDate>, today: LocalDate = DateTimeUtils.today()): Int =
+        currentStreak(dates.toList(), today)
+
+    fun bestFromBusinessDates(dates: Collection<LocalDate>): Int = bestStreak(dates.toList())
     fun calculateCurrentStreak(
         completions: List<CompletionEntity>,
         today: LocalDate = DateTimeUtils.today()

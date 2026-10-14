@@ -50,6 +50,7 @@ internal fun SyncStatusCard(
         !isOnline -> SemanticStatus.WARNING
         !isLoggedIn -> null
         syncProgress is SyncProgress.Error -> SemanticStatus.ERROR
+        syncProgress is SyncProgress.WaitingForMaterials -> SemanticStatus.PENDING
         syncProgress.isRunning() -> SemanticStatus.PENDING
         syncProgress is SyncProgress.Success -> SemanticStatus.SUCCESS
         else -> null
@@ -57,7 +58,8 @@ internal fun SyncStatusCard(
     val status = rememberStatusAppearance(state ?: SemanticStatus.PENDING, background, backdrop)
     val neutral = rememberReadableStatusIcon(MaterialTheme.colorScheme.onSurfaceVariant, background, backdrop)
     val warning = rememberStatusAppearance(SemanticStatus.WARNING, background, backdrop)
-    val description = when (state) {
+    val description = if (syncProgress is SyncProgress.WaitingForMaterials && state == SemanticStatus.PENDING)
+        stringResource(R.string.sync_waiting_materials) else when (state) {
         SemanticStatus.WARNING -> stringResource(R.string.sync_need_network)
         SemanticStatus.ERROR -> stringResource(R.string.sync_error)
         SemanticStatus.PENDING -> stringResource(R.string.sync_in_progress)
@@ -102,7 +104,8 @@ internal fun SyncStatusCard(
 
                 // Last sync time
                 Text(
-                    text = stringResource(R.string.sync_last_time, lastSyncTime),
+                    text = if (syncProgress is SyncProgress.WaitingForMaterials)
+                        stringResource(R.string.sync_waiting_materials) else stringResource(R.string.sync_last_time, lastSyncTime),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -213,14 +216,48 @@ internal fun RejectedChangesDialog(
     onCancelTimerAndUseServer: (TimerCommandEntity) -> Unit,
     onUseServer: (Long) -> Unit,
     onUseLocal: (Long) -> Unit,
-    onDiscard: (SyncOutboxEntity) -> Unit
+    onDiscard: (SyncOutboxEntity) -> Unit,
+    problems: com.dayforge.data.model.SyncProblems? = null,
+    onPreviewRecovery: ((com.dayforge.data.repository.NextRecoveryKey) -> Unit)? = null
 ) {
+    val visibleChanges = (problems as? com.dayforge.data.model.SyncProblems.Legacy)?.changes ?: changes
+    val visibleConflicts = (problems as? com.dayforge.data.model.SyncProblems.Legacy)?.conflicts ?: conflicts
+    val visibleTimers = (problems as? com.dayforge.data.model.SyncProblems.Legacy)?.timers ?: timerCommands
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.sync_rejected_title)) },
         text = {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(conflicts, key = { "conflict-${it.id}" }) { conflict ->
+                when (problems) {
+                    com.dayforge.data.model.SyncProblems.Checking -> item { Text(stringResource(R.string.sync_problems_loading)) }
+                    com.dayforge.data.model.SyncProblems.Unavailable -> item { Text(stringResource(R.string.sync_problems_unavailable)) }
+                    is com.dayforge.data.model.SyncProblems.Next -> {
+                        item { Text(stringResource(R.string.sync_problems_preserved), style = MaterialTheme.typography.bodySmall) }
+                        items(problems.items, key = { "${it.kind}:${it.requestId}" }) { problem ->
+                            Column(Modifier.testTag("next-sync-problem-${problem.requestId}")) {
+                                Text("${problem.entityType} · ${problem.entityUuid.take(8)}")
+                                Text(stringResource(when (problem.code) {
+                                    "CAUSAL_PREDECESSOR_PENDING", "ONE_TIME_PREDECESSOR_REJECTED" -> R.string.sync_problem_dependency
+                                    "TIMER_START_CONFIG_CHANGED", "COUNT_START_CONFIG_CHANGED" -> R.string.sync_problem_start_changed
+                                    "PERMISSION_DENIED" -> R.string.sync_problem_permission
+                                    "STRUCTURAL_CAUSAL_CONFLICT" -> R.string.sync_problem_structure_conflict
+                                    else -> R.string.sync_problem_rejected
+                                }), style = MaterialTheme.typography.bodySmall)
+                                Text(problem.code, style = MaterialTheme.typography.bodySmall)
+                                if (problem.fields.isNotEmpty()) Text(stringResource(R.string.sync_conflict_fields,
+                                    problem.fields.joinToString(", ")), style = MaterialTheme.typography.bodySmall)
+                                if (onPreviewRecovery != null) TextButton(onClick = {
+                                    onPreviewRecovery(com.dayforge.data.repository.NextRecoveryKey(problem.kind, problem.requestId))
+                                }, modifier = Modifier.testTag("preview-recovery-${problem.requestId}")) {
+                                    Text(stringResource(R.string.sync_recovery_preview))
+                                }
+                            }
+                        }
+                    }
+                    else -> Unit
+                }
+                if (problems == null || problems is com.dayforge.data.model.SyncProblems.Legacy) {
+                items(visibleConflicts, key = { "conflict-${it.id}" }) { conflict ->
                     Column {
                         Text(
                             stringResource(
@@ -254,7 +291,7 @@ internal fun RejectedChangesDialog(
                         }
                     }
                 }
-                items(changes, key = { it.id }) { change ->
+                items(visibleChanges, key = { it.id }) { change ->
                     Column {
                         Text("${change.recordType} · ${change.entityUuid.take(8)}")
                         Text(
@@ -271,7 +308,7 @@ internal fun RejectedChangesDialog(
                         }
                     }
                 }
-                items(timerCommands, key = { "timer-${it.id}" }) { command ->
+                items(visibleTimers, key = { "timer-${it.id}" }) { command ->
                     Column {
                         Text(
                             stringResource(
@@ -294,6 +331,7 @@ internal fun RejectedChangesDialog(
                             }
                         }
                     }
+                }
                 }
             }
         },

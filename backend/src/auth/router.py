@@ -17,19 +17,16 @@ from src.auth.service import (
     password_hash_needs_upgrade,
     verify_password,
     verify_token,
-    token_account_identity,
+    account_token_claims,
+    resolve_token_account,
 )
 from src.database import get_session
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
-def _token_claims(user: User) -> dict[str, str | int]:
-    return {"sub": str(user.id), "ver": user.auth_version}
-
-
-def _token_response(user: User) -> Token:
-    claims = _token_claims(user)
+async def _token_response(user: User, session: AsyncSession) -> Token:
+    claims = await account_token_claims(user, session)
     # Stored UUIDs are strings; validate at the response boundary as before.
     return Token.model_validate(
         {
@@ -81,7 +78,7 @@ async def login(
         # execute annotation is the wider Result. Keep the same rowcount guard.
         if cast(CursorResult, upgrade_result).rowcount != 1:
             raise HTTPException(status_code=401, detail="Incorrect credentials")
-    return _token_response(user)
+    return await _token_response(user, session)
 
 
 @router.post("/refresh", response_model=Token)
@@ -94,24 +91,11 @@ async def refresh_token(
     if not payload or payload.get("type") != "refresh":
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
-    identity = token_account_identity(payload)
-    if identity is None:
+    user = await resolve_token_account(payload, session)
+    if user is None:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
-    internal_user_id, token_version = identity
 
-    result = await session.execute(select(User).where(User.id == internal_user_id))
-    user = result.scalar()
-    if (
-        not user
-        or not user.is_active
-        or user.status != "active"
-        or user.auth_version != token_version
-    ):
-        raise HTTPException(
-            status_code=401, detail="User not found, inactive, or session revoked"
-        )
-
-    return _token_response(user)
+    return await _token_response(user, session)
 
 
 @router.get("/users/me", response_model=UserResponse)

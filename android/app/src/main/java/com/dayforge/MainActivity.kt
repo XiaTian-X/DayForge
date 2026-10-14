@@ -1,6 +1,7 @@
 package com.dayforge
 
 import android.app.Activity
+import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -8,6 +9,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
@@ -23,20 +25,15 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
@@ -51,18 +48,26 @@ import com.dayforge.ui.theme.ThemeLoadScreen
 import com.dayforge.ui.theme.ThemeRecoveryScreen
 import com.dayforge.ui.navigation.HabitNavGraph
 import com.dayforge.ui.navigation.Screen
+import com.dayforge.ui.navigation.ReplicaPresentationGate
+import com.dayforge.ui.navigation.ReplicaNavigationLifetime
+import com.dayforge.ui.screens.recovery.ReplicaRecoveryRoot
+import com.dayforge.ui.screens.recovery.ReplicaRecoveryViewModel
+import com.dayforge.domain.service.ReplicaPresentationController
 import com.dayforge.ui.theme.DayForgeTheme
 import com.dayforge.ui.theme.DayForgeWindow
 import com.dayforge.ui.theme.DayForgeNavigationBar
-import com.dayforge.widget.WidgetRefreshScheduler
+import com.dayforge.ui.CalendarRefreshEffect
+import com.dayforge.reminder.ReminderDetailRequest
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.launch
-import java.time.LocalDate
-import java.time.ZoneId
 import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : AppCompatActivity() {
+
+    // Survives removal of the frozen business graph; never a business navigation store.
+    private val recoveryModel: ReplicaRecoveryViewModel by viewModels()
+
+    private var reminderRequest by mutableStateOf<ReminderDetailRequest?>(null)
 
     @Inject
     lateinit var tokenManager: TokenManager
@@ -76,35 +81,59 @@ class MainActivity : AppCompatActivity() {
     @Inject
     lateinit var iconController: AccountIconController
 
+    @Inject
+    lateinit var replicaPresentation: ReplicaPresentationController
+
     @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        reminderRequest = if (savedInstanceState == null) ReminderDetailRequest.decode(intent)
+            else ReminderDetailRequest.restore(savedInstanceState.getBundle("reminderRequest"))
         enableEdgeToEdge()
 
         setContent {
-            val themeState by themeController.state.collectAsState()
+            ReplicaRecoveryRoot(replicaPresentation, recoveryModel) {
+                ReplicaPresentationGate(replicaPresentation) { permit ->
+                    val themeState by themeController.state.collectAsState()
 
-            // Calculate WindowSizeClass - auto-updates on resize/rotation
-            val windowSizeClass: WindowSizeClass = calculateWindowSizeClass(this)
+                    // Calculate WindowSizeClass - auto-updates on resize/rotation
+                    val windowSizeClass: WindowSizeClass = calculateWindowSizeClass(this)
 
-            val loaded = (themeState as? DeviceThemeLoadState.Ready)?.theme
-            if (loaded == null) {
-                var recovering by remember { mutableStateOf(false) }
-                if (recovering) ThemeRecoveryScreen(onBack = { recovering = false })
-                else ThemeLoadScreen(themeState, themeController::retry, onManage = { recovering = true })
-            } else DayForgeTheme(theme = loaded) {
-                CompositionLocalProvider(LocalAccountIcons provides iconController) {
-                    val navController = rememberNavController()
-                    MainScreen(
-                        activity = this@MainActivity,
-                        navController = navController,
-                        tokenManager = tokenManager,
-                        preferencesManager = preferencesManager,
-                        windowSizeClass = windowSizeClass
-                    )
+                    val loaded = (themeState as? DeviceThemeLoadState.Ready)?.theme
+                    if (loaded == null) {
+                        var recovering by remember { mutableStateOf(false) }
+                        if (recovering) ThemeRecoveryScreen(onBack = { recovering = false })
+                        else ThemeLoadScreen(themeState, themeController::retry, onManage = { recovering = true })
+                    } else DayForgeTheme(theme = loaded) {
+                        CompositionLocalProvider(LocalAccountIcons provides iconController) {
+                            ReplicaNavigationLifetime(permit) {
+                                val navController = rememberNavController()
+                                MainScreen(
+                                    activity = this@MainActivity,
+                                    navController = navController,
+                                    tokenManager = tokenManager,
+                                    preferencesManager = preferencesManager,
+                                    windowSizeClass = windowSizeClass,
+                                    reminderRequest = reminderRequest,
+                                    onReminderConsumed = { if (reminderRequest == it) reminderRequest = null }
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        reminderRequest = ReminderDetailRequest.decode(intent)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBundle("reminderRequest", reminderRequest?.save())
+        super.onSaveInstanceState(outState)
     }
 }
 
@@ -114,33 +143,13 @@ fun MainScreen(
     navController: NavHostController,
     tokenManager: TokenManager,
     preferencesManager: PreferencesManager,
-    windowSizeClass: WindowSizeClass
+    windowSizeClass: WindowSizeClass,
+    reminderRequest: ReminderDetailRequest? = null,
+    onReminderConsumed: (ReminderDetailRequest) -> Unit = {}
 ) {
     val context = LocalContext.current
     var selectedTab by remember { mutableIntStateOf(0) }
-    val scope = rememberCoroutineScope()
-    val lifecycleOwner = LocalLifecycleOwner.current
-
-    // Track date change on resume - triggers Flow refresh when date changes
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                // Check if date has changed and update trigger
-                val todayEpochDays = LocalDate.now(ZoneId.systemDefault()).toEpochDay()
-                scope.launch {
-                    val dateChanged = preferencesManager.updateLastSeenDate(todayEpochDays)
-                    if (dateChanged) {
-                        // Notify widgets to refresh when date changes
-                        WidgetRefreshScheduler.request(context)
-                    }
-                }
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
-    }
+    CalendarRefreshEffect(preferencesManager)
 
     // Double-back-to-exit state
     var lastBackPressTime by remember { mutableLongStateOf(0L) }
@@ -216,7 +225,9 @@ fun MainScreen(
             selectedTab = selectedTab,
             onTabSelected = { selectedTab = it },
             windowSizeClass = windowSizeClass,
-            modifier = contentModifier
+            modifier = contentModifier,
+            reminderRequest = reminderRequest,
+            onReminderConsumed = onReminderConsumed
         )
     }
 }

@@ -52,6 +52,7 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.job
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -71,6 +72,104 @@ import java.io.File
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 class SettingsViewModelTest {
+    @Test fun authenticationTransitionClearsRecoveryLoadingAndPreventsLateTicketPreparation() = runTest(testDispatcher.scheduler) {
+        testDispatcher.scheduler.runCurrent()
+        val graph = recoveryUiGraph()
+        val started = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        coEvery { mockSyncManager.readRecoveryPreview(graph.root) } coAnswers {
+            started.complete(Unit); withContext(kotlinx.coroutines.NonCancellable) { release.await() }; graph
+        }
+        viewModel.previewRecovery(graph.root); testDispatcher.scheduler.runCurrent()
+        assertTrue(started.isCompleted); assertEquals(RecoveryUiState.Loading, viewModel.recoveryState.value)
+        try {
+            withContext(Dispatchers.IO) { tokenManager.saveLoginSession("new", "new-refresh", "member",
+                "aa310000-0000-4000-8000-000000000010", false) }
+            assertEquals(RecoveryUiState.Hidden, viewModel.recoveryState.value)
+        } finally { release.complete(Unit) }
+        testDispatcher.scheduler.runCurrent()
+        assertEquals(RecoveryUiState.Hidden, viewModel.recoveryState.value)
+        coVerify(exactly = 0) { mockSyncManager.prepareRecoveryConfirmation(any(), any()) }
+        assertFalse(viewModel.showSyncError.value)
+    }
+
+    @Test fun nextProblemSnapshotPublishesAndUnreadableReadIsNotSilentlyEmpty() = runTest(testDispatcher.scheduler) {
+        val changes = MutableStateFlow(0)
+        every { mockSyncManager.problemChanges() } returns changes.map { Unit }
+        val problem = com.dayforge.data.model.NextSyncProblem("sync_operation", "request", "metric", "entity", "INVALID_PAYLOAD")
+        val ready = com.dayforge.data.model.SyncProblems.Next(listOf(problem))
+        coEvery { mockSyncManager.readProblems() } returns ready
+        replaceViewModel()
+        testDispatcher.scheduler.runCurrent()
+        assertEquals(ready, viewModel.syncProblems.value)
+        coEvery { mockSyncManager.readProblems() } throws IllegalStateException("synthetic corrupt private payload")
+        changes.value++; testDispatcher.scheduler.runCurrent()
+        assertEquals(com.dayforge.data.model.SyncProblems.Unavailable, viewModel.syncProblems.value)
+        assertEquals(1, viewModel.syncProblems.value.count)
+        assertFalse(viewModel.showSyncError.value)
+    }
+
+    @Test fun accountTransitionClearsProblemsSynchronouslyAndRejectsLatePriorRead() = runTest(testDispatcher.scheduler) {
+        val first = CompletableDeferred<Unit>()
+        val stale = com.dayforge.data.model.SyncProblems.Next(listOf(com.dayforge.data.model.NextSyncProblem(
+            "sync_operation", "old", "metric", "old-entity", "INVALID_PAYLOAD")))
+        coEvery { mockSyncManager.readProblems() } coAnswers {
+            withContext(kotlinx.coroutines.NonCancellable) { first.await() }; stale
+        }
+        testDispatcher.scheduler.runCurrent()
+        withContext(Dispatchers.IO) { tokenManager.saveLoginSession("new", "new-refresh", "member",
+            "aa310000-0000-4000-8000-000000000010", false) }
+        assertEquals(com.dayforge.data.model.SyncProblems.Checking, viewModel.syncProblems.value)
+        val fresh = com.dayforge.data.model.SyncProblems.Next(emptyList())
+        coEvery { mockSyncManager.readProblems() } returns fresh
+        first.complete(Unit); testDispatcher.scheduler.runCurrent()
+        assertEquals(fresh, viewModel.syncProblems.value)
+        assertFalse(viewModel.showSyncError.value)
+    }
+
+    @Test fun cancelledProblemReadDoesNotBecomeAnErrorOrLeakItsPayload() = runTest(testDispatcher.scheduler) {
+        coEvery { mockSyncManager.readProblems() } throws kotlinx.coroutines.CancellationException("leave")
+        testDispatcher.scheduler.runCurrent()
+        assertEquals(com.dayforge.data.model.SyncProblems.Checking, viewModel.syncProblems.value)
+        assertFalse(viewModel.showSyncError.value)
+    }
+
+    @Test fun cancelled_primary_device_action_does_not_publish_sync_error_dialog() = runTest(testDispatcher.scheduler) {
+        coEvery { mockSyncManager.makeCurrentDevicePrimary() } throws kotlinx.coroutines.CancellationException("screen left")
+        viewModel.makeCurrentDevicePrimary(); testDispatcher.scheduler.runCurrent()
+        assertFalse(viewModel.showSyncError.value); assertEquals("", viewModel.syncErrorMessage.value)
+        coVerify(exactly = 1) { mockSyncManager.makeCurrentDevicePrimary() }
+    }
+
+    @Test fun failed_primary_device_action_keeps_manual_diagnostic_without_starting_sync() = runTest(testDispatcher.scheduler) {
+        val error = com.dayforge.data.api.NextSyncHttpFailure(403, "DEVICE_REVOKED")
+        coEvery { mockSyncManager.makeCurrentDevicePrimary() } throws error
+        viewModel.makeCurrentDevicePrimary(); testDispatcher.scheduler.runCurrent()
+        assertTrue(viewModel.showSyncError.value); assertEquals(error.message, viewModel.syncErrorMessage.value)
+        coVerify(exactly = 0) { mockSyncManager.sync(any()) }
+    }
+
+    @Test fun v5_permission_and_invalid_reply_preserve_manual_diagnostics_not_network_message() =
+        runTest(testDispatcher.scheduler) {
+            for (error in listOf(com.dayforge.data.api.NextSyncHttpFailure(403, "DENIED"),
+                com.dayforge.data.api.NextSyncReplyInvalid())) {
+                coEvery { mockSyncManager.sync(any()) } returns Result.failure(error)
+                viewModel.sync(); testDispatcher.scheduler.runCurrent()
+                assertTrue(viewModel.showSyncError.value)
+                assertEquals(error.message, viewModel.syncErrorMessage.value)
+                viewModel.dismissSyncError()
+            }
+        }
+
+    @Test fun v5_http_failure_during_sync_logout_never_clears_account_or_claims_network_loss() = runTest {
+        tokenManager.saveTokens("access", "refresh", "member", "account", false)
+        val error = com.dayforge.data.api.NextSyncHttpFailure(422, "INVALID_PAYLOAD")
+        coEvery { mockSyncManager.syncAndThen(any()) } returns Result.failure(error)
+        var completed = false
+        viewModel.syncAndLogout { completed = true }
+        withContext(Dispatchers.Default) { withTimeout(5_000) { viewModel.showSyncError.first { it } } }
+        assertFalse(completed); assertEquals("access", tokenManager.accessToken.first())
+        assertEquals(context.getString(com.dayforge.R.string.error_sync_failed, error.message), viewModel.syncErrorMessage.value)
+    }
     @get:org.junit.Rule val storage = com.dayforge.data.local.PhysicalDatabaseRule()
 
     private lateinit var viewModel: SettingsViewModel
@@ -126,6 +225,9 @@ class SettingsViewModelTest {
         mockSyncManager = mockk(relaxed = true)
         syncProgressState = MutableStateFlow(SyncProgress.Idle)
         every { mockSyncManager.syncProgress } returns syncProgressState
+        every { mockSyncManager.problemChanges() } returns kotlinx.coroutines.flow.flowOf(Unit)
+        coEvery { mockSyncManager.readProblems() } returns com.dayforge.data.model.SyncProblems.Legacy(null,
+            emptyList(), emptyList(), emptyList())
 
         networkMonitor = mockk()
         every { networkMonitor.state } returns networkState
@@ -238,6 +340,20 @@ class SettingsViewModelTest {
         }
 
     @Test
+    fun manual_material_wait_is_non_modal_but_explicit_material_block_is_actionable() =
+        runTest(testDispatcher.scheduler) {
+            coEvery { mockSyncManager.sync(any()) } returns
+                Result.failure(com.dayforge.data.repository.NextMaterialPending())
+            viewModel.sync(); testDispatcher.scheduler.runCurrent()
+            assertFalse(viewModel.showSyncError.value)
+            coEvery { mockSyncManager.sync(any()) } returns
+                Result.failure(com.dayforge.data.repository.NextMaterialAttention())
+            viewModel.sync(); testDispatcher.scheduler.runCurrent()
+            assertTrue(viewModel.showSyncError.value)
+            assertEquals(context.getString(com.dayforge.R.string.sync_material_attention), viewModel.syncErrorMessage.value)
+        }
+
+    @Test
     fun manual_sync_failure_shows_current_network_error_and_dismiss_does_not_reset_global_state() =
         runTest(testDispatcher.scheduler) {
             coEvery { mockSyncManager.sync(any()) } returns
@@ -259,12 +375,10 @@ class SettingsViewModelTest {
         }
 
     @Test
-    fun retry_is_user_owned_reactivates_rejected_changes_and_clears_the_old_modal() =
+    fun retry_is_user_owned_uses_shared_dispatch_and_clears_the_old_modal() =
         runTest(testDispatcher.scheduler) {
-            coEvery { mockSyncManager.sync(any()) } returnsMany listOf(
-                Result.failure(java.io.IOException("offline")),
-                Result.success(Unit)
-            )
+            coEvery { mockSyncManager.sync(any()) } returns Result.failure(java.io.IOException("offline"))
+            coEvery { mockSyncManager.retrySync(any()) } returns Result.success(Unit)
 
             viewModel.sync()
             testDispatcher.scheduler.runCurrent()
@@ -274,8 +388,58 @@ class SettingsViewModelTest {
             testDispatcher.scheduler.runCurrent()
 
             assertFalse(viewModel.showSyncError.value)
-            coVerify(exactly = 1) { mockSyncManager.retryRejectedChanges() }
-            coVerify(exactly = 2) { mockSyncManager.sync(any()) }
+            coVerify(exactly = 1) { mockSyncManager.retrySync(any()) }
+            coVerify(exactly = 1) { mockSyncManager.sync(any()) }
+        }
+
+    @Test fun retry_failure_uses_manual_diagnostic_and_cancellation_does_not_open_modal() =
+        runTest(testDispatcher.scheduler) {
+            coEvery { mockSyncManager.retrySync(any()) } returns Result.failure(com.dayforge.data.api.NextSyncHttpFailure(403, "DENIED"))
+            viewModel.retrySync(); testDispatcher.scheduler.runCurrent()
+            assertTrue(viewModel.showSyncError.value)
+            assertEquals("SYNC_HTTP_403", viewModel.syncErrorMessage.value)
+            viewModel.dismissSyncError()
+            coEvery { mockSyncManager.retrySync(any()) } throws kotlinx.coroutines.CancellationException("screen left")
+            viewModel.retrySync(); testDispatcher.scheduler.runCurrent()
+            assertFalse(viewModel.showSyncError.value)
+            coVerify(exactly = 0) { mockSyncManager.sync(any()) }
+        }
+
+    @Test fun all_issue_actions_report_protected_failures_propagate_cancellation_and_keep_success_behavior() =
+        runTest(testDispatcher.scheduler) {
+            var fault: Exception? = com.dayforge.data.repository.ProtocolNextDataRequiresUpgradeException()
+            coEvery { mockSyncManager.retryRejectedChange(any()) } coAnswers { fault?.let { throw it }; Unit }
+            coEvery { mockSyncManager.retryRejectedTimerCommand(any()) } coAnswers { fault?.let { throw it }; Unit }
+            coEvery { mockSyncManager.cancelRejectedTimerCommandAndUseServer(any()) } coAnswers { fault?.let { throw it }; Unit }
+            coEvery { mockSyncManager.discardRejectedChange(any()) } coAnswers { fault?.let { throw it }; Unit }
+            coEvery { mockSyncManager.resolveConflictUseServer(any()) } coAnswers { fault?.let { throw it }; Unit }
+            coEvery { mockSyncManager.resolveConflictUseLocal(any()) } coAnswers { fault?.let { throw it }; Unit }
+            coEvery { mockSyncManager.sync(any()) } returns Result.success(Unit)
+            val actions = listOf<() -> Unit>(
+                { viewModel.retryRejectedChange(1) }, { viewModel.retryRejectedTimerCommand(1) },
+                { viewModel.cancelRejectedTimerCommandAndUseServer(1) }, { viewModel.discardRejectedChange(1) },
+                { viewModel.resolveConflictUseServer(1) }, { viewModel.resolveConflictUseLocal(1) })
+            for (action in actions) {
+                action(); testDispatcher.scheduler.runCurrent()
+                assertTrue(viewModel.showSyncError.value)
+                assertEquals(fault!!.message, viewModel.syncErrorMessage.value)
+                viewModel.dismissSyncError()
+            }
+            coVerify(exactly = 0) { mockSyncManager.sync(any()) }
+            val originalMessage = viewModel.syncErrorMessage.value
+            fault = kotlinx.coroutines.CancellationException("screen left")
+            for (action in actions) {
+                action(); testDispatcher.scheduler.runCurrent()
+                assertFalse(viewModel.showSyncError.value)
+                assertEquals(originalMessage, viewModel.syncErrorMessage.value)
+            }
+            coVerify(exactly = 0) { mockSyncManager.sync(any()) }
+            fault = null
+            for (action in actions) {
+                action(); testDispatcher.scheduler.runCurrent()
+                assertFalse(viewModel.showSyncError.value)
+            }
+            coVerify(exactly = 1) { mockSyncManager.sync(any()) } // Only the existing timer-use-server action syncs.
         }
 
     @Test

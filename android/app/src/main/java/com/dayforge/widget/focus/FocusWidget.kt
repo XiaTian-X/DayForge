@@ -1,6 +1,7 @@
 package com.dayforge.widget.focus
 
 import com.dayforge.widget.base.DeviceWidgetTheme
+import kotlinx.coroutines.CancellationException
 import android.content.Context
 import android.util.Log
 import androidx.compose.runtime.Composable
@@ -14,21 +15,15 @@ import androidx.glance.action.ActionParameters
 import androidx.glance.action.actionParametersOf
 import androidx.glance.appwidget.*
 import androidx.glance.appwidget.action.actionRunCallback
-import androidx.glance.appwidget.state.getAppWidgetState
 import androidx.glance.appwidget.state.updateAppWidgetState
 import androidx.glance.layout.*
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
-import com.dayforge.data.local.DataStoreProvider
 import com.dayforge.data.local.HabitDatabaseProvider
-import com.dayforge.data.local.PreferencesManager
-import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.data.model.HabitType
-import com.dayforge.domain.service.FailureChecker
 import com.dayforge.domain.service.HabitPriorityCalculator
-import com.dayforge.domain.service.HabitStatusCalculator
 import com.dayforge.domain.service.TimeMatchResult
 import com.dayforge.widget.base.HabitActionButtons
 import com.dayforge.widget.base.StatusLabels
@@ -44,12 +39,15 @@ import androidx.glance.appwidget.cornerRadius
 import java.time.ZonedDateTime
 import kotlinx.coroutines.flow.first
 import com.dayforge.domain.service.TimerElapsedCalculator
+import com.dayforge.widget.timer.WidgetTimerPolicy
+import com.dayforge.widget.timer.WidgetTimerRefreshCallback
 
 /**
  * FocusWidget - displays top-priority habit based on time-based relevance.
  *
  * Architecture (per WIDGET-01):
- * - provideGlance (suspend): loads priorities from HabitPriorityCalculator, writes to Glance state
+ * - Explicit refresh: prepares priorities, then publishes within the original account scope
+ * - provideGlance: consumes persisted display state without another history audit
  * - provideContent (@Composable): reads Glance state and renders UI
  * - Only stores 2 candidate habits in state (WIDGET-10 limitation)
  *
@@ -71,6 +69,7 @@ class FocusWidget : GlanceAppWidget() {
         val PRIMARY_HABIT_TYPE_KEY = stringPreferencesKey("primaryHabitType")
         val PRIMARY_TARGET_VALUE_KEY = intPreferencesKey("primaryTargetValue")
         val PRIMARY_COMPLETED_TODAY_KEY = intPreferencesKey("primaryCompletedToday")
+        val PRIMARY_ACTUAL_COUNT_KEY = longPreferencesKey("primaryActualCount")
         val PRIMARY_IS_COMPLETED_KEY = booleanPreferencesKey("primaryIsCompleted")
         val PRIMARY_IS_ACTIVE_KEY = booleanPreferencesKey("primaryIsActive")
         val PRIMARY_BACKGROUND_COLOR_KEY = intPreferencesKey("primaryBackgroundColor")
@@ -107,6 +106,12 @@ class FocusWidget : GlanceAppWidget() {
         // State keys
         val HAS_HABITS_KEY = booleanPreferencesKey("hasHabits")
         val DATA_LOADED_KEY = booleanPreferencesKey("dataLoaded")
+        val READ_FAILED_KEY = booleanPreferencesKey("timerReadFailed")
+        val TIMER_ACTION_PROOF_KEY = stringPreferencesKey("timerActionProof")
+        val FACT_ACTION_PROOF_KEY = stringPreferencesKey("factActionProof")
+        val LEGACY_FACT_ACTION_PROOF_KEY = stringPreferencesKey("legacyFactActionProof")
+        val LEGACY_TIMER_ACTION_PROOF_KEY = stringPreferencesKey("legacyTimerActionProof")
+        val LEGACY_RESTART_PROOF_KEY = stringPreferencesKey("legacyRestartProof")
 
         /**
          * Refresh all FocusWidget instances without requiring glanceId.
@@ -131,25 +136,50 @@ class FocusWidget : GlanceAppWidget() {
          */
         suspend fun refreshWidgetData(context: Context, glanceId: GlanceId) {
             val appContext = context.applicationContext
+            val publication = com.dayforge.di.WidgetEntryPoint.from(appContext).displayPublisher()
+                .capturePublication() ?: return
+            val prepared = try {
+                prepareWidgetData(appContext, glanceId, publication)
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                publication {
+                    Log.w(TAG, "Focus widget source unavailable", error)
+                    updateAppWidgetState(appContext, glanceId) { prefs ->
+                        publication.stampFrame(prefs)
+                        prefs[DATA_LOADED_KEY] = false
+                        prefs[READ_FAILED_KEY] = true
+                        prefs.remove(TIMER_ACTION_PROOF_KEY)
+                        prefs.remove(FACT_ACTION_PROOF_KEY)
+                        prefs.remove(LEGACY_FACT_ACTION_PROOF_KEY)
+                        prefs.remove(LEGACY_TIMER_ACTION_PROOF_KEY)
+                        prefs.remove(LEGACY_RESTART_PROOF_KEY)
+                    }
+                }
+                return
+            }
+            val published = publication(prepared.display)
+            // Alarm reconciliation reads repositories; it must not reenter the publication lock.
+            if (published) {
+                if (prepared.hasActiveTimer) FocusWidgetAlarmScheduler.scheduleNextRefreshForActiveTimer(appContext, publication::invoke)
+                else FocusWidgetAlarmScheduler.scheduleNextRefresh(appContext, publication::invoke)
+            }
+        }
+
+        private class PreparedDisplay(val hasActiveTimer: Boolean, val display: suspend () -> Unit)
+
+        private suspend fun prepareWidgetData(context: Context, glanceId: GlanceId,
+            publication: com.dayforge.data.repository.WidgetDisplayPublisher.Publication): PreparedDisplay {
+            val appContext = context.applicationContext
             val database = HabitDatabaseProvider.getInstance(appContext)
             val currentTime = ZonedDateTime.now()
 
-            // Create services manually (widgets don't use Hilt injection)
-            // Reuse app's centralized status calculation logic
-            val failureChecker = FailureChecker(database.completionDao(), database.timeLogDao())
-            val habitStatusCalculator = HabitStatusCalculator(
-                failureChecker,
-                database.completionDao(),
-                database.timeLogDao()
-            )
+            val habitStatusCalculator = com.dayforge.di.WidgetEntryPoint.calculator(appContext, database)
 
             // Get all active habits
-            val allActiveHabits = database.habitDao().getAllHabitsOnce().filter { it.isActive }
+            val allActiveHabits = database.habitDao().getVisibleHabitsOnce().filter { it.isActive && it.completionPolicy != "one_and_done" }
 
             // Calculate status for each habit using app logic
-            val habitsWithStats = allActiveHabits.map { habit ->
-                habitStatusCalculator.calculate(habit)
-            }
+            val habitsWithStats = allActiveHabits.map { habit -> habitStatusCalculator.calculate(habit) }
 
             // Filter eligible habits:
             // 1. check-in day (shouldCountToday)
@@ -163,12 +193,22 @@ class FocusWidget : GlanceAppWidget() {
             }
 
             // Get pending metric habits (completed habits that need metric recording)
-            val dataStore = DataStoreProvider.get(appContext)
-            val preferencesManager = PreferencesManager(dataStore)
-            val pendingMetricHabits = preferencesManager.pendingMetricHabits.first()
+            val preferencesManager = com.dayforge.di.WidgetEntryPoint.from(appContext).preferencesManager()
+            val pendingMetricUuids = publication.session?.let { session ->
+                preferencesManager.pendingMetricHabitUuids(session, allActiveHabits.map { it.uuid }.toSet()).first()
+            }.orEmpty()
+            val pendingMetricHabits = allActiveHabits.filter { it.uuid in pendingMetricUuids }.map { it.id }.toSet()
 
             // Get active timer (if any) for real-time TIMER habit progress
             val activeTimeLog = database.timeLogDao().getActiveTimeLog()
+            val activeHabit = activeTimeLog?.let { log -> allActiveHabits.singleOrNull { it.id == log.habitId } }
+            val activeSnapshot = if (activeHabit?.appearance != null) {
+                requireNotNull(
+                    com.dayforge.di.WidgetEntryPoint.from(appContext).timerWriter().widgetSnapshot(activeHabit)
+                        ?.takeIf { it.activeLog?.uuid == activeTimeLog.uuid }
+                ) { "TIMER_WIDGET_STALE_DISPLAY" }
+            } else null
+            val activePolicy = activeHabit?.let { WidgetTimerPolicy.read(it, activeTimeLog, activeSnapshot?.policy) }
 
             // Calculate priorities using HabitPriorityCalculator
             // 使用todayCount而非completedToday布尔值（支持COUNTING的Slot级别完成判定）
@@ -178,12 +218,17 @@ class FocusWidget : GlanceAppWidget() {
                 val baseCount = habitWithStats.todayCount
                 // 如果是TIMER习惯且有活跃计时器，加上实时elapsedSeconds
                 val activeElapsed = if (habit.habitType == HabitType.TIMER && activeTimeLog?.habitId == habit.id) {
-                    TimerElapsedCalculator.elapsedSeconds(activeTimeLog, appContext)
+                    requireNotNull(activePolicy).elapsed(TimerElapsedCalculator.elapsedSeconds(
+                        activeSnapshot?.activeLog ?: activeTimeLog, appContext))
                 } else 0
                 habit.id to (baseCount + activeElapsed)
             }
             val priorities = HabitPriorityCalculator.calculatePriorities(
-                eligibleHabits.map { it.habit },
+                eligibleHabits.map {
+                    if (it.habit.id == activeTimeLog?.habitId && activePolicy != null)
+                        it.windowHabit.copy(targetValue = activePolicy.targetMinutes, isCountdown = activePolicy.isCountdown)
+                    else it.windowHabit
+                },
                 currentTime,
                 completedCountMap,
                 pendingMetricHabits
@@ -197,130 +242,165 @@ class FocusWidget : GlanceAppWidget() {
 
             // Get stats for primary to avoid re-querying
             val primaryStats = primary?.let { habitsWithStats.find { it.habit.id == primary.habit.id } }
+            val primaryOriginal = primary?.let { item -> allActiveHabits.singleOrNull { it.id == item.habit.id } }
+            val primaryTimerSnapshot = if (primaryOriginal?.habitType == HabitType.TIMER && primaryOriginal.appearance != null) {
+                (activeSnapshot?.takeIf { it.habit.id == primaryOriginal.id }
+                    ?: com.dayforge.di.WidgetEntryPoint.from(appContext).timerWriter().widgetSnapshot(primaryOriginal))
+                    ?: error("TIMER_WIDGET_STALE_DISPLAY")
+            } else null
 
-            val themes = DeviceThemeControllerEntryPoint.from(appContext).themeController()
-            val widgetColorResolver = WidgetColorResolver(appContext, themes)
+            val primaryFactSnapshot = if (primaryOriginal?.appearance != null &&
+                primaryOriginal.habitType in setOf(HabitType.CHECK_IN, HabitType.COUNTING)) {
+                com.dayforge.di.WidgetEntryPoint.from(appContext).factReader().read(primaryOriginal)
+            } else null
+            primaryFactSnapshot?.let { view ->
+                // Ranking/slot inputs and the command claim must describe the same read state.
+                // A sync fact can change without changing the habit's display-only fields.
+                val stats = requireNotNull(primaryStats)
+                check(view.completed == stats.completedToday && (view.count == null ||
+                    (view.count.todayQuantity == stats.actualTodayCount &&
+                        view.count.todayPolicy?.targetValue == stats.displayTargetValue &&
+                        view.count.todayPolicy?.isCountdown == stats.displayIsCountdown))) { "FACT_WIDGET_STALE_DISPLAY" }
+            }
+            val legacyIdentity = primaryOriginal?.let { publication.legacyRestartClaim(it) }
+            val legacyFact = legacyIdentity?.takeIf { primaryOriginal?.habitType in setOf(HabitType.CHECK_IN, HabitType.COUNTING) }
+                ?.let { com.dayforge.di.WidgetEntryPoint.from(appContext).legacyFactWorkflow().capture(it) }
+            legacyFact?.let {
+                check(it.todayQuantity == requireNotNull(primaryStats).actualTodayCount &&
+                    it.date == currentTime.toLocalDate().toString() && it.timezone == currentTime.zone.id) {
+                    "LEGACY_WIDGET_STALE_DISPLAY"
+                }
+            }
+            val legacyTimer = legacyIdentity?.takeIf { primaryOriginal?.habitType == HabitType.TIMER }
+                ?.let { com.dayforge.di.WidgetEntryPoint.from(appContext).timerWriter().captureLegacyWidget(
+                    it, activeTimeLog?.takeIf { log -> log.habitId == it.habitId }) }
+            val legacyProof = legacyIdentity?.encode()
+            return PreparedDisplay(activeTimeLog != null, suspend {
+                val themes = DeviceThemeControllerEntryPoint.from(appContext).themeController()
+                val widgetColorResolver = WidgetColorResolver(appContext, themes)
 
-            updateAppWidgetState(appContext, glanceId) { prefs ->
-                prefs[DATA_LOADED_KEY] = true
+                updateAppWidgetState(appContext, glanceId) { prefs ->
+                    publication.stampFrame(prefs)
+                    prefs[DATA_LOADED_KEY] = true
+                    prefs[READ_FAILED_KEY] = false
+                    if (primaryTimerSnapshot != null) prefs[TIMER_ACTION_PROOF_KEY] =
+                        com.dayforge.widget.timer.WidgetTimerAction.from(primaryTimerSnapshot).encode()
+                    else prefs.remove(TIMER_ACTION_PROOF_KEY)
+                    if (primaryFactSnapshot != null) prefs[FACT_ACTION_PROOF_KEY] = primaryFactSnapshot.claim.encode()
+                    else prefs.remove(FACT_ACTION_PROOF_KEY)
+                    if (legacyFact != null) prefs[LEGACY_FACT_ACTION_PROOF_KEY] = legacyFact.encode()
+                    else prefs.remove(LEGACY_FACT_ACTION_PROOF_KEY)
+                    if (legacyTimer != null) prefs[LEGACY_TIMER_ACTION_PROOF_KEY] = legacyTimer.encode()
+                    else prefs.remove(LEGACY_TIMER_ACTION_PROOF_KEY)
+                    if (legacyProof != null) prefs[LEGACY_RESTART_PROOF_KEY] = legacyProof else prefs.remove(LEGACY_RESTART_PROOF_KEY)
 
-                if (primary != null) {
-                    prefs[HAS_HABITS_KEY] = true
+                    if (primary != null) {
+                        prefs[HAS_HABITS_KEY] = true
 
-                    // Primary habit state
-                    val primaryHabit = primary.habit
-                    prefs[PRIMARY_HABIT_ID_KEY] = primaryHabit.id
-                    prefs[PRIMARY_HABIT_NAME_KEY] = primaryHabit.name
-                    prefs[PRIMARY_COLOR_HEX_KEY] = primaryHabit.colorHex
-                    prefs[PRIMARY_HABIT_TYPE_KEY] = primaryHabit.habitType.name
-                    prefs[PRIMARY_TARGET_VALUE_KEY] = primaryHabit.targetValue
-                    prefs[PRIMARY_IS_ACTIVE_KEY] = primaryHabit.isActive
-                    prefs[PRIMARY_SLOT_INDEX_KEY] = primary.slotIndex ?: -1
-                    prefs[PRIMARY_TOTAL_SLOTS_KEY] = primary.totalSlots ?: -1
-                    prefs[PRIMARY_TIME_SCORE_KEY] = primary.sortScore
+                        // Primary habit state
+                        val primaryHabit = primary.habit
+                        prefs[PRIMARY_HABIT_ID_KEY] = primaryHabit.id
+                        prefs[PRIMARY_HABIT_NAME_KEY] = primaryHabit.name
+                        prefs[PRIMARY_COLOR_HEX_KEY] = primaryHabit.colorHex
+                        prefs[PRIMARY_HABIT_TYPE_KEY] = primaryHabit.habitType.name
+                        val primaryTimerPolicy = activePolicy?.takeIf { activeTimeLog?.habitId == primaryHabit.id }
+                        prefs[PRIMARY_TARGET_VALUE_KEY] = primaryTimerPolicy?.targetMinutes ?: primaryHabit.targetValue
+                        prefs[PRIMARY_IS_ACTIVE_KEY] = primaryHabit.isActive
+                        prefs[PRIMARY_SLOT_INDEX_KEY] = primary.slotIndex ?: -1
+                        prefs[PRIMARY_TOTAL_SLOTS_KEY] = primary.totalSlots ?: -1
+                        prefs[PRIMARY_TIME_SCORE_KEY] = primary.sortScore
 
-                    // Match result type and timing info
-                    prefs[PRIMARY_MATCH_TYPE_KEY] = when (primary.matchResult) {
-                        is TimeMatchResult.InWindow -> "InWindow"
-                        is TimeMatchResult.BeforeWindow -> "BeforeWindow"
-                        is TimeMatchResult.AfterWindow -> "AfterWindow"
-                        is TimeMatchResult.NoBestTime -> "NoBestTime"
-                    }
-                    when (primary.matchResult) {
-                        is TimeMatchResult.BeforeWindow -> {
-                            prefs[PRIMARY_MINUTES_UNTIL_WINDOW_KEY] = (primary.matchResult as TimeMatchResult.BeforeWindow).minutesUntilWindow
-                        }
-                        is TimeMatchResult.AfterWindow -> {
-                            prefs[PRIMARY_MINUTES_SINCE_WINDOW_KEY] = (primary.matchResult as TimeMatchResult.AfterWindow).minutesSinceWindowEnd
-                        }
-                        else -> { /* No timing info needed for InWindow or NoBestTime */ }
-                    }
-
-                    // Today's progress (use stats from HabitStatusCalculator to avoid re-querying)
-                    val isCompleted = primary.completedToday
-                    prefs[PRIMARY_IS_COMPLETED_KEY] = isCompleted
-
-                    // 计算todayCount：如果有活跃计时器，加上实时elapsedSeconds
-                    val baseTodayCount = primaryStats?.todayCount ?: 0
-                    val isTimerActive = primaryHabit.habitType == HabitType.TIMER && activeTimeLog?.habitId == primaryHabit.id
-                    val activeElapsedSeconds = if (isTimerActive) {
-                        TimerElapsedCalculator.elapsedSeconds(activeTimeLog!!, appContext)
-                    } else 0
-                    val totalTodayCount = baseTodayCount + activeElapsedSeconds
-
-                    prefs[PRIMARY_COMPLETED_TODAY_KEY] = totalTodayCount
-                    prefs[PRIMARY_TODAY_COUNT_KEY] = totalTodayCount  // 实际完成次数（含实时计时）
-                    prefs[PRIMARY_IS_TIMER_ACTIVE_KEY] = isTimerActive
-                    prefs[PRIMARY_TIMER_ELAPSED_KEY] = activeElapsedSeconds  // 正在计时的实时秒数
-
-                    // COUNTING/TIMER习惯的isCountdown模式状态
-                    prefs[PRIMARY_IS_COUNTDOWN_KEY] = primaryHabit.isCountdown
-
-                    // 状态标签数据（用于显示StatusLabels）
-                    prefs[PRIMARY_HAS_FAILED_KEY] = primaryStats?.hasFailed ?: false
-                    prefs[PRIMARY_IS_GOAL_REACHED_KEY] = primaryStats?.isGoalCompleted ?: false
-                    prefs[PRIMARY_IS_CHECKIN_ALLOWED_KEY] = primaryStats?.isCheckInAllowed ?: true
-
-                    // COUNTING习惯下一slot时间（方案I：当前slot完成后显示下一slot开始时间）
-                    prefs[PRIMARY_NEXT_SLOT_TIME_KEY] = primary.nextSlotTime ?: -1
-
-                    // Pre-computed colors (WIDGET-07)
-                    val primaryColors = widgetColorResolver.resolveWidgetColors(primaryHabit.colorHex)
-                    prefs[PRIMARY_BACKGROUND_COLOR_KEY] = primaryColors.backgroundColorArgb
-                    prefs[PRIMARY_TEXT_COLOR_KEY] = primaryColors.textColorArgb
-
-                    // Preview habit state (WIDGET-03) - next upcoming habit
-                    if (preview != null) {
-                        prefs[PREVIEW_HABIT_ID_KEY] = preview.habit.id
-                        prefs[PREVIEW_HABIT_NAME_KEY] = preview.habit.name
-                        prefs[PREVIEW_COLOR_HEX_KEY] = preview.habit.colorHex
-                        prefs[PREVIEW_HABIT_TYPE_KEY] = preview.habit.habitType.name
-                        prefs[PREVIEW_TIME_SCORE_KEY] = preview.sortScore
-                        prefs[PREVIEW_MATCH_TYPE_KEY] = when (preview.matchResult) {
+                        // Match result type and timing info
+                        prefs[PRIMARY_MATCH_TYPE_KEY] = when (primary.matchResult) {
                             is TimeMatchResult.InWindow -> "InWindow"
                             is TimeMatchResult.BeforeWindow -> "BeforeWindow"
                             is TimeMatchResult.AfterWindow -> "AfterWindow"
                             is TimeMatchResult.NoBestTime -> "NoBestTime"
                         }
-                        when (preview.matchResult) {
+                        when (primary.matchResult) {
                             is TimeMatchResult.BeforeWindow -> {
-                                prefs[PREVIEW_MINUTES_UNTIL_WINDOW_KEY] = (preview.matchResult as TimeMatchResult.BeforeWindow).minutesUntilWindow
+                                prefs[PRIMARY_MINUTES_UNTIL_WINDOW_KEY] = (primary.matchResult as TimeMatchResult.BeforeWindow).minutesUntilWindow
                             }
-                            else -> { /* No timing info needed for other match types */ }
+                            is TimeMatchResult.AfterWindow -> {
+                                prefs[PRIMARY_MINUTES_SINCE_WINDOW_KEY] = (primary.matchResult as TimeMatchResult.AfterWindow).minutesSinceWindowEnd
+                            }
+                            else -> { /* No timing info needed for InWindow or NoBestTime */ }
                         }
+
+                        // Today's progress (use stats from HabitStatusCalculator to avoid re-querying)
+                        val isCompleted = primary.completedToday
+                        prefs[PRIMARY_IS_COMPLETED_KEY] = isCompleted
+
+                        // 计算todayCount：如果有活跃计时器，加上实时elapsedSeconds
+                        val baseTodayCount = primaryStats?.todayCount ?: 0
+                        val isTimerActive = primaryHabit.habitType == HabitType.TIMER && activeTimeLog?.habitId == primaryHabit.id
+                        val activeElapsedSeconds = if (isTimerActive) {
+                            requireNotNull(primaryTimerPolicy).elapsed(TimerElapsedCalculator.elapsedSeconds(
+                                activeSnapshot?.activeLog ?: activeTimeLog!!, appContext))
+                        } else 0
+                        val totalTodayCount = baseTodayCount + activeElapsedSeconds
+
+                        prefs[PRIMARY_COMPLETED_TODAY_KEY] = totalTodayCount
+                        prefs[PRIMARY_ACTUAL_COUNT_KEY] = primaryStats?.actualTodayCount ?: totalTodayCount.toLong()
+                        prefs[PRIMARY_TODAY_COUNT_KEY] = totalTodayCount  // 实际完成次数（含实时计时）
+                        prefs[PRIMARY_IS_TIMER_ACTIVE_KEY] = isTimerActive
+                        prefs[PRIMARY_TIMER_ELAPSED_KEY] = activeElapsedSeconds  // 正在计时的实时秒数
+
+                        // COUNTING/TIMER习惯的isCountdown模式状态
+                        prefs[PRIMARY_IS_COUNTDOWN_KEY] = primaryTimerPolicy?.isCountdown ?: primaryHabit.isCountdown
+
+                        // 状态标签数据（用于显示StatusLabels）
+                        prefs[PRIMARY_HAS_FAILED_KEY] = primaryStats?.hasFailed ?: false
+                        prefs[PRIMARY_IS_GOAL_REACHED_KEY] = primaryStats?.isGoalCompleted ?: false
+                        prefs[PRIMARY_IS_CHECKIN_ALLOWED_KEY] = primaryStats?.isCheckInAllowed ?: true
+
+                        // COUNTING习惯下一slot时间（方案I：当前slot完成后显示下一slot开始时间）
+                        prefs[PRIMARY_NEXT_SLOT_TIME_KEY] = primary.nextSlotTime ?: -1
+
+                        // Pre-computed colors (WIDGET-07)
+                        val primaryColors = widgetColorResolver.resolveWidgetColors(primaryHabit.colorHex)
+                        prefs[PRIMARY_BACKGROUND_COLOR_KEY] = primaryColors.backgroundColorArgb
+                        prefs[PRIMARY_TEXT_COLOR_KEY] = primaryColors.textColorArgb
+
+                        // Preview habit state (WIDGET-03) - next upcoming habit
+                        if (preview != null) {
+                            prefs[PREVIEW_HABIT_ID_KEY] = preview.habit.id
+                            prefs[PREVIEW_HABIT_NAME_KEY] = preview.habit.name
+                            prefs[PREVIEW_COLOR_HEX_KEY] = preview.habit.colorHex
+                            prefs[PREVIEW_HABIT_TYPE_KEY] = preview.habit.habitType.name
+                            prefs[PREVIEW_TIME_SCORE_KEY] = preview.sortScore
+                            prefs[PREVIEW_MATCH_TYPE_KEY] = when (preview.matchResult) {
+                                is TimeMatchResult.InWindow -> "InWindow"
+                                is TimeMatchResult.BeforeWindow -> "BeforeWindow"
+                                is TimeMatchResult.AfterWindow -> "AfterWindow"
+                                is TimeMatchResult.NoBestTime -> "NoBestTime"
+                            }
+                            when (preview.matchResult) {
+                                is TimeMatchResult.BeforeWindow -> {
+                                    prefs[PREVIEW_MINUTES_UNTIL_WINDOW_KEY] = (preview.matchResult as TimeMatchResult.BeforeWindow).minutesUntilWindow
+                                }
+                                else -> { /* No timing info needed for other match types */ }
+                            }
+                        } else {
+                            // No preview habit
+                            prefs[PREVIEW_HABIT_ID_KEY] = -1L
+                        }
+
+                        Log.d(TAG, "refreshWidgetData: primary='${primaryHabit.name}' match=${primary.matchResult::class.simpleName}, preview='${preview?.habit?.name}'")
                     } else {
-                        // No preview habit
-                        prefs[PREVIEW_HABIT_ID_KEY] = -1L
+                        // No habits at all - empty state (WIDGET-05)
+                        prefs[HAS_HABITS_KEY] = false
+                        Log.d(TAG, "refreshWidgetData: no habits found")
                     }
-
-                    Log.d(TAG, "refreshWidgetData: primary='${primaryHabit.name}' match=${primary.matchResult::class.simpleName}, preview='${preview?.habit?.name}'")
-                } else {
-                    // No habits at all - empty state (WIDGET-05)
-                    prefs[HAS_HABITS_KEY] = false
-                    Log.d(TAG, "refreshWidgetData: no habits found")
                 }
-            }
 
-            // Schedule next refresh at window boundary (SYS-01)
-            // 如果有活跃计时器，使用更频繁的刷新（每分钟）
-            if (activeTimeLog != null) {
-                // 有活跃计时器：调度下一分钟刷新以同步实时进度
-                FocusWidgetAlarmScheduler.scheduleNextRefreshForActiveTimer(appContext)
-            } else {
-                FocusWidgetAlarmScheduler.scheduleNextRefresh(appContext)
-            }
+            })
         }
 
     }
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         Log.d(TAG, "provideGlance called for id=$id")
-
-        try {
-            refreshWidgetData(context, id)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error loading initial data", e)
-        }
 
         provideContent {
             DeviceWidgetTheme(context) {
@@ -329,7 +409,13 @@ class FocusWidget : GlanceAppWidget() {
                 val dataLoaded = state[DATA_LOADED_KEY] ?: false
                 val hasHabits = state[HAS_HABITS_KEY] ?: false
 
-                if (!dataLoaded) {
+                if (state[READ_FAILED_KEY] == true) {
+                    WidgetEmptyStates.EmptyConfigState(
+                        context.getString(R.string.data_read_failed) + "\n" + context.getString(R.string.action_retry),
+                        GlanceModifier.clickable(actionRunCallback<WidgetTimerRefreshCallback>(
+                            actionParametersOf(ActionParameters.Key<String>("widget") to "focus")))
+                    )
+                } else if (!dataLoaded) {
                     WidgetEmptyStates.EmptyConfigState(context.getString(com.dayforge.R.string.common_loading))
                 } else if (!hasHabits) {
                     // Empty state (WIDGET-05)
@@ -379,6 +465,7 @@ class FocusWidget : GlanceAppWidget() {
         }
         val targetValue = state[PRIMARY_TARGET_VALUE_KEY] ?: 1
         val completedToday = state[PRIMARY_COMPLETED_TODAY_KEY] ?: 0
+        val actualCount = state[PRIMARY_ACTUAL_COUNT_KEY] ?: completedToday.toLong()
         val todayCount = state[PRIMARY_TODAY_COUNT_KEY] ?: 0  // 实际完成次数（含实时计时）
         val isCompleted = state[PRIMARY_IS_COMPLETED_KEY] ?: false
         val isActive = state[PRIMARY_IS_ACTIVE_KEY] ?: true
@@ -571,7 +658,10 @@ class FocusWidget : GlanceAppWidget() {
                             context,
                             habitId,
                             habitName,
-                            isFailed = true
+                            isFailed = true,
+                            factProof = state[FACT_ACTION_PROOF_KEY],
+                            timerProof = state[TIMER_ACTION_PROOF_KEY],
+                            legacyProof = state[LEGACY_RESTART_PROOF_KEY]
                         )
                         Box(
                             modifier = GlanceModifier
@@ -595,7 +685,10 @@ class FocusWidget : GlanceAppWidget() {
                             context,
                             habitId,
                             habitName,
-                            isFailed = false
+                            isFailed = false,
+                            factProof = state[FACT_ACTION_PROOF_KEY],
+                            timerProof = state[TIMER_ACTION_PROOF_KEY],
+                            legacyProof = state[LEGACY_RESTART_PROOF_KEY]
                         )
                         Box(
                             modifier = GlanceModifier
@@ -619,13 +712,13 @@ class FocusWidget : GlanceAppWidget() {
                     // COUNTING type: single check-in button + progress
                     // Unified default button styling matches CHECK_IN and TIMER types
                     val remaining = if (isCountdown) {
-                        (targetValue - completedToday).coerceAtLeast(0)
+                        (targetValue.toLong() - actualCount).coerceAtLeast(0L)
                     } else 0
-                    val showCompleted = if (isCountdown) remaining <= 0 else completedToday >= targetValue
+                    val showCompleted = if (isCountdown) remaining <= 0 else actualCount >= targetValue
                     val progressText = if (isCountdown) {
                         context.getString(com.dayforge.R.string.timer_countdown_remaining, remaining)
                     } else {
-                        context.getString(com.dayforge.R.string.timer_countup_progress, completedToday, targetValue)
+                        context.getString(com.dayforge.R.string.timer_countup_progress, actualCount, targetValue)
                     }
                     Row(
                         modifier = GlanceModifier.fillMaxWidth(),
@@ -645,12 +738,8 @@ class FocusWidget : GlanceAppWidget() {
                         }
                         Button(
                             text = context.getString(com.dayforge.R.string.action_check_in),
-                            onClick = actionRunCallback<com.dayforge.widget.checkin.CheckInActionCallback>(
-                                actionParametersOf(
-                                    ActionParameters.Key<Long>("habitId") to habitId,
-                                    ActionParameters.Key<String>("action") to if (isCountdown) "decrement" else "increment"
-                                )
-                            ),
+                            onClick = com.dayforge.widget.checkin.widgetFactAction(context, habitId,
+                                if (isCountdown) "decrement" else "increment", state[FACT_ACTION_PROOF_KEY], state[LEGACY_FACT_ACTION_PROOF_KEY]),
                             modifier = GlanceModifier.height(36.dp)
                         )
                         Spacer(modifier = GlanceModifier.width(8.dp))
@@ -668,13 +757,17 @@ class FocusWidget : GlanceAppWidget() {
                     HabitActionButtons.TimerStartButton(
                         habitId = habitId,
                         targetMinutes = targetValue,
-                        isTimerActive = isTimerActive
+                        isTimerActive = isTimerActive,
+                        actionProof = state[TIMER_ACTION_PROOF_KEY],
+                        legacyActionProof = state[LEGACY_TIMER_ACTION_PROOF_KEY]
                     )
                 } else if (isCheckInAllowed) {
                     // CHECK_IN type or AfterWindow (allow makeup check-in)
                     HabitActionButtons.CheckInButton(
                         habitId = habitId,
-                        isCompleted = isCompleted
+                        isCompleted = isCompleted,
+                        actionProof = state[FACT_ACTION_PROOF_KEY],
+                        legacyActionProof = state[LEGACY_FACT_ACTION_PROOF_KEY]
                     )
                 } else if (matchType == "AfterWindow") {
                     // AfterWindow but not failed/completed and not in check-in window

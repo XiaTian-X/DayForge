@@ -24,6 +24,17 @@ class CheckInService @Inject constructor(
     private val timeLogDao: TimeLogDao
 ) {
 
+    /** Typed widget operations reuse the normal repository and target-progress rules. */
+    suspend fun widgetAction(context: Context, claim: com.dayforge.data.repository.WidgetFactClaim,
+        action: String): CheckInResult.Success {
+        val committed = habitRepository.performWidgetFact(context, claim, action)
+        val habit = committed.habit
+        if (habit.completionPolicy == "one_and_done") return CheckInResult.Success(committed.completed, 0, false)
+        val progress = committed.targetProgress
+        val added = action == "increment" || (action == "toggle" && claim.completionUuid == null)
+        return CheckInResult.Success(committed.completed, progress, added && habit.targetCycles != null && progress >= habit.targetCycles)
+    }
+
     /**
      * Gets the distinct day count for target progress calculation.
      * TIMER habits use timelogs table, other types use completions table.
@@ -39,16 +50,28 @@ class CheckInService @Inject constructor(
     private suspend fun getDistinctDayCountForTarget(habit: com.dayforge.data.local.entity.HabitEntity): Int {
         return when (habit.habitType) {
             com.dayforge.data.model.HabitType.TIMER -> {
+                if (habit.appearance != null) {
+                    val current = requireNotNull(habitRepository.getHabitById(habit.id)) { "TIMER_NOT_FOUND" }
+                    check(current.uuid == habit.uuid) { "TIMER_ACTIVITY_CHANGED" }
+                    return habitRepository.getTimerHistory(current).qualifiedDates.size
+                }
                 // TIMER: count days where duration >= targetSeconds
                 val targetSeconds = habit.targetValue * 60
                 timeLogDao.getTargetMetDayCount(habit.id, targetSeconds)
             }
             com.dayforge.data.model.HabitType.COUNTING -> {
+                if (habit.appearance != null) return habitRepository.getCountHistory(habit).qualifiedDates.size
                 // COUNTING: count days where sum >= targetValue
                 completionDao.getTargetMetDayCount(habit.id, habit.targetValue)
             }
             else -> {
                 // CHECK_IN: any completion counts
+                if (habit.habitType == com.dayforge.data.model.HabitType.CHECK_IN && habit.appearance != null) {
+                    // The write may reactivate or update activityRate. Never reuse its pre-write row.
+                    val current = requireNotNull(habitRepository.getHabitById(habit.id)) { "CHECK_NOT_FOUND" }
+                    check(current.uuid == habit.uuid) { "CHECK_ACTIVITY_CHANGED" }
+                    return habitRepository.getCheckHistory(current).qualifiedDates.size
+                }
                 completionDao.getDistinctDayCount(habit.id)
             }
         }
@@ -63,6 +86,7 @@ class CheckInService @Inject constructor(
      */
     suspend fun isCheckInAllowedToday(habitId: Long): Boolean {
         val habit = habitRepository.getHabitById(habitId) ?: return false
+        if (habit.completionPolicy == "one_and_done") return habitRepository.getOneTimeStatus(habitId).canChange
         return ScheduleValidator.isCheckInAllowedToday(habit.schedule, habit.createdAt)
     }
 
@@ -73,9 +97,16 @@ class CheckInService @Inject constructor(
      * @param habitId The ID of the habit
      * @return CheckInResult.Success with completed, progress, goalReached; or CheckInResult.Error
      */
-    suspend fun toggleCheckIn(context: Context, habitId: Long): CheckInResult {
+    suspend fun toggleCheckIn(context: Context, habitId: Long, expectedHabitUuid: String? = null,
+        oneTimeAuthority: com.dayforge.domain.model.OneTimeActionAuthority? = null): CheckInResult {
         val habit = habitRepository.getHabitById(habitId)
             ?: return CheckInResult.Error("Habit not found")
+        if (expectedHabitUuid != null && habit.uuid != expectedHabitUuid) return CheckInResult.Error("Habit changed")
+
+        if (habit.completionPolicy == "one_and_done") {
+            return CheckInResult.Success(habitRepository.toggleOneTime(context, habitId, habit.uuid, oneTimeAuthority), 0, false)
+        }
+        check(oneTimeAuthority == null) { "ONE_TIME_ACTION_EXPIRED" }
 
         val todayCount = habitRepository.getTodayCompletionCount(habitId)
         val completed: Boolean
@@ -86,7 +117,7 @@ class CheckInService @Inject constructor(
             val completionId = habitRepository.getTodayCompletionId(habitId)
             if (completionId != null) {
                 habitRepository.undoCompletion(context, completionId)
-                completed = false
+                completed = habitRepository.getTodayCompletionCount(habitId) > 0
                 isUndo = true
             } else {
                 completed = true // Edge case: no completion ID found
@@ -118,14 +149,14 @@ class CheckInService @Inject constructor(
             ?: return CheckInResult.Error("Habit not found")
 
         habitRepository.logCompletion(context, habitId, 1)
-        val todayCount = habitRepository.getTodayCompletionCount(habitId)
+        val history = countHistoryAfterAction(habit)
 
         // Calculate progress and goal detection
-        val progress = getDistinctDayCountForTarget(habit)
+        val progress = history?.qualifiedDates?.size ?: getDistinctDayCountForTarget(habit)
         val goalReached = habit.targetCycles != null && progress >= habit.targetCycles
 
         // For COUNTING: completed means todayCount >= targetValue
-        val completed = todayCount >= habit.targetValue
+        val completed = history?.completedToday ?: (habitRepository.getTodayCompletionCount(habitId) >= habit.targetValue)
 
         return CheckInResult.Success(completed, progress, goalReached)
     }
@@ -142,9 +173,10 @@ class CheckInService @Inject constructor(
         val habit = habitRepository.getHabitById(habitId)
             ?: return CheckInResult.Error("Habit not found")
 
-        val todayCount = habitRepository.getTodayCompletionCount(habitId)
+        val hasCounts = if (habit.appearance != null) habitRepository.getCountHistory(habit).todayQuantity > 0
+            else habitRepository.getTodayCompletionCount(habitId) > 0
 
-        if (todayCount > 0) {
+        if (hasCounts) {
             // Delete the most recent completion
             val completionId = habitRepository.getTodayCompletionId(habitId)
             if (completionId != null) {
@@ -152,17 +184,17 @@ class CheckInService @Inject constructor(
             }
         }
 
-        val newTodayCount = habitRepository.getTodayCompletionCount(habitId)
+        val history = countHistoryAfterAction(habit)
 
         // Calculate progress for UI display
-        val progress = getDistinctDayCountForTarget(habit)
+        val progress = history?.qualifiedDates?.size ?: getDistinctDayCountForTarget(habit)
 
         // Per TARGET-03: goalReached is always false for decrement operations
         // Undo operations should not trigger goal completion dialogs
         val goalReached = false
 
         // For COUNTING: completed means newTodayCount >= targetValue
-        val completed = newTodayCount >= habit.targetValue
+        val completed = history?.completedToday ?: (habitRepository.getTodayCompletionCount(habitId) >= habit.targetValue)
 
         return CheckInResult.Success(completed, progress, goalReached)
     }
@@ -174,7 +206,22 @@ class CheckInService @Inject constructor(
      * @return true if count >= target
      */
     suspend fun isCompleted(habitId: Long, targetValue: Int): Boolean {
+        val habit = habitRepository.getHabitById(habitId)
+        if (habit?.completionPolicy == "one_and_done") {
+            return habitRepository.getOneTimeStatus(habitId).completed
+        }
+        if (habit?.habitType == com.dayforge.data.model.HabitType.COUNTING && habit.appearance != null)
+            return habitRepository.getCountHistory(habit).completedToday
         val todayCount = habitRepository.getTodayCompletionCount(habitId)
         return todayCount >= targetValue
+    }
+
+    private suspend fun countHistoryAfterAction(expected: com.dayforge.data.local.entity.HabitEntity): com.dayforge.domain.model.CountHistory? {
+        if (expected.appearance == null) return null
+        // Recording/undo updates activityRate and can reactivate the habit. Read the committed
+        // entity rather than using the stale pre-write display value as read authority.
+        val current = requireNotNull(habitRepository.getHabitById(expected.id)) { "COUNT_NOT_FOUND" }
+        check(current.uuid == expected.uuid) { "COUNT_ACTIVITY_CHANGED" }
+        return habitRepository.getCountHistory(current)
     }
 }

@@ -120,9 +120,10 @@ def test_validated_auth_responses_have_precise_public_types(type_cache):
         "from uuid import UUID\n"
         "from src.auth.models import User\n"
         "from src.auth.router import _token_response\n"
+        "from sqlalchemy.ext.asyncio import AsyncSession\n"
         "from src.tokens.schemas import TokenResponse\n"
-        "def response(user: User, raw: dict[str, object]) -> None:\n"
-        "    assert_type(_token_response(user).user_id, UUID)\n"
+        "async def response(user: User, raw: dict[str, object], session: AsyncSession) -> None:\n"
+        "    assert_type((await _token_response(user, session)).user_id, UUID)\n"
         "    assert_type(TokenResponse.model_validate(raw).id, int)\n"
     )
     result = run_mypy(source, type_cache)

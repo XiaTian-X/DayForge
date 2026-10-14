@@ -10,6 +10,7 @@ import com.dayforge.domain.appearance.ThemeVersionRef
 import java.io.InputStream
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
@@ -30,7 +31,7 @@ internal sealed interface DeviceThemeLoadState {
  * The shared process controller owns collection for production app and widget consumers.
  */
 internal class DeviceThemeRepository(
-    preferences: DataStore<Preferences>,
+    private val preferences: DataStore<Preferences>,
     files: ThemeFileRepository,
     builtIns: BuiltInThemes
 ) {
@@ -39,6 +40,9 @@ internal class DeviceThemeRepository(
 
     /** Initialize only genuinely absent metadata; recovery touches confirmed journal operations only. */
     suspend fun initialize(): LoadedDeviceTheme = initialization.withLock {
+        // A cold interrupted recovery can display its verified device palette without repairing
+        // files/catalog or manufacturing a default. Missing/corrupt saved choices still fail.
+        if (com.dayforge.data.local.ReplicaSwitchGuard.blocked(preferences.data.first())) return@withLock load()
         catalog.initialize()
         catalog.recover()
         selection.load() ?: selection.select(0, defaults())

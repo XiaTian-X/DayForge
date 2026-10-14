@@ -5,5 +5,7 @@ data class ActiveTimerState(
     val habitId: Long,
     val elapsedSeconds: Int,
     val isPaused: Boolean,
-    val targetMinutes: Int
+    val targetMinutes: Int,
+    val isCountdown: Boolean? = null,
+    val authority: TimerActionAuthority? = null
 )

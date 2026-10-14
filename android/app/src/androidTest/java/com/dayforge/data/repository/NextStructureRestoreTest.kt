@@ -56,9 +56,9 @@ class NextStructureRestoreTest {
         file = File(context.cacheDir, "structures-${UUID.randomUUID()}.preferences_pb")
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val store = PreferenceDataStoreFactory.create(scope = scope, produceFile = { file })
-        tokens = TokenManager(store); preferences = PreferencesManager(store)
-        tokens.saveLoginSession("synthetic-a", "synthetic-r", "member", "account-a", false)
-        tokens.saveServerIdentity("server", "epoch")
+        tokens = TokenManager(store); preferences = PreferencesManager(store, tokens = tokens)
+        tokens.saveLoginSession("synthetic-a", "synthetic-r", "member", "80000000-0000-4000-8000-000000000001", false)
+        tokens.saveServerIdentity("80000000-0000-4000-8000-000000000003", "80000000-0000-4000-8000-000000000004")
         tokens.saveDeviceRegistration(device, setOf("sync.read", "facts.append"), false, 1)
     }
     @After fun cleanup() = runBlocking {
@@ -303,13 +303,13 @@ class NextStructureRestoreTest {
 
     @Test fun changedLoginGenerationOrReplicaCannotRestoreAnEarlierResponse() = runBlocking {
         val stale = sync().context()
-        tokens.saveLoginSession("synthetic-b", "synthetic-rb", "member", "account-a", false)
+        tokens.saveLoginSession("synthetic-b", "synthetic-rb", "member", "80000000-0000-4000-8000-000000000001", false)
         assertTrue(runCatching { sync().restoreStructuresAndHistories(stale, snapshot(task())) }.isFailure)
         empty()
-        tokens.saveServerIdentity("server", "epoch")
+        tokens.saveServerIdentity("80000000-0000-4000-8000-000000000003", "80000000-0000-4000-8000-000000000004")
         tokens.saveDeviceRegistration(device, setOf("sync.read", "facts.append"), false, 1)
         val oldReplica = sync().context()
-        tokens.saveServerIdentity("server", "new-epoch")
+        tokens.saveServerIdentity("80000000-0000-4000-8000-000000000003", "new-epoch")
         assertTrue(runCatching { sync().restoreStructuresAndHistories(oldReplica, snapshot(task())) }.isFailure)
         empty()
     }

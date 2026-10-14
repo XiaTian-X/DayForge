@@ -36,10 +36,12 @@ import com.dayforge.ui.components.IconPicker
 @Composable
 fun CreateGoalScreen(
     viewModel: CreateGoalViewModel = hiltViewModel(),
+    creationAuthority: com.dayforge.data.repository.ObjectCreationAuthority? = null,
     onNavigateBack: () -> Unit,
     onCreateChildHabit: (parentUuid: String) -> Unit  // Navigate to CreateHabitScreen with parentUuid
 ) {
-    val uiState by viewModel.uiState.collectAsState()
+    val uiState by viewModel.uiState.collectAsState(context = kotlinx.coroutines.Dispatchers.Main)
+    LaunchedEffect(creationAuthority) { creationAuthority?.let(viewModel::beginCreation) }
 
     Scaffold(
         topBar = {
@@ -106,6 +108,8 @@ fun CreateGoalScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(stringResource(R.string.edit_habit_icon_label), style = MaterialTheme.typography.bodyLarge)
+                        uiState.appearance?.let { com.dayforge.ui.components.ObjectIcon("new-goal", it, false,
+                            0, androidx.compose.ui.graphics.Color.Unspecified, 24.dp) }
                         Icon(Icons.AutoMirrored.Filled.ArrowForward, null)
                     }
                 }
@@ -282,7 +286,10 @@ fun CreateGoalScreen(
 
     // Icon picker dialog
     if (uiState.showIconPicker) {
-        IconPicker(
+        val appearance = uiState.appearance
+        if (appearance != null) com.dayforge.ui.components.ObjectAppearancePicker(appearance, false, uiState.creationAuthority,
+            viewModel::updateAppearance, viewModel::toggleIconPicker)
+        else IconPicker(
             selectedIconId = uiState.iconResId,
             onIconSelected = viewModel::updateIcon,
             onDismiss = viewModel::toggleIconPicker
