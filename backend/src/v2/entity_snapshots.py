@@ -153,14 +153,17 @@ async def serialize_activity_event_with_allocations(
         .order_by(col(DurationDayAllocation.local_date))
     )
     payload["day_allocations"] = [
-        {
-            "local_date": allocation.local_date.isoformat(),
-            "timezone": allocation.timezone,
-            "duration_milliseconds": allocation.duration_ms,
-        }
-        for allocation in result.scalars().all()
+        serialize_day_allocation(allocation) for allocation in result.scalars().all()
     ]
     return payload
+
+
+def serialize_day_allocation(allocation: DurationDayAllocation) -> dict[str, Any]:
+    return {
+        "local_date": allocation.local_date.isoformat(),
+        "timezone": allocation.timezone,
+        "duration_milliseconds": allocation.duration_ms,
+    }
 
 
 def serialize_metric(metric: TrackedMetric) -> dict[str, Any]:
