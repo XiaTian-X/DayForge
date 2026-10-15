@@ -307,6 +307,7 @@ fun HabitCard(
                                 todayCount
                             }
                             CompletionButton(
+                                busy = habit.id in com.dayforge.ui.LocalInFlightHabitIds.current,
                                 completed = completed,
                                 actionsEnabled = actionsEnabled,
                                 undoAvailable = undoAvailable,

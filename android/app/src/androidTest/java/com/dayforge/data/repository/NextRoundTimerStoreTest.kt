@@ -18,6 +18,22 @@ import org.junit.runner.RunWith
 /** Real file Room/auth/socket and original offline commands, not a service stopwatch test. */
 @RunWith(AndroidJUnit4::class)
 class NextRoundTimerStoreTest : NextCoreRequestFixture() {
+    @Test fun listSnapshotSharesProofWithoutChangingChallengeAuthorityOrHistory() = runBlocking<Unit> {
+        val (http, _) = channel(::respond)
+        initialize(http)
+        val writer = NextTimerWriter(db, tokens, sessions)
+        suspend fun compare() {
+            val before = db.withTransaction { nextRestartDatabaseProof(db) }
+            val expected = requireNotNull(writer.widgetSnapshot(timerHabit)).copy(startGuard = null)
+            assertEquals(expected, writer.statusSnapshot(timerHabit))
+            assertEquals(initial(timerHabit.uuid).head, expected.authority.challengeHead)
+            assertEquals(before, db.withTransaction { nextRestartDatabaseProof(db) })
+        }
+        compare()
+        startRound()
+        compare()
+    }
+
     private val json = Json { encodeDefaults = true }
     private val policies = mutableMapOf<String, TimerStartPolicy>()
     private var returnedRestart = false

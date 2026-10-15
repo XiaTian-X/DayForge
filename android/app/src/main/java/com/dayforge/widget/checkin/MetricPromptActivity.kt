@@ -92,7 +92,7 @@ class MetricPromptActivity : ComponentActivity() {
                         promptIdentity = prompt.oneTimePrompt?.eventUuid,
                         missingTargets = prompt.oneTimePrompt?.entries?.filterNot { it.available }?.map { it.name }.orEmpty(),
                         onRefreshMetadata = if (prompt.oneTimePrompt != null) ({
-                            lifecycleScope.launch {
+                            run {
                                 try { metricCoordinator.refreshPrompt() }
                                 catch (error: Exception) {
                                     if (error is CancellationException) throw error
@@ -102,24 +102,20 @@ class MetricPromptActivity : ComponentActivity() {
                         }) else null,
                         initialInputs = prompt.oneTimePrompt?.entries?.associate { it.metricId to (it.input to it.note) }.orEmpty(),
                         onDraftChange = { inputs -> prompt.oneTimePrompt?.let { ticket ->
-                            lifecycleScope.launch {
-                                try { metricCoordinator.savePromptDraft(ticket.eventUuid, inputs) }
-                                catch (error: Exception) {
-                                    if (error is CancellationException) throw error
-                                    report(error)
-                                }
-                            }
+                            metricCoordinator.savePromptDraft(ticket.eventUuid, inputs)
                         } },
                         onRecord = { values, neverAskAgain ->
-                            lifecycleScope.launch {
+                            run record@ {
                                 try {
                                     if (!metricCoordinator.recordMetricValues(habitId, values, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt, prompt.factPrompt,
-                                            expectedPreferenceClaim = prompt.preferenceClaim)) return@launch
-                                    if (neverAskAgain) {
-                                        metricCoordinator.setNeverAskAgain(habitId, true, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt, prompt.factPrompt,
-                                            expectedPreferenceClaim = prompt.preferenceClaim)
+                                            expectedPreferenceClaim = prompt.preferenceClaim)) return@record
+                                    com.dayforge.domain.service.afterCommittedAction {
+                                        if (neverAskAgain) {
+                                            metricCoordinator.setNeverAskAgain(habitId, true, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt, prompt.factPrompt,
+                                                expectedPreferenceClaim = prompt.preferenceClaim)
+                                        }
+                                        finish()
                                     }
-                                    finish()
                                 } catch (error: Exception) {
                                     if (error is CancellationException) throw error
                                     report(error)
@@ -127,7 +123,7 @@ class MetricPromptActivity : ComponentActivity() {
                             }
                         },
                         onSkip = { neverAskAgain ->
-                            lifecycleScope.launch {
+                            run {
                                 try {
                                     if (neverAskAgain) {
                                         metricCoordinator.setNeverAskAgain(habitId, true, prompt.oneTimePrompt?.eventUuid, prompt.timerPrompt, prompt.factPrompt,
@@ -142,7 +138,7 @@ class MetricPromptActivity : ComponentActivity() {
                                 }
                             }
                         },
-                        onDismiss = { lifecycleScope.launch { metricCoordinator.closePrompt(); finish() } }
+                        onDismiss = { metricCoordinator.closePrompt(); finish() }
                     )
                 }
             }
@@ -151,7 +147,7 @@ class MetricPromptActivity : ComponentActivity() {
 
     private fun report(error: Exception) {
         Log.e(TAG, "Failed to update linked metric prompt", error)
-        Toast.makeText(this, getString(com.dayforge.R.string.metric_error_record_failed, error.message.orEmpty()),
+        Toast.makeText(this, com.dayforge.ui.actionFailureMessage(this, error),
             Toast.LENGTH_LONG).show()
     }
 

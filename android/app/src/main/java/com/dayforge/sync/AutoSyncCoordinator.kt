@@ -4,7 +4,6 @@ import android.content.Context
 import com.dayforge.data.api.NetworkMonitor
 import androidx.work.BackoffPolicy
 import androidx.work.ExistingPeriodicWorkPolicy
-import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
@@ -24,6 +23,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 
@@ -52,12 +52,13 @@ class AutoSyncCoordinator internal constructor(
 
     private val started = AtomicBoolean(false)
     private val workManager by lazy { WorkManager.getInstance(context) }
+    private val immediate = CoalescingSyncWork({ workManager }, ONE_TIME_WORK_NAME)
 
     fun start() {
         if (!started.compareAndSet(false, true)) return
         schedulePeriodicSafetyNet()
         scope.launch {
-            networkMonitor.state.collectLatest { snapshot ->
+            networkMonitor.state.map { it.syncWakeKey() }.distinctUntilChanged().collectLatest { snapshot ->
                 if (snapshot.mayBeConnected) {
                     delay(NETWORK_DEBOUNCE_MILLIS)
                     enqueueNow()
@@ -95,14 +96,13 @@ class AutoSyncCoordinator internal constructor(
                 TimeUnit.SECONDS
             )
             .build()
-        // A durable queue makes cancellation safe: the replacement retries the
-        // same operation IDs. Coalescing to one latest worker also prevents an
-        // offline burst from replaying a long chain of empty syncs after recovery.
-        workManager.enqueueUniqueWork(
-            ONE_TIME_WORK_NAME,
-            ExistingWorkPolicy.REPLACE,
-            request
-        )
+        scope.launch {
+            try { immediate.enqueue(request) }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                android.util.Log.e("AutoSyncCoordinator", "Sync scheduling failed; durable work retained")
+            }
+        }
     }
 
     private fun schedulePeriodicSafetyNet() {

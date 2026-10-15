@@ -68,6 +68,24 @@ class TokenManagerAuthorityReadTest {
         assertEquals(listOf("cipher:access"), cipher.calls.toList())
     }
 
+    @Test fun localGuardsDecryptAccessOnlyButNeverReusePreviousAuthorization() = runBlocking {
+        val calls: List<suspend () -> Any?> = listOf(
+            { manager.localFactAccess() }, { manager.localCoreWriteAccess() },
+            { manager.replicaObservationCoreAccess() }, { manager.localIconAccess() }
+        )
+        for (call in calls) {
+            cipher.unreadable = setOf("cipher:refresh")
+            resetCounts()
+            assertNotNull(call())
+            assertEquals(1, store.reads.get())
+            assertEquals(listOf("cipher:access"), cipher.calls.toList())
+            cipher.unreadable = setOf("cipher:access")
+            assertNull(call())
+            assertEquals(2, store.reads.get())
+            assertEquals(listOf("cipher:access", "cipher:access"), cipher.calls.toList())
+        }
+    }
+
     @Test fun identicalCiphertextMustBeDecryptedAgainAndLaterFailureDeniesAccess() = runBlocking {
         val before = store.data.first()
         resetCounts()
@@ -129,6 +147,7 @@ class TokenManagerAuthorityReadTest {
 
     @Test fun everyRegisteredScopeFieldIsComparedAgainstTheFreshSnapshot() = runBlocking {
         val original = store.data.first()
+        val core = requireNotNull(manager.localCoreWriteAccess())
         val changes = listOf<Pair<String, (MutablePreferences) -> Unit>>(
             "account" to { it[stringPreferencesKey("user_public_id")] = id(9) },
             "generation" to { it[stringPreferencesKey("auth_session_generation")] = id(9) },
@@ -152,6 +171,7 @@ class TokenManagerAuthorityReadTest {
             assertFalse(name, manager.isCurrentSyncAuthority(expected))
             assertEquals(name, 1, store.reads.get())
             assertNull(name, manager.syncAuthenticationSnapshot(expected))
+            assertFalse(name, manager.isCurrentDisplayReadAuthority(core, expected))
         }
         store.updateData { original }
         assertTrue(manager.isCurrentSyncAuthority(expected))
@@ -232,14 +252,55 @@ class TokenManagerAuthorityReadTest {
     }
 
     private fun resetCounts() { cipher.calls.clear(); store.reads.set(0) }
+
+    @Test fun displayFenceChecksCoreAndRegisteredAuthorityInOneFreshSnapshot() = runBlocking {
+        val core = requireNotNull(manager.localCoreWriteAccess())
+        resetCounts()
+        assertTrue(manager.isCurrentDisplayReadAuthority(core, expected))
+        assertEquals(1, store.reads.get())
+        assertEquals(listOf("cipher:access"), cipher.calls.toList())
+        cipher.unreadable = setOf("cipher:access")
+        assertFalse(manager.isCurrentDisplayReadAuthority(core, expected))
+        assertEquals(2, store.reads.get())
+        assertEquals(listOf("cipher:access", "cipher:access"), cipher.calls.toList())
+        cipher.unreadable = emptySet()
+        store.edit { it[ReplicaSwitchGuard.POINTER] = "synthetic-frozen" }
+        resetCounts()
+        assertFalse(manager.isCurrentDisplayReadAuthority(core, expected))
+        assertFalse(manager.isCurrentDisplayReadAuthority(core, null))
+        assertEquals(2, store.reads.get())
+        assertTrue(cipher.calls.isEmpty())
+    }
+
+    @Test fun uiAuthorityEntrypointsNeverDecryptOnMainAndStillUseFreshCredentials() = runBlocking {
+        cipher.rejectMain = true
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+            assertNotNull(manager.authenticationSnapshot())
+            assertNotNull(manager.localFactAccess())
+            assertNotNull(manager.localIconAccess())
+            assertNotNull(manager.iconAuthenticationSnapshot(icon))
+            assertEquals("access", manager.accessToken.first())
+            assertEquals("refresh", manager.refreshToken.first())
+        }
+        cipher.unreadable = setOf("cipher:access")
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+            assertNull(manager.authenticationSnapshot())
+            assertNull(manager.localFactAccess())
+            assertNull(manager.localIconAccess())
+            assertNull(manager.iconAuthenticationSnapshot(icon))
+            assertNull(manager.accessToken.first())
+        }
+    }
     private fun id(n: Int) = "aa160000-0000-4000-8000-${n.toString().padStart(12, '0')}"
 
     private class CountingCipher : TokenCipher {
         val calls = CopyOnWriteArrayList<String>()
         @Volatile var unreadable = emptySet<String>()
         @Volatile var cancel = false
+        @Volatile var rejectMain = false
         override fun encrypt(value: String) = "cipher:$value"
         override fun decrypt(value: String): String? {
+            if (rejectMain) assertNotEquals(android.os.Looper.getMainLooper(), android.os.Looper.myLooper())
             calls += value
             if (cancel) throw CancellationException("synthetic cancellation")
             return if (value in unreadable) null else value.removePrefix("cipher:")

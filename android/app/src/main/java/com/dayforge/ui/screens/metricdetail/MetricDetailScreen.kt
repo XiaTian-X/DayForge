@@ -43,7 +43,8 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -91,7 +92,11 @@ fun MetricDetailScreen(
     onDeleted: () -> Unit = {},
     viewModel: MetricDetailViewModel = hiltViewModel()
 ) {
-    val uiState by viewModel.uiState.collectAsState()
+    LifecycleStartEffect(viewModel) {
+        viewModel.resumeReads()
+        onStopOrDispose { viewModel.pauseReads() }
+    }
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
     // Navigate back after delete
     LaunchedEffect(uiState.isDeleted) {
@@ -118,7 +123,8 @@ fun MetricDetailScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { onEditClick(metricId) }) {
+                    if (uiState.isMutating) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    IconButton(enabled = !uiState.isMutating && !uiState.isRecording, onClick = { onEditClick(metricId) }) {
                         Icon(
                             imageVector = Icons.Default.Edit,
                             contentDescription = stringResource(R.string.content_description_edit)
@@ -462,6 +468,7 @@ fun MetricDetailScreen(
         if (uiState.showValueInput) {
             uiState.metric?.let { metric ->
                 MetricValueInput(
+                    busy = uiState.isRecording,
                     metricName = metric.name,
                     unit = metric.unit,
                     decimalPlaces = metric.decimalPlaces,
@@ -489,6 +496,7 @@ fun MetricDetailScreen(
                     },
                     confirmButton = {
                         Button(
+                            enabled = !uiState.isMutating,
                             onClick = { viewModel.deleteMetric() },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.error
@@ -498,7 +506,7 @@ fun MetricDetailScreen(
                         }
                     },
                     dismissButton = {
-                        TextButton(onClick = { viewModel.toggleDeleteConfirm() }) {
+                        TextButton(enabled = !uiState.isMutating, onClick = { viewModel.toggleDeleteConfirm() }) {
                             Text(text = stringResource(R.string.action_cancel))
                         }
                     }
@@ -523,12 +531,12 @@ fun MetricDetailScreen(
                         )
                     },
                     confirmButton = {
-                        Button(onClick = { viewModel.unlinkHabit() }) {
+                        Button(enabled = !uiState.isMutating, onClick = { viewModel.unlinkHabit() }) {
                             Text(text = stringResource(R.string.metric_unlink))
                         }
                     },
                     dismissButton = {
-                        TextButton(onClick = { viewModel.dismissUnlinkConfirm() }) {
+                        TextButton(enabled = !uiState.isMutating, onClick = { viewModel.dismissUnlinkConfirm() }) {
                             Text(text = stringResource(R.string.action_cancel))
                         }
                     }
@@ -604,13 +612,13 @@ fun MetricDetailScreen(
                 confirmButton = {
                     Button(
                         onClick = { viewModel.linkSelectedHabits() },
-                        enabled = uiState.selectedHabitIds.isNotEmpty()
+                        enabled = uiState.selectedHabitIds.isNotEmpty() && !uiState.isMutating
                     ) {
                         Text(text = stringResource(R.string.metric_link_habit))
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = { viewModel.dismissLinkHabitDialog() }) {
+                    TextButton(enabled = !uiState.isMutating, onClick = { viewModel.dismissLinkHabitDialog() }) {
                         Text(text = stringResource(R.string.action_cancel))
                     }
                 }

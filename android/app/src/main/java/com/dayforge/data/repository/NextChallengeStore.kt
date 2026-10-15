@@ -21,7 +21,7 @@ internal class NextChallengeStore(private val database: HabitDatabase) {
     suspend fun activeInTransaction(access: LocalSyncAccess): Pair<NextSyncStateEntity, ChallengeMetadata> {
         check(database.inTransaction())
         require(access.deviceId != null)
-        requireNotNull(NextRequestSql.rowHash(database.openHelper.writableDatabase, "next_sync_state", "1=1", emptyArray()))
+        requireNotNull(NextRequestSql.rowHash(database, "next_sync_state", "1=1", emptyArray()))
         val state = database.nextSyncStateDao().rows().single()
         require(state.challengeContract == 1)
         return state to requireNotNull(readInTransaction(access, state))
@@ -91,25 +91,14 @@ internal class NextChallengeStore(private val database: HabitDatabase) {
     /** Audit SQLite before Room coercion, then rebuild every complete immutable chain. */
     suspend fun readInTransaction(access: LocalSyncAccess, cursor: NextSyncStateEntity?): ChallengeMetadata? {
         check(database.inTransaction())
+        val timing = HistoryAuditTiming(HistoryAuditTiming.Kind.CHALLENGE)
         val sql = database.openHelper.writableDatabase
-        for ((table, keys) in listOf("next_challenge_state" to listOf("id"),
-            "next_challenge_rounds" to listOf("roundUuid"), "next_challenge_births" to listOf("entityType", "entityUuid"))) {
-            sql.query("SELECT ${keys.joinToString(",")} FROM $table ORDER BY rowid").use { raw ->
-                while (raw.moveToNext()) {
-                    currentCoroutineContext().ensureActive()
-                    val args: Array<Any> = keys.mapIndexed<String, Any> { i, key ->
-                        if (key == "id") {
-                            require(raw.getType(i) == Cursor.FIELD_TYPE_INTEGER && raw.getLong(i) == 1L)
-                            raw.getLong(i)
-                        } else { require(raw.getType(i) == Cursor.FIELD_TYPE_STRING); raw.getString(i) }
-                    }.toTypedArray()
-                    requireNotNull(NextRequestSql.rowHash(sql, table, keys.joinToString(" AND ") { "$it=?" }, args))
-                }
-            }
-        }
+        for (table in listOf("next_challenge_state", "next_challenge_rounds", "next_challenge_births"))
+            NextRequestSql.auditChallengeRows(sql, table)
         val marker = dao.states().singleOrNull()
         val rounds = dao.rounds()
         val births = dao.births()
+        timing.mark(HistoryAuditTiming.Stage.RAW_ROWS)
         if (marker == null) {
             require(rounds.isEmpty() && births.isEmpty()) { "SYNC_CHALLENGE_CHECKPOINT_MISSING" }
             require(cursor?.challengeContract != 1) { "SYNC_CHALLENGE_CHECKPOINT_MISSING" }
@@ -133,10 +122,13 @@ internal class NextChallengeStore(private val database: HabitDatabase) {
             }
         }
         val byId = records.associateBy { it.head.roundUuid }
+        timing.mark(HistoryAuditTiming.Stage.DECODE)
         val metadata = canonical(ChallengeMetadata(1, records.groupBy { it.head.activityUuid }.map { (id, history) ->
             ChallengeCheckpoint(rebuildChallengeHistory(id, history), history)
         }, births.map { ChallengeBirth(it.entityType, it.entityUuid, requireNotNull(byId[it.roundUuid]).head) }))
+        timing.mark(HistoryAuditTiming.Stage.REBUILD)
         require(marker.metadataHash == syncPayloadHash(json.encodeToString(metadata))) { "SYNC_CHALLENGE_PROOF_CHANGED" }
+        timing.mark(HistoryAuditTiming.Stage.PAYLOAD_HASH)
         return metadata
     }
 

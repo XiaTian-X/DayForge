@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="record_saved_refresh_failed">The change was saved, but refreshing its status or follow-up failed. Refresh the page; do not submit it again.</string>
     <string name="replica_display_title">Checking the local replica</string>
     <string name="replica_display_pending">Replica recovery is incomplete. Business data cannot be displayed or changed yet. Original data and archives are retained. Rechecking only reads local state; it does not perform recovery.</string>
     <string name="replica_display_retry">Recheck local state</string>

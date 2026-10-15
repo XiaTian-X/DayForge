@@ -22,6 +22,43 @@ class NextObjectEditorTest : NextObjectEditorFixture() {
     private suspend fun metricTicket() = editingMetrics().getMetricForEditing(metric.id)
     private suspend fun habitTicket() = editingHabits().getHabitForEditing(habit.id)
 
+    @Test fun batchMetricTicketsPreserveOrderAndRejectChangedMemberOrOldAccountAtomically() = runBlocking<Unit> {
+        val second = metric.copy(id = 0, uuid = id(81), name = "Second metric", unit = "hour")
+        val secondId = db.withTransaction {
+            db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
+            db.metricDao().insert(second).also {
+                db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
+            }
+        }
+        val repo = editingMetrics()
+        val snapshots = repo.getMetricsForEditing(listOf(secondId, metric.id, secondId, Long.MAX_VALUE))
+        assertEquals(listOf(secondId, metric.id, secondId, null), snapshots.map { it.value?.id })
+        assertSame(snapshots[0].authority, snapshots[2].authority)
+        assertNull(snapshots[3].authority)
+        val selected = snapshots.take(2)
+        val values = selected.map { MetricValueDraft(it.value!!.id, 3.5) }
+        val originalRows = selected.map { it.value!! }
+        val ticket = selected.first().authority!!
+        val stamp = 1_786_000_000_123L
+        repo.recordValues(values, stamp, ticket, expectedMetrics = originalRows)
+        repo.recordValues(values, stamp, ticket, expectedMetrics = originalRows) // New explicit operation, same value/time.
+        assertEquals(4, count("metric_logs")); assertEquals(4, count("next_request_origins"))
+        assertEquals(listOf("hour", "hour"), db.metricLogDao().getAllLogsForMetric(secondId).map { it.unit })
+        assertTrue(db.metricLogDao().getAllLogsForMetric(secondId).all { it.date == stamp })
+        val before = db.syncOutboxDao().getAll()
+        db.withTransaction {
+            db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
+            db.metricDao().update(metric.copy(unit = "changed"))
+            db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
+        }
+        rejected { repo.recordValues(values, stamp, ticket, expectedMetrics = originalRows) }
+        assertEquals(before, db.syncOutboxDao().getAll()); assertEquals(4, count("metric_logs"))
+        val fresh = repo.getMetricsForEditing(listOf(secondId, metric.id))
+        tokens.saveLoginSession("synthetic-second", "synthetic-refresh", "other", id(91), false)
+        rejected { repo.recordValues(values, stamp, fresh.first().authority, expectedMetrics = fresh.map { it.value!! }) }
+        assertEquals(before, db.syncOutboxDao().getAll()); assertEquals(4, count("metric_logs"))
+    }
+
     @Test fun typedMetricEditorSavesFrozenIntentAndRealHttpAcceptanceThenColdReopens() = runBlocking<Unit> {
         register()
         val model = withContext(Dispatchers.Main) { own(EditMetricViewModel(app, db.metricDao(), editingMetrics(),
@@ -33,10 +70,13 @@ class NextObjectEditorTest : NextObjectEditorFixture() {
         withContext(Dispatchers.Main) {
             model.updateName("Native edited metric")
             model.updateAppearance(appearance("metric.changed"))
-            model.saveMetric()
+            repeat(20) { model.saveMetric() }
         }
         val saved = withTimeout(5000) { model.uiState.first { it.isSaved || it.errorMessage != null } }
         assertNull(saved.errorMessage); assertTrue(saved.isSaved)
+        withContext(Dispatchers.Main) { repeat(20) { model.saveMetric() } }
+        assertFalse(model.uiState.value.isSaving)
+        assertNull(model.uiState.value.errorMessage)
         val row = db.syncOutboxDao().getAll().single()
         val origin = originalIntent(row)
         assertEquals(5, origin.protocol); assertEquals(id(1), origin.accountId)

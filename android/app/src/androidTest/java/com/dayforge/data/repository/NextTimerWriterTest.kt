@@ -171,6 +171,26 @@ class NextTimerWriterTest : NextCoreRequestFixture() {
         }
     }
 
+    @Test fun hiddenDisplayStopsWithoutStoppingPersistedTimerAndReopensWithFreshProof() = runBlocking<Unit> {
+        startWith(writer().capture(timerHabit.id))
+        val state = ActiveTimerStateProvider(db.timeLogDao(), habits(), app, writer()).observe(scope)
+        val first = withTimeout(5_000) { state.filterNotNull().first() }
+        val before = requireNotNull(db.timeLogDao().getActiveTimeLog())
+        val commands = db.timeLogDao().getPendingTimerCommands()
+        withTimeout(5_000) {
+            while (state.value != null) kotlinx.coroutines.delay(20)
+        }
+        assertEquals(before, db.timeLogDao().getActiveTimeLog())
+        assertEquals(commands, db.timeLogDao().getPendingTimerCommands())
+        val reopened = withTimeout(5_000) { state.filterNotNull().first() }
+        assertEquals(first.habitId, reopened.habitId)
+        assertEquals(first.targetMinutes, reopened.targetMinutes)
+        assertNotSame(first.authority, reopened.authority)
+        assertEquals(before.uuid, reopened.authority!!.sessionUuid)
+        assertEquals(before, db.timeLogDao().getActiveTimeLog())
+        assertEquals(commands, db.timeLogDao().getPendingTimerCommands())
+    }
+
     @Test fun displayFlowSurvivesAccountTransitionWithoutAdoptingOldTimerOrNewTarget() = runBlocking<Unit> {
         startWith(writer().capture(timerHabit.id))
         val state = ActiveTimerStateProvider(db.timeLogDao(), habits(), app, writer()).observe(scope)

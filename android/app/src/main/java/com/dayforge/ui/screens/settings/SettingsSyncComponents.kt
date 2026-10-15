@@ -41,7 +41,8 @@ internal fun SyncStatusCard(
     rejectedCount: Int,
     onRejectedClick: () -> Unit,
     onSyncClick: () -> Unit,
-    onMakePrimaryClick: () -> Unit
+    onMakePrimaryClick: () -> Unit,
+    actionBusy: Boolean = false
 ) {
     val background = MaterialTheme.colorScheme.surfaceVariant
     val backdrop = MaterialTheme.colorScheme.background
@@ -78,6 +79,7 @@ internal fun SyncStatusCard(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            if (actionBusy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             // Sync status row
             Row(
                 modifier = Modifier.fillMaxWidth().testTag("sync-state-summary")
@@ -142,7 +144,7 @@ internal fun SyncStatusCard(
                         modifier = Modifier.weight(1f)
                     )
                     if (!canEditStructure) {
-                        TextButton(onClick = onMakePrimaryClick) {
+                        TextButton(enabled = !actionBusy, onClick = onMakePrimaryClick) {
                             Text(stringResource(R.string.sync_device_make_primary))
                         }
                     }
@@ -156,7 +158,7 @@ internal fun SyncStatusCard(
             ) {
                 Button(
                     onClick = onSyncClick,
-                    enabled = isLoggedIn && !syncProgress.isRunning(),
+                    enabled = isLoggedIn && !syncProgress.isRunning() && !actionBusy,
                     modifier = Modifier.height(48.dp)
                 ) {
                     Icon(

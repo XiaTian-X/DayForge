@@ -151,6 +151,7 @@ class EditGoalViewModel @Inject constructor(
     }
 
     fun toggleDeleteDialog() {
+        if (_uiState.value.isDeleting || _uiState.value.isSaving) return
         _uiState.value = _uiState.value.copy(showDeleteDialog = !_uiState.value.showDeleteDialog)
     }
 
@@ -171,7 +172,7 @@ class EditGoalViewModel @Inject constructor(
     fun saveGoal() {
         val currentState = _uiState.value
         val goalId = currentState.goalId ?: return
-        if (currentState.isSaving) return
+        if (currentState.isSaving || currentState.isDeleting || currentState.saved) return
 
         _uiState.value = currentState.copy(isSaving = true)
 
@@ -213,6 +214,7 @@ class EditGoalViewModel @Inject constructor(
      * Note: This will also affect child habits (they will become top-level habits).
      */
     fun deleteGoal() {
+        if (_uiState.value.isDeleting || _uiState.value.isSaving || _uiState.value.saved) return
         val authority = _uiState.value.editAuthority
         val goalId = _uiState.value.goalId ?: return
 
@@ -242,14 +244,15 @@ class EditGoalViewModel @Inject constructor(
                     isDeleting = false,
                     errorMessage = context.getString(R.string.goal_delete_failed, e.message)
                 )
-            }
+            } finally { _uiState.value = _uiState.value.copy(isDeleting = false) }
         }
     }
 
     fun deleteGoalWithChildren() {
+        if (_uiState.value.isDeleting || _uiState.value.isSaving || _uiState.value.saved) return
         val authority = _uiState.value.editAuthority
         val goalId = _uiState.value.goalId ?: return
-
+        _uiState.value = _uiState.value.copy(isDeleting = true)
         viewModelScope.launch {
             try {
                 val goal = habitDao.getHabitById(goalId) ?: return@launch
@@ -264,14 +267,15 @@ class EditGoalViewModel @Inject constructor(
                     showDeleteChildrenDialog = false,
                     errorMessage = context.getString(R.string.goal_delete_failed, e.message)
                 )
-            }
+            } finally { _uiState.value = _uiState.value.copy(isDeleting = false) }
         }
     }
 
     fun deleteGoalKeepChildren() {
+        if (_uiState.value.isDeleting || _uiState.value.isSaving || _uiState.value.saved) return
         val authority = _uiState.value.editAuthority
         val goalId = _uiState.value.goalId ?: return
-
+        _uiState.value = _uiState.value.copy(isDeleting = true)
         viewModelScope.launch {
             try {
                 val goal = habitDao.getHabitById(goalId) ?: return@launch
@@ -286,11 +290,12 @@ class EditGoalViewModel @Inject constructor(
                     showDeleteChildrenDialog = false,
                     errorMessage = context.getString(R.string.goal_delete_failed, e.message)
                 )
-            }
+            } finally { _uiState.value = _uiState.value.copy(isDeleting = false) }
         }
     }
 
     fun dismissDeleteChildrenDialog() {
+        if (_uiState.value.isDeleting) return
         _uiState.value = _uiState.value.copy(showDeleteChildrenDialog = false)
     }
 

@@ -449,6 +449,7 @@ class SettingsViewModelTest {
             coEvery { mockSyncManager.sync(any()) } coAnswers { result.await() }
 
             viewModel.sync()
+            assertTrue(viewModel.manualSyncPending.value)
             viewModel.sync()
             testDispatcher.scheduler.runCurrent()
             syncProgressState.value = SyncProgress.Error("background offline", isNetworkFailure = true)
@@ -459,6 +460,7 @@ class SettingsViewModelTest {
 
             result.complete(Result.failure(java.io.IOException("manual offline")))
             testDispatcher.scheduler.runCurrent()
+            assertFalse(viewModel.manualSyncPending.value)
 
             assertTrue(viewModel.showSyncError.value)
             assertEquals(
@@ -466,6 +468,22 @@ class SettingsViewModelTest {
                 viewModel.syncErrorMessage.value
             )
         }
+
+    @Test fun repeatedSyncIssueActionHasSynchronousBusyFeedbackAndFailureUnlocks() = runTest(testDispatcher.scheduler) {
+        val release = CompletableDeferred<Unit>()
+        coEvery { mockSyncManager.retryRejectedChange(1) } coAnswers {
+            release.await(); throw java.io.IOException("synthetic failure")
+        }
+        repeat(20) { viewModel.retryRejectedChange(1) }
+        assertTrue(viewModel.actionBusy.value)
+        testDispatcher.scheduler.runCurrent()
+        coVerify(exactly = 1) { mockSyncManager.retryRejectedChange(1) }
+        release.complete(Unit); testDispatcher.scheduler.runCurrent()
+        assertFalse(viewModel.actionBusy.value); assertTrue(viewModel.showSyncError.value)
+        coEvery { mockSyncManager.retryRejectedChange(1) } returns Unit
+        viewModel.retryRejectedChange(1); testDispatcher.scheduler.runCurrent()
+        coVerify(exactly = 2) { mockSyncManager.retryRejectedChange(1) }
+    }
 
     @Test
     fun sync_before_logout_probes_despite_empty_network_hints_and_preserves_account_on_failure() = runTest {

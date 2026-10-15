@@ -123,6 +123,9 @@ interface SyncOutboxDao {
     @Query("SELECT * FROM sync_entity_state WHERE entityType = :entityType AND entityUuid = :entityUuid")
     suspend fun getState(entityType: String, entityUuid: String): SyncEntityStateEntity?
 
+    @Query("SELECT * FROM sync_entity_state WHERE entityType = :entityType AND entityUuid IN (:ids)")
+    suspend fun getStates(entityType: String, ids: List<String>): List<SyncEntityStateEntity>
+
     @Query("SELECT * FROM sync_entity_state WHERE entityType = :entityType")
     suspend fun getStatesForType(entityType: String): List<SyncEntityStateEntity>
 

@@ -30,24 +30,26 @@ object FailureCheckerUtils {
         return if (pending) StrictFailureState.AWAITING_TIMER_SETTLEMENT else StrictFailureState.NOT_FAILED
     }
 
-    fun checkHasFailed(habit: HabitEntity, history: com.dayforge.domain.model.CheckHistory): Boolean {
+    fun checkHasFailed(habit: HabitEntity, history: com.dayforge.domain.model.CheckHistory,
+        zone: ZoneId = ZoneId.systemDefault()): Boolean {
         if (!shouldCheckFailure(habit) || !isStrictMode(habit)) return false
         var date = history.firstDate ?: return false
         val qualified = history.qualifiedDates
         while (date < history.today) {
-            if (ScheduleValidator.isCheckInAllowedOnDate(habit.schedule, habit.createdAt, date) && date !in qualified) return true
+            if (ScheduleValidator.isCheckInAllowedOnDate(habit.schedule, habit.createdAt, date, zone) && date !in qualified) return true
             date = date.plusDays(1)
         }
         return false
     }
 
-    fun countHasFailed(habit: HabitEntity, history: com.dayforge.domain.model.CountHistory): Boolean {
+    fun countHasFailed(habit: HabitEntity, history: com.dayforge.domain.model.CountHistory,
+        zone: ZoneId = ZoneId.systemDefault()): Boolean {
         if (!shouldCheckFailure(habit) || !isStrictMode(habit)) return false
         var date = history.firstDate ?: return false
         val qualified = history.qualifiedDates
         while (date < history.today) {
             if (date !in history.unknownDates &&
-                ScheduleValidator.isCheckInAllowedOnDate(habit.schedule, habit.createdAt, date) && date !in qualified) return true
+                ScheduleValidator.isCheckInAllowedOnDate(habit.schedule, habit.createdAt, date, zone) && date !in qualified) return true
             date = date.plusDays(1)
         }
         return false

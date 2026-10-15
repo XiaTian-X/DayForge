@@ -8,12 +8,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -40,7 +42,8 @@ import com.dayforge.ui.components.StreakIndicator
 import com.dayforge.ui.components.TargetProgressIndicator
 import androidx.compose.ui.res.stringResource
 import com.dayforge.R
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.compose.ui.text.font.FontWeight
 import java.util.Locale
 
@@ -66,7 +69,12 @@ fun HabitDetailScreen(
     onEditGoalClick: (Long) -> Unit = {},
     viewModel: HabitDetailViewModel = hiltViewModel()
 ) {
-    val state by viewModel.uiState.collectAsState()
+    LifecycleStartEffect(viewModel) {
+        viewModel.resumeReads()
+        onStopOrDispose { viewModel.pauseReads() }
+    }
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val busyHabitIds by viewModel.busyHabitIds.collectAsStateWithLifecycle()
 
     LaunchedEffect(habitId) {
         viewModel.loadHabit(habitId)
@@ -82,12 +90,12 @@ fun HabitDetailScreen(
                     else R.string.dialog_reactivate_habit_message, state.reactivationHabitName))
             },
             confirmButton = {
-                TextButton(onClick = { viewModel.confirmReactivation() }) {
+                TextButton(enabled = habitId !in busyHabitIds, onClick = { viewModel.confirmReactivation() }) {
                     Text(stringResource(R.string.dialog_reactivate_confirm), color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { viewModel.dismissReactivationDialog() }) {
+                TextButton(enabled = habitId !in busyHabitIds, onClick = { viewModel.dismissReactivationDialog() }) {
                     Text(stringResource(R.string.action_cancel))
                 }
             }
@@ -244,8 +252,9 @@ fun HabitDetailScreen(
                                     style = MaterialTheme.typography.bodySmall)
                             }
                             if (once.completed) {
-                                TextButton(onClick = { viewModel.undoCompletion() }, enabled = once.canChange) {
-                                    Text(stringResource(R.string.once_undo))
+                                TextButton(onClick = { viewModel.undoCompletion() }, enabled = once.canChange && habitId !in busyHabitIds) {
+                                    if (habitId in busyHabitIds) CircularProgressIndicator(Modifier.size(18.dp))
+                                    else Text(stringResource(R.string.once_undo))
                                 }
                             }
                         } else if (habit?.targetCycles != null) {

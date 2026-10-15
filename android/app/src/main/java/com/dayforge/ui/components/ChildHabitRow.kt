@@ -270,6 +270,7 @@ fun ChildHabitRow(
             ) {
                 // CompletionButton handles all states including failed/completed/non-checkin-day
                 CompletionButton(
+                    busy = habit.id in com.dayforge.ui.LocalInFlightHabitIds.current,
                     completed = childHabit.completedForDisplay,
                     actionsEnabled = childHabit.oneTimeStatus?.canChange ?: true,
                     undoAvailable = childHabit.completedForDisplay && childHabit.lastCompletionId != null,

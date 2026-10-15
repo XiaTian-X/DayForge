@@ -108,6 +108,20 @@ class IconLibraryViewModelTest {
         assertEquals(0, opens.get()); assertEquals(emptyList<IconReservation>(), repo.reservations(repo.capture()))
         assertEquals(AccountIconSelection(0, null), repo.selection(repo.capture()))
     }
+    @Test fun refreshImmediatelyMarksLoadingAndRepeatedClicksKeepOnePendingLoad() = runBlocking<Unit> {
+        open()
+        main {
+            model.refresh()
+            val pending = model.state.value
+            assertTrue(pending.loading)
+            repeat(20) { model.refresh(); assertSame(pending, model.state.value) }
+        }
+        await { it.catalog != null && !it.loading }
+        main { model.closePage(); model.refresh() }
+        assertFalse(model.state.value.loading)
+        open()
+        assertNull(model.state.value.error)
+    }
     @Test fun previewInstallSelectionAndClearAreDistinctAndColdPersistent() = runBlocking<Unit> {
         open(); preview()
         assertEquals(1, opens.get()); assertEquals(emptyList<IconReservation>(), repo.reservations(repo.capture()))

@@ -15,7 +15,6 @@ import com.dayforge.domain.service.AccountSessionCoordinator
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -46,9 +45,7 @@ class NextTimerWriter @Inject constructor(
     private val producer = NextCoreLocalIntentStore(database, tokens, sessions)
     private val replica = ReplicaPresentationRepository(database, tokens, sessions)
     private val legacyWidgets = LegacyWidgetIdentityVerifier(database, tokens, replica)
-    internal val accessChanges = combine(tokens.factAccessChanges, tokens.iconAccessChanges) { _, _ ->
-        tokens.localCoreWriteAccess()
-    }.distinctUntilChanged()
+    internal val accessChanges = tokens.coreAccessChanges
 
     suspend fun capture(habitId: Long, expectedHabit: HabitEntity? = null): TimerActionAuthority? = sessions.exclusive {
         if (!replica.isOpenWhileAccountLocked()) return@exclusive null
@@ -151,7 +148,18 @@ class NextTimerWriter @Inject constructor(
     }
 
     /** List statistics and their action ticket must share the same displayed head and account. */
-    suspend fun statusSnapshot(expectedHabit: HabitEntity): WidgetTimerReadSnapshot? = readSnapshot(expectedHabit, false)
+    suspend fun statusSnapshot(expectedHabit: HabitEntity): WidgetTimerReadSnapshot? = sessions.exclusive(AccountSessionCoordinator.Work.TIMER_DISPLAY_READ) {
+        if (!replica.isOpenWhileAccountLocked()) return@exclusive null
+        // Preserve the stale/missing-row null path before inspecting its challenge metadata.
+        val current = database.habitDao().getVisibleHabitById(expectedHabit.id) ?: return@exclusive null
+        if (current.appearance == null || current.uuid != expectedHabit.uuid ||
+            NextStructureMapper.writePlan(current) != NextStructureMapper.writePlan(expectedHabit)) return@exclusive null
+        RecurringDisplayReadScope.withSnapshotWhileAccountLocked(database, tokens, sessions,
+            onMissingAccess = { null }) { scope ->
+            // Recheck the row inside the owned read transaction; the first read grants nothing.
+            readSnapshotInTransaction(expectedHabit, false, scope)
+        }
+    }
 
     /** Display-only invalidation hints, not write authorization or a replacement action claim. */
     suspend fun renderWidgetTick(habitId: Long, displayedPlan: String, displayedLogHash: String,
@@ -183,13 +191,14 @@ class NextTimerWriter @Inject constructor(
         database.withTransaction { readSnapshotInTransaction(expectedHabit, includeStartGuard) }
     }
 
-    private suspend fun readSnapshotInTransaction(expectedHabit: HabitEntity, includeStartGuard: Boolean): WidgetTimerReadSnapshot? {
+    private suspend fun readSnapshotInTransaction(expectedHabit: HabitEntity, includeStartGuard: Boolean,
+        displayScope: RecurringDisplayReadScope? = null): WidgetTimerReadSnapshot? {
         check(database.inTransaction()) { "TIMER_WIDGET_TRANSACTION_REQUIRED" }
         val habit = database.habitDao().getVisibleHabitById(expectedHabit.id) ?: return null
         if (habit.appearance == null || habit.uuid != expectedHabit.uuid ||
             NextStructureMapper.writePlan(habit) != NextStructureMapper.writePlan(expectedHabit)) return null
-        val authority = captureInReadTransaction(habit) ?: return null
-        val access = requireNotNull(tokens.localCoreWriteAccess())
+        val authority = captureInReadTransaction(habit, displayScope) ?: return null
+        val access = displayScope?.borrow(database, tokens)?.first ?: requireNotNull(tokens.localCoreWriteAccess())
         check(access.session == authority.session() && access.capturedDeviceId == authority.deviceId)
         val log = database.timeLogDao().getActiveTimeLogForHabit(habit.id)
         check(log?.uuid == authority.sessionUuid && log?.timerNextCommandSequence == authority.nextSequence)
@@ -200,12 +209,15 @@ class NextTimerWriter @Inject constructor(
                 val row = requireNotNull(database.habitDao().getVisibleHabitById(it.habitId))
                 check(row.appearance != null) { "TIMER_WIDGET_MIXED_PROTOCOL" }
                 NextTimerPolicyStore(database).policy(access, it.uuid)
-                requireNotNull(captureInReadTransaction(row))
+                requireNotNull(captureInReadTransaction(row, displayScope))
             }
             TimerStartGuard(incumbentLog?.habitId, incumbent)
         } else null
-        check(tokens.localCoreWriteAccess() == access) { "TIMER_WIDGET_STALE_ACCOUNT" }
-        val history = timerHistoryReader.readInTransaction(habit, com.dayforge.util.DateTimeUtils.today())
+        if (displayScope != null) displayScope.borrow(database, tokens)
+        else check(tokens.localCoreWriteAccess() == access) { "TIMER_WIDGET_STALE_ACCOUNT" }
+        val history = if (displayScope == null)
+            timerHistoryReader.readInTransaction(habit, com.dayforge.util.DateTimeUtils.today())
+        else timerHistoryReader.readInTransaction(habit, com.dayforge.util.DateTimeUtils.today(), displayScope)
         val logHash = log?.let {
             requireNotNull(widgetTimerRowFingerprint(database, it.id))
         }
@@ -213,26 +225,32 @@ class NextTimerWriter @Inject constructor(
     }
 
     /** Caller already holds the non-reentrant account mutex and the Room read transaction. */
-    private suspend fun captureInReadTransaction(habit: HabitEntity): TimerActionAuthority? {
-        val access = tokens.localCoreWriteAccess() ?: return null
+    private suspend fun captureInReadTransaction(habit: HabitEntity,
+        displayScope: RecurringDisplayReadScope? = null): TimerActionAuthority? {
+        val borrowed = displayScope?.borrow(database, tokens)
+        val access = borrowed?.first ?: tokens.localCoreWriteAccess() ?: return null
         require(habit.habitType == com.dayforge.data.model.HabitType.TIMER && habit.completionPolicy == "recurring")
         val log = database.timeLogDao().getActiveTimeLogForHabit(habit.id)
-        val rounds = producer.captureDisplayedRoundsInTransaction()
-        val head = rounds?.let { displayedHead(habit, log, it) }
+        val rounds = if (borrowed != null) borrowed.second else producer.captureDisplayedRoundsInTransaction()
+        val head = rounds?.let { displayedHead(habit, log, it, displayScope) }
         return TimerActionAuthority(access.session.authentication.userId, access.session.authentication.generation,
             access.session.serverInstanceId, access.session.syncEpoch, access.capturedDeviceId, habit.uuid, log?.uuid,
             log?.timerNextCommandSequence, if (log == null) NextStructureMapper.writePlan(habit).toString() else null,
             if (rounds == null) 0 else 1, head)
-            .also { check(tokens.localCoreWriteAccess() == access) }
+            .also {
+                if (displayScope != null) displayScope.borrow(database, tokens)
+                else check(tokens.localCoreWriteAccess() == access)
+            }
     }
 
     /** Active controls retain the original local start, not a newer current challenge head. */
-    private suspend fun displayedHead(habit: HabitEntity, log: TimeLogEntity?, scope: NextRoundWriteScope): ChallengeRoundHead {
-        val metadata = Json.decodeFromString(ChallengeMetadata.serializer(), scope.metadataJson)
+    private suspend fun displayedHead(habit: HabitEntity, log: TimeLogEntity?, scope: NextRoundWriteScope,
+        displayScope: RecurringDisplayReadScope? = null): ChallengeRoundHead {
+        val metadata = scope.completionRounds
         if (log == null) return scope.pendingRestarts[habit.uuid]?.head ?:
-            metadata.checkpoints.singleOrNull { it.head.activityUuid == habit.uuid }?.head
+            metadata.head(habit.uuid)
             ?: scope.pendingInitials[habit.uuid]?.head ?: error("SYNC_CHALLENGE_HEAD_REQUIRED")
-        val access = requireNotNull(tokens.localCoreWriteAccess())
+        val access = displayScope?.borrow(database, tokens)?.first ?: requireNotNull(tokens.localCoreWriteAccess())
         NextTimerPolicyStore(database).policy(access, log.uuid)
         val (origin, start) = NextTimerPolicyStore(database).starts(sessionUuid = log.uuid).single()
         val source = requireNotNull(roundTimerIntent(origin.intentJson)) { "SYNC_CHALLENGE_TIMER_START_REQUIRED" }
@@ -241,9 +259,9 @@ class NextTimerWriter @Inject constructor(
             origin.syncEpoch == scope.access.session.syncEpoch)
         source.restartFrontier?.let { NextRestartBindingStore(database).captured(scope.access, it, start.planQueueWatermark) }
         return requireNotNull(source.context.head).also { head ->
-            require(head.activityUuid == habit.uuid && (metadata.checkpoints.any { it.records.any { row -> row.head == head } } ||
+            require(head.activityUuid == habit.uuid && (metadata.contains(habit.uuid, head) ||
                 scope.pendingInitials[habit.uuid]?.head == head || source.restartFrontier?.head == head))
-            metadata.births.singleOrNull { it.entityType == "timer_session" && it.entityUuid == log.uuid }?.let { require(it.head == head) }
+            metadata.timerBirth(log.uuid)?.let { require(it == head) }
         }
     }
 

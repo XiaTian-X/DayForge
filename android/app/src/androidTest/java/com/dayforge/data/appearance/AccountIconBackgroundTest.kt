@@ -142,6 +142,26 @@ class AccountIconBackgroundTest {
         assertTrue(durable().values.all { it.isEmpty() })
     }
 
+    @Test fun emptySuccessfulAndRetryRoundsDoNotInvalidateVisibleReferenceRequests() = runBlocking<Unit> {
+        val handle = icons.referenceImage()
+        val reference = IconReference.Role("habit.default")
+        icons.loadReference(handle, requireNotNull(handle.requests.value), reference, false,
+            com.dayforge.domain.appearance.ThemeVersionRef(id(50), 1), false, IconRasterSize(8, 8), 0xff00ff00.toInt())
+        val request = handle.requests.value
+        val state = handle.state.value
+        var failCatalog = false
+        val (service, _) = http { input, _ ->
+            if (failCatalog && input.path.endsWith("/catalog")) json("{}", 503) else normal(input)
+        }
+        try {
+            repeat(3) { assertEquals(IconMaterialOutcome.COMPLETE, service.synchronize()) }
+            assertSame(request, handle.requests.value); assertSame(state, handle.state.value)
+            failCatalog = true
+            assertEquals(IconMaterialOutcome.RETRY, service.synchronize())
+            assertSame(request, handle.requests.value); assertSame(state, handle.state.value)
+        } finally { handle.close() }
+    }
+
     @Test fun readonlyColdCatalogThenDownloadsUseOneSessionAndRetainIntentIdentityWithoutDeclarations() = runBlocking<Unit> {
         val (service,server)=http { input,_ -> if (input.path.endsWith("/catalog")) {
             json(if (input.target.contains("&after=0&")) page(listOf(AppearanceCatalogEntry.Asset(1,asset()))) else page(emptyList(),1))
@@ -152,6 +172,16 @@ class AccountIconBackgroundTest {
         assertEquals(Result.success(workDataOf(AccountIconWorker.STATUS to "COMPLETE")),work(next)); assertEquals(jobs.single().operationId,queue.jobs(context).single().operationId)
         assertEquals(IconTransferState.COMPLETE,queue.jobs(context).single().state); assertArrayEquals(bytes,store.read(context,id(10),hash))
         assertEquals(5,server.requests.size); assertTrue(server.requests.all { it.method=="GET" }); assertTrue(rows("icon_pack_selection").isEmpty())
+        val handle = icons.referenceImage()
+        try {
+            icons.loadReference(handle, requireNotNull(handle.requests.value), IconReference.Asset(id(10)), false,
+                com.dayforge.domain.appearance.ThemeVersionRef(id(50), 1), false, IconRasterSize(8, 8), 0xff00ff00.toInt())
+            val ready = handle.state.value as IconImageState.Ready
+            val request = handle.requests.value
+            assertEquals(IconMaterialOutcome.COMPLETE, next.synchronize())
+            assertSame(request, handle.requests.value)
+            assertSame(ready, handle.state.value)
+        } finally { handle.close() }
     }
 
     @Test fun v4AndFutureDoNotRecoverSendingOrCleanOwnedTemporaryButExactV5ColdRunDoes() = runBlocking<Unit> {

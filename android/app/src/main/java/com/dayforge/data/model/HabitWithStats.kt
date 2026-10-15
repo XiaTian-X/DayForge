@@ -27,7 +27,9 @@ data class HabitWithStats(
     val slotProgress: String? = null,  // Slot progress for COUNTING habits in focus mode: "第 X 个/共 Y 个"
     val oneTimeStatus: com.dayforge.domain.model.OneTimeStatus? = null,
     val timerAuthority: com.dayforge.domain.model.TimerActionAuthority? = null,
-    val countHistory: com.dayforge.domain.model.CountHistory? = null
+    val countHistory: com.dayforge.domain.model.CountHistory? = null,
+    val countActionIdentity: com.dayforge.domain.model.CountActionIdentity? = countHistory?.actionIdentity,
+    val checkActionIdentity: com.dayforge.domain.model.CheckActionIdentity? = null
 ) {
     val actualTodayCount: Long get() = countHistory?.todayQuantity ?: todayCount.toLong()
     val countRuleKnown: Boolean get() = countHistory == null || countHistory.todayPolicy != null

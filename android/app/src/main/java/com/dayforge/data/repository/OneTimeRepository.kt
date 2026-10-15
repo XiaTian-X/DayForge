@@ -64,13 +64,58 @@ class OneTimeRepository @Inject constructor(
         capture(id, expectedUuid).second
     }
 
-    private suspend fun capture(id: Long, expectedUuid: String? = null): Pair<OneTimeLocalSnapshot, OneTimeStatus> = sessions.exclusive {
+    /** Separate, bounded display transactions; never append task work to the ordinary-history
+     * transaction. Release the account lock after every pair so queued actions can run.
+     */
+    internal suspend fun readBatch(habits: List<com.dayforge.data.local.entity.HabitEntity>): Map<Long, OneTimeStatus> {
+        check(habits.all { it.completionPolicy == "one_and_done" } && habits.map { it.id }.distinct().size == habits.size)
+        val result = linkedMapOf<Long, OneTimeStatus>()
+        for (pair in habits.chunked(2)) {
+            if (pair.size == 1) {
+                val habit = pair.single()
+                result[habit.id] = read(habit.id, habit.uuid)
+            } else result.putAll(RecurringDisplayReadScope.withSnapshot(database, tokens, sessions,
+                AccountSessionCoordinator.Work.ONE_TIME_DISPLAY_READ) { scope ->
+                pair.associate { it.id to readInTransaction(it.id, it.uuid, scope) }
+            })
+        }
+        return result
+    }
+
+    private suspend fun capture(id: Long, expectedUuid: String? = null): Pair<OneTimeLocalSnapshot, OneTimeStatus> = sessions.exclusive(AccountSessionCoordinator.Work.ONE_TIME_DISPLAY_READ) {
+        val timing = HistoryAuditTiming(HistoryAuditTiming.Kind.ONE_TIME)
         val access = requireNotNull(tokens.localFactAccess()) { "ONE_TIME_SESSION_CHANGED" }
+        timing.mark(HistoryAuditTiming.Stage.AUTHORITY)
         database.withTransaction {
+            captureInTransaction(id, expectedUuid, access, timing, null)
+        }
+    }
+
+    /** Homepage participant only. No lock re-entry or write grant; owner checks read-only scope
+     * and fresh authority before publication. Standalone actions still use capture above.
+     */
+    internal suspend fun readInTransaction(id: Long, expectedUuid: String,
+        scope: RecurringDisplayReadScope): OneTimeStatus {
+        val (core, _) = scope.borrow(database, tokens)
+        val timing = HistoryAuditTiming(HistoryAuditTiming.Kind.ONE_TIME)
+        val access = requireNotNull(tokens.localFactAccess()) { "ONE_TIME_SESSION_CHANGED" }
+        check(access.session == core.session) { "ONE_TIME_SESSION_CHANGED" }
+        timing.mark(HistoryAuditTiming.Stage.AUTHORITY)
+        return captureInTransaction(id, expectedUuid, access, timing, scope).second
+    }
+
+    private suspend fun captureInTransaction(id: Long, expectedUuid: String?,
+        access: com.dayforge.data.local.LocalFactAccess, timing: HistoryAuditTiming,
+        scope: RecurringDisplayReadScope?): Pair<OneTimeLocalSnapshot, OneTimeStatus> {
+            check(database.inTransaction())
             val habit = requireNotNull(database.habitDao().getHabitById(id)) { "ONE_TIME_NOT_FOUND" }
             if (expectedUuid != null) check(habit.uuid == expectedUuid) { "ONE_TIME_ACTIVITY_CHANGED" }
             val snapshot = intents.readInTransaction(habit.uuid, access.session)
-            val rounds = producer.captureDisplayedRoundsInTransaction()
+            timing.mark(HistoryAuditTiming.Stage.FACT_PROOF)
+            // A plain scope intentionally has no rounds. Do not fall back and recapture it.
+            val rounds = if (scope == null) producer.captureDisplayedRoundsInTransaction()
+                else scope.borrow(database, tokens).second
+            timing.mark(HistoryAuditTiming.Stage.SELECT_ROUND)
             val state = snapshot.queue.optimisticState
             val factId = state.completionEventUuid?.let { uuid ->
                 val fact = requireNotNull(database.completionDao().getCompletionByUuid(uuid))
@@ -78,12 +123,13 @@ class OneTimeRepository @Inject constructor(
                 fact.id
             }
             check(tokens.localFactAccess() == access) { "ONE_TIME_SESSION_CHANGED" }
-            snapshot to OneTimeStatus(state.completionEventUuid != null, factId,
+            scope?.borrow(database, tokens)
+            timing.mark(HistoryAuditTiming.Stage.EXIT_AUTH)
+            return snapshot to OneTimeStatus(state.completionEventUuid != null, factId,
                 access.canAppend && !database.habitDao().hasPendingNextDeletion(habit.uuid) && snapshot.queue.blockedOperationIds.isEmpty() &&
                     snapshot.queue.awaitingReplayOperationIds.isEmpty(),
                 snapshot.queue.awaitingReplayOperationIds.isNotEmpty(), snapshot.queue.blockedOperationIds.isNotEmpty(),
                 ActionAuthority(snapshot, rounds))
-        }
     }
 
     /** A racing action is a CAS conflict, never a silent second toggle or a physical fact delete. */

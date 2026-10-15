@@ -101,14 +101,15 @@ internal class AccountIconRenderer(
                 } }
                 val asset = requireNotNull(metadata.asset(context, assetId)) { "ICON_ASSET_NOT_OWNED" }
                 val blob = selectedIconBlob(asset, dark)
-                // Even hits read/validate the actual owned ready file. UI should retain a snapshot,
-                // not call this from recomposition or timer ticks. No disk-render cache is created.
-                val source = store.read(context, assetId, blob.sha256)
                 val key = Key(context.access, asset, theme, dark, tint, size)
                 val hit = metadata.authorized(context) { synchronized(monitor) {
                     check(generation === stamp) { "ICON_RENDER_INVALIDATED" }
                     cache[key]?.also { check(!it.bitmap.isRecycled) { "ICON_RASTER_RECYCLED" } }
                 } }
+                // Hits still prove current ownership/ready and actual file hash. The same immutable
+                // raster proves decoding, so no temporary validation bitmap needs to be drawn again.
+                val source = if (hit == null) store.read(context, assetId, blob.sha256)
+                    else store.readForDisplay(context, assetId, hit)
                 val raster = if (hit != null) hit else {
                     val rendered = draw(source, asset, dark, size, tint)
                     currentCoroutineContext().ensureActive()

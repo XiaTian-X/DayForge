@@ -15,6 +15,41 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class NextCommonFactMapperTest {
+    @Test fun projectionValidationSubsumesOrdinarySnapshotValidationForQuantityAndRevert() {
+        val mutations = listOf<Pair<String, JsonElement>>(
+            "public_id" to JsonPrimitive(target), "revision" to JsonPrimitive(2),
+            "created_at" to JsonPrimitive("invalid"), "updated_at" to JsonPrimitive("invalid"),
+            "deleted_at" to JsonPrimitive(stamp), "activity_uuid" to JsonPrimitive("bad"),
+            "occurred_at" to JsonPrimitive("bad"), "received_at" to JsonPrimitive("bad"),
+            "local_date" to JsonPrimitive("2026-09-27"), "timezone" to JsonPrimitive("+08:00"),
+            "note" to JsonPrimitive("x".repeat(1001)), "source_type" to JsonPrimitive("unknown"),
+            "source_device_id" to JsonPrimitive("bad"), "external_event_id" to JsonPrimitive("x".repeat(201)),
+            "metadata" to JsonNull, "duration_seconds" to JsonPrimitive(-1),
+            "duration_milliseconds" to JsonPrimitive(86_400_001), "started_at" to JsonPrimitive("bad"),
+            "ended_at" to JsonPrimitive("bad"), "one_time" to JsonPrimitive(true),
+            "one_time_state_after" to JsonPrimitive(true), "count_policy" to JsonNull,
+            "value" to JsonPrimitive("invalid"), "extra" to JsonPrimitive(1))
+        for (kind in listOf("check_in", "count_delta", "count_snapshot", "revert")) {
+            val valid = event(kind)
+            fun project(row: SyncV2Change) {
+                if (kind == "revert") NextCommonFactMapper.revert(row, habit())
+                else NextCommonFactMapper.completion(row, habit())
+            }
+            NextCommonFactMapper.validateOrdinaryFactSnapshot(valid)
+            project(valid)
+            val invalid = mutations.map { mutate(valid, it) } +
+                valid.payload.keys.map { valid.copy(payload = JsonObject(valid.payload - it)) } +
+                listOf(valid.copy(operation = "delete"), valid.copy(entityType = "metric_observation"),
+                    valid.copy(revision = 0), valid.copy(sequence = -1), valid.copy(entityUuid = "bad"))
+            for (candidate in invalid) {
+                assertTrue("Fixture must violate ordinary contract: $kind", runCatching {
+                    NextCommonFactMapper.validateOrdinaryFactSnapshot(candidate)
+                }.isFailure)
+                assertTrue("Projection must retain every ordinary check: $kind", runCatching { project(candidate) }.isFailure)
+            }
+        }
+    }
+
     @Test fun countPolicyIsStrictAndCannotHideOnOtherFactTypes() {
         val policy = buildJsonObject { put("target_value", 10); put("is_countdown", true) }
         val counted = mutate(event("count_snapshot", JsonPrimitive(6)), "count_policy" to policy)

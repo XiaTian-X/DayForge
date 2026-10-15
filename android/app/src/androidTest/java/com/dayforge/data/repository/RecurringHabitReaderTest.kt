@@ -47,12 +47,14 @@ class RecurringHabitReaderTest : NextObjectEditorFixture() {
         val expected = requireNotNull(repo.getHabitById(habit.id))
         db.habitDao().updateActivityRate(habit.id, 7)
         val changed = proof()
-        assertEquals("RECURRING_READ_ACTIVITY_CHANGED", rejected { repo.getRecurringSnapshot(expected) }.message)
+        val stale = rejected { repo.getRecurringSnapshot(expected) }
+        assertTrue(stale is HabitReadSnapshotChanged)
+        assertEquals("RECURRING_READ_ACTIVITY_CHANGED", stale.message)
         assertEquals(changed, proof())
         val current = requireNotNull(repo.getHabitById(habit.id))
         assertEquals(current, repo.getRecurringSnapshot(current).habit)
         tokens.saveLoginSession("synthetic-other", "synthetic-refresh", "other", id(50), false)
-        rejected { repo.getRecurringSnapshot(current) }
+        assertFalse(rejected { repo.getRecurringSnapshot(current) } is HabitReadSnapshotChanged)
         assertEquals(changed, proof())
         tokens.saveLoginSession("synthetic-return", "synthetic-refresh", "member", id(1), false)
         register()

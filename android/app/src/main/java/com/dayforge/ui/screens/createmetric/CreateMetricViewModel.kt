@@ -307,17 +307,8 @@ class CreateMetricViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                // Check for duplicate name
+                // The repository checks the name in the same transaction as rows and links.
                 val trimmedName = currentState.name.trim()
-                val existingMetric = metricDao.getMetricByName(trimmedName)
-                if (existingMetric != null) {
-                    _uiState.value = _uiState.value.copy(
-                        isSaving = false,
-                        showDuplicateDialog = true
-                    )
-                    isSavingInProgress = false
-                    return@launch
-                }
 
                 // Pre-generate UUID for sync (D-08)
                 val metricUuid = java.util.UUID.randomUUID().toString()

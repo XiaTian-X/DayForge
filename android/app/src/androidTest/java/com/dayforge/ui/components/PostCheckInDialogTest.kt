@@ -21,6 +21,28 @@ class PostCheckInDialogTest {
     private val metrics = listOf(LinkedMetricInfo("Weight", 7, null, "kg", 1),
         LinkedMetricInfo("Steps", 9, null, "steps", 0))
 
+    @Test fun slowSubmissionLocksInputsAndSkipAndFlushesExactLatestDraftOnce() {
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var calls = 0
+        var flushed = ""
+        compose.setContent { MaterialTheme { PostCheckInDialog("Once", metrics,
+            { values, _ ->
+                assertEquals("12.5", flushed)
+                assertEquals(12.5, values.single().value, 0.0)
+                calls++; release.await()
+            }, { fail("Skip cannot race submission") }, {}, promptIdentity = "event",
+            onDraftChange = { flushed = it.single { input -> input.metricId == 7L }.inputValue }) } }
+        compose.onNodeWithText("Weight (kg)").performTextInput("12.5")
+        compose.onNodeWithText(compose.activity.getString(R.string.post_checkin_record)).performClick()
+        compose.waitUntil { calls == 1 }
+        compose.onNodeWithText("Weight (kg)").assertIsNotEnabled()
+        compose.onNodeWithText(compose.activity.getString(R.string.post_checkin_skip)).assertIsNotEnabled()
+        compose.onNode(isToggleable()).assertIsNotEnabled()
+        compose.runOnIdle { assertEquals(1, calls); release.complete(Unit) }
+        compose.waitForIdle()
+        compose.onNodeWithText("Weight (kg)").assertIsEnabled()
+    }
+
     @Test fun record_is_disabled_for_empty_input_and_submits_only_entered_values_with_preference() {
         var result: Pair<List<MetricValueInput>, Boolean>? = null
         compose.setContent { MaterialTheme { Box(Modifier.fillMaxSize()) {

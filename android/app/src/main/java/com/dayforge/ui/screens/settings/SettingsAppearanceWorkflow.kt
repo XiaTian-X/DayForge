@@ -100,7 +100,9 @@ class SettingsAppearanceWorkflow @Inject constructor(
         _themeActionError.value = null
         try {
             val saved = themes.current().saved
-            themes.select(saved.revision, transform(saved.selection))
+            val selection = transform(saved.selection)
+            if (selection == saved.selection) return@withLock
+            themes.select(saved.revision, selection)
             WidgetRefreshScheduler.request(context)
         } catch (error: Exception) {
             if (error is CancellationException) throw error

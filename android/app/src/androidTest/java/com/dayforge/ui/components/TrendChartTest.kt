@@ -3,6 +3,7 @@ package com.dayforge.ui.components
 import androidx.activity.ComponentActivity
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -48,13 +49,47 @@ class TrendChartTest {
             TrendChart(currentMetric.value, emptyList(), onAggregationTypeChange = { changes.add(it) })
         } }
         compose.onNodeWithText(label(R.string.chart_daily_average)).performClick()
-        compose.onNodeWithText(label(R.string.chart_daily_total)).performClick()
+        val selectSum = compose.onNodeWithText(label(R.string.chart_daily_total))
+            .fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        compose.runOnIdle { repeat(20) { selectSum() } }
+        // The repository has not acknowledged the request yet: do not display unsaved state.
+        compose.onNodeWithText(label(R.string.chart_daily_average)).assertIsDisplayed()
+        compose.runOnIdle { currentMetric.value = metric.copy(aggregationType = "sum") }
         compose.onNodeWithText(label(R.string.chart_daily_total)).assertIsDisplayed()
+        compose.onNodeWithText(label(R.string.chart_daily_total)).performClick()
+        val selectSameSum = compose.onAllNodesWithText(label(R.string.chart_daily_total))
+            .fetchSemanticsNodes().last().config[SemanticsActions.OnClick].action!!
+        compose.runOnIdle { repeat(20) { selectSameSum() } }
         compose.runOnIdle {
             assertEquals(listOf(AggregationType.SUM), changes)
             currentMetric.value = metric.copy(aggregationType = "by_time")
         }
         compose.onNodeWithText(label(R.string.chart_all_records)).assertIsDisplayed()
         compose.runOnIdle { assertEquals(listOf(AggregationType.SUM), changes) }
+    }
+
+    @Test fun failedAggregationSaveCanRetryTheSameChoice() {
+        val current = mutableStateOf(metric)
+        var requests = 0
+        compose.setContent { MaterialTheme {
+            TrendChart(current.value, emptyList(), onAggregationTypeChange = {
+                requests++
+                // First save fails; only the second request is acknowledged.
+                if (requests == 2) current.value = metric.copy(aggregationType = it.value)
+            })
+        } }
+        repeat(2) {
+            compose.onNodeWithText(label(R.string.chart_daily_average)).performClick()
+            compose.onNodeWithText(label(R.string.chart_daily_total)).performClick()
+        }
+        compose.onNodeWithText(label(R.string.chart_daily_total)).assertIsDisplayed()
+        compose.runOnIdle { assertEquals(2, requests) }
+    }
+
+    @Test fun chartWithoutPersistenceCallbackStillChangesLocally() {
+        compose.setContent { MaterialTheme { TrendChart(metric, emptyList()) } }
+        compose.onNodeWithText(label(R.string.chart_daily_average)).performClick()
+        compose.onNodeWithText(label(R.string.chart_all_records)).performClick()
+        compose.onNodeWithText(label(R.string.chart_all_records)).assertIsDisplayed()
     }
 }

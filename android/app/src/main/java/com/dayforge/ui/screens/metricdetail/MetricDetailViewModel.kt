@@ -19,6 +19,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineScope
 import javax.inject.Inject
 
 /**
@@ -50,6 +52,8 @@ data class MetricDetailUiState(
     val logs: List<MetricLogEntity> = emptyList(),
     val links: List<HabitMetricLinkWithHabit> = emptyList(),
     val isLoading: Boolean = true,
+    val isRecording: Boolean = false,
+    val isMutating: Boolean = false,
     val showValueInput: Boolean = false,
     val showDeleteConfirm: Boolean = false,
     val showUnlinkConfirm: Long? = null,
@@ -97,18 +101,31 @@ class MetricDetailViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(MetricDetailUiState())
     val uiState: StateFlow<MetricDetailUiState> = _uiState.asStateFlow()
 
-    init {
-        observeMetric()
-        observeLogs()
-        observeLinks()
+    private var readJob: Job? = null
+    init { resumeReads() }
+
+    fun resumeReads() {
+        if (readJob?.isActive == true) return
+        readJob = viewModelScope.launch {
+            observeMetric(this)
+            observeLogs(this)
+            observeLinks(this)
+        }
+    }
+
+    fun pauseReads() {
+        readJob?.cancel()
+        readJob = null
+        // Keep drafts, mutation progress and deletion navigation. A typed write needs a fresh claim.
+        _uiState.value = _uiState.value.copy(writeAuthority = null)
     }
 
     /**
      * Observe the metric from the database.
      * Updates the UI state whenever the metric changes.
      */
-    private fun observeMetric() {
-        viewModelScope.launch {
+    private fun observeMetric(scope: CoroutineScope) {
+        scope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
 
             metricDao.observeMetricById(metricId).collect { metric ->
@@ -143,13 +160,9 @@ class MetricDetailViewModel @Inject constructor(
                     isLoading = false
                 )
 
-                // Also update latest value when metric loads
-                viewModelScope.launch {
-                    val latestLog = metricLogDao.getLatestLog(metricId)
-                    _uiState.value = _uiState.value.copy(
-                        latestValue = latestLog?.value
-                    )
-                }
+                val latestLog = metricLogDao.getLatestLog(metricId)
+                _uiState.value = _uiState.value.copy(latestValue = latestLog?.value)
+
             }
         }
     }
@@ -158,8 +171,8 @@ class MetricDetailViewModel @Inject constructor(
      * Observe logs for this metric from the database.
      * Updates the UI state whenever logs change.
      */
-    private fun observeLogs() {
-        viewModelScope.launch {
+    private fun observeLogs(scope: CoroutineScope) {
+        scope.launch {
             metricLogDao.getLogsByMetric(metricId).collect { logs ->
                 _uiState.value = _uiState.value.copy(logs = logs)
             }
@@ -170,8 +183,8 @@ class MetricDetailViewModel @Inject constructor(
      * Observe habit links for this metric from the database.
      * Resolves habit names for display in the UI.
      */
-    private fun observeLinks() {
-        viewModelScope.launch {
+    private fun observeLinks(scope: CoroutineScope) {
+        scope.launch {
             habitMetricLinkDao.getLinksByMetric(metricId).collect { links ->
                 val linksWithHabits = links.map { link ->
                     val habit = habitDao.getHabitById(link.habitId)
@@ -193,9 +206,10 @@ class MetricDetailViewModel @Inject constructor(
      * @param note Optional note for this record
      */
     fun recordValue(value: Double, note: String) {
+        if (_uiState.value.isRecording || _uiState.value.isMutating || !_uiState.value.showValueInput) return
         val metric = _uiState.value.metric ?: return
         val authority = _uiState.value.writeAuthority
-
+        _uiState.value = _uiState.value.copy(isRecording = true)
         viewModelScope.launch {
             try {
                 if (metric.appearance != null) metricRepository.recordValue(metric.id, value, note,
@@ -212,7 +226,7 @@ class MetricDetailViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(
                     errorMessage = context.getString(R.string.metric_error_record_failed, e.message ?: "")
                 )
-            }
+            } finally { _uiState.value = _uiState.value.copy(isRecording = false) }
         }
     }
 
@@ -222,11 +236,13 @@ class MetricDetailViewModel @Inject constructor(
      *
      * @param aggregationType The new aggregation type value ("average", "sum", or "by_time")
      */
+    private val aggregationActions = com.dayforge.ui.InFlightActions()
+
     fun updateAggregationType(aggregationType: String) {
         val metric = _uiState.value.metric ?: return
         val authority = _uiState.value.writeAuthority
 
-        viewModelScope.launch {
+        aggregationActions.launch(viewModelScope, metric.id) {
             try {
                 val updatedMetric = metric.copy(
                     aggregationType = aggregationType,
@@ -247,6 +263,7 @@ class MetricDetailViewModel @Inject constructor(
      * Toggle the visibility of the value input dialog.
      */
     fun toggleValueInput() {
+        if (_uiState.value.isRecording || _uiState.value.isMutating) return
         _uiState.value = _uiState.value.copy(
             showValueInput = !_uiState.value.showValueInput
         )
@@ -256,6 +273,7 @@ class MetricDetailViewModel @Inject constructor(
      * Toggle the visibility of the delete confirmation dialog.
      */
     fun toggleDeleteConfirm() {
+        if (_uiState.value.isMutating || _uiState.value.isRecording) return
         _uiState.value = _uiState.value.copy(
             showDeleteConfirm = !_uiState.value.showDeleteConfirm
         )
@@ -266,9 +284,10 @@ class MetricDetailViewModel @Inject constructor(
      * Legacy cascades or retained v5 rows and their outbox are committed atomically.
      */
     fun deleteMetric() {
+        if (_uiState.value.isMutating || _uiState.value.isRecording || _uiState.value.isDeleted) return
         val metric = _uiState.value.metric ?: return
         val authority = _uiState.value.writeAuthority
-
+        _uiState.value = _uiState.value.copy(isMutating = true)
         viewModelScope.launch {
             try {
                 // The repository owns offline staging and exact-ACK retention.
@@ -282,7 +301,7 @@ class MetricDetailViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(
                     errorMessage = context.getString(R.string.metric_error_delete_failed, e.message ?: "")
                 )
-            }
+            } finally { _uiState.value = _uiState.value.copy(isMutating = false) }
         }
     }
 
@@ -292,6 +311,7 @@ class MetricDetailViewModel @Inject constructor(
      * @param linkId The ID of the link to potentially unlink
      */
     fun showUnlinkConfirm(linkId: Long) {
+        if (_uiState.value.isMutating) return
         _uiState.value = _uiState.value.copy(showUnlinkConfirm = linkId)
     }
 
@@ -299,6 +319,7 @@ class MetricDetailViewModel @Inject constructor(
      * Dismiss the unlink confirmation dialog.
      */
     fun dismissUnlinkConfirm() {
+        if (_uiState.value.isMutating) return
         _uiState.value = _uiState.value.copy(showUnlinkConfirm = null)
     }
 
@@ -307,10 +328,11 @@ class MetricDetailViewModel @Inject constructor(
      * The durable v2 outbox synchronizes the local unlink later.
      */
     fun unlinkHabit() {
+        if (_uiState.value.isMutating || _uiState.value.isRecording) return
         val linkId = _uiState.value.showUnlinkConfirm ?: return
         val link = _uiState.value.links.find { it.link.id == linkId }?.link ?: return
         val authority = _uiState.value.writeAuthority
-
+        _uiState.value = _uiState.value.copy(isMutating = true)
         viewModelScope.launch {
             try {
                 metricRepository.unlinkHabit(linkId, link.uuid, authority)
@@ -320,7 +342,7 @@ class MetricDetailViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(
                     errorMessage = context.getString(R.string.metric_error_unlink_failed, e.message ?: "")
                 )
-            }
+            } finally { _uiState.value = _uiState.value.copy(isMutating = false) }
         }
     }
 
@@ -336,23 +358,30 @@ class MetricDetailViewModel @Inject constructor(
      * Loads all habits and marks which are already linked.
      */
     fun showLinkHabitDialog() {
+        if (_uiState.value.isMutating || _uiState.value.showLinkHabit) return
+        _uiState.value = _uiState.value.copy(isMutating = true)
         viewModelScope.launch {
-            val allHabits = habitDao.getVisibleHabitsOnce()
-            val linkedHabitIds = _uiState.value.links.map { it.link.habitId }.toSet()
+            try {
+                val allHabits = habitDao.getVisibleHabitsOnce()
+                val linkedHabitIds = _uiState.value.links.map { it.link.habitId }.toSet()
 
-            val habitsForLinking = allHabits.map { habit ->
-                HabitForLinking(
-                    id = habit.id,
-                    name = habit.name,
-                    isAlreadyLinked = habit.id in linkedHabitIds
+                val habitsForLinking = allHabits.map { habit ->
+                    HabitForLinking(
+                        id = habit.id,
+                        name = habit.name,
+                        isAlreadyLinked = habit.id in linkedHabitIds
+                    )
+                }
+
+                _uiState.value = _uiState.value.copy(
+                    showLinkHabit = true,
+                    availableHabits = habitsForLinking,
+                    selectedHabitIds = emptySet()
                 )
-            }
-
-            _uiState.value = _uiState.value.copy(
-                showLinkHabit = true,
-                availableHabits = habitsForLinking,
-                selectedHabitIds = emptySet()
-            )
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                _uiState.value = _uiState.value.copy(errorMessage = context.getString(R.string.metric_error_link_failed, error.message ?: ""))
+            } finally { _uiState.value = _uiState.value.copy(isMutating = false) }
         }
     }
 
@@ -360,6 +389,7 @@ class MetricDetailViewModel @Inject constructor(
      * Dismiss the link habit dialog.
      */
     fun dismissLinkHabitDialog() {
+        if (_uiState.value.isMutating) return
         _uiState.value = _uiState.value.copy(
             showLinkHabit = false,
             availableHabits = emptyList(),
@@ -371,6 +401,7 @@ class MetricDetailViewModel @Inject constructor(
      * Toggle habit selection in the link dialog.
      */
     fun toggleHabitSelection(habitId: Long) {
+        if (_uiState.value.isMutating) return
         val currentSelected = _uiState.value.selectedHabitIds
         val newSelected = if (habitId in currentSelected) {
             currentSelected - habitId
@@ -384,6 +415,7 @@ class MetricDetailViewModel @Inject constructor(
      * Create links for selected habits.
      */
     fun linkSelectedHabits() {
+        if (_uiState.value.isMutating || _uiState.value.isRecording) return
         val selectedIds = _uiState.value.selectedHabitIds
         val metric = _uiState.value.metric
         val authority = _uiState.value.writeAuthority
@@ -392,6 +424,7 @@ class MetricDetailViewModel @Inject constructor(
             return
         }
 
+        _uiState.value = _uiState.value.copy(isMutating = true)
         viewModelScope.launch {
             try {
                 metricRepository.linkHabits(metric, selectedIds, authority)
@@ -405,7 +438,7 @@ class MetricDetailViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(
                     errorMessage = context.getString(R.string.metric_error_link_failed, e.message ?: "")
                 )
-            }
+            } finally { _uiState.value = _uiState.value.copy(isMutating = false) }
         }
     }
 }

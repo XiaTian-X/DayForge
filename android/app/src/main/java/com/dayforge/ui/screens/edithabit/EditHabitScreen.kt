@@ -71,7 +71,7 @@ fun EditHabitScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = viewModel::toggleDeleteDialog) {
+                    IconButton(enabled = !uiState.isSaving && !uiState.isDeleting, onClick = viewModel::toggleDeleteDialog) {
                         Icon(
                             Icons.Default.Delete,
                             contentDescription = stringResource(R.string.action_delete),
@@ -568,7 +568,7 @@ fun EditHabitScreen(
                         viewModel.saveChanges { onNavigateBack() }
                     },
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = uiState.hasChanges && uiState.isValid && !uiState.isSaving
+                    enabled = uiState.hasChanges && uiState.isValid && !uiState.isSaving && !uiState.isDeleting
                 ) {
                     if (uiState.isSaving) {
                         CircularProgressIndicator(
@@ -607,6 +607,7 @@ fun EditHabitScreen(
     // Delete confirmation dialog
     if (uiState.showDeleteDialog) {
         DeleteConfirmationDialog(
+            busy = uiState.isDeleting,
             habitName = uiState.name,
             onConfirm = {
                 viewModel.deleteHabit(onHabitDeleted)
@@ -625,13 +626,14 @@ fun EditHabitScreen(
             },
             confirmButton = {
                 TextButton(
+                    enabled = !uiState.isDeleting,
                     onClick = { viewModel.deleteHabitWithChildren(onHabitDeleted) }
                 ) {
                     Text(stringResource(R.string.dialog_delete_habit_with_children), color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { viewModel.deleteHabitKeepChildren(onHabitDeleted) }) {
+                TextButton(enabled = !uiState.isDeleting, onClick = { viewModel.deleteHabitKeepChildren(onHabitDeleted) }) {
                     Text(stringResource(R.string.dialog_delete_habit_keep_children))
                 }
             }

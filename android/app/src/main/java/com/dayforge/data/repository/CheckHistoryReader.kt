@@ -28,5 +28,12 @@ class CheckHistoryReader @Inject constructor(database: HabitDatabase, tokens: To
         return project(evidence.readInTransaction(expected, today))
     }
 
-    private fun project(source: RecurringCompletionEvidence) = CheckHistory(source.today, source.completions, source.roundHead)
+    internal suspend fun readInTransaction(expected: HabitEntity, today: LocalDate,
+        scope: RecurringDisplayReadScope): CheckHistory {
+        check(expected.habitType == HabitType.CHECK_IN) { "CHECK_ACTIVITY_CHANGED" }
+        return project(evidence.readInTransaction(expected, today, scope))
+    }
+
+    private fun project(source: RecurringCompletionEvidence) =
+        CheckHistory(source.today, source.completions, source.roundHead, source.checkIdentity)
 }

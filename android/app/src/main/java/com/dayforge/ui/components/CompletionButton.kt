@@ -127,8 +127,13 @@ fun CompletionButton(
     textColor: Color = Color.Unspecified,
     modifier: Modifier = Modifier,
     actionsEnabled: Boolean = true,
-    countRuleKnown: Boolean = true
+    countRuleKnown: Boolean = true,
+    busy: Boolean = false
 ) {
+    if (busy) {
+        androidx.compose.material3.CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+        return
+    }
     // Resolve text color: use provided color or fallback to theme default
     val resolvedTextColor = if (textColor != Color.Unspecified) {
         textColor

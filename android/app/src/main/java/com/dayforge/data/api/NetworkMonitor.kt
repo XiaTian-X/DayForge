@@ -26,11 +26,14 @@ class NetworkMonitor internal constructor(private val connectivity: NetworkObser
         val paths: List<Path> = emptyList(),
         val monitoring: Boolean = true,
         val revision: Long = 0,
-        val defaultNetwork: Network? = null
+        val defaultNetwork: Network? = null,
+        val routingRevision: Long = 0
     ) {
         // Observation failure is unknown, not proof that a server cannot be reached.
         val mayBeConnected: Boolean get() = !monitoring || paths.any { !it.blocked }
         val localNetworks: List<Network> get() = paths.filter { it.local && !it.blocked }.map { it.network }
+        /** Exclude signal-strength/capability noise, retain routes/DNS and actual path changes. */
+        internal fun syncWakeKey() = copy(paths = paths.sortedBy { it.network.toString() }, revision = 0)
     }
 
     private data class Entry(
@@ -48,6 +51,7 @@ class NetworkMonitor internal constructor(private val connectivity: NetworkObser
     private var defaultRegistered = false
     private var defaultNetwork: Network? = null
     private var closed = false
+    private var routingRevision = 0L
 
     private val defaultCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) = synchronized(lock) {
@@ -96,6 +100,7 @@ class NetworkMonitor internal constructor(private val connectivity: NetworkObser
                 } finally {
                     parcel.recycle()
                 }
+                routingRevision++
                 publish()
             }
         }
@@ -176,7 +181,8 @@ class NetworkMonitor internal constructor(private val connectivity: NetworkObser
             },
             monitoring = monitoring,
             revision = mutableState.value.revision + 1,
-            defaultNetwork = defaultNetwork
+            defaultNetwork = defaultNetwork,
+            routingRevision = routingRevision
         )
     }
 

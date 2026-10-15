@@ -3,6 +3,7 @@ package com.dayforge.data.repository
 import android.database.Cursor
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.dayforge.data.api.SYNC_REQUEST_LIMIT
+import com.dayforge.data.local.HabitDatabase
 import java.security.MessageDigest
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -64,6 +65,8 @@ private class RowDigest(private val checkpoint: () -> Unit = {}) {
         if (size != 0) { hash.update(buffer, 0, size); size = 0 }
     }
 
+    // MessageDigest.digest resets its state; flush has already emptied the scratch buffer.
+    // A scanner may reuse this workspace for the NEXT row, never a previously computed proof.
     fun finish(): String { flush(); return digestHex(hash.digest()) }
 }
 
@@ -124,11 +127,24 @@ internal object NextRequestSql {
         else -> rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
     }
 
+    /** Legacy raw-handle path stays entirely fresh, even inside another owner's read session. */
     suspend fun rowHash(sql: SupportSQLiteDatabase, table: String, where: String, args: Array<Any>): String? {
         require(table in tables)
+        return auditRowHash(sql, table, where, args, lengthExpression(sql, table))
+    }
+
+    /** Explicit owner-bound path: share raw audits only within a controlled SELECT-only phase. */
+    suspend fun rowHash(database: HabitDatabase, table: String, where: String, args: Array<Any>): String? {
+        require(table in tables)
+        return NextEvidenceReadSession.rowHash(database, table, where, args,
+            length = { sql -> lengthExpression(sql, table) },
+            audit = { sql, length -> auditRowHash(sql, table, where, args, length) })
+    }
+
+    private suspend fun auditRowHash(sql: SupportSQLiteDatabase, table: String, where: String,
+        args: Array<Any>, length: String): String? {
         val caller = currentCoroutineContext()
         // Check lengths in SQLite before materializing a possibly damaged TEXT/BLOB in memory.
-        val length = lengthExpression(sql, table)
         sql.query("SELECT ($length) FROM $table WHERE $where", args).use { c ->
             if (!c.moveToFirst()) return null
             val limit = SYNC_REQUEST_LIMIT + 4096 // Finite payload plus source/journal identity overhead.
@@ -151,18 +167,67 @@ internal object NextRequestSql {
         return columns.joinToString(" + ") { "COALESCE(length(CAST(`$it` AS BLOB)),0)" }
     }
 
+    /** Same full raw-row audit as rowHash, streamed within ONE caller-owned transaction.
+     * Challenge readers discard individual hashes; looking up every already-enumerated key
+     * again only adds SQL/PRAGMA round trips. No authority, schema or row result is cached.
+     * The scalar preflight rejects oversized cells before a full row enters a CursorWindow.
+     */
+    suspend fun auditChallengeRows(sql: SupportSQLiteDatabase, table: String) {
+        check(sql.inTransaction())
+        val keys = when (table) {
+            "next_challenge_state" -> listOf("id")
+            "next_challenge_rounds" -> listOf("roundUuid")
+            "next_challenge_births" -> listOf("entityType", "entityUuid")
+            else -> error("Not a challenge audit table")
+        }
+        val caller = currentCoroutineContext()
+        fun key(cursor: Cursor): List<Any> = keys.map { name ->
+            val index = cursor.getColumnIndexOrThrow(name)
+            if (name == "id") {
+                require(cursor.getType(index) == Cursor.FIELD_TYPE_INTEGER && cursor.getLong(index) == 1L)
+                cursor.getLong(index)
+            } else {
+                require(cursor.getType(index) == Cursor.FIELD_TYPE_STRING)
+                cursor.getString(index)
+            }
+        }
+        val expected = hashSetOf<List<Any>>()
+        val length = lengthExpression(sql, table)
+        sql.query("SELECT ${keys.joinToString(",")},($length) FROM $table ORDER BY rowid").use { cursor ->
+            while (cursor.moveToNext()) {
+                caller.ensureActive()
+                require(expected.add(key(cursor)))
+                if (cursor.getType(keys.size) != Cursor.FIELD_TYPE_INTEGER || cursor.getLong(keys.size) > SYNC_REQUEST_LIMIT + 4096)
+                    rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
+            }
+        }
+        val digest = RowDigest { caller.ensureActive() }
+        sql.query("SELECT * FROM $table ORDER BY rowid").use { cursor ->
+            while (cursor.moveToNext()) {
+                caller.ensureActive()
+                require(expected.remove(key(cursor)))
+                hashRow(cursor, table, digest) { caller.ensureActive() }
+            }
+        }
+        require(expected.isEmpty())
+    }
+
     /** SELECT-only snapshot hint. Oversized batches fall back, never reject/truncate a valid chain. */
     suspend fun boundedRowHashes(sql: SupportSQLiteDatabase, table: String, column: String,
-        ids: List<Any>, kind: String? = null): Map<Any, String?>? {
+        ids: List<Any>, kind: String? = null, entityType: String? = null): Map<Any, String?>? {
         check(sql.inTransaction())
-        require(table in tables && column in setOf("requestId", "operationId", "originalId", "id") &&
+        require(table in tables && column in setOf("requestId", "operationId", "originalId", "id", "entityUuid") &&
             ids.size in 1..128 && ids.distinct().size == ids.size &&
             ids.all { if (column == "id") it is Long && it > 0 else it is String && com.dayforge.domain.model.isContractUuid(it) } &&
-            (kind == null || kind in setOf(NEXT_OPERATION, NEXT_TIMER) && column == "requestId"))
+            (kind == null || kind in setOf(NEXT_OPERATION, NEXT_TIMER) && column == "requestId") &&
+            (if (column == "entityUuid") table == "sync_entity_state" && entityType == "activity_event" && kind == null
+                else entityType == null))
         val caller = currentCoroutineContext()
         caller.ensureActive()
-        val where = (if (kind == null) "" else "kind=? AND ") + "`$column` IN (${ids.joinToString(",") { "?" }})"
-        val args = (if (kind == null) ids else listOf(kind) + ids).toTypedArray()
+        val discriminator = kind ?: entityType
+        val where = (if (kind != null) "kind=? AND " else if (entityType != null) "entityType=? AND " else "") +
+            "`$column` IN (${ids.joinToString(",") { "?" }})"
+        val args = (if (discriminator == null) ids else listOf(discriminator) + ids).toTypedArray()
         val length = lengthExpression(sql, table)
         val found = mutableSetOf<Any>()
         var total = 0L
@@ -186,10 +251,11 @@ internal object NextRequestSql {
         if (total > 2_097_152) return null // Same original per-row audit remains available.
         val hashes = ids.associateWith<Any, String?> { null }.toMutableMap()
         val read = mutableSetOf<Any>()
+        val digest = RowDigest { caller.ensureActive() }
         sql.query("SELECT * FROM $table WHERE $where", args).use { c ->
             while (c.moveToNext()) {
                 caller.ensureActive()
-                val value = hashRow(c, table) { caller.ensureActive() }
+                val value = hashRow(c, table, digest) { caller.ensureActive() }
                 val i = c.getColumnIndexOrThrow(column)
                 val key: Any = if (column == "id") c.getLong(i) else c.getString(i)
                 require(key in found && read.add(key))
@@ -201,8 +267,8 @@ internal object NextRequestSql {
     }
 
     /** Both single and bounded audits retain the identical original row byte encoding. */
-    private fun hashRow(c: Cursor, table: String, checkpoint: () -> Unit): String {
-            val hash = RowDigest(checkpoint)
+    private fun hashRow(c: Cursor, table: String, workspace: RowDigest? = null, checkpoint: () -> Unit): String {
+            val hash = workspace ?: RowDigest(checkpoint)
             hash.bytes(table.toByteArray(Charsets.UTF_8))
             for (i in 0 until c.columnCount) {
                 checkpoint()

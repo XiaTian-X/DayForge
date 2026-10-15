@@ -22,11 +22,13 @@ class WidgetFactActionActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        lifecycleScope.launch {
+        // Enter shared admission before the first dispatch/suspension.
+        lifecycleScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
             try {
                 val claim = requireNotNull(WidgetFactClaim.read(intent))
                 val action = requireNotNull(intent.action)
-                val result = checkIns.widgetAction(this@WidgetFactActionActivity, claim, action)
+                val result = checkIns.widgetInteraction(this@WidgetFactActionActivity, claim, action)
+                    as? com.dayforge.data.model.CheckInResult.Success ?: return@launch
                 val added = action == "increment" || (action == "toggle" && claim.completionUuid == null)
                 if (added) {
                     val committed = reader.afterWrite(claim)

@@ -16,6 +16,9 @@ import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.HabitRepository
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.Dispatchers
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -69,6 +72,13 @@ class CheckInServiceTest {
     }
 
     // ==================== CHECK-01: Toggle check-in creates completion ====================
+
+    @Test fun concurrentDecrementsEachRemoveOneRealCompletion() = runBlocking {
+        val habitId = createTestHabit(HabitType.COUNTING, targetValue = 5)
+        repeat(5) { service.incrementCount(context, habitId) }
+        (1..5).map { async(Dispatchers.IO) { service.decrementCount(context, habitId) } }.awaitAll()
+        assertEquals(0, repository.getTodayCompletionCount(habitId))
+    }
 
     @Test
     fun testToggleCheckIn_completesHabit() = runBlocking {

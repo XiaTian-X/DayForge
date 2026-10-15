@@ -54,6 +54,7 @@ data class EditHabitUiState(
     val isCountdown: Boolean = false,
     val isLoading: Boolean = true,
     val isSaving: Boolean = false,
+    val isDeleting: Boolean = false,
     val hasChanges: Boolean = false,
     val isValid: Boolean = false,
     val showDeleteDialog: Boolean = false,
@@ -380,6 +381,7 @@ class EditHabitViewModel @Inject constructor(
     }
 
     fun toggleDeleteDialog() {
+        if (_uiState.value.isSaving || _uiState.value.isDeleting) return
         _uiState.value = _uiState.value.copy(
             showDeleteDialog = !_uiState.value.showDeleteDialog
         )
@@ -387,7 +389,9 @@ class EditHabitViewModel @Inject constructor(
 
     fun deleteHabit(onDeleted: () -> Unit) {
         val captured = _uiState.value
+        if (captured.isSaving || captured.isDeleting || captured.habitId == 0L) return
         val habit = originalHabit ?: return
+        _uiState.value = captured.copy(isDeleting = true)
         viewModelScope.launch {
             try {
                 val children = habitRepository.getHabitChildren(habit.uuid)
@@ -405,13 +409,15 @@ class EditHabitViewModel @Inject constructor(
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 _uiState.value = _uiState.value.copy(errorMessage = context.getString(R.string.goal_delete_failed, e.message))
-            }
+            } finally { _uiState.value = _uiState.value.copy(isDeleting = false) }
         }
     }
 
     fun deleteHabitWithChildren(onDeleted: () -> Unit) {
         val captured = _uiState.value
+        if (captured.isSaving || captured.isDeleting || captured.habitId == 0L) return
         val habit = originalHabit ?: return
+        _uiState.value = captured.copy(isDeleting = true)
         viewModelScope.launch {
             try {
                 habitRepository.deleteHabitWithChildren(habit, context, captured.editAuthority)
@@ -423,13 +429,15 @@ class EditHabitViewModel @Inject constructor(
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 _uiState.value = _uiState.value.copy(errorMessage = context.getString(R.string.goal_delete_failed, e.message))
-            }
+            } finally { _uiState.value = _uiState.value.copy(isDeleting = false) }
         }
     }
 
     fun deleteHabitKeepChildren(onDeleted: () -> Unit) {
         val captured = _uiState.value
+        if (captured.isSaving || captured.isDeleting || captured.habitId == 0L) return
         val habit = originalHabit ?: return
+        _uiState.value = captured.copy(isDeleting = true)
         viewModelScope.launch {
             try {
                 habitRepository.deleteHabitOrphanChildren(habit, context, captured.editAuthority)
@@ -441,11 +449,12 @@ class EditHabitViewModel @Inject constructor(
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 _uiState.value = _uiState.value.copy(errorMessage = context.getString(R.string.goal_delete_failed, e.message))
-            }
+            } finally { _uiState.value = _uiState.value.copy(isDeleting = false) }
         }
     }
 
     fun dismissDeleteChildrenDialog() {
+        if (_uiState.value.isDeleting) return
         _uiState.value = _uiState.value.copy(
             showDeleteChildrenDialog = false
         )
@@ -468,6 +477,7 @@ class EditHabitViewModel @Inject constructor(
     }
 
     fun saveChanges(onSaved: () -> Unit = {}) {
+        if (_uiState.value.isDeleting || _uiState.value.saved || _uiState.value.habitId == 0L) return
         if (!_uiState.value.hasChanges || !_uiState.value.isValid || _uiState.value.isSaving) return
 
         val currentState = _uiState.value
@@ -507,8 +517,8 @@ class EditHabitViewModel @Inject constructor(
             else -> currentState.schedule
         }
 
+        _uiState.value = _uiState.value.copy(isSaving = true, saved = false)
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isSaving = true, saved = false)
             try {
                 val updatedHabit = originalHabit?.copy(
                     name = currentState.name,

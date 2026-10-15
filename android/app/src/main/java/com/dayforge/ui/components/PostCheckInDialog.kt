@@ -13,6 +13,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.dayforge.R
 import com.dayforge.util.NumericInputUtils
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 
 /**
  * State for a single metric input in the post-check-in dialog.
@@ -61,16 +63,34 @@ data class MetricValueInput(
 fun PostCheckInDialog(
     habitName: String,
     linkedMetrics: List<LinkedMetricInfo>,
-    onRecord: (values: List<MetricValueInput>, neverAskAgain: Boolean) -> Unit,
-    onSkip: (neverAskAgain: Boolean) -> Unit,
-    onDismiss: () -> Unit,
+    onRecord: suspend (values: List<MetricValueInput>, neverAskAgain: Boolean) -> Unit,
+    onSkip: suspend (neverAskAgain: Boolean) -> Unit,
+    onDismiss: suspend () -> Unit,
     initialInputs: Map<Long, Pair<String, String>> = emptyMap(),
     promptIdentity: String? = null,
-    onDraftChange: (List<MetricInputState>) -> Unit = {},
-    onRefreshMetadata: (() -> Unit)? = null,
+    onDraftChange: suspend (List<MetricInputState>) -> Unit = {},
+    onRefreshMetadata: (suspend () -> Unit)? = null,
     missingTargets: List<String> = emptyList()
 ) {
     var neverAskAgain by remember(promptIdentity) { mutableStateOf(false) }
+    var busy by remember(promptIdentity) { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var draftJob by remember(promptIdentity) { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    fun submit(block: suspend () -> Unit) {
+        if (busy) return
+        busy = true // Set before launching: even two callbacks before recomposition cannot submit twice.
+        scope.launch {
+            try {
+                draftJob?.cancel(); draftJob?.join()
+                block()
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                android.widget.Toast.makeText(context, com.dayforge.ui.actionFailureMessage(context, error),
+                    android.widget.Toast.LENGTH_LONG).show()
+            } finally { busy = false }
+        }
+    }
 
     // State for each metric's input
     val inputStates = remember(promptIdentity, linkedMetrics) {
@@ -89,7 +109,10 @@ fun PostCheckInDialog(
     }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { submit {
+            onDraftChange(inputStates.map { it.value })
+            onDismiss()
+        } },
         title = {
             Text(
                 text = stringResource(R.string.post_checkin_title),
@@ -117,12 +140,26 @@ fun PostCheckInDialog(
                     val state = inputStates[index]
 
                     OutlinedTextField(
+                        enabled = !busy,
                         value = state.value.inputValue,
-                        onValueChange = { newValue ->
+                        onValueChange = input@ { newValue ->
+                            if (busy) return@input
                             state.value = state.value.copy(
                                 inputValue = NumericInputUtils.filterNumericInput(newValue, state.value.decimalPlaces)
                             )
-                            onDraftChange(inputStates.map { it.value })
+                            val draft = inputStates.map { it.value }
+                            val previous = draftJob
+                            previous?.cancel()
+                            draftJob = scope.launch {
+                                previous?.join()
+                                try {
+                                    onDraftChange(draft)
+                                } catch (error: Exception) {
+                                    if (error is CancellationException) throw error
+                                    android.widget.Toast.makeText(context, context.getString(R.string.metric_error_record_failed,
+                                        error.message.orEmpty()), android.widget.Toast.LENGTH_LONG).show()
+                                }
+                            }
                         },
                         label = { Text("${info.metricName} (${info.unit})") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -136,7 +173,10 @@ fun PostCheckInDialog(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 onRefreshMetadata?.let { refresh ->
-                    TextButton(onClick = refresh) { Text(stringResource(R.string.once_refresh_metrics)) }
+                    TextButton(onClick = { submit {
+                        onDraftChange(inputStates.map { it.value })
+                        refresh()
+                    } }, enabled = !busy) { Text(stringResource(R.string.once_refresh_metrics)) }
                 }
 
                 // Never ask again checkbox (D-18)
@@ -144,6 +184,7 @@ fun PostCheckInDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Checkbox(
+                        enabled = !busy,
                         checked = neverAskAgain,
                         onCheckedChange = { neverAskAgain = it }
                     )
@@ -153,7 +194,7 @@ fun PostCheckInDialog(
         },
         confirmButton = {
             Button(
-                enabled = inputStates.any { NumericInputUtils.parseFiniteDouble(it.value.inputValue) != null },
+                enabled = !busy && inputStates.any { NumericInputUtils.parseFiniteDouble(it.value.inputValue) != null },
                 onClick = {
                     val values = inputStates.mapNotNull { state ->
                         NumericInputUtils.parseFiniteDouble(state.value.inputValue)?.let { value ->
@@ -164,16 +205,23 @@ fun PostCheckInDialog(
                             )
                         }
                     }
-                    onRecord(values, neverAskAgain)
+                    submit {
+                        // Flush exact visible text before submission; cancelled superseded drafts
+                        // cannot trail the final write. Durable identities/time remain repository-owned.
+                        onDraftChange(inputStates.map { it.value })
+                        onRecord(values, neverAskAgain)
+                    }
                 }
             ) {
-                Text(stringResource(R.string.post_checkin_record))  // D-19
+                if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                else Text(stringResource(R.string.post_checkin_record))
             }
         },
         dismissButton = {
             TextButton(
+                enabled = !busy,
                 onClick = {
-                    onSkip(neverAskAgain)
+                    submit { onSkip(neverAskAgain) }
                 }
             ) {
                 Text(stringResource(R.string.post_checkin_skip))  // D-19

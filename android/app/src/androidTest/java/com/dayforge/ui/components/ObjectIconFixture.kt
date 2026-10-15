@@ -26,6 +26,7 @@ internal class ObjectIconFixture {
     val sessions = AccountSessionCoordinator()
     val decrypts = AtomicInteger()
     val draws = AtomicInteger()
+    val validations = AtomicInteger()
     var drawBarrier: (() -> Unit)? = null
     private val handles = mutableListOf<IconImageHandle>()
     fun id(n: Int) = IconLibraryFixture.id(n)
@@ -42,7 +43,12 @@ internal class ObjectIconFixture {
             produceFile = { File(directory, "auth.preferences_pb") }), cipher)
         database = AccountIconDatabase.open(app)
         val metadata = AccountIconRepository(database, tokens, sessions)
-        val store = AccountIconStore(metadata, AccountIconFiles(directory))
+        val store = AccountIconStore(metadata, AccountIconFiles(directory, object : IconFileIo() {
+            override fun validateImage(bytes: ByteArray, expected: com.dayforge.domain.model.IconBlob) {
+                validations.incrementAndGet()
+                super.validateImage(bytes, expected)
+            }
+        }))
         val renderer = AccountIconRenderer(metadata, store, draw = { bytes, asset, dark, size, tint ->
             draws.incrementAndGet()
             val image = renderIcon(bytes, asset, dark, size, tint)
@@ -70,7 +76,7 @@ internal class ObjectIconFixture {
         val catalog = controller.library(context)
         controller.select(context, catalog.selection.generation, offset?.let { IconPackVersion(id(10 + it), 1) })
     }
-    fun handle() = controller.referenceImage().also(handles::add)
+    fun handle(key: IconDisplayKey? = null) = controller.referenceImage(key).also(handles::add)
     fun theme(dark: Boolean = false) = app.assets.open("appearance/themes/ocean-v1.json").use {
         ResolvedTheme.from(ValidatedTheme.parse(it.readBytes()).definition, dark)
     }

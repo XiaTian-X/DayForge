@@ -46,7 +46,8 @@ class HabitRepository @Inject constructor(
     private val recurringHabitReader: RecurringHabitReader? = null,
     private val restartEntry: HabitRestartEntry? = null,
     private val widgetRestartEntry: WidgetRestartEntry? = null,
-    private val timerWriter: NextTimerWriter? = null
+    private val timerWriter: NextTimerWriter? = null,
+    private val countActions: CountActionReader? = null
 ) {
     val allHabits: Flow<List<HabitEntity>> = habitDao.getAllHabits()
 
@@ -59,6 +60,8 @@ class HabitRepository @Inject constructor(
 
     suspend fun getCountHistory(habit: HabitEntity): com.dayforge.domain.model.CountHistory =
         requireNotNull(countHistoryReader) { "COUNT_READER_REQUIRED" }.read(habit)
+
+    internal suspend fun legacyCountIdentity(habit: HabitEntity) = countActions?.legacy(habit)
 
     suspend fun getCheckHistory(habit: HabitEntity): com.dayforge.domain.model.CheckHistory =
         requireNotNull(checkHistoryReader) { "CHECK_READER_REQUIRED" }.read(habit)
@@ -117,6 +120,58 @@ class HabitRepository @Inject constructor(
 
     suspend fun getHabitForEditing(id: Long): ObjectEditSnapshot<HabitEntity> =
         nextObjectEditor?.habit(id) ?: ObjectEditSnapshot(habitDao.getHabitById(id), null)
+
+    /** Uncontended action-lock path only; legacy/once and increment retain their original preparation. */
+    suspend fun prepareCompletion(id: Long, includeHistory: Boolean = true): CompletionActionSnapshot {
+        if (!includeHistory) return CompletionActionSnapshot(getHabitForEditing(id))
+        val row = habitDao.getVisibleHabitById(id)
+        if (row?.appearance != null && row.completionPolicy == "recurring" &&
+            row.habitType in setOf(HabitType.CHECK_IN, HabitType.COUNTING)) {
+            return requireNotNull(recurringHabitReader) { "RECURRING_READER_REQUIRED" }.prepareCompletion(id)
+        }
+        return CompletionActionSnapshot(getHabitForEditing(id))
+    }
+
+    suspend fun readCompletionAfter(captured: CompletionActionSnapshot,
+        allowActivation: Boolean, recordedCompletionId: Long? = null): RecurringCompletionSnapshot =
+        requireNotNull(recurringHabitReader) { "RECURRING_READER_REQUIRED" }
+            .readCompletionAfter(captured, allowActivation, recordedCompletionId)
+
+    internal fun registerCompletionConsumer(listener: com.dayforge.data.local.PersonalDataDisplayMemory.Listener) =
+        widgetFactReader?.registerCompletionConsumer(listener)
+
+    internal suspend fun publishCompletion(snapshot: WidgetFactSnapshot, requireDay: Boolean = false,
+        requireUnchangedProgress: Boolean = false, block: suspend () -> Unit) =
+        requireNotNull(widgetFactReader) { "FACT_READER_REQUIRED" }
+            .publishCompletion(snapshot, requireDay, requireUnchangedProgress, block)
+
+    /** Goal edits retain their source fact/round and derive only the accepted plan successor. */
+    suspend fun applyCompletionGoal(context: Context, snapshot: WidgetFactSnapshot, complete: Boolean): WidgetFactSnapshot {
+        val reader = requireNotNull(widgetFactReader) { "FACT_READER_REQUIRED" }
+        val before = reader.authorizeCompletion(snapshot.claim)
+        val expected = requireNotNull(before.value)
+        val successor = mutate(expected, requireNotNull(before.authority)) { habit ->
+            val view = reader.requireCompletionInTransaction(snapshot.claim)
+            check(habit.completionPolicy == "recurring" && habit.targetCycles != null &&
+                view.targetProgress >= habit.targetCycles) { "COMPLETION_GOAL_CHANGED" }
+            if (complete) habitDao.updateIsActive(habit.id, false)
+            else if (habit.failMode == FailMode.STRICT) habitDao.updateFailMode(habit.id, FailMode.LOOSE)
+            val current = requireNotNull(habitDao.getVisibleHabitById(habit.id))
+            val allowed = if (complete) habit.copy(isActive = false) else habit.copy(failMode = FailMode.LOOSE)
+            check(current.uuid == habit.uuid && NextStructureMapper.writePlan(current) == NextStructureMapper.writePlan(allowed)) {
+                "COMPLETION_GOAL_SUCCESSOR_CHANGED"
+            }
+            view.copy(habit = current, claim = view.claim.copy(plan = NextStructureMapper.writePlan(current)),
+                hasFailed = view.hasFailed && com.dayforge.domain.service.FailureCheckerUtils.shouldCheckFailure(current) &&
+                    com.dayforge.domain.service.FailureCheckerUtils.isStrictMode(current))
+        }
+        // These are post-COMMIT side effects, matching the existing goal mutation behavior.
+        com.dayforge.domain.service.afterCommittedAction {
+            if (complete && expected.bestTime != null) HabitReminderScheduler.cancelReminder(context, expected.id)
+            notifyWidgetUpdate(context)
+        }
+        return successor
+    }
 
     /** Explicit display-time operation; a stale click must never become a fresh toggle. */
     internal suspend fun performWidgetFact(context: Context, claim: WidgetFactClaim, action: String): WidgetFactSnapshot {
@@ -634,13 +689,28 @@ class HabitRepository @Inject constructor(
      * @param context Context for scheduling widget refresh
      * @param habitId The ID of the habit to log completion for
      * @param value The completion value (default 1 for check-in habits)
-     * @return The ID of the inserted completion
+     * @return The ID of the inserted completion, or 0 when a countdown is already complete.
      */
     suspend fun logCompletion(context: Context, habitId: Long, value: Int = 1,
         authority: ObjectEditAuthority? = null, expectedHabitUuid: String? = null,
-        widgetClaim: WidgetFactClaim? = null): Long {
+        widgetClaim: WidgetFactClaim? = null,
+        countIdentity: com.dayforge.domain.model.CountActionIdentity? = null,
+        checkIdentity: com.dayforge.domain.model.CheckActionIdentity? = null): Long {
         val capturedHabit = habitDao.getHabitById(habitId)
         if (expectedHabitUuid != null) check(capturedHabit?.uuid == expectedHabitUuid) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
+        check(checkIdentity == null || countIdentity == null) { "CHECK_ACTION_EXPIRED" }
+        val checkAuthority = checkIdentity?.let { identity ->
+            check(capturedHabit?.habitType == HabitType.CHECK_IN && capturedHabit.appearance != null &&
+                capturedHabit.completionPolicy == "recurring" && identity.habitId == habitId &&
+                identity.habitUuid == capturedHabit.uuid) { "CHECK_ACTION_EXPIRED" }
+            (authority ?: requireNotNull(getHabitForEditing(habitId).authority)).also(identity::requireAuthority)
+        }
+        val countAuthority = if (countIdentity != null) {
+            check(capturedHabit?.habitType == HabitType.COUNTING && countIdentity.habitId == habitId &&
+                countIdentity.habitUuid == capturedHabit.uuid) { "COUNT_ACTION_EXPIRED" }
+            if (capturedHabit.appearance != null) (authority ?: requireNotNull(getHabitForEditing(habitId).authority))
+                .also(countIdentity::requireAuthority) else null
+        } else checkAuthority ?: authority
         if (capturedHabit?.completionPolicy == "one_and_done") {
             require(value == 1) { "ONE_TIME_VALUE_MUST_BE_ONE" }
             val id = requireNotNull(oneTimeRepository).change(habitId, complete = true, expectedUuid = capturedHabit.uuid,
@@ -650,7 +720,8 @@ class HabitRepository @Inject constructor(
         }
         val occurredAt = java.time.Instant.now()
         val capturedZone = java.time.ZoneId.systemDefault()
-        val id = mutate(requireNotNull(capturedHabit), authority, structural = !capturedHabit.isActive) { habit ->
+        val id = mutate(requireNotNull(capturedHabit), countAuthority, structural = !capturedHabit.isActive,
+            countIdentity = countIdentity, checkIdentity = checkIdentity) { habit ->
             if (widgetClaim != null) {
                 val view = requireNotNull(widgetFactReader).requireInTransaction(widgetClaim,
                     exactFact = habit.habitType != HabitType.COUNTING)
@@ -664,11 +735,27 @@ class HabitRepository @Inject constructor(
                     check(!policy.isCountdown || history.todayQuantity < policy.targetValue) { "COUNT_DAY_ALREADY_COMPLETED" }
                 }
             }
+            // Enforce the effective day's rule in the same owner/Room transaction as the fact.
+            // UI queues and other entry points must not overrun a completed countdown.
+            if (habit.habitType == HabitType.COUNTING) {
+                val date = occurredAt.atZone(capturedZone).toLocalDate()
+                val policy = (if (habit.appearance != null)
+                    NextCountDayStore(database).read(habit, date.toString())?.policy else null)
+                    ?: com.dayforge.domain.model.CountDayPolicy(habit.targetValue, habit.isCountdown)
+                if (policy.isCountdown) {
+                    val history = if (habit.appearance != null)
+                        requireNotNull(countHistoryReader).readInTransaction(habit, date) else null
+                    if (habit.appearance != null) requireNotNull(history?.todayPolicy) { "COUNT_DAY_RULE_UNKNOWN" }
+                    val quantity = history?.todayQuantity ?: completionDao.getCompletionsInRange(habit.id, date, date.plusDays(1))
+                        .sumOf { it.value.toLong() }
+                    if (quantity >= policy.targetValue) return@mutate 0L
+                }
+            }
             insertCompletionInTransaction(habit, occurredAt, capturedZone, value)
         }
 
         // Notify widgets to update
-        notifyWidgetUpdate(context)
+        if (id != 0L) notifyWidgetUpdate(context)
 
         // Completion and any reactivation are both captured by the v2 outbox.
 
@@ -682,10 +769,14 @@ class HabitRepository @Inject constructor(
      */
     suspend fun undoCompletion(context: Context, completionId: Long,
         oneTimeAuthority: com.dayforge.domain.model.OneTimeActionAuthority? = null,
-        authority: ObjectEditAuthority? = null, widgetClaim: WidgetFactClaim? = null) {
+        authority: ObjectEditAuthority? = null, widgetClaim: WidgetFactClaim? = null,
+        countIdentity: com.dayforge.domain.model.CountActionIdentity? = null,
+        checkIdentity: com.dayforge.domain.model.CheckActionIdentity? = null) {
+        check(checkIdentity == null || countIdentity == null && oneTimeAuthority == null) { "CHECK_ACTION_EXPIRED" }
         val initial = completionDao.getCompletionById(completionId)
         if (oneTimeAuthority != null) check(initial?.oneTimeAction == "complete") { "ONE_TIME_ACTION_EXPIRED" }
         if (initial?.oneTimeAction != null) {
+            check(checkIdentity == null) { "CHECK_ACTION_EXPIRED" }
             require(initial.oneTimeAction == "complete") { "ONE_TIME_ONLY_COMPLETION_CAN_BE_UNDONE" }
             requireNotNull(oneTimeRepository).change(initial.habitId, complete = false,
                 expectedCompletionId = completionId, expectedUuid = initial.habitUuid, authority = oneTimeAuthority,
@@ -695,8 +786,20 @@ class HabitRepository @Inject constructor(
         }
         if (initial == null) { check(widgetClaim == null) { "FACT_WIDGET_FACT_CHANGED" }; return }
         val expected = requireNotNull(habitDao.getHabitById(initial.habitId))
+        val checkAuthority = checkIdentity?.let { identity ->
+            check(expected.habitType == HabitType.CHECK_IN && expected.appearance != null &&
+                expected.completionPolicy == "recurring" && identity.habitId == expected.id &&
+                identity.habitUuid == expected.uuid) { "CHECK_ACTION_EXPIRED" }
+            (authority ?: requireNotNull(getHabitForEditing(expected.id).authority)).also(identity::requireAuthority)
+        }
+        val countAuthority = if (countIdentity != null) {
+            check(expected.habitType == HabitType.COUNTING && countIdentity.habitId == initial.habitId &&
+                countIdentity.habitUuid == expected.uuid) { "COUNT_ACTION_EXPIRED" }
+            if (expected.appearance != null) (authority ?: requireNotNull(getHabitForEditing(expected.id).authority))
+                .also(countIdentity::requireAuthority) else null
+        } else checkAuthority ?: authority
         if (expected.appearance != null) check(initial.habitUuid == expected.uuid) { "OBJECT_WRITE_FACT_CHANGED" }
-        mutate(expected, authority, structural = false) {
+        mutate(expected, countAuthority, structural = false, countIdentity = countIdentity, checkIdentity = checkIdentity) {
             if (widgetClaim != null) {
                 requireNotNull(widgetFactReader).requireInTransaction(widgetClaim)
                 check(initial.uuid == widgetClaim.completionUuid) { "FACT_WIDGET_FACT_CHANGED" }
@@ -772,12 +875,18 @@ class HabitRepository @Inject constructor(
     }
 
     private suspend fun <T> mutate(expected: HabitEntity, authority: ObjectEditAuthority? = null,
-        structural: Boolean = true, commit: suspend (HabitEntity) -> T): T {
+        structural: Boolean = true, countIdentity: com.dayforge.domain.model.CountActionIdentity? = null,
+        checkIdentity: com.dayforge.domain.model.CheckActionIdentity? = null,
+        commit: suspend (HabitEntity) -> T): T {
         if (expected.appearance != null && nextObjectEditor != null) {
-            return nextObjectEditor.mutateHabit(expected, authority, commit)
+            return nextObjectEditor.mutateHabit(expected, authority, countIdentity, checkIdentity, commit)
         }
+        check(checkIdentity == null) { "CHECK_ACTION_EXPIRED" }
         check(authority == null) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
         if (structural) structuralEditGuard?.requireAllowed()
+        if (countIdentity != null) return requireNotNull(countActions).writeLegacy(countIdentity) {
+            commit(requireNotNull(habitDao.getHabitById(expected.id)))
+        }
         return database.withTransaction {
             val current = requireNotNull(habitDao.getHabitById(expected.id)) { "OBJECT_WRITE_NOT_FOUND" }
             check(current.uuid == expected.uuid) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }

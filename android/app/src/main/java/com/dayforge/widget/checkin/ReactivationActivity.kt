@@ -82,7 +82,8 @@ class ReactivationActivity : ComponentActivity() {
                                 Row(modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
                                     TextButton(onClick = { finish() }) { Text(stringResource(R.string.action_cancel)) }
-                                    Button(enabled = !submitting, onClick = {
+                                    Button(enabled = !submitting, onClick = click@ {
+                                        if (submitting) return@click
                                         submitting = true
                                         lifecycleScope.launch {
                                             try {

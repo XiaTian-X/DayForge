@@ -15,6 +15,28 @@ import javax.inject.Inject
 class DashboardHabitListBuilder @Inject constructor(
     private val habitStatusCalculator: HabitStatusCalculator
 ) {
+    internal suspend fun project(batch: com.dayforge.data.repository.DashboardReadBatch): List<HabitWithStats> {
+        var oneTimes: Map<Long, com.dayforge.domain.model.OneTimeStatus>? = null
+        return batch.habits.map { habit ->
+            val count = batch.counts[habit.id]
+            val check = batch.checks[habit.id]
+            when {
+                habit.completionPolicy == "one_and_done" -> {
+                    val statuses = oneTimes ?: habitStatusCalculator.readOneTimes(
+                        batch.habits.filter { it.completionPolicy == "one_and_done" }).also { oneTimes = it }
+                    habitStatusCalculator.projectOneTime(habit, statuses.getValue(habit.id))
+                }
+                count != null -> habitStatusCalculator.projectCount(habit, count, batch.time)
+                check != null -> habitStatusCalculator.projectCheck(habit, check, batch.time)
+                else -> habitStatusCalculator.calculate(habit, batch.completions, null).let { stats ->
+                    if (habit.habitType == HabitType.COUNTING && habit.appearance == null)
+                        stats.copy(countActionIdentity = com.dayforge.data.repository.CountActionReader.legacyIdentity(habit, batch.core))
+                    else stats
+                }
+            }
+        }
+    }
+
     suspend fun build(
         habits: List<HabitEntity>,
         completions: List<CompletionEntity>,

@@ -93,6 +93,51 @@ class NextObjectCreationTest : NextObjectEditorFixture() {
         bestTime = draft.bestTime, predefinedUuid = draft.id, selectedMetricIds = draft.selectedMetricIds,
         appearance = draft.appearance, completionPolicy = draft.completionPolicy, creationAuthority = ticket)
 
+    @Test fun fixedIconGraphChecksEveryPurposeAndOwnershipBeforeAtomicSave() = runBlocking<Unit> {
+        register()
+        val context = iconMetadata.capture()
+        val asset = IconAsset(id(180), "General", "general", "template",
+            IconBlob("1".repeat(64), 1, "image/svg+xml", 1, 1), null)
+        val task = asset.copy(assetId = id(181), name = "Task", purpose = "task")
+        iconMetadata.reserveAsset(context, asset); iconMetadata.reserveAsset(context, task)
+        val ticket = creator.capture()
+        val goal = draft(182, HabitType.GOAL).copy(appearance = appearance("goal.custom").copy(icon = IconReference.Asset(asset.assetId)))
+        val child = draft(183).copy(appearance = goal.appearance, selectedMetricIds = setOf(metric.id))
+        for (invalid in listOf(task.assetId, id(184))) {
+            rejected { creatingHabits().createGoal(goal, listOf(child.copy(appearance = child.appearance!!.copy(
+                icon = IconReference.Asset(invalid)))), creationAuthority = ticket) }
+            assertEquals(2, count("habits")); assertEquals(0, count("sync_outbox")); assertEquals(0, count("habit_metric_links"))
+        }
+        val saved = creatingHabits().createGoal(goal, listOf(child), creationAuthority = ticket)
+        assertEquals(4, count("habits")); assertEquals(3, count("next_request_origins"))
+        assertEquals(goal.appearance, db.habitDao().getHabitById(saved)!!.appearance)
+        assertEquals(child.appearance, db.habitDao().getHabitByUuid(child.id)!!.appearance)
+        assertEquals(1, count("habit_metric_links"))
+    }
+
+    @Test fun metricSaveDuplicateKeepsDraftAndTicketThenSingleRetryCreatesWithLinks() = runBlocking<Unit> {
+        val ticket = creator.capture()
+        val model = withContext(Dispatchers.Main) { own(CreateMetricViewModel(app, creatingMetrics(), db.metricDao(), db.habitDao())) }
+        withContext(Dispatchers.Main) {
+            model.beginCreation(ticket); model.updateName(metric.name); model.updateUnit("kg")
+            model.toggleHabitSelection(habit.id)
+            repeat(20) { model.saveMetric() }
+            assertTrue(model.uiState.value.isSaving)
+        }
+        withTimeout(5000) { model.uiState.first { !it.isSaving } }
+        assertTrue(model.uiState.value.showDuplicateDialog)
+        assertEquals(metric.name, model.uiState.value.name); assertSame(ticket, model.uiState.value.creationAuthority)
+        assertEquals(setOf(habit.id), model.uiState.value.selectedHabitIds)
+        assertEquals(0, count("sync_outbox"))
+        withContext(Dispatchers.Main) {
+            model.dismissDuplicateDialog(); model.updateName("Retried metric")
+            repeat(20) { model.saveMetric() }
+        }
+        val saved = withTimeout(5000) { model.uiState.first { it.savedMetricId != null || it.errorMessage != null } }
+        assertNull(saved.errorMessage); assertNotNull(saved.savedMetricId)
+        assertEquals(2, count("metrics")); assertEquals(1, count("habit_metric_links")); assertEquals(2, count("next_request_origins"))
+    }
+
     @Test fun formOpenedBeforeMidnightFreezesTimeOnlyAtFirstSaveAndKeepsItOnRetry() = runBlocking<Unit> {
         var now = java.time.Instant.parse("2026-10-07T15:59:59Z")
         var reads = 0

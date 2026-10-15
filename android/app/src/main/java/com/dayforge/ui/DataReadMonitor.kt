@@ -11,6 +11,9 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.retryWhen
+import kotlinx.coroutines.flow.onEach
+import com.dayforge.data.repository.HabitReadSnapshotChanged
 
 /** Read errors remain recoverable; no stale account content is kept as a fallback. */
 internal class DataReadMonitor(private val tag: String) {
@@ -18,10 +21,12 @@ internal class DataReadMonitor(private val tag: String) {
     val error = failed.asStateFlow()
     val retries = MutableStateFlow(0L)
     fun retry() { retries.update { it + 1 } }
+    /** Called inside a verified memory-only publication, before exposing its successful data. */
+    fun publicationSucceeded() { failed.value = false }
     /** Includes exceptions thrown by DAO/DataStore sources, not just projection calculations. */
     @OptIn(ExperimentalCoroutinesApi::class)
     fun <T> recover(fallback: T, source: () -> Flow<T>): Flow<T> = retries.flatMapLatest {
-        flow { emitAll(source()) }.catch { error ->
+        flow { emitAll(source()) }.retryChangedHabitSnapshot().catch { error ->
             if (error is CancellationException) throw error
             Log.e(tag, "Read source failed; explicit retry restarts the subscription", error)
             failed.value = true
@@ -32,8 +37,21 @@ internal class DataReadMonitor(private val tag: String) {
         block().also { failed.value = false }
     } catch (error: Exception) {
         if (error is CancellationException) throw error
+        if (error is HabitReadSnapshotChanged) throw error
         Log.e(tag, "Cannot read personal data; retry remains available", error)
         failed.value = true
         fallback
     }
+}
+
+/** Reopen the entire read, never substitute a fresh row into an old projection or retry a write. */
+internal fun <T> Flow<T>.retryChangedHabitSnapshot(): Flow<T> = flow {
+    var consecutiveFailures = 0
+    emitAll(this@retryChangedHabitSnapshot.onEach { consecutiveFailures = 0 }
+        .retryWhen { error, _ ->
+            if (error is HabitReadSnapshotChanged && consecutiveFailures++ < 3) {
+                kotlinx.coroutines.yield()
+                true
+            } else false
+        })
 }
