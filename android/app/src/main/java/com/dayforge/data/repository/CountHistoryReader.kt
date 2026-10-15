@@ -30,6 +30,12 @@ class CountHistoryReader @Inject constructor(database: HabitDatabase, tokens: To
         return project(expected, evidence.readInTransaction(expected, today))
     }
 
+    internal suspend fun readInTransaction(expected: HabitEntity, today: LocalDate,
+        scope: RecurringDisplayReadScope): CountHistory {
+        check(expected.habitType == HabitType.COUNTING) { "COUNT_ACTIVITY_CHANGED" }
+        return project(expected, evidence.readInTransaction(expected, today, scope))
+    }
+
     private fun project(habit: HabitEntity, source: RecurringCompletionEvidence): CountHistory {
         val quantities = source.completions.groupBy { it.businessDate }.mapValues { (_, rows) ->
             rows.fold(0L) { sum, row -> Math.addExact(sum, row.value.toLong()) }
@@ -37,6 +43,6 @@ class CountHistoryReader @Inject constructor(database: HabitDatabase, tokens: To
         return CountHistory(source.today, source.policies, quantities,
             source.policies[source.today] ?: if (source.today in source.unknownDates) null
                 else CountDayPolicy(habit.targetValue, habit.isCountdown),
-            source.unknownDates, source.completions, source.roundHead)
+            source.unknownDates, source.completions, source.roundHead, source.countIdentity)
     }
 }

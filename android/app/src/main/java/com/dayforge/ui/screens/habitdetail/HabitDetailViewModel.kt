@@ -1,5 +1,7 @@
 package com.dayforge.ui.screens.habitdetail
 
+import kotlinx.coroutines.flow.stateIn
+
 import android.content.Context
 import android.widget.Toast
 import androidx.lifecycle.ViewModel
@@ -22,6 +24,7 @@ import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.model.StreakStats
 import com.dayforge.data.repository.HabitRepository
+import com.dayforge.ui.retryChangedHabitSnapshot
 import com.dayforge.domain.service.StreakCalculator
 import com.dayforge.util.DateTimeUtils
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -34,6 +37,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.DecimalFormat
@@ -63,6 +67,8 @@ data class HabitDetailUiState(
     val oneTimeStatus: com.dayforge.domain.model.OneTimeStatus? = null,
     val writeAuthority: com.dayforge.data.repository.ObjectEditAuthority? = null,
     val countHistory: com.dayforge.domain.model.CountHistory? = null,
+    val countActionIdentity: com.dayforge.domain.model.CountActionIdentity? = null,
+    val checkActionIdentity: com.dayforge.domain.model.CheckActionIdentity? = null,
     val activityRate: Int = 100,
     val targetProgress: Int = 0,  // Distinct days completed for habits with targetCycles
     val isLoading: Boolean = true,
@@ -80,6 +86,7 @@ data class HabitDetailUiState(
 )
 
 @HiltViewModel
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class HabitDetailViewModel @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val habitRepository: HabitRepository,
@@ -90,14 +97,45 @@ class HabitDetailViewModel @Inject constructor(
     private val habitMetricLinkDao: HabitMetricLinkDao,
     private val metricDao: MetricDao,
     private val metricLogDao: MetricLogDao,
-    private val habitPreferences: com.dayforge.data.repository.HabitPreferenceRepository? = null
+    private val habitPreferences: com.dayforge.data.repository.HabitPreferenceRepository? = null,
+    private val countActions: com.dayforge.domain.service.CountActionGate? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(HabitDetailUiState())
     val uiState: StateFlow<HabitDetailUiState> = _uiState.asStateFlow()
 
     private var currentHabitId: Long? = null
+    // Undo feedback is not an ID-only ticket that may be rebound by a later account/round read.
+    private var lastCountCompletionIdentity: com.dayforge.domain.model.CountActionIdentity? = null
+    private data class CheckCompletionSource(
+        val completionId: Long,
+        val original: com.dayforge.domain.model.CheckActionIdentity,
+        val successor: com.dayforge.domain.model.CheckActionIdentity,
+        val successorDisplayed: Boolean
+    ) {
+        fun accepts(displayed: com.dayforge.domain.model.CheckActionIdentity?) =
+            displayed == successor || (!successorDisplayed && displayed == original)
+    }
+    private var lastCheckCompletionSource: CheckCompletionSource? = null
     private var habitLoadJob: Job? = null
+    private var readsEnabled = true
+    fun pauseReads() {
+        readsEnabled = false
+        habitLoadJob?.cancel()
+        habitLoadJob = null
+        dismissReactivationDialog()
+        // Preserve display/undo state, but recapture write claims before another typed action.
+        _uiState.value = _uiState.value.copy(writeAuthority = null, oneTimeStatus = null, preferenceClaim = null,
+            countActionIdentity = null, checkActionIdentity = null)
+    }
+
+    fun resumeReads() {
+        if (readsEnabled) return
+        readsEnabled = true
+        val id = currentHabitId ?: return
+        currentHabitId = null
+        loadHabit(id)
+    }
     private var reactivationRequest: com.dayforge.data.repository.HabitReactivationRequest? = null
     private var reactivationGeneration = 0
     fun retryRead() {
@@ -110,6 +148,8 @@ class HabitDetailViewModel @Inject constructor(
     fun loadHabit(habitId: Long) {
         // Reset if different habit to ensure fresh data load
         if (currentHabitId != null && currentHabitId != habitId) {
+            lastCountCompletionIdentity = null
+            lastCheckCompletionSource = null
             reactivationGeneration++
             reactivationRequest = null
             _uiState.value = HabitDetailUiState(habitId = habitId, isLoading = true)
@@ -117,6 +157,8 @@ class HabitDetailViewModel @Inject constructor(
         if (currentHabitId == habitId) return
         habitLoadJob?.cancel()
         currentHabitId = habitId
+
+        if (!readsEnabled) return
 
         habitLoadJob = viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, habitId = habitId)
@@ -128,7 +170,8 @@ class HabitDetailViewModel @Inject constructor(
                 combine(habitRepository.getAllCompletions(), habitRepository.oneTimeChanges,
                     habitRepository.countChanges, preferencesManager.dateChangeTrigger) { rows, _, _, _ -> rows },
                 habitPreferences?.changes ?: kotlinx.coroutines.flow.flowOf(Unit)
-            ) { habit, allCompletions, _ ->
+            ) { habit, allCompletions, _ -> habit to allCompletions }
+                .mapLatest { (habit, allCompletions) ->
                 val notificationEnabled = true
                 try {
                 val habitCompletions = allCompletions.filter { it.habitId == habitId }
@@ -218,11 +261,12 @@ class HabitDetailViewModel @Inject constructor(
                 }
                 } catch (error: Exception) {
                     if (error is kotlinx.coroutines.CancellationException) throw error
+                    if (error is com.dayforge.data.repository.HabitReadSnapshotChanged) throw error
                     android.util.Log.e("HabitDetail", "Cannot read personal data; retry remains available", error)
                     LoadResult(null, null, emptyList(), emptyList(), 0, emptyList(), notificationEnabled,
                         errorMessage = error.message ?: "HABIT_READ_UNAVAILABLE")
                 }
-            }.catch { error ->
+            }.retryChangedHabitSnapshot().catch { error ->
                 if (error is kotlinx.coroutines.CancellationException) throw error
                 android.util.Log.e("HabitDetail", "Read source failed; explicit retry restarts the subscription", error)
                 emit(LoadResult(null, null, emptyList(), emptyList(), 0, emptyList(), true,
@@ -239,12 +283,32 @@ class HabitDetailViewModel @Inject constructor(
                     return@collect
                 }
                 if (captured != null && captured.value != result.habit) return@collect
+                val countIdentity = try {
+                    result.countHistory?.actionIdentity ?: result.habit
+                        ?.takeIf { it.appearance == null && it.habitType == HabitType.COUNTING }
+                        ?.let { habitRepository.legacyCountIdentity(it) }
+                } catch (error: Exception) {
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    _uiState.value = HabitDetailUiState(habitId = habitId, isLoading = false, readError = true,
+                        errorMessage = error.message)
+                    return@collect
+                }
                 val preference = try { result.habit?.let { habitPreferences?.read(it) } }
                 catch (error: Exception) {
                     if (error is kotlinx.coroutines.CancellationException) throw error
                     _uiState.value = HabitDetailUiState(habitId = habitId, isLoading = false, readError = true,
                         errorMessage = error.message)
                     return@collect
+                }
+                val staleCountUndo = countIdentity != null && lastCountCompletionIdentity?.let {
+                    !sameCountScope(it, countIdentity)
+                } == true
+                if (staleCountUndo) lastCountCompletionIdentity = null
+                val checkIdentity = result.recurringSnapshot?.checkHistory?.actionIdentity
+                val staleCheckUndo = lastCheckCompletionSource?.let { !it.accepts(checkIdentity) } == true
+                if (staleCheckUndo) lastCheckCompletionSource = null
+                else lastCheckCompletionSource?.takeIf { it.successor == checkIdentity }?.let {
+                    lastCheckCompletionSource = it.copy(successorDisplayed = true)
                 }
                 _uiState.value = _uiState.value.copy(
                     habit = result.habit,
@@ -258,10 +322,13 @@ class HabitDetailViewModel @Inject constructor(
                     preferenceClaim = preference?.claim,
                     oneTimeStatus = result.oneTimeStatus,
                     countHistory = result.countHistory,
+                    countActionIdentity = countIdentity,
+                    checkActionIdentity = checkIdentity,
                     activityRate = result.recurringSnapshot?.activityRate ?: result.habit?.activityRate ?: 100,
                     errorMessage = result.errorMessage,
                     readError = result.errorMessage != null,
                     lastCompletionId = if (result.oneTimeStatus != null) result.oneTimeStatus.completionId
+                        else if (staleCountUndo || staleCheckUndo) null
                         else _uiState.value.lastCompletionId,
                     isLoading = false
                 )
@@ -438,13 +505,28 @@ class HabitDetailViewModel @Inject constructor(
 
     fun logCompletion(value: Int = 1) {
         val habitId = currentHabitId ?: return
-        val displayed = _uiState.value.habit
+        val displayed = _uiState.value.habit ?: return
+        if (_uiState.value.readError) return
         val authority = _uiState.value.writeAuthority
-        launchCompletion {
-            val completionId = if (displayed?.appearance != null && displayed.completionPolicy == "recurring")
-                habitRepository.logCompletion(context, habitId, value, requireNotNull(authority), displayed.uuid)
-            else habitRepository.logCompletion(context, habitId, value)
-            if (currentHabitId == habitId) {
+        val identity = _uiState.value.countActionIdentity
+        val checkIdentity = _uiState.value.checkActionIdentity
+        launchCompletion(identity, displayed.habitType == HabitType.COUNTING) {
+            if (displayed.appearance != null && displayed.completionPolicy == "recurring" && displayed.habitType == HabitType.CHECK_IN)
+                requireNotNull(checkIdentity) { "CHECK_ACTION_REQUIRED" }
+            val checkSuccessor = checkIdentity?.completionSuccessor(displayed)
+            val completionId = if (displayed.appearance != null && displayed.completionPolicy == "recurring")
+                habitRepository.logCompletion(context, habitId, value, requireNotNull(authority), displayed.uuid,
+                    countIdentity = identity, checkIdentity = checkIdentity)
+            else habitRepository.logCompletion(context, habitId, value, countIdentity = identity)
+            // A precomputed successor is never evidence that a cancelled/unknown write committed.
+            val checkSource = checkIdentity?.let {
+                CheckCompletionSource(completionId, it, requireNotNull(checkSuccessor),
+                    successorDisplayed = _uiState.value.checkActionIdentity == checkSuccessor)
+            }
+            if (currentHabitId == habitId && completionId != 0L && isCurrentCountDisplay(identity) &&
+                (checkSource == null || checkSource.accepts(_uiState.value.checkActionIdentity))) {
+                lastCountCompletionIdentity = identity
+                lastCheckCompletionSource = checkSource
                 _uiState.value = _uiState.value.copy(
                     lastCompletionId = completionId
                 )
@@ -454,12 +536,32 @@ class HabitDetailViewModel @Inject constructor(
 
     fun undoCompletion() {
         val habitId = currentHabitId ?: return
+        val displayed = _uiState.value.habit ?: return
+        if (_uiState.value.readError) return
         val completionId = _uiState.value.lastCompletionId ?: return
         val authority = _uiState.value.oneTimeStatus?.authority
         val recurringAuthority = _uiState.value.writeAuthority
-        launchCompletion {
-            habitRepository.undoCompletion(context, completionId, authority, recurringAuthority)
-            if (currentHabitId == habitId && _uiState.value.lastCompletionId == completionId) {
+        val identity = _uiState.value.countActionIdentity
+        val isTypedCheck = displayed.habitType == HabitType.CHECK_IN && displayed.appearance != null &&
+            displayed.completionPolicy == "recurring"
+        val checkSource = if (isTypedCheck) lastCheckCompletionSource?.takeIf {
+            it.completionId == completionId && it.accepts(_uiState.value.checkActionIdentity)
+        } ?: return else null
+        // A fresh authority may validate the saved successor, but cannot define a new undo identity.
+        val checkIdentity = checkSource?.successor
+        val undoAuthority = if (checkSource != null && _uiState.value.checkActionIdentity != checkIdentity)
+            null else recurringAuthority
+        if (displayed.habitType == HabitType.COUNTING && countActions != null &&
+            (identity == null || lastCountCompletionIdentity?.let { sameCountScope(it, identity) } != true)) return
+        launchCompletion(identity, displayed.habitType == HabitType.COUNTING) {
+            if (displayed.appearance != null && displayed.completionPolicy == "recurring" && displayed.habitType == HabitType.CHECK_IN)
+                requireNotNull(checkIdentity) { "CHECK_ACTION_REQUIRED" }
+            habitRepository.undoCompletion(context, completionId, authority, undoAuthority,
+                countIdentity = identity, checkIdentity = checkIdentity)
+            if (currentHabitId == habitId && _uiState.value.lastCompletionId == completionId && isCurrentCountDisplay(identity) &&
+                (checkSource == null || checkSource.accepts(_uiState.value.checkActionIdentity))) {
+                lastCountCompletionIdentity = null
+                lastCheckCompletionSource = null
                 _uiState.value = _uiState.value.copy(
                     lastCompletionId = null
                 )
@@ -467,14 +569,35 @@ class HabitDetailViewModel @Inject constructor(
         }
     }
 
-    private fun launchCompletion(block: suspend () -> Unit) {
-        viewModelScope.launch {
+    private val completionActions = com.dayforge.ui.InFlightActions()
+    val busyHabitIds = countActions?.let { gate ->
+        combine(completionActions.active, gate.busyHabitIds) { local, shared -> local + shared }
+            .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, emptySet())
+    } ?: completionActions.active
+
+    private fun isCurrentCountDisplay(identity: com.dayforge.domain.model.CountActionIdentity?): Boolean =
+        identity == null || _uiState.value.countActionIdentity?.let {
+            (countActions == null || countActions.isCurrent(identity)) && sameCountScope(it, identity)
+        } == true
+
+    private fun sameCountScope(first: com.dayforge.domain.model.CountActionIdentity,
+        second: com.dayforge.domain.model.CountActionIdentity) = first.session == second.session &&
+        first.deviceId == second.deviceId && first.habitId == second.habitId &&
+        first.habitUuid == second.habitUuid && first.roundHead == second.roundHead
+
+    private fun launchCompletion(identity: com.dayforge.domain.model.CountActionIdentity? = null,
+        isCount: Boolean = false, block: suspend () -> Unit) {
+        val id = currentHabitId ?: return
+        val operation: suspend () -> Unit = {
             try { block() }
             catch (error: Exception) {
                 if (error is kotlinx.coroutines.CancellationException) throw error
                 _uiState.value = _uiState.value.copy(errorMessage = error.message)
             }
         }
+        if (isCount && countActions != null) {
+            if (identity != null) countActions.launch(viewModelScope, identity, operation)
+        } else completionActions.launch(viewModelScope, id, block = operation)
     }
 
     /**

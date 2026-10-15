@@ -140,6 +140,7 @@ fun AdminScreen(
                     ) {
                         items(users, key = { "user_${it.id}" }) { user ->
                             UserCard(
+                                enabled = !isLoading && !tokensLoading,
                                 user = user,
                                 isSelected = selectedUser?.id == user.id,
                                 onToggleStatus = { viewModel.toggleUserStatus(user) },
@@ -153,6 +154,7 @@ fun AdminScreen(
                             item(key = "token_header") {
                                 Spacer(modifier = Modifier.height(8.dp))
                                 TokenManagementHeader(
+                                    enabled = !tokensLoading && !isLoading,
                                     username = selectedUser!!.username,
                                     onDismiss = { viewModel.dismissSelectedUser() },
                                     onCreateToken = { showCreateTokenDialog = true },
@@ -184,7 +186,7 @@ fun AdminScreen(
                                 items(userTokens, key = { "token_${it.id}" }) { token ->
                                     AdminTokenCard(
                                         token = token,
-                                        onDelete = { showDeleteTokenDialog = token }
+                                        onDelete = { if (!tokensLoading) showDeleteTokenDialog = token }
                                     )
                                 }
                             }
@@ -192,11 +194,15 @@ fun AdminScreen(
                     }
                 }
             }
+            if (isLoading && users.isNotEmpty()) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
         }
     }
 
     if (resetUser != null) {
         ResetPasswordDialog(
+            busy = isLoading,
             username = resetUser!!.username,
             passwordInput = resetPasswordInput,
             onPasswordChange = { viewModel.onResetPasswordInputChange(it) },
@@ -207,6 +213,7 @@ fun AdminScreen(
 
     if (showCreateUserDialog) {
         CreateUserDialog(
+            busy = isLoading,
             onDismiss = { showCreateUserDialog = false },
             onCreate = viewModel::createUser
         )
@@ -215,6 +222,7 @@ fun AdminScreen(
     // Token dialogs
     if (showCreateTokenDialog) {
         AdminCreateTokenDialog(
+            busy = tokensLoading,
             onDismiss = { showCreateTokenDialog = false },
             onCreate = { name, expiresInDays ->
                 viewModel.createUserToken(name, expiresInDays)
@@ -229,7 +237,7 @@ fun AdminScreen(
             title = { Text(stringResource(R.string.token_delete_title)) },
             text = { Text(stringResource(R.string.token_delete_message, token.name)) },
             confirmButton = {
-                TextButton(onClick = {
+                TextButton(enabled = !tokensLoading, onClick = {
                     viewModel.deleteUserToken(token.id)
                     showDeleteTokenDialog = null
                 }) {
@@ -254,6 +262,7 @@ fun AdminScreen(
 
 @Composable
 private fun CreateUserDialog(
+    busy: Boolean = false,
     onDismiss: () -> Unit,
     onCreate: (String, String, Boolean) -> Unit
 ) {
@@ -261,7 +270,7 @@ private fun CreateUserDialog(
     var password by remember { mutableStateOf("") }
     var isAdmin by remember { mutableStateOf(false) }
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!busy) onDismiss() },
         title = { Text(stringResource(R.string.admin_create_user)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -285,12 +294,13 @@ private fun CreateUserDialog(
             }
         },
         confirmButton = {
-            Button(onClick = { onCreate(username, password, isAdmin) }) {
-                Text(stringResource(R.string.action_create))
+            Button(enabled = !busy, onClick = { onCreate(username, password, isAdmin) }) {
+                if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                else Text(stringResource(R.string.action_create))
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
+            TextButton(enabled = !busy, onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
         }
     )
 }
@@ -302,9 +312,11 @@ private fun UserCard(
     onToggleStatus: () -> Unit,
     onResetPassword: () -> Unit,
     onSelect: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
 ) {
     Card(
+        enabled = enabled,
         onClick = onSelect,
         modifier = modifier.fillMaxWidth(),
         colors = if (isSelected) CardDefaults.cardColors(
@@ -349,13 +361,14 @@ private fun UserCard(
                     }
                 }
                 Switch(
+                    enabled = enabled,
                     checked = user.isActive,
                     onCheckedChange = { onToggleStatus() }
                 )
             }
             Spacer(modifier = Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onResetPassword) {
+                OutlinedButton(enabled = enabled, onClick = onResetPassword) {
                     Text(stringResource(R.string.admin_reset_password))
                 }
             }
@@ -365,6 +378,7 @@ private fun UserCard(
 
 @Composable
 private fun TokenManagementHeader(
+    enabled: Boolean = true,
     username: String,
     onDismiss: () -> Unit,
     onCreateToken: () -> Unit,
@@ -386,7 +400,7 @@ private fun TokenManagementHeader(
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
-                IconButton(onClick = onDismiss) {
+                IconButton(enabled = enabled, onClick = onDismiss) {
                     Icon(
                         Icons.Default.Close,
                         contentDescription = stringResource(R.string.action_cancel)
@@ -395,7 +409,7 @@ private fun TokenManagementHeader(
             }
             Spacer(modifier = Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilledTonalButton(onClick = onCreateToken) {
+                FilledTonalButton(enabled = enabled, onClick = onCreateToken) {
                     Icon(
                         Icons.Default.Add,
                         contentDescription = null,
@@ -404,7 +418,7 @@ private fun TokenManagementHeader(
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(stringResource(R.string.token_create))
                 }
-                OutlinedButton(onClick = onRefresh) {
+                OutlinedButton(enabled = enabled, onClick = onRefresh) {
                     Icon(
                         Icons.Default.Refresh,
                         contentDescription = null,
@@ -475,6 +489,7 @@ private fun AdminTokenCard(
 
 @Composable
 private fun AdminCreateTokenDialog(
+    busy: Boolean = false,
     onDismiss: () -> Unit,
     onCreate: (String, Int?) -> Unit
 ) {
@@ -512,7 +527,7 @@ private fun AdminCreateTokenDialog(
                         onCreate(name, days)
                     }
                 },
-                enabled = name.isNotBlank()
+                enabled = name.isNotBlank() && !busy
             ) {
                 Text(stringResource(R.string.action_create))
             }
@@ -574,6 +589,7 @@ private fun AdminCreatedTokenDialog(
 
 @Composable
 private fun ResetPasswordDialog(
+    busy: Boolean = false,
     username: String,
     passwordInput: String,
     onPasswordChange: (String) -> Unit,
@@ -581,10 +597,11 @@ private fun ResetPasswordDialog(
     onDismiss: () -> Unit
 ) {
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!busy) onDismiss() },
         title = { Text(stringResource(R.string.admin_reset_password_title, username)) },
         text = {
             OutlinedTextField(
+                enabled = !busy,
                 value = passwordInput,
                 onValueChange = onPasswordChange,
                 label = { Text(stringResource(R.string.admin_new_password)) },
@@ -594,12 +611,13 @@ private fun ResetPasswordDialog(
             )
         },
         confirmButton = {
-            TextButton(onClick = onConfirm) {
-                Text(stringResource(R.string.admin_confirm))
+            TextButton(enabled = !busy, onClick = onConfirm) {
+                if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                else Text(stringResource(R.string.admin_confirm))
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(enabled = !busy, onClick = onDismiss) {
                 Text(stringResource(R.string.action_cancel))
             }
         }

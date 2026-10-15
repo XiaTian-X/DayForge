@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flow
@@ -294,6 +295,10 @@ class PreferencesManager @Inject constructor(
 
     internal val habitPreferenceChanges: Flow<Unit> = dataStore.data.map { Unit }
 
+    /** One promotion/read for fields consumed together; still authenticates the actor snapshot. */
+    internal suspend fun readHabitPreferences(session: LocalDataSession, uuid: String): HabitDevicePreferences =
+        habitPreference(session, uuid).first()
+
     private fun hasHabitPreferenceSession(values: Preferences, session: LocalDataSession): Boolean = try {
         requireNotNull(tokens) { "HABIT_PREFERENCE_TOKENS_REQUIRED" }.requireHabitPreferenceSession(values, session); true
     } catch (error: kotlinx.coroutines.CancellationException) { throw error }
@@ -421,7 +426,7 @@ class PreferencesManager @Inject constructor(
      */
     val dateChangeTrigger: Flow<Long> = dataStore.data.map { prefs ->
         prefs[LAST_SEEN_DATE_KEY] ?: 0L
-    }.combine(calendar.changes) { date, _ -> date }
+    }.distinctUntilChanged().combine(calendar.changes) { date, _ -> date }
 
     /**
      * Updates the last seen date to today.

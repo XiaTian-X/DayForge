@@ -34,7 +34,8 @@ class NestedHabitTreeBuilder @Inject constructor(
     private val oneTimeRepository: com.dayforge.data.repository.OneTimeRepository? = null,
     private val timerWriter: com.dayforge.data.repository.NextTimerWriter? = null,
     private val countHistoryReader: com.dayforge.data.repository.CountHistoryReader? = null,
-    private val checkHistoryReader: com.dayforge.data.repository.CheckHistoryReader? = null
+    private val checkHistoryReader: com.dayforge.data.repository.CheckHistoryReader? = null,
+    private val countActions: com.dayforge.data.repository.CountActionReader? = null
 ) {
 
     suspend fun build(
@@ -122,7 +123,8 @@ class NestedHabitTreeBuilder @Inject constructor(
                     history.qualifiedDates.toList()), isCheckInAllowed = allowed,
                 nextCheckInDate = if (allowed) null else ScheduleValidator.getNextCheckInDate(child.schedule, child.createdAt),
                 targetProgress = if (child.targetCycles == null) 0 else history.qualifiedDates.size,
-                hasFailed = com.dayforge.domain.service.FailureCheckerUtils.checkHasFailed(child, history))
+                hasFailed = com.dayforge.domain.service.FailureCheckerUtils.checkHasFailed(child, history),
+                checkActionIdentity = history.actionIdentity)
         }
         if (child.habitType == HabitType.TIMER && child.appearance != null) {
             val snapshot = requireNotNull(timerWriter).statusSnapshot(child)
@@ -222,6 +224,8 @@ class NestedHabitTreeBuilder @Inject constructor(
             },
             targetProgress = targetProgress,
             hasFailed = hasFailed,
+            countActionIdentity = if (child.habitType == HabitType.COUNTING && child.appearance == null)
+                countActions?.legacy(child) else null,
             timerAuthority = if (child.habitType == HabitType.TIMER && child.appearance != null)
                 requireNotNull(timerWriter).capture(child.id, child) else null
         )

@@ -46,6 +46,10 @@ class TimerHistoryReader @Inject constructor(private val database: HabitDatabase
     internal suspend fun readInTransaction(expected: HabitEntity, today: LocalDate): TimerHistory =
         readEvidenceInTransaction(expected, today, false)
 
+    internal suspend fun readInTransaction(expected: HabitEntity, today: LocalDate,
+        scope: RecurringDisplayReadScope): TimerHistory =
+        readEvidenceInTransaction(expected, today, false, displayScope = scope)
+
     /** One history audit also supplies goal progress. A local endTime alone is not a stop proof. */
     internal suspend fun completedInTransaction(habit: HabitEntity, source: TimerActionAuthority): TimerHistory {
         val history = readInTransaction(habit, DateTimeUtils.today())
@@ -119,24 +123,27 @@ class TimerHistoryReader @Inject constructor(private val database: HabitDatabase
         TimerRecoveryEvidence(readEvidenceInTransaction(expected, today, true, scope))
 
     private suspend fun readEvidenceInTransaction(expected: HabitEntity, today: LocalDate, recovery: Boolean,
-        recoveryScope: ReplicaFactRecoveryReadScope? = null): TimerHistory {
+        recoveryScope: ReplicaFactRecoveryReadScope? = null,
+        displayScope: RecurringDisplayReadScope? = null): TimerHistory {
         check(database.inTransaction()) { "TIMER_READ_TRANSACTION_REQUIRED" }
         check(recoveryScope == null || recovery)
-        val borrowed = recoveryScope?.borrow(database, tokens)
+        check(displayScope == null || !recovery && recoveryScope == null)
+        val borrowed = recoveryScope?.borrow(database, tokens) ?: displayScope?.borrow(database, tokens)
         suspend fun observedAccess() = if (recovery) tokens.replicaObservationCoreAccess() else tokens.localCoreWriteAccess()
         val access = borrowed?.first ?: requireNotNull(observedAccess()) { "TIMER_SESSION_CHANGED" }
         val habit = requireNotNull(database.habitDao().getHabitById(expected.id))
+        if (!recovery && habit.uuid == expected.uuid && habit != expected)
+            throw HabitReadSnapshotChanged("TIMER_ACTIVITY_CHANGED")
         check(habit == expected && habit.appearance != null &&
             (if (recovery) habit.habitType != HabitType.GOAL else habit.habitType == HabitType.TIMER) &&
             habit.completionPolicy == "recurring") { "TIMER_ACTIVITY_CHANGED" }
         require((recovery || habit.targetValue > 0) && isContractUuid(habit.uuid)) { "TIMER_ACTIVITY_INVALID" }
         val scope = if (borrowed != null) borrowed.second
             else NextCoreLocalIntentStore(database, tokens, sessions).captureDisplayedRoundsInTransaction()
-        val metadata = scope?.let { Json.decodeFromString(ChallengeMetadata.serializer(), it.metadataJson) }
-        val checkpoint = metadata?.checkpoints?.singleOrNull { it.head.activityUuid == habit.uuid }
-        val head = scope?.let { it.pendingRestarts[habit.uuid]?.head ?: checkpoint?.head ?:
+        val metadata = scope?.completionRounds
+        val head = scope?.let { it.pendingRestarts[habit.uuid]?.head ?: metadata?.head(habit.uuid) ?:
             requireNotNull(it.pendingInitials[habit.uuid]) { "TIMER_ROUND_REQUIRED" }.head }
-        val known = checkpoint?.records?.mapTo(hashSetOf()) { it.head }.orEmpty() + listOfNotNull(scope?.pendingInitials?.get(habit.uuid)?.head)
+        val known = metadata?.knownHeads(habit.uuid).orEmpty() + listOfNotNull(scope?.pendingInitials?.get(habit.uuid)?.head)
         val originals = originalStarts(habit.uuid)
         auditStorage(habit.id)
         val logs = database.timeLogDao().getAllTimeLogsForHabit(habit.id)
@@ -146,16 +153,20 @@ class TimerHistoryReader @Inject constructor(private val database: HabitDatabase
         val totals = linkedMapOf<LocalDate, Long>()
         var active: TimeLogEntity? = null
         var activeSegments = emptyList<TimerSegmentEntity>()
-        for (log in logs) {
+        for (chunk in logs.chunked(128)) {
+          val acceptedRows = acceptedFactRows(database, chunk.map { it.uuid })
+          val children = TimerHistoryRows.read(database, chunk.map { it.uuid })
+          for (log in chunk) {
             currentCoroutineContext().ensureActive()
             check(log.uuid !in reverted) { "TIMER_REVERTED_FACT_PRESENT" }
-            val shadow = accepted(log.uuid)
+            val shadow = if (acceptedRows == null) accepted(log.uuid)
+                else acceptedRows[log.uuid]?.let { decodeAccepted(log.uuid, it, true) }
             val sessionId = shadow?.payload?.getValue("metadata")?.jsonObject?.getValue("timer_session_id")?.let {
                 require(it is JsonPrimitive && it.isString && isContractUuid(it.content)); it.content
             } ?: log.uuid
             val original = originals[sessionId]
-            val segments = database.timeLogDao().getTimerSegments(log.uuid)
-            val allocations = database.timeLogDao().getDayAllocations(log.uuid)
+            val segments = children.segments(database, log.uuid)
+            val allocations = children.allocations(database, log.uuid)
             check(isContractUuid(log.uuid) && log.durationSeconds in 0..86_400 && log.timerActiveElapsedMillis in 0..86_400_000 &&
                 log.timerControlGeneration >= 0 && log.timerNextCommandSequence > 0 && log.accumulatedPauseMillis >= 0 &&
                 log.timerTimezone in ZoneId.getAvailableZoneIds()) { "TIMER_STORAGE_INVALID" }
@@ -245,12 +256,11 @@ class TimerHistoryReader @Inject constructor(private val database: HabitDatabase
                 }
             }
             val birth = if (scope == null) null else {
-                val type = if (shadow == null) "timer_session" else "activity_event"
-                val acceptedBirth = metadata!!.births.singleOrNull { it.entityType == type && it.entityUuid == log.uuid }?.head
+                val acceptedBirth = if (shadow == null) metadata!!.timerBirth(log.uuid) else metadata!!.birth(log.uuid)
                 acceptedBirth?.let { require(it.activityUuid == habit.uuid && it in known) { "TIMER_ROUND_INVALID" } }
                 if (shadow != null) {
                     require(shadow.payload["external_event_id"] == JsonPrimitive(sessionId)) { "TIMER_SESSION_ID_CHANGED" }
-                    val sessionBirth = metadata.births.singleOrNull { it.entityType == "timer_session" && it.entityUuid == sessionId }?.head
+                    val sessionBirth = metadata.timerBirth(sessionId)
                     require(sessionBirth != null && sessionBirth == acceptedBirth) { "TIMER_SESSION_BIRTH_REQUIRED" }
                 }
                 source?.let { require(it.context.head in known || it.context.head == pendingHead) { "TIMER_ROUND_INVALID" }
@@ -275,8 +285,10 @@ class TimerHistoryReader @Inject constructor(private val database: HabitDatabase
                     }
                 }
             }
+          }
         }
         if (recoveryScope != null) recoveryScope.borrow(database, tokens)
+        else if (displayScope != null) displayScope.borrow(database, tokens)
         else check(observedAccess() == access && (scope == null || tokens.localSyncAccess() == scope.access)) { "TIMER_SESSION_CHANGED" }
         return TimerHistory(today, Math.multiplyExact(habit.targetValue.toLong(), 60L), totals, visible, active, activeSegments, head)
     }
@@ -307,9 +319,9 @@ class TimerHistoryReader @Inject constructor(private val database: HabitDatabase
         val originHints = NextRequestSql.boundedRowHashes(sql, "next_request_origins", "requestId", ids, NEXT_TIMER)
         if (originHints == null) {
             for (id in ids) {
-                requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_TIMER, id)))
+                requireNotNull(NextRequestSql.rowHash(database, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_TIMER, id)))
                 val row = requireNotNull(database.nextRequestDao().origin(NEXT_TIMER, id))
-                val hash = NextRequestSql.rowHash(sql, "timer_command_outbox", "id=?", arrayOf(row.queueId))
+                val hash = NextRequestSql.rowHash(database, "timer_command_outbox", "id=?", arrayOf(row.queueId))
                 collectStart(row, decodeNextTimerIntent(row.intentJson),
                     hash?.let { database.timeLogDao().getTimerCommand(row.queueId) }, hash, activity, starts)
             }
@@ -331,7 +343,7 @@ class TimerHistoryReader @Inject constructor(private val database: HabitDatabase
         val queueHints = NextRequestSql.boundedRowHashes(sql, "timer_command_outbox", "id", queueIds)
         if (queueHints == null) {
             for (row in rows) {
-                val hash = NextRequestSql.rowHash(sql, "timer_command_outbox", "id=?", arrayOf(row.queueId))
+                val hash = NextRequestSql.rowHash(database, "timer_command_outbox", "id=?", arrayOf(row.queueId))
                 collectStart(row, decoded.getValue(row.requestId),
                     hash?.let { database.timeLogDao().getTimerCommand(row.queueId) }, hash, activity, starts)
             }
@@ -366,8 +378,13 @@ class TimerHistoryReader @Inject constructor(private val database: HabitDatabase
     }
 
     private suspend fun accepted(id: String, duration: Boolean = true): SyncV2Change? {
-        NextRequestSql.rowHash(sql, "sync_entity_state", "entityType=? AND entityUuid=?", arrayOf("activity_event", id)) ?: return null
+        NextRequestSql.rowHash(database, "sync_entity_state", "entityType=? AND entityUuid=?", arrayOf("activity_event", id)) ?: return null
         val state = requireNotNull(database.syncOutboxDao().getState("activity_event", id))
+        return decodeAccepted(id, state, duration)
+    }
+
+    private fun decodeAccepted(id: String, state: com.dayforge.data.local.entity.SyncEntityStateEntity,
+        duration: Boolean): SyncV2Change {
         check(!state.deleted && state.payloadJson != null && state.payloadHash == syncPayloadHash(state.payloadJson)) { "TIMER_FACT_INVALID" }
         val body = Json.parseToJsonElement(state.payloadJson).jsonObject
         return SyncV2Change(0, "activity_event", id, "upsert", state.revision, body,
@@ -392,7 +409,7 @@ class TimerHistoryReader @Inject constructor(private val database: HabitDatabase
             "(SELECT commandId FROM timer_command_outbox WHERE sessionUuid=?))", arrayOf(NEXT_TIMER, "%$session%", session))
             .use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
         return ids.mapNotNull { id ->
-            requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_TIMER, id)))
+            requireNotNull(NextRequestSql.rowHash(database, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_TIMER, id)))
             val row = requireNotNull(database.nextRequestDao().origin(NEXT_TIMER, id))
             val command = decodeNextTimerIntent(row.intentJson).command
             if (command.sessionId == session) row to command else null
@@ -402,10 +419,10 @@ class TimerHistoryReader @Inject constructor(private val database: HabitDatabase
     /** Verify retained original journals with their OWN capture, not today's device/epoch. Read-only. */
     private suspend fun auditCommand(origin: NextRequestOriginEntity, command: TimerCommandRequest, account: String) {
         val args = arrayOf<Any>(NEXT_TIMER, origin.requestId)
-        val originHash = requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", args))
+        val originHash = requireNotNull(NextRequestSql.rowHash(database, "next_request_origins", "kind=? AND requestId=?", args))
         require(origin.accountId == account && origin.protocol == 5 && origin.queueId > 0 && command.commandId == origin.requestId)
-        val transmissionHash = NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", args)
-        val acceptanceHash = NextRequestSql.rowHash(sql, "next_acceptances", "kind=? AND requestId=?", args)
+        val transmissionHash = NextRequestSql.rowHash(database, "next_transmissions", "kind=? AND requestId=?", args)
+        val acceptanceHash = NextRequestSql.rowHash(database, "next_acceptances", "kind=? AND requestId=?", args)
         val sent = if (transmissionHash == null) null else requireNotNull(database.nextRequestDao().transmission(NEXT_TIMER, origin.requestId)).also {
             require(it.protocol == 5 && it.accountId == account && it.queueId == origin.queueId &&
                 (origin.serverInstanceId == null || it.serverInstanceId == origin.serverInstanceId && it.syncEpoch == origin.syncEpoch) &&
@@ -413,7 +430,7 @@ class TimerHistoryReader @Inject constructor(private val database: HabitDatabase
             require(validateNextTimerEnvelope(origin.intentJson, it.wireBytes, it.deviceId) == command)
         }
         if (acceptanceHash == null) {
-            require(NextRequestSql.rowHash(sql, "timer_command_outbox", "id=?", arrayOf(origin.queueId)) == origin.sourceHash)
+            require(NextRequestSql.rowHash(database, "timer_command_outbox", "id=?", arrayOf(origin.queueId)) == origin.sourceHash)
             require(timerRequest(requireNotNull(database.timeLogDao().getTimerCommand(origin.queueId))) == command.copy(startPolicy = null))
         } else {
             requireNotNull(sent)

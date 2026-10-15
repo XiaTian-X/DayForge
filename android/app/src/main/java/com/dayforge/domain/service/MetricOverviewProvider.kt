@@ -4,16 +4,18 @@ import com.dayforge.data.repository.MetricRepository
 import com.dayforge.domain.model.MetricWithLatestValue
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.mapLatest
 import javax.inject.Inject
 
 /** Builds the shared active-metric overview consumed by Dashboard and Metrics screens. */
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class MetricOverviewProvider @Inject constructor(
     private val metricRepository: MetricRepository
 ) {
     fun observe(): Flow<List<MetricWithLatestValue>> = combine(
         metricRepository.observeActiveMetrics(),
         metricRepository.observeLatestMetricLog()
-    ) { metrics, _ ->
+    ) { metrics, _ -> metrics }.mapLatest { metrics ->
         val endExclusive = System.currentTimeMillis()
         val startInclusive = endExclusive - RECENT_LOG_WINDOW_MILLIS
         metrics.map { metric ->

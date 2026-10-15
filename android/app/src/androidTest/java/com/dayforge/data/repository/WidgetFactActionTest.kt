@@ -166,6 +166,32 @@ class WidgetFactActionTest : NextObjectEditorFixture() {
         assertEquals(1, db.metricLogDao().countAll())
     }
 
+    @Test fun factPromptCleanupRetryCannotDuplicateCommittedMetrics() = runBlocking<Unit> {
+        val row = checkHabit()
+        metricRepo().linkHabits(metric, setOf(row.id))
+        service().widgetAction(app, claim(row.id), "toggle")
+        val prefs = io.mockk.spyk(preferences)
+        io.mockk.coEvery { prefs.removePendingMetricHabit(any(), any()) } throws IllegalStateException("PREFERENCE_UNAVAILABLE")
+        val coordinator = LinkedMetricCoordinator(app, prefs, metricRepo(), repo(), onceRepository(), factReader = reader())
+        coordinator.showWidgetFactPrompt(claim(row.id))
+        val prompt = requireNotNull(coordinator.postCheckInState.value?.factPrompt)
+        val values = listOf(MetricValueInput(metric.id, 4.0))
+        withContext(Dispatchers.Main) {
+            assertFalse(coordinator.recordMetricValues(row.id, values, expectedFactPrompt = prompt))
+        }
+        assertEquals(1, db.metricLogDao().countAll())
+        assertEquals(values, prompt.submitted)
+        val queued = db.syncOutboxDao().getAll()
+        io.mockk.coEvery { prefs.removePendingMetricHabit(any(), any()) } coAnswers {
+            preferences.removePendingMetricHabit(firstArg(), secondArg())
+        }
+        withContext(Dispatchers.Main) {
+            assertTrue(coordinator.recordMetricValues(row.id, values, expectedFactPrompt = prompt))
+        }
+        assertEquals(1, db.metricLogDao().countAll())
+        assertEquals(queued, db.syncOutboxDao().getAll())
+    }
+
     @Test fun goalConfirmChecksOriginalFactAndPlanAndNeverArchivesAnotherAccount() = runBlocking<Unit> {
         val row = checkHabit(targetCycles = 1)
         assertTrue(service().widgetAction(app, claim(row.id), "toggle").goalReached)

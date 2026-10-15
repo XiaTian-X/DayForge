@@ -23,7 +23,9 @@ class ObjectEditAuthority internal constructor(
     internal val type: String,
     internal val original: JsonObject,
     internal val rounds: NextRoundWriteScope? = null,
-    internal val goalChildUuids: List<String>? = null
+    internal val goalChildUuids: List<String>? = null,
+    internal val capturedDeviceId: String? = null,
+    internal val completionDeviceCaptured: Boolean = false
 ) : ObjectAppearanceAuthority(session)
 
 data class ObjectEditSnapshot<T>(val value: T?, val authority: ObjectEditAuthority?)
@@ -41,37 +43,69 @@ class NextObjectEditor @Inject constructor(
 ) {
     private val producer = NextCoreLocalIntentStore(database, tokens, sessions)
 
-    internal suspend fun habit(id: Long): ObjectEditSnapshot<HabitEntity> = sessions.exclusive {
+    internal suspend fun habit(id: Long): ObjectEditSnapshot<HabitEntity> = sessions.exclusive(AccountSessionCoordinator.Work.HABIT_EDIT_READ) {
         database.withTransaction { habitInTransaction(id) }
     }
 
     /** Read participant only: caller owns the account lock and Room snapshot. */
-    internal suspend fun habitInTransaction(id: Long): ObjectEditSnapshot<HabitEntity> {
+    internal suspend fun habitInTransaction(id: Long, displayScope: RecurringDisplayReadScope? = null): ObjectEditSnapshot<HabitEntity> {
         check(database.inTransaction()) { "OBJECT_EDIT_TRANSACTION_REQUIRED" }
-        val access = tokens.localCoreWriteAccess()
+        val borrowed = displayScope?.borrow(database, tokens)
+        val access = borrowed?.first ?: tokens.localCoreWriteAccess()
         val row = database.habitDao().getVisibleHabitById(id)
         val ticket = row?.takeIf { it.appearance != null }?.let {
-            val rounds = producer.captureDisplayedRoundsInTransaction()
+            val rounds = if (borrowed != null) borrowed.second else producer.captureDisplayedRoundsInTransaction()
             ObjectEditAuthority(requireNotNull(access) { "OBJECT_EDIT_ACCESS_DENIED" }.session,
                 it.uuid, "plan_node", NextStructureMapper.writePlan(it), rounds,
                 if (rounds != null && it.habitType == com.dayforge.data.model.HabitType.GOAL)
-                    database.habitDao().getChildrenByParentUuidOnce(it.uuid).map { child -> child.uuid }.sorted() else null)
+                    database.habitDao().getChildrenByParentUuidOnce(it.uuid).map { child -> child.uuid }.sorted() else null,
+                capturedDeviceId = access.capturedDeviceId, completionDeviceCaptured = true)
         }
-        check(tokens.localCoreWriteAccess() == access) { "OBJECT_EDIT_SESSION_CHANGED" }
+        if (displayScope != null) displayScope.borrow(database, tokens)
+        else check(tokens.localCoreWriteAccess() == access) { "OBJECT_EDIT_SESSION_CHANGED" }
         return ObjectEditSnapshot(row, ticket)
     }
 
-    internal suspend fun metric(id: Long): ObjectEditSnapshot<MetricEntity> = sessions.exclusive {
+    internal suspend fun metric(id: Long): ObjectEditSnapshot<MetricEntity> = metrics(listOf(id)).single()
+
+    /** One displayed prompt owns one snapshot, not one account/round audit per metric.
+     * Tickets still carry each original structure; writers always revalidate them separately.
+     */
+    internal suspend fun metrics(ids: List<Long>): List<ObjectEditSnapshot<MetricEntity>> = sessions.exclusive(AccountSessionCoordinator.Work.METRIC_EDIT_READ) {
         val access = tokens.localCoreWriteAccess()
         database.withTransaction {
-            val row = database.metricDao().getVisibleMetricById(id)
-            val ticket = row?.takeIf { it.appearance != null }?.let {
-                ObjectEditAuthority(requireNotNull(access) { "OBJECT_EDIT_ACCESS_DENIED" }.session,
-                    it.uuid, "metric", NextStructureMapper.writeMetric(it), producer.captureDisplayedRoundsInTransaction())
+            val rows = ids.distinct().associateWith { database.metricDao().getVisibleMetricById(it) }
+            val rounds = if (rows.values.any { it?.appearance != null }) {
+                requireNotNull(access) { "OBJECT_EDIT_ACCESS_DENIED" }
+                producer.captureDisplayedRoundsInTransaction().also {
+                    check(it == null || it.access.session == access.session &&
+                        it.access.deviceId == access.capturedDeviceId && it.access.capabilities == access.capabilities) {
+                        "OBJECT_EDIT_SESSION_CHANGED"
+                    }
+                }
+            } else null
+            val snapshots = rows.mapValues { (_, row) ->
+                ObjectEditSnapshot(row, row?.takeIf { it.appearance != null }?.let {
+                    ObjectEditAuthority(requireNotNull(access).session, it.uuid, "metric",
+                        NextStructureMapper.writeMetric(it), rounds)
+                })
             }
             check(tokens.localCoreWriteAccess() == access) { "OBJECT_EDIT_SESSION_CHANGED" }
-            ObjectEditSnapshot(row, ticket)
+            ids.map { snapshots.getValue(it) }
         }
+    }
+
+    /** Participant in one completion-prompt snapshot; never acquires the account lock again. */
+    internal suspend fun metricsInTransaction(ids: List<Long>, scope: RecurringDisplayReadScope): List<ObjectEditSnapshot<MetricEntity>> {
+        val (access, rounds) = scope.borrow(database, tokens)
+        val rows = ids.distinct().associateWith { database.metricDao().getVisibleMetricById(it) }
+        val snapshots = rows.mapValues { (_, row) ->
+            ObjectEditSnapshot(row, row?.takeIf { it.appearance != null }?.let {
+                ObjectEditAuthority(access.session, it.uuid, "metric", NextStructureMapper.writeMetric(it), rounds)
+            })
+        }
+        scope.borrow(database, tokens)
+        return ids.map { snapshots.getValue(it) }
     }
 
     internal suspend fun <T> editHabit(edited: HabitEntity, ticket: ObjectEditAuthority,
@@ -121,11 +155,21 @@ class NextObjectEditor @Inject constructor(
 
     /** Existing-object business mutations preserve appearance; no file work or nested account lock. */
     internal suspend fun <T> mutateHabit(expected: HabitEntity, authority: ObjectEditAuthority? = null,
+        countIdentity: com.dayforge.domain.model.CountActionIdentity? = null,
+        checkIdentity: com.dayforge.domain.model.CheckActionIdentity? = null,
         commit: suspend (HabitEntity) -> T): T {
         val ticket = authority ?: requireNotNull(habit(expected.id).authority) { "OBJECT_WRITE_TICKET_REQUIRED" }
         check(ticket.type == "plan_node" && ticket.uuid == expected.uuid &&
             ticket.original == NextStructureMapper.writePlan(expected)) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
         return write(ticket) {
+            countIdentity?.let {
+                it.requireAuthority(ticket)
+                check(tokens.localCoreWriteAccess()?.capturedDeviceId == it.deviceId) { "COUNT_SESSION_CHANGED" }
+            }
+            checkIdentity?.let {
+                it.requireAuthority(ticket)
+                check(tokens.localCoreWriteAccess()?.capturedDeviceId == it.deviceId) { "CHECK_SESSION_CHANGED" }
+            }
             NextPlanDeletionStore(database).requireWritable(ticket.uuid)
             val current = requireNotNull(database.habitDao().getHabitById(expected.id)) { "OBJECT_WRITE_NOT_FOUND" }
             check(current.uuid == ticket.uuid && NextStructureMapper.writePlan(current) == ticket.original) {
@@ -173,21 +217,22 @@ class NextObjectEditor @Inject constructor(
 
     /** Batch observations/links share one owner and transaction, including all their original intents. */
     internal suspend fun <T> mutateMetrics(expected: List<MetricEntity>, authority: ObjectEditAuthority? = null,
-        deleting: Boolean = false, commit: suspend () -> T): T {
+        deleting: Boolean = false, commit: suspend (Map<Long, MetricEntity>) -> T): T {
         require(expected.isNotEmpty() && expected.all { it.appearance != null }) { "OBJECT_WRITE_MIXED_PROTOCOL" }
         val first = expected.first()
         val ticket = authority ?: requireNotNull(metric(first.id).authority) { "OBJECT_WRITE_TICKET_REQUIRED" }
         check(ticket.type == "metric" && ticket.uuid == first.uuid &&
             ticket.original == NextStructureMapper.writeMetric(first)) { "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED" }
         return write(ticket) {
-            expected.forEach { row ->
+            val currentRows = expected.associate { row ->
                 if (!deleting) NextMetricDeletionStore(database).requireWritable(row.uuid)
                 val current = requireNotNull(database.metricDao().getMetricById(row.id)) { "OBJECT_WRITE_NOT_FOUND" }
                 check(current.uuid == row.uuid && NextStructureMapper.writeMetric(current) == NextStructureMapper.writeMetric(row)) {
                     "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED"
                 }
+                row.id to current
             }
-            commit()
+            commit(currentRows)
         }
     }
 

@@ -7,10 +7,10 @@ import com.dayforge.data.repository.HabitRepository
 import com.dayforge.domain.service.HabitStatusCalculator
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import javax.inject.Inject
@@ -22,6 +22,7 @@ import javax.inject.Inject
  * Per PROFILE-01: Shows progress display moved from Dashboard TopAppBar.
  */
 @HiltViewModel
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class ProfileViewModel @Inject constructor(
     private val habitRepository: HabitRepository,
     private val timeLogDao: TimeLogDao,
@@ -47,23 +48,24 @@ class ProfileViewModel @Inject constructor(
             habitRepository.oneTimeChanges,
             preferencesManager.dateChangeTrigger) { rows, _, _, _ -> rows },
         timeLogDao.getActiveTimeLogFlow()
-    ) { habits, completions, _ ->
-        // Calculate status for each habit
-        val stats = readMonitor.read(emptyList()) { habits.map { habit ->
-            habitStatusCalculator.calculate(habit, completions, null)
+    ) { habits, completions, _ -> habits to completions }
+        .mapLatest { (habits, completions) ->
+            // Calculate status for each habit
+            val stats = readMonitor.read(emptyList()) { habits.map { habit ->
+                habitStatusCalculator.calculate(habit, completions, null)
+            } }
+
+            // Filter eligible habits (check-in day + not failed + not goal-completed)
+            val eligibleStats = stats.filter { it.shouldCountToday }
+
+            // Count completed
+            val completed = eligibleStats.count { it.completedToday }
+            Pair(completed, eligibleStats.size)
         } }
-
-        // Filter eligible habits (check-in day + not failed + not goal-completed)
-        val eligibleStats = stats.filter { it.shouldCountToday }
-
-        // Count completed
-        val completed = eligibleStats.count { it.completedToday }
-        Pair(completed, eligibleStats.size)
-    } }
         .onEach { _isInitialized.value = true }
         .stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.Lazily,
-        initialValue = Pair(0, 0)
-    )
+            scope = viewModelScope,
+            started = com.dayforge.ui.VisibleScreenSharing,
+            initialValue = Pair(0, 0)
+        )
 }

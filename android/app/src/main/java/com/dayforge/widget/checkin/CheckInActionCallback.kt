@@ -15,10 +15,16 @@ import kotlinx.coroutines.CancellationException
 class CheckInActionCallback : ActionCallback {
     override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
         val habitId = parameters[ActionParameters.Key<Long>("habitId")] ?: return
+        var lease: com.dayforge.domain.service.CountActionGate.Lease? = null
+        var gate: com.dayforge.domain.service.CountActionGate? = null
         try {
             val claim = LegacyWidgetFactClaim.decode(requireNotNull(parameters[LEGACY_PROOF]))
             val action = parameters[ActionParameters.Key<String>("action")] ?: "toggle"
             require(claim.identity.habitId == habitId && claim.action == action) { "LEGACY_WIDGET_ACTION_CHANGED" }
+            if (action == "increment" || action == "decrement") {
+                gate = WidgetEntryPoint.from(context).countActionGate()
+                lease = gate.tryAcquire(claim.identity.session(), claim.identity.habitUuid, habitId) ?: return
+            }
             val workflow = WidgetEntryPoint.from(context).legacyFactWorkflow()
             val committed = workflow.perform(context, claim)
             if (committed.result.goalReached) {
@@ -40,6 +46,8 @@ class CheckInActionCallback : ActionCallback {
             if (error is CancellationException) throw error
             Log.w(TAG, "Expired legacy widget action", error)
             WidgetRefreshScheduler.request(context)
+        } finally {
+            lease?.let { gate?.release(it) }
         }
     }
 

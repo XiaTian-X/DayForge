@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="record_saved_refresh_failed">操作已保存，但状态或后续提示刷新失败。请刷新页面，不要重复提交。</string>
     <string name="replica_display_title">正在核对本地副本</string>
     <string name="replica_display_pending">副本恢复尚未完成，暂不显示或修改业务数据。原数据和恢复档案保留；重新核对只读取本地状态，不执行恢复。</string>
     <string name="replica_display_retry">重新核对</string>

@@ -18,6 +18,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 data class SettingsImportConfirmData(
@@ -61,14 +64,13 @@ class SettingsConfigWorkflow @Inject constructor(
     val importResult: StateFlow<Result<Unit>?> = _importResult.asStateFlow()
 
     suspend fun exportConfigToJson(): String? {
+        if (_exportProgress.value) return null
         _exportProgress.value = true
-        val result = configExportService.exportConfigToJson()
-        _exportProgress.value = false
-        if (result.isFailure) {
-            @Suppress("UNCHECKED_CAST")
-            _exportResult.value = result as Result<String>
-        }
-        return result.getOrNull()
+        try {
+            val result = withContext(Dispatchers.IO) { configExportService.exportConfigToJson() }
+            if (result.isFailure) _exportResult.value = result
+            return result.getOrNull()
+        } finally { _exportProgress.value = false }
     }
 
     fun dismissExportResult() {
@@ -76,18 +78,13 @@ class SettingsConfigWorkflow @Inject constructor(
     }
 
     suspend fun prepareImport(uri: Uri) {
+        if (_importProgress.value) return
+        _importProgress.value = true
         try {
-            val inputStream = context.contentResolver.openInputStream(uri)
-            if (inputStream == null) {
-                _importResult.value = Result.failure(
-                    Exception(context.getString(R.string.error_cannot_open_file))
-                )
-                return
+            val configDto = withContext(Dispatchers.IO) {
+                val json = Json { ignoreUnknownKeys = true }
+                json.decodeFromString<ConfigExportDto>(readDocument(uri))
             }
-
-            val jsonString = inputStream.bufferedReader().use { it.readText() }
-            val json = Json { ignoreUnknownKeys = true }
-            val configDto = json.decodeFromString<ConfigExportDto>(jsonString)
 
             val duplicateNames = configDto.habits
                 .map { it.name }
@@ -119,33 +116,27 @@ class SettingsConfigWorkflow @Inject constructor(
                 deleteMetricLogCount = metricLogDao.countAll()
             )
         } catch (error: Exception) {
+            if (error is CancellationException) throw error
             _importResult.value = Result.failure(
                 Exception(context.getString(R.string.error_read_file_failed, error.message))
             )
-        }
+        } finally { _importProgress.value = false }
     }
 
     suspend fun confirmImport() {
+        if (_importProgress.value) return
         val confirmData = _importConfirmData.value ?: return
         _importProgress.value = true
 
         try {
-            val inputStream = context.contentResolver.openInputStream(confirmData.uri)
-            if (inputStream == null) {
-                _importProgress.value = false
-                _importResult.value = Result.failure(
-                    Exception(context.getString(R.string.error_cannot_open_file))
-                )
-                _importConfirmData.value = null
-                return
+            val result = withContext(Dispatchers.IO) {
+                configImportService.importConfig(readDocument(confirmData.uri))
             }
-
-            val jsonString = inputStream.bufferedReader().use { it.readText() }
-            val result = configImportService.importConfig(jsonString)
             if (result.isSuccess) {
                 try {
                     HabitReminderScheduler.rescheduleAllReminders(context)
-                } catch (_: Exception) {
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
                     // Reminder scheduling must not turn a successful import into a failure.
                 }
             }
@@ -154,19 +145,26 @@ class SettingsConfigWorkflow @Inject constructor(
             _importResult.value = result
             _importConfirmData.value = null
         } catch (error: Exception) {
+            if (error is CancellationException) throw error
             _importProgress.value = false
             _importResult.value = Result.failure(
                 Exception(context.getString(R.string.error_import_failed, error.message))
             )
             _importConfirmData.value = null
-        }
+        } finally { _importProgress.value = false }
     }
 
     fun cancelImport() {
+        if (_importProgress.value) return
         _importConfirmData.value = null
     }
 
     fun dismissImportResult() {
         _importResult.value = null
     }
+
+    private fun readDocument(uri: Uri): String =
+        (context.contentResolver.openInputStream(uri)
+            ?: throw java.io.IOException(context.getString(R.string.error_cannot_open_file)))
+            .bufferedReader().use { it.readText() }
 }

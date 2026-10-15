@@ -168,6 +168,21 @@ class HabitDetailViewModelTest {
         assertEquals(1, widgetRefresh.requestCount)
     }
 
+    @Test fun completedCountdownIgnoresQueuedClicksWithoutLosingUndoIdentity() = runBlocking {
+        val habitId = repository.createHabit(name = "Countdown", description = "", habitType = HabitType.COUNTING,
+            iconResId = 1, colorHex = "#123456", schedule = HabitSchedule.Daily, targetValue = 1, isCountdown = true)
+        viewModel.loadHabit(habitId)
+        awaitState { !it.isLoading && it.habit?.id == habitId }
+        repeat(3) { viewModel.logCompletion() }
+        awaitState { it.lastCompletionId != null && habitId !in viewModel.busyHabitIds.value }
+        val stored = completionDao.getByHabitOnce(habitId).single()
+        assertEquals(stored.id, viewModel.uiState.value.lastCompletionId)
+        assertEquals(1, widgetRefresh.requestCount)
+        viewModel.undoCompletion()
+        awaitState { it.lastCompletionId == null && it.completions.isEmpty() }
+        assertTrue(completionDao.getByHabitOnce(habitId).isEmpty())
+    }
+
     @Test
     fun undoCompletion_clearsLastCompletionId() = runBlocking {
         val habitId = repository.createHabit(
@@ -275,6 +290,17 @@ class HabitDetailViewModelTest {
         first.value = first.value!!.copy(name = "Stale update")
         testDispatcher.scheduler.runCurrent()
         assertEquals(secondId, viewModel.uiState.value.habitId)
+
+        viewModel.pauseReads()
+        testDispatcher.scheduler.runCurrent()
+        assertEquals(0, second.subscriptionCount.value)
+        assertEquals("Second", viewModel.uiState.value.habit?.name)
+        second.value = second.value.copy(name = "Edited while hidden")
+        testDispatcher.scheduler.runCurrent()
+        assertEquals("Second", viewModel.uiState.value.habit?.name)
+        viewModel.resumeReads()
+        awaitState { !it.isLoading && it.habit?.name == "Edited while hidden" }
+        assertEquals(1, second.subscriptionCount.value)
     }
 
     @Test

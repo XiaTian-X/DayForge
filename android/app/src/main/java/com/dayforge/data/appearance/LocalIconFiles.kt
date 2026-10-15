@@ -28,6 +28,10 @@ internal open class IconFileIo {
     open fun sync(fd: FileDescriptor) = Os.fsync(fd)
     open fun rename(source: String, target: String) = Os.rename(source, target)
     open fun unlink(path: String) = Os.remove(path)
+    open fun validateImage(bytes: ByteArray, expected: IconBlob) {
+        val bitmap = if (expected.mediaType == "image/png") decodePng(bytes, expected) else renderSvg(bytes, expected)
+        bitmap.recycle()
+    }
 }
 
 /**
@@ -94,12 +98,26 @@ internal class LocalIconFiles(root: File, private val io: IconFileIo = IconFileI
 
     /** Reads are bounded through EOF from one ordinary file; existence alone never means ready. */
     fun read(expected: IconBlob, validationProfile: String = profile(expected)): ByteArray {
+        val bytes = readExact(expected, validationProfile)
+        validate(bytes, expected)
+        return bytes
+    }
+
+    /** A live immutable raster proves decoding of this exact blob, not ownership or file health.
+     * Still opens the ordinary file and checks bounded EOF, length and SHA-256 on every call.
+     * Never used by install, export, recovery or readiness/selection publication.
+     */
+    fun readForDisplay(expected: IconBlob, validationProfile: String, previous: IconRaster): ByteArray {
+        require(previous.blob == expected && !previous.bitmap.isRecycled && !previous.bitmap.isMutable)
+        return readExact(expected, validationProfile)
+    }
+
+    private fun readExact(expected: IconBlob, validationProfile: String): ByteArray {
         require(validationProfile == profile(expected))
         active()
         val bytes = descriptor(path(expected.sha256), OsConstants.O_RDONLY).use { handle ->
             readIconBytes(stream(handle.fd), expected)
         }
-        validate(bytes, expected)
         return bytes
     }
 
@@ -205,10 +223,7 @@ internal class LocalIconFiles(root: File, private val io: IconFileIo = IconFileI
         // The Descriptor, not this borrowed stream, owns fd.
     }
 
-    private fun validate(bytes: ByteArray, expected: IconBlob) {
-        val bitmap = if (expected.mediaType == "image/png") decodePng(bytes, expected) else renderSvg(bytes, expected)
-        bitmap.recycle()
-    }
+    private fun validate(bytes: ByteArray, expected: IconBlob) = io.validateImage(bytes, expected)
 
     private fun profile(expected: IconBlob) = iconValidationProfile(expected)
 }

@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 
@@ -43,6 +44,7 @@ class AccountIconWorkCoordinator internal constructor(
 
     private val started = AtomicBoolean(false)
     private val workManager by lazy { WorkManager.getInstance(context) }
+    private val immediate = CoalescingSyncWork({ workManager }, ONE_TIME)
     internal enum class Status { INACTIVE, OBSERVING, FAILED }
     private val mutableStatus = MutableStateFlow(Status.INACTIVE)
     internal val status = mutableStatus.asStateFlow()
@@ -65,7 +67,8 @@ class AccountIconWorkCoordinator internal constructor(
                     enqueue()
                     mutableStatus.value = Status.OBSERVING
                     // Loss cancels a pending wakeup; local-only LAN is deliberately NOT an INTERNET constraint.
-                    merge(network.map { it.mayBeConnected }, requests.map { true }).collectLatest { wake ->
+                    merge(network.map { it.syncWakeKey() }.distinctUntilChanged().map { it.mayBeConnected },
+                        requests.map { true }).collectLatest { wake ->
                         if (wake) { delay(2_000); enqueue() }
                     }
                 }
@@ -84,12 +87,10 @@ class AccountIconWorkCoordinator internal constructor(
         }
     }
 
-    private fun enqueue() {
+    private suspend fun enqueue() {
         val work = OneTimeWorkRequestBuilder<AccountIconWorker>()
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS).build()
-        // Replacement cancels the old worker. The canonical runtime mutex waits for real IO to join
-        // before recovering its sending rows; never replace stable durable operation IDs.
-        workManager.enqueueUniqueWork(ONE_TIME, ExistingWorkPolicy.REPLACE, work)
+        immediate.enqueue(work)
     }
 
     internal companion object {

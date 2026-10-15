@@ -31,7 +31,7 @@ internal sealed interface IconImageState {
 }
 
 /** Consumer owns this reference; invalidation drops pixels immediately, without recycling them. */
-internal class IconImageHandle : AccountIconMemory.Cache {
+internal class IconImageHandle(val displayKey: IconDisplayKey? = null) : AccountIconMemory.Cache {
     private val monitor = Any()
     private var generation = Any()
     private var blocked = false
@@ -52,7 +52,13 @@ internal class IconImageHandle : AccountIconMemory.Cache {
         if (closed || blocked) return@synchronized null
         if (expected != null && expected !== generation) return@synchronized null
         if (expected == null) generation = Any()
-        mutable.value = IconImageState.Loading; generation
+        if (displayKey == null || mutable.value !is IconImageState.Ready) mutable.value = IconImageState.Loading
+        generation
+    }
+    internal fun restore(value: AccountIconNamespace, raster: IconRaster) = synchronized(monitor) {
+        if (!closed && !blocked && namespace == null && !raster.bitmap.isRecycled) {
+            namespace = value; mutable.value = IconImageState.Ready(raster)
+        }
     }
     /** A surviving object consumer may reauthenticate, but never rebind to a different replica. */
     internal fun bind(stamp: Any, value: AccountIconNamespace): Boolean = synchronized(monitor) {
@@ -65,7 +71,7 @@ internal class IconImageHandle : AccountIconMemory.Cache {
         }
     }
     internal fun publish(stamp: Any, state: IconImageState) = synchronized(monitor) {
-        if (!closed && !blocked && generation === stamp) mutable.value = state
+        if (!closed && !blocked && generation === stamp) { mutable.value = state; true } else false
     }
 }
 
@@ -173,6 +179,7 @@ class AccountIconController internal constructor(
     }, tokens)
 
     private val runtime = lazy(factory)
+    private val snapshots = IconDisplaySnapshots().also(tokens::registerIconCache)
     private val materialWakeups = MutableSharedFlow<Unit>(extraBufferCapacity = 1,
         onBufferOverflow = BufferOverflow.DROP_OLDEST)
     internal val workRequests = materialWakeups.asSharedFlow()
@@ -216,10 +223,14 @@ class AccountIconController internal constructor(
         val storage = runtime.value
         val context = storage.metadata.capture()
         check(context.access == access) { "ICON_SESSION_CHANGED" }
-        val result = storage.synchronize(context, http) { businessWakeups.tryEmit(Unit) }
-        if (result != IconMaterialOutcome.UNSUPPORTED)
-            storage.metadata.authorized(context) { refreshReferences(context.namespace) }
-        result
+        var changed = false
+        try {
+            storage.synchronize(context, http) { changed = true; businessWakeups.tryEmit(Unit) }
+        } finally {
+            // Empty/retry rounds are not content changes. Include committed partial progress,
+            // but never publish under authority lost while the round was running.
+            if (changed) storage.metadata.authorized(context) { refreshReferences(context.namespace) }
+        }
     }
     internal suspend fun refreshCatalog(http: com.dayforge.data.appearance.AccountIconHttp) = io {
         val context = it.metadata.capture()
@@ -234,9 +245,7 @@ class AccountIconController internal constructor(
         result
     }
     internal suspend fun library(context: AccountIconContext) = io {
-        val catalog = it.metadata.library(context)
-        it.metadata.authorized(context) { refreshReferences(context.namespace) }
-        catalog
+        it.metadata.library(context)
     }
     /** New fixed references require owned immutable metadata; an unchanged missing reference is retained. */
     internal suspend fun authorizeEditReference(session: com.dayforge.data.local.LocalDataSession,
@@ -257,6 +266,34 @@ class AccountIconController internal constructor(
             val asset = it.metadata.asset(context, (reference as IconReference.Asset).assetId)
             if (asset == null) check(reference == previous) { "ICON_ASSET_NOT_OWNED" }
             else require(com.dayforge.domain.model.iconAllowed(reference, oneTime, asset)) { "ICON_PURPOSE_MISMATCH" }
+            it.metadata.reauthorize(context)
+        }
+    }
+
+    /** New graph references have no old asset to retain. Validate the complete set before
+     * the business writer acquires its lock; it still checks the original creation session.
+     */
+    internal suspend fun authorizeCreationReferences(session: com.dayforge.data.local.LocalDataSession,
+        references: List<Pair<IconReference, Boolean>>) {
+        val fixed = references.filter { (reference, oneTime) ->
+            if (reference is IconReference.Role) {
+                require(com.dayforge.domain.model.iconAllowed(reference, oneTime)) { "ICON_PURPOSE_MISMATCH" }
+                false
+            } else true
+        }
+        if (fixed.isEmpty()) return
+        val access = requireNotNull(tokens.localIconAccess()) { "ICON_ACCESS_DENIED" }
+        check(access.session == session) { "ICON_SESSION_CHANGED" }
+        io {
+            val context = it.metadata.capture()
+            check(context.access == access) { "ICON_SESSION_CHANGED" }
+            val assets = it.metadata.assets(context, fixed.map { (reference, _) ->
+                (reference as IconReference.Asset).assetId
+            }.toSet())
+            fixed.forEach { (reference, oneTime) ->
+                val asset = checkNotNull(assets[(reference as IconReference.Asset).assetId]) { "ICON_ASSET_NOT_OWNED" }
+                require(com.dayforge.domain.model.iconAllowed(reference, oneTime, asset)) { "ICON_PURPOSE_MISMATCH" }
+            }
             it.metadata.reauthorize(context)
         }
     }
@@ -289,11 +326,17 @@ class AccountIconController internal constructor(
     internal suspend fun select(context: AccountIconContext, expected: Long, version: IconPackVersion?) =
         io { it.store.select(context, expected, version) }
     internal fun image(): IconImageHandle = IconImageHandle().also(::registerConsumer)
-    internal fun referenceImage(): IconImageHandle = image().also { handle -> synchronized(references) {
-        references.removeAll { it.get() == null }
-        references.add(WeakReference(handle))
-    } }
+    internal fun referenceImage(key: IconDisplayKey? = null): IconImageHandle =
+        IconImageHandle(key).also { handle ->
+            registerConsumer(handle)
+            snapshots.restore(handle)
+            synchronized(references) {
+                references.removeAll { it.get() == null }
+                references.add(WeakReference(handle))
+            }
+        }
     private fun refreshReferences(namespace: AccountIconNamespace) = synchronized(references) {
+        snapshots.invalidate()
         val iterator = references.iterator()
         while (iterator.hasNext()) {
             val handle = iterator.next().get()
@@ -316,11 +359,15 @@ class AccountIconController internal constructor(
     internal suspend fun loadReference(handle: IconImageHandle, request: Any, reference: IconReference,
         oneTime: Boolean, theme: ThemeVersionRef, dark: Boolean, size: IconRasterSize, tint: Int) =
         imageWork(handle, request) { storage, stamp ->
+            check(handle.displayKey == null || handle.displayKey ==
+                IconDisplayKey(reference, oneTime, theme, dark, size, tint)) { "ICON_DISPLAY_REQUEST_CHANGED" }
+            val snapshotTicket = snapshots.ticket()
             val context = storage.metadata.capture()
             check(storage.metadata.authorized(context) { handle.bind(stamp, context.namespace) }) { "ICON_IMAGE_NAMESPACE_CHANGED" }
             val rendered = storage.renderer.renderReference(context, reference, oneTime, theme, dark, size, tint)
             storage.metadata.withSelection(context, rendered.resolution.selection) {
-                handle.publish(stamp, rendered.raster?.let(IconImageState::Ready) ?: IconImageState.Empty)
+                snapshots.publish(handle, stamp, snapshotTicket, context.namespace,
+                    rendered.raster?.let(IconImageState::Ready) ?: IconImageState.Empty)
             }
         }
     private suspend fun imageWork(handle: IconImageHandle, request: Any? = null,
@@ -334,7 +381,7 @@ class AccountIconController internal constructor(
         } catch (error: Exception) {
             if (error is CancellationException) throw error
             // A stale handle is already empty; it cannot display a new owner's result/error.
-            handle.publish(stamp, IconImageState.Failed(error))
+            snapshots.fail(handle, stamp, IconImageState.Failed(error))
         } finally {
             synchronized(imageMonitor) { if (--imageCalls == 0) imagesIdle.complete(Unit) }
         }
@@ -347,5 +394,5 @@ class AccountIconController internal constructor(
         }
     }
     /** Only an explicit process/test owner may close after joining all its callers. */
-    internal fun close() { if (runtime.isInitialized()) runtime.value.close() }
+    internal fun close() { snapshots.invalidate(); if (runtime.isInitialized()) runtime.value.close() }
 }

@@ -76,6 +76,7 @@ class CountdownDiscardActivity : ComponentActivity() {
         }
 
         setContent {
+            var submitting by remember { mutableStateOf(false) }
             var ready by remember { mutableStateOf(legacy == null) }
             LaunchedEffect(Unit) {
                 if (legacy != null) try { writer.requireLegacyWidgetAction(legacy); ready = true }
@@ -88,7 +89,7 @@ class CountdownDiscardActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
-                    Dialog(onDismissRequest = { finish() }) {
+                    Dialog(onDismissRequest = { if (!submitting) finish() }) {
                         Card(
                             modifier = Modifier.padding(16.dp),
                             elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
@@ -117,14 +118,16 @@ class CountdownDiscardActivity : ComponentActivity() {
                                     horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)
                                 ) {
                                     // "继续计时" button - just dismiss, timer continues
-                                    TextButton(onClick = { finish() }) {
+                                    TextButton(enabled = !submitting, onClick = { finish() }) {
                                         Text(stringResource(R.string.action_continue_timer))
                                     }
 
                                     // "放弃" button - discard the session
                                     Button(
-                                        enabled = ready,
-                                        onClick = {
+                                        enabled = ready && !submitting,
+                                        onClick = click@ {
+                                            if (submitting) return@click
+                                            submitting = true
                                             lifecycleScope.launch {
                                                 try {
                                                     if (legacy != null) writer.requireLegacyWidgetAction(legacy)
@@ -136,7 +139,8 @@ class CountdownDiscardActivity : ComponentActivity() {
                                             }
                                         }
                                     ) {
-                                        Text(stringResource(R.string.action_discard))
+                                        if (submitting) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                        else Text(stringResource(R.string.action_discard))
                                     }
                                 }
                             }

@@ -114,6 +114,8 @@ class TokenManager @Inject constructor(
     internal fun registerIconCache(cache: AccountIconMemory.Cache) = iconMemory.register(cache)
     private val replicaPresentation = ReplicaPresentationMemory()
     internal fun registerReplicaPresentation(cache: ReplicaPresentationMemory.Cache) = replicaPresentation.register(cache)
+    private val personalDisplay = PersonalDataDisplayMemory()
+    internal fun registerPersonalDisplay(listener: PersonalDataDisplayMemory.Listener) = personalDisplay.register(listener)
     internal fun beginIconSelectionTransition() = iconMemory.beginTransition()
     internal fun endIconSelectionTransition() = iconMemory.endTransition()
 
@@ -121,11 +123,18 @@ class TokenManager @Inject constructor(
     private fun iconIdentity(preferences: Preferences): List<Any?> =
         listOf(preferences[ACCESS_TOKEN_KEY] != null) + ICON_IDENTITY_KEYS.map { preferences[it] }
 
+    // Include ciphertext replacement: a same-generation replacement is not proof of validity.
+    // Comparison stays inside TokenManager; no credentials enter display snapshots or logs.
+    private fun personalDisplayIdentity(preferences: Preferences): List<Any?> =
+        ICON_IDENTITY_KEYS.map { preferences[it] } +
+            listOf(preferences[ACCESS_TOKEN_KEY], preferences[DEVICE_PRIMARY_EDITOR_KEY])
+
     /** No delayed Flow collector: block publication across the actual persisted transition. */
     private suspend fun editPreferences(block: suspend (MutablePreferences) -> Unit): Preferences {
         val caller = currentCoroutineContext()
         var transitioning = false
         var replicaTransitioning = false
+        var displayTransitioning = false
         try {
             // DataStore owns the write actor: cancelling its caller need not stop a write
             // after transform. Join actual persistence before reopening image publication.
@@ -133,9 +142,14 @@ class TokenManager @Inject constructor(
                 dataStore.edit { preferences ->
                     caller.ensureActive()
                     val before = iconIdentity(preferences)
+                    val beforeDisplay = personalDisplayIdentity(preferences)
                     val beforePointer = preferences.asMap().filterKeys { it.name == ReplicaSwitchGuard.POINTER.name }
                     block(preferences)
                     caller.ensureActive()
+                    if (beforeDisplay != personalDisplayIdentity(preferences)) {
+                        personalDisplay.begin()
+                        displayTransitioning = true
+                    }
                     if (before != iconIdentity(preferences)) {
                         iconMemory.beginTransition()
                         transitioning = true
@@ -153,6 +167,7 @@ class TokenManager @Inject constructor(
             // conservative memory eviction is safe and cannot delete installation intent.
             if (transitioning) iconMemory.endTransition()
             if (replicaTransitioning) replicaPresentation.end()
+            if (displayTransitioning) personalDisplay.end()
         }
     }
 
@@ -162,7 +177,7 @@ class TokenManager @Inject constructor(
      */
     val accessToken: Flow<String?> = dataStore.data.map { preferences ->
         preferences[ACCESS_TOKEN_KEY]?.let(tokenCipher::decrypt)
-    }
+    }.flowOn(Dispatchers.IO)
 
     /**
      * Flow of the current refresh token.
@@ -170,7 +185,7 @@ class TokenManager @Inject constructor(
      */
     val refreshToken: Flow<String?> = dataStore.data.map { preferences ->
         preferences[REFRESH_TOKEN_KEY]?.let(tokenCipher::decrypt)
-    }
+    }.flowOn(Dispatchers.IO)
 
     /**
      * Flow of the current user email.
@@ -250,7 +265,7 @@ class TokenManager @Inject constructor(
 
     /** Read request credentials and their account generation from one DataStore snapshot. */
     suspend fun authenticationSnapshot(): AuthenticationSnapshot? =
-        snapshot(dataStore.data.first())
+        withContext(Dispatchers.IO) { snapshot(dataStore.data.first()) }
 
     /** Credential-free UI generation only, NOT authenticated access. Allows explicit recovery
      * login even when old Keystore ciphertext is unusable; actual operations still prove auth.
@@ -329,15 +344,14 @@ class TokenManager @Inject constructor(
     }
 
     /** Read ownership, generation, replica and permissions from the same persisted snapshot. */
-    internal suspend fun localFactAccess(): LocalFactAccess? {
-        return factAccess(dataStore.data.first())
-    }
+    internal suspend fun localFactAccess(): LocalFactAccess? =
+        withContext(Dispatchers.IO) { factAccess(dataStore.data.first()) }
 
     internal val factAccessChanges: Flow<LocalFactAccess?> = dataStore.data.map(::factAccess)
         .distinctUntilChanged().flowOn(Dispatchers.IO)
 
     private fun factAccess(preferences: Preferences): LocalFactAccess? {
-        val authentication = snapshot(preferences)?.session ?: return null
+        val authentication = verifiedLocalSession(preferences) ?: return null
         if (preferences[SYNC_ACCOUNT_ID_KEY] != authentication.userId) return null
         val server = preferences[SERVER_INSTANCE_ID_KEY]
         val epoch = preferences[SYNC_EPOCH_KEY]
@@ -357,10 +371,32 @@ class TokenManager @Inject constructor(
         check(factAccess(values)?.session == expected) { "HABIT_PREFERENCE_SESSION_CHANGED" }
     }
 
-    internal suspend fun localIconAccess(): LocalIconAccess? = iconAccess(dataStore.data.first())
+    internal suspend fun localIconAccess(): LocalIconAccess? =
+        withContext(Dispatchers.IO) { iconAccess(dataStore.data.first()) }
 
     internal suspend fun localCoreWriteAccess(): LocalCoreWriteAccess? = withContext(Dispatchers.IO) {
         coreWriteAccess(dataStore.data.first())
+    }
+
+    /** Lifecycle signal, not a reusable write grant. Authenticate EVERY preferences emission
+     * before deduplicating the result, including unrelated edits after Keystore invalidation.
+     * Cold by design: no replayed authority across subscribers or operations.
+     */
+    internal val coreAccessChanges: Flow<LocalCoreWriteAccess?> = dataStore.data.map(::coreWriteAccess)
+        .distinctUntilChanged().flowOn(Dispatchers.IO)
+
+    /** Only lifecycle changes invalidate a presentation. Still decrypt every emitted snapshot. */
+    internal val personalDisplayChanges: Flow<Unit> = dataStore.data.map {
+        coreWriteAccess(it) to personalDisplayIdentity(it)
+    }.distinctUntilChanged().map { Unit }.flowOn(Dispatchers.IO)
+
+    /** Final fence for one display transaction, not a reusable write grant. Core/freeze and
+     * registered device permissions must agree in ONE fresh snapshot and one real decryption.
+     */
+    internal suspend fun isCurrentDisplayReadAuthority(core: LocalCoreWriteAccess,
+        registered: LocalSyncAccess?): Boolean = withContext(Dispatchers.IO) {
+        val values = dataStore.data.first()
+        coreWriteAccess(values) == core && (registered == null || syncAccessMetadata(values) == registered)
     }
 
     /** Read-only recovery proof, never a ticket for an ordinary writer. */
@@ -560,7 +596,7 @@ class TokenManager @Inject constructor(
     }
 
     private fun observationCoreAccess(preferences: Preferences): LocalCoreWriteAccess? {
-        val authentication = snapshot(preferences)?.session ?: return null
+        val authentication = verifiedLocalSession(preferences) ?: return null
         if (preferences[SYNC_ACCOUNT_ID_KEY] != authentication.userId ||
             !com.dayforge.domain.model.isContractUuid(authentication.userId) ||
             !com.dayforge.domain.model.isContractUuid(authentication.generation)) return null
@@ -637,10 +673,10 @@ class TokenManager @Inject constructor(
         .distinctUntilChanged().flowOn(Dispatchers.IO)
 
     /** Bind credentials and all material permissions to ONE actual persisted snapshot. */
-    internal suspend fun iconAuthenticationSnapshot(expected: LocalIconAccess): AuthenticationSnapshot? {
+    internal suspend fun iconAuthenticationSnapshot(expected: LocalIconAccess): AuthenticationSnapshot? = withContext(Dispatchers.IO) {
         val preferences = dataStore.data.first()
-        if (iconAccessMetadata(preferences) != expected) return null
-        return snapshot(preferences)?.takeIf { it.session == expected.session.authentication }
+        if (iconAccessMetadata(preferences) != expected) return@withContext null
+        snapshot(preferences)?.takeIf { it.session == expected.session.authentication }
     }
 
     private fun iconAccess(preferences: Preferences): LocalIconAccess? {
@@ -671,6 +707,15 @@ class TokenManager @Inject constructor(
             LocalDataSession(authentication, server, epoch), device, revision,
             "structure.write" in capabilities
         )
+    }
+
+    /** Local guards need a freshly decrypted access token, not HTTP refresh credentials.
+     * No plaintext or authority cache: re-read and prove the current ciphertext on every call.
+     */
+    private fun verifiedLocalSession(preferences: Preferences): AuthenticationSession? {
+        val userId = preferences[USER_ID_KEY] ?: return null
+        preferences[ACCESS_TOKEN_KEY]?.let(tokenCipher::decrypt) ?: return null
+        return AuthenticationSession(userId, preferences[AUTH_SESSION_KEY] ?: "legacy")
     }
 
     private fun snapshot(preferences: Preferences): AuthenticationSnapshot? {

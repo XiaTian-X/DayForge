@@ -11,7 +11,6 @@ import com.dayforge.domain.service.MetricOverviewProvider
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
@@ -40,7 +39,7 @@ class MetricsViewModel @Inject constructor(
         .onEach { _isInitialized.value = true }
         .stateIn(
             scope = viewModelScope,
-            started = SharingStarted.Lazily,
+            started = com.dayforge.ui.VisibleScreenSharing,
             initialValue = emptyList()
         )
 
@@ -50,12 +49,15 @@ class MetricsViewModel @Inject constructor(
      * Update the aggregation type for a metric.
      * Called when user changes aggregation type in TrendChart.
      */
+    private val aggregationActions = com.dayforge.ui.InFlightActions()
+
     fun updateAggregationType(metricId: Long, aggregationType: String) {
-        viewModelScope.launch {
-            runCatching {
+        aggregationActions.launch(viewModelScope, metricId) {
+            try {
                 metricRepository.updateAggregationType(metricId, aggregationType)
-            }.onFailure {
-                Toast.makeText(context, it.message ?: "当前设备不能修改指标配置", Toast.LENGTH_LONG).show()
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                Toast.makeText(context, error.message ?: "当前设备不能修改指标配置", Toast.LENGTH_LONG).show()
             }
         }
     }

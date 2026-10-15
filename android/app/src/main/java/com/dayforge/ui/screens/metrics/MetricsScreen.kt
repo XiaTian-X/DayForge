@@ -12,6 +12,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -46,8 +47,8 @@ fun MetricsScreen(
     onEditMetricClick: (Long) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    val metricsWithLatest by viewModel.metricsWithLatest.collectAsState()
-    val isInitialized by viewModel.isInitialized.collectAsState()
+    val metricsWithLatest by viewModel.metricsWithLatest.collectAsStateWithLifecycle()
+    val isInitialized by viewModel.isInitialized.collectAsStateWithLifecycle()
     // Card color style for reactive card rendering (CARD-09)
     val cardColorStyle = com.dayforge.ui.theme.LocalDeviceCardStyle.current
 

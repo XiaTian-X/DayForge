@@ -186,8 +186,9 @@ class LoginViewModel @Inject constructor(
     }
 
     fun onSyncSkip() {
+        if (_isLoading.value || !_showSyncPrompt.value) return
+        _showSyncPrompt.value = false
         viewModelScope.launch {
-            _showSyncPrompt.value = false
             _syncErrorMessage.value = null
             _loginEvent.emit(LoginEvent.Success)
         }
@@ -298,9 +299,14 @@ class LoginViewModel @Inject constructor(
     }
 
     fun saveServerUrl() {
+        if (_isLoading.value) return
+        _isLoading.value = true
         viewModelScope.launch {
-            runCatching { persistServerSelection() }
-                .onFailure { _errorMessage.value = context.getString(R.string.server_error_invalid_address) }
+            try { persistServerSelection() }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                _errorMessage.value = context.getString(R.string.server_error_invalid_address)
+            } finally { _isLoading.value = false }
         }
     }
 
@@ -335,13 +341,20 @@ class LoginViewModel @Inject constructor(
     }
 
     fun resetServerUrl() {
+        if (_isLoading.value) return
+        _isLoading.value = true
         viewModelScope.launch {
-            preferencesManager.setServerUrl(null)
-            preferencesManager.setRemoteServerUrl(null)
-            _serverUrl.value = ""
-            _serverProtocol.value = "https"
-            _serverHostPort.value = ""
-            _remoteServerHostPort.value = ""
+            try {
+                preferencesManager.setServerUrl(null)
+                preferencesManager.setRemoteServerUrl(null)
+                _serverUrl.value = ""
+                _serverProtocol.value = "https"
+                _serverHostPort.value = ""
+                _remoteServerHostPort.value = ""
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                _errorMessage.value = context.getString(R.string.server_error_invalid_address)
+            } finally { _isLoading.value = false }
         }
     }
 

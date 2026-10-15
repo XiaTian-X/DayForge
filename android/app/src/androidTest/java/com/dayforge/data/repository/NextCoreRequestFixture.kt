@@ -67,13 +67,15 @@ abstract class NextCoreRequestFixture {
 
     internal fun metrics() = MetricRepository(db, db.metricDao(), db.metricLogDao(), db.habitDao(), db.habitMetricLinkDao())
 
+    internal open fun tokenCipher(): TokenCipher = PlaintextTokenCipher
+
     @Before fun setup() = runBlocking<Unit> {
         check(app.packageName == "com.dayforge.testbed")
         directory = Files.createTempDirectory(app.filesDir.toPath(), "next-journal-").toFile()
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val data = PreferenceDataStoreFactory.create(scope = scope, produceFile = { File(directory, "auth.preferences_pb") })
         dataStore = data
-        tokens = TokenManager(data); preferences = PreferencesManager(data, tokens = tokens)
+        tokens = TokenManager(data, tokenCipher()); preferences = PreferencesManager(data, tokens = tokens)
         client = OkHttpClient.Builder().addInterceptor(BaseUrlInterceptor(preferences)).addInterceptor(AuthInterceptor(tokens))
             .authenticator(TokenAuthenticator(tokens, preferences, SelectedNetworkTransport())).build()
         tokens.saveLoginSession("synthetic-first", "synthetic-refresh", "member", id(1), false)

@@ -21,13 +21,27 @@ interface TokenCipher {
 class AndroidKeystoreTokenCipher internal constructor(private val keyAlias: String) : TokenCipher {
     @Inject constructor() : this(KEY_ALIAS)
 
+    // This is a non-exportable platform handle, NOT cached plaintext or authorization.
+    // Every decrypt still executes AES-GCM in Keystore. Deleted/invalidated handles fail there.
+    @Volatile private var keyHandle: SecretKey? = null
+
+    private fun <T> withKey(block: (SecretKey) -> T): T {
+        val key = getOrCreateKey()
+        return try { block(key) } catch (error: java.security.InvalidKeyException) {
+            synchronized(KEY_LOCK) { if (keyHandle === key) keyHandle = null }
+            block(getOrCreateKey())
+        }
+    }
+
     override fun encrypt(value: String): String {
         if (value.startsWith(PREFIX)) return value
-        val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
-        val encrypted = cipher.doFinal(value.toByteArray(Charsets.UTF_8))
-        val combined = cipher.iv + encrypted
-        return PREFIX + Base64.encodeToString(combined, Base64.NO_WRAP)
+        return withKey { key ->
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.ENCRYPT_MODE, key)
+            val encrypted = cipher.doFinal(value.toByteArray(Charsets.UTF_8))
+            val combined = cipher.iv + encrypted
+            PREFIX + Base64.encodeToString(combined, Base64.NO_WRAP)
+        }
     }
 
     override fun decrypt(value: String): String? {
@@ -39,15 +53,18 @@ class AndroidKeystoreTokenCipher internal constructor(private val keyAlias: Stri
             require(combined.size > IV_LENGTH) { "encrypted token is truncated" }
             val iv = combined.copyOfRange(0, IV_LENGTH)
             val encrypted = combined.copyOfRange(IV_LENGTH, combined.size)
-            val cipher = Cipher.getInstance(TRANSFORMATION)
-            cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(128, iv))
-            cipher.doFinal(encrypted).toString(Charsets.UTF_8)
+            withKey { key ->
+                val cipher = Cipher.getInstance(TRANSFORMATION)
+                cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
+                cipher.doFinal(encrypted).toString(Charsets.UTF_8)
+            }
         }.getOrNull()
     }
 
-    private fun getOrCreateKey(): SecretKey = synchronized(KEY_LOCK) {
+    private fun getOrCreateKey(): SecretKey = keyHandle ?: synchronized(KEY_LOCK) {
+        keyHandle?.let { return@synchronized it }
         val keyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
-        (keyStore.getKey(keyAlias, null) as? SecretKey) ?: KeyGenerator
+        ((keyStore.getKey(keyAlias, null) as? SecretKey) ?: KeyGenerator
             .getInstance(KeyProperties.KEY_ALGORITHM_AES, KEYSTORE)
             .apply {
                 init(
@@ -61,7 +78,7 @@ class AndroidKeystoreTokenCipher internal constructor(private val keyAlias: Stri
                         .build()
                 )
             }
-            .generateKey()
+            .generateKey()).also { keyHandle = it }
     }
 
     private companion object {

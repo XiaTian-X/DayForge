@@ -65,17 +65,7 @@ class AdminViewModel @Inject constructor(
     }
 
     fun loadUsers() {
-        viewModelScope.launch {
-            _isLoading.value = true
-            _errorMessage.value = null
-            try {
-                _users.value = adminApi.listUsers()
-            } catch (e: Exception) {
-                _errorMessage.value = parseError(e)
-            } finally {
-                _isLoading.value = false
-            }
-        }
+        userOperation { _users.value = adminApi.listUsers() }
     }
 
     fun clearError() {
@@ -92,39 +82,34 @@ class AdminViewModel @Inject constructor(
             _errorMessage.value = context.getString(R.string.admin_error_password_min_length)
             return
         }
-        viewModelScope.launch {
-            try {
-                adminApi.createUser(AdminUserCreate(normalizedUsername, password, isAdmin))
-                loadUsers()
-                _event.emit(AdminEvent.UserCreated(normalizedUsername))
-            } catch (e: Exception) {
-                _errorMessage.value = parseError(e)
-            }
+        userOperation {
+            adminApi.createUser(AdminUserCreate(normalizedUsername, password, isAdmin))
+            _event.emit(AdminEvent.UserCreated(normalizedUsername))
+            _users.value = adminApi.listUsers()
         }
     }
 
     fun toggleUserStatus(user: AdminUserResponse) {
-        viewModelScope.launch {
-            try {
-                adminApi.updateUserStatus(user.id, UserStatusUpdate(isActive = !user.isActive))
-                loadUsers()
-            } catch (e: Exception) {
-                _errorMessage.value = parseError(e)
-            }
+        userOperation {
+            adminApi.updateUserStatus(user.id, UserStatusUpdate(isActive = !user.isActive))
+            _users.value = adminApi.listUsers()
         }
     }
 
     fun showResetPasswordDialog(user: AdminUserResponse) {
+        if (_isLoading.value) return
         _resetPasswordDialog.value = user
         _resetPasswordInput.value = ""
     }
 
     fun dismissResetPasswordDialog() {
+        if (_isLoading.value) return
         _resetPasswordDialog.value = null
         _resetPasswordInput.value = ""
     }
 
     fun onResetPasswordInputChange(password: String) {
+        if (_isLoading.value) return
         _resetPasswordInput.value = password
     }
 
@@ -137,21 +122,18 @@ class AdminViewModel @Inject constructor(
             return
         }
 
-        viewModelScope.launch {
-            try {
-                adminApi.resetPassword(user.id, AdminPasswordReset(newPassword))
-                _resetPasswordDialog.value = null
-                _resetPasswordInput.value = ""
-                _event.emit(AdminEvent.PasswordResetSuccess(user.username))
-            } catch (e: Exception) {
-                _errorMessage.value = parseError(e)
-            }
+        userOperation {
+            adminApi.resetPassword(user.id, AdminPasswordReset(newPassword))
+            _resetPasswordDialog.value = null
+            _resetPasswordInput.value = ""
+            _event.emit(AdminEvent.PasswordResetSuccess(user.username))
         }
     }
 
     // Token management
 
     fun selectUser(user: AdminUserResponse) {
+        if (_isLoading.value || _tokensLoading.value) return
         if (_selectedUser.value?.id == user.id) {
             _selectedUser.value = null
             _userTokens.value = emptyList()
@@ -162,55 +144,66 @@ class AdminViewModel @Inject constructor(
     }
 
     fun dismissSelectedUser() {
+        if (_tokensLoading.value) return
         _selectedUser.value = null
         _userTokens.value = emptyList()
     }
 
     fun loadUserTokens(userId: Int) {
-        viewModelScope.launch {
-            _tokensLoading.value = true
-            try {
-                _userTokens.value = adminApi.listUserTokens(userId)
-            } catch (e: Exception) {
-                _errorMessage.value = parseError(e)
-            } finally {
-                _tokensLoading.value = false
-            }
+        tokenOperation {
+            val tokens = adminApi.listUserTokens(userId)
+            if (_selectedUser.value?.id == userId) _userTokens.value = tokens
         }
     }
 
     fun createUserToken(name: String, expiresInDays: Int?) {
         val user = _selectedUser.value ?: return
-        viewModelScope.launch {
-            try {
-                val token = adminApi.createUserToken(
-                    user.id,
-                    ApiTokenCreateRequest(name = name, expires_in_days = expiresInDays)
-                )
-                _createdToken.value = token
-                loadUserTokens(user.id)
-            } catch (e: Exception) {
-                _errorMessage.value = parseError(e)
-            }
+        tokenOperation {
+            val token = adminApi.createUserToken(
+                user.id,
+                ApiTokenCreateRequest(name = name, expires_in_days = expiresInDays)
+            )
+            _createdToken.value = token
+            _userTokens.value = adminApi.listUserTokens(user.id)
         }
     }
 
     fun deleteUserToken(tokenId: Int) {
         val user = _selectedUser.value ?: return
-        viewModelScope.launch {
+        tokenOperation {
             try {
                 adminApi.deleteUserToken(user.id, tokenId)
-                // Optimistically remove from list
                 _userTokens.value = _userTokens.value.filter { it.id != tokenId }
-            } catch (e: Exception) {
-                _errorMessage.value = parseError(e)
-                loadUserTokens(user.id) // Reload on error
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                try { _userTokens.value = adminApi.listUserTokens(user.id) }
+                catch (refreshError: Exception) {
+                    if (refreshError is kotlinx.coroutines.CancellationException) throw refreshError
+                    // Preserve the original visible failure if reconciliation is also unavailable.
+                }
+                throw error
             }
         }
     }
 
     fun clearCreatedToken() {
         _createdToken.value = null
+    }
+
+    private fun userOperation(action: suspend () -> Unit) = operation(_isLoading, action)
+    private fun tokenOperation(action: suspend () -> Unit) = operation(_tokensLoading, action)
+
+    private fun operation(busy: MutableStateFlow<Boolean>, action: suspend () -> Unit) {
+        if (busy.value) return
+        busy.value = true // Admission and feedback precede coroutine dispatch.
+        _errorMessage.value = null
+        viewModelScope.launch {
+            try { action() }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                _errorMessage.value = parseError(error)
+            } finally { busy.value = false }
+        }
     }
 
     private fun parseError(e: Exception): String {

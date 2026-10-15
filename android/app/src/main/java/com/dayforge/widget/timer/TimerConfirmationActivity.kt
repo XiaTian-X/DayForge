@@ -59,6 +59,7 @@ class TimerConfirmationActivity : ComponentActivity() {
         }
 
         setContent {
+            var submitting by remember { mutableStateOf(false) }
             var currentHabitName by remember { mutableStateOf<String?>(null) }
             var newHabitName by remember { mutableStateOf<String?>(null) }
             var ready by remember { mutableStateOf(false) }
@@ -84,7 +85,7 @@ class TimerConfirmationActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
-                    Dialog(onDismissRequest = { finish() }) {
+                    Dialog(onDismissRequest = { if (!submitting) finish() }) {
                         Card(
                             modifier = Modifier.padding(16.dp),
                             elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
@@ -118,13 +119,15 @@ class TimerConfirmationActivity : ComponentActivity() {
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)
                                 ) {
-                                    TextButton(onClick = { finish() }) {
+                                    TextButton(enabled = !submitting, onClick = { finish() }) {
                                         Text(stringResource(R.string.action_cancel))
                                     }
 
                                     Button(
-                                        enabled = ready,
-                                        onClick = {
+                                        enabled = ready && !submitting,
+                                        onClick = click@ {
+                                            if (submitting) return@click
+                                            submitting = true
                                             lifecycleScope.launch {
                                                 try {
                                                     if (claim != null) writer.requireWidgetStart(habitId, claim.authority, requireNotNull(claim.startGuard))
@@ -142,7 +145,8 @@ class TimerConfirmationActivity : ComponentActivity() {
                                             }
                                         }
                                     ) {
-                                        Text(stringResource(R.string.action_confirm))
+                                        if (submitting) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                        else Text(stringResource(R.string.action_confirm))
                                     }
                                 }
                             }

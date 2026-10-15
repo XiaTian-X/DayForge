@@ -7,12 +7,16 @@ import com.dayforge.data.api.decodeSyncReply
 import com.dayforge.data.local.AuthenticationSession
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.LocalDataSession
+import com.dayforge.data.local.LocalCoreWriteAccess
+import com.dayforge.data.local.PersonalDataDisplayMemory
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
 import com.dayforge.data.local.entity.HabitEntity
+import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.model.CountDayPolicy
 import com.dayforge.domain.model.CountHistory
+import com.dayforge.domain.model.CheckHistory
 import com.dayforge.domain.model.ChallengeRoundHead
 import com.dayforge.domain.model.ContractIntegerSerializer
 import com.dayforge.domain.model.OneTimeState
@@ -28,8 +32,9 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 
 /** Credential-free display claim. This is NOT ObjectEditAuthority or OneTimeActionAuthority. */
 @Serializable
@@ -96,6 +101,28 @@ data class WidgetFactSnapshot internal constructor(
 
 class WidgetGoalDisplay internal constructor(val habit: HabitEntity, val progress: Int, val target: Int)
 
+/** Pure projection of history already audited in the same read transaction; never a new authority. */
+internal fun recurringFactSnapshot(habit: HabitEntity, access: LocalCoreWriteAccess,
+    rounds: NextRoundWriteScope?, history: CountHistory?, checks: CheckHistory?, date: LocalDate,
+    zone: ZoneId, source: CompletionEntity? = null): WidgetFactSnapshot {
+    check(habit.appearance != null && habit.completionPolicy == "recurring")
+    check((habit.habitType == HabitType.COUNTING && history != null && checks == null) ||
+        (habit.habitType == HabitType.CHECK_IN && checks != null && history == null))
+    check(history == null || history.today == date && history.todayPolicy != null) { "COUNT_RULE_UNKNOWN" }
+    check(checks == null || checks.today == date)
+    val facts = checks?.todayCompletions ?: requireNotNull(history).completions.filter { it.recordedLocalDate == date.toString() }
+    check(facts.all { it.habitUuid == habit.uuid && it.oneTimeAction == null }) { "FACT_WIDGET_FACT_INVALID" }
+    if (source != null) check(source in facts && source.recordedTimezone == zone.id) { "COMPLETION_SOURCE_CHANGED" }
+    val claim = WidgetFactClaim(access.session.authentication.userId, access.session.authentication.generation,
+        access.session.serverInstanceId, access.session.syncEpoch, access.capturedDeviceId, habit.id, habit.uuid,
+        NextStructureMapper.writePlan(habit), date.toString(), zone.id, source?.uuid ?: facts.maxByOrNull { it.id }?.uuid,
+        null, history?.todayPolicy?.toJson(), if (rounds == null) 0 else 1, history?.roundHead ?: checks?.roundHead)
+    return WidgetFactSnapshot(habit, claim, history, history?.completedToday ?: requireNotNull(checks).completedToday,
+        history?.qualifiedDates?.size ?: requireNotNull(checks).qualifiedDates.size,
+        history?.let { com.dayforge.domain.service.FailureCheckerUtils.countHasFailed(habit, it) }
+            ?: com.dayforge.domain.service.FailureCheckerUtils.checkHasFailed(habit, requireNotNull(checks)))
+}
+
 /** Capture and validate under the existing account/Room boundary; never invent an owner on click. */
 @Singleton
 class WidgetFactReader @Inject constructor(
@@ -108,9 +135,8 @@ class WidgetFactReader @Inject constructor(
 ) {
     private val once = OneTimeLocalIntentStore(database, tokens, sessions, preferences)
     private val replica = ReplicaPresentationRepository(database, tokens, sessions)
-    internal val accessChanges = combine(tokens.factAccessChanges, tokens.iconAccessChanges) { _, _ ->
-        tokens.localCoreWriteAccess()
-    }.distinctUntilChanged()
+    internal val accessChanges = tokens.coreAccessChanges
+    internal fun registerCompletionConsumer(listener: PersonalDataDisplayMemory.Listener) = tokens.registerPersonalDisplay(listener)
 
     suspend fun read(expected: HabitEntity): WidgetFactSnapshot = sessions.exclusive {
         check(replica.isOpenWhileAccountLocked()) { com.dayforge.data.local.ReplicaSwitchGuard.PENDING }
@@ -122,10 +148,17 @@ class WidgetFactReader @Inject constructor(
     }
 
     internal suspend fun authorize(claim: WidgetFactClaim, exactFact: Boolean = true): ObjectEditSnapshot<HabitEntity> =
+        authorizeFact(claim, exactFact, completionSource = false)
+
+    internal suspend fun authorizeCompletion(claim: WidgetFactClaim): ObjectEditSnapshot<HabitEntity> =
+        authorizeFact(claim, exactFact = true, completionSource = true)
+
+    private suspend fun authorizeFact(claim: WidgetFactClaim, exactFact: Boolean,
+        completionSource: Boolean): ObjectEditSnapshot<HabitEntity> =
         sessions.exclusive {
             check(replica.isOpenWhileAccountLocked()) { com.dayforge.data.local.ReplicaSwitchGuard.PENDING }
             database.withTransaction {
-                val view = requireInTransaction(claim, exactFact)
+                val view = if (completionSource) requireCompletionInTransaction(claim) else requireInTransaction(claim, exactFact)
                 // Mint the actual in-memory ticket from the trusted current row, not decoded plan/owner fields.
                 ObjectEditSnapshot(view.habit, ObjectEditAuthority(requireNotNull(tokens.localCoreWriteAccess()).session,
                     view.habit.uuid, "plan_node", NextStructureMapper.writePlan(view.habit),
@@ -135,16 +168,30 @@ class WidgetFactReader @Inject constructor(
 
     /** Caller already holds the non-reentrant account lock and producer transaction. */
     internal suspend fun requireInTransaction(claim: WidgetFactClaim, exactFact: Boolean = true,
-        requireDay: Boolean = true): WidgetFactSnapshot {
+        requireDay: Boolean = true): WidgetFactSnapshot =
+        requireBoundFactInTransaction(claim, exactFact, requireDay, completionSource = false)
+
+    /** Original app completion, not the widget's exact-current/latest toggle semantics. */
+    internal suspend fun requireCompletionInTransaction(claim: WidgetFactClaim, requireDay: Boolean = false,
+        displayScope: RecurringDisplayReadScope? = null): WidgetFactSnapshot =
+        requireBoundFactInTransaction(claim, exactFact = true, requireDay, completionSource = true, displayScope)
+
+    private suspend fun requireBoundFactInTransaction(claim: WidgetFactClaim, exactFact: Boolean,
+        requireDay: Boolean, completionSource: Boolean, displayScope: RecurringDisplayReadScope? = null): WidgetFactSnapshot {
         check(database.inTransaction())
         check(replica.isOpenWhileAccountLocked()) { com.dayforge.data.local.ReplicaSwitchGuard.PENDING }
-        val access = requireNotNull(tokens.localCoreWriteAccess()) { "FACT_WIDGET_STALE_ACCOUNT" }
+        val access = displayScope?.borrow(database, tokens)?.first
+            ?: requireNotNull(tokens.localCoreWriteAccess()) { "FACT_WIDGET_STALE_ACCOUNT" }
         check(access.session == claim.session() && access.capturedDeviceId == claim.deviceId) { "FACT_WIDGET_STALE_ACCOUNT" }
         val habit = requireNotNull(database.habitDao().getVisibleHabitById(claim.habitId)) { "FACT_WIDGET_NOT_FOUND" }
         check(habit.uuid == claim.habitUuid && NextStructureMapper.writePlan(habit) == claim.plan) { "FACT_WIDGET_PLAN_CHANGED" }
         if (requireDay) check(ZoneId.systemDefault().id == claim.timezone &&
             Instant.now().atZone(ZoneId.of(claim.timezone)).toLocalDate().toString() == claim.date) { "FACT_WIDGET_DAY_CHANGED" }
-        val current = snapshot(habit, LocalDate.parse(claim.date), ZoneId.of(claim.timezone))
+        if (completionSource) check(habit.completionPolicy == "recurring" && claim.completionUuid != null) {
+            "COMPLETION_SOURCE_CHANGED"
+        }
+        val current = snapshot(habit, LocalDate.parse(claim.date), ZoneId.of(claim.timezone),
+            displayScope, sourceUuid = claim.completionUuid.takeIf { completionSource })
         check(current.claim.challengeContract == claim.challengeContract && current.claim.roundHead == claim.roundHead) {
             "FACT_WIDGET_ROUND_CHANGED"
         }
@@ -152,7 +199,8 @@ class WidgetFactReader @Inject constructor(
             "FACT_WIDGET_STATE_CHANGED"
         }
         if (exactFact) check(current.claim.completionUuid == claim.completionUuid) { "FACT_WIDGET_FACT_CHANGED" }
-        check(tokens.localCoreWriteAccess() == access) { "FACT_WIDGET_STALE_ACCOUNT" }
+        if (displayScope != null) displayScope.borrow(database, tokens)
+        else check(tokens.localCoreWriteAccess() == access) { "FACT_WIDGET_STALE_ACCOUNT" }
         return current
     }
 
@@ -191,31 +239,70 @@ class WidgetFactReader @Inject constructor(
         block()
     }
 
+    /** Exact completion follow-up fence; the callback may update bound preferences, never reenter a repository. */
+    internal suspend fun publishCompletion(snapshot: WidgetFactSnapshot, requireDay: Boolean = false,
+        requireUnchangedProgress: Boolean = false, block: suspend () -> Unit) = sessions.exclusive {
+        RecurringDisplayReadScope.withSnapshotWhileAccountLocked(database, tokens, sessions) { scope ->
+            val current = requireCompletionInTransaction(snapshot.claim, requireDay, scope)
+            if (requireUnchangedProgress) check(current.completed == snapshot.completed &&
+                current.targetProgress == snapshot.targetProgress && current.hasFailed == snapshot.hasFailed) {
+                "COMPLETION_DISPLAY_CHANGED"
+            }
+        }
+        block()
+    }
+
+    /** One bounded follow-up read plan. Participants only read; publication is memory-only and
+     * happens after the read transaction and its final authority check have actually returned.
+     */
+    internal suspend fun <T> readCompletionPlanAndPublish(snapshot: WidgetFactSnapshot,
+        read: suspend (WidgetFactSnapshot, RecurringDisplayReadScope) -> T,
+        publish: (T) -> Unit) = withContext(Dispatchers.IO) { sessions.exclusive(AccountSessionCoordinator.Work.COMPLETION_PROMPT_READ) {
+        val prepared = RecurringDisplayReadScope.withSnapshotWhileAccountLocked(database, tokens, sessions) { scope ->
+            val current = requireCompletionInTransaction(snapshot.claim, requireDay = false, displayScope = scope)
+            read(current, scope)
+        }
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        publish(prepared)
+    } }
+
     private suspend fun snapshot(habit: HabitEntity,
         capturedDate: LocalDate? = null,
-        zone: ZoneId = ZoneId.systemDefault()): WidgetFactSnapshot {
+        zone: ZoneId = ZoneId.systemDefault(), displayScope: RecurringDisplayReadScope? = null,
+        sourceUuid: String? = null): WidgetFactSnapshot {
         val date = capturedDate ?: Instant.now().atZone(zone).toLocalDate()
         check(habit.appearance != null && habit.habitType in setOf(HabitType.CHECK_IN, HabitType.COUNTING))
-        val access = requireNotNull(tokens.localCoreWriteAccess()) { "FACT_WIDGET_STALE_ACCOUNT" }
-        val rounds = NextCoreLocalIntentStore(database, tokens, sessions).captureDisplayedRoundsInTransaction()
+        val borrowed = displayScope?.borrow(database, tokens)
+        val access = borrowed?.first ?: requireNotNull(tokens.localCoreWriteAccess()) { "FACT_WIDGET_STALE_ACCOUNT" }
+        val rounds = if (borrowed != null) borrowed.second
+            else NextCoreLocalIntentStore(database, tokens, sessions).captureDisplayedRoundsInTransaction()
+        check(displayScope == null || habit.completionPolicy == "recurring") { "COMPLETION_RECURRING_REQUIRED" }
         val oneTime = if (habit.completionPolicy == "one_and_done") {
             val view = once.readInTransaction(habit.uuid, access.session)
             view.queue.optimisticState
         } else null
-        val history = if (habit.habitType == HabitType.COUNTING) counts.readInTransaction(habit, date) else null
-        val checkHistory = if (oneTime == null && habit.habitType == HabitType.CHECK_IN) checks.readInTransaction(habit, date) else null
+        val history = if (habit.habitType == HabitType.COUNTING) {
+            if (displayScope != null) counts.readInTransaction(habit, date, displayScope) else counts.readInTransaction(habit, date)
+        } else null
+        val checkHistory = if (oneTime == null && habit.habitType == HabitType.CHECK_IN) {
+            if (displayScope != null) checks.readInTransaction(habit, date, displayScope) else checks.readInTransaction(habit, date)
+        } else null
         val facts = if (oneTime != null) emptyList() else checkHistory?.todayCompletions
             ?: history?.completions?.filter { it.recordedLocalDate == date.toString() }
             ?: database.completionDao().getCompletionsInRange(habit.id, date, date.plusDays(1))
         check(facts.all { it.habitUuid == habit.uuid && it.oneTimeAction == null }) { "FACT_WIDGET_FACT_INVALID" }
-        val latest = facts.maxByOrNull { it.id }?.uuid
+        val source = sourceUuid?.let { uuid ->
+            requireNotNull(facts.singleOrNull { it.uuid == uuid && it.recordedTimezone == zone.id }) { "COMPLETION_SOURCE_CHANGED" }
+        }
+        val latest = source?.uuid ?: facts.maxByOrNull { it.id }?.uuid
         val claim = WidgetFactClaim(access.session.authentication.userId, access.session.authentication.generation,
             access.session.serverInstanceId, access.session.syncEpoch, access.capturedDeviceId, habit.id, habit.uuid,
             NextStructureMapper.writePlan(habit), date.toString(), zone.id, oneTime?.completionEventUuid ?: latest,
             oneTime, history?.todayPolicy?.toJson(), if (rounds == null) 0 else 1,
             history?.roundHead ?: checkHistory?.roundHead)
         check(history == null || history.todayPolicy != null) { "COUNT_RULE_UNKNOWN" }
-        check(tokens.localCoreWriteAccess() == access) { "FACT_WIDGET_STALE_ACCOUNT" }
+        if (displayScope != null) displayScope.borrow(database, tokens)
+        else check(tokens.localCoreWriteAccess() == access) { "FACT_WIDGET_STALE_ACCOUNT" }
         val progress = if (oneTime != null) 0 else history?.qualifiedDates?.size ?: checkHistory?.qualifiedDates?.size
             ?: database.completionDao().getDistinctDayCount(habit.id)
         return WidgetFactSnapshot(habit, claim, history, oneTime?.let { it.completionEventUuid != null }

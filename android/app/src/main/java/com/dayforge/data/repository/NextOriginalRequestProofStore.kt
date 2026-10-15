@@ -31,8 +31,6 @@ internal data class NextOriginalPendingProof(val origin: NextRequestOriginEntity
  * Live origins ALWAYS require the actual source row; retired evidence uses the complete audit reader.
  */
 internal class NextOriginalRequestProofStore(private val database: HabitDatabase) {
-    private val sql get() = database.openHelper.writableDatabase
-
     private suspend fun requireNotAbandoned(access: LocalSyncAccess, kind: String, id: String) {
         // Only complete original-source/group evidence earns the terminal classification. A partial
         // audit still fails, and neither a valid nor damaged terminal ever grants a live origin/ACK.
@@ -45,7 +43,7 @@ internal class NextOriginalRequestProofStore(private val database: HabitDatabase
         check(database.inTransaction()); currentCoroutineContext().ensureActive()
         require(kind in setOf(NEXT_OPERATION, NEXT_TIMER) && isContractUuid(id))
         requireNotAbandoned(access, kind, id)
-        if (NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(kind, id)) == null)
+        if (NextRequestSql.rowHash(database, "next_request_origins", "kind=? AND requestId=?", arrayOf(kind, id)) == null)
             rejectNextRequest(NextRequestException.Reason.OLD_INTENT)
         val row = requireNotNull(database.nextRequestDao().origin(kind, id))
         if (row.kind != kind || row.requestId != id || row.protocol != 5 || row.queueId <= 0 ||
@@ -55,7 +53,7 @@ internal class NextOriginalRequestProofStore(private val database: HabitDatabase
         if (row.accountId != access.session.authentication.userId ||
             (row.serverInstanceId != null && (row.serverInstanceId != access.session.serverInstanceId || row.syncEpoch != access.session.syncEpoch)))
             rejectNextRequest(NextRequestException.Reason.TRANSMISSION_CONTEXT_CHANGED)
-        if (NextRequestSql.rowHash(sql, NextRequestSql.table(kind), "id=?", arrayOf(row.queueId)) != row.sourceHash)
+        if (NextRequestSql.rowHash(database, NextRequestSql.table(kind), "id=?", arrayOf(row.queueId)) != row.sourceHash)
             rejectNextRequest(NextRequestException.Reason.SOURCE_CHANGED)
         val permission = if (kind == NEXT_OPERATION) {
             val queue = requireNotNull(database.syncOutboxDao().getById(row.queueId))
@@ -96,13 +94,13 @@ internal class NextOriginalRequestProofStore(private val database: HabitDatabase
     suspend fun pending(access: LocalSyncAccess, kind: String, id: String): NextOriginalPendingProof {
         val source = inspectionOrigin(access, kind, id)
         val args = arrayOf<Any>(kind, id)
-        val originHash = requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", args))
-        require(NextRequestSql.rowHash(sql, "next_acceptances", "kind=? AND requestId=?", args) == null)
+        val originHash = requireNotNull(NextRequestSql.rowHash(database, "next_request_origins", "kind=? AND requestId=?", args))
+        require(NextRequestSql.rowHash(database, "next_acceptances", "kind=? AND requestId=?", args) == null)
         // An ordinary source cannot borrow/ignore the independent once HTTP journal.
-        if (kind == NEXT_OPERATION) require(NextRequestSql.rowHash(sql, "one_time_transmissions",
+        if (kind == NEXT_OPERATION) require(NextRequestSql.rowHash(database, "one_time_transmissions",
             "operationId=?", arrayOf(id)) == null)
-        val sent = NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", args)
-        val failed = NextRequestSql.rowHash(sql, "next_rejections", "kind=? AND requestId=?", args)
+        val sent = NextRequestSql.rowHash(database, "next_transmissions", "kind=? AND requestId=?", args)
+        val failed = NextRequestSql.rowHash(database, "next_rejections", "kind=? AND requestId=?", args)
         val state = if (failed != null) {
             val rejected = rejection(access, kind, id)
             require(rejected.origin == source && sent != null)
@@ -122,7 +120,7 @@ internal class NextOriginalRequestProofStore(private val database: HabitDatabase
                         row.recordType == "metric_log" && row.entityUuid == operation.entityUuid && row.wireEntityUuid == operation.entityUuid &&
                         row.referenceUuid == operation.payload.getValue("metric_uuid").jsonPrimitive.content &&
                         payload == operation.payload.toString())
-                    requireNotNull(NextRequestSql.rowHash(sql, "local_fact_submissions", "operationId=?", arrayOf(id)))
+                    requireNotNull(NextRequestSql.rowHash(database, "local_fact_submissions", "operationId=?", arrayOf(id)))
                     require(database.completionFollowUpDao().submission(id) ==
                         com.dayforge.data.local.entity.LocalFactSubmissionEntity(id, "metric_observation", operation.entityUuid,
                             requireNotNull(row.referenceUuid), payload))
@@ -165,13 +163,13 @@ internal class NextOriginalRequestProofStore(private val database: HabitDatabase
         check(database.inTransaction()); currentCoroutineContext().ensureActive()
         val source = inspectionOrigin(access, kind, id)
         val args = arrayOf<Any>(kind, id)
-        requireNotNull(NextRequestSql.rowHash(sql, "next_rejections", "kind=? AND requestId=?", args))
+        requireNotNull(NextRequestSql.rowHash(database, "next_rejections", "kind=? AND requestId=?", args))
         val row = requireNotNull(database.nextSyncStateDao().rejection(kind, id))
         require(row.kind == kind && row.requestId == id &&
-            row.originHash == NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", args) &&
-            row.transmissionHash == NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", args) &&
+            row.originHash == NextRequestSql.rowHash(database, "next_request_origins", "kind=? AND requestId=?", args) &&
+            row.transmissionHash == NextRequestSql.rowHash(database, "next_transmissions", "kind=? AND requestId=?", args) &&
             row.resultHash == nextRequestHash(row.resultJson.toByteArray(Charsets.UTF_8)) &&
-            NextRequestSql.rowHash(sql, "next_acceptances", "kind=? AND requestId=?", args) == null)
+            NextRequestSql.rowHash(database, "next_acceptances", "kind=? AND requestId=?", args) == null)
         val transmitted = requireNotNull(database.nextRequestDao().transmission(kind, id))
         journal(source, transmitted, access)
         val metadata = NextChallengeStore(database).activeInTransaction(access).second

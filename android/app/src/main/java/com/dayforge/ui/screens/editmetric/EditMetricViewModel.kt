@@ -277,7 +277,7 @@ class EditMetricViewModel @Inject constructor(
      */
     fun saveMetric() {
         // Prevent double-click
-        if (isSavingInProgress) return
+        if (isSavingInProgress || _uiState.value.isSaved) return
 
         val currentState = _uiState.value
         if (!currentState.isValid) return
@@ -350,6 +350,7 @@ class EditMetricViewModel @Inject constructor(
                 )
             } finally {
                 isSavingInProgress = false
+                _uiState.value = _uiState.value.copy(isSaving = false)
             }
         }
     }

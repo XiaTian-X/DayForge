@@ -24,6 +24,13 @@ data class MetricValueDraft(
     val note: String = ""
 )
 
+/** Immutable preparation from one read transaction, not permission to skip writer validation. */
+internal class CompletionMetricRead internal constructor(
+    val source: WidgetFactSnapshot,
+    val metrics: List<ObjectEditSnapshot<MetricEntity>>,
+    val links: List<LinkedMetricSnapshot>
+)
+
 /**
  * Owns local metric mutations.
  *
@@ -54,6 +61,12 @@ class MetricRepository @Inject constructor(
     suspend fun getMetricForEditing(id: Long): ObjectEditSnapshot<MetricEntity> =
         nextObjectEditor?.metric(id) ?: ObjectEditSnapshot(metricDao.getVisibleMetricById(id), null)
 
+    suspend fun getMetricsForEditing(ids: List<Long>): List<ObjectEditSnapshot<MetricEntity>> =
+        if (ids.isEmpty()) emptyList() else nextObjectEditor?.metrics(ids) ?: database.withTransaction {
+            val rows = ids.distinct().associateWith { ObjectEditSnapshot(metricDao.getVisibleMetricById(it), null) }
+            ids.map { rows.getValue(it) }
+        }
+
     suspend fun getLogsInRange(
         metricId: Long,
         startInclusive: Long,
@@ -66,6 +79,27 @@ class MetricRepository @Inject constructor(
 
     suspend fun getLinkedMetricSnapshots(habitId: Long): List<LinkedMetricSnapshot> =
         linkDao.getLinkedMetricSnapshots(habitId)
+
+    /** A preflight link query may skip this work, but no preflight row is used for publication. */
+    internal suspend fun publishCompletionPrompt(snapshot: WidgetFactSnapshot,
+        publish: (CompletionMetricRead) -> Unit) {
+        requireNotNull(widgetFactReader).readCompletionPlanAndPublish(snapshot, read = { current, scope ->
+            val infos = linkDao.getLinkedMetricSnapshots(current.habit.id).filter { it.promptOnComplete }
+            if (infos.isEmpty()) null else {
+                val links = linkDao.getVisibleLinksForHabit(current.habit.id).filter { it.isActive && it.promptOnComplete }
+                val metrics = requireNotNull(nextObjectEditor).metricsInTransaction(infos.map { it.metricId }, scope)
+                metrics.forEach { captured ->
+                    val metric = requireNotNull(captured.value) { "FACT_PROMPT_STALE_METRIC" }
+                    check(captured.authority?.session == snapshot.claim.session() && metric.appearance != null) {
+                        "FACT_PROMPT_STALE_METRIC"
+                    }
+                    val link = links.single { it.metricId == metric.id }
+                    check(link.habitUuid == current.habit.uuid && link.metricUuid == metric.uuid) { "METRIC_PROMPT_LINK_CHANGED" }
+                }
+                CompletionMetricRead(snapshot, metrics, infos)
+            }
+        }, publish = { prepared -> if (prepared != null) publish(prepared) })
+    }
 
     suspend fun createMetric(
         metric: MetricEntity,
@@ -224,17 +258,20 @@ class MetricRepository @Inject constructor(
         expectedMetrics: List<MetricEntity>? = null,
         promptHabit: com.dayforge.data.local.entity.HabitEntity? = null,
         promptFact: WidgetFactClaim? = null,
-        promptTimer: com.dayforge.domain.model.TimerActionAuthority? = null
+        promptTimer: com.dayforge.domain.model.TimerActionAuthority? = null,
+        promptCompletionSource: Boolean = false
     ): List<Long> {
         val capturedZone = java.time.ZoneId.systemDefault().id
         if (values.isEmpty()) return emptyList()
+        require(!promptCompletionSource || promptFact != null && promptHabit?.appearance != null &&
+            promptHabit.completionPolicy == "recurring") { "COMPLETION_PROMPT_SOURCE_REQUIRED" }
         if (promptFact != null) require(authority != null && expectedMetrics != null && promptHabit != null &&
             promptHabit.id == promptFact.habitId && promptHabit.uuid == promptFact.habitUuid) { "FACT_PROMPT_TICKET_REQUIRED" }
         if (promptTimer != null) require(promptFact == null && authority != null && expectedMetrics != null &&
             promptHabit?.uuid == promptTimer.habitUuid && promptTimer.sessionUuid != null) { "TIMER_PROMPT_TICKET_REQUIRED" }
-        val targets = expectedMetrics ?: values.map { requireNotNull(metricDao.getMetricById(it.metricId)) {
-            "Metric no longer exists: ${it.metricId}"
-        } }.distinctBy { it.id }
+        val targets = expectedMetrics ?: values.map { it.metricId }.distinct().map { id ->
+            requireNotNull(metricDao.getMetricById(id)) { "Metric no longer exists: $id" }
+        }
         if (expectedMetrics != null) {
             require(authority != null && targets.all { it.appearance != null })
             require(targets.map { it.id }.toSet() == values.map { it.metricId }.toSet() &&
@@ -243,7 +280,7 @@ class MetricRepository @Inject constructor(
         if (expectedMetricUuid != null) check(targets.size == 1 && targets.single().uuid == expectedMetricUuid) {
             "OBJECT_WRITE_CHANGED_RELOAD_REQUIRED"
         }
-        return mutate(targets, authority, structural = false) {
+        return mutate(targets, authority, structural = false, readCurrentMetrics = true) { currentMetrics ->
             val timerAccess = promptTimer?.let { source ->
                 check(authority?.session == source.session()) { "TIMER_PROMPT_STALE_ACCOUNT" }
                 requireNotNull(timerWriter).completionInTransaction(requireNotNull(promptHabit).id, source)
@@ -251,7 +288,8 @@ class MetricRepository @Inject constructor(
             }
             if (promptFact != null) {
                 check(authority?.session == promptFact.session()) { "FACT_PROMPT_STALE_ACCOUNT" }
-                requireNotNull(widgetFactReader).requireInTransaction(promptFact, requireDay = false)
+                if (promptCompletionSource) requireNotNull(widgetFactReader).requireCompletionInTransaction(promptFact)
+                else requireNotNull(widgetFactReader).requireInTransaction(promptFact, requireDay = false)
                 check(promptFact.completionUuid != null) { "FACT_PROMPT_COMPLETION_CHANGED" }
             }
             if (promptHabit != null) {
@@ -266,9 +304,7 @@ class MetricRepository @Inject constructor(
             }
             val logs = values.map { input ->
                 require(input.value.isFinite()) { "Metric value must be finite" }
-                val metric = requireNotNull(metricDao.getMetricById(input.metricId)) {
-                    "Metric no longer exists: ${input.metricId}"
-                }
+                val metric = currentMetrics.getValue(input.metricId)
                 MetricLogEntity(
                     metricId = input.metricId,
                     date = recordedAt,
@@ -287,7 +323,8 @@ class MetricRepository @Inject constructor(
     }
 
     private suspend fun <T> mutate(metrics: List<MetricEntity>, authority: ObjectEditAuthority? = null,
-        structural: Boolean = true, deleting: Boolean = false, commit: suspend () -> T): T {
+        structural: Boolean = true, deleting: Boolean = false, readCurrentMetrics: Boolean = false,
+        commit: suspend (Map<Long, MetricEntity>) -> T): T {
         if (metrics.any { it.appearance != null } && nextObjectEditor != null) {
             return nextObjectEditor.mutateMetrics(metrics, authority, deleting, commit)
         }
@@ -295,7 +332,11 @@ class MetricRepository @Inject constructor(
         if (structural) structuralEditGuard?.requireAllowed()
         return database.withTransaction {
             if (!deleting) metrics.forEach { NextMetricDeletionStore(database).requireWritable(it.uuid) }
-            commit()
+            // Read current units in the transaction, never reuse a pre-transaction projection.
+            val current = if (!readCurrentMetrics) emptyMap() else metrics.associate { row -> row.id to requireNotNull(metricDao.getMetricById(row.id)) {
+                "Metric no longer exists: ${row.id}"
+            } }
+            commit(current)
         }
     }
 

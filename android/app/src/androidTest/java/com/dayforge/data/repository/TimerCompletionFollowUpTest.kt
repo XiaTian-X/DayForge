@@ -130,6 +130,34 @@ class TimerCompletionFollowUpTest : NextObjectEditorFixture() {
         assertEquals(before, proof())
     }
 
+    @Test fun timerPromptCleanupRetryCannotDuplicateCommittedMetrics() = runBlocking<Unit> {
+        goal(); val source = complete()
+        producer().write(local()) {
+            db.habitMetricLinkDao().insert(HabitMetricLinkEntity(habitId = timerHabit.id, habitUuid = timerHabit.uuid,
+                metricId = metric.id, metricUuid = metric.uuid, coefficient = 1.0, showInHabitDetail = true, promptOnComplete = true))
+        }
+        val prefs = io.mockk.spyk(preferences)
+        io.mockk.coEvery { prefs.removePendingMetricHabit(any(), any()) } throws IllegalStateException("PREFERENCE_UNAVAILABLE")
+        val coordinator = LinkedMetricCoordinator(app, prefs, promptMetrics(), goalHabits(), timerWriter = writer())
+        coordinator.showPromptAfterTimerGoal(timerHabit.id, source)
+        val prompt = requireNotNull(coordinator.postCheckInState.value?.timerPrompt)
+        val values = listOf(MetricValueInput(metric.id, 4.0))
+        withContext(Dispatchers.Main) {
+            assertFalse(coordinator.recordMetricValues(timerHabit.id, values, expectedTimerPrompt = prompt))
+        }
+        assertEquals(1, db.metricLogDao().countAll())
+        assertEquals(values, prompt.submitted)
+        val queued = db.syncOutboxDao().getAll()
+        io.mockk.coEvery { prefs.removePendingMetricHabit(any(), any()) } coAnswers {
+            preferences.removePendingMetricHabit(firstArg(), secondArg())
+        }
+        withContext(Dispatchers.Main) {
+            assertTrue(coordinator.recordMetricValues(timerHabit.id, values, expectedTimerPrompt = prompt))
+        }
+        assertEquals(1, db.metricLogDao().countAll())
+        assertEquals(queued, db.syncOutboxDao().getAll())
+    }
+
     @Test fun tokenInvalidationAfterMetricInsertRollsBackRowsAndOutboxUnderOriginalCompletion() = runBlocking<Unit> {
         goal(); val source = complete()
         producer().write(local()) {

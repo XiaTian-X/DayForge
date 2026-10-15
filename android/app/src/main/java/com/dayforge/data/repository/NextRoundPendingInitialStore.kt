@@ -5,6 +5,7 @@ import com.dayforge.data.api.dto.ChallengeMetadata
 import com.dayforge.data.local.HabitDatabase
 import com.dayforge.data.local.LocalCoreWriteAccess
 import com.dayforge.data.local.LocalSyncAccess
+import com.dayforge.data.local.entity.NextSyncStateEntity
 import com.dayforge.domain.model.ChallengeRoundHead
 import com.dayforge.domain.model.initialChallengeRoundHead
 import kotlinx.coroutines.currentCoroutineContext
@@ -14,11 +15,33 @@ import kotlinx.coroutines.ensureActive
 internal data class NextPendingInitial(val operationId: String, val originHash: String, val sourceHash: String,
     val head: ChallengeRoundHead)
 
+internal data class NextPendingRoundSnapshot(val state: NextSyncStateEntity, val metadata: ChallengeMetadata,
+    val initials: Map<String, NextPendingInitial>)
+
 internal class NextRoundPendingInitialStore(private val database: HabitDatabase) {
+    /** Sequential SELECT-only capture; no caller-supplied proof or callback can skip the audit. */
+    suspend fun capture(access: LocalSyncAccess): NextPendingRoundSnapshot {
+        check(database.inTransaction())
+        val (state, metadata) = NextChallengeStore(database).activeInTransaction(access)
+        return NextPendingRoundSnapshot(state, metadata, readValidatedMetadata(access, metadata))
+    }
+
     suspend fun read(access: LocalSyncAccess, metadata: ChallengeMetadata): Map<String, NextPendingInitial> {
         check(database.inTransaction())
-        val sql = database.openHelper.writableDatabase
         require(NextChallengeStore(database).activeInTransaction(access).second == metadata) { "SYNC_CHALLENGE_INITIAL_METADATA_CHANGED" }
+        return readValidatedMetadata(access, metadata)
+    }
+
+    /** Only a captured same-phase proof may omit the otherwise repeated complete metadata audit. */
+    suspend fun read(access: LocalSyncAccess, snapshot: NextChallengeReadSnapshot): Map<String, NextPendingInitial> {
+        val metadata = snapshot.borrow(database, access).second
+        val result = readValidatedMetadata(access, metadata)
+        snapshot.borrow(database, access)
+        return result
+    }
+
+    private suspend fun readValidatedMetadata(access: LocalSyncAccess, metadata: ChallengeMetadata): Map<String, NextPendingInitial> {
+        val sql = database.openHelper.writableDatabase
         val known = metadata.checkpoints.map { it.head.activityUuid }.toSet()
         val ids = sql.query("SELECT CASE WHEN typeof(id)='integer' THEN id ELSE NULL END FROM sync_outbox " +
             "WHERE recordType='habit' ORDER BY id LIMIT 10001").use { c -> buildList {
@@ -32,17 +55,18 @@ internal class NextRoundPendingInitialStore(private val database: HabitDatabase)
         val result = linkedMapOf<String, NextPendingInitial>()
         for (id in ids) {
             currentCoroutineContext().ensureActive()
-            requireNotNull(NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(id)))
+            requireNotNull(NextRequestSql.rowHash(database, "sync_outbox", "id=?", arrayOf(id)))
             val row = requireNotNull(database.syncOutboxDao().getById(id))
             if (row.entityUuid in known) continue
-            if (NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?",
+            if (NextRequestSql.rowHash(database, "next_request_origins", "kind=? AND requestId=?",
                     arrayOf(NEXT_OPERATION, row.operationId)) == null) continue
             val origin = database.nextRequestDao().origin(NEXT_OPERATION, row.operationId) ?: continue
             val source = roundOperationIntent(origin.intentJson) ?: continue
             if (!source.initialCreation) continue // Unknown/older writes are not relabelled as creations.
             val operation = source.operation
-            require(proofs.inspectionOrigin(access, NEXT_OPERATION, row.operationId) == origin)
-            val originHash = requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins",
+            // pending() below includes inspectionOrigin, then binds the same origin/hash to its
+            // journal/rejection state. No writes occur between these SELECT-only checks.
+            val originHash = requireNotNull(NextRequestSql.rowHash(database, "next_request_origins",
                 "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, row.operationId)))
             require(origin.kind == NEXT_OPERATION && origin.requestId == row.operationId && origin.queueId == row.id &&
                 origin.protocol == 5 && origin.accountId == access.session.authentication.userId &&
@@ -50,10 +74,10 @@ internal class NextRoundPendingInitialStore(private val database: HabitDatabase)
                 source.capturedDeviceId == access.deviceId && operation.operationId == row.operationId &&
                 operation.entityUuid == row.entityUuid && row.wireEntityUuid == row.entityUuid && row.action == "upsert" &&
                 row.deadLetteredAt == null && NextRequestSql.sourceHash(row) == origin.sourceHash &&
-                NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(row.id)) == origin.sourceHash)
-            require(NextRequestSql.rowHash(sql, "next_acceptances", "kind=? AND requestId=?",
+                NextRequestSql.rowHash(database, "sync_outbox", "id=?", arrayOf(row.id)) == origin.sourceHash)
+            require(NextRequestSql.rowHash(database, "next_acceptances", "kind=? AND requestId=?",
                     arrayOf(NEXT_OPERATION, row.operationId)) == null &&
-                NextRequestSql.rowHash(sql, "sync_entity_state", "entityType=? AND entityUuid=?",
+                NextRequestSql.rowHash(database, "sync_entity_state", "entityType=? AND entityUuid=?",
                     arrayOf("plan_node", row.entityUuid)) == null) { "SYNC_CHALLENGE_INITIAL_NOT_PENDING" }
             val causal = NextStructuralCausalStore(database)
             causal.auditCaptured(row.operationId, LocalCoreWriteAccess(access.session, access.capabilities, access.deviceId))

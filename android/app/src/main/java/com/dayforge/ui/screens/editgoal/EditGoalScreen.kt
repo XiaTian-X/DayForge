@@ -82,7 +82,7 @@ fun EditGoalScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = viewModel::toggleDeleteDialog) {
+                    IconButton(enabled = !uiState.isDeleting && !uiState.isSaving, onClick = viewModel::toggleDeleteDialog) {
                         Icon(
                             Icons.Default.Delete,
                             contentDescription = stringResource(R.string.action_delete),
@@ -326,7 +326,7 @@ fun EditGoalScreen(
                     Button(
                         onClick = { viewModel.saveGoal() },
                         modifier = Modifier.fillMaxWidth(),
-                        enabled = !uiState.isSaving
+                        enabled = !uiState.isSaving && !uiState.isDeleting
                     ) {
                         if (uiState.isSaving) {
                             CircularProgressIndicator(
@@ -382,7 +382,7 @@ fun EditGoalScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { viewModel.toggleDeleteDialog() }) {
+                TextButton(enabled = !uiState.isDeleting, onClick = { viewModel.toggleDeleteDialog() }) {
                     Text(stringResource(R.string.action_cancel))
                 }
             }
@@ -399,13 +399,14 @@ fun EditGoalScreen(
             },
             confirmButton = {
                 TextButton(
+                    enabled = !uiState.isDeleting,
                     onClick = { viewModel.deleteGoalWithChildren() }
                 ) {
                     Text(stringResource(R.string.dialog_delete_habit_with_children), color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { viewModel.deleteGoalKeepChildren() }) {
+                TextButton(enabled = !uiState.isDeleting, onClick = { viewModel.deleteGoalKeepChildren() }) {
                     Text(stringResource(R.string.dialog_delete_habit_keep_children))
                 }
             }

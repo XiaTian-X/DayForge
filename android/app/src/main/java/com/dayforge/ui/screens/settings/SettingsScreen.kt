@@ -58,6 +58,8 @@ fun SettingsScreen(
     val showSyncError by viewModel.showSyncError.collectAsState()
     val syncErrorMessage by viewModel.syncErrorMessage.collectAsState()
     val isLoggingOut by viewModel.isLoggingOut.collectAsState()
+    val actionBusy by viewModel.actionBusy.collectAsState()
+    val manualSyncPending by viewModel.manualSyncPending.collectAsState()
     val showActiveTimerDialog by viewModel.showActiveTimerDialog.collectAsState()
     val activeTimerHabitName by viewModel.activeTimerHabitName.collectAsState()
     val activeTimerDuration by viewModel.activeTimerDuration.collectAsState()
@@ -162,8 +164,16 @@ fun SettingsScreen(
             coroutineScope.launch {
                 val jsonContent = viewModel.exportConfigToJson()
                 if (jsonContent != null) {
-                    context.contentResolver.openOutputStream(uri)?.use { outputStream ->
-                        outputStream.write(jsonContent.toByteArray())
+                    try {
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            requireNotNull(context.contentResolver.openOutputStream(uri)).use { outputStream ->
+                                outputStream.write(jsonContent.toByteArray())
+                            }
+                        }
+                    } catch (error: Exception) {
+                        if (error is kotlinx.coroutines.CancellationException) throw error
+                        android.widget.Toast.makeText(context, context.getString(R.string.export_error),
+                            android.widget.Toast.LENGTH_LONG).show()
                     }
                 }
             }
@@ -261,6 +271,7 @@ fun SettingsScreen(
 
             item {
                 SyncStatusCard(
+                    actionBusy = actionBusy || isLoggingOut || manualSyncPending,
                     isOnline = isOnline,
                     isLoggedIn = isLoggedIn,
                     lastSyncTime = viewModel.formatLastSyncTime(lastSyncTime),
@@ -935,8 +946,10 @@ fun SettingsScreen(
             confirmButton = {
                 TextButton(
                     onClick = {
-                        viewModel.deleteCustomTheme(theme)
-                        themeToDelete = null
+                        if (themeToDelete === theme) {
+                            themeToDelete = null
+                            viewModel.deleteCustomTheme(theme)
+                        }
                     }
                 ) {
                     Text(
@@ -960,6 +973,7 @@ fun SettingsScreen(
             text = { Text(stringResource(R.string.theme_export_complete_hint)) },
             confirmButton = {
                 TextButton(onClick = {
+                    if (themeExportOptions !== theme) return@TextButton
                     themeExportOptions = null
                     coroutineScope.launch {
                         viewModel.prepareThemeExport(theme)?.let {

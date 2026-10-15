@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.stateIn
 import javax.inject.Inject
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.onStart
 import android.util.Log
 import kotlinx.coroutines.CancellationException
 
@@ -90,9 +91,15 @@ class ActiveTimerStateProvider @Inject constructor(
                 authority = authority
             )
         }
+    }.onStart {
+        // Re-entering a page must capture a fresh proof, not reuse a hidden page's authority.
+        lastBinding = null
+        authority = null
+        policy = null
     }.stateIn(
         scope = scope,
-        started = SharingStarted.Lazily,  // Changed from WhileSubscribed to ensure flow stays active
+        // Only the display ticker stops. TimerService and durable timer state are independent.
+        started = SharingStarted.WhileSubscribed(stopTimeoutMillis = 1_000, replayExpirationMillis = 0),
         initialValue = null
     )
     }

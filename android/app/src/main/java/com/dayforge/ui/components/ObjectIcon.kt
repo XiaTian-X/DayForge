@@ -32,6 +32,7 @@ import com.dayforge.domain.appearance.parseAppearanceColor
 import com.dayforge.domain.model.ObjectAppearance
 import com.dayforge.domain.service.AccountIconController
 import com.dayforge.domain.service.IconImageState
+import com.dayforge.domain.service.IconDisplayKey
 import com.dayforge.ui.theme.LocalResolvedTheme
 import com.dayforge.ui.theme.toComposeImage
 import kotlinx.coroutines.Dispatchers
@@ -82,7 +83,9 @@ internal fun ObjectIcon(
     Box(modifier.size(size).testTag("object-icon:$objectKey")) {
         if (icons == null || oneTime == null) MissingObjectIcon(tint)
         else {
-            val handle = remember(icons, objectKey, appearance, oneTime, theme, dark, pixels, tint) { icons.referenceImage() }
+            val handle = remember(icons, objectKey, appearance, oneTime, theme, dark, pixels, tint) {
+                icons.referenceImage(IconDisplayKey(appearance.icon, oneTime, theme, dark, pixels, tint))
+            }
             DisposableEffect(handle) { onDispose { handle.close() } }
             LaunchedEffect(handle) {
                 // Both requests and UI snapshots dispatch to Android Main, never eager IO continuations.

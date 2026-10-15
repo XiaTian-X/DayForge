@@ -140,6 +140,7 @@ class SettingsConfigV2Workflow internal constructor(
 
     /** Freeze the complete archive BEFORE opening CreateDocument, never at its later callback. */
     internal suspend fun beginExport(requireSelection: Boolean = false): Boolean = mutex.withLock {
+        if (mutable.value.pickerPending) return@withLock false
         action {
             check(!mutable.value.pickerPending && mutable.value.preview == null)
             requireOwner()
@@ -173,6 +174,7 @@ class SettingsConfigV2Workflow internal constructor(
     }
 
     internal suspend fun beginImport(recover: Boolean = false): Boolean = mutex.withLock {
+        if (mutable.value.pickerPending) return@withLock false
         action {
             check(!mutable.value.pickerPending && mutable.value.preview == null && exportOptions == null)
             requireOwner(); check(requireNotNull(owner).canDeclare)
@@ -221,6 +223,7 @@ class SettingsConfigV2Workflow internal constructor(
     }
 
     internal suspend fun confirmImport() = mutex.withLock {
+        if (mutable.value.preview == null) return@withLock
         val completed = action {
             val old = replacement; val restore = recovery
             check((old != null) != (restore != null)) { "CONFIG_IMPORT_NOT_PREPARED" }
@@ -252,6 +255,7 @@ class SettingsConfigV2Workflow internal constructor(
     }
 
     internal suspend fun abandonPrepared() = mutex.withLock {
+        if (recovery == null) return@withLock
         val completed = action {
             val preview = requireNotNull(recovery)
             requireOwner(preview.original.context.access); check(!preview.committed)

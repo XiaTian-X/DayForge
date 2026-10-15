@@ -22,6 +22,7 @@ import androidx.compose.material3.*
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -56,28 +57,30 @@ fun DashboardScreen(
     onMetricClick: (Long) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    val habitsWithStats by viewModel.habitsWithStats.collectAsState()
-    val isInitialized by viewModel.isInitialized.collectAsState()
-    val readError by viewModel.readError.collectAsState()
-    val activeTimer by viewModel.activeTimerState.collectAsState()
-    val linkedMetricsByHabit by viewModel.linkedMetricsByHabit.collectAsState()
-    val postCheckInState by viewModel.postCheckInState.collectAsState()
-    val pendingMetricHabits by viewModel.pendingMetricHabits.collectAsState()
+    val habitsWithStats by viewModel.habitsWithStats.collectAsStateWithLifecycle()
+    val busyHabitIds by viewModel.busyHabitIds.collectAsStateWithLifecycle()
+    val isInitialized by viewModel.isInitialized.collectAsStateWithLifecycle()
+    val readError by viewModel.readError.collectAsStateWithLifecycle()
+    val activeTimer by viewModel.activeTimerState.collectAsStateWithLifecycle()
+    val linkedMetricsByHabit by viewModel.linkedMetricsByHabit.collectAsStateWithLifecycle()
+    val postCheckInState by viewModel.postCheckInState.collectAsStateWithLifecycle()
+    val pendingMetricHabits by viewModel.pendingMetricHabits.collectAsStateWithLifecycle()
     // Card color style for reactive card rendering (CARD-09)
     val cardColorStyle = com.dayforge.ui.theme.LocalDeviceCardStyle.current
     // Filter mode state
-    val currentFilterMode by viewModel.filterMode.collectAsState()
+    val currentFilterMode by viewModel.filterMode.collectAsStateWithLifecycle()
     // Goal completion dialog states (TARGET-08)
-    val showGoalDialog by viewModel.showGoalDialog.collectAsState()
-    val goalHabitId by viewModel.goalHabitId.collectAsState()
-    val goalProgress by viewModel.goalProgress.collectAsState()
-    val goalTarget by viewModel.goalTarget.collectAsState()
+    val showGoalDialog by viewModel.showGoalDialog.collectAsStateWithLifecycle()
+    val goalHabitId by viewModel.goalHabitId.collectAsStateWithLifecycle()
+    val goalProgress by viewModel.goalProgress.collectAsStateWithLifecycle()
+    val goalTarget by viewModel.goalTarget.collectAsStateWithLifecycle()
     // Reactivation dialog states
-    val showReactivationDialog by viewModel.showReactivationDialog.collectAsState()
-    val reactivationHabitName by viewModel.reactivationHabitName.collectAsState()
-    val reactivationPreservesHistory by viewModel.reactivationPreservesHistory.collectAsState()
+    val showReactivationDialog by viewModel.showReactivationDialog.collectAsStateWithLifecycle()
+    val reactivationHabitId by viewModel.reactivationHabitId.collectAsStateWithLifecycle()
+    val reactivationHabitName by viewModel.reactivationHabitName.collectAsStateWithLifecycle()
+    val reactivationPreservesHistory by viewModel.reactivationPreservesHistory.collectAsStateWithLifecycle()
     // Children deletion dialog state
-    val showChildrenDialog by viewModel.showChildrenDialog.collectAsState()
+    val showChildrenDialog by viewModel.showChildrenDialog.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
@@ -127,6 +130,7 @@ fun DashboardScreen(
         }
     }
 
+    CompositionLocalProvider(com.dayforge.ui.LocalInFlightHabitIds provides busyHabitIds) {
     Scaffold(
         topBar = {
             TopAppBar(
@@ -409,6 +413,7 @@ fun DashboardScreen(
         }
     }
 
+    }
     // Battery optimization guidance dialog (D-10, D-12)
     if (showBatteryGuidanceDialog) {
         AlertDialog(
@@ -521,30 +526,31 @@ fun DashboardScreen(
                 initialInputs = state.oneTimePrompt?.entries?.associate { it.metricId to (it.input to it.note) }.orEmpty(),
                 onDraftChange = { inputs -> state.oneTimePrompt?.let { viewModel.savePostCheckInDraft(it.eventUuid, inputs) } },
                 onRecord = { values, neverAskAgain ->
-                    scope.launch {
+                    run record@ {
                         try {
-                            if (!viewModel.recordMetricValues(state.habitId, values, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim)) return@launch
-                            if (neverAskAgain) {
-                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim)
-                            }
-                            viewModel.dismissPostCheckInDialog()
-                            if (state.isTempTask) {
-                                viewModel.deleteTempTask(state.habitId)
+                            if (!viewModel.recordMetricValues(state.habitId, values, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim, state.factPrompt)) return@record
+                            com.dayforge.domain.service.afterCommittedAction {
+                                if (neverAskAgain) {
+                                    viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim, state.factPrompt)
+                                }
+                                viewModel.dismissPostCheckInDialog(state)
+                                if (state.isTempTask) {
+                                    viewModel.deleteTempTask(state.habitId)
+                                }
                             }
                         } catch (error: Exception) {
                             if (error is kotlinx.coroutines.CancellationException) throw error
-                            Toast.makeText(context, context.getString(R.string.metric_error_record_failed,
-                                error.message.orEmpty()), Toast.LENGTH_LONG).show()
+                            Toast.makeText(context, com.dayforge.ui.actionFailureMessage(context, error), Toast.LENGTH_LONG).show()
                         }
                     }
                 },
                 onSkip = { neverAskAgain ->
-                    scope.launch {
+                    run {
                         try {
                             if (neverAskAgain) {
-                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim)
+                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim, state.factPrompt)
                             }
-                            viewModel.skipPostCheckInDialog(state.habitId, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim)
+                            viewModel.skipPostCheckInDialog(state.habitId, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim, state.factPrompt)
                             if (state.isTempTask) {
                                 viewModel.deleteTempTask(state.habitId)
                             }
@@ -556,7 +562,7 @@ fun DashboardScreen(
                     }
                 },
                 onDismiss = {
-                    viewModel.dismissPostCheckInDialog()
+                    viewModel.dismissPostCheckInDialog(state)
                     // 临时任务在对话框关闭后删除
                     if (state.isTempTask) {
                         viewModel.deleteTempTask(state.habitId)
@@ -571,6 +577,7 @@ fun DashboardScreen(
         val goalHabit = habitsWithStats.find { it.habit.id == goalHabitId }
         if (goalHabit != null) {
             GoalCompletionDialog(
+                busy = goalHabitId in busyHabitIds,
                 habitName = goalHabit.habit.name,
                 progress = goalProgress,
                 target = goalTarget,
@@ -590,12 +597,12 @@ fun DashboardScreen(
                     else R.string.dialog_reactivate_habit_message, reactivationHabitName))
             },
             confirmButton = {
-                TextButton(onClick = { viewModel.confirmReactivation() }) {
+                TextButton(enabled = reactivationHabitId !in busyHabitIds, onClick = { viewModel.confirmReactivation() }) {
                     Text(stringResource(R.string.dialog_reactivate_confirm), color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { viewModel.dismissReactivationDialog() }) {
+                TextButton(enabled = reactivationHabitId !in busyHabitIds, onClick = { viewModel.dismissReactivationDialog() }) {
                     Text(stringResource(R.string.action_cancel))
                 }
             }
@@ -612,13 +619,14 @@ fun DashboardScreen(
             },
             confirmButton = {
                 TextButton(
+                    enabled = deleteInfo.habit.id !in busyHabitIds,
                     onClick = { viewModel.deleteHabitWithChildren() }
                 ) {
                     Text(stringResource(R.string.dialog_delete_habit_with_children), color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { viewModel.deleteHabitKeepChildren() }) {
+                TextButton(enabled = deleteInfo.habit.id !in busyHabitIds, onClick = { viewModel.deleteHabitKeepChildren() }) {
                     Text(stringResource(R.string.dialog_delete_habit_keep_children))
                 }
             }

@@ -79,6 +79,10 @@ class SettingsViewModel @Inject constructor(
     // Logout-in-progress state
     private val _isLoggingOut = MutableStateFlow(false)
     val isLoggingOut: StateFlow<Boolean> = _isLoggingOut.asStateFlow()
+    private val _actionBusy = MutableStateFlow(false)
+    val actionBusy = _actionBusy.asStateFlow()
+    private val _manualSyncPending = MutableStateFlow(false)
+    val manualSyncPending = _manualSyncPending.asStateFlow()
 
     // Active timer dialog state
     private val _showActiveTimerDialog = MutableStateFlow(false)
@@ -218,7 +222,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun makeCurrentDevicePrimary() {
-        viewModelScope.launch {
+        runSyncIssueAction {
             try { syncManager.makeCurrentDevicePrimary() }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
@@ -258,20 +262,23 @@ class SettingsViewModel @Inject constructor(
     }
 
     private fun startManualSync(retryRejected: Boolean) {
-        if (manualSyncJob?.isActive == true) return
+        if (manualSyncJob?.isActive == true || _isLoggingOut.value || _actionBusy.value) return
+        _manualSyncPending.value = true
         manualSyncJob = viewModelScope.launch {
-            val failure = try {
-                // Version/account discovery owns the retry policy; never mutate v4 queues before dispatch.
-                val result = if (retryRejected) syncManager.retrySync() else syncManager.sync()
-                result.exceptionOrNull()?.also { error ->
-                    if (error is CancellationException) throw error
+            try {
+                val failure = try {
+                    // Version/account discovery owns the retry policy; never mutate v4 queues before dispatch.
+                    val result = if (retryRejected) syncManager.retrySync() else syncManager.sync()
+                    result.exceptionOrNull()?.also { error ->
+                        if (error is CancellationException) throw error
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    error
                 }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                error
-            }
-            failure?.let(::showManualSyncIssue)
+                failure?.let(::showManualSyncIssue)
+            } finally { _manualSyncPending.value = false }
         }
     }
 
@@ -319,6 +326,8 @@ class SettingsViewModel @Inject constructor(
 
     /** A protected/stale action is feedback, not an uncaught coroutine failure; cancellation stays cancellation. */
     private fun runSyncIssueAction(action: suspend () -> Unit) {
+        if (_actionBusy.value || _isLoggingOut.value || _manualSyncPending.value) return
+        _actionBusy.value = true
         viewModelScope.launch {
             try {
                 action()
@@ -326,7 +335,7 @@ class SettingsViewModel @Inject constructor(
                 throw cancelled
             } catch (error: Exception) {
                 showSyncIssue(error)
-            }
+            } finally { _actionBusy.value = false }
         }
     }
 
@@ -339,8 +348,8 @@ class SettingsViewModel @Inject constructor(
      * Logs out the user by clearing tokens and local data.
      */
     fun logout() {
-        viewModelScope.launch {
-            if (showActiveTimerWarningIfNeeded()) return@launch
+        logoutOperation {
+            if (showActiveTimerWarningIfNeeded()) return@logoutOperation
             accountSessionCoordinator.exclusive {
                 clearAccountData()
             }
@@ -352,11 +361,9 @@ class SettingsViewModel @Inject constructor(
      * Called when user chooses "Sync then logout" option.
      */
     fun syncAndLogout(onComplete: () -> Unit) {
-        viewModelScope.launch {
-            if (showActiveTimerWarningIfNeeded()) return@launch
-            _isLoggingOut.value = true
+        logoutOperation {
+            if (showActiveTimerWarningIfNeeded()) return@logoutOperation
             val result = syncManager.syncAndThen { clearAccountData() }
-            _isLoggingOut.value = false
 
             if (result.isSuccess) {
                 onComplete()
@@ -381,10 +388,22 @@ class SettingsViewModel @Inject constructor(
      * Called when user chooses "Direct logout" option.
      */
     fun directLogout(onComplete: () -> Unit) {
-        viewModelScope.launch {
-            if (showActiveTimerWarningIfNeeded()) return@launch
+        logoutOperation {
+            if (showActiveTimerWarningIfNeeded()) return@logoutOperation
             accountSessionCoordinator.exclusive { clearAccountData() }
             onComplete()
+        }
+    }
+
+    private fun logoutOperation(action: suspend () -> Unit) {
+        if (_isLoggingOut.value || _actionBusy.value || _manualSyncPending.value) return
+        _isLoggingOut.value = true
+        viewModelScope.launch {
+            try { action() }
+            catch (error: Exception) {
+                if (error is CancellationException) throw error
+                showSyncIssue(error)
+            } finally { _isLoggingOut.value = false }
         }
     }
 

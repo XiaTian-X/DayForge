@@ -14,9 +14,8 @@ internal class NextRestartBindingStore(private val database: HabitDatabase) {
 
     suspend fun ready(access: LocalSyncAccess, reference: NextRestartReference): Pair<kotlinx.serialization.json.JsonObject, String> {
         captured(access, reference)
-        val sql = database.openHelper.writableDatabase
-        if (NextRequestSql.rowHash(sql, "next_acceptances", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, reference.operationId)) == null ||
-            NextRequestSql.rowHash(sql, "next_restart_plan_proofs", "operationId=?", arrayOf(reference.operationId)) == null)
+        if (NextRequestSql.rowHash(database, "next_acceptances", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, reference.operationId)) == null ||
+            NextRequestSql.rowHash(database, "next_restart_plan_proofs", "operationId=?", arrayOf(reference.operationId)) == null)
             rejectNextRequest(NextRequestException.Reason.CAUSAL_PREDECESSOR_PENDING)
         return NextRestartStore(database).acceptedPlan(access, reference)
     }

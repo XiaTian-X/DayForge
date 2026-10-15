@@ -17,6 +17,7 @@ import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -49,11 +50,28 @@ fun PermissionScreen(
     val exactAlarmStatus by viewModel.exactAlarmPermissionStatus.collectAsStateWithLifecycle()
     val reminderStatus by viewModel.reminderPermissionStatus.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    var externalPending by rememberSaveable { mutableStateOf(false) }
+    fun launchExternal(action: () -> Unit) {
+        if (externalPending) return
+        externalPending = true
+        try { action() }
+        catch (_: Exception) {
+            externalPending = false
+            android.widget.Toast.makeText(context, context.getString(R.string.common_error),
+                android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+    val settingsLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        externalPending = false
+        viewModel.refreshNotificationPermissionStatus()
+        viewModel.refreshExactAlarmPermissionStatus()
+    }
 
     // Permission launcher for Android 13+ (TIRAMISU)
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
+        externalPending = false
         viewModel.refreshNotificationPermissionStatus()
     }
 
@@ -125,18 +143,16 @@ fun PermissionScreen(
                         if (shouldShowRationale) {
                             // First denial - can still request again
                             Pair(stringResource(R.string.permission_request)) {
-                                permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                launchExternal { permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }
                             }
                         } else {
                             // Permanent denial - must open settings
                             Pair(stringResource(R.string.permission_open_settings)) {
-                                try {
+                                launchExternal {
                                     val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                                         data = "package:${context.packageName}".toUri()
                                     }
-                                    context.startActivity(intent)
-                                } catch (e: Exception) {
-                                    // Fallback if settings cannot be opened
+                                    settingsLauncher.launch(intent)
                                 }
                             }
                         }
@@ -152,6 +168,7 @@ fun PermissionScreen(
                     description = stringResource(R.string.permission_notification_desc),
                     status = notificationStatus,
                     icon = Icons.Rounded.Notifications,
+                    actionEnabled = !externalPending,
                     actionButton = actionButton
                 )
             }
@@ -161,13 +178,11 @@ fun PermissionScreen(
                 val exactAlarmActionButton: Pair<String, () -> Unit>? = if (exactAlarmStatus is PermissionStatus.Denied) {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         Pair(stringResource(R.string.permission_open_settings)) {
-                            try {
+                            launchExternal {
                                 val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
                                     data = "package:${context.packageName}".toUri()
                                 }
-                                context.startActivity(intent)
-                            } catch (e: Exception) {
-                                // Fallback to app settings
+                                settingsLauncher.launch(intent)
                             }
                         }
                     } else {
@@ -182,6 +197,7 @@ fun PermissionScreen(
                     description = stringResource(R.string.permission_exact_alarm_desc),
                     status = exactAlarmStatus,
                     icon = Icons.Rounded.Schedule,
+                    actionEnabled = !externalPending,
                     actionButton = exactAlarmActionButton
                 )
             }
@@ -199,19 +215,17 @@ fun PermissionScreen(
                             notificationDenied && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
                                 // Notification permission denied - request it
                                 Pair(stringResource(R.string.permission_request)) {
-                                    permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                    launchExternal { permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }
                                 }
                             }
                             alarmDenied && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
                                 // Exact alarm permission denied - open settings
                                 Pair(stringResource(R.string.permission_open_settings)) {
-                                    try {
+                                    launchExternal {
                                         val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
                                             data = "package:${context.packageName}".toUri()
                                         }
-                                        context.startActivity(intent)
-                                    } catch (e: Exception) {
-                                        // Fallback
+                                        settingsLauncher.launch(intent)
                                     }
                                 }
                             }
@@ -223,6 +237,7 @@ fun PermissionScreen(
 
                 PermissionItem(
                     title = stringResource(R.string.permission_reminder_title),
+                    actionEnabled = !externalPending,
                     description = stringResource(R.string.permission_reminder_desc),
                     status = reminderStatus,
                     icon = Icons.Rounded.Notifications,
@@ -250,7 +265,8 @@ fun PermissionItem(
     status: PermissionStatus,
     icon: ImageVector,
     actionButton: Pair<String, () -> Unit>? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    actionEnabled: Boolean = true
 ) {
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -337,6 +353,7 @@ fun PermissionItem(
         if (actionButton != null && status is PermissionStatus.Denied) {
             Spacer(modifier = Modifier.height(8.dp))
             Button(
+                enabled = actionEnabled,
                 onClick = actionButton.second,
                 modifier = Modifier.fillMaxWidth()
             ) {

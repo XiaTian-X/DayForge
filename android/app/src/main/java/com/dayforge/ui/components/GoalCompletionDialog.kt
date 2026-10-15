@@ -3,6 +3,7 @@ package com.dayforge.ui.components
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -37,10 +38,11 @@ fun GoalCompletionDialog(
     progress: Int,
     target: Int,
     onConfirm: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    busy: Boolean = false
 ) {
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!busy) onDismiss() },
         title = {
             // Emoji is visual only, not in contentDescription for accessibility
             val accessibilityTitle = stringResource(R.string.dialog_goal_complete_title_accessibility)
@@ -68,13 +70,16 @@ fun GoalCompletionDialog(
         },
         confirmButton = {
             Button(
+                enabled = !busy,
                 onClick = onConfirm
             ) {
-                Text(stringResource(R.string.action_confirm_complete))
+                if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                else Text(stringResource(R.string.action_confirm_complete))
             }
         },
         dismissButton = {
             TextButton(
+                enabled = !busy,
                 onClick = onDismiss
             ) {
                 Text(stringResource(R.string.action_continue_checkin))

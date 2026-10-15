@@ -145,10 +145,11 @@ fun HabitNavGraph(
         modifier = modifier
     ) {
         // Login screen
-        composable(Screen.Login.route) {
+        composable(Screen.Login.route) { entry ->
+            val navigation = remember(entry) { EntryNavigation(navController, entry) }
             LoginScreen(
                 onLoginSuccess = {
-                    navController.navigate(BUSINESS_GRAPH) {
+                    navigation.navigate(BUSINESS_GRAPH) {
                         popUpTo(Screen.Login.route) { inclusive = true }
                     }
                 }
@@ -159,7 +160,7 @@ fun HabitNavGraph(
             listOf(Screen.Dashboard, Screen.Nested, Screen.Metrics, Screen.Profile).forEach { screen ->
                 composable(screen.route) { entry ->
                     val owner = businessGraphOwner(navController, entry)
-                    MainTabContent(navController, owner, selectedTab, windowSizeClass)
+                    MainTabContent(navController, owner, entry, selectedTab, windowSizeClass)
                 }
             }
 
@@ -174,12 +175,13 @@ fun HabitNavGraph(
                     }
                 )
             ) { backStackEntry ->
+                val navigation = remember(backStackEntry) { EntryNavigation(navController, backStackEntry) }
                 val parentUuid = backStackEntry.arguments?.getString("parentUuid")
-                ObjectCreationEntry(onBack = { navController.popBackStack() }) { authority ->
+                ObjectCreationEntry(onBack = navigation::back) { authority ->
                     CreateHabitScreen(
                         creationAuthority = authority,
                         parentUuid = parentUuid,
-                        onNavigateBack = { navController.popBackStack() }
+                        onNavigateBack = navigation::back
                     )
                 }
             }
@@ -194,50 +196,54 @@ fun HabitNavGraph(
                     }
                 )
             ) { backStackEntry ->
+                val navigation = remember(backStackEntry) { EntryNavigation(navController, backStackEntry) }
                 val parentUuid = backStackEntry.arguments?.getString("parentUuid")
-                ObjectCreationEntry(onBack = { navController.popBackStack() }) { authority ->
+                ObjectCreationEntry(onBack = navigation::back) { authority ->
                     CreateTempTaskScreen(
                         creationAuthority = authority,
                         parentUuid = parentUuid,
-                        onNavigateBack = { navController.popBackStack() }
+                        onNavigateBack = navigation::back
                     )
                 }
             }
 
-            composable(Screen.CreateGoal.route) {
-                ObjectCreationEntry(onBack = { navController.popBackStack() }) { authority ->
+            composable(Screen.CreateGoal.route) { entry ->
+                val navigation = remember(entry) { EntryNavigation(navController, entry) }
+                ObjectCreationEntry(onBack = navigation::back) { authority ->
                     CreateGoalScreen(
                         creationAuthority = authority,
-                        onNavigateBack = { navController.popBackStack() },
-                        onCreateChildHabit = { _ -> navController.navigate(Screen.CreateGoalChild.route) }
+                        onNavigateBack = navigation::back,
+                        onCreateChildHabit = { _ -> navigation.navigate(Screen.CreateGoalChild.route) }
                     )
                 }
             }
 
             composable(Screen.CreateGoalChild.route) { childEntry ->
+                val navigation = remember(childEntry) { EntryNavigation(navController, childEntry) }
                 val goalEntry = remember(childEntry) { navController.getBackStackEntry(Screen.CreateGoal.route) }
                 val goalViewModel: CreateGoalViewModel = hiltViewModel(goalEntry)
                 val goalState by goalViewModel.uiState.collectAsStateWithLifecycle()
                 // After process death the parent form can be below this route and not composed.
                 // Recover its entry admission before exposing a child, never a new independent ticket.
-                ObjectCreationEntry(onBack = { navController.popBackStack() }, viewModel = hiltViewModel(goalEntry)) { authority ->
+                ObjectCreationEntry(onBack = navigation::back, viewModel = hiltViewModel(goalEntry)) { authority ->
                     LaunchedEffect(authority) { authority?.let(goalViewModel::beginCreation) }
                     if (authority == null || goalState.creationAuthority === authority) {
                         CreateHabitScreen(
                             parentUuid = goalState.parentUuid,
                             creationAuthority = goalState.creationAuthority,
                             onSaveDraft = goalViewModel::addChildHabit,
-                            onNavigateBack = { navController.popBackStack() }
+                            onNavigateBack = navigation::back
                         )
-                    } else ObjectCreationPending(goalState.errorMessage, onBack = { navController.popBackStack() })
+                    } else ObjectCreationPending(goalState.errorMessage, onBack = navigation::back)
                 }
             }
 
-            composable(Screen.CreateMetric.route) {
-                ObjectCreationEntry(onBack = { navController.popBackStack() }) { authority ->
+            composable(Screen.CreateMetric.route) { entry ->
+                val navigation = remember(entry) { EntryNavigation(navController, entry) }
+                ObjectCreationEntry(onBack = navigation::back) { authority ->
                     CreateMetricScreen(
                         creationAuthority = authority,
-                        onNavigateBack = { navController.popBackStack() }
+                        onNavigateBack = navigation::back
                     )
                 }
             }
@@ -251,15 +257,16 @@ fun HabitNavGraph(
                 )
             ) { backStackEntry ->
                 val habitId = backStackEntry.arguments?.getLong("habitId") ?: return@composable
+                val navigation = remember(backStackEntry) { EntryNavigation(navController, backStackEntry) }
                 EditHabitScreen(
                     habitId = habitId,
                     onNavigateBack = {
-                        navController.popBackStack()
+                        navigation.back()
                     },
                     onHabitDeleted = {
                         // Pop back to Dashboard (the only tab route in the backstack).
                         // selectedTab is preserved, so the correct tab content is shown.
-                        navController.popBackStack(Screen.Dashboard.route, inclusive = false)
+                        navigation.backToDashboard()
                     }
                 )
             }
@@ -273,18 +280,19 @@ fun HabitNavGraph(
                 )
             ) { backStackEntry ->
                 val goalId = backStackEntry.arguments?.getLong("goalId") ?: return@composable
+                val navigation = remember(backStackEntry) { EntryNavigation(navController, backStackEntry) }
                 EditGoalScreen(
                     goalId = goalId,
                     onNavigateBack = {
                         // Pop back to Dashboard (the only tab route in the backstack).
                         // selectedTab is preserved, so the correct tab content is shown.
-                        navController.popBackStack(Screen.Dashboard.route, inclusive = false)
+                        navigation.backToDashboard()
                     },
                     onCreateChildHabit = { parentUuid ->
-                        navController.navigate(Screen.CreateHabit.createRoute(parentUuid))
+                        navigation.navigate(Screen.CreateHabit.createRoute(parentUuid))
                     },
                     onEditChildHabit = { habitId ->
-                        navController.navigate(Screen.EditHabit.createRoute(habitId))
+                        navigation.navigate(Screen.EditHabit.createRoute(habitId))
                     }
                 )
             }
@@ -298,16 +306,17 @@ fun HabitNavGraph(
                 )
             ) { backStackEntry ->
                 val habitId = backStackEntry.arguments?.getLong("habitId") ?: return@composable
+                val navigation = remember(backStackEntry) { EntryNavigation(navController, backStackEntry) }
                 HabitDetailScreen(
                     habitId = habitId,
                     onNavigateBack = {
-                        navController.popBackStack()
+                        navigation.back()
                     },
                     onEditClick = { id ->
-                        navController.navigate(Screen.EditHabit.createRoute(id))
+                        navigation.navigate(Screen.EditHabit.createRoute(id))
                     },
                     onEditGoalClick = { id ->
-                        navController.navigate(Screen.EditGoal.createRoute(id))
+                        navigation.navigate(Screen.EditGoal.createRoute(id))
                     }
                 )
             }
@@ -321,16 +330,17 @@ fun HabitNavGraph(
                 )
             ) { backStackEntry ->
                 val metricId = backStackEntry.arguments?.getLong("metricId") ?: return@composable
+                val navigation = remember(backStackEntry) { EntryNavigation(navController, backStackEntry) }
                 MetricDetailScreen(
                     metricId = metricId,
                     onNavigateBack = {
-                        navController.popBackStack()
+                        navigation.back()
                     },
                     onEditClick = { id ->
-                        navController.navigate(Screen.EditMetric.createRoute(id))
+                        navigation.navigate(Screen.EditMetric.createRoute(id))
                     },
                     onDeleted = {
-                        navController.popBackStack(Screen.Dashboard.route, inclusive = false)
+                        navigation.backToDashboard()
                     }
                 )
             }
@@ -344,63 +354,69 @@ fun HabitNavGraph(
                 )
             ) { backStackEntry ->
                 val metricId = backStackEntry.arguments?.getLong("metricId") ?: return@composable
+                val navigation = remember(backStackEntry) { EntryNavigation(navController, backStackEntry) }
                 EditMetricScreen(
                     metricId = metricId,
                     onNavigateBack = {
-                        navController.popBackStack()
+                        navigation.back()
                     },
                     onMetricDeleted = {
-                        navController.popBackStack(Screen.Dashboard.route, inclusive = false)
+                        navigation.backToDashboard()
                     }
                 )
             }
 
-            composable(Screen.Settings.route) {
+            composable(Screen.Settings.route) { entry ->
+                val navigation = remember(entry) { EntryNavigation(navController, entry) }
                 SettingsScreen(
                     onNavigateBack = {
-                        navController.popBackStack()
+                        navigation.back()
                     },
                     onNavigateToLogin = {
-                        navController.navigate(Screen.Login.route) {
+                        navigation.navigate(Screen.Login.route) {
                             popUpTo(BUSINESS_GRAPH) { inclusive = true }
                         }
                     },
                     onNavigateToPermission = {
-                        navController.navigate(Screen.Permission.route)
+                        navigation.navigate(Screen.Permission.route)
                     },
                     onNavigateToAdmin = {
-                        navController.navigate(Screen.Admin.route)
+                        navigation.navigate(Screen.Admin.route)
                     },
                     onNavigateToToken = {
-                        navController.navigate(Screen.Token.route)
+                        navigation.navigate(Screen.Token.route)
                     },
                     onNavigateToIcons = {
-                        navController.navigate(Screen.IconLibrary.route)
+                        navigation.navigate(Screen.IconLibrary.route)
                     }
                 )
             }
 
-            composable(Screen.IconLibrary.route) {
-                IconLibraryScreen(onNavigateBack = { navController.popBackStack() })
+            composable(Screen.IconLibrary.route) { entry ->
+                val navigation = remember(entry) { EntryNavigation(navController, entry) }
+                IconLibraryScreen(onNavigateBack = navigation::back)
             }
 
-            composable(Screen.Token.route) {
+            composable(Screen.Token.route) { entry ->
+                val navigation = remember(entry) { EntryNavigation(navController, entry) }
                 TokenScreen(
                     onNavigateBack = {
-                        navController.popBackStack()
+                        navigation.back()
                     }
                 )
             }
 
-            composable(Screen.Permission.route) {
+            composable(Screen.Permission.route) { entry ->
+                val navigation = remember(entry) { EntryNavigation(navController, entry) }
                 PermissionScreen(
-                    onNavigateBack = { navController.popBackStack() }
+                    onNavigateBack = navigation::back
                 )
             }
 
-            composable(Screen.Admin.route) {
+            composable(Screen.Admin.route) { entry ->
+                val navigation = remember(entry) { EntryNavigation(navController, entry) }
                 AdminScreen(
-                    onNavigateBack = { navController.popBackStack() }
+                    onNavigateBack = navigation::back
                 )
             }
         }
@@ -414,7 +430,8 @@ internal fun businessGraphOwner(navController: NavHostController, entry: android
 
 @Composable
 private fun MainTabContent(navController: NavHostController, owner: androidx.navigation.NavBackStackEntry,
-    selectedTab: Int, windowSizeClass: WindowSizeClass) {
+    entry: androidx.navigation.NavBackStackEntry, selectedTab: Int, windowSizeClass: WindowSizeClass) {
+    val navigation = remember(entry) { EntryNavigation(navController, entry) }
     val dashboardViewModel: DashboardViewModel = hiltViewModel(owner)
     val nestedViewModel: NestedViewModel = hiltViewModel(owner)
     val metricsViewModel: MetricsViewModel = hiltViewModel(owner)
@@ -423,31 +440,31 @@ private fun MainTabContent(navController: NavHostController, owner: androidx.nav
         0 -> DashboardScreen(
             viewModel = dashboardViewModel,
             windowSizeClass = windowSizeClass,
-            onHabitClick = { navController.navigate(Screen.HabitDetail.createRoute(it)) },
-            onCreateHabitClick = { navController.navigate(Screen.CreateHabit.createRoute()) },
-            onCreateTempTaskClick = { navController.navigate(Screen.CreateTempTask.createRoute()) },
-            onEditHabitClick = { navController.navigate(Screen.EditHabit.createRoute(it)) },
-            onMetricClick = { navController.navigate(Screen.MetricDetail.createRoute(it)) }
+            onHabitClick = { navigation.navigate(Screen.HabitDetail.createRoute(it)) },
+            onCreateHabitClick = { navigation.navigate(Screen.CreateHabit.createRoute()) },
+            onCreateTempTaskClick = { navigation.navigate(Screen.CreateTempTask.createRoute()) },
+            onEditHabitClick = { navigation.navigate(Screen.EditHabit.createRoute(it)) },
+            onMetricClick = { navigation.navigate(Screen.MetricDetail.createRoute(it)) }
         )
         1 -> NestedScreen(
             viewModel = nestedViewModel,
             windowSizeClass = windowSizeClass,
-            onHabitClick = { navController.navigate(Screen.HabitDetail.createRoute(it)) },
-            onEditHabitClick = { navController.navigate(Screen.EditHabit.createRoute(it)) },
-            onEditGoalClick = { navController.navigate(Screen.HabitDetail.createRoute(it)) },
-            onCreateGoalClick = { navController.navigate(Screen.CreateGoal.route) },
-            onMetricClick = { navController.navigate(Screen.MetricDetail.createRoute(it)) }
+            onHabitClick = { navigation.navigate(Screen.HabitDetail.createRoute(it)) },
+            onEditHabitClick = { navigation.navigate(Screen.EditHabit.createRoute(it)) },
+            onEditGoalClick = { navigation.navigate(Screen.HabitDetail.createRoute(it)) },
+            onCreateGoalClick = { navigation.navigate(Screen.CreateGoal.route) },
+            onMetricClick = { navigation.navigate(Screen.MetricDetail.createRoute(it)) }
         )
         2 -> MetricsScreen(
             viewModel = metricsViewModel,
             windowSizeClass = windowSizeClass,
-            onCreateMetricClick = { navController.navigate(Screen.CreateMetric.route) },
-            onMetricClick = { navController.navigate(Screen.MetricDetail.createRoute(it)) },
-            onEditMetricClick = { navController.navigate(Screen.EditMetric.createRoute(it)) }
+            onCreateMetricClick = { navigation.navigate(Screen.CreateMetric.route) },
+            onMetricClick = { navigation.navigate(Screen.MetricDetail.createRoute(it)) },
+            onEditMetricClick = { navigation.navigate(Screen.EditMetric.createRoute(it)) }
         )
         3 -> ProfileScreen(
             viewModel = profileViewModel,
-            onSettingsClick = { navController.navigate(Screen.Settings.route) }
+            onSettingsClick = { navigation.navigate(Screen.Settings.route) }
         )
     }
 }

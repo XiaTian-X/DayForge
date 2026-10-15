@@ -23,8 +23,8 @@ internal class NextRestartStore(private val database: HabitDatabase) {
 
     private suspend fun rowHash(table: String, id: String) = when (table) {
         "next_request_origins", "next_transmissions", "next_acceptances", "next_rejections" ->
-            NextRequestSql.rowHash(sql, table, "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, id))
-        else -> NextRequestSql.rowHash(sql, table, "operationId=?", arrayOf(id))
+            NextRequestSql.rowHash(database, table, "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, id))
+        else -> NextRequestSql.rowHash(database, table, "operationId=?", arrayOf(id))
     }
 
     suspend fun original(access: LocalSyncAccess, id: String): Original {
@@ -54,7 +54,7 @@ internal class NextRestartStore(private val database: HabitDatabase) {
         val queue = database.syncOutboxDao().getById(origin.queueId)
         if (queue == null) require(rowHash("next_acceptances", id) != null && database.syncOutboxDao().getByOperationId(id) == null)
         else {
-            require(NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(origin.queueId)) == origin.sourceHash &&
+            require(NextRequestSql.rowHash(database, "sync_outbox", "id=?", arrayOf(origin.queueId)) == origin.sourceHash &&
                 NextRequestSql.sourceHash(queue) == origin.sourceHash && queue.operationId == id &&
                 queue.recordType == RESTART_RECORD && queue.entityUuid == proposal.head.activityUuid &&
                 queue.wireEntityUuid == proposal.head.roundUuid && queue.action == "upsert" && queue.referenceUuid == null &&
@@ -76,7 +76,7 @@ internal class NextRestartStore(private val database: HabitDatabase) {
                 com.dayforge.data.local.LocalCoreWriteAccess(access.session, access.capabilities, access.deviceId))
         }
         for (terminal in proposal.terminals) {
-            val raw = requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_TIMER, terminal.commandId)))
+            val raw = requireNotNull(NextRequestSql.rowHash(database, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_TIMER, terminal.commandId)))
             val source = requireNotNull(requests.origin(NEXT_TIMER, terminal.commandId))
             val intent = requireNotNull(roundTimerIntent(source.intentJson))
             require(raw == terminal.originHash && source.protocol == 5 && source.accountId == origin.accountId &&
