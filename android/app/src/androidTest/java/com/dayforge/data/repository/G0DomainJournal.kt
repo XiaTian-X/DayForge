@@ -20,12 +20,13 @@ internal class G0DomainJournal(private val sql: SupportSQLiteDatabase, private v
     private var mainVersion = -1L
     private var installed = false
     private var consumed = 0L
-    private val columns = G0DomainSqlCatalog.columns +
+    private val domainColumns = G0DomainSqlCatalog.columns +
         (if(countCertificateScope)G0CountCertificateSql.tables else emptyMap()) +
         (if(countBlockScope)G0CountBlockSql.tables else emptyMap()) +
         (if(countRootScope)G0CountRootSql.tables else emptyMap())
 
-    private val width = columns.values.maxOf { it.size }
+    private lateinit var columns: Map<String, List<String>>
+    private var width = 0
     private fun <T> timed(name:String, body:()->T):T = G0PhaseTrace.current.get().let { trace -> if(trace==null) body() else trace.call("journal_$name",body) }
     private fun scalar(text: String): Long = sql.query(text).use { check(it.moveToFirst()); it.getLong(0) }
     private fun schema(): List<List<String?>> = trustedSchema(sql)
@@ -33,6 +34,10 @@ internal class G0DomainJournal(private val sql: SupportSQLiteDatabase, private v
         check(!installed && sql.inTransaction())
         check(timed("schema") { schema() } == expected) { "G0_DOMAIN_SCHEMA_NOT_TRUSTED" }
         check(scalar("PRAGMA recursive_triggers") == 1L) { "G0_DOMAIN_REPLACE_CAPTURE_REQUIRED" }
+        val witnessColumns = G0ProductionWitnessColumns.read(sql, expected)
+        check(domainColumns.keys.intersect(witnessColumns.keys).isEmpty()) { "G0_DOMAIN_WITNESS_OVERLAP" }
+        columns = domainColumns + witnessColumns
+        width = columns.values.maxOf { it.size }
         val actualTables = timed("tables") { sql.query("SELECT name FROM main.sqlite_master WHERE type='table'").use { c ->
             buildSet { while (c.moveToNext()) add(c.getString(0)) }
         }

@@ -296,6 +296,7 @@ internal class G0DomainSqlGate(
     suspend fun certifyChanges(validate: (List<G0DomainJournal.Change>) -> Unit) {
         check((active().phase == Phase.BUSINESS || countCertificateScope && active().phase == Phase.MAINTENANCE) && !active().writesClosed)
         val changes = stage("certify_capture") { changes() }
+        G0ProductionWitnessColumns.rejectChanges(changes)
         if(active().phase==Phase.MAINTENANCE)check(changes.all {it.table in G0CountCertificateSql.tables}) {"G0_CERTIFICATE_CHANGED_PRIMARY"}
         stage("certify_validate") { validate(changes) }
         candidate = changes
