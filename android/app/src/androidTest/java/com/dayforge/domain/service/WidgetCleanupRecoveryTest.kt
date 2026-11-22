@@ -12,6 +12,9 @@ import androidx.glance.appwidget.state.updateAppWidgetState
 import androidx.room.withTransaction
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.dayforge.data.local.DatabaseEpochGraph
+import com.dayforge.data.local.DatabaseEpochValue
+import com.dayforge.data.local.DatabaseRuntimeHost
 import com.dayforge.data.local.PhysicalDatabaseRule
 import com.dayforge.data.local.TokenManager
 import com.dayforge.data.repository.nextRestartDatabaseProof
@@ -46,6 +49,7 @@ class WidgetCleanupRecoveryTest {
     @get:Rule(order = 0) val widgets = IsolatedWidgetRefreshRule()
     @get:Rule(order = 1) val storage = PhysicalDatabaseRule()
     @get:Rule(order = 2) val hilt = HiltAndroidRule(this)
+    @Inject internal lateinit var host: DatabaseRuntimeHost
     @Inject lateinit var tokens: TokenManager
     @Inject lateinit var sessions: AccountSessionCoordinator
     @Inject lateinit var publisher: WidgetDisplayPublisher
@@ -103,18 +107,27 @@ class WidgetCleanupRecoveryTest {
     }
     private suspend fun state(n: Int) = CountingWidget().getAppWidgetState<Preferences>(app, requireNotNull(ids[n]))
 
+    private suspend fun databaseProof(graph: DatabaseEpochGraph): String =
+        graph.database.withTransaction { nextRestartDatabaseProof(graph.database) }
+
+    private suspend fun assertBusinessUnchanged(before: DatabaseEpochValue<String>) {
+        val after = host.withSourceGraph(before.publication, block = ::databaseProof)
+        assertTrue("The original database must still be current after the proof", before.publication.isCurrentInMemory())
+        assertEquals(before.value, after)
+    }
+
     @Test fun discoveryAndInstanceFailureAreIsolatedAndRecoveryIsRequestedAfterStoresAndBindingsClear() = runBlocking<Unit> {
         every { platform.getAppWidgetIds(match { it.className == CheckInWidgetReceiver::class.java.name }) } throws IOException("discovery unavailable")
         coEvery { anyConstructed<CountingWidget>().update(app, requireNotNull(ids[10])) } throws IOException("launcher unavailable")
         var cleared = false
-        val before = storage.database.withTransaction { nextRestartDatabaseProof(storage.database) }
+        val before = host.snapshot(::databaseProof)
         sessions.exclusive { AccountLocalStateCleaner.clear(app) { cleared = true } }
         assertTrue(cleared); assertEquals(1, widgets.requestCount)
         names.forEach { assertTrue(app.getSharedPreferences(it, Context.MODE_PRIVATE).all.isEmpty()) }
         ids.keys.forEach { assertTrue(state(it).asMap().isEmpty()) }
         coVerify(exactly = 1) { anyConstructed<CountingWidget>().update(app, requireNotNull(ids[11])) }
         coVerify(exactly = 1) { anyConstructed<ProgressWidget>().update(app, requireNotNull(ids[12])) }
-        assertEquals(before, storage.database.withTransaction { nextRestartDatabaseProof(storage.database) })
+        assertBusinessUnchanged(before)
     }
 
     @Test fun cancellationPropagatesAndQueuedRecoveryClearsCurrentUnboundStateNotOldBindingsOrBusiness() = runBlocking<Unit> {
@@ -131,7 +144,7 @@ class WidgetCleanupRecoveryTest {
         val currentFrameOwner = requireNotNull(publisher.capturePublication()?.frameOwner)
         assertNotEquals(oldFrameOwner, currentFrameOwner)
         val emptyCurrentFrame = mapOf<Preferences.Key<*>, Any>(kotlin.Pair(WidgetDisplayPublisher.FRAME_OWNER_KEY, currentFrameOwner))
-        val before = storage.database.withTransaction { nextRestartDatabaseProof(storage.database) }
+        val before = host.snapshot(::databaseProof)
         coEvery { anyConstructed<GlanceAppWidgetManager>().getGlanceIds(CountingWidget::class.java) } returns listOf(requireNotNull(ids[10]), requireNotNull(ids[11]))
         coEvery { anyConstructed<CountingWidget>().update(app, any()) } coAnswers {
             val key = secondArg<GlanceId>()
@@ -142,6 +155,6 @@ class WidgetCleanupRecoveryTest {
         assertEquals(0, WidgetRefresher(app).refresh())
         assertEquals(emptyCurrentFrame, state(10).asMap()); assertEquals(emptyCurrentFrame, state(11).asMap())
         assertEquals(account(50), tokens.authenticationSnapshot()!!.session.userId)
-        assertEquals(before, storage.database.withTransaction { nextRestartDatabaseProof(storage.database) })
+        assertBusinessUnchanged(before)
     }
 }
