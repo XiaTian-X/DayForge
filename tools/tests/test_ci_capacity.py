@@ -1,8 +1,13 @@
 """Approved whole-job/shard capacity must preserve full-suite and case guards."""
 
 from pathlib import Path
+import importlib.util
+import json
+import tempfile
 import re
+import subprocess
 import unittest
+from unittest.mock import patch
 
 from tools.run_android_tests import SHARDS, SHARD_TIMEOUT_SECONDS, TARGETED_TIMEOUT_SECONDS, TARGETED_MAX_TIMEOUT_SECONDS
 
@@ -59,20 +64,88 @@ class CiCapacityTest(unittest.TestCase):
         self.assertIn("uv sync --frozen", verify)
         self.assertIn("uv run --frozen python -m pytest -p tests.warning_budget", verify)
 
-    def test_hosted_android_build_has_time_to_report_before_the_step_and_job_end(self):
-        android = self.job("android")
-        self.assertEqual(["50"], re.findall(r"^    timeout-minutes: (\d+)$", android, re.MULTILINE))
-        self.assertIn(
-            '        timeout-minutes: 45\n'
-            '        env:\n'
-            '          DAYFORGE_BUILD_TIMEOUT_SECONDS: "2400"\n'
-            '        run: ./tools/verify android-build\n',
-            android,
-        )
+    def test_hosted_android_builds_have_independent_capacity_and_evidence(self):
+        build = self.job("android_build")
+        self.assertIn("    runs-on: ubuntu-latest", build)
+        self.assertIn("      fail-fast: false", build)
+        lanes = re.findall(r'- lane: (\w+)\n +build_seconds: "(\d+)"\n +step_minutes: (\d+)\n +job_minutes: (\d+)', build)
+        self.assertEqual([("app", "1800", "35", "40"), ("instrumentation", "3600", "65", "70")], lanes)
+        for setting in (
+            "    timeout-minutes: ${{ matrix.job_minutes }}",
+            "        timeout-minutes: ${{ matrix.step_minutes }}",
+            "          DAYFORGE_BUILD_TIMEOUT_SECONDS: ${{ matrix.build_seconds }}",
+            '        run: python3 .github/scripts/hosted_android_build.py "${{ matrix.lane }}"',
+            "            android/app/build/reports/dayforge-device/",
+        ):
+            self.assertIn(setting, build)
+        self.assertNotIn("continue-on-error", build)
         runner = (ROOT / "tools/run_android_tests.py").read_text()
-        self.assertIn(
-            '"-Pandroid.testInstrumentationRunnerArguments.timeout_msec=150000"', runner
-        )
+        self.assertIn('"-Pandroid.testInstrumentationRunnerArguments.timeout_msec=150000"', runner)
+
+    def test_required_android_check_only_accepts_two_successes_or_an_inapplicable_build(self):
+        job = self.job("android")
+        self.assertIn("needs: [changes, android_build]", job)
+        self.assertIn("if: always()", job)
+        self.assertIn("CHANGES_RESULT: ${{ needs.changes.result }}", job)
+        self.assertIn("ANDROID_REQUIRED: ${{ needs.changes.outputs.android }}", job)
+        self.assertIn("BUILD_RESULT: ${{ needs.android_build.result }}", job)
+        check = job.split("        run: |\n", 1)[1]
+        for changes, required, build, accepted in (
+            ("success", "true", "success", True), ("success", "false", "skipped", True),
+            ("failure", "false", "skipped", False), ("success", "true", "skipped", False),
+            ("success", "true", "failure", False), ("success", "true", "cancelled", False),
+            ("success", "", "skipped", False),
+        ):
+            with self.subTest(changes=changes, required=required, build=build):
+                env = {"CHANGES_RESULT": changes, "ANDROID_REQUIRED": required, "BUILD_RESULT": build}
+                self.assertEqual(subprocess.run(["sh", "-c", check], env=env).returncode == 0, accepted)
+
+    def test_independent_builds_require_each_artifact_and_enforce_the_warning_budget(self):
+        script = ROOT / ".github/scripts/hosted_android_build.py"
+        spec = importlib.util.spec_from_file_location("hosted_android_build", script)
+        hosted = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hosted)
+        for lane, fault in (
+            ("app", None), ("instrumentation", None),
+            ("app", "warning"), ("instrumentation", "warning"),
+            ("app", "missing"), ("instrumentation", "missing"),
+        ):
+            with self.subTest(lane=lane, fault=fault), tempfile.TemporaryDirectory() as tmp:
+                gate = hosted.Gate(Path(tmp), build_timeout=1800 if lane == "app" else 3600)
+                (gate.android / "compiler-warning-budget.json").write_text('{"version": 1, "warnings": []}')
+                outputs = [("debug", "com.dayforge")] if lane == "app" else [
+                    ("deviceTest", "com.dayforge.testbed"), ("androidTest/deviceTest", "com.dayforge.testbed.test")
+                ]
+                for directory, package in outputs:
+                    apk_dir = gate.build / "outputs/apk" / directory
+                    apk_dir.mkdir(parents=True)
+                    (apk_dir / "output-metadata.json").write_text(json.dumps({
+                        "applicationId": package, "elements": [{"outputFile": "app.apk"}]
+                    }))
+                    if fault != "missing" or directory == "deviceTest":
+                        (apk_dir / "app.apk").write_bytes(b"host fixture")
+                (gate.build / "reports/lint-results-debug.xml").write_text("<issues/>")
+
+                def fake_build(name, argv, seconds):
+                    log = gate.run / (name + ".log")
+                    log.write_text("w: file:///workspace/Test.kt:12:4 Kotlin warning\n" if fault == "warning" else "")
+                    gate.logs.append(log)
+
+                with patch.object(gate, "execute", side_effect=fake_build) as run, patch.object(hosted, "snapshot", return_value={}):
+                    if fault:
+                        with self.assertRaisesRegex(ValueError, "budget exceeded" if fault == "warning" else "Missing"):
+                            hosted.build(gate, lane)
+                        self.assertFalse((gate.run / "outputs.json").exists())
+                    else:
+                        hosted.build(gate, lane)
+                        artifacts = json.loads((gate.run / "outputs.json").read_text())
+                        self.assertEqual(2, len(artifacts))
+                        for rel, digest in artifacts.items():
+                            self.assertEqual(hosted.digest(gate.build / rel), digest)
+                    tasks = ["lintDebug", "assembleDebug"] if lane == "app" else [
+                        "assembleDeviceTest", "assembleDeviceTestAndroidTest"]
+                    run.assert_called_once_with("build", ["./gradlew", "--no-daemon", *tasks], gate.build_timeout_seconds)
+                    self.assertEqual(tasks, json.loads((gate.run / "build-budget.json").read_text())["tasks"])
 
     def test_physical_shard_capacity_is_explicit_and_user_approved(self):
         self.assertEqual(3, SHARDS)
