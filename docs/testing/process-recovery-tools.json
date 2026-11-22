@@ -1,0 +1,53 @@
+{
+  "format": "dayforge-process-recovery-tools/v1",
+  "status": "SOURCE_PACKAGE_NOT_EXECUTION_ADMISSION",
+  "origin": {
+    "host_candidate": "611",
+    "reviewed_manifest_sha256": "843e582e5fabb1f8c37ea1042a05d9d660e5ca9acac90554eef5ab8df9940afc",
+    "host_script_sha256": "9b60c3460a839e9c43afa1d897af85c643958ea5d327a926fc7667e86d1eeeb7",
+    "host_script_bytes": 54031,
+    "legacy_513_template_preserved": true
+  },
+  "files": [
+    {
+      "path": "tools/run_command_process_gates.py",
+      "sha256": "9b60c3460a839e9c43afa1d897af85c643958ea5d327a926fc7667e86d1eeeb7",
+      "bytes": 54031,
+      "source_sha256": "9b60c3460a839e9c43afa1d897af85c643958ea5d327a926fc7667e86d1eeeb7",
+      "logic_unchanged": true
+    },
+    {
+      "path": "tools/tests/test_command_process_protocol.py",
+      "sha256": "ff4760ebb1bd3c0e365d23f13e894f8af87a161192b78e185b513fcfdcff20fd",
+      "bytes": 7625,
+      "source_sha256": "870ffe3efd77afbcec4fe775f1bc446dffea5b82160edabbded4715271a8d460",
+      "logic_unchanged": true
+    },
+    {
+      "path": "tools/tests/test_command_build_admission.py",
+      "sha256": "621943e90d93eea494803bc89567989644bd80888c7416adae84a8aa49a218a7",
+      "bytes": 11096,
+      "source_sha256": "e2c66a6d4d630381f86d48a528f527fb711c08d57f4a2828a437d540634e01e1",
+      "logic_unchanged": true
+    },
+    {
+      "path": "tools/tests/test_replica_process_protocol.py",
+      "sha256": "fffc21ea3b0d9b89efe8bbe3a0f274931ec83e706f4914b54d6e2aa199560426",
+      "bytes": 10541,
+      "source_sha256": "6e5a4626f39081700fd7ea7d8a00aedcdd5efbbed287b67c56fca9fa69a10e2a",
+      "logic_unchanged": true
+    },
+    {
+      "path": "tools/tests/test_replica_build_admission.py",
+      "sha256": "1b420503d0fbe478e67f745f31fdd472d82e821f881f62fd671ee37c15489d1e",
+      "bytes": 2468,
+      "source_sha256": "a5321aef9bd4785e33e6e0f49593ef559984531534152d647c8e9488748cdac7",
+      "logic_unchanged": true
+    }
+  ],
+  "existing_host_test_methods": 45,
+  "changes": "Driver copied byte-for-byte; four existing test modules use repository-relative imports only",
+  "tools_verify_changed": false,
+  "runtime_admission_required": true,
+  "packaging_executed_tests": false
+}
