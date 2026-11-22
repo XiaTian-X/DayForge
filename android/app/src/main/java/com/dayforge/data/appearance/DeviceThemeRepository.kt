@@ -8,6 +8,7 @@ import com.dayforge.domain.appearance.DeviceThemeSelection
 import com.dayforge.domain.appearance.LoadedDeviceTheme
 import com.dayforge.domain.appearance.ThemeVersionRef
 import java.io.InputStream
+import com.dayforge.domain.service.AccountSessionCoordinator
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -83,10 +84,31 @@ internal class DeviceThemeRepository(
     suspend fun library(): ThemeCatalogListing = catalog.listing()
     suspend fun savedSelection() = selection.read()
 
-    private companion object {
+    companion object {
         // App and widget can cold-start concurrently, including through separate facade instances.
-        val initialization = Mutex()
-        fun defaults() = DeviceThemeSelection(
+        private val initialization = Mutex()
+
+        /** Only the Host's preference snapshot, native check and publication belong here.
+         * Account owners never wait for theme initialization or initialize theme files. */
+        internal suspend fun <T : Any> withSessionPreparation(
+            sessions: AccountSessionCoordinator,
+            prepare: suspend () -> T
+        ): T {
+            while (true) {
+                val result = sessions.exclusive {
+                    if (!initialization.tryLock()) return@exclusive null
+                    try {
+                        prepare()
+                    } finally {
+                        initialization.unlock()
+                    }
+                }
+                if (result != null) return result
+                // Wait without the account. Release the theme lock before reacquiring the account.
+                initialization.withLock { }
+            }
+        }
+        private fun defaults() = DeviceThemeSelection(
             ThemeVersionRef(BuiltInTheme.OCEAN.themeId, BuiltInTheme.OCEAN.revision),
             ThemeVersionRef(BuiltInTheme.DUSK.themeId, BuiltInTheme.DUSK.revision),
             DeviceThemeMode.SYSTEM,

@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
+import androidx.room.RoomDatabase
 import androidx.room.withTransaction
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
@@ -20,6 +21,7 @@ import com.dayforge.data.model.HabitSchedule
 import com.dayforge.data.model.HabitType
 import com.dayforge.di.DatabaseModule
 import com.dayforge.di.WidgetEntryPoint
+import com.dayforge.domain.appearance.DeviceThemeMode
 import com.dayforge.domain.service.AccountIconTransferService
 import com.dayforge.domain.service.DeviceCalendar
 import com.dayforge.domain.service.DeviceThemeController
@@ -41,6 +43,8 @@ import dagger.hilt.android.testing.UninstallModules
 import dagger.hilt.components.SingletonComponent
 import io.mockk.*
 import java.io.IOException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -63,10 +67,25 @@ import org.junit.runner.RunWith
 class LegacySessionGenerationEntrypointTest {
     @get:Rule(order = 0) val timeout: Timeout = Timeout.seconds(150)
     @get:Rule(order = 2) internal val preferences = LegacySessionHostPreferences()
+    private val coldSchemaRead = CompletableDeferred<Unit>()
+    private val releaseColdSchema = CountDownLatch(1)
+
     /** Covers setup, Activities, service cancellation, original Host drain and preferences.
      * A failed owner drain keeps isolation in place and blocks following fixture cleanup. */
-    @get:Rule(order = 1) val widgets = TestRule { base: Statement, _: Description -> object : Statement() {
+    @get:Rule(order = 1) val widgets = TestRule { base: Statement, description: Description -> object : Statement() {
         override fun evaluate() {
+            // Install the inline Room observer before the inner epoch rule captures its configuration.
+            // The other methods retain their original, unwrapped database configuration.
+            if (description.methodName == "currentLoginThemeChangeRecoversOnlyAfterExplicitActivityRetry") {
+                epochs.queryCallback = object : RoomDatabase.QueryCallback {
+                    override fun onQuery(sqlQuery: String, bindArgs: List<Any?>) {
+                        if (sqlQuery.startsWith("SELECT type,CASE WHEN length(CAST(name AS BLOB))<=256") &&
+                            coldSchemaRead.complete(Unit)) {
+                            check(releaseColdSchema.await(45, TimeUnit.SECONDS)) { "Cold schema read was never released" }
+                        }
+                    }
+                }
+            }
             var failure: Throwable? = null
             mockkObject(com.dayforge.widget.WidgetRefreshScheduler)
             every { com.dayforge.widget.WidgetRefreshScheduler.request(any()) } returns null
@@ -313,6 +332,103 @@ class LegacySessionGenerationEntrypointTest {
         assertEquals(createdGeneration, generation())
         assertEquals(1, generationTransforms.get())
         assertEquals(1, preferences.store.committedChanges.get() - generationCommits)
+    }
+
+    @Test fun currentLoginThemeChangeRecoversOnlyAfterExplicitActivityRetry() = preparedTest {
+        // Persist a normal current login through the real token API, without first opening Room.
+        val user = legacyGenerationId(1)
+        epochs.sessions.exclusive {
+            epochs.tokens.saveLoginSession("synthetic-current-access", "synthetic-current-refresh", "synthetic", user, false)
+        }
+        val session = requireNotNull(epochs.tokens.authenticationSnapshot()).session
+        assertEquals(user, session.userId)
+        assertEquals(session.generation, generation())
+        assertEquals(0, epochs.realRoomCreates)
+        val initialPrefs = preferences.store.data.first()
+        val originalTheme = themes.current().saved
+        val newMode = if (originalTheme.selection.mode == DeviceThemeMode.DARK) DeviceThemeMode.LIGHT else DeviceThemeMode.DARK
+        val choice = originalTheme.selection.copy(mode = newMode)
+
+        // The first control entry opens the actual Host and binds its schema. The theme writer
+        // uses the independent device store while the read is held; it never acquires the Host.
+        val coldOpen = async(Dispatchers.IO) { control() }
+        val committedTheme = try {
+            withTimeout(45_000) {
+                coldSchemaRead.await()
+                themes.select(originalTheme.revision, choice).saved
+            }
+        } finally {
+            releaseColdSchema.countDown()
+        }
+        coldOpen.await()
+        assertEquals(originalTheme.revision + 1, committedTheme.revision)
+        assertEquals(choice, committedTheme.selection)
+        val themeKey = stringPreferencesKey("appearance_theme_selection_v1")
+        val changedPrefs = preferences.store.data.first()
+        assertTrue("Only the device theme may change during preparation",
+            initialPrefs.asMap().filterKeys { it != themeKey } ==
+                changedPrefs.asMap().filterKeys { it != themeKey })
+        assertNotEquals(initialPrefs[themeKey], changedPrefs[themeKey])
+
+        val refused = epochs.host.sessionPreparation.value as SessionPreparationState.RetryableFailure
+        assertEquals("LEGACY_SESSION_PREPARATION_CHANGED", refused.cause.message)
+        val obsolete = requireNotNull(refused.attempt.snapshot)
+        assertFalse("The original attempt must retain the actual superseded input", epochs.sessions.exclusive {
+            epochs.tokens.isCurrentLegacySessionPreparationWhileAccountLocked(obsolete)
+        })
+        suspend fun requireOriginalRefusal() {
+            var entered = false
+            val failure = try {
+                epochs.host.withGraph(DatabaseRuntimeHost.Work.COMMAND) { entered = true }
+                null
+            } catch (error: DatabaseRuntimeHost.SessionPreparationUnavailable) {
+                error
+            }
+            assertFalse("Ordinary command entered before explicit retry", entered)
+            assertSame(refused, requireNotNull(failure).preparation)
+        }
+        suspend fun noEffects() = epochs.current { graph ->
+            graph.database.withTransaction {
+                assertEquals(0, graph.database.completionDao().countAll())
+                assertEquals(0, graph.database.metricLogDao().countAll())
+                assertEquals(0, graph.database.timeLogDao().countAll())
+                assertTrue(graph.database.syncOutboxDao().getAll().isEmpty())
+                graph.database.openHelper.writableDatabase.query(
+                    "SELECT (SELECT COUNT(*) FROM count_command_intents), (SELECT COUNT(*) FROM count_command_status)"
+                ).use { rows ->
+                    assertTrue(rows.moveToFirst())
+                    assertEquals(0L, rows.getLong(0))
+                    assertEquals(0L, rows.getLong(1))
+                }
+            }
+        }
+        requireOriginalRefusal()
+        noEffects()
+        activity = ActivityScenario.launch(MainActivity::class.java)
+        compose.waitUntil(45_000) {
+            compose.onAllNodesWithTag("session-preparation-retry").fetchSemanticsNodes().size == 1
+        }
+        requireOriginalRefusal()
+        compose.onNodeWithTag("session-preparation-retry").assertIsDisplayed().performClick()
+        val ready = withTimeout(45_000) {
+            epochs.host.sessionPreparation.first { it is SessionPreparationState.Satisfied }
+        } as SessionPreparationState.Satisfied
+        assertEquals(SessionPreparationDisposition.CURRENT_GENERATION, ready.disposition)
+        assertNotSame(refused.attempt, ready.attempt)
+        val recoveryLabel = app.getString(R.string.count_recovery_open)
+        compose.waitUntil(45_000) { compose.onAllNodesWithText(recoveryLabel).fetchSemanticsNodes().size == 1 }
+        compose.onNodeWithText(recoveryLabel).assertIsDisplayed()
+        compose.onNodeWithTag("session-preparation").assertDoesNotExist()
+        epochs.host.withGraph(DatabaseRuntimeHost.Work.COMMAND) {
+            assertEquals(session, requireNotNull(epochs.tokens.authenticationSnapshot()).session)
+        }
+        noEffects()
+        assertEquals(committedTheme, themes.current().saved)
+        val calendarKey = longPreferencesKey("last_seen_date")
+        val today = settings.calendar.changes.value.date.toEpochDay()
+        val finalPrefs = withTimeout(45_000) { preferences.store.data.first { it[calendarKey] == today } }
+        assertTrue("Explicit preparation changed credentials, permissions or another preference",
+            changedPrefs.asMap().filterKeys { it != calendarKey } == finalPrefs.asMap().filterKeys { it != calendarKey })
     }
 
     @Test fun actualActivityPreparationFailureKeepsOriginalLoginAndRecoveryScreensReachable() = preparedTest {

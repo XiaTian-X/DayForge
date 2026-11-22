@@ -398,11 +398,21 @@ internal class DatabaseRuntimeHost @Inject constructor(private val factory: Data
             lease.epoch.preparation = null
             preparationState.value = SessionPreparationState.Checking()
         }
-        val result = try { factory.prepareSession(lease.epoch.graph) }
+        factory.withSessionPreparation {
+            val result = checkSessionWhileAccountLocked(lease)
+            currentCoroutineContext().ensureActive()
+            recordPreparation(lease.epoch, result)
+            Unit
+        }
+    }
+
+    private suspend fun checkSessionWhileAccountLocked(lease: Lease,
+        expected: LegacySessionPreparationSnapshot? = null): LegacySessionPreparationCheck {
+        return try { factory.checkSessionWhileAccountLocked(lease.epoch.graph, expected) }
         catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Throwable) {
-            // Factory only propagates physical schema/source/actual-END failure. Preserve it;
-            // never turn Unknown into session Ready, auto-close, or a usable control graph.
+            // Only the original physical schema/source/actual-END failure poisons the Host.
+            // Calling code records the result outside this catch, in the same lock window.
             synchronized(monitor) {
                 lease.epoch.publishable = false
                 state = State.Failed(failure, listOf(lease.epoch))
@@ -410,8 +420,6 @@ internal class DatabaseRuntimeHost @Inject constructor(private val factory: Data
             announce()
             throw Unavailable(failure)
         }
-        recordPreparation(lease.epoch, result)
-        Unit
     }
 
     private fun release(lease: Lease) {
@@ -446,26 +454,24 @@ internal class DatabaseRuntimeHost @Inject constructor(private val factory: Data
         return withGraph(Work.CONTROL) {
             val lease = checkNotNull(bound.get())
             preparationSerial.withLock {
-                val active = synchronized(monitor) { lease.epoch.preparation }
-                if (lease.epoch.graph !== expected.graph || active?.attempt !== expected ||
-                    !tokens.isCurrentPersonalDisplayStamp(expected.stamp)) return@withLock SessionPreparationRetry.Stale
-                preparationState.value = SessionPreparationState.Checking(expected)
-                val result = try { factory.prepareSession(lease.epoch.graph, expected.snapshot) }
-                catch (cancelled: CancellationException) { throw cancelled }
-                catch (failure: Throwable) {
-                    synchronized(monitor) {
-                        lease.epoch.publishable = false
-                        state = State.Failed(failure, listOf(lease.epoch))
+                factory.withSessionPreparation {
+                    // Recheck after any wait for the account/theme owner. An attempt with a
+                    // missing snapshot is still bound to its original graph and display stamp.
+                    val active = synchronized(monitor) { lease.epoch.preparation }
+                    if (lease.epoch.graph !== expected.graph || active?.attempt !== expected ||
+                        !tokens.isCurrentPersonalDisplayStamp(expected.stamp)) {
+                        return@withSessionPreparation SessionPreparationRetry.Stale
                     }
-                    announce()
-                    throw Unavailable(failure)
+                    preparationState.value = SessionPreparationState.Checking(expected)
+                    val result = checkSessionWhileAccountLocked(lease, expected.snapshot)
+                    currentCoroutineContext().ensureActive()
+                    if (result.result == LegacySessionGenerationResult.Stale) {
+                        synchronized(monitor) { lease.epoch.preparation = null; preparationState.value = SessionPreparationState.Checking() }
+                        announce()
+                        SessionPreparationRetry.Stale
+                    } else recordPreparation(lease.epoch, result)?.let { SessionPreparationRetry.Completed(it) }
+                        ?: SessionPreparationRetry.Stale
                 }
-                if (result.result == LegacySessionGenerationResult.Stale) {
-                    synchronized(monitor) { lease.epoch.preparation = null; preparationState.value = SessionPreparationState.Checking() }
-                    announce()
-                    SessionPreparationRetry.Stale
-                } else recordPreparation(lease.epoch, result)?.let { SessionPreparationRetry.Completed(it) }
-                    ?: SessionPreparationRetry.Stale
             }
         }
     }

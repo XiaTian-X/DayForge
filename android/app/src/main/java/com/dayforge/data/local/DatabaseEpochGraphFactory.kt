@@ -1,6 +1,7 @@
 package com.dayforge.data.local
 
 import androidx.room.withTransaction
+import com.dayforge.data.appearance.DeviceThemeRepository
 import com.dayforge.data.repository.ReplicaPresentationRepository
 import com.dayforge.data.repository.ReplicaPresentationCheck
 import com.dayforge.data.repository.ReplicaPresentationProblem
@@ -211,20 +212,22 @@ internal class DatabaseEpochGraphFactory @Inject constructor(
         return check
     }
 
+    /** The callback may inspect session metadata and record its outcome. It must never run a
+     * business operation or call a theme loader while owning this boundary. */
+    internal suspend fun <T : Any> withSessionPreparation(block: suspend () -> T): T =
+        withContext(Dispatchers.IO) { DeviceThemeRepository.withSessionPreparation(sessions, block) }
+
     /** Physical publication preserves original recovery/login access even when local session
      * preparation needs attention. Ordinary admission is separately gated by the Host. */
     internal suspend fun validateAndPublish(graph: DatabaseEpochGraph,
-        publish: (LegacySessionPreparationCheck) -> Unit) =
-        withContext(Dispatchers.IO) { sessions.exclusive {
-            val preparation = prepareWhileAccountLocked(graph, bindSource = true)
-            currentCoroutineContext().ensureActive()
-            publish(preparation)
-        } }
+        publish: (LegacySessionPreparationCheck) -> Unit) = withSessionPreparation {
+        val preparation = prepareWhileAccountLocked(graph, bindSource = true)
+        currentCoroutineContext().ensureActive()
+        publish(preparation)
+    }
 
-    /** Explicit retry/new capture only; no business lambda and no nested Host acquisition. */
-    internal suspend fun prepareSession(graph: DatabaseEpochGraph,
+    /** Only within withSessionPreparation, without re-entering Host, Room or the account lock. */
+    internal suspend fun checkSessionWhileAccountLocked(graph: DatabaseEpochGraph,
         expected: LegacySessionPreparationSnapshot? = null): LegacySessionPreparationCheck =
-        withContext(Dispatchers.IO) { sessions.exclusive {
-            prepareWhileAccountLocked(graph, bindSource = false, expected = expected)
-        } }
+        prepareWhileAccountLocked(graph, bindSource = false, expected = expected)
 }
