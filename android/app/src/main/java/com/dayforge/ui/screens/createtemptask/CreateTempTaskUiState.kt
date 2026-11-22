@@ -27,6 +27,7 @@ data class CreateTempTaskUiState(
     val topLevelHabits: List<HabitEntity> = emptyList(),
     val availableMetrics: List<MetricEntity> = emptyList(),
     val selectedMetricIds: Set<Long> = emptySet(),
+    val selectedMetricUuids: Map<Long, String> = emptyMap(),
     val isValid: Boolean = false,
     val isSaving: Boolean = false,
     val savedHabitId: Long? = null,

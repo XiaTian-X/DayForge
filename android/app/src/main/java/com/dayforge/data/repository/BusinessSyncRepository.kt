@@ -13,9 +13,7 @@ import com.dayforge.data.model.SyncProgress
 import com.dayforge.domain.service.AccountSessionCoordinator
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import com.dayforge.data.local.LocalDataSession
 
@@ -23,18 +21,52 @@ internal data class BusinessSyncCompletion(val session: LocalDataSession?, val s
 
 /** Shared manual/background entry. Server metadata still defaults to v4 until coordinated release. */
 @Singleton
-class BusinessSyncRepository @Inject internal constructor(
+class BusinessSyncRepository private constructor(
+    private val fixed: EpochBusinessSyncRepository?,
+    private val host: com.dayforge.data.local.DatabaseRuntimeHost?,
+    coordination: com.dayforge.data.local.DatabaseSyncCoordination
+) {
+    internal constructor(legacy: IncrementalSyncRepository, endpoints: EndpointResolver, database: HabitDatabase,
+        tokens: TokenManager, sessions: AccountSessionCoordinator, http: NextSyncHttp, next: NextSyncRuntime,
+        coordination: com.dayforge.data.local.DatabaseSyncCoordination = com.dayforge.data.local.DatabaseSyncCoordination()) :
+        this(EpochBusinessSyncRepository(legacy, endpoints, database, tokens, sessions, http, next, coordination), null, coordination)
+    @Inject internal constructor(host: com.dayforge.data.local.DatabaseRuntimeHost,
+        coordination: com.dayforge.data.local.DatabaseSyncCoordination) : this(null, host, coordination)
+    internal val completions = coordination.completed.asStateFlow()
+    private suspend fun <T> operation(block: suspend (EpochBusinessSyncRepository) -> T): T =
+        if (fixed != null) block(fixed) else requireNotNull(host).withGraph { graph ->
+            block(requireNotNull(graph.businessSyncRepository.fixed))
+        }
+    internal fun problemChanges() = fixed?.problemChanges() ?: requireNotNull(host).hints {
+        requireNotNull(it.businessSyncRepository.fixed).problemChanges()
+    }
+    internal suspend fun readProblems() = operation { it.readProblems() }
+    internal suspend fun readRecoveryPreview(root: NextRecoveryKey) = operation { it.readRecoveryPreview(root) }
+    internal suspend fun <T> coordinateReplicaRecovery(block: suspend () -> T): T = operation { it.coordinateReplicaRecovery(block) }
+    internal suspend fun prepareRecoveryConfirmation(preview: NextRecoveryDependencyPreview, selected: Set<NextRecoveryKey>) =
+        operation { it.prepareRecoveryConfirmation(preview, selected) }
+    internal suspend fun confirmRecovery(ticket: NextRecoveryConfirmation) = operation { it.confirmRecovery(ticket) }
+    suspend fun makeCurrentDevicePrimary(): DeviceResponse = operation { it.makeCurrentDevicePrimary() }
+    suspend fun setCurrentDeviceStructuralEditing(enabled: Boolean): DeviceResponse = operation { it.setCurrentDeviceStructuralEditing(enabled) }
+    suspend fun sync(progress: (SyncProgress) -> Unit = {}, afterSync: (suspend () -> Unit)? = null): Unit =
+        operation { it.sync(progress, afterSync) }
+    suspend fun retrySync(progress: (SyncProgress) -> Unit = {}): Unit = operation { it.retrySync(progress) }
+}
+
+/** Original protocol implementation, scoped to one eagerly constructed physical graph. */
+internal class EpochBusinessSyncRepository(
     private val legacy: IncrementalSyncRepository,
     private val endpoints: EndpointResolver,
     private val database: HabitDatabase,
     private val tokens: TokenManager,
     private val sessions: AccountSessionCoordinator,
     private val http: NextSyncHttp,
-    private val next: NextSyncRuntime
+    private val next: NextSyncRuntime,
+    coordination: com.dayforge.data.local.DatabaseSyncCoordination = com.dayforge.data.local.DatabaseSyncCoordination()
 ) {
-    private val mutex = Mutex()
+    private val mutex = coordination.business
     private val replica = ReplicaPresentationRepository(database, tokens, sessions)
-    private val completed = MutableStateFlow(BusinessSyncCompletion(null, 0))
+    private val completed = coordination.completed
     internal val completions = completed.asStateFlow()
     internal fun problemChanges() = next.problemChanges()
     internal suspend fun readProblems() = next.readProblems()

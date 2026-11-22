@@ -13,6 +13,8 @@ from tools.run_android_tests import (
     COVERAGE_INPUT,
     RESULTS,
     TARGETED_TIMEOUT_SECONDS,
+    TARGETED_MAX_TIMEOUT_SECONDS,
+    targeted_timeout_seconds,
     main,
     parse_arguments,
     selected_classes,
@@ -88,6 +90,86 @@ class AndroidTargetedGateTest(unittest.TestCase):
         output.start()
         self.addCleanup(output.stop)
 
+    def test_targeted_capacity_is_defaulted_bounded_and_strictly_decimal(self):
+        self.assertEqual(2700, targeted_timeout_seconds(None))
+        self.assertEqual(10800, TARGETED_MAX_TIMEOUT_SECONDS)
+        for value in ("2700", "2701", "4500", "10800"):
+            with self.subTest(value=value):
+                self.assertEqual(int(value), targeted_timeout_seconds(value))
+        for value in ("", "0", "2699", "10801", "-2700", "+2700", "02700", "2700.0",
+                      "2.7e3", "nan", "inf", " 2700", "2700\n", "２７００", "9" * 1000):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                targeted_timeout_seconds(value)
+
+    def test_invalid_capacity_is_rejected_before_gate_device_or_build(self):
+        with (
+            patch.dict(os.environ, {"DAYFORGE_TARGETED_TIMEOUT_SECONDS": "10801"}),
+            patch("sys.argv", ["gate", "--classes", FIRST]),
+            patch("tools.run_android_tests.Gate") as gate,
+            patch("tools.run_android_tests.subprocess.check_output") as device,
+            patch("sys.stderr", new=io.StringIO()),
+        ):
+            self.assertEqual(2, main())
+            gate.assert_not_called(); device.assert_not_called()
+        with patch.dict(os.environ, {"DAYFORGE_TARGETED_TIMEOUT_SECONDS": "NaN"}):
+            with self.assertRaises(ValueError):
+                ScopedFakeGate(self.repo)
+        self.assertFalse((self.repo / "android/app").exists())
+
+    def test_explicit_capacity_is_frozen_and_matches_native_argument_and_evidence(self):
+        for seconds in (2700, 4500, 10800):
+            with self.subTest(seconds=seconds), tempfile.TemporaryDirectory() as directory:
+                repo = Path(directory)
+                (repo / "android").mkdir()
+                (repo / "android/compiler-warning-budget.json").write_text('{"version":1,"warnings":[]}')
+                with patch.dict(os.environ, {"DAYFORGE_TARGETED_TIMEOUT_SECONDS": str(seconds)}):
+                    gate = ScopedFakeGate(repo)
+                with patch.dict(os.environ, {"DAYFORGE_TARGETED_TIMEOUT_SECONDS": "9000"}):
+                    gate.run_gate(classes=(FIRST, SECOND))
+                gate.cleanup(); gate.finish()
+                run = next((argv, deadline) for name, argv, deadline in gate.calls if name == "targeted")
+                self.assertEqual(seconds, run[1])
+                self.assertEqual([f"-Pdayforge.targetedTimeoutSeconds={seconds}"],
+                    [arg for arg in run[0] if arg.startswith("-Pdayforge.targetedTimeoutSeconds=")])
+                self.assertIn("-Pandroid.testInstrumentationRunnerArguments.timeout_msec=150000", run[0])
+                self.assertEqual(1200, next(deadline for name, _, deadline in gate.calls if name == "build"))
+                budget = json.loads((gate.run / "targeted-budget.json").read_text())
+                self.assertEqual(seconds, budget["command_timeout_seconds"])
+                self.assertEqual(seconds, budget["gradle_timeout_seconds"])
+                self.assertEqual(150000, budget["case_timeout_msec"])
+                self.assertEqual(1200, budget["build_timeout_seconds"])
+                self.assertEqual([FIRST, SECOND], budget["selected_classes"])
+                proof = json.loads((gate.run / "targeted.json").read_text())
+                self.assertEqual(seconds, proof["command_timeout_seconds"])
+                self.assertEqual("targeted_complete", proof["status"])
+
+    def test_failed_execution_retains_budget_without_success_evidence(self):
+        with patch.dict(os.environ, {"DAYFORGE_TARGETED_TIMEOUT_SECONDS": "4500"}):
+            gate = ScopedFakeGate(self.repo, "targeted")
+        with self.assertRaises(ValueError):
+            try:
+                gate.run_gate(classes=(FIRST,))
+            finally:
+                gate.cleanup()
+        budget = json.loads((gate.run / "targeted-budget.json").read_text())
+        self.assertEqual(4500, budget["command_timeout_seconds"])
+        self.assertEqual(4500, budget["gradle_timeout_seconds"])
+        self.assertFalse((gate.run / "targeted.json").exists())
+        self.assertFalse((gate.run / "complete.json").exists())
+
+    def test_targeted_override_does_not_change_full_shard_or_build_deadlines(self):
+        with patch.dict(os.environ, {"DAYFORGE_TARGETED_TIMEOUT_SECONDS": "4500"}):
+            gate = FakeGate(self.repo)
+        gate.run_gate(); gate.cleanup()
+        self.assertEqual(1200, next(deadline for name, _, deadline in gate.calls if name == "build"))
+        shards = [(argv, deadline) for name, argv, deadline in gate.calls if name.startswith("shard-")]
+        self.assertEqual(3, len(shards))
+        for argv, deadline in shards:
+            self.assertEqual(10800, deadline)
+            self.assertFalse(any(arg.startswith("-Pdayforge.targetedTimeoutSeconds=") for arg in argv))
+            self.assertIn("-Pandroid.testInstrumentationRunnerArguments.timeout_msec=150000", argv)
+        self.assertFalse((gate.run / "targeted-budget.json").exists())
+
     def test_selection_is_explicit_bounded_sorted_and_has_no_method_or_wildcard(self):
         self.assertEqual((FIRST, SECOND), selected_classes([SECOND, FIRST]))
         self.assertEqual(
@@ -158,6 +240,8 @@ class AndroidTargetedGateTest(unittest.TestCase):
         )
         self.assertEqual(2700, TARGETED_TIMEOUT_SECONDS)
         self.assertEqual(TARGETED_TIMEOUT_SECONDS, run[1])
+        self.assertIn("-Pdayforge.targetedTimeoutSeconds=2700", run[0])
+        self.assertEqual(2700, proof["command_timeout_seconds"])
         self.assertEqual(
             ["-Pdayforge.deviceTestScope=targeted"],
             [arg for arg in run[0] if arg.startswith("-Pdayforge.deviceTestScope=")],

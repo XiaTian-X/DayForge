@@ -34,12 +34,12 @@ class NextConfigReplacementPreviewTest : NextObjectEditorFixture() {
         db.nextSyncStateDao().insert(NextSyncStateEntity(id(1), id(2), id(3), id(4), 1, 0,
             "a".repeat(64), "b".repeat(64)))
     }
-    private suspend fun acceptedGraph() {
+    private suspend fun acceptedGraph(withCount: Boolean = false) {
         register(); db.clearAllData() // Isolated test fixture only, never the real application.
         val appearance = ObjectAppearance(IconReference.Role("habit.default"), "#123456", "theme")
         creatingHabits().createGoal(HabitDraft(id = id(510), name = "Existing goal", habitType = HabitType.GOAL,
             appearance = appearance.copy(icon = IconReference.Role("goal.default"))),
-            listOf(HabitDraft(id = id(511), name = "Existing habit", habitType = HabitType.CHECK_IN,
+            listOf(HabitDraft(id = id(511), name = "Existing habit", habitType = if (withCount) HabitType.COUNTING else HabitType.CHECK_IN,
                 targetValue = 1, completionPolicy = "recurring", appearance = appearance)), creationAuthority = creator.capture())
         metric = metric.copy(id = 0)
         val metricId = creatingMetrics().createMetric(metric, creationAuthority = creator.capture())
@@ -71,6 +71,64 @@ class NextConfigReplacementPreviewTest : NextObjectEditorFixture() {
                 } })
             } }
         }
+    }
+
+    @Test fun countQualificationAndExplicitCacheRetirementPreserveTheExactBusinessPreview() = runBlocking<Unit> {
+        acceptedGraph(withCount = true)
+        storage.reopen() // clearAllData intentionally retires its owner; use normal cold ownership.
+        val value = preview()
+        assertTrue(value.eligible); assertEquals(0, count("count_trust_root"))
+        val counted = requireNotNull(db.habitDao().getHabitByUuid(id(511)))
+        CountHistoryReader(db, tokens, sessions).read(counted, com.dayforge.util.DateTimeUtils.today())
+        assertEquals(1, count("count_trust_root"))
+        assertTrue(preview().sameContents(value)); service().recheckReplacement(value)
+        assertTrue(CountTrustRecoveryPreparation(db, tokens, sessions).discardCache(access()))
+        assertEquals(0, count("count_trust_root")); assertEquals(0, count("count_trust_nodes"))
+        assertTrue(requireNotNull(com.dayforge.data.local.CountTrustRuntime.forDatabase(db)).isRetired)
+        assertTrue(preview().sameContents(value)); service().recheckReplacement(value)
+        storage.reopen(); service().recheckReplacement(value)
+    }
+
+    @Test fun durableCommandAndStorageIdentityRemainPartOfReplacementConfirmation() = runBlocking<Unit> {
+        acceptedGraph(); val value = preview()
+        db.withTransaction { com.dayforge.data.local.CountTrustRuntime.maintenance(db) {
+            db.openHelper.writableDatabase.execSQL("INSERT INTO count_command_results VALUES(?,?,?,?,?,?)",
+                arrayOf(id(8001), "input", id(8002), null, "result", "committed"))
+        } }
+        assertNotEquals(value.fingerprint, preview().fingerprint)
+        assertEquals("CONFIG_REPLACEMENT_PREVIEW_CHANGED", rejected { service().recheckReplacement(value) }.message)
+        val commandBound = preview()
+        db.withTransaction { com.dayforge.data.local.CountTrustRuntime.maintenance(db) {
+            db.openHelper.writableDatabase.execSQL("UPDATE count_trust_control SET storageId=? WHERE id=1", arrayOf(id(8003)))
+        } }
+        assertNotEquals(commandBound.fingerprint, preview().fingerprint)
+        assertEquals("CONFIG_REPLACEMENT_PREVIEW_CHANGED", rejected { service().recheckReplacement(commandBound) }.message)
+        assertEquals(1, count("count_command_results"))
+    }
+
+    @Test fun noOpBusinessUpdateKeepsTheOriginalFingerprintSemantics() = runBlocking<Unit> {
+        acceptedGraph(); val value = preview()
+        db.withTransaction {
+            // This protected checkpoint has no producer/outbox side effect. The original raw
+            // fingerprint treated a native no-op as unchanged, despite the new dirty counter.
+            db.openHelper.writableDatabase.execSQL("UPDATE next_sync_state SET cursor=cursor")
+        }
+        val current = preview()
+        assertTrue(requireNotNull(current.trustGeneration) > requireNotNull(value.trustGeneration))
+        assertEquals(value.fingerprint, current.fingerprint)
+        assertTrue(current.sameContents(value)); service().recheckReplacement(value)
+    }
+
+    @Test fun identicalBusinessBytesDoNotAllowAnInMemoryControlGenerationToGoBackward() = runBlocking<Unit> {
+        acceptedGraph(); val value = preview()
+        assertTrue(requireNotNull(value.trustGeneration) > 0)
+        db.withTransaction { com.dayforge.data.local.CountTrustRuntime.maintenance(db) {
+            db.openHelper.writableDatabase.execSQL("UPDATE count_trust_control SET generation=generation-1 WHERE id=1")
+        } }
+        val current = preview()
+        assertEquals(value.fingerprint, current.fingerprint)
+        assertFalse(current.sameContents(value))
+        assertEquals("CONFIG_REPLACEMENT_PREVIEW_CHANGED", rejected { service().recheckReplacement(value) }.message)
     }
 
     @Test fun acceptedNonemptyGraphHasExactDestructiveCountsAndColdRecheckIsReadOnly() = runBlocking<Unit> {

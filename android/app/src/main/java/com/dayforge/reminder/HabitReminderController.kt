@@ -6,6 +6,8 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.room.withTransaction
 import com.dayforge.data.local.AccountIconMemory
 import com.dayforge.data.local.HabitDatabase
+import com.dayforge.data.local.DatabaseRuntimeHost
+import com.dayforge.data.local.DatabaseObjectSelection
 import com.dayforge.data.local.LocalFactAccess
 import com.dayforge.data.local.LocalDataSession
 import com.dayforge.data.local.PreferencesManager
@@ -60,19 +62,39 @@ internal interface ReminderAlarms {
 
 /** Only presentation side effects. No fact/outbox mutations or unverified owner from an Intent. */
 @Singleton
-class HabitReminderController internal constructor(
-    private val database: HabitDatabase, private val tokens: TokenManager,
-    private val sessions: AccountSessionCoordinator, private val counts: CountHistoryReader,
+class HabitReminderController private constructor(
+    private val fixedDatabase: HabitDatabase?, private val tokens: TokenManager,
+    private val sessions: AccountSessionCoordinator, private val fixedCounts: CountHistoryReader?,
     private val preferences: PreferencesManager, private val dataStore: DataStore<Preferences>,
-    private val alarms: ReminderAlarms
+    private val alarms: ReminderAlarms, private val databases: DatabaseRuntimeHost?
 ) {
-    @Inject internal constructor(database: HabitDatabase, tokens: TokenManager, sessions: AccountSessionCoordinator,
+    internal constructor(database: HabitDatabase, tokens: TokenManager, sessions: AccountSessionCoordinator,
         counts: CountHistoryReader, preferences: PreferencesManager, dataStore: DataStore<Preferences>,
-        alarms: AndroidReminderAlarms) : this(database, tokens, sessions, counts, preferences, dataStore, alarms as ReminderAlarms)
+        alarms: ReminderAlarms) : this(database, tokens, sessions, counts, preferences, dataStore, alarms, null)
+    @Inject internal constructor(databases: DatabaseRuntimeHost, tokens: TokenManager, sessions: AccountSessionCoordinator,
+        preferences: PreferencesManager, dataStore: DataStore<Preferences>, alarms: AndroidReminderAlarms) :
+        this(null, tokens, sessions, null, preferences, dataStore, alarms, databases)
+    private val database get() = databases?.boundGraph()?.database ?: requireNotNull(fixedDatabase)
+    private val counts get() = databases?.boundGraph()?.countHistoryReader ?: requireNotNull(fixedCounts)
+    private val fixedReplica = fixedDatabase?.let { com.dayforge.data.repository.ReplicaPresentationRepository(it, tokens, sessions) }
+    private val replica get() = databases?.boundGraph()?.replicaPresentationRepository ?: requireNotNull(fixedReplica)
+    private suspend fun <T> withDatabase(block: suspend () -> T): T = if (databases == null) block()
+        else databases.withGraph { block() }
+    private val replicaChanges get() = if (databases == null) replica.changes
+        else databases.controlHints { it.replicaPresentationRepository.changes }
+    private val businessChanges get() = if (databases == null) combine(database.habitDao().getAllHabits(),
+        database.completionDao().getAllCompletions(), counts.changes,
+        database.completionFollowUpDao().observeOneTimeChanges(), dataStore.data) { _, _, _, _, _ -> Unit }
+        else databases.hints { graph -> combine(graph.habitDao.getAllHabits(), graph.completionDao.getAllCompletions(),
+            graph.countHistoryReader.changes, graph.database.completionFollowUpDao().observeOneTimeChanges(), dataStore.data) {
+                _, _, _, _, _ -> Unit
+            } }
 
     private val started = AtomicBoolean(false)
-    private val replica = com.dayforge.data.repository.ReplicaPresentationRepository(database, tokens, sessions)
+    private val sourceRevocations = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.CONFLATED)
     @Volatile private var publicationBlocked = false
+    @Volatile private var graphBlocked = false
+    private val blocked get() = publicationBlocked || graphBlocked
     private val publicationGuard = Any()
     private var publicationGeneration = 0L
     private val invalidator = object : AccountIconMemory.Cache {
@@ -80,12 +102,22 @@ class HabitReminderController internal constructor(
             synchronized(publicationGuard) {
                 publicationBlocked = blocked
                 if (blocked) publicationGeneration++
+                if (blocked) sourceRevocations.trySend(Unit)
                 // This registry allows only short memory invalidation. OS/storage cleanup is
                 // performed by the session observer, not inside TokenManager's transition hook.
             }
         }
     }
     init { tokens.registerIconCache(invalidator) }
+    private val graphRegistration = databases?.observeMemory(object : DatabaseRuntimeHost.MemoryListener {
+        override fun transition(blocked: Boolean) {
+            synchronized(publicationGuard) {
+                graphBlocked = blocked
+                if (blocked) publicationGeneration++
+            }
+            if (blocked) sourceRevocations.trySend(Unit)
+        }
+    })
 
     /** Account cleanup may already hold the non-reentrant coordinator. No DB or account re-entry. */
     suspend fun cancelAllNow() = withContext(Dispatchers.IO) {
@@ -93,13 +125,30 @@ class HabitReminderController internal constructor(
     }
 
     /** Resolve only in the current account; keep switching serialized through the main-thread handoff. */
-    suspend fun openDetail(request: ReminderDetailRequest, navigate: (Long) -> Unit): Boolean =
+    suspend fun openDetail(request: ReminderDetailRequest, navigate: (Long) -> Unit): Boolean {
+        check(databases == null) { "DATABASE_EPOCH_INPUT_REQUIRED" }
+        return openDetailValue(request) { navigate(it.id) }
+    }
+
+    internal suspend fun openDetailSelection(request: ReminderDetailRequest,
+        navigate: (DatabaseObjectSelection) -> Unit): Boolean = withDatabase {
+        val host = requireNotNull(databases)
+        val publication = host.currentPublication()
+        var selected: DatabaseObjectSelection? = null
+        val valid = openDetailValue(request) { row -> selected = DatabaseObjectSelection.habit(row, publication) }
+        if (!valid) false else withContext(Dispatchers.Main.immediate) {
+            val original = requireNotNull(selected)
+            if (!publication.isCurrentInMemory()) false else { navigate(original); true }
+        }
+    }
+
+    private suspend fun openDetailValue(request: ReminderDetailRequest, navigate: (HabitEntity) -> Unit): Boolean =
         withContext(Dispatchers.IO) {
             sessions.exclusive {
                 if (!replica.isOpenWhileAccountLocked()) return@exclusive false
                 val generation = synchronized(publicationGuard) { publicationGeneration }
                 val access = tokens.localFactAccess() ?: return@exclusive false
-                if (publicationBlocked || reminderScope(access.session) != request.scope) return@exclusive false
+                if (blocked || reminderScope(access.session) != request.scope) return@exclusive false
                 val row = database.withTransaction {
                     database.habitDao().getVisibleHabitByIdSync(request.habitId)
                 } ?: return@exclusive false
@@ -110,8 +159,8 @@ class HabitReminderController internal constructor(
                 // No DAO access or disk IO on Main, and no navigation inside Room's transaction.
                 withContext(Dispatchers.Main.immediate) {
                     synchronized(publicationGuard) {
-                        if (publicationBlocked || publicationGeneration != generation || current != access) false
-                        else { navigate(row.id); true }
+                        if (blocked || publicationGeneration != generation || current != access) false
+                        else { navigate(row); true }
                     }
                 }
             }
@@ -122,23 +171,33 @@ class HabitReminderController internal constructor(
         scope.launch {
             try {
                 coroutineScope {
+                    // OS cleanup is scheduled outside the memory fence and never waits for
+                    // a retired graph to become readable again.
+                    launch { for (ignored in sourceRevocations) cancelAllNow() }
                     launch {
-                        combine(tokens.factAccessChanges.map { it?.session }.distinctUntilChanged(), replica.changes) {
+                        combine(tokens.factAccessChanges.map { it?.session }.distinctUntilChanged(), replicaChanges) {
                             _, _ -> Unit
                         }.collectLatest {
-                            sessions.exclusive {
-                                val current = tokens.localFactAccess()?.session.takeIf { replica.isOpenWhileAccountLocked() }
-                                synchronized(publicationGuard) {
-                                    alarms.clearPublished(current?.let(::reminderScope)); alarms.cancelAll()
-                                }
+                            try {
+                                withDatabase { sessions.exclusive {
+                                    val current = tokens.localFactAccess()?.session.takeIf { replica.isOpenWhileAccountLocked() }
+                                    synchronized(publicationGuard) {
+                                        alarms.clearPublished(current?.let(::reminderScope)); alarms.cancelAll()
+                                    }
+                                } }
+                                rescheduleAll()
+                            } catch (_: DatabaseRuntimeHost.SessionPreparationUnavailable) {
+                                // Revoke old OS declarations. A later successful explicit
+                                // preparation restarts the business observer with fresh input.
+                                cancelAllNow()
                             }
-                            rescheduleAll()
                         }
                     }
-                    combine(database.habitDao().getAllHabits(), database.completionDao().getAllCompletions(),
-                        counts.changes, database.completionFollowUpDao().observeOneTimeChanges(), dataStore.data) {
-                        _, _, _, _, _ -> Unit
-                    }.collectLatest { delay(200); rescheduleAll() }
+                    businessChanges.collectLatest {
+                        delay(200)
+                        try { rescheduleAll() }
+                        catch (_: DatabaseRuntimeHost.SessionPreparationUnavailable) { cancelAllNow() }
+                    }
                 }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
@@ -147,7 +206,8 @@ class HabitReminderController internal constructor(
         }
     }
 
-    suspend fun rescheduleAll() = withContext(Dispatchers.IO) {
+    suspend fun rescheduleAll() = withDatabase { rescheduleAllInGraph() }
+    private suspend fun rescheduleAllInGraph() = withContext(Dispatchers.IO) {
         // Cancel tracked obsolete/deleted identities before rebuilding from current Room, not a cache.
         val ids = sessions.exclusive {
             alarms.cancelAll()
@@ -162,7 +222,8 @@ class HabitReminderController internal constructor(
         }
     }
 
-    suspend fun schedule(id: Long, now: ZonedDateTime = ZonedDateTime.now()) = withContext(Dispatchers.IO) {
+    suspend fun schedule(id: Long, now: ZonedDateTime = ZonedDateTime.now()) = withDatabase { scheduleInGraph(id, now) }
+    private suspend fun scheduleInGraph(id: Long, now: ZonedDateTime) = withContext(Dispatchers.IO) {
         sessions.exclusive {
             if (!replica.isOpenWhileAccountLocked()) {
                 synchronized(publicationGuard) { alarms.cancelAll(); alarms.clearPublished() }
@@ -171,7 +232,7 @@ class HabitReminderController internal constructor(
             val reading = database.withTransaction { read(id, now) }
             // Account lock remains held across publication, but all OS calls are after Room COMMIT.
             synchronized(publicationGuard) {
-                if (reading == null || !reading.enabled || reading.onceCompleted || publicationBlocked) alarms.cancel(id)
+                if (reading == null || !reading.enabled || reading.onceCompleted || blocked) alarms.cancel(id)
                 else {
                     val wake = HabitReminderPlan.next(reading.habit, reading.target, reading.quantity, now)
                     if (wake == null) alarms.cancel(id) else alarms.replace(reading, wake)
@@ -181,6 +242,8 @@ class HabitReminderController internal constructor(
     }
 
     internal suspend fun deliver(delivery: ReminderDelivery, now: ZonedDateTime = ZonedDateTime.now()) =
+        withDatabase { deliverInGraph(delivery, now) }
+    private suspend fun deliverInGraph(delivery: ReminderDelivery, now: ZonedDateTime) =
         withContext(Dispatchers.IO) {
             sessions.exclusive {
                 if (!replica.isOpenWhileAccountLocked()) {
@@ -192,14 +255,14 @@ class HabitReminderController internal constructor(
                 if (currentScope != delivery.scope) return@exclusive
                 val reading = database.withTransaction { read(delivery.habitId, now) }
                 // Old-account broadcasts must not cancel/replace a new account's current alarm.
-                if (reading == null || publicationBlocked || reading.scope != delivery.scope ||
+                if (reading == null || blocked || reading.scope != delivery.scope ||
                     reading.habit.uuid != delivery.habitUuid) return@exclusive
                 val wake = delivery.wake
                 val sameDate = wake.date == now.toLocalDate() && wake.zone == now.zone
                 val due = now.toInstant() >= wake.trigger
                 val eligible = HabitReminderPlan.nextEligible(reading.habit, now.toLocalDate(), now.zone) == now.toLocalDate()
                 synchronized(publicationGuard) {
-                if (publicationBlocked) return@synchronized
+                if (blocked) return@synchronized
                 if (sameDate && due && eligible && reading.enabled && !reading.onceCompleted &&
                     reading.habit.isActive && reading.habit.bestTime != null && reading.stamp == delivery.stamp && wake.minute != null) {
                     val countWindow = HabitReminderPlan.window(reading.habit, reading.target, wake.minute, now)

@@ -35,12 +35,14 @@ class TokenViewModel @Inject constructor(
     }
 
     fun loadTokens() {
+        if (_isLoading.value) return
+        _isLoading.value = true
         viewModelScope.launch {
-            _isLoading.value = true
             _error.value = null
             try {
                 _tokens.value = tokenApi.listTokens()
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 _error.value = e.message ?: "Failed to load tokens"
             } finally {
                 _isLoading.value = false
@@ -49,14 +51,16 @@ class TokenViewModel @Inject constructor(
     }
 
     fun createToken(name: String, expiresInDays: Int? = null) {
+        if (_isLoading.value) return
+        _isLoading.value = true
         viewModelScope.launch {
-            _isLoading.value = true
             _error.value = null
             try {
                 val request = ApiTokenCreateRequest(name = name, expires_in_days = expiresInDays)
                 _createdToken.value = tokenApi.createToken(request)
-                loadTokens() // Refresh list
+                _tokens.value = tokenApi.listTokens()
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 _error.value = e.message ?: "Failed to create token"
             } finally {
                 _isLoading.value = false
@@ -65,16 +69,23 @@ class TokenViewModel @Inject constructor(
     }
 
     fun deleteToken(tokenId: Int) {
+        if (_isLoading.value) return
+        _isLoading.value = true
         viewModelScope.launch {
-            _isLoading.value = true
             _error.value = null
             try {
                 tokenApi.deleteToken(tokenId)
                 // Optimistically remove from list
                 _tokens.value = _tokens.value.filter { it.id != tokenId }
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 _error.value = e.message ?: "Failed to delete token"
-                loadTokens() // Reload on error
+                // Resolve an uncertain delete without opening a second independently queued job.
+                try { _tokens.value = tokenApi.listTokens() }
+                catch (refreshError: Exception) {
+                    if (refreshError is kotlinx.coroutines.CancellationException) throw refreshError
+                    // Keep the original failure visible if refreshing also fails.
+                }
             } finally {
                 _isLoading.value = false
             }

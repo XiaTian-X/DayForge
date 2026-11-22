@@ -52,6 +52,29 @@ class ObjectIconPresentationTest {
         compose.waitUntil(5000) { pixels(key) == expected }
         assertEquals(expected, pixels(key))
     }
+    @Test fun leavingAndReturningToCompositionHasReadyPixelsWithoutRepeatingNativeValidation() {
+        val theme = fixture.theme()
+        val appearance = ObjectAppearance(IconReference.Asset(fixture.id(11)), "#123456", "theme")
+        compose.setContent {
+            if (shown.value) CompositionLocalProvider(LocalAccountIcons provides fixture.controller,
+                LocalResolvedTheme provides theme) {
+                MaterialTheme(colorScheme = theme.toComposeColors()) {
+                    ObjectIcon("return", appearance, false, 1, Color.Red, 40.dp)
+                }
+            }
+        }
+        awaitPixel("return", IconLibraryFixture.red)
+        runBlocking { fixture.controller.awaitImages() }
+        val draws = fixture.draws.get(); val validations = fixture.validations.get()
+        repeat(3) {
+            compose.runOnIdle { shown.value = false }; compose.waitForIdle()
+            compose.runOnIdle { shown.value = true }
+            // No polling for Ready on return: the first displayed frame must already be correct.
+            assertEquals(IconLibraryFixture.red, pixels("return"))
+            runBlocking { fixture.controller.awaitImages() }
+            assertEquals(draws, fixture.draws.get()); assertEquals(validations, fixture.validations.get())
+        }
+    }
     @Test fun actualCardsKeepGeometryAndActionsWithoutReopeningImagesOnTick() {
         val theme = fixture.theme()
         val appearance = ObjectAppearance(IconReference.Asset(fixture.id(11)), "#123456", "theme")

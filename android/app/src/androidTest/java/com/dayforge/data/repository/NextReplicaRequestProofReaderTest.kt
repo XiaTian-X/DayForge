@@ -58,9 +58,38 @@ class NextReplicaRequestProofReaderTest : NextObjectEditorFixture() {
                 metadata().checkpoints, metadata().births))
     }
     private suspend fun queuedObservation(): SyncOutboxEntity {
-        val writer = producer()
-        writer.writeRounds(writer.captureRounds()) { metrics().recordValue(metric.id, 21.125, "original note", millis) }
-        return db.syncOutboxDao().getAll().last()
+        // The actual formal editor owns its account lock and producer transaction.
+        // Rebind to the current physical owner; never nest this writer in writeRounds.
+        editor = NextObjectEditor(db, tokens, sessions, icons)
+        val selected = editor.metric(metric.id)
+        val actual = requireNotNull(selected.value)
+        assertEquals(metric.uuid, actual.uuid); assertNotNull(actual.appearance)
+        val beforeLogs = db.metricLogDao().getAllLogsForMetric(actual.id).associateBy { it.id }
+        val beforeQueue = db.syncOutboxDao().getAll().associateBy { it.id }
+        fun originCount() = db.openHelper.writableDatabase.query("SELECT count(*) FROM main.next_request_origins").use {
+            assertTrue(it.moveToFirst()); it.getLong(0).also { _ -> assertFalse(it.moveToNext()) }
+        }
+        val beforeOrigins = originCount()
+        val observationId = editingMetrics().recordValue(actual.id, 21.125, "original note", millis,
+            authority = requireNotNull(selected.authority), expectedMetricUuid = actual.uuid)
+        val logs = db.metricLogDao().getAllLogsForMetric(actual.id).associateBy { it.id }
+        val observation = logs.getValue(observationId)
+        assertEquals(beforeLogs, logs - observationId); assertEquals(beforeLogs.size + 1, logs.size)
+        assertEquals(actual.id, observation.metricId); assertEquals(21.125, observation.value, 0.0)
+        assertEquals("original note", observation.note); assertEquals(millis, observation.date)
+        val queue = db.syncOutboxDao().getAll().associateBy { it.id }
+        val queued = queue.getValue((queue.keys - beforeQueue.keys).single())
+        assertEquals(beforeQueue, queue - queued.id); assertEquals(beforeQueue.size + 1, queue.size)
+        assertEquals("metric_log", queued.recordType); assertEquals("upsert", queued.action)
+        assertEquals(observation.uuid, queued.entityUuid); assertEquals(observation.uuid, queued.wireEntityUuid)
+        val origin = requireNotNull(db.nextRequestDao().origin(NEXT_OPERATION, queued.operationId))
+        assertEquals(queued.id, origin.queueId); assertEquals(queued.operationId, origin.requestId)
+        assertEquals(NextRequestSql.sourceHash(queued), origin.sourceHash); assertEquals(5, origin.protocol)
+        val operation = requireNotNull(roundOperationIntent(origin.intentJson)).operation
+        assertEquals(queued.operationId, operation.operationId); assertEquals(observation.uuid, operation.entityUuid)
+        assertEquals("metric_observation", operation.entityType); assertEquals("upsert", operation.action)
+        assertEquals(beforeOrigins + 1, originCount())
+        return queued
     }
     private suspend fun edit(name: String): SyncOutboxEntity {
         editor = NextObjectEditor(db, tokens, sessions, icons)

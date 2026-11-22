@@ -56,6 +56,11 @@ internal class NextOneTimeRequestStore(
             val prepared = sessions.exclusive {
                 authorize(access)
                 database.withTransaction {
+                    val trust = CountTrustKernel(database, tokens, sessions)
+                    val trustAccess = if (com.dayforge.data.local.CountTrustRuntime.forDatabase(database) == null) null
+                        else tokens.localCoreWriteAccess()
+                    trust.withOnceCapture(trustAccess?.takeIf { it.session == access.session && it.capturedDeviceId == access.deviceId }) { capture ->
+                    val update = OnceTrustAck.create(database, capture)
                     NextRequestSql.requireOutboxEnabled(database.openHelper.writableDatabase)
                     val terminals = NextRecoveryAuditStore(database).validatedMembers(access)
                     var evidence = evidence(access, id)
@@ -67,7 +72,7 @@ internal class NextOneTimeRequestStore(
                         requireParent(access, evidence.prepared.operation, allowDeleted = false)
                         requireHead(evidence)
                         val original = requireNotNull(facts.prepareInTransaction(evidence.prepared.context,
-                            activity(evidence.prepared.operation), journalled = true))
+                            activity(evidence.prepared.operation), journalled = true, trust = update))
                         require(original == evidence.prepared)
                         val round = roundOperationIntent(evidence.origin.intentJson)
                         val bytes = if (round == null) encodeSyncRequest(NextSyncPushRequest.serializer(), NextSyncPushRequest(
@@ -78,6 +83,7 @@ internal class NextOneTimeRequestStore(
                             evidence.origin.accountId, requireNotNull(access.session.serverInstanceId),
                             requireNotNull(access.session.syncEpoch), requireNotNull(access.deviceId), nextRequestHash(bytes), bytes)
                         database.nextRequestDao().insertTransmission(transmission)
+                        update?.let { it.record("next_transmissions", null, it.transmission(transmission)) }
                         val current = evidence(access, id)
                         check(current.hashes.origin == evidence.hashes.origin && current.hashes.submission == evidence.hashes.submission &&
                             current.transmission?.wireBytes?.contentEquals(bytes) == true)
@@ -91,7 +97,9 @@ internal class NextOneTimeRequestStore(
                     }
                     require(NextRecoveryAuditStore(database).validatedMembers(access) == terminals) { "RECOVERY_TERMINAL_CHANGED" }
                     authorize(access)
+                    trust.finishOnce(capture, update?.freeze())
                     evidence
+                    }
                 }
             }
             val transmission = requireNotNull(prepared.transmission)
@@ -129,6 +137,12 @@ internal class NextOneTimeRequestStore(
             val rounds = NextChallengeStore(database)
             val round = roundOperationIntent(evidence.origin.intentJson)
             val checkpoint = if (round == null) { require(delivery.challengeMetadata == null); null } else rounds.activeInTransaction(access)
+            val trust = CountTrustKernel(database, tokens, sessions)
+            val trustAccess = if (com.dayforge.data.local.CountTrustRuntime.forDatabase(database) == null) null
+                else tokens.localCoreWriteAccess()
+            trust.withOnceCapture(trustAccess?.takeIf { it.session == access.session && it.capturedDeviceId == access.deviceId }) { capture ->
+            val update = OnceTrustAck.create(database, capture)
+            update?.affect(activity(evidence.prepared.operation))
             val merged = if (round == null) null else {
                 val metadata = decodeFrozenSyncRequest(encodeSyncRequest(ChallengeMetadata.serializer(),
                     requireNotNull(delivery.challengeMetadata) { "SYNC_CHALLENGE_ACK_REQUIRED" }), ChallengeMetadata.serializer())
@@ -136,6 +150,7 @@ internal class NextOneTimeRequestStore(
                 require(metadata.births.none { it.entityType == "activity_event" && it.entityUuid == evidence.prepared.operation.entityUuid })
                 validateRoundResultBinding(decodeFrozenSyncRequest(requireNotNull(evidence.transmission).wireBytes, RoundSyncPushRequest.serializer()),
                     RoundSyncPushResponse(listOf(result), 1, metadata.checkpoints, metadata.births))
+                update?.unchangedSidecar(requireNotNull(checkpoint), metadata, evidence.prepared.operation.entityUuid)
                 rounds.acknowledgeInTransaction(access, metadata)
             }
             suspend fun verifyRounds() {
@@ -156,7 +171,8 @@ internal class NextOneTimeRequestStore(
                     is NextOneTimeOutcome.Rejected -> require(saved.result == result)
                 }
                 verifyRounds(); authorize(access)
-                return@withTransaction saved
+                trust.finishOnce(capture, update?.freeze())
+                return@withOnceCapture saved
             }
             requireHead(evidence)
             val parentProof = requireParent(access, evidence.prepared.operation, allowDeleted = true)
@@ -164,11 +180,12 @@ internal class NextOneTimeRequestStore(
             val outcome: NextOneTimeOutcome
             if (result.status in setOf("applied", "already_applied")) {
                 validateSuccess(evidence.prepared, result)
-                facts.acknowledgeInTransaction(evidence.prepared, result, journalled = true, deletedParent = parentProof != null)
+                facts.acknowledgeInTransaction(evidence.prepared, result, journalled = true, deletedParent = parentProof != null, trust = update)
                 val bytes = encodeSyncRequest(NextSyncOperationResult.serializer(), result.copy(status = "applied"))
                 val receipt = NextAcceptanceEntity(NEXT_OPERATION, delivery.requestId, evidence.hashes.origin,
                     requireNotNull(evidence.hashes.transmission), nextRequestHash(bytes), bytes.toString(Charsets.UTF_8))
                 database.nextRequestDao().insertAcceptance(receipt)
+                update?.let { it.record("next_acceptances", null, it.acceptance(receipt)) }
                 check(hash("next_acceptances", delivery.requestId) != null &&
                     database.nextRequestDao().acceptance(NEXT_OPERATION, delivery.requestId) == receipt)
                 check(NextRequestSql.sources(sql, "sync_outbox") == sources - evidence.origin.queueId)
@@ -185,7 +202,7 @@ internal class NextOneTimeRequestStore(
                 require(savedOutcome(access, delivery.requestId) is NextOneTimeOutcome.Accepted)
                 outcome = NextOneTimeOutcome.Accepted(NextOperationAcceptance.COMMITTED)
             } else {
-                facts.rejectInTransaction(evidence.prepared, result, journalled = true, deletedParent = parentProof != null)
+                facts.rejectInTransaction(evidence.prepared, result, journalled = true, deletedParent = parentProof != null, trust = update)
                 val current = evidence(access, delivery.requestId, rejected = true)
                 check(current.hashes.copy(binding = null) == evidence.hashes.copy(binding = null))
                 val rejectedHash = requireNotNull(NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(evidence.origin.queueId)))
@@ -199,7 +216,9 @@ internal class NextOneTimeRequestStore(
             NextRequestSql.requireOutboxEnabled(sql)
             verifyRounds()
             authorize(access)
+            trust.finishOnce(capture, update?.freeze())
             outcome
+            }
         }
     }
 

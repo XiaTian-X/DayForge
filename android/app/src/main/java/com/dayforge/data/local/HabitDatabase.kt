@@ -43,6 +43,7 @@ import com.dayforge.data.local.entity.TimerCommandEntity
 import com.dayforge.data.local.entity.TimerSegmentEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import androidx.room.withTransaction
 
 /**
  * Production local schema, incrementally migrated from the version-1 baseline.
@@ -87,9 +88,18 @@ import kotlinx.coroutines.withContext
         com.dayforge.data.local.entity.NextRecoveryAuditEntity::class,
         com.dayforge.data.local.entity.NextAbandonedRequestEntity::class,
         com.dayforge.data.local.entity.NextRecoveryAuditPayloadEntity::class,
-        com.dayforge.data.local.entity.NextReplicaFenceEntity::class
+        com.dayforge.data.local.entity.NextReplicaFenceEntity::class,
+        com.dayforge.data.local.entity.CountTrustControlEntity::class,
+        com.dayforge.data.local.entity.CountTrustRootEntity::class,
+        com.dayforge.data.local.entity.CountTrustNodeEntity::class,
+        com.dayforge.data.local.entity.CountTrustRouteEntity::class,
+        com.dayforge.data.local.entity.CountCommandResultEntity::class,
+        com.dayforge.data.local.entity.CountCommandIntentEntity::class,
+        com.dayforge.data.local.entity.CountCommandStatusEntity::class,
+        com.dayforge.data.local.entity.CountCommandRecoveryRootEntity::class,
+        com.dayforge.data.local.entity.CountCommandNodeEntity::class
     ],
-    version = 18,
+    version = 20,
     exportSchema = true
 )
 @TypeConverters(HabitTypeConverter::class)
@@ -131,10 +141,41 @@ abstract class HabitDatabase : RoomDatabase() {
 
     suspend fun clearAllData() {
         withContext(Dispatchers.IO) {
-            clearAllTables()
-            openHelper.writableDatabase.execSQL(
-                "INSERT OR REPLACE INTO sync_control(id, suppressOutbox) VALUES(1, 0)"
-            )
+            val owner = CountTrustRuntime.forDatabase(this@HabitDatabase)
+            if (owner == null) {
+                // Explicit unsealed reference/G0 builders own no persistent trust capability.
+                clearAllTables()
+                openHelper.writableDatabase.execSQL(
+                    "INSERT OR REPLACE INTO sync_control(id, suppressOutbox) VALUES(1, 0)"
+                )
+            } else {
+                // Existing callers may own an outer account lock; no lock-free claim is made.
+                // Reference construction finishes before this source write transaction begins.
+                val reference = ReplicaBusinessReferenceSchema.read(owner.context)
+                withTransaction {
+                    CountTrustRuntime.maintenance(this@HabitDatabase) {
+                        val sql = openHelper.writableDatabase
+                        ApprovedBusinessSchema.requireCleanupInTransaction(sql, reference)
+                        val primaryReset = owner.preparePrimaryReset(this@HabitDatabase)
+                        // Reset may commit even if subsequent compaction/credential cleanup fails.
+                        // Permanently retire before its first DML; cached ordinary handles remain
+                        // usable for this original control workflow until actual graph drain.
+                        owner.retireFastPathForRecovery()
+                        CountTrustSchema.resetLocalInTransaction(sql)
+                        owner.initializePrimaryReset(primaryReset)
+                        sql.execSQL("PRAGMA defer_foreign_keys=ON")
+                        sql.query("PRAGMA defer_foreign_keys").use { check(it.moveToFirst() && it.getInt(0) == 1) }
+                        sql.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
+                        // Keep the new untrusted control alive while every old row invalidation runs.
+                        for (table in CountTrustSchema.BUSINESS_TABLES) sql.execSQL("DELETE FROM `$table`")
+                        sql.execSQL("INSERT INTO sync_control(id,suppressOutbox) VALUES(1,0)")
+                        sql.query("PRAGMA foreign_key_check").use { check(!it.moveToFirst()) }
+                        CountTrustSchema.requireControl(sql)
+                        owner.finishPrimaryReset(primaryReset)
+                    }
+                }
+                CountTrustRuntime.compactAfterClear(this@HabitDatabase)
+            }
         }
     }
 }

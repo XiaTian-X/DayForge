@@ -8,16 +8,25 @@ internal object SyncSchemaCallback : RoomDatabase.Callback() {
 
     override fun onCreate(db: SupportSQLiteDatabase) {
         super.onCreate(db)
-        installSyncObjects(db)
+        if (CountTrustRuntime.isControlledDatabase(db)) CountTrustSchema.install(db, CountCommandV20Schema.VERSION)
+        installSyncObjects(db, CountCommandV20Schema.VERSION)
     }
 
     override fun onOpen(db: SupportSQLiteDatabase) {
         super.onOpen(db)
+        if (CountTrustRuntime.isControlledDatabase(db)) CountTrustSchema.preOpen(db)
         // Ensure known objects exist; never overwrite an existing definition.
         installSyncObjects(db)
     }
 
-    private fun installSyncObjects(database: SupportSQLiteDatabase) {
+    /** Only the factory's original pre19 upgrade invokes this before first enrollment.
+     * Existing19 files and ordinary opens retain their exact original path and definitions. */
+    internal fun completeLegacyUpgradeBeforeCommandEnrollment(db: SupportSQLiteDatabase) {
+        check(CountTrustRuntime.isControlledDatabase(db) && db.inTransaction())
+        installSyncObjects(db, 19)
+    }
+
+    private fun installSyncObjects(database: SupportSQLiteDatabase, version: Int = database.version) {
         // Migration fixtures also open earlier schemas through this callback.
         val columns = database.query("PRAGMA table_info(habits)").use { cursor ->
             buildSet { while (cursor.moveToNext()) add(cursor.getString(1)) }
@@ -99,7 +108,7 @@ internal object SyncSchemaCallback : RoomDatabase.Callback() {
                     "OLD.promptOnComplete IS NOT NEW.promptOnComplete OR " +
                     "OLD.isActive IS NOT NEW.isActive"
         )
-        NextReplicaFenceSql.install(database)
+        NextReplicaFenceSql.install(database, version)
     }
 
     private fun createSyncTrigger(

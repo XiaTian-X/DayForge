@@ -54,40 +54,36 @@ class HabitStatusCalculator @Inject constructor(
     ): HabitWithStats {
         if (habit.completionPolicy == "one_and_done") {
             val status = requireNotNull(oneTimeRepository) { "ONE_TIME_REPOSITORY_REQUIRED" }.read(habit.id, habit.uuid)
-            return HabitWithStats(habit, completedToday = false, todayCount = 0,
-                lastCompletionId = status.completionId, currentStreak = 0, bestStreak = 0,
-                isCheckInAllowed = true, oneTimeStatus = status)
+            return projectOneTime(habit, status)
         }
         if (habit.habitType == HabitType.COUNTING && habit.appearance != null) {
-            val history = requireNotNull(countHistoryReader) { "COUNT_READER_REQUIRED" }.read(habit)
-            val allowed = ScheduleValidator.isCheckInAllowedToday(habit.schedule, habit.createdAt)
-            return HabitWithStats(habit, history.completedToday,
-                history.todayQuantity.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
-                history.completions.filter { it.recordedLocalDate == history.today.toString() }.maxByOrNull { it.id }?.id,
-                StreakCalculator.currentFromBusinessDates(history.qualifiedDates, history.today),
-                StreakCalculator.bestFromBusinessDates(history.qualifiedDates),
-                activityRate = ActivityRateCalculator.calculate(habit.schedule, habit.createdAt,
-                    history.completions.map { it.businessDate }), isCheckInAllowed = allowed && history.todayPolicy != null,
-                nextCheckInDate = if (allowed) null else ScheduleValidator.getNextCheckInDate(habit.schedule, habit.createdAt),
-                targetProgress = if (habit.targetCycles == null) 0 else history.qualifiedDates.size,
-                hasFailed = FailureCheckerUtils.countHasFailed(habit, history), countHistory = history)
+            val time = java.time.ZonedDateTime.now()
+            return projectCount(habit, requireNotNull(countHistoryReader) { "COUNT_READER_REQUIRED" }
+                .readSummary(habit, time.toLocalDate()), time)
         }
         if (habit.habitType == HabitType.CHECK_IN && habit.appearance != null) {
-            val history = requireNotNull(checkHistoryReader) { "CHECK_READER_REQUIRED" }.read(habit)
-            val allowed = ScheduleValidator.isCheckInAllowedToday(habit.schedule, habit.createdAt)
-            return HabitWithStats(habit, history.completedToday,
-                history.todayQuantity.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
-                history.todayCompletions.maxByOrNull { it.id }?.id,
-                StreakCalculator.currentFromBusinessDates(history.qualifiedDates, history.today),
-                StreakCalculator.bestFromBusinessDates(history.qualifiedDates),
-                activityRate = ActivityRateCalculator.calculate(habit.schedule, habit.createdAt,
-                    history.qualifiedDates.toList()), isCheckInAllowed = allowed,
-                nextCheckInDate = if (allowed) null else ScheduleValidator.getNextCheckInDate(habit.schedule, habit.createdAt),
-                targetProgress = if (habit.targetCycles == null) 0 else history.qualifiedDates.size,
-                hasFailed = FailureCheckerUtils.checkHasFailed(habit, history))
+            val time = java.time.ZonedDateTime.now()
+            return projectCheckDisplay(habit, requireNotNull(checkHistoryReader) { "CHECK_READER_REQUIRED" }
+                .readProjection(habit, time.toLocalDate(), time.zone, time.toInstant().toEpochMilli()), time)
         }
         if (habit.habitType == HabitType.TIMER && habit.appearance != null) {
-            val snapshot = requireNotNull(timerWriter).statusSnapshot(habit)
+            val writer = requireNotNull(timerWriter)
+            val display = writer.statusDisplaySnapshot(habit)
+                ?: return HabitWithStats(habit, false, 0, null, 0, 0, isCheckInAllowed = false)
+            val projection = display.projection
+            // The old activity-rate/failure helpers sample their zone after the read.
+            // A changed day/zone keeps the original complete path, not a fabricated history.
+            if (projection.today == DateTimeUtils.today() && projection.zoneId == ZoneId.systemDefault().id) {
+                val allowed = ScheduleValidator.isCheckInAllowedToday(habit.schedule, habit.createdAt)
+                return HabitWithStats(habit, projection.completedToday,
+                    projection.todaySeconds.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), null,
+                    projection.currentStreak, projection.bestStreak, activityRate = projection.activityRate,
+                    isCheckInAllowed = allowed,
+                    nextCheckInDate = if (allowed) null else ScheduleValidator.getNextCheckInDate(habit.schedule, habit.createdAt),
+                    targetProgress = if (habit.targetCycles == null) 0 else projection.qualifiedDayCount,
+                    hasFailed = projection.hasFailed, timerAuthority = display.authority)
+            }
+            val snapshot = writer.statusSnapshot(habit)
             // A stale display is not permission to publish lifetime progress; wait for its row Flow.
             if (snapshot == null) return HabitWithStats(habit, false, 0, null, 0, 0, isCheckInAllowed = false)
             val history = snapshot.history
@@ -103,6 +99,7 @@ class HabitStatusCalculator @Inject constructor(
                 hasFailed = FailureCheckerUtils.timerFailure(habit, history) == StrictFailureState.FAILED,
                 timerAuthority = snapshot.authority)
         }
+        if (habit.habitType == HabitType.GOAL) return calculateGoalHabit(habit)
         // Fetch data if not provided
         val habitCompletions = completions?.filter { it.habitId == habit.id }
             ?: completionDao.getCompletionsByHabit(habit.id).first()
@@ -117,6 +114,83 @@ class HabitStatusCalculator @Inject constructor(
             HabitType.COUNTING -> calculateCompletionHabit(habit, habitCompletions)
             HabitType.GOAL -> calculateGoalHabit(habit)
         }
+    }
+
+    internal fun projectOneTime(habit: HabitEntity, status: com.dayforge.domain.model.OneTimeStatus): HabitWithStats {
+        check(habit.completionPolicy == "one_and_done")
+        return HabitWithStats(habit, completedToday = false, todayCount = 0,
+            lastCompletionId = status.completionId, currentStreak = 0, bestStreak = 0,
+            isCheckInAllowed = true, oneTimeStatus = status)
+    }
+
+    internal suspend fun readOneTimes(habits: List<HabitEntity>) =
+        requireNotNull(oneTimeRepository) { "ONE_TIME_REPOSITORY_REQUIRED" }.readBatch(habits)
+
+    internal fun projectCount(habit: HabitEntity, history: com.dayforge.domain.model.CountHistory,
+        time: java.time.ZonedDateTime): HabitWithStats =
+        projectCount(habit, history.summary, time).copy(countHistory = history)
+
+    internal fun projectCount(habit: HabitEntity, summary: com.dayforge.domain.model.CountSummary,
+        time: java.time.ZonedDateTime): HabitWithStats {
+        check(summary.today == time.toLocalDate()) { "DISPLAY_DATE_CHANGED" }
+        val allowed = ScheduleValidator.isCheckInAllowedOnDate(habit.schedule, habit.createdAt, summary.today, time.zone)
+        return HabitWithStats(habit, summary.completedToday,
+            summary.todayQuantity.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+            summary.todayLatestCompletionId,
+            StreakCalculator.currentFromBusinessDates(summary.qualifiedDates, summary.today),
+            StreakCalculator.bestFromBusinessDates(summary.qualifiedDates),
+            activityRate = ActivityRateCalculator.calculate(habit.schedule, habit.createdAt,
+                summary.participatingDates.toList(), time.toInstant().toEpochMilli(), time.zone),
+            isCheckInAllowed = allowed && summary.todayPolicy != null,
+            nextCheckInDate = if (allowed) null else ScheduleValidator.getNextCheckInDate(habit.schedule, habit.createdAt, summary.today, time.zone),
+            targetProgress = if (habit.targetCycles == null) 0 else summary.qualifiedDates.size,
+            hasFailed = FailureCheckerUtils.countHasFailed(habit, summary, time.zone), countSummary = summary,
+            countActionIdentity = summary.actionIdentity)
+    }
+
+    internal fun projectCountDisplay(habit: HabitEntity, projection: com.dayforge.domain.model.CountDisplayProjection,
+        time: java.time.ZonedDateTime): HabitWithStats {
+        check(projection.today == time.toLocalDate() && projection.zoneId == time.zone.id) { "DISPLAY_DATE_CHANGED" }
+        val card = requireNotNull(projection.card)
+        val allowed = ScheduleValidator.isCheckInAllowedOnDate(habit.schedule, habit.createdAt, projection.today, time.zone)
+        return HabitWithStats(habit, projection.completedToday,
+            projection.todayQuantity.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), projection.todayLatestCompletionId,
+            card.currentStreak, card.bestStreak, activityRate = card.activityRate,
+            isCheckInAllowed = allowed && projection.todayPolicy != null,
+            nextCheckInDate = if (allowed) null else ScheduleValidator.getNextCheckInDate(habit.schedule, habit.createdAt, projection.today, time.zone),
+            targetProgress = if (habit.targetCycles == null) 0 else projection.qualifiedDayCount,
+            hasFailed = projection.hasFailed, countActionIdentity = projection.actionIdentity, countDisplay = projection)
+    }
+
+    internal fun projectCheckDisplay(habit: HabitEntity, projection: com.dayforge.domain.model.CheckDisplayProjection,
+        time: java.time.ZonedDateTime): HabitWithStats {
+        check(projection.today == time.toLocalDate() && projection.zoneId == time.zone.id) { "DISPLAY_DATE_CHANGED" }
+        val card = requireNotNull(projection.card)
+        val allowed = ScheduleValidator.isCheckInAllowedOnDate(habit.schedule, habit.createdAt, projection.today, time.zone)
+        return HabitWithStats(habit, projection.completedToday,
+            projection.todayQuantity.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), projection.todayLatestCompletionId,
+            card.currentStreak, card.bestStreak, activityRate = card.activityRate,
+            isCheckInAllowed = allowed,
+            nextCheckInDate = if (allowed) null else ScheduleValidator.getNextCheckInDate(habit.schedule, habit.createdAt, projection.today, time.zone),
+            targetProgress = if (habit.targetCycles == null) 0 else projection.qualifiedDayCount,
+            hasFailed = projection.hasFailed, checkActionIdentity = projection.actionIdentity)
+    }
+
+    internal fun projectCheck(habit: HabitEntity, history: com.dayforge.domain.model.CheckHistory,
+        time: java.time.ZonedDateTime): HabitWithStats {
+        check(history.today == time.toLocalDate()) { "DISPLAY_DATE_CHANGED" }
+        val allowed = ScheduleValidator.isCheckInAllowedOnDate(habit.schedule, habit.createdAt, history.today, time.zone)
+        return HabitWithStats(habit, history.completedToday,
+            history.todayQuantity.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+            history.todayCompletions.maxByOrNull { it.id }?.id,
+            StreakCalculator.currentFromBusinessDates(history.qualifiedDates, history.today),
+            StreakCalculator.bestFromBusinessDates(history.qualifiedDates),
+            activityRate = ActivityRateCalculator.calculate(habit.schedule, habit.createdAt,
+                history.qualifiedDates.toList(), time.toInstant().toEpochMilli(), time.zone), isCheckInAllowed = allowed,
+            nextCheckInDate = if (allowed) null else ScheduleValidator.getNextCheckInDate(habit.schedule, habit.createdAt, history.today, time.zone),
+            targetProgress = if (habit.targetCycles == null) 0 else history.qualifiedDates.size,
+            hasFailed = FailureCheckerUtils.checkHasFailed(habit, history, time.zone),
+            checkActionIdentity = history.actionIdentity)
     }
 
     /**

@@ -32,6 +32,10 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class CompletionMetricPromptStoreTest {
     @get:Rule val storage = PhysicalDatabaseRule()
+    private val faults = OnceExistingFixtureFault()
+    init { storage.isolatedBuilder = { context ->
+        com.dayforge.data.local.HabitDatabaseProvider.build(context, storage.queryCallback, nativeFactory = faults)
+    } }
     private val db get() = storage.database
     private val sessions = AccountSessionCoordinator()
     private lateinit var scope: CoroutineScope
@@ -123,18 +127,19 @@ class CompletionMetricPromptStoreTest {
     }
 
     @Test fun promptCreationFailureRollsBackCompletionOutboxAndReceiptTogether() = runBlocking {
-        db.openHelper.writableDatabase.execSQL("""CREATE TRIGGER reject_prompt BEFORE INSERT ON completion_metric_prompts
-            BEGIN SELECT RAISE(ABORT, 'prompt unavailable'); END""")
+        faults.arm(OnceExistingFixtureFault.Kind.PROMPT_ABORT, OnceExistingFixtureFault.Targets(activityUuid = habit.uuid))
         val failure = runCatching { transition() }.exceptionOrNull()
         assertTrue(failure?.message.orEmpty().contains("prompt unavailable"))
-        storage.reopen()
+        faults.requireFailure(requireNotNull(failure))
+        storage.reopen(); assertTrue(db.openHelper.writableDatabase.isOpen)
+        faults.requireColdRollback()
         assertEquals(0, db.completionDao().countAll())
         assertEquals(0, db.syncOutboxDao().count())
         assertTrue(prompts().pending().isEmpty())
         db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM local_fact_submissions").use {
             assertTrue(it.moveToFirst()); assertEquals(0, it.getInt(0))
         }
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER reject_prompt")
+        faults.clear()
         transition()
         assertEquals(1, prompts().pending().size)
     }
@@ -142,12 +147,14 @@ class CompletionMetricPromptStoreTest {
     @Test fun secondOutboxFailureKeepsDraftAndTimestampButRollsBackAllObservations() = runBlocking {
         val draft = filled()
         val lastOperation = draft.entries.last().operationId
-        db.openHelper.writableDatabase.execSQL("""CREATE TRIGGER reject_observation BEFORE INSERT ON sync_outbox
-            WHEN NEW.operationId = '$lastOperation' BEGIN SELECT RAISE(ABORT, 'outbox unavailable'); END""")
+        faults.arm(OnceExistingFixtureFault.Kind.LAST_OBSERVATION_ABORT,
+            OnceExistingFixtureFault.Targets(requestId = lastOperation, priorRequestId = draft.entries.first().operationId))
         val before = db.syncOutboxDao().getAll()
         val failure = runCatching { prompts().submit(draft) }.exceptionOrNull()
         assertTrue(failure?.message.orEmpty().contains("outbox unavailable"))
-        storage.reopen()
+        faults.requireFailure(requireNotNull(failure))
+        storage.reopen(); assertTrue(db.openHelper.writableDatabase.isOpen)
+        faults.requireColdRollback()
         val pending = prompts().pending().single()
         assertEquals(draft.entries, pending.entries)
         assertEquals(clock, pending.row.recordedAtMillis)
@@ -157,7 +164,7 @@ class CompletionMetricPromptStoreTest {
         db.openHelper.readableDatabase.query("SELECT suppressOutbox FROM sync_control WHERE id=1").use {
             assertTrue(it.moveToFirst()); assertEquals(0, it.getInt(0))
         }
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER reject_observation")
+        faults.clear()
         val originalTime = clock
         clock += 86_400_000
         prompts().submit(pending)

@@ -28,6 +28,10 @@ import org.junit.runner.RunWith
 /** Real file Room, account preferences, original requests and existing production writers. */
 @RunWith(AndroidJUnit4::class)
 class WidgetFactActionTest : NextObjectEditorFixture() {
+    private val faults = OnceExistingFixtureFault()
+    init { storage.isolatedBuilder = { context ->
+        com.dayforge.data.local.HabitDatabaseProvider.build(context, storage.queryCallback, nativeFactory = faults)
+    } }
     private fun reader() = WidgetFactReader(db, tokens, sessions, preferences, CountHistoryReader(db, tokens, sessions))
     private fun repo() = HabitRepository(db.habitDao(), db.completionDao(), db.timeLogDao(), db,
         nextObjectEditor = editor, nextObjectCreator = creator, oneTimeRepository = onceRepository(),
@@ -166,6 +170,32 @@ class WidgetFactActionTest : NextObjectEditorFixture() {
         assertEquals(1, db.metricLogDao().countAll())
     }
 
+    @Test fun factPromptCleanupRetryCannotDuplicateCommittedMetrics() = runBlocking<Unit> {
+        val row = checkHabit()
+        metricRepo().linkHabits(metric, setOf(row.id))
+        service().widgetAction(app, claim(row.id), "toggle")
+        val prefs = io.mockk.spyk(preferences)
+        io.mockk.coEvery { prefs.removePendingMetricHabit(any(), any()) } throws IllegalStateException("PREFERENCE_UNAVAILABLE")
+        val coordinator = LinkedMetricCoordinator(app, prefs, metricRepo(), repo(), onceRepository(), factReader = reader())
+        coordinator.showWidgetFactPrompt(claim(row.id))
+        val prompt = requireNotNull(coordinator.postCheckInState.value?.factPrompt)
+        val values = listOf(MetricValueInput(metric.id, 4.0))
+        withContext(Dispatchers.Main) {
+            assertFalse(coordinator.recordMetricValues(row.id, values, expectedFactPrompt = prompt))
+        }
+        assertEquals(1, db.metricLogDao().countAll())
+        assertEquals(values, prompt.submitted)
+        val queued = db.syncOutboxDao().getAll()
+        io.mockk.coEvery { prefs.removePendingMetricHabit(any(), any()) } coAnswers {
+            preferences.removePendingMetricHabit(firstArg(), secondArg())
+        }
+        withContext(Dispatchers.Main) {
+            assertTrue(coordinator.recordMetricValues(row.id, values, expectedFactPrompt = prompt))
+        }
+        assertEquals(1, db.metricLogDao().countAll())
+        assertEquals(queued, db.syncOutboxDao().getAll())
+    }
+
     @Test fun goalConfirmChecksOriginalFactAndPlanAndNeverArchivesAnotherAccount() = runBlocking<Unit> {
         val row = checkHabit(targetCycles = 1)
         assertTrue(service().widgetAction(app, claim(row.id), "toggle").goalReached)
@@ -184,9 +214,9 @@ class WidgetFactActionTest : NextObjectEditorFixture() {
     @Test fun producerFailureRollsBackFactDayAndOriginAndStrictIntentRejectsMalformedClaims() = runBlocking<Unit> {
         val before = claim()
         val queued = db.syncOutboxDao().getAll()
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER fail_widget_origin BEFORE INSERT ON next_request_origins BEGIN SELECT RAISE(ABORT,'widget origin'); END")
-        try { rejected { service().widgetAction(app, before, "increment") } }
-        finally { db.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_widget_origin") }
+        faults.arm(OnceExistingFixtureFault.Kind.WIDGET_ORIGIN_ABORT, OnceExistingFixtureFault.Targets(activityUuid = habit.uuid))
+        val failure = rejected { service().widgetAction(app, before, "increment") }
+        faults.requireFailure(failure); faults.clear()
         assertTrue(db.completionDao().getByHabitOnce(habit.id).isEmpty())
         assertTrue(db.countDayDao().forHabit(habit.id).isEmpty())
         assertEquals(queued, db.syncOutboxDao().getAll())

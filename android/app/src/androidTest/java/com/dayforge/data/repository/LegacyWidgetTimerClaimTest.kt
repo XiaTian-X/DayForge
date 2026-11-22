@@ -26,8 +26,7 @@ class LegacyWidgetTimerClaimTest : NextCoreRequestFixture() {
         }
         timerHabit = requireNotNull(db.habitDao().getHabitById(timerHabit.id))
     }
-    private suspend fun claim() = writer().captureLegacyWidget(
-        LegacyWidgetRestartClaim.displayed(timerHabit, requireNotNull(tokens.localCoreWriteAccess())),
+    private suspend fun claim() = writer().captureLegacyForDisplay(timerHabit,
         db.timeLogDao().getActiveTimeLogForHabit(timerHabit.id))
     private suspend fun startLegacy(captured: LegacyWidgetTimerClaim, number: Int = 80, startedAt: Long = millis): TimeLogEntity {
         val uuid = id(number)

@@ -16,6 +16,33 @@ plugins {
     alias(libs.plugins.compose.compiler)
 }
 
+// This is a separate measurement diagnostic, never a coverage gate or release benchmark.
+val deviceTestCoverageCalibration = providers.gradleProperty("dayforge.deviceTestCalibration").map { value ->
+    require(value == "coverage-off") { "Only coverage-off is a supported DayForge device test calibration" }
+    true
+}.orElse(false)
+
+// Explicit opt-in; ordinary physical verification remains the covered deviceTest variant.
+val calibrationMode = providers.gradleProperty("dayforge.calibration").map { value ->
+    require(value in setOf("release", "debug-real")) { "Unknown DayForge calibration mode" }
+    value
+}.orElse("none")
+val releaseCalibration = calibrationMode.map { it == "release" }
+// Explicit phase attribution only. Never enables diagnostics in the shipping release.
+val releaseTimingDiagnostics = providers.gradleProperty("dayforge.releaseTimingDiagnostics").map { value ->
+    require(value in setOf("true", "false")) { "Release timing diagnostics must be exactly true or false" }
+    value == "true"
+}.orElse(false)
+require(!releaseTimingDiagnostics.get() || releaseCalibration.get()) {
+    "Release timing diagnostics require explicit dayforge.calibration=release"
+}
+require(calibrationMode.get() != "debug-real" || deviceTestCoverageCalibration.get()) {
+    "Real-worker debug calibration requires explicit coverage-off"
+}
+require(!releaseCalibration.get() || !deviceTestCoverageCalibration.get()) {
+    "Select either release calibration or deviceTest coverage-off, never both"
+}
+
 android {
     namespace = "com.dayforge"
     compileSdk = 36
@@ -27,8 +54,10 @@ android {
         targetSdk = 35
         versionCode = 5
         versionName = "2.0"
+        buildConfigField("boolean", "RELEASE_TIMING_DIAGNOSTICS", "false")
 
-        testInstrumentationRunner = "com.dayforge.HiltTestRunner"
+        testInstrumentationRunner = if (calibrationMode.get() == "none") "com.dayforge.HiltTestRunner"
+            else "com.dayforge.RealWorkerCalibrationRunner"
         testInstrumentationRunnerArguments["timeout_msec"] = "150000"
     }
 
@@ -54,7 +83,7 @@ android {
         buildConfig = true
     }
 
-    testBuildType = "deviceTest"
+    testBuildType = if (releaseCalibration.get()) "releaseCalibration" else "deviceTest"
 
     lint {
         baseline = file("lint-baseline.xml")
@@ -75,15 +104,29 @@ android {
             applicationIdSuffix = ".testbed"
             matchingFallbacks += "debug"
             enableUnitTestCoverage = false
-            enableAndroidTestCoverage = true
+            enableAndroidTestCoverage = !deviceTestCoverageCalibration.get()
         }
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("release")
         }
+        create("releaseCalibration") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".testbed"
+            signingConfig = signingConfigs.getByName("debug")
+            isDebuggable = false
+            isMinifyEnabled = false
+            enableUnitTestCoverage = false
+            enableAndroidTestCoverage = false
+            matchingFallbacks += "release"
+            buildConfigField("boolean", "RELEASE_TIMING_DIAGNOSTICS", releaseTimingDiagnostics.get().toString())
+        }
     }
 
     sourceSets {
+        if (calibrationMode.get() == "debug-real") {
+            getByName("deviceTest").manifest.srcFile("src/realWorkerDeviceTest/AndroidManifest.xml")
+        }
         getByName("androidTest").assets.srcDir("$projectDir/schemas")
         getByName("androidTest").assets.srcDir(rootProject.file("../contracts"))
     }
@@ -113,11 +156,13 @@ androidComponents {
         variant.hostTests.values.forEach { it.enable = false }
     }
 
-    onVariants(selector().withBuildType("deviceTest")) { variant ->
-        // Retain all notices from the instrumentation-only MockK/JUnit dependencies.
-        variant.androidTest?.packaging?.resources?.merges?.addAll(
-            "META-INF/LICENSE.md", "META-INF/LICENSE-notice.md"
-        )
+    listOf("deviceTest", "releaseCalibration").forEach { buildType ->
+        onVariants(selector().withBuildType(buildType)) { variant ->
+            // Retain all notices from the instrumentation-only MockK/JUnit dependencies.
+            variant.androidTest?.packaging?.resources?.merges?.addAll(
+                "META-INF/LICENSE.md", "META-INF/LICENSE-notice.md"
+            )
+        }
     }
 }
 
@@ -187,10 +232,17 @@ dependencies {
     // Physical-device instrumentation testing
     debugImplementation(libs.ui.test.manifest)
     add("deviceTestImplementation", libs.ui.test.manifest)
+    add("releaseCalibrationImplementation", libs.ui.test.manifest)
     kspAndroidTest(libs.hilt.compiler)
     androidTestImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.runner)
-    androidTestImplementation(libs.mockk.android)
+    androidTestImplementation(libs.mockk.android) {
+        // Explicit real-worker calibration never loads the Android JVMTI agent.
+        // Keep the default MockK test dependency graph unchanged.
+        if (calibrationMode.get() != "none") {
+            exclude(group = "io.mockk", module = "mockk-agent-android")
+        }
+    }
     androidTestImplementation(libs.coroutines.test)
     androidTestImplementation(libs.turbine)
     androidTestImplementation(libs.androidx.test.ext.junit)
@@ -201,16 +253,24 @@ dependencies {
     androidTestImplementation(libs.ui.test.junit4)
 }
 
-// Only the full three-shard gate has the approved larger whole-task budget.
-// Direct/targeted runs keep the smaller default; never change per-case deadlines.
+// Targeted capacity is chosen before launch, with the same bounded value as the Python owner.
+// Direct runs retain 2700 seconds. This never changes the 150000ms per-case deadline.
+val targetedDeviceTestTimeoutSeconds = providers.gradleProperty("dayforge.targetedTimeoutSeconds").map { value ->
+    require(value.matches(Regex("[1-9][0-9]{3,4}"))) { "Targeted timeout must be an integer from 2700 to 10800" }
+    value.toLong().also { require(it in 2700L..10800L) { "Targeted timeout must be an integer from 2700 to 10800" } }
+}.orElse(2700L)
 val physicalDeviceTestTimeoutSeconds = providers.gradleProperty("dayforge.deviceTestScope").map { scope ->
     when (scope) {
         "full" -> 10800L
-        "targeted" -> 2700L
+        "targeted" -> targetedDeviceTestTimeoutSeconds.get()
         else -> error("Unknown DayForge device test scope")
     }
 }.orElse(2700L)
 
 tasks.matching { it.name == "connectedDeviceTestAndroidTest" }.configureEach {
+    timeout.set(physicalDeviceTestTimeoutSeconds.map { Duration.ofSeconds(it) })
+}
+
+tasks.matching { it.name == "connectedReleaseCalibrationAndroidTest" }.configureEach {
     timeout.set(physicalDeviceTestTimeoutSeconds.map { Duration.ofSeconds(it) })
 }

@@ -1,5 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="independent_metric_unregistered">Operation was not registered. Confirm your input again.</string>
+    <string name="independent_metric_saved">Saved on this device.</string>
+    <string name="independent_metric_unknown">The original save result is not yet confirmed. Continue checking this operation before recording again.</string>
+    <string name="independent_metric_pending_delivery">Saved on this device. Result delivery is still pending.</string>
+
+    <string name="metric_submission_saved_input_missing">Saved input is unavailable. Close this form and reopen the pending action to continue.</string>
+    <string name="metric_submission_continue">Continue follow-up</string>
+    <string name="metric_submission_later">Later</string>
+    <string name="metric_submission_processing">Processing…</string>
+    <string name="metric_submission_saving">Saving on this device…</string>
+    <string name="metric_submission_saved_delivering">Saved on this device. Finishing follow-up…</string>
+    <string name="metric_submission_saved_pending">Saved on this device. Follow-up is not yet confirmed.</string>
+    <string name="metric_submission_delivered">Saved on this device.</string>
+    <string name="record_saved_refresh_failed">The change was saved, but refreshing its status or follow-up failed. Refresh the page; do not submit it again.</string>
     <string name="replica_display_title">Checking the local replica</string>
     <string name="replica_display_pending">Replica recovery is incomplete. Business data cannot be displayed or changed yet. Original data and archives are retained. Rechecking only reads local state; it does not perform recovery.</string>
     <string name="replica_display_retry">Recheck local state</string>
@@ -1285,6 +1299,7 @@
     <string name="replica_recovery_conflicts">Conflicts</string>
     <string name="replica_recovery_metric_drafts">Incomplete metric drafts</string>
     <string name="replica_recovery_config_pending">Unfinished configuration work</string>
+    <string name="replica_recovery_local_commands">Local actions awaiting recovery or follow-up</string>
     <string name="replica_recovery_snapshot_pending">Unfinished snapshot work</string>
     <string name="replica_recovery_material_gaps">Required materials are unavailable. Switching remains blocked.</string>
     <string name="replica_recovery_pack_missing">The exact selected icon-pack version is missing.</string>
@@ -1302,4 +1317,62 @@
     <string name="replica_recovery_storage_error">Storage or content verification failed. The durable stage is retained; inspect and retry safely.</string>
     <string name="replica_recovery_damaged">The local recovery controls are damaged or orphaned. Ordinary access remains blocked. This page can recheck local state but cannot repair or adopt missing evidence.</string>
     <string name="replica_recovery_failed">Recovery could not be verified. Inspect the retained local stage; do not assume the operation failed before committing.</string>
+    <string name="database_view_expired">This view is no longer current. Reopen it to see the latest result.</string>
+    <string name="widget_count_action_refresh_required">This tap was not recorded. Refresh the widget and try again.</string>
+    <string name="widget_count_locally_saved">%1$s: saved on this device</string>
+    <string name="widget_count_no_change">%1$s: no new change was needed</string>
+    <string name="widget_count_processing">Processing…</string>
+    <string name="widget_count_busy_not_recorded">Another action is running. This tap was not recorded.</string>
+    <string name="widget_count_result_unresolved">The previous result is not yet confirmed. No new action was recorded.</string>
+    <string name="widget_count_restore_busy">Another action is running. The previous command has not been resumed.</string>
+    <string name="count_action_saved_undo">Undo saved</string>
+    <string name="count_action_saved_add">Saved on this device</string>
+    <string name="count_action_no_effect">No new change was needed</string>
+
+    <string name="count_recovery_open">Unfinished local actions</string>
+    <string name="count_recovery_title">Resume a saved action</string>
+    <string name="count_recovery_explanation">Reading this list does not repeat an action. Continue checks the original saved action and its current state.</string>
+    <string name="count_recovery_refresh_required">This view or action could not be completed. Refresh to check its current state; it has not been automatically retried.</string>
+    <string name="count_recovery_saved">The original action is confirmed locally saved. Any required follow-up remains separate.</string>
+    <string name="count_recovery_no_effect">The original action did not add or remove a record.</string>
+    <string name="count_recovery_unresolved">The original result remains unresolved. No new action was created.</string>
+    <string name="count_recovery_metric_pending">Continue the original metric form. No values have been submitted from this list.</string>
+    <string name="count_recovery_add">Count increase · %1$s</string>
+    <string name="count_recovery_undo">Count undo · %1$s</string>
+    <string name="count_recovery_metrics">Metric entry · %1$s</string>
+    <string name="count_recovery_scope_required">This action needs its original account registration context before it can resume.</string>
+    <string name="count_recovery_continue">Continue original action</string>
+    <string name="count_recovery_next">Next batch</string>
+    <string name="count_recovery_end">End of this directory snapshot. Earlier unresolved actions may still remain.</string>
+    <string name="count_recovery_refresh">Refresh from the beginning</string>
+    <string name="count_recovery_close">Close</string>
+    <plurals name="count_recovery_metrics_saved">
+        <item quantity="one">The original %1$d metric record was saved. No value was submitted again.</item>
+        <item quantity="other">The original group of %1$d metric records was saved. No values were submitted again.</item>
+    </plurals>
+    <string name="count_recovery_metrics_hint_unresolved">The pending prompt cannot be matched to this result. It was kept; delivery is still pending.</string>
+    <string name="count_recovery_invalidated_plan">The original count action was not executed because its plan changed. No replacement action was created.</string>
+    <string name="count_recovery_invalidated_round">The original count action was not executed because its original round has ended. No replacement action was created.</string>
+    <string name="count_recovery_followup_obsolete_round">This count is saved. A verified later round makes its original follow-up no longer applicable. It remains pending unless you choose to end it.</string>
+    <string name="count_recovery_followup_obsolete_reverted">This saved count was undone. Its verified undo makes the original follow-up no longer applicable. It remains pending unless you choose to end it.</string>
+    <string name="count_recovery_followup_obsolete_deleted">This count is saved. The verified accepted deletion of its activity makes its original follow-up no longer applicable. It remains pending unless you choose to end it.</string>
+    <string name="count_recovery_end_followup">End this follow-up</string>
+    <string name="count_recovery_followup_ended">This follow-up is ended. The original count and command history are retained.</string>
+    <string name="independent_metric_saved_value">Saved value: %1$s %2$s</string>
+    <string name="independent_metric_end_action">End this unsaved entry</string>
+    <string name="independent_metric_ended">This entry was ended without adding a record</string>
+    <string name="count_recovery_view_result">View result</string>
+    <string name="independent_metric_unexecuted">This entry has not been saved.</string>
+    <string name="independent_metric_check_end">End this entry only after confirming it was not saved</string>
+    <string name="session_preparation_title">Preparing local data</string>
+    <string name="session_preparation_checking">Checking this device before opening your data.</string>
+    <string name="session_preparation_failed">Local data could not be prepared. You can retry, sign in, or open recovery.</string>
+    <string name="session_preparation_authentication">Please sign in again to prepare local data.</string>
+    <string name="session_preparation_recovery">Local recovery needs attention before data can be prepared.</string>
+    <string name="session_preparation_storage">Local data is unavailable. Open recovery to review the current state.</string>
+    <string name="session_preparation_retry">Retry</string>
+    <plurals name="count_recovery_retained">
+        <item quantity="one">%1$d older result is preserved. Its outcome cannot be determined here; it cannot be continued or ended from this list.</item>
+        <item quantity="other">%1$d older results are preserved. Their outcome cannot be determined here; they cannot be continued or ended from this list.</item>
+    </plurals>
 </resources>

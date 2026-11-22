@@ -1,5 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="independent_metric_unregistered">本次尚未登记，请重新确认输入。</string>
+    <string name="independent_metric_saved">已保存在本机。</string>
+    <string name="independent_metric_unknown">原保存结果尚未确认。请先继续查明这次操作，再录入新值。</string>
+    <string name="independent_metric_pending_delivery">已保存在本机，结果交付仍待确认。</string>
+
+    <string name="metric_submission_saved_input_missing">无法恢复已保存的表单。请关闭后从待处理操作重新打开。</string>
+    <string name="metric_submission_continue">继续处理</string>
+    <string name="metric_submission_later">稍后处理</string>
+    <string name="metric_submission_processing">正在处理…</string>
+    <string name="metric_submission_saving">正在保存到本机…</string>
+    <string name="metric_submission_saved_delivering">已保存在本机，正在完成后续处理…</string>
+    <string name="metric_submission_saved_pending">已保存在本机，后续处理尚未确认。</string>
+    <string name="metric_submission_delivered">已保存在本机。</string>
+    <string name="record_saved_refresh_failed">操作已保存，但状态或后续提示刷新失败。请刷新页面，不要重复提交。</string>
     <string name="replica_display_title">正在核对本地副本</string>
     <string name="replica_display_pending">副本恢复尚未完成，暂不显示或修改业务数据。原数据和恢复档案保留；重新核对只读取本地状态，不执行恢复。</string>
     <string name="replica_display_retry">重新核对</string>
@@ -1276,6 +1290,7 @@
     <string name="replica_recovery_conflicts">冲突</string>
     <string name="replica_recovery_metric_drafts">未完成的指标草稿</string>
     <string name="replica_recovery_config_pending">未完成的配置工作</string>
+    <string name="replica_recovery_local_commands">待恢复或待处理后续步骤的本地操作</string>
     <string name="replica_recovery_snapshot_pending">未完成的快照工作</string>
     <string name="replica_recovery_material_gaps">所需素材不可用，切换保持阻断。</string>
     <string name="replica_recovery_pack_missing">缺少原来选择的精确图标包版本。</string>
@@ -1293,4 +1308,60 @@
     <string name="replica_recovery_storage_error">存储或内容验证失败，持久阶段保留，请核对后安全重试。</string>
     <string name="replica_recovery_damaged">本地恢复控制已损坏或出现孤立日志，普通访问保持阻断。本页面仅能重新核对，不能修复或采用缺失证明。</string>
     <string name="replica_recovery_failed">无法核验恢复，请检查保留的本地阶段；不能假定操作在提交前失败。</string>
+    <string name="database_view_expired">此页面状态已过期，请重新打开以查看最新结果。</string>
+    <string name="widget_count_action_refresh_required">本次未记录，请刷新小组件后重试。</string>
+    <string name="widget_count_locally_saved">%1$s：已在本机保存</string>
+    <string name="widget_count_no_change">%1$s：本次无需修改</string>
+    <string name="widget_count_processing">处理中…</string>
+    <string name="widget_count_busy_not_recorded">操作正在处理中，本次点击未记录。</string>
+    <string name="widget_count_result_unresolved">上次操作结果尚未确认，本次没有记录新操作。</string>
+    <string name="widget_count_restore_busy">已有操作正在处理，上次命令本次尚未恢复执行。</string>
+    <string name="count_action_saved_add">已保存到本机</string>
+    <string name="count_action_saved_undo">撤销已保存</string>
+    <string name="count_action_no_effect">本次无需修改</string>
+
+    <string name="count_recovery_open">未完成的本地操作</string>
+    <string name="count_recovery_title">继续已保存的操作</string>
+    <string name="count_recovery_explanation">读取列表不会重复执行。继续时会核对原操作及其当前状态。</string>
+    <string name="count_recovery_refresh_required">本次查看或续办未完成。请刷新核对当前状态；没有自动重试。</string>
+    <string name="count_recovery_saved">已确认原操作在本地保存，必要后续仍需单独完成。</string>
+    <string name="count_recovery_no_effect">原操作没有新增或删除记录。</string>
+    <string name="count_recovery_unresolved">原结果仍待核实，没有创建新操作。</string>
+    <string name="count_recovery_metric_pending">继续原指标表单；列表没有提交指标值。</string>
+    <string name="count_recovery_add">计数增加 · %1$s</string>
+    <string name="count_recovery_undo">计数撤销 · %1$s</string>
+    <string name="count_recovery_metrics">指标录入 · %1$s</string>
+    <string name="count_recovery_scope_required">此操作需要原账户注册上下文核对后才能续办。</string>
+    <string name="count_recovery_continue">继续原操作</string>
+    <string name="count_recovery_next">下一批</string>
+    <string name="count_recovery_end">已到本次目录末尾，前面的未完成操作可能仍然存在。</string>
+    <string name="count_recovery_refresh">从头刷新</string>
+    <string name="count_recovery_close">关闭</string>
+    <plurals name="count_recovery_metrics_saved">
+        <item quantity="other">原来的 %1$d 项指标记录已保存，没有再次提交指标值。</item>
+    </plurals>
+    <string name="count_recovery_metrics_hint_unresolved">待提示标记无法与本次结果确认关联，已保留，结果交付仍待处理。</string>
+    <string name="count_recovery_invalidated_plan">原计数操作未执行，因为原计划已变化；没有创建替代操作。</string>
+    <string name="count_recovery_invalidated_round">原计数操作未执行，因为其原轮次已结束；没有创建替代操作。</string>
+    <string name="count_recovery_followup_obsolete_round">计数已保存。已验证的后续轮次使本次原后续不再适用；除非你选择结束，否则继续保留待处理。</string>
+    <string name="count_recovery_followup_obsolete_reverted">本次已保存的计数已撤销。经验证的撤销使原后续处理不再适用；除非你选择结束，否则继续保留待处理。</string>
+    <string name="count_recovery_followup_obsolete_deleted">计数已经保存。经完整确认的对象删除使原后续处理不再适用；除非你选择结束，否则继续保留待处理。</string>
+    <string name="count_recovery_end_followup">结束此后续处理</string>
+    <string name="count_recovery_followup_ended">此后续已结束，原计数与命令历史仍保留。</string>
+    <string name="independent_metric_saved_value">已保存数值：%1$s %2$s</string>
+    <string name="independent_metric_end_action">结束这次尚未保存的录入</string>
+    <string name="independent_metric_ended">这次录入已结束，未新增记录</string>
+    <string name="count_recovery_view_result">查看结果</string>
+    <string name="independent_metric_unexecuted">这次录入尚未保存。</string>
+    <string name="independent_metric_check_end">核实未保存后结束本次录入</string>
+    <string name="session_preparation_title">准备本机数据</string>
+    <string name="session_preparation_checking">正在检查本机数据，请稍候。</string>
+    <string name="session_preparation_failed">暂时无法准备本机数据。可以重试、重新登录或查看恢复选项。</string>
+    <string name="session_preparation_authentication">请重新登录后继续准备本机数据。</string>
+    <string name="session_preparation_recovery">请先处理本机恢复，再继续准备数据。</string>
+    <string name="session_preparation_storage">本机数据暂时不可用，请查看恢复选项。</string>
+    <string name="session_preparation_retry">重试</string>
+    <plurals name="count_recovery_retained">
+        <item quantity="other">已保留 %1$d 条旧结果。这里无法确认其处理结果，不能从此列表继续或结束。</item>
+    </plurals>
 </resources>

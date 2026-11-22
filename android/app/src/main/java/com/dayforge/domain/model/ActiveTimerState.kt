@@ -7,5 +7,6 @@ data class ActiveTimerState(
     val isPaused: Boolean,
     val targetMinutes: Int,
     val isCountdown: Boolean? = null,
-    val authority: TimerActionAuthority? = null
+    val authority: TimerActionAuthority? = null,
+    val legacyClaim: com.dayforge.data.repository.LegacyWidgetTimerClaim? = null
 )

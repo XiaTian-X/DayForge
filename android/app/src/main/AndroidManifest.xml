@@ -180,6 +180,17 @@
 
         <!-- Metric prompt dialog (shown after widget check-in with linked metrics) -->
         <activity
+            android:name=".widget.checkin.CountWidgetActionActivity"
+            android:exported="false"
+            android:launchMode="standard"
+            android:documentLaunchMode="none"
+            android:taskAffinity="${applicationId}.widget.count.command"
+            android:allowTaskReparenting="false"
+            android:relinquishTaskIdentity="true"
+            android:persistableMode="persistNever"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <activity
             android:name=".widget.checkin.WidgetFactActionActivity"
             android:exported="false"
             android:excludeFromRecents="true"

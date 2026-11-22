@@ -30,6 +30,7 @@ import com.dayforge.data.model.HabitType
 import com.dayforge.data.model.SyncProgress
 import com.dayforge.domain.service.AccountSessionCoordinator
 import java.util.UUID
+import androidx.room.withTransaction
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.encodeToString
@@ -61,7 +62,8 @@ class IncrementalSyncRepository(
     private val timerSyncRepository: TimerSyncRepository,
     private val merger: SyncV2Merger,
     private val json: Json,
-    private val accountSessionCoordinator: AccountSessionCoordinator
+    private val accountSessionCoordinator: AccountSessionCoordinator,
+    private val problemDatabase: com.dayforge.data.local.HabitDatabase? = null
 ) {
     suspend fun sync(progressCallback: (SyncProgress) -> Unit = {}) =
         accountSessionCoordinator.exclusive { syncInternal(progressCallback) }
@@ -220,6 +222,66 @@ class IncrementalSyncRepository(
         accountSessionCoordinator.exclusive {
             requireV4LocalState()
             timerSyncRepository.cancelRejectedCommandAndUseServer(id, ensureDevice())
+        }
+
+    /** Source-bound UI variants. The original account lock, v4 refusal and writer remain;
+     * complete original row equality is checked inside the actual local mutation transaction.
+     * Fixed/manual ID variants above are retained for original engine/fixture callers.
+     */
+    private suspend fun <T> problemTransaction(session: com.dayforge.data.local.LocalDataSession,
+        block: suspend () -> T): T = requireNotNull(problemDatabase) { "SYNC_PROBLEM_DATABASE_REQUIRED" }.withTransaction {
+        val authority = requireNotNull(tokenManager.localCoreWriteAccess()) { "SYNC_ACCOUNT_CHANGED" }
+        check(authority.session == session) { "SYNC_ACCOUNT_CHANGED" }
+        requireV4LocalState()
+        val result = block()
+        check(tokenManager.localCoreWriteAccess() == authority) { "SYNC_ACCOUNT_CHANGED" }
+        result
+    }
+    private suspend fun requireChange(original: com.dayforge.data.model.SyncProblemChange) {
+        check(original.row.deadLetteredAt != null && outboxDao.getById(original.row.id) == original.row) { "SYNC_PROBLEM_CHANGED" }
+    }
+    private suspend fun requireTimer(original: com.dayforge.data.model.SyncProblemTimer) {
+        check(original.row.deadLetteredAt != null && timeLogDao.getRejectedTimerCommand(original.row.id) == original.row) { "SYNC_PROBLEM_CHANGED" }
+    }
+    internal suspend fun retryDeadLetter(original: com.dayforge.data.model.SyncProblemChange) = accountSessionCoordinator.exclusive {
+        problemTransaction(original.session) {
+            requireChange(original)
+            outboxDao.retryDeadLetter(original.row.id, UUID.randomUUID().toString())
+        }
+    }
+    internal suspend fun discardDeadLetter(original: com.dayforge.data.model.SyncProblemChange) = accountSessionCoordinator.exclusive {
+        problemTransaction(original.session) { requireChange(original) }
+        // Original conservative bootstrap intent precedes local deletion, outside Room.
+        // A later failure can require extra recovery but never silently discard divergence.
+        tokenManager.requireSyncBootstrap()
+        problemTransaction(original.session) { requireChange(original); outboxDao.deleteDeadLetter(original.row.id) }
+    }
+    internal suspend fun resolveConflictUseServer(original: com.dayforge.data.model.SyncProblemConflict) = accountSessionCoordinator.exclusive {
+        problemTransaction(original.session) {
+            check(conflictDao.getUnresolvedById(original.row.id) == original.row) { "SYNC_PROBLEM_CHANGED" }
+            check(merger.resolveConflictUseServer(original.row.id)) { "同步冲突已被处理" }
+        }
+    }
+    internal suspend fun resolveConflictUseLocal(original: com.dayforge.data.model.SyncProblemConflict) = accountSessionCoordinator.exclusive {
+        problemTransaction(original.session) {
+            check(conflictDao.getUnresolvedById(original.row.id) == original.row) { "SYNC_PROBLEM_CHANGED" }
+            check(merger.resolveConflictUseLocal(original.row.id)) { "无法恢复已被服务器删除的数据，请保留服务器版本" }
+        }
+    }
+    internal suspend fun retryRejectedTimerCommand(original: com.dayforge.data.model.SyncProblemTimer) = accountSessionCoordinator.exclusive {
+        problemTransaction(original.session) { requireTimer(original); timerSyncRepository.retryRejectedCommand(original.row.id) }
+    }
+    internal suspend fun cancelRejectedTimerCommandAndUseServer(original: com.dayforge.data.model.SyncProblemTimer) =
+        accountSessionCoordinator.exclusive {
+            problemTransaction(original.session) { requireTimer(original) }
+            val device = ensureDevice()
+            // HTTP stays in its original account scope and outside every Room transaction.
+            timerSyncRepository.cancelOriginalRejectedCommandAndUseServer(original.row, device) { remove ->
+                problemTransaction(original.session) {
+                    requireTimer(original)
+                    timeLogDao.resolveRejectedTimerCommand(original.row.sessionUuid, remove)
+                }
+            }
         }
 
     fun getLastSyncTime(): Flow<Long?> = preferencesManager.lastSyncTimestamp

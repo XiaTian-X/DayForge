@@ -15,6 +15,7 @@ import com.dayforge.domain.appearance.*
 import com.dayforge.domain.model.*
 import com.dayforge.domain.service.AccountIconRuntime
 import com.dayforge.domain.service.IconMaterialOutcome
+import com.dayforge.domain.service.ReplicaPresentationController
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicBoolean
@@ -30,7 +31,9 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-abstract class NextReplicaDestinationFixture : NextCoreRequestFixture() {
+abstract class NextReplicaDestinationFixture internal constructor(
+    storage: PhysicalDatabaseRule = PhysicalDatabaseRule()
+) : NextCoreRequestFixture(storage) {
     @get:org.junit.Rule(order = -2) val widgetRefresh = com.dayforge.widget.IsolatedWidgetRefreshRule()
     internal lateinit var iconDb: AccountIconDatabase
     internal lateinit var icons: AccountIconRepository
@@ -46,9 +49,20 @@ abstract class NextReplicaDestinationFixture : NextCoreRequestFixture() {
     internal var recoveryPack: IconPack? = null
     internal var destinationTransform: (ReplicaRecoveryPreviewResponse) -> ReplicaRecoveryPreviewResponse = { it }
     internal var destinationFailure: Int? = null
+    // An explicit cancellation test may identify one actual request; every other reply is strict.
+    internal var destinationClientCloseExpected: (MaterialSocketServer.Input) -> Boolean = { false }
     // Registry intentionally holds weak references. Keep the real fault observer alive across
     // the complete archive verification, including GC, until this per-case fixture is released.
     internal lateinit var cancellationCache: AccountIconMemory.Cache
+
+    private val recoveryControllers = mutableListOf<ReplicaPresentationController>()
+    internal fun <T> recoveryRunBlocking(block: suspend CoroutineScope.() -> T): T = runBlocking {
+        storage.ownRecoveryMethod(requireNotNull(coroutineContext[Job]))
+        block()
+    }
+    internal fun ownRecoveryController(controller: ReplicaPresentationController) {
+        recoveryControllers += controller
+    }
 
     internal fun materialParticipants() {
         icons = AccountIconRepository(iconDb, tokens, sessions); files = AccountIconFiles(directory)
@@ -61,9 +75,18 @@ abstract class NextReplicaDestinationFixture : NextCoreRequestFixture() {
         materialParticipants()
         themes = ThemeFileRepository(directory); builtIns = BuiltInThemes(app.assets)
     }
-    @After fun appearanceCleanup() {
-        if (::iconDb.isInitialized) iconDb.close()
-        assertTrue(app.deleteDatabase(AccountIconDatabase.NAME) || !app.getDatabasePath(AccountIconDatabase.NAME).exists())
+    @After fun appearanceCleanup() = runBlocking<Unit> {
+        storage.recoveryCleanup {
+            // The presentation observer owns an independent SupervisorJob. The method's
+            // cancelled finally requests close but cannot prove that its await joined.
+            withTimeout(5_000) {
+                recoveryControllers.forEach { it.close(); it.awaitClosed() }
+            }
+            if (::iconDb.isInitialized) iconDb.close()
+            storage.afterDatabaseClose {
+                assertTrue(app.deleteDatabase(AccountIconDatabase.NAME) || !app.getDatabasePath(AccountIconDatabase.NAME).exists())
+            }
+        }
     }
     internal fun canonical(kind: String, uuid: String, payload: JsonObject) = SyncV2Change(0, kind, uuid, "upsert", 1,
         JsonObject(payload + mapOf("public_id" to JsonPrimitive(uuid), "revision" to JsonPrimitive(1),
@@ -98,7 +121,8 @@ abstract class NextReplicaDestinationFixture : NextCoreRequestFixture() {
                         asset.copy(assetId = it, name = "Required fixed reference")
                     })
                     MaterialSocketServer.Reply(json.encodeToString(recoveryMaterialReply(destinationTransform(response), input,
-                        listOf(selected), available)).toByteArray(), headers = mapOf("Cache-Control" to "private, max-age=3600"))
+                        listOf(selected), available)).toByteArray(), headers = mapOf("Cache-Control" to "private, max-age=3600"),
+                        allowClientClose = destinationClientCloseExpected(input))
                 }
                 else -> if (input.path.startsWith("/api/v2/appearance/")) requireNotNull(materialReply)(input)
                     else error("Recovery may not send ordinary work: ${input.path}")
@@ -119,13 +143,31 @@ abstract class NextReplicaDestinationFixture : NextCoreRequestFixture() {
             NextReplicaCandidateValidator(app, tokens, sessions, preferences),
             NextReplicaDifferenceReader(db, tokens, sessions, preferences), inputs, ReplicaPrivateArchiveStore(directory))
     }
+    private enum class PreparationStep { CANDIDATE, DIFFERENCE, PREPARE, VERIFY_CONFIRMATION, CONFIRM }
+    private suspend fun <T> preparationStep(step: PreparationStep, block: suspend () -> T): T {
+        val started = android.os.SystemClock.elapsedRealtime()
+        android.util.Log.d("ReplicaPreparationStep", "step=$step event=start at_ms=$started")
+        var returned = false
+        try { return block().also { returned = true } }
+        finally {
+            val ended = android.os.SystemClock.elapsedRealtime()
+            android.util.Log.d("ReplicaPreparationStep", "step=$step event=end returned=$returned " +
+                "at_ms=$ended elapsed_ms=${ended - started}")
+        }
+    }
     internal suspend fun committed(): ReplicaSwitchStage {
         val original = access(); val installation = tokens.registeredInstallationId()!!
-        val candidate = NextReplicaCandidateValidator(app, tokens, sessions, preferences)
-            .validate(original, installation, http.recoveryPreview(original, id(99), installation))
+        val candidate = preparationStep(PreparationStep.CANDIDATE) {
+            NextReplicaCandidateValidator(app, tokens, sessions, preferences)
+                .validate(original, installation, http.recoveryPreview(original, id(99), installation))
+        }
         val flow = workflow()
-        val stage = flow.prepare(NextReplicaDifferenceReader(db, tokens, sessions, preferences).capture(candidate))
-        return flow.confirm(flow.verifyForConfirmation(stage))
+        val difference = preparationStep(PreparationStep.DIFFERENCE) {
+            NextReplicaDifferenceReader(db, tokens, sessions, preferences).capture(candidate)
+        }
+        val stage = preparationStep(PreparationStep.PREPARE) { flow.prepare(difference) }
+        val evidence = preparationStep(PreparationStep.VERIFY_CONFIRMATION) { flow.verifyForConfirmation(stage) }
+        return preparationStep(PreparationStep.CONFIRM) { flow.confirm(evidence) }
     }
     internal fun archive(stage: ReplicaSwitchStage) = File(directory,
         "replica-archives-v1/${stage.accountId}/${stage.serverInstanceId}/${stage.oldEpoch}/${stage.archive!!.archiveId}.candidate")

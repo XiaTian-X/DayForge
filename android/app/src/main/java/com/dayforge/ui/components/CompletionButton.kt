@@ -7,6 +7,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
@@ -25,6 +26,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -38,6 +40,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -127,7 +133,9 @@ fun CompletionButton(
     textColor: Color = Color.Unspecified,
     modifier: Modifier = Modifier,
     actionsEnabled: Boolean = true,
-    countRuleKnown: Boolean = true
+    countRuleKnown: Boolean = true,
+    busy: Boolean = false,
+    countCommandModel: com.dayforge.ui.CountButtonModel? = null
 ) {
     // Resolve text color: use provided color or fallback to theme default
     val resolvedTextColor = if (textColor != Color.Unspecified) {
@@ -136,6 +144,15 @@ fun CompletionButton(
         MaterialTheme.colorScheme.onPrimary
     }
 
+    val countState = if (habitType != HabitType.COUNTING) null else when {
+        busy -> stringResource(R.string.widget_count_processing)
+        countCommandModel?.kind == com.dayforge.ui.CountButtonModel.Kind.SAVED_ADD -> stringResource(R.string.count_action_saved_add)
+        countCommandModel?.kind == com.dayforge.ui.CountButtonModel.Kind.SAVED_UNDO -> stringResource(R.string.count_action_saved_undo)
+        countCommandModel?.kind == com.dayforge.ui.CountButtonModel.Kind.NO_EFFECT -> stringResource(R.string.count_action_no_effect)
+        else -> null
+    }
+    val actionState = if (busy && habitType != HabitType.COUNTING)
+        stringResource(R.string.metric_submission_processing) else countState
     AnimatedContent(
         targetState = when {
             // 1. TIMER 运行中/暂停中 - 最高优先级，不中断计时
@@ -174,236 +191,310 @@ fun CompletionButton(
             fadeIn(animationSpec = tween(150)) togetherWith
             fadeOut(animationSpec = tween(150))
         },
-        modifier = modifier.animateContentSize()
+        modifier = modifier.animateContentSize().semantics { actionState?.let { stateDescription = it } }
     ) { state ->
-        when (state) {
-            "count_unknown" -> Text(stringResource(R.string.count_rule_unknown_quantity, actualCount),
-                color = resolvedTextColor, style = MaterialTheme.typography.labelLarge)
-            "timer_running" -> {
-                // Running timer: [Pause] MM:SS / X分钟 [Stop]
-                // For countdown mode: [Pause] 还剩 MM:SS / X分钟 [Stop]
-                val targetSeconds = targetValue * 60
-                val displayText = if (isCountdown) {
-                    // Countdown mode: display remaining time
-                    val remainingSeconds = (targetSeconds - currentCount).coerceAtLeast(0)
-                    val minutes = remainingSeconds / 60
-                    val seconds = remainingSeconds % 60
-                    stringResource(R.string.timer_remaining_format, minutes, seconds, targetValue)
-                } else {
-                    // Countup mode: display elapsed time
-                    val minutes = currentCount / 60
-                    val seconds = currentCount % 60
-                    stringResource(R.string.timer_elapsed_format, minutes, seconds, targetValue)
-                }
-                val isCompleted = if (isCountdown) {
-                    // Countdown: completed when remaining <= 0
-                    (targetSeconds - currentCount) <= 0
-                } else {
-                    // Countup: completed when elapsed >= target
-                    currentCount >= targetSeconds
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.height(48.dp)
-                ) {
-                    // Pause button
-                    FilledIconButton(onClick = onTimerPause, modifier = Modifier.offset(x = (-4).dp)) {
-                        Icon(
-                            imageVector = Icons.Default.Pause,
-                            contentDescription = stringResource(R.string.action_pause)
-                        )
+        val content: @Composable () -> Unit = {
+            when (state) {
+                "count_unknown" -> Text(stringResource(R.string.count_rule_unknown_quantity, actualCount),
+                    color = resolvedTextColor, style = MaterialTheme.typography.labelLarge)
+                "timer_running" -> {
+                    // Running timer: [Pause] MM:SS / X分钟 [Stop]
+                    // For countdown mode: [Pause] 还剩 MM:SS / X分钟 [Stop]
+                    val targetSeconds = targetValue * 60
+                    val displayText = if (isCountdown) {
+                        // Countdown mode: display remaining time
+                        val remainingSeconds = (targetSeconds - currentCount).coerceAtLeast(0)
+                        val minutes = remainingSeconds / 60
+                        val seconds = remainingSeconds % 60
+                        stringResource(R.string.timer_remaining_format, minutes, seconds, targetValue)
+                    } else {
+                        // Countup mode: display elapsed time
+                        val minutes = currentCount / 60
+                        val seconds = currentCount % 60
+                        stringResource(R.string.timer_elapsed_format, minutes, seconds, targetValue)
                     }
-
-                    // Progress display
-                    Text(
-                        text = displayText,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = resolvedTextColor,
-                        modifier = Modifier.weight(1f, fill=false),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-
-                    // Stop button
-                    FilledIconButton(onClick = onTimerStop) {
-                        Icon(
-                            imageVector = Icons.Default.Stop,
-                            contentDescription = stringResource(R.string.action_stop)
-                        )
+                    val isCompleted = if (isCountdown) {
+                        // Countdown: completed when remaining <= 0
+                        (targetSeconds - currentCount) <= 0
+                    } else {
+                        // Countup: completed when elapsed >= target
+                        currentCount >= targetSeconds
                     }
-
-                    // Completed badge when target reached
-                    if (isCompleted) {
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Icon(
-                            imageVector = Icons.Default.CheckCircle,
-                            contentDescription = stringResource(R.string.habit_card_status_completed),
-                            tint = resolvedTextColor,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
-            }
-            "timer_paused" -> {
-                // Paused timer: [Resume] MM:SS / X分钟 (已暂停) [Stop]
-                // For countdown mode: [Resume] 还剩 MM:SS / X分钟 (已暂停) [Stop]
-                val targetSeconds = targetValue * 60
-                val displayText = if (isCountdown) {
-                    // Countdown mode: display remaining time
-                    val remainingSeconds = (targetSeconds - currentCount).coerceAtLeast(0)
-                    val minutes = remainingSeconds / 60
-                    val seconds = remainingSeconds % 60
-                    stringResource(R.string.timer_remaining_paused_format, minutes, seconds, targetValue)
-                } else {
-                    // Countup mode: display elapsed time
-                    val minutes = currentCount / 60
-                    val seconds = currentCount % 60
-                    stringResource(R.string.timer_elapsed_paused_format, minutes, seconds, targetValue)
-                }
-                val isCompleted = if (isCountdown) {
-                    // Countdown: completed when remaining <= 0
-                    (targetSeconds - currentCount) <= 0
-                } else {
-                    // Countup: completed when elapsed >= target
-                    currentCount >= targetSeconds
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.height(48.dp)
-                ) {
-                    // Resume button
-                    FilledIconButton(onClick = onTimerResume, modifier = Modifier.offset(x = (-4).dp)) {
-                        Icon(
-                            imageVector = Icons.Default.PlayArrow,
-                            contentDescription = stringResource(R.string.action_resume)
-                        )
-                    }
-
-                    // Progress display with paused indicator
-                    Text(
-                        text = displayText,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = resolvedTextColor.copy(alpha = 0.5f),
-                        modifier = Modifier.weight(1f, fill=false),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-
-                    // Stop button
-                    FilledIconButton(onClick = onTimerStop) {
-                        Icon(
-                            imageVector = Icons.Default.Stop,
-                            contentDescription = stringResource(R.string.action_stop)
-                        )
-                    }
-
-                    // Completed badge when target reached
-                    if (isCompleted) {
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Icon(
-                            imageVector = Icons.Default.CheckCircle,
-                            contentDescription = stringResource(R.string.habit_card_status_completed),
-                            tint = resolvedTextColor,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
-            }
-            "timer_static" -> {
-                // No active timer: Start button + target only
-                val progressText = stringResource(R.string.timer_target_format, targetValue)
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.height(48.dp)
-                ) {
-                    // Start button
-                    FilledIconButton(onClick = onTimerStart, modifier = Modifier.offset(x = (-4).dp)) {
-                        Icon(
-                            imageVector = Icons.Default.PlayArrow,
-                            contentDescription = stringResource(R.string.action_start_timer)
-                        )
-                    }
-
-                    // Progress display
-                    Text(
-                        text = progressText,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = resolvedTextColor,
-                        modifier = Modifier.weight(1f, fill=false),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-            "timer_completed" -> {
-                // Timer already completed today - show completed badge, no start button
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.height(48.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.CheckCircle,
-                        contentDescription = stringResource(R.string.habit_card_status_completed),
-                        tint = resolvedTextColor,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = stringResource(R.string.habit_card_status_completed),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = resolvedTextColor,
-                        modifier = Modifier.weight(1f, fill=false),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-
-                    // Record metrics button for timer habits with pending metrics
-                    if (showMetricPrompt) {
-                        Spacer(modifier = Modifier.width(12.dp))
-                        TextButton(
-                            onClick = onRecordMetrics,
-                            colors = ButtonDefaults.textButtonColors(
-                                contentColor = resolvedTextColor
-                            )
-                        ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.height(48.dp)
+                    ) {
+                        // Pause button
+                        FilledIconButton(onClick = { if (!busy) onTimerPause() }, enabled = !busy, modifier = Modifier.offset(x = (-4).dp)) {
                             Icon(
-                                imageVector = Icons.Default.Add,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
+                                imageVector = Icons.Default.Pause,
+                                contentDescription = stringResource(R.string.action_pause)
                             )
+                        }
+
+                        // Progress display
+                        Text(
+                            text = displayText,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = resolvedTextColor,
+                            modifier = Modifier.weight(1f, fill=false),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+
+                        // Stop button
+                        FilledIconButton(onClick = { if (!busy) onTimerStop() }, enabled = !busy) {
+                            Icon(
+                                imageVector = Icons.Default.Stop,
+                                contentDescription = stringResource(R.string.action_stop)
+                            )
+                        }
+
+                        // Completed badge when target reached
+                        if (isCompleted) {
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text(stringResource(R.string.action_record_metrics))
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = stringResource(R.string.habit_card_status_completed),
+                                tint = resolvedTextColor,
+                                modifier = Modifier.size(20.dp)
+                            )
                         }
                     }
                 }
-            }
-            "counting" -> {
-                // 统一使用打卡按钮样式
-                val remaining = if (isCountdown) {
-                    (targetValue.toLong() - actualCount).coerceAtLeast(0L)
-                } else {
-                    0
-                }
+                "timer_paused" -> {
+                    // Paused timer: [Resume] MM:SS / X分钟 (已暂停) [Stop]
+                    // For countdown mode: [Resume] 还剩 MM:SS / X分钟 (已暂停) [Stop]
+                    val targetSeconds = targetValue * 60
+                    val displayText = if (isCountdown) {
+                        // Countdown mode: display remaining time
+                        val remainingSeconds = (targetSeconds - currentCount).coerceAtLeast(0)
+                        val minutes = remainingSeconds / 60
+                        val seconds = remainingSeconds % 60
+                        stringResource(R.string.timer_remaining_paused_format, minutes, seconds, targetValue)
+                    } else {
+                        // Countup mode: display elapsed time
+                        val minutes = currentCount / 60
+                        val seconds = currentCount % 60
+                        stringResource(R.string.timer_elapsed_paused_format, minutes, seconds, targetValue)
+                    }
+                    val isCompleted = if (isCountdown) {
+                        // Countdown: completed when remaining <= 0
+                        (targetSeconds - currentCount) <= 0
+                    } else {
+                        // Countup: completed when elapsed >= target
+                        currentCount >= targetSeconds
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.height(48.dp)
+                    ) {
+                        // Resume button
+                        FilledIconButton(onClick = { if (!busy) onTimerResume() }, enabled = !busy, modifier = Modifier.offset(x = (-4).dp)) {
+                            Icon(
+                                imageVector = Icons.Default.PlayArrow,
+                                contentDescription = stringResource(R.string.action_resume)
+                            )
+                        }
 
-                val isCompleted = if (isCountdown) {
-                    remaining <= 0
-                } else {
-                    actualCount >= targetValue
-                }
+                        // Progress display with paused indicator
+                        Text(
+                            text = displayText,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = resolvedTextColor.copy(alpha = 0.5f),
+                            modifier = Modifier.weight(1f, fill=false),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
 
-                // 倒计数完成后不能再打卡，正计数可以继续打卡
-                val canCheckIn = if (isCountdown) {
-                    remaining > 0
-                } else {
-                    true  // 正计数始终可以打卡
-                }
+                        // Stop button
+                        FilledIconButton(onClick = { if (!busy) onTimerStop() }, enabled = !busy) {
+                            Icon(
+                                imageVector = Icons.Default.Stop,
+                                contentDescription = stringResource(R.string.action_stop)
+                            )
+                        }
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.height(48.dp)
-                ) {
-                    if (isCountdown && isCompleted) {
-                        // 倒计数完成：只显示 "✓ 已完成"
+                        // Completed badge when target reached
+                        if (isCompleted) {
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = stringResource(R.string.habit_card_status_completed),
+                                tint = resolvedTextColor,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                }
+                "timer_static" -> {
+                    // No active timer: Start button + target only
+                    val progressText = stringResource(R.string.timer_target_format, targetValue)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.height(48.dp)
+                    ) {
+                        // Start button
+                        FilledIconButton(onClick = { if (!busy) onTimerStart() }, enabled = !busy, modifier = Modifier.offset(x = (-4).dp)) {
+                            Icon(
+                                imageVector = Icons.Default.PlayArrow,
+                                contentDescription = stringResource(R.string.action_start_timer)
+                            )
+                        }
+
+                        // Progress display
+                        Text(
+                            text = progressText,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = resolvedTextColor,
+                            modifier = Modifier.weight(1f, fill=false),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                "timer_completed" -> {
+                    // Timer already completed today - show completed badge, no start button
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.height(48.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = stringResource(R.string.habit_card_status_completed),
+                            tint = resolvedTextColor,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = stringResource(R.string.habit_card_status_completed),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = resolvedTextColor,
+                            modifier = Modifier.weight(1f, fill=false),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+
+                        // Record metrics button for timer habits with pending metrics
+                        if (showMetricPrompt) {
+                            Spacer(modifier = Modifier.width(12.dp))
+                            TextButton(
+                                onClick = { if (!busy) onRecordMetrics() },
+                                enabled = !busy,
+                                colors = ButtonDefaults.textButtonColors(
+                                    contentColor = resolvedTextColor
+                                )
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(stringResource(R.string.action_record_metrics))
+                            }
+                        }
+                    }
+                }
+                "counting" -> {
+                    // 统一使用打卡按钮样式
+                    val remaining = if (isCountdown) {
+                        (targetValue.toLong() - actualCount).coerceAtLeast(0L)
+                    } else {
+                        0
+                    }
+
+                    val isCompleted = if (isCountdown) {
+                        remaining <= 0
+                    } else {
+                        actualCount >= targetValue
+                    }
+
+                    // 倒计数完成后不能再打卡，正计数可以继续打卡
+                    val canCheckIn = if (isCountdown) {
+                        remaining > 0
+                    } else {
+                        true  // 正计数始终可以打卡
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.height(48.dp)
+                    ) {
+                        if (isCountdown && isCompleted) {
+                            // 倒计数完成：只显示 "✓ 已完成"
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = resolvedTextColor,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = stringResource(R.string.habit_card_status_completed),
+                                style = MaterialTheme.typography.labelLarge,
+                                color = resolvedTextColor,
+                            modifier = Modifier.weight(1f, fill=false),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                            )
+                        } else {
+                            // 正计数或倒计数未完成：显示打卡按钮 + 进度
+                            // 完成标记（正计数达标后显示）
+                            if (isCompleted) {
+                                Icon(
+                                    imageVector = Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    tint = resolvedTextColor,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                            }
+
+                            // 打卡按钮
+                            Button(
+                                onClick = { if (isCountdown) onDecrement() else onIncrement() },
+                                enabled = actionsEnabled && !busy,
+                                modifier = Modifier.height(36.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    // Keep the original text's layout dimensions while busy; only
+                                    // the visual content changes. No extra delay or local arithmetic.
+                                    Text(text = stringResource(R.string.action_check_in),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        modifier = Modifier.alpha(if (busy) 0f else 1f))
+                                    if (busy) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+
+                            // 进度显示
+                            val progressText = if (isCountdown) {
+                                stringResource(R.string.timer_countdown_remaining, remaining)
+                            } else {
+                                stringResource(R.string.timer_countup_progress, actualCount, targetValue)
+                            }
+                            Text(
+                                text = progressText,
+                                style = MaterialTheme.typography.labelLarge,
+                                color = resolvedTextColor,
+                            modifier = Modifier.weight(1f, fill=false),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+                "completed" -> {
+                    // Tappable row for undo (CHECK_IN habits)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .height(48.dp)
+                            .clickable(enabled = undoAvailable && actionsEnabled && !busy) {
+                                if (undoAvailable && actionsEnabled && !busy) onUndo()
+                            }
+                    ) {
                         Icon(
                             imageVector = Icons.Default.CheckCircle,
                             contentDescription = null,
@@ -414,188 +505,136 @@ fun CompletionButton(
                         Text(
                             text = stringResource(R.string.habit_card_status_completed),
                             style = MaterialTheme.typography.labelLarge,
-                            color = resolvedTextColor,
-                        modifier = Modifier.weight(1f, fill=false),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                            color = resolvedTextColor.copy(alpha = 0.9f),
+                            modifier = Modifier.weight(1f, fill=false),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
-                    } else {
-                        // 正计数或倒计数未完成：显示打卡按钮 + 进度
-                        // 完成标记（正计数达标后显示）
-                        if (isCompleted) {
+                        if (showMetricPrompt) {
+                            TextButton(onClick = { if (!busy) onRecordMetrics() }, enabled = !busy) {
+                                Text(stringResource(R.string.post_checkin_record), color = resolvedTextColor)
+                            }
+                        }
+                    }
+                }
+                "disabled_checkin" -> {
+                    // Non-check-in day: Show disabled state with next check-in date hint
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.height(48.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Block,
+                            contentDescription = null,
+                            tint = resolvedTextColor.copy(alpha = 0.5f),
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = stringResource(R.string.habit_card_status_non_checkin_day),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = resolvedTextColor.copy(alpha = 0.5f),
+                            modifier = Modifier.weight(1f, fill=false),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (nextCheckInDate != null) {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            val daysUntil = ChronoUnit.DAYS.between(LocalDate.now(), nextCheckInDate)
+                            val hint = when {
+                                daysUntil == 1L -> stringResource(R.string.next_checkin_tomorrow)
+                                daysUntil <= 7L -> stringResource(R.string.next_checkin_days, daysUntil)
+                                else -> stringResource(R.string.next_checkin_date, nextCheckInDate.monthValue, nextCheckInDate.dayOfMonth)
+                            }
+                            Text(
+                                text = hint,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = resolvedTextColor.copy(alpha = 0.6f)
+                            )
+                        }
+                    }
+                }
+                "failed" -> {
+                    // Target-based habit has failed (STRICT mode missed check-in)
+                    // Clickable to trigger reactivation dialog
+                    Surface(
+                        modifier = Modifier.clickable(enabled = !busy) { if (!busy) onReactivation() },
+                        color = Color.White.copy(alpha = 0.85f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
                             Icon(
-                                imageVector = Icons.Default.CheckCircle,
+                                imageVector = Icons.Default.Cancel,
                                 contentDescription = null,
-                                tint = resolvedTextColor,
+                                tint = MaterialTheme.colorScheme.error,
                                 modifier = Modifier.size(20.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
-                        }
-
-                        // 打卡按钮
-                        Button(
-                            onClick = { if (isCountdown) onDecrement() else onIncrement() },
-                            modifier = Modifier.height(36.dp)
-                        ) {
                             Text(
-                                text = stringResource(R.string.action_check_in),
-                                style = MaterialTheme.typography.labelMedium
+                                text = stringResource(R.string.status_already_failed),
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.weight(1f, fill=false),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                             )
                         }
-                        Spacer(modifier = Modifier.width(8.dp))
-
-                        // 进度显示
-                        val progressText = if (isCountdown) {
-                            stringResource(R.string.timer_countdown_remaining, remaining)
-                        } else {
-                            stringResource(R.string.timer_countup_progress, actualCount, targetValue)
-                        }
-                        Text(
-                            text = progressText,
-                            style = MaterialTheme.typography.labelLarge,
-                            color = resolvedTextColor,
-                        modifier = Modifier.weight(1f, fill=false),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                        )
                     }
                 }
-            }
-            "completed" -> {
-                // Tappable row for undo (CHECK_IN habits)
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .height(48.dp)
-                        .clickable(enabled = undoAvailable && actionsEnabled) { onUndo() }
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.CheckCircle,
-                        contentDescription = null,
-                        tint = resolvedTextColor,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = stringResource(R.string.habit_card_status_completed),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = resolvedTextColor.copy(alpha = 0.9f),
-                        modifier = Modifier.weight(1f, fill=false),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (showMetricPrompt) {
-                        TextButton(onClick = onRecordMetrics) {
-                            Text(stringResource(R.string.post_checkin_record), color = resolvedTextColor)
-                        }
-                    }
-                }
-            }
-            "disabled_checkin" -> {
-                // Non-check-in day: Show disabled state with next check-in date hint
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.height(48.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Block,
-                        contentDescription = null,
-                        tint = resolvedTextColor.copy(alpha = 0.5f),
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = stringResource(R.string.habit_card_status_non_checkin_day),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = resolvedTextColor.copy(alpha = 0.5f),
-                        modifier = Modifier.weight(1f, fill=false),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (nextCheckInDate != null) {
-                        Spacer(modifier = Modifier.width(8.dp))
-                        val daysUntil = ChronoUnit.DAYS.between(LocalDate.now(), nextCheckInDate)
-                        val hint = when {
-                            daysUntil == 1L -> stringResource(R.string.next_checkin_tomorrow)
-                            daysUntil <= 7L -> stringResource(R.string.next_checkin_days, daysUntil)
-                            else -> stringResource(R.string.next_checkin_date, nextCheckInDate.monthValue, nextCheckInDate.dayOfMonth)
-                        }
-                        Text(
-                            text = hint,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = resolvedTextColor.copy(alpha = 0.6f)
-                        )
-                    }
-                }
-            }
-            "failed" -> {
-                // Target-based habit has failed (STRICT mode missed check-in)
-                // Clickable to trigger reactivation dialog
-                Surface(
-                    modifier = Modifier.clickable { onReactivation() },
-                    color = Color.White.copy(alpha = 0.85f),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                "goal_completed" -> {
+                    // Target-based habit has completed goal (reached targetCycles and deactivated)
+                    // Clickable to trigger reactivation dialog
+                    Surface(
+                        modifier = Modifier.clickable(enabled = !busy) { if (!busy) onReactivation() },
+                        color = Color.White.copy(alpha = 0.85f),
+                        shape = RoundedCornerShape(8.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Cancel,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = stringResource(R.string.status_already_failed),
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.weight(1f, fill=false),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,  // Use theme primary color
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = stringResource(R.string.status_goal_completed),
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary,  // Use theme primary color
+                            modifier = Modifier
+                            )
+                        }
                     }
                 }
-            }
-            "goal_completed" -> {
-                // Target-based habit has completed goal (reached targetCycles and deactivated)
-                // Clickable to trigger reactivation dialog
-                Surface(
-                    modifier = Modifier.clickable { onReactivation() },
-                    color = Color.White.copy(alpha = 0.85f),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                "checkin" -> {
+                    Button(
+                        onClick = { if (actionsEnabled && !busy) onCheckIn(1) },
+                        enabled = actionsEnabled && !busy,
+                        modifier = Modifier.height(36.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.CheckCircle,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,  // Use theme primary color
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = stringResource(R.string.status_goal_completed),
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary,  // Use theme primary color
-                        modifier = Modifier
+                            text = stringResource(R.string.action_check_in),
+                            style = MaterialTheme.typography.labelMedium
                         )
                     }
                 }
             }
-            "checkin" -> {
-                Button(
-                    onClick = { onCheckIn(1) },
-                    enabled = actionsEnabled,
-                    modifier = Modifier.height(36.dp)
-                ) {
-                    Text(
-                        text = stringResource(R.string.action_check_in),
-                        style = MaterialTheme.typography.labelMedium
-                    )
+        }
+        if (habitType == HabitType.COUNTING) {
+            content()
+        } else Box(propagateMinConstraints = true) {
+            content()
+            if (busy) {
+                // Decoration only: matchParentSize is measured after the retained content.
+                // It adds no minimum size, input handler or duplicate accessibility message.
+                Box(Modifier.matchParentSize().clearAndSetSemantics { }) {
+                    CircularProgressIndicator(Modifier.align(Alignment.TopEnd).size(16.dp), strokeWidth = 2.dp)
                 }
             }
         }

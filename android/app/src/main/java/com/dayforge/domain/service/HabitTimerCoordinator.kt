@@ -13,22 +13,26 @@ class HabitTimerCoordinator @Inject constructor(
     fun observeActiveTimer(scope: CoroutineScope): StateFlow<ActiveTimerState?> =
         activeTimerStateProvider.observe(scope)
 
+    internal fun observeActiveTimerFrames(): kotlinx.coroutines.flow.Flow<
+        com.dayforge.data.local.DatabaseEpochValue<ActiveTimerState?>> = activeTimerStateProvider.observeFrames()
+
     suspend fun recoverRunningTimer() {
         timerManager.recoverRunningTimer()
     }
 
-    suspend fun startTimer(habitId: Long, targetMinutes: Int, authority: com.dayforge.domain.model.TimerActionAuthority? = null) {
-        timerManager.startTimer(habitId, targetMinutes, authority)
+    suspend fun startTimer(habitId: Long, targetMinutes: Int, authority: com.dayforge.domain.model.TimerActionAuthority? = null,
+        expectedHabit: com.dayforge.data.local.entity.HabitEntity? = null) {
+        timerManager.startTimer(habitId, targetMinutes, authority, expectedHabit)
     }
 
     fun pauseTimer(activeTimer: ActiveTimerState?) {
         activeTimer ?: return
-        timerManager.pauseTimer(activeTimer.habitId, activeTimer.targetMinutes, activeTimer.authority)
+        timerManager.pauseTimer(activeTimer.habitId, activeTimer.targetMinutes, activeTimer.authority, activeTimer.legacyClaim)
     }
 
     fun resumeTimer(activeTimer: ActiveTimerState?) {
         activeTimer ?: return
-        timerManager.resumeTimer(activeTimer.habitId, activeTimer.targetMinutes, activeTimer.authority)
+        timerManager.resumeTimer(activeTimer.habitId, activeTimer.targetMinutes, activeTimer.authority, activeTimer.legacyClaim)
     }
 
     suspend fun stopTimer(activeTimer: ActiveTimerState?): Long? {
@@ -36,7 +40,8 @@ class HabitTimerCoordinator @Inject constructor(
         return timerManager.stopTimer(
             habitId = activeTimer.habitId,
             targetMinutes = activeTimer.targetMinutes,
-            authority = activeTimer.authority
+            authority = activeTimer.authority,
+            legacyClaim = activeTimer.legacyClaim
         )
     }
 

@@ -41,7 +41,7 @@ internal data class ReplicaRecoveryUiState(val stamp: Any = Any(), val visible: 
     val material: ReplicaMaterialPreflight? = null, val error: ReplicaRecoveryError? = null,
     val notice: ReplicaRecoveryNotice? = null) {
     val review get() = evidence?.differences ?: preview
-    val canPrepare get() = !busy && stage == null && preview != null &&
+    val canPrepare get() = !busy && stage == null && preview != null && ReplicaDifferencePreview.isLive(preview) &&
         !preview.hasUnfinishedTimer && preview.unconfirmedLocalRecords.isEmpty() &&
         preview.assessment.reviewCounts.values.none { it > 0 }
     val canConfirm get() = !busy && evidence != null && approved
@@ -55,18 +55,21 @@ internal data class ReplicaRecoveryUiState(val stamp: Any = Any(), val visible: 
  */
 @HiltViewModel
 internal class ReplicaRecoveryViewModel internal constructor(private val actions: ReplicaRecoveryActions) : ViewModel() {
-    @Inject constructor(service: ReplicaRecoveryService) : this(service as ReplicaRecoveryActions)
+    @Inject constructor(service: DatabaseRecoveryFacade) : this(service as ReplicaRecoveryActions)
     private val monitor = Any()
     private var revision = Any()
     private var blocked = false
     private var cleared = false
     private var operation: Any? = null
+    private var previewOperation = false
+    private var operationJob: Job? = null
     private val entryReload = Channel<Unit>(Channel.CONFLATED)
     private val mutable = MutableStateFlow(ReplicaRecoveryUiState(stamp = revision))
     val state = mutable.asStateFlow()
     private val invalidator = object : AccountIconMemory.Cache {
         override fun authenticationTransition(blocked: Boolean) = synchronized(monitor) {
             if (!cleared) {
+                ReplicaDifferencePreview.discard(mutable.value.preview)
                 revision = Any(); this@ReplicaRecoveryViewModel.blocked = blocked
                 mutable.value = ReplicaRecoveryUiState(revision, visible = mutable.value.visible, busy = operation != null)
                 if (!blocked) entryReload.trySend(Unit)
@@ -92,18 +95,26 @@ internal class ReplicaRecoveryViewModel internal constructor(private val actions
         }
     }
     fun canRender(value: ReplicaRecoveryUiState): Boolean = synchronized(monitor) {
-        !cleared && !blocked && value.stamp === revision
+        !cleared && !blocked && value.stamp === revision && ReplicaDifferencePreview.isLive(value.preview)
     }
     fun show() {
         synchronized(monitor) { if (!cleared) mutable.value = mutable.value.copy(visible = true, approved = false) }
         inspect()
     }
-    fun dismiss() = synchronized(monitor) {
-        if (operation == null && !cleared) mutable.value = ReplicaRecoveryUiState(revision,
-            checked = mutable.value.checked, entryAvailable = mutable.value.entryAvailable)
+    fun dismiss() {
+        val cancel = synchronized(monitor) {
+            if (cleared || operation != null && !previewOperation) return
+            ReplicaDifferencePreview.discard(mutable.value.preview)
+            revision = Any() // Revoke even a not-yet-returned HTTP preview or retained old view.
+            mutable.value = ReplicaRecoveryUiState(revision, busy = operation != null,
+                checked = mutable.value.checked, entryAvailable = mutable.value.entryAvailable)
+            operationJob.takeIf { previewOperation }
+        }
+        // Never cancel an owned prepare/COMMIT; a preview cancellation joins original cleanup.
+        cancel?.cancel()
     }
     fun inspect() = perform { ReplicaRecoveryUiState(checked = true) }
-    fun preview() = perform { ReplicaRecoveryUiState(preview = actions.preview(), checked = true) }
+    fun preview() = execute(replacePreview = true) { Result(ReplicaRecoveryUiState(preview = actions.preview(), checked = true)) }
     fun prepare() {
         if (!state.value.canPrepare) return
         perform(mutates = true) { original ->
@@ -167,22 +178,30 @@ internal class ReplicaRecoveryViewModel internal constructor(private val actions
      * SAME authenticated generation and current durable stage. Non-owned late previews cannot
      * publish across any invalidation. Passwords exist only in the explicit call closure.
      */
-    private fun execute(mutates: Boolean = false, login: Boolean = false,
+    private fun execute(mutates: Boolean = false, login: Boolean = false, replacePreview: Boolean = false,
         block: suspend (ReplicaRecoveryUiState) -> Result) {
         val id = Any()
         val original = synchronized(monitor) {
             if (cleared || blocked || operation != null) return
-            operation = id
-            mutable.value.also { mutable.value = it.copy(busy = true, approved = false, error = null, notice = null) }
+            operation = id; previewOperation = replacePreview
+            val previous = mutable.value
+            if (replacePreview) { ReplicaDifferencePreview.discard(previous.preview); revision = Any() }
+            previous.copy(stamp = revision).also {
+                mutable.value = it.copy(busy = true, approved = false, error = null, notice = null,
+                    preview = if (replacePreview) null else it.preview, detail = if (replacePreview) null else it.detail)
+            }
         }
-        viewModelScope.launch {
+        val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
             var authentication: AuthenticationSession? = null
             var result: Result? = null
+            // Capture before withContext's cancellable delivery boundary; a late preview can
+            // never lose its disposer merely because Main rejected delivery after IO finished.
+            var produced: Result? = null
             var failure: Exception? = null
             try {
                 result = withContext(Dispatchers.IO) {
                     authentication = actions.control().authentication
-                    block(original)
+                    block(original).also { produced = it }
                 }
             } catch (error: Exception) {
                 failure = error
@@ -195,7 +214,7 @@ internal class ReplicaRecoveryViewModel internal constructor(private val actions
                 val problem = failure
                 synchronized(monitor) {
                     if (operation === id) {
-                        operation = null
+                        operation = null; previewOperation = false; operationJob = null
                         if (!cleared) {
                             val valid = !blocked && stamp === revision && control != null &&
                                 control.authentication == if (login && finished != null) finished.authenticated else authentication
@@ -213,11 +232,28 @@ internal class ReplicaRecoveryViewModel internal constructor(private val actions
                             entryReload.trySend(Unit)
                         }
                     }
+                    val retained = mutable.value.preview.takeUnless { cleared }
+                    if (original.preview !== retained) ReplicaDifferencePreview.discard(original.preview)
+                    if (produced?.view?.preview !== retained) ReplicaDifferencePreview.discard(produced?.view?.preview)
                 }
+            }
+        }
+        synchronized(monitor) {
+            operationJob = job
+            if (cleared || replacePreview && original.stamp !== revision) job.cancel()
+        }
+        if (!job.start()) synchronized(monitor) {
+            // A LAZY preview can be closed before its body starts; no operation or SQL then
+            // exists to run finally. Release only this admission, never a newer operation.
+            if (operation === id) {
+                operation = null; previewOperation = false; operationJob = null
+                mutable.value = mutable.value.copy(busy = false)
+                if (original.preview !== mutable.value.preview) ReplicaDifferencePreview.discard(original.preview)
             }
         }
     }
     override fun onCleared() = synchronized(monitor) {
+        ReplicaDifferencePreview.discard(mutable.value.preview)
         cleared = true; revision = Any(); mutable.value = ReplicaRecoveryUiState(revision); entryReload.close()
         Unit
     }

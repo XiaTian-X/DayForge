@@ -21,7 +21,7 @@ internal class NextChallengeStore(private val database: HabitDatabase) {
     suspend fun activeInTransaction(access: LocalSyncAccess): Pair<NextSyncStateEntity, ChallengeMetadata> {
         check(database.inTransaction())
         require(access.deviceId != null)
-        requireNotNull(NextRequestSql.rowHash(database.openHelper.writableDatabase, "next_sync_state", "1=1", emptyArray()))
+        requireNotNull(NextRequestSql.rowHash(database, "next_sync_state", "1=1", emptyArray()))
         val state = database.nextSyncStateDao().rows().single()
         require(state.challengeContract == 1)
         return state to requireNotNull(readInTransaction(access, state))
@@ -30,15 +30,25 @@ internal class NextChallengeStore(private val database: HabitDatabase) {
     /** Sidecar-only ACK merge; caller commits the original receipt and business in the SAME transaction. */
     suspend fun acknowledgeInTransaction(access: LocalSyncAccess, incoming: ChallengeMetadata): ChallengeMetadata {
         val (state, _) = activeInTransaction(access)
-        val before = otherTablesProof()
-        mergeInTransaction(access, state, state, incoming)
-        check(otherTablesProof() == before) { "SYNC_CHALLENGE_ACK_SIDE_EFFECT" }
-        return activeInTransaction(access).second
+        val control = CountTrustRecoveryControl.read(database)
+        val before = otherTablesProof(control)
+        check(CountTrustRecoveryControl.read(database) == control) { "SYNC_CHALLENGE_ACK_SIDE_EFFECT" }
+        val writes = mergeAndCountWrites(access, state, state, incoming)
+        val after = CountTrustRecoveryControl.read(database)
+        if (control == null) check(after == null) { "SYNC_CHALLENGE_ACK_SIDE_EFFECT" }
+        else check(after != null && after.storageId == control.storageId && after.dirty == 1L &&
+            after.generation == Math.addExact(control.generation, writes)) { "SYNC_CHALLENGE_ACK_SIDE_EFFECT" }
+        check(otherTablesProof(after) == before && CountTrustRecoveryControl.read(database) == after) {
+            "SYNC_CHALLENGE_ACK_SIDE_EFFECT"
+        }
+        val result = activeInTransaction(access).second
+        check(CountTrustRecoveryControl.read(database) == after) { "SYNC_CHALLENGE_ACK_SIDE_EFFECT" }
+        return result
     }
 
-    private suspend fun otherTablesProof(): String {
+    private suspend fun otherTablesProof(control: CountTrustRecoveryControl?): String {
         val sql = database.openHelper.writableDatabase
-        val names = sql.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").use { c ->
+        val names = sql.query("SELECT name FROM main.sqlite_master WHERE type='table' ORDER BY name").use { c ->
             buildList { while (c.moveToNext()) add(c.getString(0)) }
         }.filterNot { it.startsWith("next_challenge_") }
         val digest = MessageDigest.getInstance("SHA-256")
@@ -46,7 +56,16 @@ internal class NextChallengeStore(private val database: HabitDatabase) {
         for (table in names) {
             require(table.matches(Regex("[a-zA-Z_][a-zA-Z_0-9]*")))
             bytes(table.toByteArray(Charsets.UTF_8))
-            sql.query("SELECT * FROM $table ORDER BY rowid").use { row -> while (row.moveToNext()) {
+            if (table == "count_trust_control" && control != null) {
+                // The complete singleton/native types and this build's exact dirty triggers
+                // were checked by read(). Only generation/dirty have the exact DML delta above.
+                // Root, nodes, routes and command receipts keep their original full proof.
+                bytes("1:${control.storageId}".toByteArray(Charsets.UTF_8))
+                continue
+            }
+            // The native journal owns TEMP sqlite_sequence. Bind the original business proof
+            // to main, so journal appends cannot masquerade as changes to the durable sequence.
+            sql.query("SELECT * FROM main.`$table` ORDER BY rowid").use { row -> while (row.moveToNext()) {
                 currentCoroutineContext().ensureActive()
                 for (column in 0 until row.columnCount) {
                     digest.update(row.getType(column).toByte())
@@ -91,25 +110,14 @@ internal class NextChallengeStore(private val database: HabitDatabase) {
     /** Audit SQLite before Room coercion, then rebuild every complete immutable chain. */
     suspend fun readInTransaction(access: LocalSyncAccess, cursor: NextSyncStateEntity?): ChallengeMetadata? {
         check(database.inTransaction())
+        val timing = HistoryAuditTiming(HistoryAuditTiming.Kind.CHALLENGE)
         val sql = database.openHelper.writableDatabase
-        for ((table, keys) in listOf("next_challenge_state" to listOf("id"),
-            "next_challenge_rounds" to listOf("roundUuid"), "next_challenge_births" to listOf("entityType", "entityUuid"))) {
-            sql.query("SELECT ${keys.joinToString(",")} FROM $table ORDER BY rowid").use { raw ->
-                while (raw.moveToNext()) {
-                    currentCoroutineContext().ensureActive()
-                    val args: Array<Any> = keys.mapIndexed<String, Any> { i, key ->
-                        if (key == "id") {
-                            require(raw.getType(i) == Cursor.FIELD_TYPE_INTEGER && raw.getLong(i) == 1L)
-                            raw.getLong(i)
-                        } else { require(raw.getType(i) == Cursor.FIELD_TYPE_STRING); raw.getString(i) }
-                    }.toTypedArray()
-                    requireNotNull(NextRequestSql.rowHash(sql, table, keys.joinToString(" AND ") { "$it=?" }, args))
-                }
-            }
-        }
+        for (table in listOf("next_challenge_state", "next_challenge_rounds", "next_challenge_births"))
+            NextRequestSql.auditChallengeRows(sql, table)
         val marker = dao.states().singleOrNull()
         val rounds = dao.rounds()
         val births = dao.births()
+        timing.mark(HistoryAuditTiming.Stage.RAW_ROWS)
         if (marker == null) {
             require(rounds.isEmpty() && births.isEmpty()) { "SYNC_CHALLENGE_CHECKPOINT_MISSING" }
             require(cursor?.challengeContract != 1) { "SYNC_CHALLENGE_CHECKPOINT_MISSING" }
@@ -133,17 +141,31 @@ internal class NextChallengeStore(private val database: HabitDatabase) {
             }
         }
         val byId = records.associateBy { it.head.roundUuid }
+        timing.mark(HistoryAuditTiming.Stage.DECODE)
         val metadata = canonical(ChallengeMetadata(1, records.groupBy { it.head.activityUuid }.map { (id, history) ->
             ChallengeCheckpoint(rebuildChallengeHistory(id, history), history)
         }, births.map { ChallengeBirth(it.entityType, it.entityUuid, requireNotNull(byId[it.roundUuid]).head) }))
+        timing.mark(HistoryAuditTiming.Stage.REBUILD)
         require(marker.metadataHash == syncPayloadHash(json.encodeToString(metadata))) { "SYNC_CHALLENGE_PROOF_CHANGED" }
+        timing.mark(HistoryAuditTiming.Stage.PAYLOAD_HASH)
         return metadata
     }
 
     /** Append-only union: omission never erases history, head rollback or birth reassignment rejects. */
     suspend fun mergeInTransaction(access: LocalSyncAccess, current: NextSyncStateEntity?, next: NextSyncStateEntity,
         incoming: ChallengeMetadata) {
+        mergeAndCountWrites(access, current, next, incoming)
+    }
+
+    /** Count successful original sidecar DML, not predicted metadata differences. Every such
+     * row write fires one validated permanent dirty trigger, including a same-value marker
+     * UPDATE. This does not require a usable fast-path owner, install a journal or issue a root;
+     * recovery's soft-retired owner retains the same ordinary DAO and complete proof path.
+     */
+    private suspend fun mergeAndCountWrites(access: LocalSyncAccess, current: NextSyncStateEntity?, next: NextSyncStateEntity,
+        incoming: ChallengeMetadata): Long {
         check(database.inTransaction())
+        var writes = 0L
         val before = readInTransaction(access, current)
         val histories = before?.checkpoints.orEmpty().associateBy { it.head.activityUuid }.toMutableMap()
         for (checkpoint in incoming.checkpoints) {
@@ -169,15 +191,20 @@ internal class NextChallengeStore(private val database: HabitDatabase) {
             dao.insert(NextChallengeRoundEntity(record.head.roundUuid, record.head.activityUuid, record.head.generation.toLong(),
                 next.accountId, next.serverInstanceId, next.syncEpoch, record.sourceDeviceUuid, record.restartOperationUuid,
                 body, syncPayloadHash(body)))
+            writes = Math.addExact(writes, 1L)
         }
         val oldBirths = before?.births.orEmpty().map { it.entityType to it.entityUuid }.toSet()
-        for (birth in merged.births) if (birth.entityType to birth.entityUuid !in oldBirths)
+        for (birth in merged.births) if (birth.entityType to birth.entityUuid !in oldBirths) {
             dao.insert(NextChallengeBirthEntity(birth.entityType, birth.entityUuid, birth.head.roundUuid))
+            writes = Math.addExact(writes, 1L)
+        }
         val marker = NextChallengeStateEntity(next.accountId, next.serverInstanceId, next.syncEpoch, next.deviceId,
             next.generation, next.cursor, next.batchHash, syncPayloadHash(json.encodeToString(merged)))
         if (before == null) check(dao.insert(marker) == 1L) else check(dao.update(marker) == 1)
+        writes = Math.addExact(writes, 1L)
         // Deferred FK allows the initial marker and ACTIVE cursor to be committed atomically.
         check(readInTransaction(access, next) == merged)
+        return writes
     }
 
     private fun canonical(metadata: ChallengeMetadata) = ChallengeMetadata(1,

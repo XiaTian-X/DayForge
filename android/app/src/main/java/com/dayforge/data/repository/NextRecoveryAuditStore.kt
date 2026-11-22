@@ -31,8 +31,8 @@ internal class NextRecoveryAuditStore(private val database: HabitDatabase) {
         val active = NextChallengeStore(database).activeInTransaction(access)
         return NextRecoveryAuditCheckpoint(access.session.authentication.userId, requireNotNull(access.session.serverInstanceId),
             requireNotNull(access.session.syncEpoch), requireNotNull(access.deviceId),
-            requireNotNull(NextRequestSql.rowHash(sql, "next_sync_state", "1=1", emptyArray())),
-            requireNotNull(NextRequestSql.rowHash(sql, "next_challenge_state", "1=1", emptyArray())), active.second)
+            requireNotNull(NextRequestSql.rowHash(database, "next_sync_state", "1=1", emptyArray())),
+            requireNotNull(NextRequestSql.rowHash(database, "next_challenge_state", "1=1", emptyArray())), active.second)
     }
 
     /** Immutable rows of the actual graph; streamed per row, no closure-sized source bodies. */
@@ -75,7 +75,7 @@ internal class NextRecoveryAuditStore(private val database: HabitDatabase) {
         check(database.inTransaction()); currentCoroutineContext().ensureActive(); require(isContractUuid(id))
         NextRequestSql.requireOutboxEnabled(sql)
         val current = checkpoint(access)
-        val headerHash = requireNotNull(NextRequestSql.rowHash(sql, "next_recovery_audits", "recoveryId=?", arrayOf(id)))
+        val headerHash = requireNotNull(NextRequestSql.rowHash(database, "next_recovery_audits", "recoveryId=?", arrayOf(id)))
         val header = sql.query("SELECT * FROM next_recovery_audits WHERE recoveryId=?", arrayOf(id)).use { c ->
             require(c.moveToFirst())
             c.columnNames.associateWith { column -> c.getString(c.getColumnIndexOrThrow(column)) }
@@ -120,7 +120,7 @@ internal class NextRecoveryAuditStore(private val database: HabitDatabase) {
             NextRecoveryProjectionStore(database).validateDraft(NextRecoveryProjectionDraft(before, after, baseline), origins)
         }
         // A trigger/read participant cannot mutate the terminal while it is being inspected.
-        check(NextRequestSql.rowHash(sql, "next_recovery_audits", "recoveryId=?", arrayOf(id)) == headerHash)
+        check(NextRequestSql.rowHash(database, "next_recovery_audits", "recoveryId=?", arrayOf(id)) == headerHash)
         return NextRecoveryTerminalProof(id, manifest, nextRequestHash((headerHash + manifestReference.hash).toByteArray(Charsets.UTF_8)))
     }
 
@@ -134,7 +134,7 @@ internal class NextRecoveryAuditStore(private val database: HabitDatabase) {
         val present = sql.query("SELECT 1 FROM next_abandoned_requests WHERE kind=? AND requestId=? LIMIT 1",
             arrayOf(key.kind, key.requestId)).use { it.moveToFirst() }
         if (!present) return null
-        val memberHash = requireNotNull(NextRequestSql.rowHash(sql, "next_abandoned_requests", "kind=? AND requestId=?", arrayOf(key.kind, key.requestId))) {
+        val memberHash = requireNotNull(NextRequestSql.rowHash(database, "next_abandoned_requests", "kind=? AND requestId=?", arrayOf(key.kind, key.requestId))) {
             "RECOVERY_MEMBER_CHANGED"
         }
         val id = sql.query("SELECT recoveryId FROM next_abandoned_requests WHERE kind=? AND requestId=?",
@@ -142,7 +142,7 @@ internal class NextRecoveryAuditStore(private val database: HabitDatabase) {
         val proof = read(access, id)
         val request = proof.manifest.requests.single { it.key == key }
         val source = NextRecoverySourceSnapshot.decode(payloads.read(id, request.source), request.sourceHash)
-        check(NextRequestSql.rowHash(sql, "next_abandoned_requests", "kind=? AND requestId=?", arrayOf(key.kind, key.requestId)) == memberHash)
+        check(NextRequestSql.rowHash(database, "next_abandoned_requests", "kind=? AND requestId=?", arrayOf(key.kind, key.requestId)) == memberHash)
         return proof to source
     }
 
@@ -212,7 +212,7 @@ internal class NextRecoveryAuditStore(private val database: HabitDatabase) {
         val key = request.key
         require(node.category == NextRecoveryCategory.STRUCTURE && node.protections.isEmpty())
         val args = arrayOf<Any>(key.kind, key.requestId)
-        requireNotNull(NextRequestSql.rowHash(sql, "next_abandoned_requests", "kind=? AND requestId=?", args))
+        requireNotNull(NextRequestSql.rowHash(database, "next_abandoned_requests", "kind=? AND requestId=?", args))
         sql.query("SELECT recoveryId,disposition,sourceHash,sourceSnapshotHash,originHash,transmissionHash,rejectionHash " +
             "FROM next_abandoned_requests WHERE kind=? AND requestId=?", args).use { c ->
             require(c.moveToFirst() && c.getString(0) == id && c.getString(1) == request.state.name &&
@@ -230,9 +230,9 @@ internal class NextRecoveryAuditStore(private val database: HabitDatabase) {
             round.restartFrontier == null && operation.entityType == node.entityType && operation.entityUuid == node.entityUuid &&
             source.entityUuid == operation.entityUuid && source.wireEntityUuid == operation.entityUuid && source.action == operation.action &&
             source.recordType == when (operation.entityType) { "plan_node" -> "habit"; "metric" -> "metric"; "activity_metric_link" -> "link"; else -> error("Not a structure") })
-        require(NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(source.id)) == null &&
-            NextRequestSql.rowHash(sql, "sync_outbox", "operationId=?", arrayOf(source.operationId)) == null)
-        require(rowHash("next_acceptances", key) == null && NextRequestSql.rowHash(sql, "one_time_transmissions", "operationId=?", arrayOf(key.requestId)) == null)
+        require(NextRequestSql.rowHash(database, "sync_outbox", "id=?", arrayOf(source.id)) == null &&
+            NextRequestSql.rowHash(database, "sync_outbox", "operationId=?", arrayOf(source.operationId)) == null)
+        require(rowHash("next_acceptances", key) == null && NextRequestSql.rowHash(database, "one_time_transmissions", "operationId=?", arrayOf(key.requestId)) == null)
         require(rowHash("next_transmissions", key) == request.transmissionHash && rowHash("next_rejections", key) == request.rejectionHash)
         if (request.state == NextRecoveryRequestState.NEVER_SENT) {
             require(source.payloadJson == null && source.baseRevision == null && source.basePayloadJson == null &&
@@ -260,9 +260,9 @@ internal class NextRecoveryAuditStore(private val database: HabitDatabase) {
     }
 
     private suspend fun rowHash(table: String, key: NextRecoveryKey): String? = when (table) {
-        "next_structural_dependencies" -> NextRequestSql.rowHash(sql, table, "operationId=?", arrayOf(key.requestId))
-        "next_structural_supersessions" -> NextRequestSql.rowHash(sql, table, "originalId=?", arrayOf(key.requestId))
-        else -> { require(table in requestTables); NextRequestSql.rowHash(sql, table, "kind=? AND requestId=?", arrayOf(key.kind, key.requestId)) }
+        "next_structural_dependencies" -> NextRequestSql.rowHash(database, table, "operationId=?", arrayOf(key.requestId))
+        "next_structural_supersessions" -> NextRequestSql.rowHash(database, table, "originalId=?", arrayOf(key.requestId))
+        else -> { require(table in requestTables); NextRequestSql.rowHash(database, table, "kind=? AND requestId=?", arrayOf(key.kind, key.requestId)) }
     }
 
     private fun memberKeys(id: String): List<NextRecoveryKey> = sql.query("SELECT kind,requestId FROM next_abandoned_requests " +

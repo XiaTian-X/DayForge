@@ -36,6 +36,9 @@ class DayForgeApplication : Application() {
     @Inject
     lateinit var habitReminderController: com.dayforge.reminder.HabitReminderController
 
+    @Inject
+    internal lateinit var countNodeMaintenance: com.dayforge.data.repository.CountTrustNodeMaintenance
+
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
@@ -56,6 +59,9 @@ class DayForgeApplication : Application() {
         accountIconWorkCoordinator.start()
 
         habitReminderController.start(applicationScope)
+
+        // Optional derived-node maintenance runs bounded idle slices, never in a user commit.
+        countNodeMaintenance.start(applicationScope)
 
         // Recover presentation state after a process restart; work reads current Room data.
         WidgetRefreshScheduler.request(this)

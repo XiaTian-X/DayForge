@@ -1,35 +1,57 @@
 package com.dayforge.di
 
-import com.dayforge.data.repository.HabitRepository
+import android.content.Context
+import com.dayforge.data.local.DatabaseEpochGraph
+import com.dayforge.data.local.DatabaseRuntimeHost
+import com.dayforge.data.local.HabitDatabase
+import com.dayforge.data.local.PreferencesManager
+import com.dayforge.data.repository.WidgetDisplayPublisher
+import com.dayforge.domain.service.CountActionGate
+import com.dayforge.domain.service.WidgetConfigurationWorkflow
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
+import javax.inject.Inject
+import javax.inject.Singleton
 
-/** Dependencies used by Glance callbacks, which cannot receive constructor injection. */
+/** Stable entrypoint only. No per-epoch database/DAO/repository is cached by the Hilt component. */
 @EntryPoint
 @InstallIn(SingletonComponent::class)
 interface WidgetEntryPoint {
-    fun habitRepository(): HabitRepository
-    fun habitStatusCalculator(): com.dayforge.domain.service.HabitStatusCalculator
-    fun timerWriter(): com.dayforge.data.repository.NextTimerWriter
-    fun factReader(): com.dayforge.data.repository.WidgetFactReader
-    fun legacyFactWorkflow(): com.dayforge.data.repository.LegacyWidgetFactWorkflow
-    fun activityRateRefresher(): com.dayforge.data.repository.LegacyActivityRateRefresher
-    fun displayPublisher(): com.dayforge.data.repository.WidgetDisplayPublisher
-    fun configurationWorkflow(): com.dayforge.domain.service.WidgetConfigurationWorkflow
-    fun preferencesManager(): com.dayforge.data.local.PreferencesManager
-
+    fun access(): WidgetGraphAccess
     companion object {
-        fun from(context: android.content.Context): WidgetEntryPoint = dagger.hilt.android.EntryPointAccessors
-            .fromApplication(context.applicationContext, WidgetEntryPoint::class.java)
-
-        fun calculator(context: android.content.Context, database: com.dayforge.data.local.HabitDatabase): com.dayforge.domain.service.HabitStatusCalculator =
-            try { from(context).habitStatusCalculator() }
+        fun from(context: Context): WidgetGraphAccess = dagger.hilt.android.EntryPointAccessors
+            .fromApplication(context.applicationContext, WidgetEntryPoint::class.java).access()
+        internal suspend fun <T> withGraph(context: Context, block: suspend () -> T): T =
+            from(context).withGraph(block)
+        internal fun database(context: Context): HabitDatabase = from(context).bound().database
+        fun calculator(context: Context, database: HabitDatabase): com.dayforge.domain.service.HabitStatusCalculator =
+            try { from(context).bound().also { check(it.database === database) { "DATABASE_EPOCH_INPUT_EXPIRED" } }.habitStatusCalculator }
             catch (error: IllegalStateException) {
-                // Isolated legacy fixtures have no Hilt graph. Typed counters still fail closed
-                // in the calculator; production must use its account-coordinated reader.
+                // Preserve only the original unsealed/non-Hilt reference fixture fallback.
+                // A production controlled database must never turn missing source scope into
+                // an unauthenticated calculator or resolve another owner's cached DAO.
+                if (com.dayforge.data.local.CountTrustRuntime.forDatabase(database) != null) throw error
                 com.dayforge.domain.service.HabitStatusCalculator(com.dayforge.domain.service.FailureChecker(
                     database.completionDao(), database.timeLogDao()), database.completionDao(), database.timeLogDao())
             }
     }
+}
+
+@Singleton
+class WidgetGraphAccess @Inject internal constructor(private val host: DatabaseRuntimeHost,
+    private val publisher: WidgetDisplayPublisher, private val configuration: WidgetConfigurationWorkflow,
+    private val preferences: PreferencesManager, private val countGate: CountActionGate) {
+    internal fun bound(): DatabaseEpochGraph = host.boundGraph()
+    internal suspend fun <T> withGraph(block: suspend () -> T): T = host.withGraph { block() }
+    fun habitRepository() = bound().habitRepository
+    fun habitStatusCalculator() = bound().habitStatusCalculator
+    fun timerWriter() = bound().nextTimerWriter
+    fun factReader() = bound().widgetFactReader
+    fun legacyFactWorkflow() = bound().legacyWidgetFactWorkflow
+    fun activityRateRefresher() = bound().legacyActivityRateRefresher
+    fun countActionGate() = countGate
+    fun displayPublisher() = publisher
+    fun configurationWorkflow() = configuration
+    fun preferencesManager() = preferences
 }

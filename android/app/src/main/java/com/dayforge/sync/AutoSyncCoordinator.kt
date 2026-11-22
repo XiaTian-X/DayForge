@@ -4,7 +4,6 @@ import android.content.Context
 import com.dayforge.data.api.NetworkMonitor
 import androidx.work.BackoffPolicy
 import androidx.work.ExistingPeriodicWorkPolicy
-import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
@@ -24,6 +23,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 
@@ -33,31 +33,35 @@ import kotlinx.coroutines.launch
  * reachable through a Wi-Fi LAN that Android does not classify as internet-capable.
  */
 @Singleton
-class AutoSyncCoordinator internal constructor(
+class AutoSyncCoordinator private constructor(
     private val context: Context,
-    private val outboxDao: SyncOutboxDao,
-    private val timeLogDao: TimeLogDao,
     private val networkMonitor: NetworkMonitor,
     private val scope: CoroutineScope,
-    private val materialChanges: Flow<Unit> = emptyFlow()
+    private val materialChanges: Flow<Unit>,
+    private val pendingCounts: Flow<Int>
 ) {
-    @Inject constructor(
-        @ApplicationContext context: Context,
-        outboxDao: SyncOutboxDao,
-        timeLogDao: TimeLogDao,
-        networkMonitor: NetworkMonitor,
-        icons: AccountIconController
-    ) : this(context, outboxDao, timeLogDao, networkMonitor,
-        CoroutineScope(SupervisorJob() + Dispatchers.Default), icons.businessRequests)
+    internal constructor(context: Context, outboxDao: SyncOutboxDao, timeLogDao: TimeLogDao,
+        networkMonitor: NetworkMonitor, scope: CoroutineScope, materialChanges: Flow<Unit> = emptyFlow()) :
+        this(context, networkMonitor, scope, materialChanges, combine(outboxDao.observePendingCount(),
+            timeLogDao.observePendingTimerCommandCount()) { ordinary, timers -> ordinary + timers })
+    @Inject internal constructor(@ApplicationContext context: Context,
+        databases: com.dayforge.data.local.DatabaseRuntimeHost, networkMonitor: NetworkMonitor,
+        icons: AccountIconController) : this(context, networkMonitor,
+            CoroutineScope(SupervisorJob() + Dispatchers.Default), icons.businessRequests,
+            databases.observe { graph -> combine(graph.syncOutboxDao.observePendingCount(),
+                graph.timeLogDao.observePendingTimerCommandCount()) { ordinary, timers -> ordinary + timers } }
+                // Scheduling hint only; the actual worker rechecks current durable data/auth.
+                .map { it.value })
 
     private val started = AtomicBoolean(false)
     private val workManager by lazy { WorkManager.getInstance(context) }
+    private val immediate = CoalescingSyncWork({ workManager }, ONE_TIME_WORK_NAME)
 
     fun start() {
         if (!started.compareAndSet(false, true)) return
         schedulePeriodicSafetyNet()
         scope.launch {
-            networkMonitor.state.collectLatest { snapshot ->
+            networkMonitor.state.map { it.syncWakeKey() }.distinctUntilChanged().collectLatest { snapshot ->
                 if (snapshot.mayBeConnected) {
                     delay(NETWORK_DEBOUNCE_MILLIS)
                     enqueueNow()
@@ -73,11 +77,7 @@ class AutoSyncCoordinator internal constructor(
             }
         }
         scope.launch {
-            combine(
-                outboxDao.observePendingCount(),
-                timeLogDao.observePendingTimerCommandCount()
-            ) { ordinary, timers -> ordinary + timers }
-                .distinctUntilChanged()
+            pendingCounts.distinctUntilChanged()
                 .collectLatest { count ->
                     if (count > 0) {
                         delay(OUTBOX_DEBOUNCE_MILLIS)
@@ -95,14 +95,13 @@ class AutoSyncCoordinator internal constructor(
                 TimeUnit.SECONDS
             )
             .build()
-        // A durable queue makes cancellation safe: the replacement retries the
-        // same operation IDs. Coalescing to one latest worker also prevents an
-        // offline burst from replaying a long chain of empty syncs after recovery.
-        workManager.enqueueUniqueWork(
-            ONE_TIME_WORK_NAME,
-            ExistingWorkPolicy.REPLACE,
-            request
-        )
+        scope.launch {
+            try { immediate.enqueue(request) }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                android.util.Log.e("AutoSyncCoordinator", "Sync scheduling failed; durable work retained")
+            }
+        }
     }
 
     private fun schedulePeriodicSafetyNet() {

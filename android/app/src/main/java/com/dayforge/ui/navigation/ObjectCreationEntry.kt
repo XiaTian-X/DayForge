@@ -34,8 +34,7 @@ sealed interface ObjectCreationEntryState {
 }
 
 /** Per navigation entry, memory only: neither authority nor credentials enter SavedStateHandle. */
-@HiltViewModel
-class ObjectCreationEntryViewModel @Inject constructor(private val creator: NextObjectCreator) : ViewModel() {
+class ObjectCreationEntryViewModel constructor(private val creator: NextObjectCreator) : ViewModel() {
     private val mutable = MutableStateFlow<ObjectCreationEntryState>(ObjectCreationEntryState.Loading)
     val state = mutable.asStateFlow()
     init { load() }
@@ -55,7 +54,7 @@ class ObjectCreationEntryViewModel @Inject constructor(private val creator: Next
 /** Do not render a legacy form during asynchronous v5 admission. Existing form layouts stay intact. */
 @Composable
 internal fun ObjectCreationEntry(onBack: () -> Unit,
-    viewModel: ObjectCreationEntryViewModel = hiltViewModel(),
+    viewModel: ObjectCreationEntryViewModel,
     content: @Composable (ObjectCreationAuthority?) -> Unit
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()

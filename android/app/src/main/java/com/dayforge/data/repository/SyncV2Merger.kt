@@ -29,7 +29,6 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
-import java.security.MessageDigest
 import java.util.UUID
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -553,10 +552,8 @@ class SyncV2Merger(
         throw SyncMergeException(change, reason)
 }
 
-internal fun syncPayloadHash(payloadJson: String): String =
-    MessageDigest.getInstance("SHA-256")
-        .digest(payloadJson.toByteArray(Charsets.UTF_8))
-        .joinToString("") { "%02x".format(it) }
+// Exact original UTF-8/SHA-256/lowercase-hex contract, without 32 Formatter allocations.
+internal fun syncPayloadHash(payloadJson: String): String = nextRequestHash(payloadJson.toByteArray(Charsets.UTF_8))
 
 class SyncMergeException(
     val change: SyncV2Change,

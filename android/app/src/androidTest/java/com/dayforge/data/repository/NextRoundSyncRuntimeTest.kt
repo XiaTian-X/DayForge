@@ -8,12 +8,18 @@ import com.dayforge.data.appearance.MaterialSocketServer
 import com.dayforge.data.local.entity.*
 import com.dayforge.data.model.*
 import com.dayforge.domain.model.*
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.*
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import java.time.Instant
 import java.time.ZoneId
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -21,6 +27,8 @@ import org.junit.runner.RunWith
 /** Actual unified profile coordinator, not production activation or a service stopwatch. */
 @RunWith(AndroidJUnit4::class)
 class NextRoundSyncRuntimeTest : NextCoreRequestFixture() {
+    private val cursorIgnoreFault = NextRoundCursorIgnoreFault()
+    init { storage.isolatedBuilder = { context -> buildDiagnosticFaultDatabase(context, cursorIgnoreFault) } }
     private val json = Json { encodeDefaults = true }
     private lateinit var onceHabit: HabitEntity
     private val births = linkedMapOf<Pair<String, String>, ChallengeBirth>()
@@ -151,7 +159,9 @@ class NextRoundSyncRuntimeTest : NextCoreRequestFixture() {
             NextCountDayStore(db).capture(habit, fact); db.completionDao().insert(fact)
         }
     }
-    private suspend fun observationFact() { producer().writeRounds(producer().captureRounds()) { metrics().recordValue(metric.id, 21.125, "original", millis) } }
+    private suspend fun observationFact() {
+        recordRuntimeMetricObservation(expectedRound = true, note = "original")
+    }
     private suspend fun onceChain() {
         repeat(2) { n -> val state = localOnce().read(onceHabit.uuid).queue.optimisticState
             localOnce().appendRounds(producer().captureRounds(), OneTimeLocalCommand(onceHabit.uuid,
@@ -171,6 +181,140 @@ class NextRoundSyncRuntimeTest : NextCoreRequestFixture() {
             db.timeLogDao().finishTimerAndQueue(db.timeLogDao().getTimeLogByUuid(id(20))!!.id, millis + 60_000, 60, 0, 3, 60_000,
                 TimerCommandEntity(commandId = id(22), sessionUuid = id(20), sequence = 2, commandType = "stop",
                     occurredAt = millis + 60_000, expectedControlGeneration = 1, activeElapsedMillis = 60_000), false)
+        }
+    }
+
+    @Test fun observationBornAfterUploadExhaustionRequiresRetryAndOriginalSuccessorDrains() = runBlocking<Unit> {
+        val pullEntered = CompletableDeferred<MaterialSocketServer.Input>()
+        val releasePull = CountDownLatch(1)
+        val gateOnce = AtomicBoolean(true)
+        val stages = CopyOnWriteArrayList<SyncProgress>()
+        val successfulCallbacks = AtomicInteger()
+        val (http, server) = channel { input ->
+            val response = respond(input) // Freeze the real first COUNT page before any successor exists.
+            if (input.path == "/api/v2/sync/rounds/changes" && gateOnce.compareAndSet(true, false)) {
+                check(response != null && input.method == "GET")
+                check(pullEntered.complete(input))
+                check(releasePull.await(45, TimeUnit.SECONDS)) { "Original pull response was not released" }
+            }
+            response
+        }
+        initialize(http); countFact()
+        val original = db.syncOutboxDao().getAll().single()
+        val originalOrigin = originalIntent(original)
+        assertEquals(id(210), original.entityUuid)
+        assertEquals(0, count("next_acceptances")); assertEquals(0, count("next_restart_materializations"))
+        assertTrue(db.timeLogDao().getPendingTimerCommands().isEmpty())
+        assertNull(preferences.lastSyncTimestamp.first())
+        val coordinator = runtime(http)
+        suspend fun acceptedProof(requestId: String) = sessions.exclusive {
+            db.withTransaction { sender(http).recoveryAcceptedFactProof(access(), requestId) }
+        }
+        val first = async(Dispatchers.Default) {
+            try {
+                coordinator.syncRounds(progress = { stages += it }, afterSync = { successfulCallbacks.incrementAndGet() })
+                null
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { error } // Preserve the exact outcome for the assertion; never call it success.
+        }
+        var primary: Throwable? = null
+        try {
+            val pull = withTimeout(45_000) {
+                select<MaterialSocketServer.Input> {
+                    pullEntered.onAwait { it }
+                    first.onAwait { throw requireNotNull(it) { "First pass ended before the original pull gate" } }
+                }
+            }
+            assertTrue(first.isActive); assertEquals(1L, releasePull.count)
+            assertEquals("20", pull.target.substringAfter("cursor=").substringBefore('&'))
+            assertEquals(SyncProgress.Downloading, stages.last())
+            assertEquals(1, stages.filterIsInstance<SyncProgress.UploadingChanges>().last().current)
+            // This receipt/empty queue is observed after the real upload loop reached Downloading.
+            val countProof = acceptedProof(original.operationId)
+            assertEquals("activity_event", countProof.first.entityType); assertEquals(id(210), countProof.first.entityUuid)
+            assertEquals(originalOrigin, originalIntent(original))
+            val countReceipt = requireNotNull(db.nextRequestDao().acceptance(NEXT_OPERATION, original.operationId))
+            val countWire = transmission(NEXT_OPERATION, original.operationId).wireBytes.copyOf()
+            val countFact = requireNotNull(db.completionDao().getCompletionByUuid(id(210)))
+            val countDay = requireNotNull(db.countDayDao().get(habit.id, "2026-10-06"))
+            assertEquals(3, countFact.value); assertTrue(db.syncOutboxDao().getAll().isEmpty())
+            assertEquals(1, server.requests.count { it.path == "/api/v2/sync/rounds/push" })
+            assertEquals(0, successfulCallbacks.get()); assertNull(preferences.lastSyncTimestamp.first())
+
+            // Use the existing formal editor/producer, outside any account lock or ambient transaction.
+            val successor = recordRuntimeMetricObservation(expectedRound = true, note = "born while original pull is gated")
+            val successorOrigin = originalIntent(successor)
+            val localFact = requireNotNull(db.metricLogDao().getLogByUuid(successor.entityUuid))
+            assertNotEquals(original.operationId, successor.operationId)
+            assertNotEquals(original.id, successor.id)
+            assertEquals(listOf(successor), db.syncOutboxDao().getAll())
+            assertEquals(2, count("next_request_origins")); assertEquals(1, count("next_acceptances"))
+            assertNull(db.nextRequestDao().transmission(NEXT_OPERATION, successor.operationId))
+            assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, successor.operationId))
+            assertTrue(first.isActive); assertEquals(1L, releasePull.count)
+            releasePull.countDown()
+            val firstFailure = withTimeout(45_000) { first.await() }
+            assertTrue("The original final outstanding check must request retry, got $firstFailure", firstFailure is NextSyncRetryRequired)
+            assertEquals(0, successfulCallbacks.get()); assertNull(preferences.lastSyncTimestamp.first())
+            assertEquals(21L, merger(http).state(access(), true)!!.cursor) // Completed pull is retained, not full-sync success.
+            assertEquals(countProof, acceptedProof(original.operationId))
+            assertEquals(countReceipt, db.nextRequestDao().acceptance(NEXT_OPERATION, original.operationId))
+            assertEquals(originalOrigin, originalIntent(original))
+            assertEquals(countFact, db.completionDao().getCompletionByUuid(id(210)))
+            assertEquals(countDay, db.countDayDao().get(habit.id, "2026-10-06"))
+            assertEquals(listOf(successor), db.syncOutboxDao().getAll())
+            assertEquals(successorOrigin, originalIntent(successor))
+            assertEquals(localFact, db.metricLogDao().getLogByUuid(successor.entityUuid))
+            assertNull(db.nextRequestDao().transmission(NEXT_OPERATION, successor.operationId))
+            assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, successor.operationId))
+            assertTrue(db.nextSyncStateDao().rejections().isEmpty())
+            assertTrue(db.syncOutboxDao().getDeadLetters().isEmpty())
+            assertTrue(db.syncConflictDao().getUnresolved().isEmpty())
+            assertEquals(1, server.requests.count { it.path == "/api/v2/sync/rounds/push" })
+
+            // The ordinary next pass, with the original immutable request, drains the successor.
+            coordinator.syncRounds(afterSync = { successfulCallbacks.incrementAndGet() })
+            assertEquals(1, successfulCallbacks.get()); assertNotNull(preferences.lastSyncTimestamp.first())
+            assertEquals(22L, merger(http).state(access(), true)!!.cursor)
+            assertTrue(db.syncOutboxDao().getAll().isEmpty()); assertTrue(db.syncOutboxDao().getDeadLetters().isEmpty())
+            assertTrue(db.timeLogDao().getPendingTimerCommands().isEmpty())
+            assertTrue(db.nextSyncStateDao().rejections().isEmpty()); assertTrue(db.syncConflictDao().getUnresolved().isEmpty())
+            assertEquals(2, count("next_request_origins")); assertEquals(2, count("next_transmissions")); assertEquals(2, count("next_acceptances"))
+            assertEquals(originalOrigin, originalIntent(original)); assertEquals(successorOrigin, originalIntent(successor))
+            assertEquals(countProof, acceptedProof(original.operationId))
+            assertEquals(countReceipt, db.nextRequestDao().acceptance(NEXT_OPERATION, original.operationId))
+            val successorProof = acceptedProof(successor.operationId)
+            assertEquals(decodeNextOperationIntent(successorOrigin.intentJson), successorProof.first)
+            assertEquals("metric_observation", successorProof.first.entityType)
+            assertEquals(successor.entityUuid, successorProof.first.entityUuid)
+            assertEquals(listOf(countFact), db.completionDao().getAllCompletionsOnce())
+            assertEquals(countDay, db.countDayDao().get(habit.id, "2026-10-06"))
+            val canonical = accepted.single { it.entityUuid == successor.entityUuid }.payload
+            val expectedFact = localFact.copy(
+                createdAt = Instant.parse(canonical.getValue("created_at").jsonPrimitive.content).toEpochMilli(),
+                updatedAt = Instant.parse(canonical.getValue("updated_at").jsonPrimitive.content).toEpochMilli())
+            assertEquals(listOf(expectedFact), db.metricLogDao().getAllLogsForMetric(metric.id))
+            val uploads = server.requests.filter { it.path == "/api/v2/sync/rounds/push" }
+            assertEquals(listOf(original.operationId, successor.operationId), uploads.map {
+                wireOperation(it).getValue("operation_id").jsonPrimitive.content })
+            assertArrayEquals(countWire, uploads[0].body)
+            assertArrayEquals(countWire, transmission(NEXT_OPERATION, original.operationId).wireBytes)
+            assertArrayEquals(transmission(NEXT_OPERATION, successor.operationId).wireBytes, uploads[1].body)
+            assertEquals(listOf("activity_event", "metric_observation"), accepted.map { it.entityType })
+            assertEquals(listOf(21L, 22L), accepted.map { it.sequence })
+            val pulls = server.requests.filter { it.path == "/api/v2/sync/rounds/changes" }
+            assertEquals(listOf("20", "21"), pulls.map { it.target.substringAfter("cursor=").substringBefore('&') })
+            assertEquals(2, server.requests.count { it.method == "POST" })
+            assertFalse(server.requests.any { it.path == "/api/v2/sync/push" || it.path.endsWith("/bootstrap") })
+        } catch (error: Throwable) { primary = error; throw error }
+        finally {
+            releasePull.countDown()
+            try { withContext(NonCancellable) { withTimeout(5_000) { first.cancelAndJoin() } } }
+            catch (cleanup: Throwable) {
+                val originalFailure = primary
+                if (originalFailure == null) throw cleanup
+                if (originalFailure !== cleanup) originalFailure.addSuppressed(cleanup)
+            }
         }
     }
 
@@ -201,7 +345,8 @@ class NextRoundSyncRuntimeTest : NextCoreRequestFixture() {
 
     @Test fun coldProfileBootstrapUsesOnlyExplicitRoutesButLegacyPendingWorkStopsBeforeNetwork() = runBlocking {
         val (http, server) = channel(::respond); setupObjects()
-        val row = observation(); val original = originalIntent(row)
+        val row = recordRuntimeMetricObservation(expectedRound = false, note = "captured\nvalue")
+        val original = originalIntent(row)
         rejected { runtime(http).syncRounds() }; assertTrue(server.requests.isEmpty()); assertEquals(original, originalIntent(row))
         assertEquals(0, count("next_transmissions")); assertNull(preferences.lastSyncTimestamp.first())
     }
@@ -301,12 +446,35 @@ class NextRoundSyncRuntimeTest : NextCoreRequestFixture() {
 
     @Test fun pageCommitFailureDoesNotUndoAcceptedUploadsOrMarkSuccessAndColdRetryOnlyReads() = runBlocking {
         val (http, server) = channel(::respond); initialize(http); countFact(); observationFact()
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER round_page BEFORE UPDATE ON next_sync_state BEGIN SELECT RAISE(IGNORE); END")
-        rejected { runtime(http).syncRounds() }; assertTrue(db.syncOutboxDao().getAll().isEmpty())
+        assertEquals(2, db.syncOutboxDao().getAll().size); assertEquals(0, count("next_acceptances"))
+        cursorIgnoreFault.installOnNextOpen()
+        storage.reopen()
+        assertEquals(20L, merger(http).state(access(), true)!!.cursor)
+        cursorIgnoreFault.arm()
+        val failure = rejected { runtime(http).syncRounds() }
+        cursorIgnoreFault.requireActualIgnoreAndEnd(failure)
+        assertTrue(db.syncOutboxDao().getAll().isEmpty())
         assertEquals(2, count("next_acceptances")); assertEquals(20L, merger(http).state(access(), true)!!.cursor); assertNull(preferences.lastSyncTimestamp.first())
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER round_page"); val posts = server.requests.count { it.method == "POST" }
-        storage.reopen(); runtime(http).syncRounds()
+        val posts = server.requests.count { it.method == "POST" }; assertEquals(2, posts)
+        val originalPage = accepted.toList()
+        assertEquals(listOf(21L, 22L), originalPage.map { it.sequence })
+        assertEquals(setOf("activity_event", "metric_observation"), originalPage.map { it.entityType }.toSet())
+        val beforeCold = db.withTransaction { NextReplicaStorageProof(db).readInTransaction().contents }
+        val previousOwner = requireNotNull(com.dayforge.data.local.CountTrustRuntime.forDatabase(db))
+        storage.reopen()
+        assertNotSame(previousOwner, requireNotNull(com.dayforge.data.local.CountTrustRuntime.forDatabase(db)))
+        val afterCold = db.withTransaction { NextReplicaStorageProof(db).readInTransaction().contents }
+        assertEquals(beforeCold, afterCold)
+        cursorIgnoreFault.requireNotReinstalled()
+        assertEquals(20L, merger(http).state(access(), true)!!.cursor)
+        assertEquals(2, count("next_acceptances")); assertTrue(db.syncOutboxDao().getAll().isEmpty())
+        assertNull(preferences.lastSyncTimestamp.first())
+        val beforeRetryRequests = server.requests.size
+        runtime(http).syncRounds()
         assertEquals(posts, server.requests.count { it.method == "POST" }); assertEquals(22L, merger(http).state(access(), true)!!.cursor)
+        val pulled = server.requests.drop(beforeRetryRequests).filter { it.path == "/api/v2/sync/rounds/changes" }.single()
+        assertEquals("GET", pulled.method); assertEquals("20", pulled.target.substringAfter("cursor=").substringBefore('&'))
+        assertEquals(originalPage, accepted)
         assertNotNull(preferences.lastSyncTimestamp.first()); assertEquals(3, db.completionDao().getCompletionByUuid(id(210))!!.value)
     }
 }

@@ -1,5 +1,14 @@
 package com.dayforge.data.repository
 
+import android.database.Cursor
+import android.database.sqlite.SQLiteConstraintException
+import androidx.sqlite.db.SupportSQLiteDatabase
+import androidx.sqlite.db.SupportSQLiteOpenHelper
+import androidx.sqlite.db.SupportSQLiteStatement
+import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+
 import androidx.room.withTransaction
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -36,12 +45,16 @@ class LegacyWidgetFactWorkflowTest {
     @get:Rule(order = 0) val widgets = IsolatedWidgetRefreshRule()
     @get:Rule(order = 1) val storage = PhysicalDatabaseRule()
     @get:Rule(order = 2) val hilt = HiltAndroidRule(this)
+    private val completionFault = CompletionInsertNativeFault()
+    init { storage.isolatedBuilder = { buildDiagnosticFaultDatabase(it, completionFault) } }
     @Inject lateinit var workflow: LegacyWidgetFactWorkflow
     @Inject lateinit var habits: HabitRepository
     @Inject lateinit var tokens: TokenManager
     @Inject lateinit var sessions: AccountSessionCoordinator
     @Inject lateinit var coordinator: LinkedMetricCoordinator
     @Inject lateinit var preferences: HabitPreferenceRepository
+    @Inject internal lateinit var host: com.dayforge.data.local.DatabaseRuntimeHost
+    @Inject internal lateinit var graphServices: com.dayforge.data.local.DatabaseEpochServices
     private val app get() = InstrumentationRegistry.getInstrumentation().targetContext
     private val db get() = storage.database
     private fun id(n: Int) = "ab420000-0000-4000-8000-${n.toString(16).padStart(12, '0')}"
@@ -52,7 +65,13 @@ class LegacyWidgetFactWorkflowTest {
         sessions.exclusive { tokens.clearTokens(); tokens.saveLoginSession("synthetic-first", "synthetic-refresh", "member", id(1), false) }
     }
     @After fun cleanup() = runBlocking<Unit> {
-        if (::coordinator.isInitialized) coordinator.closePrompt()
+        if (::coordinator.isInitialized) {
+            // Teardown closes only this exact already-published in-memory prompt. It does
+            // not acquire a new graph/source or consume its durable pending preference.
+            coordinator.postCheckInFrames.value?.let { original -> coordinator.dismissPrompt(original) }
+            assertNull(coordinator.postCheckInState.value)
+            assertNull(coordinator.postCheckInFrames.value)
+        }
         if (::tokens.isInitialized) sessions.exclusive { tokens.clearTokens() }
     }
     private suspend fun create(type: HabitType = HabitType.CHECK_IN, countdown: Boolean = false, target: Int = 1): Long =
@@ -60,7 +79,7 @@ class LegacyWidgetFactWorkflowTest {
             colorHex = "#123456", schedule = HabitSchedule.Daily, targetValue = target, isCountdown = countdown))
     private suspend fun identity(habitId: Long) = sessions.exclusive { db.withTransaction {
         LegacyWidgetRestartClaim.displayed(requireNotNull(db.habitDao().getVisibleHabitById(habitId)),
-            requireNotNull(tokens.localCoreWriteAccess()))
+            requireNotNull(tokens.localCoreWriteAccess()), com.dayforge.data.local.LocalReplicaIdentity.readInTransaction(db))
     } }
     private suspend fun claim(habitId: Long, action: String) = workflow.capture(identity(habitId)).forAction(action)
     private suspend fun proof() = db.withTransaction { nextRestartDatabaseProof(db) }
@@ -146,11 +165,20 @@ class LegacyWidgetFactWorkflowTest {
         val habitId = create()
         val original = claim(habitId, "toggle")
         val before = proof()
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER legacy_widget_abort AFTER INSERT ON completions BEGIN SELECT RAISE(ABORT, 'injected widget write failure'); END")
+        val fullBefore = db.withTransaction { NextReplicaStorageProof(db).readInTransaction().contents }
+        completionFault.arm(habitId, original.identity.habitUuid)
         try {
-            rejected { workflow.perform(app, original) }
+            val failure = try { workflow.perform(app, original); null }
+                catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                catch (error: Exception) { error }
+            completionFault.requireRejected(failure)
+            assertFalse(db.inTransaction())
             assertEquals(before, proof())
-        } finally { db.openHelper.writableDatabase.execSQL("DROP TRIGGER legacy_widget_abort") }
+            assertEquals(fullBefore, db.withTransaction { NextReplicaStorageProof(db).readInTransaction().contents })
+            assertEquals(0, db.completionDao().countAll())
+            assertNull(db.completionDao().getCompletionByUuid(requireNotNull(completionFault.insertedUuid)))
+            assertTrue(db.syncOutboxDao().getAll().none { it.entityUuid == completionFault.insertedUuid })
+        } finally { completionFault.disarm() }
         assertTrue(workflow.perform(app, original).result.completed)
         assertEquals(1, db.completionDao().countAll())
     }
@@ -163,23 +191,55 @@ class LegacyWidgetFactWorkflowTest {
         val metricId = db.metricDao().insert(metric)
         db.habitMetricLinkDao().insert(HabitMetricLinkEntity(habitId = habitId, habitUuid = original.identity.habitUuid,
             metricId = metricId, metricUuid = metric.uuid, coefficient = 1.0, showInHabitDetail = true, promptOnComplete = true))
-        coordinator.showLegacyWidgetPrompt(original.identity)
-        val source = requireNotNull(coordinator.postCheckInState.value?.preferenceClaim)
+        // Hilt's stable coordinator owns the real Host graph. Prove it opens the same
+        // physical dataset and account collaborators as this original fixed DAO fixture.
+        val fixtureStorage = db.withTransaction { com.dayforge.data.local.LocalReplicaIdentity.readInTransaction(db) }
+        assertNotNull(fixtureStorage)
+        suspend fun show(identity: LegacyWidgetRestartClaim) = host.withGraph { graph ->
+            assertSame(tokens, graphServices.tokenManager)
+            assertSame(sessions, graphServices.accountSessionCoordinator)
+            assertEquals(java.io.File(requireNotNull(db.openHelper.writableDatabase.path)).canonicalPath,
+                java.io.File(requireNotNull(graph.database.openHelper.writableDatabase.path)).canonicalPath)
+            assertEquals(fixtureStorage, graph.database.withTransaction {
+                com.dayforge.data.local.LocalReplicaIdentity.readInTransaction(graph.database)
+            })
+            assertEquals(db.habitDao().getVisibleHabitById(habitId), graph.habitDao.getVisibleHabitById(habitId))
+            coordinator.showLegacyWidgetPrompt(identity)
+            requireNotNull(coordinator.postCheckInFrames.value).also { frame ->
+                assertSame(coordinator.postCheckInState.value, frame.value)
+            }
+        }
+        val originalFrame = show(original.identity)
+        val source = requireNotNull(originalFrame.value?.preferenceClaim)
         assertEquals(original.identity, source.widgetIdentity)
         suspend fun submit() = withContext(Dispatchers.Main) {
-            coordinator.recordMetricValues(habitId, listOf(MetricValueInput(metricId, 4.0)), expectedPreferenceClaim = source)
+            host.withSourceGraph(originalFrame.publication) {
+                coordinator.recordMetricValues(habitId, listOf(MetricValueInput(metricId, 4.0)),
+                    expectedPreferenceClaim = source, frame = originalFrame)
+            }
         }
         assertTrue(submit()); assertTrue(submit())
         assertEquals(1, db.metricLogDao().countAll())
-        coordinator.showLegacyWidgetPrompt(original.identity)
-        val next = requireNotNull(coordinator.postCheckInState.value?.preferenceClaim)
+        val nextFrame = show(original.identity)
+        val next = requireNotNull(nextFrame.value?.preferenceClaim)
         tokens.saveSyncDeviceId(id(4))
         val before = proof()
         withContext(Dispatchers.Main) {
-            assertFalse(coordinator.recordMetricValues(habitId, listOf(MetricValueInput(metricId, 5.0)), expectedPreferenceClaim = next))
+            try {
+                host.withSourceGraph(nextFrame.publication) { fail("Expired original prompt source was admitted") }
+                fail("Expected original source rejection")
+            } catch (expired: IllegalStateException) {
+                assertEquals("DATABASE_EPOCH_INPUT_EXPIRED", expired.message)
+            }
+            // Also retain the original coordinator-level false-result contract. Binding a
+            // graph does not re-sign the old frame: its own first guard must still reject it.
+            host.withGraph {
+                assertFalse(coordinator.recordMetricValues(habitId, listOf(MetricValueInput(metricId, 5.0)),
+                    expectedPreferenceClaim = next, frame = nextFrame))
+            }
         }
         assertEquals(before, proof())
-        rejected { coordinator.showLegacyWidgetPrompt(original.identity) }
+        rejected { show(original.identity) }
         assertNull(coordinator.postCheckInState.value)
 
         // The network authenticator does not take the account mutex. Invalidate the real
@@ -208,4 +268,114 @@ class LegacyWidgetFactWorkflowTest {
         assertEquals(beforeInvalidation, proof())
         assertEquals(1, db.metricLogDao().countAll())
     }
+
+    /** Same production-equivalent native seam as Settings203, under the real controlled
+     * factory. Only this exact generated completion insert can arm a fixed engine failure.
+     * Always wrap cached statements; no generic SQL callback or raw handle escapes.
+     */
+    private class CompletionInsertNativeFault : SupportSQLiteOpenHelper.Factory {
+        private val armed = AtomicBoolean()
+        private val writes = AtomicInteger()
+        private val rejections = AtomicInteger()
+        private val completedEnds = AtomicInteger()
+        private var expectedHabitId = -1L
+        private var expectedHabitUuid = ""
+        @Volatile var insertedUuid: String? = null; private set
+        @Volatile private var rejectedByEngine: SQLiteConstraintException? = null
+        @Volatile private var faultThread: Thread? = null
+        @Volatile private var faultNative: SupportSQLiteDatabase? = null
+        fun arm(habitId: Long, habitUuid: String) {
+            check(writes.get() == 0 && rejections.get() == 0 && completedEnds.get() == 0)
+            expectedHabitId = habitId; expectedHabitUuid = habitUuid
+            check(armed.compareAndSet(false, true))
+        }
+        fun disarm() { armed.set(false) }
+        fun requireRejected(failure: Throwable?) {
+            assertEquals("Actual generated completion INSERT must execute exactly once", 1, writes.get())
+            assertEquals("Fixed duplicate must be refused by SQLite itself", 1, rejections.get())
+            assertEquals("Fault transaction must reach native outer END on its original thread", 1, completedEnds.get())
+            assertFalse(armed.get())
+            val actual = requireNotNull(rejectedByEngine)
+            assertTrue("The same native constraint must escape the original writer",
+                generateSequence(failure) { it.cause }.any { it === actual })
+        }
+        private fun matches(sql: String) = sql.startsWith("INSERT OR REPLACE INTO `completions` (`id`,")
+        private fun <T> executed(sql: String, raw: SupportSQLiteDatabase, action: () -> T): T {
+            val result = action()
+            if (matches(sql) && armed.compareAndSet(true, false)) {
+                check(raw.inTransaction()) { "WIDGET_TEST_NATIVE_INSERT_OUTSIDE_TRANSACTION" }
+                raw.query("SELECT changes()").use { check(it.moveToFirst() && it.getLong(0) == 1L && !it.moveToNext()) }
+                val inserted = raw.query("SELECT last_insert_rowid()").use {
+                    check(it.moveToFirst() && it.getType(0) == Cursor.FIELD_TYPE_INTEGER)
+                    it.getLong(0).also { value -> check(value > 0L && !it.moveToNext()) }
+                }
+                val uuid = raw.query("SELECT habitId,habitUuid,uuid,value FROM main.completions WHERE id=? LIMIT 2",
+                    arrayOf(inserted)).use { c ->
+                    check(c.moveToFirst() && c.getType(0) == Cursor.FIELD_TYPE_INTEGER && c.getLong(0) == expectedHabitId &&
+                        c.getType(1) == Cursor.FIELD_TYPE_STRING && c.getString(1) == expectedHabitUuid &&
+                        c.getType(2) == Cursor.FIELD_TYPE_STRING && c.getType(3) == Cursor.FIELD_TYPE_INTEGER && c.getLong(3) == 1L)
+                    c.getString(2).also { value -> check(com.dayforge.domain.model.isContractUuid(value) && !c.moveToNext()) }
+                }
+                // The original INSERT and trigger-produced source both exist BEFORE failure.
+                raw.query("SELECT count(*) FROM main.sync_outbox WHERE recordType='completion' AND action='upsert' " +
+                    "AND entityUuid=? AND wireEntityUuid=? AND referenceUuid=?", arrayOf(uuid, uuid, expectedHabitUuid)).use {
+                    check(it.moveToFirst() && it.getLong(0) == 1L && !it.moveToNext()) { "WIDGET_TEST_NATIVE_SOURCE_NOT_WRITTEN" }
+                }
+                insertedUuid = uuid; writes.incrementAndGet(); faultNative = raw; faultThread = Thread.currentThread()
+                try {
+                    raw.execSQL("INSERT INTO completions SELECT * FROM completions WHERE id=?", arrayOf(inserted))
+                } catch (failure: SQLiteConstraintException) {
+                    check(failure.message?.contains("UNIQUE constraint failed: completions.id") == true) {
+                        "WIDGET_TEST_WRONG_NATIVE_CONSTRAINT"
+                    }
+                    rejectedByEngine = failure; rejections.incrementAndGet(); throw failure
+                }
+                error("WIDGET_TEST_NATIVE_DUPLICATE_WAS_ACCEPTED")
+            }
+            return result
+        }
+        override fun create(configuration: SupportSQLiteOpenHelper.Configuration): SupportSQLiteOpenHelper {
+            var rawOwner: SupportSQLiteDatabase? = null
+            var wrapper: SupportSQLiteDatabase? = null
+            val monitor = Any()
+            fun wrap(raw: SupportSQLiteDatabase): SupportSQLiteDatabase = synchronized(monitor) {
+                if (rawOwner !== raw) {
+                    rawOwner = raw
+                    wrapper = object : SupportSQLiteDatabase by raw {
+                        override fun compileStatement(sql: String): SupportSQLiteStatement {
+                            val actual = raw.compileStatement(sql)
+                            return object : SupportSQLiteStatement by actual {
+                                override fun execute() = executed(sql, raw) { actual.execute() }
+                                override fun executeInsert() = executed(sql, raw) { actual.executeInsert() }
+                                override fun executeUpdateDelete() = executed(sql, raw) { actual.executeUpdateDelete() }
+                            }
+                        }
+                        override fun endTransaction() {
+                            raw.endTransaction()
+                            if (faultNative === raw && faultThread === Thread.currentThread() && rejectedByEngine != null && !raw.inTransaction()) {
+                                faultThread = null; faultNative = null; completedEnds.incrementAndGet()
+                            }
+                        }
+                    }
+                }
+                requireNotNull(wrapper)
+            }
+            val parent = configuration.callback
+            val callback = object : SupportSQLiteOpenHelper.Callback(parent.version) {
+                override fun onConfigure(db: SupportSQLiteDatabase) = parent.onConfigure(wrap(db))
+                override fun onCreate(db: SupportSQLiteDatabase) = parent.onCreate(wrap(db))
+                override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = parent.onUpgrade(wrap(db), oldVersion, newVersion)
+                override fun onDowngrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = parent.onDowngrade(wrap(db), oldVersion, newVersion)
+                override fun onOpen(db: SupportSQLiteDatabase) = parent.onOpen(wrap(db))
+                override fun onCorruption(db: SupportSQLiteDatabase) = parent.onCorruption(wrap(db))
+            }
+            val actual = FrameworkSQLiteOpenHelperFactory().create(SupportSQLiteOpenHelper.Configuration.builder(configuration.context)
+                .name(configuration.name).callback(callback).noBackupDirectory(configuration.useNoBackupDirectory).build())
+            return object : SupportSQLiteOpenHelper by actual {
+                override val readableDatabase get() = wrap(actual.readableDatabase)
+                override val writableDatabase get() = wrap(actual.writableDatabase)
+            }
+        }
+    }
+
 }

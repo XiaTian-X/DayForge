@@ -5,6 +5,7 @@ import com.dayforge.data.repository.NextRecoveryDependencyPreview
 import com.dayforge.data.repository.NextRecoveryDependencyReason
 import com.dayforge.data.repository.NextRecoveryKey
 import com.dayforge.domain.service.SyncManager
+import com.dayforge.data.model.SyncProblemFrame
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -54,8 +55,15 @@ internal sealed interface RecoveryUiState {
     data class Completed(val recoveryId: String, val count: Int) : RecoveryUiState
 }
 
-/** ViewModel-owned local workflow. No DAO, saved credentials, request construction or automatic HTTP. */
-internal class SettingsRecoveryWorkflow(private val sync: SyncManager, private val scope: CoroutineScope) {
+/** An immutable original dialog emission. Identity distinguishes even two Loading/Stale
+ * singleton values and two identical reviews. It is never fresh authority. */
+internal class RecoveryUiFrame internal constructor(val value: RecoveryUiState,
+    internal val source: SyncProblemFrame?)
+
+/** ViewModel-owned workflow. The original problem source and same receipt survive each
+ * stage; only fixed/manual mode can use the historical no-frame action API. */
+internal class SettingsRecoveryWorkflow(private val sync: SyncManager, private val scope: CoroutineScope,
+    private val requireOriginalSource: Boolean = false) {
     private val monitor = Any()
     private var blocked = false
     private var authority = Any()
@@ -63,100 +71,161 @@ internal class SettingsRecoveryWorkflow(private val sync: SyncManager, private v
     private var action = Any()
     private var root: NextRecoveryKey? = null
     private var receipt: NextRecoveryConfirmation? = null
+    private var source: SyncProblemFrame? = null
     private var committing = false
     private val mutableState = MutableStateFlow<RecoveryUiState>(RecoveryUiState.Hidden)
     val state = mutableState.asStateFlow()
+    private val mutableFrames = MutableStateFlow(RecoveryUiFrame(RecoveryUiState.Hidden, null))
+    val frames = mutableFrames.asStateFlow()
 
-    /** Called synchronously by TokenManager before account/replica/device/permission transitions. */
-    fun authenticationTransition(value: Boolean) = synchronized(monitor) {
-        blocked = value; authority = Any(); revision = Any(); action = Any()
-        root = null; receipt = null; mutableState.value = RecoveryUiState.Hidden
+    /** Call only under monitor (and original source fence for personal result assignments). */
+    private fun assign(value: RecoveryUiState) {
+        mutableState.value = value
+        mutableFrames.value = RecoveryUiFrame(value, source)
     }
-
+    private fun clearPrivate() {
+        authority = Any(); revision = Any(); action = Any()
+        root = null; receipt = null; source = null; assign(RecoveryUiState.Hidden)
+        // Accepted confirmation continues. Its finally alone releases committing.
+    }
+    fun authenticationTransition(value: Boolean) = synchronized(monitor) {
+        blocked = value; clearPrivate()
+    }
+    /** Pure memory only. Never cancel a confirmed write or call SQL/Host/account admission. */
+    fun sourceTransition(blocked: Boolean) {
+        val original = synchronized(monitor) { source }
+        if (blocked || original?.isCurrent() == false) synchronized(monitor) {
+            if (source === original) clearPrivate()
+        }
+    }
+    private fun publish(original: SyncProblemFrame?, block: () -> Unit): Boolean {
+        if (original == null) {
+            if (requireOriginalSource) return false
+            synchronized(monitor) { block() }; return true
+        }
+        // Token memory -> workflow monitor -> Host publication, never the reverse.
+        return original.withSourceFence { synchronized(monitor) { original.publish(block) } }
+    }
+    private fun fixedFrame(): RecoveryUiFrame {
+        check(!requireOriginalSource) { "SYNC_RECOVERY_ORIGINAL_INPUT_REQUIRED" }
+        return synchronized(monitor) { mutableFrames.value }
+    }
+    private fun matches(expected: RecoveryUiFrame): Boolean = mutableFrames.value === expected && source === expected.source
+    private fun edit(expected: RecoveryUiFrame, change: () -> Unit): Boolean {
+        var accepted = false
+        publish(expected.source) { if (matches(expected) && !blocked) { change(); accepted = true } }
+        return accepted
+    }
     fun databaseChanged() = synchronized(monitor) {
         revision = Any()
-        // Own COMMIT invalidation must not cancel the action or lose its idempotency receipt.
+        // Stale has no private result; invalidation needs no newly issued publication.
+        // Own COMMIT and unknown-result retry keep their exact original receipt.
         if (mutableState.value is RecoveryUiState.Review || mutableState.value == RecoveryUiState.Loading) {
-            receipt = null; mutableState.value = RecoveryUiState.Stale
+            receipt = null; assign(RecoveryUiState.Stale)
         }
     }
-
-    fun preview(key: NextRecoveryKey) {
-        val capture = synchronized(monitor) {
-            if (blocked || committing) return
-            root = key; receipt = null; action = Any()
-            mutableState.value = RecoveryUiState.Loading
-            Triple(authority, revision, action)
+    fun preview(key: NextRecoveryKey) { fixedFrame(); beginPreview(null, key) }
+    fun previewFrom(original: SyncProblemFrame, key: NextRecoveryKey) {
+        original.requireRecovery(key)
+        beginPreview(original, key)
+    }
+    private data class PreviewCapture(val authority: Any, val revision: Any, val action: Any,
+        val source: SyncProblemFrame?, val root: NextRecoveryKey)
+    private fun beginPreview(original: SyncProblemFrame?, key: NextRecoveryKey,
+        expected: RecoveryUiFrame? = null) {
+        var capture: PreviewCapture? = null
+        publish(original) {
+            if (!blocked && !committing && (expected == null || matches(expected))) {
+                root = key; receipt = null; source = original; action = Any()
+                assign(RecoveryUiState.Loading)
+                capture = PreviewCapture(authority, revision, action, original, key)
+            }
         }
+        val started = capture ?: return
         scope.launch {
             try {
-                val graph = sync.readRecoveryPreview(key)
-                if (!synchronized(monitor) { current(capture.first, capture.third) && revision === capture.second }) return@launch
+                val graph = if (started.source == null) sync.readRecoveryPreview(started.root)
+                    else sync.readRecoveryPreview(started.source, started.root)
+                if (!previewCurrent(started)) return@launch
                 var ticket: NextRecoveryConfirmation? = null
                 var failed = false
                 if (graph.canConfirm) {
-                    try { ticket = sync.prepareRecoveryConfirmation(graph, graph.affected.map { it.key }.toSet()) }
+                    try { ticket = if (started.source == null)
+                        sync.prepareRecoveryConfirmation(graph, graph.affected.map { it.key }.toSet())
+                    else sync.prepareRecoveryConfirmation(started.source, graph, graph.affected.map { it.key }.toSet()) }
                     catch (cancelled: CancellationException) { throw cancelled }
                     catch (error: Exception) {
                         if (error.staleRecovery()) throw error
                         failed = true
                     }
                 }
-                if (!synchronized(monitor) { current(capture.first, capture.third) && revision === capture.second }) return@launch
+                if (!previewCurrent(started)) return@launch
                 val review = withContext(Dispatchers.Default) { describe(graph, ticket, failed) }
-                synchronized(monitor) {
-                    if (current(capture.first, capture.third) && revision === capture.second) {
-                        receipt = ticket; mutableState.value = RecoveryUiState.Review(review)
+                publish(started.source) {
+                    if (current(started.authority, started.action, started.source) && revision === started.revision) {
+                        receipt = ticket; assign(RecoveryUiState.Review(review))
                     }
                 }
             } catch (cancelled: CancellationException) {
-                synchronized(monitor) {
-                    if (current(capture.first, capture.third)) {
-                        receipt = null; mutableState.value = RecoveryUiState.Stale
-                    }
-                }
+                publish(started.source) { if (current(started.authority, started.action, started.source)) {
+                    receipt = null; assign(RecoveryUiState.Stale)
+                } }
                 throw cancelled
             } catch (error: Exception) {
-                synchronized(monitor) {
-                    if (current(capture.first, capture.third) && revision === capture.second) {
-                        receipt = null
-                        mutableState.value = if (error.staleRecovery()) RecoveryUiState.Stale else RecoveryUiState.Unavailable
-                    }
+                publish(started.source) { if (current(started.authority, started.action, started.source) && revision === started.revision) {
+                    receipt = null
+                    assign(if (error.staleRecovery()) RecoveryUiState.Stale else RecoveryUiState.Unavailable)
+                } }
+            }
+        }
+    }
+    private fun previewCurrent(capture: PreviewCapture): Boolean {
+        var valid = false
+        publish(capture.source) { valid = current(capture.authority, capture.action, capture.source) && revision === capture.revision }
+        return valid
+    }
+    fun refresh() = refreshFrom(fixedFrame())
+    fun refreshFrom(expected: RecoveryUiFrame) {
+        var key: NextRecoveryKey? = null
+        edit(expected) { if (!committing) key = root }
+        key?.let { beginPreview(expected.source, it, expected) }
+    }
+    fun approve(value: Boolean) = approveFrom(fixedFrame(), value)
+    fun approveFrom(expected: RecoveryUiFrame, value: Boolean) {
+        edit(expected) {
+            val view = mutableState.value as? RecoveryUiState.Review
+            if (!committing && receipt != null && view != null && view.data.graph.canConfirm && !view.data.preparationFailed)
+                assign(view.copy(approved = value))
+        }
+    }
+    fun confirm() = confirmFrom(fixedFrame())
+    fun confirmFrom(expected: RecoveryUiFrame) {
+        var captured: ConfirmationCapture? = null
+        edit(expected) {
+            if (!committing) {
+                val data = when (val view = mutableState.value) {
+                    is RecoveryUiState.Review -> view.data.takeIf { view.approved }
+                    is RecoveryUiState.RetryConfirmation -> view.data
+                    else -> null
+                }
+                val ticket = receipt
+                if (data != null && ticket != null) {
+                    committing = true; assign(RecoveryUiState.Committing(data))
+                    captured = ConfirmationCapture(authority, action, ticket, data, source)
                 }
             }
         }
-    }
-
-    fun refresh() { val key = synchronized(monitor) { root }; if (key != null) preview(key) }
-
-    fun approve(value: Boolean) = synchronized(monitor) {
-        val view = mutableState.value as? RecoveryUiState.Review ?: return@synchronized
-        if (!blocked && receipt != null && view.data.graph.canConfirm && !view.data.preparationFailed)
-            mutableState.value = view.copy(approved = value)
-    }
-
-    fun confirm() {
-        val capture = synchronized(monitor) {
-            if (blocked || committing) return
-            val data = when (val view = mutableState.value) {
-                is RecoveryUiState.Review -> if (view.approved) view.data else return
-                is RecoveryUiState.RetryConfirmation -> view.data
-                else -> return
-            }
-            val ticket = receipt ?: return
-            committing = true; mutableState.value = RecoveryUiState.Committing(data)
-            ConfirmationCapture(authority, action, ticket, data)
-        }
+        val capture = captured ?: return
         scope.launch {
             try {
-                if (!synchronized(monitor) { current(capture.authority, capture.action) }) return@launch
-                val result = sync.confirmRecovery(capture.ticket)
-                synchronized(monitor) {
-                    if (current(capture.authority, capture.action)) {
-                        receipt = null
-                        mutableState.value = RecoveryUiState.Completed(result.recoveryId, result.manifest.requests.size)
-                    }
-                }
+                var valid = false
+                publish(capture.source) { valid = current(capture.authority, capture.action, capture.source) }
+                if (!valid) return@launch
+                val result = if (capture.source == null) sync.confirmRecovery(capture.ticket)
+                    else sync.confirmRecovery(capture.source, capture.ticket)
+                publish(capture.source) { if (current(capture.authority, capture.action, capture.source)) {
+                    receipt = null; assign(RecoveryUiState.Completed(result.recoveryId, result.manifest.requests.size))
+                } }
             } catch (cancelled: CancellationException) {
                 retryOrStale(capture, false)
                 throw cancelled
@@ -165,27 +234,28 @@ internal class SettingsRecoveryWorkflow(private val sync: SyncManager, private v
             } finally { synchronized(monitor) { committing = false } }
         }
     }
-
     private data class ConfirmationCapture(val authority: Any, val action: Any,
-        val ticket: NextRecoveryConfirmation, val data: RecoveryReview)
-
-    private fun retryOrStale(capture: ConfirmationCapture, stale: Boolean) = synchronized(monitor) {
-        if (current(capture.authority, capture.action)) {
+        val ticket: NextRecoveryConfirmation, val data: RecoveryReview, val source: SyncProblemFrame?)
+    private fun retryOrStale(capture: ConfirmationCapture, stale: Boolean) {
+        publish(capture.source) { if (current(capture.authority, capture.action, capture.source)) {
             if (stale) receipt = null
-            mutableState.value = if (stale) RecoveryUiState.Stale else RecoveryUiState.RetryConfirmation(capture.data)
+            assign(if (stale) RecoveryUiState.Stale else RecoveryUiState.RetryConfirmation(capture.data))
+        } }
+    }
+    fun dismiss() = dismissFrom(fixedFrame())
+    fun dismissFrom(expected: RecoveryUiFrame) {
+        edit(expected) {
+            // Closing UI never cancels the already confirmed transaction.
+            action = Any(); root = null; receipt = null; source = null; assign(RecoveryUiState.Hidden)
         }
     }
-
-    fun dismiss() = synchronized(monitor) {
-        // Closing UI is not permission to cancel a confirmed transaction or replay its projection.
-        action = Any(); root = null; receipt = null; mutableState.value = RecoveryUiState.Hidden
-    }
-
-    private fun current(owner: Any, operation: Any) = !blocked && authority === owner && action === operation
-
+    private fun current(owner: Any, operation: Any, original: SyncProblemFrame?) =
+        !blocked && authority === owner && action === operation && source === original
     private fun Exception.staleRecovery() = message in setOf("SYNC_RECOVERY_PREVIEW_CHANGED",
         "SYNC_RECOVERY_CHECKPOINT_CHANGED", "SYNC_RECOVERY_PROJECTION_CHANGED", "SYNC_RECOVERY_ACCESS_CHANGED",
-        "SYNC_ACCOUNT_CHANGED", "SYNC_REPLICA_CHANGED")
+        "SYNC_ACCOUNT_CHANGED", "SYNC_REPLICA_CHANGED", "SYNC_PROBLEM_INPUT_CHANGED",
+        "DATABASE_EPOCH_INPUT_REQUIRED", "DATABASE_EPOCH_INPUT_EXPIRED", "DATABASE_EPOCH_OPERATION_EXPIRED",
+        "DATABASE_EPOCH_REPLICA_CHANGED")
 
     private suspend fun describe(graph: NextRecoveryDependencyPreview, ticket: NextRecoveryConfirmation?,
         failed: Boolean): RecoveryReview {

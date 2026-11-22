@@ -38,8 +38,9 @@ class AccountIconWorkCoordinatorTest {
         LocalDataSession(AuthenticationSession(id(owner),id(5)),id(2),id(3)),id(4),revision,false)
     @Before fun setup() {
         mockkStatic(WorkManager::class); every { WorkManager.getInstance(context) } returns manager
+        stubSyncWorkQueries(manager)
         every { manager.enqueueUniqueWork(AccountIconWorkCoordinator.ONE_TIME,ExistingWorkPolicy.REPLACE,any<OneTimeWorkRequest>()) } answers {
-            immediate.add(thirdArg()); mockk(relaxed=true)
+            immediate.add(thirdArg()); mockk<Operation> { every { result } returns readyWorkFuture(Operation.SUCCESS) }
         }
         every { manager.enqueueUniquePeriodicWork(AccountIconWorkCoordinator.PERIODIC,ExistingPeriodicWorkPolicy.UPDATE,any()) } answers {
             periodic.add(thirdArg()); mockk(relaxed=true)
@@ -125,7 +126,7 @@ class AccountIconWorkCoordinatorTest {
         coordinator.start(); runCurrent(); assertEquals(AccountIconWorkCoordinator.Status.FAILED,coordinator.status.value)
         assertEquals(listOf(AccountIconWorkCoordinator.ONE_TIME,AccountIconWorkCoordinator.PERIODIC),cancelled)
         every { manager.enqueueUniqueWork(AccountIconWorkCoordinator.ONE_TIME,ExistingWorkPolicy.REPLACE,any<OneTimeWorkRequest>()) } answers {
-            immediate.add(thirdArg()); mockk(relaxed=true)
+            immediate.add(thirdArg()); mockk<Operation> { every { result } returns readyWorkFuture(Operation.SUCCESS) }
         }
         coordinator.start(); runCurrent(); assertEquals(AccountIconWorkCoordinator.Status.OBSERVING,coordinator.status.value)
         assertEquals(1,immediate.size); assertEquals(authority(),access.value)

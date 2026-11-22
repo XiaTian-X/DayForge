@@ -1,5 +1,6 @@
 package com.dayforge.data.repository
 
+import androidx.room.withTransaction
 import android.content.Intent
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.dayforge.domain.model.TimerStartGuard
@@ -24,8 +25,8 @@ class WidgetTimerActionTest : NextCoreRequestFixture() {
         // Sentinel legacy cache, not a v5 local intent. The v5 producer correctly rejects
         // a missing typed plan; no accepted/switchable replica is claimed by this fixture.
         val legacyId = db.habitDao().insert(legacy)
-        val legacyClaim = LegacyWidgetTimerClaim(LegacyWidgetRestartClaim.displayed(legacy.copy(id = legacyId),
-            requireNotNull(tokens.localCoreWriteAccess())), null, null)
+        val legacyClaim = db.withTransaction { LegacyWidgetTimerClaim(LegacyWidgetRestartClaim.displayed(legacy.copy(id = legacyId),
+            requireNotNull(tokens.localCoreWriteAccess()), com.dayforge.data.local.LocalReplicaIdentity.readInTransaction(db)), null, null) }
         val stage = tokens.replicaStageFixture(); NextReplicaWriteFence(db).acquire(stage.fence)
         suspend fun verifyClosed() {
             assertNull(writer().capture(timerHabit.id)); assertNull(writer().policy(timerHabit.id, id(20)))

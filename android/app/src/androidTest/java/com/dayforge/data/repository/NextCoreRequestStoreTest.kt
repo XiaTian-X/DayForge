@@ -7,6 +7,7 @@ import com.dayforge.data.appearance.MaterialSocketServer
 import com.dayforge.data.local.*
 import com.dayforge.data.local.entity.*
 import com.dayforge.data.model.*
+import com.dayforge.domain.service.AccountIconController
 import java.io.IOException
 import java.time.Instant
 import java.util.concurrent.CountDownLatch
@@ -14,6 +15,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.selects.select
 import kotlinx.serialization.json.*
 import org.junit.Assert.*
 import org.junit.Test
@@ -22,6 +24,97 @@ import org.junit.runner.RunWith
 /** Original first-send, replay and acceptance regressions. */
 @RunWith(AndroidJUnit4::class)
 class NextCoreRequestStoreTest : NextCoreRequestFixture() {
+    private val native = NextCoreRequestNativeFault()
+    init {
+        native.installOnNextOpen()
+        storage.isolatedBuilder = { context -> HabitDatabaseProvider.build(context, storage.queryCallback, nativeFactory = native) }
+    }
+
+    /** Current formal entry, independent of the low-level producer fault/batch cases below. */
+    private suspend fun <T> typedMetric(block: suspend (MetricRepository, NextObjectEditor) -> T): T {
+        assertFalse("The actual editor owns its producer transaction", db.inTransaction())
+        val icons = AccountIconController(app, tokens, sessions)
+        try {
+            val editor = NextObjectEditor(db, tokens, sessions, icons)
+            val repository = MetricRepository(db, db.metricDao(), db.metricLogDao(), db.habitDao(),
+                db.habitMetricLinkDao(), nextObjectEditor = editor)
+            return block(repository, editor)
+        } finally {
+            try { icons.awaitImages() } finally { icons.close() }
+        }
+    }
+
+    private suspend fun coreObservation(): SyncOutboxEntity {
+        val previousLogs = db.metricLogDao().getAllLogsForMetric(metric.id).map { it.id }.toSet()
+        val previousQueue = db.syncOutboxDao().getAll().map { it.operationId }.toSet()
+        val previousOrigins = count("next_request_origins")
+        val previousNetwork = servers.map { it.requests.size }
+        val inserted = typedMetric { repository, editor ->
+            val selected = editor.metric(metric.id)
+            val actual = requireNotNull(selected.value); val authority = requireNotNull(selected.authority)
+            assertEquals(metric.uuid, actual.uuid); assertNotNull(actual.appearance)
+            assertNull("This fixture's original protocol is plain, not inferred from appearance", authority.rounds)
+            repository.recordValue(actual.id, 21.125, "captured\nvalue", millis,
+                authority = authority, expectedMetricUuid = actual.uuid)
+        }
+        val logs = db.metricLogDao().getAllLogsForMetric(metric.id)
+        val saved = logs.filter { it.id !in previousLogs }.single()
+        assertEquals(previousLogs.size + 1, logs.size); assertEquals(inserted, saved.id)
+        assertEquals(21.125, saved.value, 0.0); assertEquals("captured\nvalue", saved.note); assertEquals(millis, saved.date)
+        val queue = db.syncOutboxDao().getAll()
+        val source = queue.filter { it.operationId !in previousQueue }.single()
+        assertEquals(previousQueue.size + 1, queue.size)
+        assertEquals("metric_log", source.recordType); assertEquals(saved.uuid, source.entityUuid)
+        val origin = requireNotNull(db.nextRequestDao().origin(NEXT_OPERATION, source.operationId))
+        assertEquals(source.operationId, origin.requestId); assertEquals(source.id, origin.queueId)
+        assertEquals(5, origin.protocol); assertNull(roundOperationIntent(origin.intentJson))
+        val operation = decodeNextOperationIntent(origin.intentJson)
+        assertEquals("metric_observation", operation.entityType); assertEquals(saved.uuid, operation.entityUuid)
+        assertEquals(SyncV2Mapper.metricObservation(saved, metric.uuid), operation.payload)
+        assertEquals(previousOrigins + 1, count("next_request_origins"))
+        assertEquals(previousNetwork, servers.map { it.requests.size })
+        return source
+    }
+
+    /** Fixed legal business input for producer atomicity/corruption/cancellation tests.
+     * It deliberately tests the original producer callback, not a nested typed repository.
+     */
+    private suspend fun insertProducerObservation(note: String): MetricLogEntity {
+        assertTrue(db.inTransaction())
+        val current = requireNotNull(db.metricDao().getMetricById(metric.id))
+        assertEquals(metric.uuid, current.uuid); assertNotNull(current.appearance)
+        NextStructureMapper.writeMetric(current)
+        NextMetricDeletionStore(db).requireWritable(current.uuid)
+        val row = MetricLogEntity(metricId = current.id, date = millis, value = 21.125,
+            unit = current.unit, note = note)
+        val inserted = db.metricLogDao().insertAll(listOf(row)).single()
+        val saved = requireNotNull(db.metricLogDao().getLogByUuid(row.uuid))
+        assertEquals(row.copy(id = inserted), saved)
+        return saved
+    }
+
+    private suspend fun requireInsertedObservationBeforeOrigin(saved: MetricLogEntity): SyncOutboxEntity {
+        assertTrue(db.inTransaction())
+        assertEquals(saved, db.metricLogDao().getLogByUuid(saved.uuid))
+        val source = db.syncOutboxDao().getAll().single { it.recordType == "metric_log" && it.entityUuid == saved.uuid }
+        assertNull(db.nextRequestDao().origin(NEXT_OPERATION, source.operationId))
+        return source
+    }
+
+    private suspend fun coreLink() = typedMetric { repository, editor ->
+        val selected = editor.metric(metric.id)
+        val actual = requireNotNull(selected.value); val authority = requireNotNull(selected.authority)
+        assertEquals(metric.uuid, actual.uuid); assertNull(authority.rounds)
+        repository.linkHabits(actual, setOf(habit.id), authority, mapOf(habit.id to habit.uuid))
+    }
+
+    private suspend fun coreDelete() = typedMetric { repository, editor ->
+        val selected = editor.metric(metric.id)
+        val actual = requireNotNull(selected.value); val authority = requireNotNull(selected.authority)
+        assertEquals(metric.uuid, actual.uuid); assertNull(authority.rounds)
+        repository.deleteMetric(actual, authority)
+    }
+
     @Test fun rootStructuralAcceptanceRejectsRevisionBelowFrozenBaseWithoutConsumingIntent() = runBlocking<Unit> {
         val revision = AtomicLong(5)
         val seed = editMetric("Seed"); register()
@@ -126,7 +219,7 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
         val lost = TimerCommandEntity(commandId = id(41), sessionUuid = id(42), sequence = 1,
             commandType = "start", occurredAt = millis, expectedControlGeneration = 0, attemptCount = 0)
         val lostId = db.timeLogDao().insertTimerCommand(lost)
-        val observation = observation(); val timer = start()
+        val observation = coreObservation(); val timer = start()
         storage.reopen()
         assertEquals(old.copy(id = oldId), db.syncOutboxDao().getById(oldId))
         assertEquals(lost.copy(id = lostId), db.timeLogDao().getTimerCommand(lostId))
@@ -156,7 +249,7 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
     }
 
     @Test fun lostResponseThenColdReopenReplaysWholeOriginalEnvelopeAndNeverConsumesTheQueue() = runBlocking<Unit> {
-        val observation = observation(); val timer = start(); register()
+        val observation = coreObservation(); val timer = start(); register()
         val captured = access(); var drop = true
         val (http, server) = channel { if (!it.path.endsWith("/identity") && drop) null else reply(it) }
         assertTrue(rejected { sender(http).sendOperation(captured, observation.operationId) } is IOException)
@@ -182,20 +275,40 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
 
     @Test fun allFiveOrdinaryKindsFreezeAtLocalWriteNotFromLaterMutableBusinessState() = runBlocking<Unit> {
         val session = local()
+        native.beginProducerObservation()
+        // Deterministic non-target transactions exercise both sides of the actual producer.
+        // They must not claim its identity or inflate its exact one-BEGIN/one-END contract.
+        db.withTransaction {
+            assertEquals(0, count("metric_logs"))
+            native.observeProducerCalibration(NextCoreRequestNativeFault.ProducerCalibration.BEFORE_TARGET)
+        }
         producer().write(session) {
-            habits().updateHabit(habit.copy(name = "First name"))
-            metrics().updateMetric(metric.copy(name = "First metric"))
+            // This method verifies the generic producer's one-transaction five-kind contract.
+            val firstHabit = habit.copy(name = "First name", updatedAt = System.currentTimeMillis())
+            val firstMetric = metric.copy(name = "First metric", updatedAt = System.currentTimeMillis())
+            NextStructureMapper.writePlan(firstHabit); NextStructureMapper.writeMetric(firstMetric)
+            db.habitDao().update(firstHabit)
+            db.metricDao().update(firstMetric)
             val fact = CompletionEntity(habitId = habit.id, habitUuid = habit.uuid,
                 uuid = id(50), date = Instant.ofEpochMilli(millis).atZone(java.time.ZoneId.of("Asia/Shanghai"))
                     .toLocalDate().atStartOfDay(java.time.ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli(),
                 actualCompletedAt = millis, value = 3, recordedTimezone = "Asia/Shanghai")
             NextCountDayStore(db).capture(habit, fact)
             db.completionDao().insertForSync(fact)
-            metrics().recordValue(metric.id, 21.125, "note", millis)
+            insertProducerObservation("note")
             db.habitMetricLinkDao().insertOrIgnore(HabitMetricLinkEntity(habitId = habit.id, habitUuid = habit.uuid,
                 metricId = metric.id, metricUuid = metric.uuid, uuid = id(51), coefficient = 0.5,
                 showInHabitDetail = true, promptOnComplete = true))
+            assertEquals(1, count("metric_logs")); assertEquals(5, count("sync_outbox"))
+            assertEquals(0, count("next_request_origins"))
+            native.observeProducerCallback()
         }
+        db.withTransaction {
+            assertEquals(1, count("metric_logs")); assertEquals(5, count("sync_outbox"))
+            native.observeProducerCalibration(NextCoreRequestNativeFault.ProducerCalibration.AFTER_TARGET)
+        }
+        native.requireProducerCalibrations()
+        native.requireProducerCommitted()
         val rows = db.syncOutboxDao().getAll(); assertEquals(5, rows.size)
         producer().write(session) {
             habits().updateHabit(requireNotNull(db.habitDao().getHabitById(habit.id)).copy(name = "Later name"))
@@ -217,7 +330,7 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
     }
 
     @Test fun sameAccountReauthenticationUsesCurrentCredentialsButOriginalDurableIdentity() = runBlocking<Unit> {
-        val row = observation(); register(); var drop = true
+        val row = coreObservation(); register(); var drop = true
         val (http, server) = channel { if (!it.path.endsWith("/identity") && drop) null else reply(it) }
         val originalAccess = access()
         assertTrue(rejected { sender(http).sendOperation(originalAccess, row.operationId) } is IOException)
@@ -233,7 +346,7 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
     }
 
     @Test fun changedDeviceReplicaAndOwnerCannotRebindTheOriginalTransmission() = runBlocking<Unit> {
-        val row = observation(); register(); val (http, server) = channel { if (it.path.endsWith("/identity")) reply(it) else null }
+        val row = coreObservation(); register(); val (http, server) = channel { if (it.path.endsWith("/identity")) reply(it) else null }
         assertTrue(rejected { sender(http).sendOperation(access(), row.operationId) } is IOException)
         val wire = transmission(NEXT_OPERATION, row.operationId).wireBytes.copyOf()
         register(device = id(80))
@@ -252,7 +365,7 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
     }
 
     @Test fun publicV4OrUnknownVersionCannotCreateFirstSendJournalsOrPrivateTraffic() = runBlocking<Unit> {
-        val row = observation(); val command = start(); register()
+        val row = coreObservation(); val command = start(); register()
         for (version in listOf(4, 6)) {
             val (http, server) = channel { reply(it, version) }
             assertNull(sender(http).sendOperation(access(), row.operationId))
@@ -263,43 +376,50 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
     }
 
     @Test fun failedOriginInsertRollsBackRealRepositoryWriteAndQueue() = runBlocking<Unit> {
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER fail_origin BEFORE INSERT ON next_request_origins BEGIN SELECT RAISE(ABORT,'synthetic origin failure'); END")
-        assertNotNull(rejected { observation() })
+        native.arm(NextCoreRequestNativeFault.Kind.ORIGIN_ABORT,
+            NextCoreRequestNativeFault.Targets(metricId = metric.id, metricUuid = metric.uuid, accountId = id(1),
+                expectedDate = millis, expectedValue = 21.125, expectedNote = "captured\nvalue", expectedUnit = metric.unit))
+        val failure = rejected { coreObservation() }
+        assertNotNull(failure); native.requireTriggered(failure); native.requireWarmRollback()
         assertEquals(0, count("metric_logs")); assertEquals(0, count("sync_outbox")); assertEquals(0, count("next_request_origins"))
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_origin")
-        observation(); storage.reopen()
+        native.expectWarmRetry()
+        coreObservation()
+        native.requireWarmRetryCommitted()
+        storage.reopen()
         assertEquals(1, count("metric_logs")); assertEquals(1, count("next_request_origins"))
     }
 
     @Test fun failedFirstJournalInsertLeavesOriginalIntentAndSendsNoBusinessRequest() = runBlocking<Unit> {
-        val row = observation(); register()
+        val row = coreObservation(); register()
         val origin = db.nextRequestDao().origin(NEXT_OPERATION, row.operationId)
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER fail_transmission BEFORE INSERT ON next_transmissions BEGIN SELECT RAISE(ABORT,'synthetic journal failure'); END")
         val (http, server) = channel()
-        assertNotNull(rejected { sender(http).sendOperation(access(), row.operationId) })
+        native.arm(NextCoreRequestNativeFault.Kind.JOURNAL_ABORT,
+            NextCoreRequestNativeFault.Targets(row.operationId, row.id, metric.id, metric.uuid, id(1)))
+        val failure = rejected { sender(http).sendOperation(access(), row.operationId) }
+        assertNotNull(failure); native.requireTriggered(failure); native.requireWarmRollback()
         assertEquals(0, count("next_transmissions")); assertTrue(server.requests.all { it.path.endsWith("/identity") })
         assertEquals(origin, db.nextRequestDao().origin(NEXT_OPERATION, row.operationId)); assertEquals(row, db.syncOutboxDao().getById(row.id))
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_transmission")
-        assertNotNull(sender(http).sendOperation(access(), row.operationId)); assertEquals(1, count("next_transmissions"))
+        native.expectWarmRetry()
+        assertNotNull(sender(http).sendOperation(access(), row.operationId))
+        native.requireWarmRetryCommitted()
+        assertEquals(1, count("next_transmissions"))
     }
 
     @Test fun failedFinalCommitNeverSendsAndColdReopenHasNoCommittedJournal() = runBlocking<Unit> {
-        val row = observation(); register(); val sql = db.openHelper.writableDatabase
+        val row = coreObservation(); register()
         val origin = requireNotNull(db.nextRequestDao().origin(NEXT_OPERATION, row.operationId))
-        sql.execSQL("CREATE TABLE journal_commit_parent(id INTEGER PRIMARY KEY)")
-        sql.execSQL("CREATE TABLE journal_commit_child(id INTEGER REFERENCES journal_commit_parent(id) DEFERRABLE INITIALLY DEFERRED)")
-        sql.execSQL("CREATE TRIGGER fail_final_commit AFTER INSERT ON next_transmissions BEGIN INSERT INTO journal_commit_child(id) VALUES(1); END")
         val (http, server) = channel()
-        assertTrue(rejected { sender(http).sendOperation(access(), row.operationId) } is SQLiteConstraintException)
+        native.arm(NextCoreRequestNativeFault.Kind.JOURNAL_END,
+            NextCoreRequestNativeFault.Targets(row.operationId, row.id, metric.id, metric.uuid, id(1)))
+        val failure = rejected { sender(http).sendOperation(access(), row.operationId) }
+        assertTrue(failure is SQLiteConstraintException); native.requireTriggered(failure)
         assertTrue(server.requests.all { it.path.endsWith("/identity") })
-        // A deferred COMMIT failure can leave the framework writer connection in a native
-        // transaction. A WAL reader seeing zero rows does not prove durable rollback.
-        // Close/reopen the real file, as after process death; do not reuse that writer.
-        storage.reopen()
-        assertEquals(0, count("next_transmissions")); assertEquals(0, count("journal_commit_child"))
+        // Confirm the actual file after a real deferred END failure, never a WAL-reader guess.
+        storage.reopen(); assertTrue(db.openHelper.writableDatabase.isOpen)
+        native.requireColdFaultAbsent()
+        assertEquals(0, count("next_transmissions"))
         assertEquals(origin, db.nextRequestDao().origin(NEXT_OPERATION, row.operationId))
         assertEquals(row, db.syncOutboxDao().getById(row.id)); assertEquals(1, count("metric_logs"))
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_final_commit")
         assertNotNull(sender(http).sendOperation(access(), row.operationId))
         assertEquals(1, server.requests.count { it.path.endsWith("/push") })
         storage.reopen()
@@ -307,7 +427,7 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
     }
 
     @Test fun appliedDeliveryStillRequiresSeparateAcceptanceBeforeQueueOrCursorChanges() = runBlocking<Unit> {
-        val row = observation(); register()
+        val row = coreObservation(); register()
         val (http, server) = channel { input ->
             if (input.path.endsWith("/identity")) reply(input)
             else MaterialSocketServer.Reply(reply(input).bytes.toString(Charsets.UTF_8)
@@ -349,7 +469,7 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
     }
 
     @Test fun newEpochEvenWithMatchingPublicDiscoveryCannotClaimAnOldFrozenRequest() = runBlocking<Unit> {
-        val row = observation(); register(); var epoch = id(3)
+        val row = coreObservation(); register(); var epoch = id(3)
         val (http, server) = channel {
             if (it.path.endsWith("/identity")) MaterialSocketServer.Reply("""{"server_instance_id":"${id(2)}","sync_epoch":"$epoch","protocol_version":5,"capabilities":["sync.read"],"server_time":"$time"}""".toByteArray())
             else null
@@ -367,19 +487,43 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
     @Test fun cancellationInsideBusinessWriteRollsBackQueueAndOrigins() = runBlocking<Unit> {
         val wrote = CompletableDeferred<Unit>(); val owner = SupervisorJob()
         val taskScope = CoroutineScope(owner + Dispatchers.IO)
+        val originalDatabase = db; val originalOwner = requireNotNull(CountTrustRuntime.forDatabase(db))
         try {
             val session = local()
-            val task = taskScope.launch {
-                producer().write(session) { metrics().recordValue(metric.id, 21.125, "cancel", millis); wrote.complete(Unit); awaitCancellation() }
+            native.beginProducerObservation()
+            val task = taskScope.async<Unit> {
+                producer().write(session) {
+                    val saved = insertProducerObservation("cancel")
+                    requireInsertedObservationBeforeOrigin(saved)
+                    assertEquals(1, count("metric_logs")); assertEquals(1, count("sync_outbox"))
+                    assertEquals(0, count("next_request_origins"))
+                    native.observeProducerCallback()
+                    wrote.complete(Unit)
+                    awaitCancellation()
+                }
             }
-            withTimeout(5000) { wrote.await() }; task.cancelAndJoin()
+            withTimeout(5000) {
+                select<Unit> {
+                    wrote.onAwait { }
+                    task.onAwait { error("Producer returned before the requested cancellation") }
+                }
+            }
+            task.cancelAndJoin()
+            assertTrue(task.isCancelled)
+            try { task.await(); fail("Cancelled producer must not return success") }
+            catch (_: CancellationException) { /* Only the explicitly cancelled task is expected. */ }
+            native.requireProducerRolledBack()
             assertEquals(0, count("metric_logs")); assertEquals(0, count("sync_outbox")); assertEquals(0, count("next_request_origins"))
+            assertSame(originalDatabase, db); assertSame(originalOwner, CountTrustRuntime.forDatabase(db))
+            val retry = coreObservation()
+            assertEquals(1, count("metric_logs")); assertEquals(1, count("sync_outbox"))
+            assertNotNull(db.nextRequestDao().origin(NEXT_OPERATION, retry.operationId))
         } finally { owner.cancelAndJoin() }
     }
 
     @Test fun knownDeniedPermissionsAndStaleLocalAccountRollbackTheBusinessWrite() = runBlocking<Unit> {
         val stale = local(); register(permissions = setOf("sync.read"))
-        assertEquals(NextRequestException.Reason.PERMISSION_DENIED, (rejected { observation() } as NextRequestException).reason)
+        assertEquals(NextRequestException.Reason.PERMISSION_DENIED, (rejected { coreObservation() } as NextRequestException).reason)
         assertEquals(NextRequestException.Reason.PERMISSION_DENIED,
             (rejected { producer().write(local()) { habits().updateHabit(habit.copy(name = "Denied")) } } as NextRequestException).reason)
         assertEquals(NextRequestException.Reason.PERMISSION_DENIED, (rejected { start() } as NextRequestException).reason)
@@ -393,18 +537,23 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
         val old = TimerCommandEntity(commandId = id(90), sessionUuid = id(91), sequence = 1,
             commandType = "start", occurredAt = millis, expectedControlGeneration = 0)
         val oldId = db.timeLogDao().insertTimerCommand(old)
+        native.beginProducerObservation()
         assertEquals(NextRequestException.Reason.SOURCE_CHANGED, (rejected {
             producer().write(local()) {
                 db.openHelper.writableDatabase.execSQL("UPDATE timer_command_outbox SET commandId=? WHERE id=?", arrayOf<Any>(id(92), oldId))
-                metrics().recordValue(metric.id, 21.125, "must rollback", millis)
+                val saved = insertProducerObservation("must rollback")
+                requireInsertedObservationBeforeOrigin(saved)
+                assertEquals(id(92), db.timeLogDao().getTimerCommand(oldId)!!.commandId)
+                native.observeProducerCallback()
             }
         } as NextRequestException).reason)
+        native.requireProducerRolledBack()
         assertEquals(old.copy(id = oldId), db.timeLogDao().getTimerCommand(oldId))
         assertEquals(0, count("metric_logs")); assertEquals(0, count("next_request_origins"))
     }
 
     @Test fun rawSqlIntegerWidthAndTypeCorruptionFailBeforeRoomCanCoerceTheOrigin() = runBlocking<Unit> {
-        val row = observation(); register(); val (http, server) = channel()
+        val row = coreObservation(); register(); val (http, server) = channel()
         for (value in listOf("4294967301", "5.5", "'bad'")) {
             db.openHelper.writableDatabase.execSQL("UPDATE next_request_origins SET protocol=$value")
             assertEquals(NextRequestException.Reason.INVALID_LOCAL_STATE,
@@ -417,7 +566,7 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
     }
 
     @Test fun persistedMalformedWireCannotBecomeAValidRequestByReencoding() = runBlocking<Unit> {
-        val row = observation(); register(); val (http, server) = channel()
+        val row = coreObservation(); register(); val (http, server) = channel()
         assertNotNull(sender(http).sendOperation(access(), row.operationId))
         val original = transmission(NEXT_OPERATION, row.operationId).wireBytes.copyOf()
         val bad = (original.toString(Charsets.UTF_8).dropLast(1) + ",\"unexpected\":true}").toByteArray()
@@ -430,7 +579,7 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
     }
 
     @Test fun blockedResponseDoesNotHoldDatabaseOrAccountLocksAndOldAccountCannotReturnDelivery() = runBlocking<Unit> {
-        val row = observation(); register(); val captured = access()
+        val row = coreObservation(); register(); val captured = access()
         val entered = CountDownLatch(1); val release = CountDownLatch(1); val owner = SupervisorJob()
         val taskScope = CoroutineScope(owner + Dispatchers.IO)
         val (http, _) = channel {
@@ -522,12 +671,20 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
 
     @Test fun suppressedOrDamagedOutboxControlCannotCommitAnUnqueuedBusinessWrite() = runBlocking<Unit> {
         val sql = db.openHelper.writableDatabase
+        native.beginProducerObservation()
         assertEquals(NextRequestException.Reason.INVALID_LOCAL_STATE, (rejected {
             producer().write(local()) {
                 sql.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
-                metrics().recordValue(metric.id, 21.125, "must rollback", millis)
+                insertProducerObservation("must rollback")
+                assertEquals(1, count("metric_logs")); assertEquals(0, count("sync_outbox"))
+                assertEquals(0, count("next_request_origins"))
+                sql.query("SELECT suppressOutbox FROM sync_control WHERE id=1").use {
+                    assertTrue(it.moveToFirst()); assertEquals(1L, it.getLong(0)); assertFalse(it.moveToNext())
+                }
+                native.observeProducerCallback()
             }
         } as NextRequestException).reason)
+        native.requireProducerRolledBack()
         assertEquals(0, count("metric_logs")); assertEquals(0, count("sync_outbox")); assertEquals(0, count("next_request_origins"))
         sql.query("SELECT suppressOutbox FROM sync_control WHERE id=1").use { assertTrue(it.moveToFirst()); assertEquals(0L, it.getLong(0)) }
         for (bad in listOf("1", "0.5", "'bad'")) {
@@ -537,11 +694,11 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
             } as NextRequestException).reason)
         }
         sql.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
-        observation(); assertEquals(1, count("next_request_origins"))
+        coreObservation(); assertEquals(1, count("next_request_origins"))
     }
 
     @Test fun ordinaryObservationSuccessAtomicallyAcceptsCanonicalTimeShadowQueueAndReceipt() = runBlocking<Unit> {
-        val row = observation(); val oldLog = requireNotNull(db.metricLogDao().getLogByUuid(row.entityUuid))
+        val row = coreObservation(); val oldLog = requireNotNull(db.metricLogDao().getLogByUuid(row.entityUuid))
         val (store, delivery) = success(row)
         val original = transmission(NEXT_OPERATION, row.operationId).wireBytes.copyOf()
         assertUnaccepted(row)
@@ -578,7 +735,7 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
     }
 
     @Test fun exactAppliedAndAlreadyAppliedCallbacksAreEquivalentButChangedResultIsNot() = runBlocking<Unit> {
-        val row = observation(); val (store, delivery) = success(row)
+        val row = coreObservation(); val (store, delivery) = success(row)
         assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
         val repeated = delivery.copy(result = delivery.result.copy(results = listOf(delivery.result.results.single().copy(status = "already_applied"))))
         assertEquals(NextOperationAcceptance.REPLAYED, store.acceptOperation(repeated))
@@ -590,7 +747,7 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
     }
 
     @Test fun concurrentCallbacksConsumeExactlyOnce() = runBlocking<Unit> {
-        val row = observation(); val (store, delivery) = success(row)
+        val row = coreObservation(); val (store, delivery) = success(row)
         val outcomes = coroutineScope { listOf(async(Dispatchers.IO) { store.acceptOperation(delivery) },
             async(Dispatchers.IO) { store.acceptOperation(delivery) }).awaitAll() }
         assertEquals(setOf(NextOperationAcceptance.COMMITTED, NextOperationAcceptance.REPLAYED), outcomes.toSet())
@@ -691,7 +848,7 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
     }
 
     @Test fun linkSuccessPreservesEndpointsAndLaterLocalFlags() = runBlocking<Unit> {
-        producer().write(local()) { metrics().linkHabits(metric, setOf(habit.id)) }
+        coreLink()
         val row = db.syncOutboxDao().getAll().single(); val (store, delivery) = success(row)
         val link = db.habitMetricLinkDao().getLinkByUuid(row.entityUuid)!!
         producer().write(local()) { db.habitMetricLinkDao().upsert(link.copy(promptOnComplete = false)) }
@@ -703,7 +860,7 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
     }
 
     @Test fun missingOrMalformedCanonicalFactProofNeverAcknowledgesSuccess() = runBlocking<Unit> {
-        val row = observation(); val (store, delivery) = success(row)
+        val row = coreObservation(); val (store, delivery) = success(row)
         val result = delivery.result.results.single()
         val invalid = listOf(result.copy(entity = null), result.copy(revision = null), result.copy(revision = 0),
             result.copy(entity = JsonObject(result.entity!! - "received_at")),
@@ -719,7 +876,7 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
     }
 
     @Test fun changedSourceOrRemovedQueueWithoutReceiptCannotBecomeAnAcknowledgement() = runBlocking<Unit> {
-        val row = observation(); val (store, delivery) = success(row)
+        val row = coreObservation(); val (store, delivery) = success(row)
         db.openHelper.writableDatabase.execSQL("UPDATE sync_outbox SET lastError='changed' WHERE id=?", arrayOf<Any>(row.id))
         assertEquals(NextRequestException.Reason.SOURCE_CHANGED, (rejected { store.acceptOperation(delivery) } as NextRequestException).reason)
         assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, row.operationId))
@@ -729,7 +886,7 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
     }
 
     @Test fun changedDevicePermissionRevisionAndAuthenticationRejectLateAcceptance() = runBlocking<Unit> {
-        val row = observation(); val (store, delivery) = success(row)
+        val row = coreObservation(); val (store, delivery) = success(row)
         register(device = id(99))
         assertEquals(NextRequestException.Reason.STALE_ACCESS, (rejected { store.acceptOperation(delivery) } as NextRequestException).reason)
         register(permissions = setOf("sync.read"), revision = 2)
@@ -743,37 +900,38 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
         val row = db.syncOutboxDao().getAll().single(); val (store, delivery) = success(row)
         val before = db.metricDao().getMetricById(metric.id)
         val faults = listOf(
-            "BEFORE INSERT ON next_acceptances BEGIN SELECT RAISE(ABORT,'accept failed'); END",
-            "BEFORE INSERT ON next_acceptances BEGIN SELECT RAISE(IGNORE); END",
-            "AFTER INSERT ON next_acceptances BEGIN UPDATE next_acceptances SET resultHash='changed'; END",
-            "AFTER INSERT ON next_acceptances BEGIN UPDATE sync_outbox SET lastError='changed'; END",
-            "BEFORE DELETE ON sync_outbox BEGIN SELECT RAISE(ABORT,'consume failed'); END",
-            "BEFORE DELETE ON sync_outbox BEGIN SELECT RAISE(IGNORE); END",
-            "AFTER DELETE ON sync_outbox BEGIN UPDATE next_transmissions SET wireHash='changed'; END",
-            "AFTER DELETE ON sync_outbox BEGIN DELETE FROM next_acceptances; END",
-            "AFTER DELETE ON sync_outbox BEGIN UPDATE next_acceptances SET resultHash='changed'; END",
-            "AFTER DELETE ON sync_outbox BEGIN UPDATE sync_entity_state SET payloadHash='changed'; END")
+            NextCoreRequestNativeFault.Kind.RECEIPT_ABORT,
+            NextCoreRequestNativeFault.Kind.RECEIPT_IGNORE,
+            NextCoreRequestNativeFault.Kind.RECEIPT_HASH,
+            NextCoreRequestNativeFault.Kind.RECEIPT_QUEUE_ERROR,
+            NextCoreRequestNativeFault.Kind.QUEUE_ABORT,
+            NextCoreRequestNativeFault.Kind.QUEUE_IGNORE,
+            NextCoreRequestNativeFault.Kind.QUEUE_WIRE_HASH,
+            NextCoreRequestNativeFault.Kind.QUEUE_DELETE_RECEIPT,
+            NextCoreRequestNativeFault.Kind.QUEUE_RECEIPT_HASH,
+            NextCoreRequestNativeFault.Kind.QUEUE_SHADOW_HASH)
         for (fault in faults) {
-            db.openHelper.writableDatabase.execSQL("CREATE TRIGGER acceptance_fault $fault")
-            assertNotNull(rejected { store.acceptOperation(delivery) })
+            native.arm(fault, NextCoreRequestNativeFault.Targets(row.operationId, row.id, metric.id, metric.uuid, id(1)))
+            val failure = rejected { store.acceptOperation(delivery) }
+            assertNotNull(failure); native.requireTriggered(failure); native.requireWarmRollback()
             assertUnaccepted(row); assertEquals(before, db.metricDao().getMetricById(metric.id)); assertEquals(0, count("sync_entity_state"))
-            db.openHelper.writableDatabase.execSQL("DROP TRIGGER acceptance_fault")
         }
+        native.expectWarmRetry()
         assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
+        native.requireWarmRetryCommitted()
     }
 
     @Test fun acceptanceFinalCommitFailureIsNotSuccessAndColdRetryPreservesOriginalRequest() = runBlocking<Unit> {
-        val row = observation(); val (store, delivery) = success(row)
+        val row = coreObservation(); val (store, delivery) = success(row)
         val original = transmission(NEXT_OPERATION, row.operationId).wireBytes.copyOf()
-        val sql = db.openHelper.writableDatabase
-        sql.execSQL("CREATE TABLE acceptance_parent(id INTEGER PRIMARY KEY)")
-        sql.execSQL("CREATE TABLE acceptance_child(id INTEGER REFERENCES acceptance_parent(id) DEFERRABLE INITIALLY DEFERRED)")
-        sql.execSQL("CREATE TRIGGER acceptance_commit_fault AFTER INSERT ON next_acceptances BEGIN INSERT INTO acceptance_child VALUES(1); END")
-        assertTrue(rejected { store.acceptOperation(delivery) } is SQLiteConstraintException)
-        storage.reopen()
-        assertUnaccepted(row); assertEquals(0, count("acceptance_child")); assertEquals(0, count("sync_entity_state"))
+        native.arm(NextCoreRequestNativeFault.Kind.ACCEPTANCE_END,
+            NextCoreRequestNativeFault.Targets(row.operationId, row.id, metric.id, metric.uuid, id(1)))
+        val failure = rejected { store.acceptOperation(delivery) }
+        assertTrue(failure is SQLiteConstraintException); native.requireTriggered(failure)
+        storage.reopen(); assertTrue(db.openHelper.writableDatabase.isOpen)
+        native.requireColdFaultAbsent()
+        assertUnaccepted(row); assertEquals(0, count("sync_entity_state"))
         assertArrayEquals(original, transmission(NEXT_OPERATION, row.operationId).wireBytes)
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER acceptance_commit_fault")
         val (http, _) = channel { successReply(it) }
         assertEquals(NextOperationAcceptance.COMMITTED, sender(http).sendAndAcceptOperation(access(), row.operationId))
         storage.reopen()
@@ -781,7 +939,7 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
     }
 
     @Test fun corruptReceiptCannotAuthorizeReplayOrReinsertConsumedWork() = runBlocking<Unit> {
-        val row = observation(); val (store, delivery) = success(row)
+        val row = coreObservation(); val (store, delivery) = success(row)
         assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
         val receipt = db.nextRequestDao().acceptance(NEXT_OPERATION, row.operationId)!!
         for (statement in listOf("UPDATE next_acceptances SET resultJson='{}'",
@@ -797,7 +955,7 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
     }
 
     @Test fun rejectedDeleteResultKeepsPendingWorkAndNoCursor() = runBlocking<Unit> {
-        producer().write(local()) { metrics().deleteMetric(metric) }
+        coreDelete()
         val row = db.syncOutboxDao().getAll().single(); register(); val (http, _) = channel()
         val store = sender(http); val delivery = requireNotNull(store.sendOperation(access(), row.operationId))
         assertEquals("INVALID_PAYLOAD", delivery.result.results.single().errorCode)
@@ -810,7 +968,7 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
         val timerOrigin = db.nextRequestDao().origin(NEXT_TIMER, timer.commandId)
         val once = OneTimeTransmissionEntity(id(230), id(1), id(2), id(3), id(4), "original-once-bytes")
         db.completionFollowUpDao().insertTransmission(once)
-        val row = observation(); val (store, delivery) = success(row)
+        val row = coreObservation(); val (store, delivery) = success(row)
         assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
         storage.reopen()
         assertEquals(timer, db.timeLogDao().getTimerCommand(timer.id))
@@ -820,7 +978,7 @@ class NextCoreRequestStoreTest : NextCoreRequestFixture() {
     }
 
     @Test fun cancelledQueuedAcceptanceNeverCommitsBusinessShadowOrReceipt() = runBlocking<Unit> {
-        val row = observation(); val (store, delivery) = success(row)
+        val row = coreObservation(); val (store, delivery) = success(row)
         sessions.exclusive {
             val task = launch(start = CoroutineStart.UNDISPATCHED) { store.acceptOperation(delivery) }
             task.cancelAndJoin()

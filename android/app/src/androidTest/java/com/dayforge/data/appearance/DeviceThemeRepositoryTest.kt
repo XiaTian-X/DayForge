@@ -1,10 +1,13 @@
 package com.dayforge.data.appearance
 
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.dayforge.domain.service.AccountSessionCoordinator
 import com.dayforge.domain.appearance.DeviceCardStyle
 import com.dayforge.domain.appearance.DeviceThemeMode
 import com.dayforge.domain.appearance.ThemeVersionRef
@@ -12,8 +15,12 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.IOException
 import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -22,6 +29,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
@@ -54,6 +62,94 @@ class DeviceThemeRepositoryTest {
     @After fun cleanup() = runBlocking {
         scope.coroutineContext[Job]!!.cancelAndJoin()
         assertTrue(parent.deleteRecursively())
+    }
+
+    @Test fun automaticThemeWritesFinishBeforeSessionCaptureWithoutOwningTheAccountWhileWaiting() = runBlocking<Unit> {
+        val readingAsset = CompletableDeferred<Unit>()
+        val releaseAsset = CountDownLatch(1)
+        val builtIns = BuiltInThemes { path ->
+            if (readingAsset.complete(Unit)) {
+                check(releaseAsset.await(45, TimeUnit.SECONDS)) { "Initial theme read was never released" }
+            }
+            app.targetContext.assets.open(path)
+        }
+        val repository = DeviceThemeRepository(preferences, files, builtIns)
+        val sessions = AccountSessionCoordinator()
+        val snapshots = AtomicInteger()
+        val initial = async(Dispatchers.IO) { repository.initialize() }
+        try {
+            withTimeout(45_000) {
+                readingAsset.await()
+                val cancelled = launch(start = CoroutineStart.UNDISPATCHED) {
+                    DeviceThemeRepository.withSessionPreparation<Unit>(sessions) { error("Cancelled capture executed") }
+                }
+                val first = async(start = CoroutineStart.UNDISPATCHED) {
+                    DeviceThemeRepository.withSessionPreparation(sessions) {
+                        snapshots.incrementAndGet()
+                        preferences.data.first()
+                    }
+                }
+                // Both callers have reached their first suspension. The account must be freely
+                // acquirable while the initializer is still stopped inside its first asset read.
+                sessions.exclusive {
+                    assertTrue(cancelled.isActive)
+                    assertTrue(first.isActive)
+                    assertEquals(0, snapshots.get())
+                }
+                cancelled.cancelAndJoin()
+                releaseAsset.countDown()
+                val loaded = initial.await()
+                val confirmed = first.await()
+                assertEquals(1, snapshots.get())
+                assertEquals(preferences.data.first(), confirmed)
+                assertEquals(loaded.saved, repository.savedSelection())
+                assertNotNull(repository.catalog())
+            }
+        } finally {
+            releaseAsset.countDown()
+        }
+    }
+
+    @Test fun automaticInitializationCannotStartInsidePreparationAndFailureReleasesBothLocks() = runBlocking<Unit> {
+        val reached = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val initializationReads = AtomicInteger()
+        val observed = object : DataStore<Preferences> by preferences {
+            override val data: Flow<Preferences>
+                get() {
+                    initializationReads.incrementAndGet()
+                    return preferences.data
+                }
+        }
+        val repository = DeviceThemeRepository(observed, files, builtIns)
+        val sessions = AccountSessionCoordinator()
+        val original = IOException("synthetic preparation failed")
+        withTimeout(45_000) {
+            val failed = async(start = CoroutineStart.UNDISPATCHED) {
+                try {
+                    DeviceThemeRepository.withSessionPreparation<Unit>(sessions) {
+                        reached.complete(Unit)
+                        release.await()
+                        throw original
+                    }
+                    null
+                } catch (error: IOException) { error }
+            }
+            try {
+                reached.await()
+                val initial = async(start = CoroutineStart.UNDISPATCHED) { repository.initialize() }
+                assertTrue(initial.isActive)
+                assertEquals(0, initializationReads.get())
+                release.complete(Unit)
+                assertSame(original, failed.await())
+                val loaded = initial.await()
+                assertTrue(initializationReads.get() > 0)
+                assertTrue(sessions.exclusive { true })
+                assertEquals(loaded.saved, repository.savedSelection())
+            } finally {
+                release.complete(Unit)
+            }
+        }
     }
 
     @Test fun coldFrozenStartLoadsOnlySavedChoiceWithoutRecoveringCatalogOrMutatingFiles() = runBlocking<Unit> {

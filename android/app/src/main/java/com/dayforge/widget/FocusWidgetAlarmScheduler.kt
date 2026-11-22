@@ -2,13 +2,23 @@ package com.dayforge.widget
 
 import android.app.AlarmManager
 import android.app.PendingIntent
+import android.appwidget.AppWidgetManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
-import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.service.CountingSlotCalculator
+import androidx.work.await
+import com.dayforge.widget.checkin.CheckInWidgetReceiver
+import com.dayforge.widget.counting.CountingWidgetReceiver
+import com.dayforge.widget.focus.FocusWidgetReceiver
+import com.dayforge.widget.motivation.MotivationWidgetReceiver
+import com.dayforge.widget.progress.ProgressWidgetReceiver
+import com.dayforge.widget.timer.TimerWidgetReceiver
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import java.time.ZonedDateTime
 
 /**
@@ -47,22 +57,62 @@ object FocusWidgetAlarmScheduler {
     }
 
     /** Preparation may call account-coordinated count readers; only platform IO owns the lock. */
-    internal suspend fun scheduleNextRefresh(context: Context, publication: suspend (suspend () -> Unit) -> Boolean) {
+    internal suspend fun scheduleNextRefresh(context: Context, publication: suspend (suspend () -> Unit) -> Boolean) =
+        com.dayforge.di.WidgetEntryPoint.withGraph(context) { scheduleInGraph(context, publication) }
+    private suspend fun scheduleInGraph(context: Context, publication: suspend (suspend () -> Unit) -> Boolean) {
         val appContext = context.applicationContext
-        val nextRefreshTime = prepareNextRefresh(appContext)
-        publication {
-            if (nextRefreshTime == null) cancelScheduledRefresh(appContext)
-            else {
-                val alarmManager = appContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-                scheduleAlarmAt(alarmManager, appContext, nextRefreshTime)
+        reconcileConsumers(appContext, publication) { prepareNextRefresh(appContext) }
+    }
+
+    /** Platform inventory only; no data, permission or source-health proof is returned.
+     * Query every provider. A failed/null platform response is unknown, never an empty set. */
+    private fun hasDisplayConsumers(context: Context): Boolean {
+        val manager = requireNotNull(AppWidgetManager.getInstance(context)) { "WIDGET_PRESENCE_SERVICE_UNAVAILABLE" }
+        var present = false
+        for (receiver in listOf(CheckInWidgetReceiver::class.java, CountingWidgetReceiver::class.java,
+            TimerWidgetReceiver::class.java, ProgressWidgetReceiver::class.java,
+            MotivationWidgetReceiver::class.java, FocusWidgetReceiver::class.java)) {
+            val ids = requireNotNull(manager.getAppWidgetIds(ComponentName(context, receiver))) { "WIDGET_PRESENCE_UNAVAILABLE" }
+            if (ids.isNotEmpty()) present = true
+        }
+        return present
+    }
+
+    /** Preparation stays outside the account publication lock. Zero consumers can omit only
+     * that preparation; the original fresh publication still owns every alarm set/cancel. */
+    private suspend fun reconcileConsumers(context: Context,
+        publication: suspend (suspend () -> Unit) -> Boolean, prepare: suspend () -> ZonedDateTime?) {
+        currentCoroutineContext().ensureActive()
+        val prepared = hasDisplayConsumers(context)
+        val nextRefreshTime = if (prepared) prepare() else null
+        var requeue = false
+        val published = publication {
+            currentCoroutineContext().ensureActive()
+            val present = hasDisplayConsumers(context)
+            currentCoroutineContext().ensureActive()
+            when {
+                !present -> cancelScheduledRefresh(context)
+                !prepared -> requeue = true
+                nextRefreshTime == null -> cancelScheduledRefresh(context)
+                else -> {
+                    val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+                    scheduleAlarmAt(alarmManager, context, nextRefreshTime)
+                }
             }
+        }
+        if (published && requeue) {
+            // A newly installed consumer needs a new worker's fresh preparation. Confirm only
+            // durable enqueue after leaving publication; never await that successor's execution.
+            currentCoroutineContext().ensureActive()
+            requireNotNull(WidgetRefreshScheduler.request(context)) { "WIDGET_REFRESH_ENQUEUE_UNAVAILABLE" }.await()
+            currentCoroutineContext().ensureActive()
         }
     }
 
     private suspend fun prepareNextRefresh(appContext: Context): ZonedDateTime? {
 
         // Get all active habits with bestTime
-        val database = HabitDatabaseProvider.getInstance(appContext)
+        val database = com.dayforge.di.WidgetEntryPoint.database(appContext)
         val currentTime = ZonedDateTime.now()
         val currentMinutes = currentTime.hour * 60 + currentTime.minute
         val activeHabits = database.habitDao().getVisibleHabitsOnce().filter {
@@ -255,18 +305,17 @@ object FocusWidgetAlarmScheduler {
     internal suspend fun scheduleNextRefreshForActiveTimer(context: Context,
         publication: suspend (suspend () -> Unit) -> Boolean) {
         val appContext = context.applicationContext
-        val currentTime = ZonedDateTime.now()
+        reconcileConsumers(appContext, publication) {
+            val currentTime = ZonedDateTime.now()
 
-        // Schedule refresh at next minute boundary
-        val nextMinuteRefresh = currentTime
-            .plusMinutes(1)
-            .withSecond(0)
-            .withNano(0)
+            // Schedule refresh at next minute boundary
+            val nextMinuteRefresh = currentTime
+                .plusMinutes(1)
+                .withSecond(0)
+                .withNano(0)
 
-        Log.d(TAG, "Active timer mode: scheduling refresh at next minute ($nextMinuteRefresh)")
-        publication {
-            val alarmManager = appContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            scheduleAlarmAt(alarmManager, appContext, nextMinuteRefresh)
+            Log.d(TAG, "Active timer mode: scheduling refresh at next minute ($nextMinuteRefresh)")
+            nextMinuteRefresh
         }
     }
 }

@@ -1,6 +1,7 @@
 package com.dayforge.data.repository
 
 import androidx.room.withTransaction
+import androidx.lifecycle.viewModelScope
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.model.HabitDraft
@@ -18,6 +19,7 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -30,26 +32,37 @@ import org.junit.runner.RunWith
 class CalendarConsumerRefreshTest : NextObjectEditorFixture() {
     private data class Models(val dashboard: DashboardViewModel, val nested: NestedViewModel,
         val profile: ProfileViewModel, val detail: HabitDetailViewModel)
-    private suspend fun models(prefs: PreferencesManager, completion: HabitCompletionCoordinator? = null): Models {
+    private suspend fun models(prefs: PreferencesManager, completion: HabitCompletionCoordinator? = null,
+        gate: CountActionGate? = null): Models {
         val repo = creatingHabits(); val metrics = creatingMetrics()
         val count = CountHistoryReader(db, tokens, sessions)
         val timerWriter = NextTimerWriter(db, tokens, sessions)
         val failure = FailureChecker(db.completionDao(), db.timeLogDao(), count)
         val status = HabitStatusCalculator(failure, db.completionDao(), db.timeLogDao(), timerWriter = timerWriter, countHistoryReader = count)
-        val linked = LinkedMetricCoordinator(app, prefs, metrics, repo)
+        val linked = LinkedMetricCoordinator(app, prefs, metrics, repo,
+            habitPreferences = HabitPreferenceRepository(db, tokens, sessions, prefs,
+                ReplicaPresentationRepository(db, tokens, sessions)))
         val complete = completion ?: HabitCompletionCoordinator(app, CheckInService(repo, db.completionDao(), db.timeLogDao()), repo, metrics)
         val timers = HabitTimerCoordinator(TimerManager(app, db.habitDao(), db.timeLogDao(), timerWriter),
             ActiveTimerStateProvider(db.timeLogDao(), repo, app, timerWriter))
         return withContext(Dispatchers.Main) {
             Models(own(DashboardViewModel(app, repo, complete, HabitDeletionCoordinator(app, repo),
                 DashboardHabitListBuilder(status), DashboardTimeWindowTicker(repo, prefs), HabitLifecycleCoordinator(app, repo),
-                timers, db.timeLogDao(), db.habitDao(), prefs, db.completionDao(), metrics, linked, MetricOverviewProvider(metrics))),
+                timers, db.timeLogDao(), db.habitDao(), prefs, db.completionDao(), metrics, linked, MetricOverviewProvider(metrics),
+                DashboardReadRepository(db, tokens, sessions, ReplicaPresentationRepository(db, tokens, sessions),
+                    count, CheckHistoryReader(db, tokens, sessions)), gate)),
                 own(NestedViewModel(app, db.habitDao(), db.timeLogDao(), repo,
                     NestedHabitTreeBuilder(db.habitDao(), db.completionDao(), db.timeLogDao(), failure, timerWriter = timerWriter, countHistoryReader = count),
-                    complete, HabitDeletionCoordinator(app, repo), prefs, linked, HabitLifecycleCoordinator(app, repo), timers)),
+                    complete, HabitDeletionCoordinator(app, repo), prefs, linked, HabitLifecycleCoordinator(app, repo), timers, gate)),
                 own(ProfileViewModel(repo, db.timeLogDao(), status, prefs)),
                 own(HabitDetailViewModel(app, repo, prefs, db.timeLogDao(), db.completionDao(), db.habitDao(),
-                    db.habitMetricLinkDao(), db.metricDao(), db.metricLogDao())).also { it.loadHabit(habit.id) })
+                    db.habitMetricLinkDao(), db.metricDao(), db.metricLogDao(), countActions = gate)).also { it.loadHabit(habit.id) })
+                .also { visible ->
+                    // Model visible screens, not an abandoned StateFlow.value observer.
+                    visible.dashboard.habitsWithStats.launchIn(visible.dashboard.viewModelScope)
+                    visible.nested.topLevelHabitsWithChildren.launchIn(visible.nested.viewModelScope)
+                    visible.profile.todayProgress.launchIn(visible.profile.viewModelScope)
+                }
         }
     }
     private suspend fun setupCount() {
@@ -126,16 +139,58 @@ class CalendarConsumerRefreshTest : NextObjectEditorFixture() {
     @Test fun staleCountActionsUseTheExistingErrorRouteAndDoNotCrashOrCreateRecords() = runBlocking<Unit> {
         setupCount()
         val completion = mockk<HabitCompletionCoordinator>()
-        coEvery { completion.incrementCount(any(), any()) } throws IllegalStateException("COUNT_DAY_INVALID")
-        coEvery { completion.decrementCount(any()) } throws IllegalStateException("COUNT_DAY_INVALID")
+        coEvery { completion.incrementCount(any(), any(), any()) } throws IllegalStateException("COUNT_DAY_INVALID")
+        coEvery { completion.decrementCount(any(), any()) } throws IllegalStateException("COUNT_DAY_INVALID")
         val models = models(preferences, completion)
+        models.ready()
         val facts = db.completionDao().getByHabitOnce(habit.id); val queue = db.syncOutboxDao().getAll()
         withContext(Dispatchers.Main) {
             models.dashboard.incrementCount(habit.id); models.dashboard.decrementCount(habit.id)
             models.nested.incrementCount(habit.id); models.nested.decrementCount(habit.id)
         }
-        coVerify(exactly = 2) { completion.incrementCount(habit.id, any()) }
-        coVerify(exactly = 2) { completion.decrementCount(habit.id) }
+        coVerify(exactly = 2) { completion.incrementCount(habit.id, any(), any()) }
+        coVerify(exactly = 2) { completion.decrementCount(habit.id, any()) }
         assertEquals(facts, db.completionDao().getByHabitOnce(habit.id)); assertEquals(queue, db.syncOutboxDao().getAll())
+    }
+
+    @Test fun actualHomeGoalAndDetailEntriesShareCountAdmissionAndResumeNormally() = runBlocking<Unit> {
+        setupCount()
+        var clock = 0L
+        val gate = CountActionGate(tokens, { clock }, { _, _ -> })
+        val models = models(preferences, gate = gate)
+        models.ready()
+        val identity = requireNotNull(models.dashboard.habitsWithStats.value.single { it.habit.id == habit.id }.countActionIdentity)
+        val lease = gate.tryAcquire(identity)!!
+        val before = db.syncOutboxDao().getAll()
+        withContext(Dispatchers.Main) {
+            repeat(5) {
+                models.dashboard.incrementCount(habit.id); models.dashboard.decrementCount(habit.id)
+                models.dashboard.logCompletion(habit.id)
+                models.nested.incrementCount(habit.id); models.nested.decrementCount(habit.id)
+                models.nested.logCompletion(habit.id); models.detail.logCompletion()
+            }
+        }
+        assertEquals(before, db.syncOutboxDao().getAll())
+        clock = 300; gate.release(lease)
+        withContext(Dispatchers.Main) { models.dashboard.incrementCount(habit.id); clock = 600 }
+        withTimeout(10_000) {
+            models.dashboard.habitsWithStats.first { rows -> rows.any { it.habit.id == habit.id && it.actualTodayCount == 7L } }
+            gate.busyHabitIds.first { it.isEmpty() }
+        }
+        withContext(Dispatchers.Main) { models.nested.decrementCount(habit.id); clock = 900 }
+        withTimeout(10_000) {
+            models.detail.uiState.first { it.countHistory?.todayQuantity == 6L }
+            gate.busyHabitIds.first { it.isEmpty() }
+        }
+        withContext(Dispatchers.Main) { models.detail.logCompletion(2); clock = 1200 }
+        withTimeout(10_000) {
+            models.detail.uiState.first { it.countHistory?.todayQuantity == 8L && it.lastCompletionId != null }
+            gate.busyHabitIds.first { it.isEmpty() }
+        }
+        withContext(Dispatchers.Main) { models.detail.undoCompletion(); clock = 1500 }
+        withTimeout(10_000) { models.detail.uiState.first { it.countHistory?.todayQuantity == 6L && it.lastCompletionId == null } }
+        assertEquals(6, db.completionDao().getByHabitOnce(habit.id).sumOf { it.value })
+        assertEquals(before.size + 4, db.syncOutboxDao().getAll().size)
+        assertNull(models.detail.uiState.value.errorMessage)
     }
 }

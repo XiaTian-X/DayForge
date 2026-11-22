@@ -67,8 +67,10 @@ class DeviceWidgetThemeTest {
         withTimeout(5000) { controller.state.first { it is DeviceThemeLoadState.Ready && it.theme.saved == result.saved } }
     }
     private suspend fun background(context: Context): Int {
+        // This Glance render checks a settled, one-shot theme snapshot.
+        val themeState = controller.state.value
         val views = withTimeout(5000) { GlanceRemoteViews().compose(context, DpSize(32.dp, 32.dp)) {
-            DeviceWidgetThemeSnapshot(context, controller.state.value) {
+            DeviceWidgetThemeSnapshot(context, themeState) {
                 Box(GlanceModifier.size(32.dp).background(GlanceTheme.colors.background)) {}
             }
         }.remoteViews }
@@ -123,8 +125,9 @@ class DeviceWidgetThemeTest {
         assertTrue(File(directory, "theme-definitions-v1/${ref.themeId}-1.json").delete())
         controller.retry()
         withTimeout(5000) { controller.state.first { it is DeviceThemeLoadState.Failed } }
+        val themeState = controller.state.value
         val views = withTimeout(5000) { GlanceRemoteViews().compose(context, DpSize(160.dp, 80.dp)) {
-            DeviceWidgetThemeSnapshot(context, controller.state.value) { Text("normal-content-must-not-render") }
+            DeviceWidgetThemeSnapshot(context, themeState) { Text("normal-content-must-not-render") }
         }.remoteViews }
         app.runOnMainSync {
             val root = views.apply(context, FrameLayout(context))

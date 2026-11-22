@@ -69,7 +69,7 @@ fun TokenScreen(
             )
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = { showCreateDialog = true }) {
+            FloatingActionButton(onClick = { if (!isLoading) showCreateDialog = true }) {
                 Icon(Icons.Default.Add, contentDescription = stringResource(R.string.token_create))
             }
         },
@@ -110,6 +110,7 @@ fun TokenScreen(
                     items(tokens, key = { it.id }) { token ->
                         TokenCard(
                             token = token,
+                            enabled = !isLoading,
                             onDelete = { showDeleteDialog = token }
                         )
                     }
@@ -128,6 +129,7 @@ fun TokenScreen(
     // Create dialog
     if (showCreateDialog) {
         CreateTokenDialog(
+            busy = isLoading,
             onDismiss = { showCreateDialog = false },
             onCreate = { name, expiresInDays ->
                 viewModel.createToken(name, expiresInDays)
@@ -143,7 +145,7 @@ fun TokenScreen(
             title = { Text(stringResource(R.string.token_delete_title)) },
             text = { Text(stringResource(R.string.token_delete_message, token.name)) },
             confirmButton = {
-                TextButton(onClick = {
+                TextButton(enabled = !isLoading, onClick = {
                     viewModel.deleteToken(token.id)
                     showDeleteDialog = null
                 }) {
@@ -171,7 +173,8 @@ fun TokenScreen(
 @Composable
 fun TokenCard(
     token: ApiTokenListResponse,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    enabled: Boolean = true
 ) {
     Card(
         modifier = Modifier.fillMaxWidth()
@@ -197,7 +200,7 @@ fun TokenCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                IconButton(onClick = onDelete) {
+                IconButton(enabled = enabled, onClick = onDelete) {
                     Icon(
                         Icons.Default.Delete,
                         contentDescription = stringResource(R.string.token_delete),
@@ -230,7 +233,8 @@ fun TokenCard(
 @Composable
 fun CreateTokenDialog(
     onDismiss: () -> Unit,
-    onCreate: (String, Int?) -> Unit
+    onCreate: (String, Int?) -> Unit,
+    busy: Boolean = false
 ) {
     var name by remember { mutableStateOf("") }
     var expiresInDays by remember { mutableStateOf("") }
@@ -266,7 +270,7 @@ fun CreateTokenDialog(
                         onCreate(name, days)
                     }
                 },
-                enabled = name.isNotBlank()
+                enabled = name.isNotBlank() && !busy
             ) {
                 Text(stringResource(R.string.action_create))
             }

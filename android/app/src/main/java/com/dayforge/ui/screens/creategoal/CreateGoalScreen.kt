@@ -38,10 +38,14 @@ fun CreateGoalScreen(
     viewModel: CreateGoalViewModel = hiltViewModel(),
     creationAuthority: com.dayforge.data.repository.ObjectCreationAuthority? = null,
     onNavigateBack: () -> Unit,
-    onCreateChildHabit: (parentUuid: String) -> Unit  // Navigate to CreateHabitScreen with parentUuid
+    onCreateChildHabit: (parentUuid: String) -> Unit, // Navigate to CreateHabitScreen with parentUuid
+    creationInput: com.dayforge.data.local.DatabaseCreationInput? = null
 ) {
     val uiState by viewModel.uiState.collectAsState(context = kotlinx.coroutines.Dispatchers.Main)
-    LaunchedEffect(creationAuthority) { creationAuthority?.let(viewModel::beginCreation) }
+    LaunchedEffect(creationInput, creationAuthority) {
+        if (creationInput != null) viewModel.beginSource(creationInput)
+        else creationAuthority?.let(viewModel::beginCreation)
+    }
 
     Scaffold(
         topBar = {

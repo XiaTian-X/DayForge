@@ -1,7 +1,10 @@
 package com.dayforge.ui.screens.dashboard
 
+import kotlinx.coroutines.launch
+
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import android.content.Context
+import android.widget.Toast
 import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.local.HabitDatabase
@@ -49,6 +52,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -112,7 +116,7 @@ class DashboardViewModelTest {
             every { filterMode } returns filterModeFlow
         }
         // Create a real CheckInService that uses the repository
-        checkInService = CheckInService(repository, completionDao, timeLogDao)
+        checkInService = io.mockk.spyk(CheckInService(repository, completionDao, timeLogDao))
         // Create HabitStatusCalculator
         val failureChecker = FailureChecker(completionDao, timeLogDao)
         val habitStatusCalculator = HabitStatusCalculator(failureChecker, completionDao, timeLogDao)
@@ -140,13 +144,23 @@ class DashboardViewModelTest {
                 habitPreferences = habitPreferences)
         val completionCoordinator =
             HabitCompletionCoordinator(context, checkInService, repository, metricRepository)
+        // The real ticker computes midnight/window delays from the wall clock. runTest
+        // must not skip those delays while Room is still reading on real threads: that
+        // would repeatedly cancel mapLatest without the wall clock advancing at all.
+        // Keep its real filter/DB sources and cancellation; only align its delay clock.
+        // Screen sharing still uses testDispatcher for explicit offscreen expiry below.
+        val realTicks = DashboardTimeWindowTicker(repository, mockPreferencesManager)
+            .observe().flowOn(Dispatchers.Default)
+        val wallClockTicker = mockk<DashboardTimeWindowTicker> {
+            every { observe() } returns realTicks
+        }
         viewModel = DashboardViewModel(
             context,
             repository,
             completionCoordinator,
             HabitDeletionCoordinator(context, repository),
             DashboardHabitListBuilder(habitStatusCalculator),
-            DashboardTimeWindowTicker(repository, mockPreferencesManager),
+            wallClockTicker,
             HabitLifecycleCoordinator(context, repository),
             HabitTimerCoordinator(
                 TimerManager(context, habitDao, timeLogDao),
@@ -180,6 +194,62 @@ class DashboardViewModelTest {
         val initialHabits = viewModel.habitsWithStats.value
 
         assertTrue("Initial habits should be empty list", initialHabits.isEmpty())
+    }
+
+    @Test fun completionEntryDistinguishesCommittedRefreshFailureFromWriteFailure() = runTest {
+        io.mockk.mockkStatic(Toast::class)
+        try {
+            val id = repository.createHabit(name = "Error feedback count", description = "", habitType = HabitType.COUNTING,
+                iconResId = 1, colorHex = "#123456", schedule = HabitSchedule.Daily)
+            val subscription = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { viewModel.habitsWithStats.collect {} }
+            awaitCondition { viewModel.habitsWithStats.value.any { it.habit.id == id } }
+            val messages = mutableListOf<CharSequence>()
+            every { Toast.makeText(context, capture(messages), Toast.LENGTH_LONG) } returns mockk(relaxed = true)
+            coEvery { checkInService.incrementCount(context, id) } throws
+                com.dayforge.domain.service.CommittedActionRefreshFailed(IllegalStateException("REFRESH_FAILED"))
+            viewModel.incrementCount(id)
+            awaitCondition { messages.size == 1 && id !in viewModel.busyHabitIds.value }
+            assertEquals(context.getString(com.dayforge.R.string.record_saved_refresh_failed), messages.single())
+            coEvery { checkInService.incrementCount(context, id) } throws IllegalStateException("WRITE_DENIED")
+            viewModel.incrementCount(id)
+            awaitCondition { messages.size == 2 && id !in viewModel.busyHabitIds.value }
+            assertEquals(context.getString(com.dayforge.R.string.metric_error_record_failed, "WRITE_DENIED"), messages.last())
+            subscription.cancel()
+        } finally { io.mockk.unmockkStatic(Toast::class) }
+    }
+
+    @Test fun acceptedIncrementRetainsGoalAndMetricPromptAfterVisibleListExpires() = runTest {
+        val metricId = metricDao.insert(MetricEntity(name = "Linked", unit = "kg", iconResId = 1, colorHex = "#123456"))
+        val habitId = repository.createHabit(name = "Offscreen count", description = "", habitType = HabitType.COUNTING,
+            iconResId = 1, colorHex = "#123456", schedule = HabitSchedule.Daily, targetValue = 1,
+            targetCycles = 1, selectedMetricIds = setOf(metricId))
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val actual = CheckInService(repository, completionDao, timeLogDao)
+        coEvery { checkInService.incrementCount(context, habitId) } coAnswers {
+            release.await()
+            actual.incrementCount(context, habitId)
+        }
+        viewModel.habitsWithStats.test {
+            while (awaitItem().none { it.habit.id == habitId }) { }
+            viewModel.incrementCount(habitId)
+            assertTrue(habitId in viewModel.busyHabitIds.value)
+            cancelAndIgnoreRemainingEvents()
+        }
+        testDispatcher.scheduler.advanceTimeBy(1_001)
+        testDispatcher.scheduler.runCurrent()
+        assertTrue(viewModel.habitsWithStats.value.isEmpty())
+        release.complete(Unit)
+        awaitCondition { habitId !in viewModel.busyHabitIds.value }
+        assertEquals(1, completionDao.getByHabitOnce(habitId).size)
+        assertTrue(viewModel.showGoalDialog.value)
+        assertEquals(habitId, viewModel.goalHabitId.value)
+        assertEquals(1, viewModel.goalTarget.value)
+        assertEquals(metricId, viewModel.postCheckInState.value?.linkedMetrics?.single()?.metricId)
+        viewModel.habitsWithStats.test {
+            while (awaitItem().none { it.habit.id == habitId && it.completedToday }) { }
+            cancelAndIgnoreRemainingEvents()
+        }
+        assertTrue(viewModel.showGoalDialog.value)
     }
 
     @Test
@@ -573,10 +643,13 @@ class DashboardViewModelTest {
             assertEquals(1, viewModel.goalProgress.value)
             assertEquals(1, viewModel.goalTarget.value)
 
+            // The real dialog disables actions until the originating check-in has finished.
+            awaitCondition { habitId !in viewModel.busyHabitIds.value }
             viewModel.dismissGoalDialog()
             awaitGoalDialogVisibility(visible = false)
             assertEquals(FailMode.LOOSE, repository.getHabitById(habitId)?.failMode)
 
+            awaitCondition { habitId !in viewModel.busyHabitIds.value }
             viewModel.showReactivationDialog(habitId)
             viewModel.showReactivationDialog.first { it }
             assertTrue(viewModel.showReactivationDialog.value)

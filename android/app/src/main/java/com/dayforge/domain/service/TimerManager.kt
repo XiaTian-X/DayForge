@@ -17,18 +17,38 @@ import javax.inject.Inject
  * Shared timer management logic extracted from DashboardViewModel and NestedViewModel.
  * Handles starting, pausing, resuming, and stopping timers.
  */
-class TimerManager @Inject constructor(
-    @param:ApplicationContext private val context: Context,
-    private val habitDao: HabitDao,
-    private val timeLogDao: TimeLogDao,
-    private val timerWriter: NextTimerWriter? = null,
-    private val timerHistoryReader: com.dayforge.data.repository.TimerHistoryReader? = null
+class TimerManager private constructor(
+    private val context: Context,
+    private val fixedHabitDao: HabitDao?,
+    private val fixedTimeLogDao: TimeLogDao?,
+    private val fixedTimerWriter: NextTimerWriter?,
+    private val fixedTimerHistoryReader: com.dayforge.data.repository.TimerHistoryReader?,
+    private val databases: com.dayforge.data.local.DatabaseRuntimeHost?
 ) {
+    constructor(context: Context, habitDao: HabitDao, timeLogDao: TimeLogDao,
+        timerWriter: NextTimerWriter? = null, timerHistoryReader: com.dayforge.data.repository.TimerHistoryReader? = null) :
+        this(context, habitDao, timeLogDao, timerWriter, timerHistoryReader, null)
+    @Inject internal constructor(@ApplicationContext context: Context, databases: com.dayforge.data.local.DatabaseRuntimeHost) :
+        this(context, null, null, null, null, databases)
+    private val habitDao get() = fixedHabitDao ?: requireNotNull(databases).boundGraph().habitDao
+    private val timeLogDao get() = fixedTimeLogDao ?: requireNotNull(databases).boundGraph().timeLogDao
+    private val timerWriter get() = if (databases == null) fixedTimerWriter else databases.boundGraph().nextTimerWriter
+    private val timerHistoryReader get() = if (databases == null) fixedTimerHistoryReader else databases.boundGraph().timerHistoryReader
+
     /** Restores foreground execution for a persisted running or paused timer. */
     suspend fun recoverRunningTimer() {
+        if (databases == null) recoverRunningTimerInGraph()
+        else databases.withGraph(com.dayforge.data.local.DatabaseRuntimeHost.Work.CONTROL) { recoverRunningTimerInGraph() }
+    }
+    private suspend fun recoverRunningTimerInGraph() {
         val activeLog = timeLogDao.getActiveTimeLog() ?: return
         val habit = habitDao.getHabitById(activeLog.habitId) ?: return
-        val intent = Intent(context, TimerService::class.java).apply {
+        val intent = if (databases != null) {
+            // This method is an explicit system read/recovery entry, not an old user action.
+            // The existing null-action service path reads and authenticates persisted state;
+            // it must never treat an active-session claim as a new START request.
+            Intent(context, TimerService::class.java)
+        } else Intent(context, TimerService::class.java).apply {
             action = TimerService.ACTION_START
             putExtra(TimerService.EXTRA_HABIT_ID, activeLog.habitId)
             putExtra(TimerService.EXTRA_TARGET_MINUTES, habit.targetValue)
@@ -43,13 +63,19 @@ class TimerManager @Inject constructor(
      * @param habitId ID of the habit to start timer for
      * @param targetMinutes Target duration in minutes
      */
-    suspend fun startTimer(habitId: Long, targetMinutes: Int, authority: TimerActionAuthority? = null) {
-        timerWriter?.requireAction(habitId, authority)
+    suspend fun startTimer(habitId: Long, targetMinutes: Int, authority: TimerActionAuthority? = null,
+        expectedHabit: com.dayforge.data.local.entity.HabitEntity? = null) {
+        val legacy = if (databases != null && authority == null) {
+            val original = requireNotNull(expectedHabit) { "DATABASE_EPOCH_INPUT_REQUIRED" }
+            check(original.id == habitId && original.appearance == null) { "DATABASE_EPOCH_SELECTION_CHANGED" }
+            requireNotNull(timerWriter).captureLegacyForDisplay(original, timeLogDao.getActiveTimeLogForHabit(habitId))
+        } else null
+        timerWriter?.requireAction(habitId, authority, legacy)
         val todayStart = DateTimeUtils.startOfDayMillis()
         val todayEnd = DateTimeUtils.startOfNextDayMillis(todayStart)
         val habit = habitDao.getHabitById(habitId) ?: return
         val completedSeconds: Long = if (habit.appearance != null) requireNotNull(timerHistoryReader) { "TIMER_READER_REQUIRED" }
-            .read(habit).todaySeconds else timeLogDao.getCompletedDurationSecondsForDate(
+            .readProjection(habit).todaySeconds else timeLogDao.getCompletedDurationSecondsForDate(
             habitId, java.time.LocalDate.now().toString(), todayStart, todayEnd
         ).toLong()
         val targetSeconds = targetMinutes * 60
@@ -62,7 +88,7 @@ class TimerManager @Inject constructor(
             action = TimerService.ACTION_START
             putExtra(TimerService.EXTRA_HABIT_ID, habitId)
             putExtra(TimerService.EXTRA_TARGET_MINUTES, targetMinutes)
-            authority?.attach(this)
+            authority?.attach(this); legacy?.attach(this)
         }
         ContextCompat.startForegroundService(context, intent)
     }
@@ -72,12 +98,17 @@ class TimerManager @Inject constructor(
      * @param habitId Current habit ID
      * @param targetMinutes Current target minutes
      */
-    fun pauseTimer(habitId: Long, targetMinutes: Int, authority: TimerActionAuthority? = null) {
+    fun pauseTimer(habitId: Long, targetMinutes: Int, authority: TimerActionAuthority? = null,
+        legacyClaim: com.dayforge.data.repository.LegacyWidgetTimerClaim? = null) {
+        if (databases != null) {
+            databases.boundGraph()
+            check(authority != null || legacyClaim != null) { "DATABASE_EPOCH_INPUT_REQUIRED" }
+        }
         val intent = Intent(context, TimerService::class.java).apply {
             action = TimerService.ACTION_PAUSE
             putExtra(TimerService.EXTRA_HABIT_ID, habitId)
             putExtra(TimerService.EXTRA_TARGET_MINUTES, targetMinutes)
-            authority?.attach(this)
+            authority?.attach(this); legacyClaim?.attach(this)
         }
         context.startService(intent)
     }
@@ -87,12 +118,17 @@ class TimerManager @Inject constructor(
      * @param habitId Current habit ID
      * @param targetMinutes Current target minutes
      */
-    fun resumeTimer(habitId: Long, targetMinutes: Int, authority: TimerActionAuthority? = null) {
+    fun resumeTimer(habitId: Long, targetMinutes: Int, authority: TimerActionAuthority? = null,
+        legacyClaim: com.dayforge.data.repository.LegacyWidgetTimerClaim? = null) {
+        if (databases != null) {
+            databases.boundGraph()
+            check(authority != null || legacyClaim != null) { "DATABASE_EPOCH_INPUT_REQUIRED" }
+        }
         val intent = Intent(context, TimerService::class.java).apply {
             action = TimerService.ACTION_RESUME
             putExtra(TimerService.EXTRA_HABIT_ID, habitId)
             putExtra(TimerService.EXTRA_TARGET_MINUTES, targetMinutes)
-            authority?.attach(this)
+            authority?.attach(this); legacyClaim?.attach(this)
         }
         context.startService(intent)
     }
@@ -107,9 +143,11 @@ class TimerManager @Inject constructor(
     suspend fun stopTimer(
         habitId: Long,
         targetMinutes: Int,
-        authority: TimerActionAuthority? = null
+        authority: TimerActionAuthority? = null,
+        legacyClaim: com.dayforge.data.repository.LegacyWidgetTimerClaim? = null
     ): Long? {
-        timerWriter?.requireAction(habitId, authority)
+        if (databases != null) check(authority != null || legacyClaim != null) { "DATABASE_EPOCH_INPUT_REQUIRED" }
+        timerWriter?.requireAction(habitId, authority, legacyClaim)
         val habit = habitDao.getHabitById(habitId)
         val activeLog = timeLogDao.getActiveTimeLog()
         val policy = activeLog?.takeIf { it.habitId == habitId }?.let { timerWriter?.policy(habitId, it.uuid) }
@@ -139,7 +177,7 @@ class TimerManager @Inject constructor(
                 seconds,
                 isCountdown,
                 authority,
-                if (authority == null) requireNotNull(timerWriter).captureLegacyConfirmation(requireNotNull(habit), activeLog) else null
+                if (authority == null) legacyClaim ?: requireNotNull(timerWriter).captureLegacyConfirmation(requireNotNull(habit), activeLog) else null
             )
             context.startActivity(intent)
             return null
@@ -148,7 +186,7 @@ class TimerManager @Inject constructor(
                 action = TimerService.ACTION_STOP
                 putExtra(TimerService.EXTRA_HABIT_ID, habitId)
                 putExtra(TimerService.EXTRA_TARGET_MINUTES, targetMinutes)
-                authority?.attach(this)
+                authority?.attach(this); legacyClaim?.attach(this)
             }
             context.startService(intent)
             return habitId

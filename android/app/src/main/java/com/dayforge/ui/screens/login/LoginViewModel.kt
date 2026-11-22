@@ -29,16 +29,31 @@ import javax.inject.Inject
 
 /** Handles login to an administrator-managed DayForge server account. */
 @HiltViewModel
-class LoginViewModel @Inject constructor(
+class LoginViewModel private constructor(
     private val authApi: AuthApi,
     private val endpointResolver: EndpointResolver,
     private val tokenManager: TokenManager,
     private val syncManager: SyncManager,
-    private val habitRepository: HabitRepository,
+    private val fixedHabitRepository: HabitRepository?,
     private val preferencesManager: PreferencesManager,
     private val accountSessionCoordinator: AccountSessionCoordinator,
-    @param:ApplicationContext private val context: Context
+    @param:ApplicationContext private val context: Context,
+    private val databaseHost: com.dayforge.data.local.DatabaseRuntimeHost?
 ) : ViewModel() {
+    constructor(authApi: AuthApi, endpointResolver: EndpointResolver, tokenManager: TokenManager,
+        syncManager: SyncManager, habitRepository: HabitRepository, preferencesManager: PreferencesManager,
+        accountSessionCoordinator: AccountSessionCoordinator, context: Context) :
+        this(authApi, endpointResolver, tokenManager, syncManager, habitRepository, preferencesManager,
+            accountSessionCoordinator, context, null)
+    @Inject internal constructor(authApi: AuthApi, endpointResolver: EndpointResolver, tokenManager: TokenManager,
+        syncManager: SyncManager, preferencesManager: PreferencesManager, accountSessionCoordinator: AccountSessionCoordinator,
+        @ApplicationContext context: Context, databaseHost: com.dayforge.data.local.DatabaseRuntimeHost) :
+        this(authApi, endpointResolver, tokenManager, syncManager, null, preferencesManager,
+            accountSessionCoordinator, context, databaseHost)
+    private val habitRepository get() = fixedHabitRepository ?: requireNotNull(databaseHost).boundGraph().habitRepository
+    private suspend fun <T> withControlGraph(block: suspend () -> T): T = if (databaseHost == null) block()
+        else databaseHost.withGraph(com.dayforge.data.local.DatabaseRuntimeHost.Work.CONTROL) { block() }
+
     private val _username = MutableStateFlow("")
     val username: StateFlow<String> = _username.asStateFlow()
     private val _password = MutableStateFlow("")
@@ -137,7 +152,7 @@ class LoginViewModel @Inject constructor(
                 check(health.status == "ok") { "Server is not ready" }
                 val response = authApi.login(LoginRequest(username, password))
 
-                val needsLocalDataDecision = accountSessionCoordinator.exclusive {
+                val needsLocalDataDecision = withControlGraph { accountSessionCoordinator.exclusive {
                     val localDataOwner = tokenManager.syncAccountId.first()
                     val accountChanged = localDataOwner != response.userId
                     if (accountChanged && syncManager.hasLocalData()) {
@@ -152,6 +167,7 @@ class LoginViewModel @Inject constructor(
                         saveCredentials(response)
                         false
                     }
+                }
                 }
                 if (!needsLocalDataDecision) _showSyncPrompt.value = true
             } catch (e: Exception) {
@@ -186,8 +202,9 @@ class LoginViewModel @Inject constructor(
     }
 
     fun onSyncSkip() {
+        if (_isLoading.value || !_showSyncPrompt.value) return
+        _showSyncPrompt.value = false
         viewModelScope.launch {
-            _showSyncPrompt.value = false
             _syncErrorMessage.value = null
             _loginEvent.emit(LoginEvent.Success)
         }
@@ -219,7 +236,7 @@ class LoginViewModel @Inject constructor(
         viewModelScope.launch {
             _errorMessage.value = null
             try {
-                accountSessionCoordinator.exclusive {
+                withControlGraph { accountSessionCoordinator.exclusive {
                     val response = checkNotNull(pendingLoginResponse) {
                         "Login session expired"
                     }
@@ -234,6 +251,7 @@ class LoginViewModel @Inject constructor(
                     pendingLoginResponse = null
                     _localDataPrompt.value = null
                 }
+                }
                 _syncErrorMessage.value = null
                 _showSyncPrompt.value = true
             } catch (e: Exception) {
@@ -245,6 +263,10 @@ class LoginViewModel @Inject constructor(
     }
 
     private suspend fun clearLocalAccountData() {
+        if (databaseHost == null) clearLocalAccountDataInGraph()
+        else databaseHost.withLocalDataReset { clearLocalAccountDataInGraph() }
+    }
+    private suspend fun clearLocalAccountDataInGraph() {
         // Invalidate any previous session before its cache is removed. If a later
         // persistence step fails, the app stays safely logged out instead of exposing
         // an empty cache under stale credentials.
@@ -298,9 +320,14 @@ class LoginViewModel @Inject constructor(
     }
 
     fun saveServerUrl() {
+        if (_isLoading.value) return
+        _isLoading.value = true
         viewModelScope.launch {
-            runCatching { persistServerSelection() }
-                .onFailure { _errorMessage.value = context.getString(R.string.server_error_invalid_address) }
+            try { persistServerSelection() }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                _errorMessage.value = context.getString(R.string.server_error_invalid_address)
+            } finally { _isLoading.value = false }
         }
     }
 
@@ -335,13 +362,20 @@ class LoginViewModel @Inject constructor(
     }
 
     fun resetServerUrl() {
+        if (_isLoading.value) return
+        _isLoading.value = true
         viewModelScope.launch {
-            preferencesManager.setServerUrl(null)
-            preferencesManager.setRemoteServerUrl(null)
-            _serverUrl.value = ""
-            _serverProtocol.value = "https"
-            _serverHostPort.value = ""
-            _remoteServerHostPort.value = ""
+            try {
+                preferencesManager.setServerUrl(null)
+                preferencesManager.setRemoteServerUrl(null)
+                _serverUrl.value = ""
+                _serverProtocol.value = "https"
+                _serverHostPort.value = ""
+                _remoteServerHostPort.value = ""
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                _errorMessage.value = context.getString(R.string.server_error_invalid_address)
+            } finally { _isLoading.value = false }
         }
     }
 

@@ -28,10 +28,16 @@ internal class NextConfigReplacementPreview internal constructor(
     internal val original: NextConfigImportPreview,
     val counts: ConfigReplacementCounts,
     blockers: Set<ConfigReplacementBlocker>,
-    internal val fingerprint: String
+    internal val fingerprint: String,
+    internal val trustGeneration: Long? = null
 ) {
     val blockers: Set<ConfigReplacementBlocker> = Collections.unmodifiableSet(blockers.toSet())
     val eligible: Boolean get() = blockers.isEmpty()
+
+    internal fun sameContents(previous: NextConfigReplacementPreview): Boolean =
+        fingerprint == previous.fingerprint && counts == previous.counts && blockers == previous.blockers &&
+            if (trustGeneration == null || previous.trustGeneration == null) trustGeneration == previous.trustGeneration
+            else trustGeneration >= previous.trustGeneration
 }
 
 /** Read participant only. Caller owns the actual account lock and one Room snapshot. */
@@ -132,7 +138,10 @@ internal class NextConfigReplacementInspector(private val database: HabitDatabas
             habits.count { it.habitType != HabitType.GOAL && it.completionPolicy != "one_and_done" }.toLong(),
             habits.count { it.completionPolicy == "one_and_done" }.toLong(), metrics.size.toLong(), links.size.toLong(),
             count("completions"), count("timelogs"), count("metric_logs"))
-        return NextConfigReplacementPreview(original, counts, blockers, fingerprint(preparedImportId))
+        val control = CountTrustRecoveryControl.read(database)
+        val fingerprint = fingerprint(preparedImportId, control)
+        require(CountTrustRecoveryControl.read(database) == control) { "CONFIG_REPLACEMENT_PREVIEW_CHANGED" }
+        return NextConfigReplacementPreview(original, counts, blockers, fingerprint, control?.generation)
     }
 
     private fun exists(table: String, where: String = "1=1") =
@@ -145,13 +154,24 @@ internal class NextConfigReplacementInspector(private val database: HabitDatabas
     /** Hash actual SQLite values/types, including facts and retained journals; never Room coercions.
      * Pages keep arbitrary history out of a single CursorWindow. This proof is only in memory.
      */
-    private suspend fun fingerprint(preparedImportId: String?): String {
+    private suspend fun fingerprint(preparedImportId: String?, control: CountTrustRecoveryControl?): String {
         val caller = currentCoroutineContext()
         val digest = MessageDigest.getInstance("SHA-256")
         fun bytes(value: ByteArray) {
             digest.update(ByteBuffer.allocate(4).putInt(value.size).array()); digest.update(value)
         }
-        val tables = sql.query("SELECT name FROM sqlite_master WHERE type='table' AND " +
+        // These three owned tables contain only reconstructible evidence/results. Bind their
+        // exact schema, but do not turn legitimate qualification/retirement into a business edit.
+        // command_results is intentionally absent: unknown-commit recovery records are durable
+        // command state and remain subject to the complete native-cell fingerprint below.
+        val derived = if (control == null) emptySet() else setOf("count_trust_root", "count_trust_nodes", "count_trust_routes")
+        if (control != null) sql.query("SELECT type,name,tbl_name,sql FROM main.sqlite_master ORDER BY type,name").use { cursor ->
+            while (cursor.moveToNext()) for (column in 0..3) {
+                digest.update(cursor.getType(column).toByte())
+                if (!cursor.isNull(column)) bytes(cursor.getString(column).toByteArray(Charsets.UTF_8))
+            }
+        }
+        val tables = sql.query("SELECT name FROM main.sqlite_master WHERE type='table' AND " +
             "name NOT IN ('android_metadata','room_master_table') ORDER BY name").use { c -> buildList {
             while (c.moveToNext()) { require(c.getType(0) == Cursor.FIELD_TYPE_STRING); add(c.getString(0)) }
         } }
@@ -159,7 +179,12 @@ internal class NextConfigReplacementInspector(private val database: HabitDatabas
             caller.ensureActive()
             require(table.matches(Regex("[A-Za-z_][A-Za-z_0-9]*")))
             bytes(table.toByteArray(Charsets.UTF_8))
-            val columns = sql.query("PRAGMA table_info(`$table`)").use { c -> buildList {
+            if (table in derived) { digest.update(0.toByte()); continue }
+            if (table == "count_trust_control" && control != null) {
+                bytes("id=1".toByteArray(Charsets.UTF_8)); bytes(control.storageId.toByteArray(Charsets.UTF_8))
+                digest.update(0.toByte()); continue
+            }
+            val columns = sql.query("PRAGMA main.table_info(`$table`)").use { c -> buildList {
                 while (c.moveToNext()) add(c.getString(1))
             } }
             require(columns.isNotEmpty() && columns.all { it.matches(Regex("[A-Za-z_][A-Za-z_0-9]*")) })
@@ -181,7 +206,7 @@ internal class NextConfigReplacementInspector(private val database: HabitDatabas
                     if (excluded) add(requireNotNull(preparedImportId))
                 }.toTypedArray()
                 val where = if (predicates.isEmpty()) "" else "WHERE ${predicates.joinToString(" AND ")} "
-                val ids = sql.query("SELECT rowid,($length) FROM `$table` $where ORDER BY rowid LIMIT 128",
+                val ids = sql.query("SELECT rowid,($length) FROM main.`$table` $where ORDER BY rowid LIMIT 128",
                     arguments).use { c -> buildList {
                     var bytes = 0L
                     while (c.moveToNext()) {
@@ -197,7 +222,7 @@ internal class NextConfigReplacementInspector(private val database: HabitDatabas
                     }
                 } }
                 if (ids.isEmpty()) break
-                sql.query("SELECT * FROM `$table` WHERE ${(predicates + "rowid<=?").joinToString(" AND ")} ORDER BY rowid",
+                sql.query("SELECT * FROM main.`$table` WHERE ${(predicates + "rowid<=?").joinToString(" AND ")} ORDER BY rowid",
                     arguments + ids.last()).use { c ->
                     require(c.columnCount == columns.size)
                     var rows = 0

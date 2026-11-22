@@ -53,6 +53,10 @@ class AutoSyncWorker internal constructor(
             // REPLACE and WorkManager stoppages cancel the structured owner. Never
             // convert that signal into a completed attempt or a retry decision.
             throw cancelled
+        } catch (_: com.dayforge.data.local.DatabaseRuntimeHost.SessionPreparationUnavailable) {
+            // Local preparation needs an explicit control retry. A wrapped disk IOException
+            // is not a transport failure and must not schedule automatic business replay.
+            Result.failure()
         } catch (_: ServerIdentityMismatchException) {
             Result.failure()
         } catch (_: SyncEpochChangedException) {

@@ -27,14 +27,23 @@ data class HabitWithStats(
     val slotProgress: String? = null,  // Slot progress for COUNTING habits in focus mode: "第 X 个/共 Y 个"
     val oneTimeStatus: com.dayforge.domain.model.OneTimeStatus? = null,
     val timerAuthority: com.dayforge.domain.model.TimerActionAuthority? = null,
-    val countHistory: com.dayforge.domain.model.CountHistory? = null
+    val countHistory: com.dayforge.domain.model.CountHistory? = null,
+    val countActionIdentity: com.dayforge.domain.model.CountActionIdentity? = countHistory?.actionIdentity,
+    val checkActionIdentity: com.dayforge.domain.model.CheckActionIdentity? = null,
+    val countSummary: com.dayforge.domain.model.CountSummary? = countHistory?.summary,
+    val countDisplay: com.dayforge.domain.model.CountDisplayProjection? = null,
+    val sourceEpoch: com.dayforge.data.local.DatabaseEpochPublication? = null
 ) {
-    val actualTodayCount: Long get() = countHistory?.todayQuantity ?: todayCount.toLong()
-    val countRuleKnown: Boolean get() = countHistory == null || countHistory.todayPolicy != null
-    val displayTargetValue: Int get() = countHistory?.todayPolicy?.targetValue ?: habit.targetValue
-    val displayIsCountdown: Boolean get() = countHistory?.todayPolicy?.isCountdown ?: habit.isCountdown
+    init {
+        require(countHistory == null || countSummary == countHistory.summary) { "COUNT_DISPLAY_INPUT_CHANGED" }
+        require(countDisplay == null || countSummary == null) { "COUNT_DISPLAY_INPUT_CHANGED" }
+    }
+    val actualTodayCount: Long get() = countDisplay?.todayQuantity ?: countSummary?.todayQuantity ?: todayCount.toLong()
+    val countRuleKnown: Boolean get() = if (countDisplay != null) countDisplay.todayPolicy != null else countSummary == null || countSummary.todayPolicy != null
+    val displayTargetValue: Int get() = (if (countDisplay != null) countDisplay.todayPolicy else countSummary?.todayPolicy)?.targetValue ?: habit.targetValue
+    val displayIsCountdown: Boolean get() = (if (countDisplay != null) countDisplay.todayPolicy else countSummary?.todayPolicy)?.isCountdown ?: habit.isCountdown
     /** Pure ranking/window input only. Never use this copy as a write authority. */
-    val windowHabit: HabitEntity get() = if (countHistory == null) habit else
+    val windowHabit: HabitEntity get() = if (countSummary == null && countDisplay == null) habit else
         habit.copy(targetValue = displayTargetValue, isCountdown = displayIsCountdown)
     val completedForDisplay: Boolean get() = oneTimeStatus?.completed ?: completedToday
     /**

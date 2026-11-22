@@ -11,6 +11,9 @@ import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.dao.HabitDao
 import com.dayforge.data.local.dao.TimeLogDao
 import com.dayforge.data.model.SyncProgress
+import com.dayforge.data.model.SyncProblemFrame
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.collect
 import com.dayforge.data.local.entity.SyncOutboxEntity
 import com.dayforge.data.local.entity.SyncConflictEntity
 import com.dayforge.data.local.entity.TimerCommandEntity
@@ -47,20 +50,41 @@ import javax.inject.Inject
  * Handles sync operations, network state, and authentication status.
  */
 @HiltViewModel
-class SettingsViewModel @Inject constructor(
+class SettingsViewModel private constructor(
     @param:ApplicationContext private val context: Context,
     private val syncManager: SyncManager,
     private val tokenManager: TokenManager,
     private val preferencesManager: PreferencesManager,
     private val networkMonitor: NetworkMonitor,
-    private val habitRepository: HabitRepository,
-    private val habitDao: HabitDao,
-    private val timeLogDao: TimeLogDao,
+    private val fixedHabitRepository: HabitRepository?,
+    private val fixedHabitDao: HabitDao?,
+    private val fixedTimeLogDao: TimeLogDao?,
     private val configWorkflow: SettingsConfigWorkflow,
     private val appearanceWorkflow: SettingsAppearanceWorkflow,
     private val accountSessionCoordinator: AccountSessionCoordinator,
-    savedStateHandle: SavedStateHandle = SavedStateHandle()
+    savedStateHandle: SavedStateHandle,
+    private val databaseHost: com.dayforge.data.local.DatabaseRuntimeHost?
 ) : ViewModel() {
+    constructor(context: Context, syncManager: SyncManager, tokenManager: TokenManager,
+        preferencesManager: PreferencesManager, networkMonitor: NetworkMonitor, habitRepository: HabitRepository,
+        habitDao: HabitDao, timeLogDao: TimeLogDao, configWorkflow: SettingsConfigWorkflow,
+        appearanceWorkflow: SettingsAppearanceWorkflow, accountSessionCoordinator: AccountSessionCoordinator,
+        savedStateHandle: SavedStateHandle = SavedStateHandle()) : this(context, syncManager, tokenManager,
+            preferencesManager, networkMonitor, habitRepository, habitDao, timeLogDao, configWorkflow,
+            appearanceWorkflow, accountSessionCoordinator, savedStateHandle, null)
+    @Inject internal constructor(@ApplicationContext context: Context, syncManager: SyncManager, tokenManager: TokenManager,
+        preferencesManager: PreferencesManager, networkMonitor: NetworkMonitor, configWorkflow: SettingsConfigWorkflow,
+        appearanceWorkflow: SettingsAppearanceWorkflow, accountSessionCoordinator: AccountSessionCoordinator,
+        savedStateHandle: SavedStateHandle, databaseHost: com.dayforge.data.local.DatabaseRuntimeHost) :
+        this(context, syncManager, tokenManager, preferencesManager, networkMonitor, null, null, null,
+            configWorkflow, appearanceWorkflow, accountSessionCoordinator, savedStateHandle, databaseHost)
+    private val habitRepository get() = fixedHabitRepository ?: requireNotNull(databaseHost).boundGraph().habitRepository
+    private val fixedSettingsReads = if (databaseHost == null) com.dayforge.data.repository.SettingsReadRepository(
+        requireNotNull(fixedHabitDao), requireNotNull(fixedTimeLogDao)) else null
+    private val settingsReads get() = fixedSettingsReads ?: requireNotNull(databaseHost).boundGraph().settingsReadRepository
+    private suspend fun <T> withControlGraph(block: suspend () -> T): T = if (databaseHost == null) block()
+        else databaseHost.withGraph(com.dayforge.data.local.DatabaseRuntimeHost.Work.CONTROL) { block() }
+
 
     // UI State
     private val _syncProgress = MutableStateFlow<SyncProgress>(SyncProgress.Idle)
@@ -79,6 +103,10 @@ class SettingsViewModel @Inject constructor(
     // Logout-in-progress state
     private val _isLoggingOut = MutableStateFlow(false)
     val isLoggingOut: StateFlow<Boolean> = _isLoggingOut.asStateFlow()
+    private val _actionBusy = MutableStateFlow(false)
+    val actionBusy = _actionBusy.asStateFlow()
+    private val _manualSyncPending = MutableStateFlow(false)
+    val manualSyncPending = _manualSyncPending.asStateFlow()
 
     // Active timer dialog state
     private val _showActiveTimerDialog = MutableStateFlow(false)
@@ -89,7 +117,17 @@ class SettingsViewModel @Inject constructor(
 
     private val _activeTimerDuration = MutableStateFlow(0)
     val activeTimerDuration: StateFlow<Int> = _activeTimerDuration.asStateFlow()
+    private val graphPresentation = databaseHost?.observeMemory(object : com.dayforge.data.local.DatabaseRuntimeHost.MemoryListener {
+        override fun transition(blocked: Boolean) {
+            if (blocked) {
+                _activeTimerHabitName.value = ""
+                _activeTimerDuration.value = 0
+                _showActiveTimerDialog.value = false
+            }
+        }
+    })
 
+    internal val legacyConfigFrame = configWorkflow.frame
     val exportProgress = configWorkflow.exportProgress
     val exportResult = configWorkflow.exportResult
     val importProgress = configWorkflow.importProgress
@@ -111,8 +149,21 @@ class SettingsViewModel @Inject constructor(
     private val problemReload = MutableStateFlow(problemStamp)
     private val mutableProblems = MutableStateFlow<com.dayforge.data.model.SyncProblems>(com.dayforge.data.model.SyncProblems.Checking)
     internal val syncProblems = mutableProblems.asStateFlow()
-    private val recoveryWorkflow = SettingsRecoveryWorkflow(syncManager, viewModelScope)
+    private val mutableProblemFrame = MutableStateFlow<SyncProblemFrame?>(null)
+    internal val syncProblemFrame = mutableProblemFrame.asStateFlow()
+    internal val usesProblemSource: Boolean get() = databaseHost != null
+    private val recoveryWorkflow = SettingsRecoveryWorkflow(syncManager, viewModelScope, requireOriginalSource = databaseHost != null)
     internal val recoveryState = recoveryWorkflow.state
+    internal val recoveryFrames = recoveryWorkflow.frames
+    internal fun previewRecoveryFrom(frame: SyncProblemFrame?, key: com.dayforge.data.repository.NextRecoveryKey) {
+        if (databaseHost == null) recoveryWorkflow.preview(key)
+        else if (frame != null && frame.isCurrent()) recoveryWorkflow.previewFrom(frame, key)
+        else rejectProblemInput()
+    }
+    internal fun refreshRecoveryFrom(frame: RecoveryUiFrame) = recoveryWorkflow.refreshFrom(frame)
+    internal fun approveRecoveryFrom(frame: RecoveryUiFrame, value: Boolean) = recoveryWorkflow.approveFrom(frame, value)
+    internal fun confirmRecoveryFrom(frame: RecoveryUiFrame) = recoveryWorkflow.confirmFrom(frame)
+    internal fun dismissRecoveryFrom(frame: RecoveryUiFrame) = recoveryWorkflow.dismissFrom(frame)
     internal fun previewRecovery(key: com.dayforge.data.repository.NextRecoveryKey) = recoveryWorkflow.preview(key)
     internal fun refreshRecovery() = recoveryWorkflow.refresh()
     internal fun approveRecovery(value: Boolean) = recoveryWorkflow.approve(value)
@@ -124,9 +175,33 @@ class SettingsViewModel @Inject constructor(
             problemBlocked = blocked
             problemStamp = Any()
             mutableProblems.value = com.dayforge.data.model.SyncProblems.Checking
+            mutableProblemFrame.value = null
             recoveryWorkflow.authenticationTransition(blocked)
             problemReload.value = problemStamp
         }
+    }
+
+    private val problemGraphRegistration = databaseHost?.observeMemory(object : com.dayforge.data.local.DatabaseRuntimeHost.MemoryListener {
+        override fun transition(blocked: Boolean) {
+            recoveryWorkflow.sourceTransition(blocked)
+            val before = mutableProblemFrame.value
+            if (before != null && (blocked || !before.isCurrent())) synchronized(problemMonitor) {
+                if (mutableProblemFrame.value === before) {
+                    mutableProblemFrame.value = null
+                    mutableProblems.value = com.dayforge.data.model.SyncProblems.Checking
+                    problemStamp = Any(); problemReload.value = problemStamp
+                }
+            }
+        }
+    })
+    private fun publishProblems(ticket: Any, frame: SyncProblemFrame?, result: com.dayforge.data.model.SyncProblems) {
+        fun assign() {
+            if (!problemBlocked && problemStamp === ticket) {
+                mutableProblemFrame.value = frame; mutableProblems.value = result
+            }
+        }
+        if (frame == null) synchronized(problemMonitor) { assign() }
+        else frame.withSourceFence { synchronized(problemMonitor) { frame.publish { assign() } } }
     }
 
     // Login state - derived from access token presence
@@ -173,15 +248,17 @@ class SettingsViewModel @Inject constructor(
     init {
         tokenManager.registerIconCache(problemInvalidator)
         viewModelScope.launch {
-            combine(problemReload, syncManager.problemChanges()) { ticket, _ -> ticket }.collectLatest { ticket ->
+            // Join each finite read and conflate later hints. A Host initialization hint
+            // must not cancel its own first reader repeatedly. Revocation still clears
+            // memory synchronously and the original source gates every final publication.
+            combine(problemReload, syncManager.problemChanges()) { ticket, _ -> ticket }.conflate().collect { ticket ->
                 recoveryWorkflow.databaseChanged()
-                if (!synchronized(problemMonitor) { !problemBlocked && problemStamp === ticket }) return@collectLatest
-                val result = try { syncManager.readProblems() }
-                catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { com.dayforge.data.model.SyncProblems.Unavailable }
-                synchronized(problemMonitor) {
-                    if (!problemBlocked && problemStamp === ticket) mutableProblems.value = result
-                }
+                if (!synchronized(problemMonitor) { !problemBlocked && problemStamp === ticket }) return@collect
+                try {
+                    if (databaseHost == null) publishProblems(ticket, null, syncManager.readProblems())
+                    else syncManager.readProblemFrame().let { publishProblems(ticket, it, it.value) }
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { publishProblems(ticket, null, com.dayforge.data.model.SyncProblems.Unavailable) }
             }
         }
         viewModelScope.launch { configWorkflow.v2?.observe() }
@@ -218,7 +295,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun makeCurrentDevicePrimary() {
-        viewModelScope.launch {
+        runSyncIssueAction {
             try { syncManager.makeCurrentDevicePrimary() }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
@@ -258,20 +335,23 @@ class SettingsViewModel @Inject constructor(
     }
 
     private fun startManualSync(retryRejected: Boolean) {
-        if (manualSyncJob?.isActive == true) return
+        if (manualSyncJob?.isActive == true || _isLoggingOut.value || _actionBusy.value) return
+        _manualSyncPending.value = true
         manualSyncJob = viewModelScope.launch {
-            val failure = try {
-                // Version/account discovery owns the retry policy; never mutate v4 queues before dispatch.
-                val result = if (retryRejected) syncManager.retrySync() else syncManager.sync()
-                result.exceptionOrNull()?.also { error ->
-                    if (error is CancellationException) throw error
+            try {
+                val failure = try {
+                    // Version/account discovery owns the retry policy; never mutate v4 queues before dispatch.
+                    val result = if (retryRejected) syncManager.retrySync() else syncManager.sync()
+                    result.exceptionOrNull()?.also { error ->
+                        if (error is CancellationException) throw error
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    error
                 }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                error
-            }
-            failure?.let(::showManualSyncIssue)
+                failure?.let(::showManualSyncIssue)
+            } finally { _manualSyncPending.value = false }
         }
     }
 
@@ -282,7 +362,9 @@ class SettingsViewModel @Inject constructor(
             _showSyncError.value = true
             return
         }
-        _syncErrorMessage.value = if (error.isSyncTransportFailure()) {
+        _syncErrorMessage.value = if (error is com.dayforge.data.local.DatabaseRuntimeHost.SessionPreparationUnavailable) {
+            context.getString(R.string.session_preparation_failed)
+        } else if (error.isSyncTransportFailure()) {
             context.getString(R.string.error_network_failed)
         } else {
             error.message ?: context.getString(R.string.sync_rejected_unknown_error)
@@ -291,14 +373,17 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun retryRejectedChange(id: Long) {
+        if (databaseHost != null) { rejectProblemInput(); return }
         runSyncIssueAction { syncManager.retryRejectedChange(id) }
     }
 
     fun retryRejectedTimerCommand(id: Long) {
+        if (databaseHost != null) { rejectProblemInput(); return }
         runSyncIssueAction { syncManager.retryRejectedTimerCommand(id) }
     }
 
     fun cancelRejectedTimerCommandAndUseServer(id: Long) {
+        if (databaseHost != null) { rejectProblemInput(); return }
         runSyncIssueAction {
             syncManager.cancelRejectedTimerCommandAndUseServer(id)
             syncManager.sync().getOrThrow()
@@ -306,19 +391,69 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun discardRejectedChange(id: Long) {
+        if (databaseHost != null) { rejectProblemInput(); return }
         runSyncIssueAction { syncManager.discardRejectedChange(id) }
     }
 
     fun resolveConflictUseServer(id: Long) {
+        if (databaseHost != null) { rejectProblemInput(); return }
         runSyncIssueAction { syncManager.resolveConflictUseServer(id) }
     }
 
     fun resolveConflictUseLocal(id: Long) {
+        if (databaseHost != null) { rejectProblemInput(); return }
         runSyncIssueAction { syncManager.resolveConflictUseLocal(id) }
+    }
+
+    private fun rejectProblemInput() {
+        android.widget.Toast.makeText(context, R.string.database_view_expired, android.widget.Toast.LENGTH_LONG).show()
+    }
+    private fun runOriginalProblemAction(frame: SyncProblemFrame?, action: suspend (SyncProblemFrame) -> Unit) {
+        if (frame == null || !frame.isCurrent()) { rejectProblemInput(); return }
+        if (_actionBusy.value || _isLoggingOut.value || _manualSyncPending.value) return
+        _actionBusy.value = true
+        viewModelScope.launch {
+            try { action(frame) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { frame.withSourceFence { synchronized(problemMonitor) {
+                frame.publish { showSyncIssue(error) }
+            } } }
+            finally { _actionBusy.value = false }
+        }
+    }
+    internal fun retryRejectedChangeFrom(frame: SyncProblemFrame?, row: SyncOutboxEntity) {
+        if (databaseHost == null) retryRejectedChange(row.id)
+        else runOriginalProblemAction(frame) { syncManager.retryRejectedChange(it, row) }
+    }
+    internal fun discardRejectedChangeFrom(frame: SyncProblemFrame?, row: SyncOutboxEntity) {
+        if (databaseHost == null) discardRejectedChange(row.id)
+        else runOriginalProblemAction(frame) { syncManager.discardRejectedChange(it, row) }
+    }
+    internal fun resolveConflictUseServerFrom(frame: SyncProblemFrame?, row: SyncConflictEntity) {
+        if (databaseHost == null) resolveConflictUseServer(row.id)
+        else runOriginalProblemAction(frame) { syncManager.resolveConflictUseServer(it, row) }
+    }
+    internal fun resolveConflictUseLocalFrom(frame: SyncProblemFrame?, row: SyncConflictEntity) {
+        if (databaseHost == null) resolveConflictUseLocal(row.id)
+        else runOriginalProblemAction(frame) { syncManager.resolveConflictUseLocal(it, row) }
+    }
+    internal fun retryRejectedTimerCommandFrom(frame: SyncProblemFrame?, row: TimerCommandEntity) {
+        if (databaseHost == null) retryRejectedTimerCommand(row.id)
+        else runOriginalProblemAction(frame) { syncManager.retryRejectedTimerCommand(it, row) }
+    }
+    internal fun cancelRejectedTimerCommandAndUseServerFrom(frame: SyncProblemFrame?, row: TimerCommandEntity) {
+        if (databaseHost == null) cancelRejectedTimerCommandAndUseServer(row.id)
+        else runOriginalProblemAction(frame) {
+            syncManager.cancelRejectedTimerCommandAndUseServer(it, row)
+            // Preserve the original follow-up sync, but not after this original input expires.
+            requireNotNull(databaseHost).withSourceGraph(it.business) { syncManager.sync().getOrThrow() }
+        }
     }
 
     /** A protected/stale action is feedback, not an uncaught coroutine failure; cancellation stays cancellation. */
     private fun runSyncIssueAction(action: suspend () -> Unit) {
+        if (_actionBusy.value || _isLoggingOut.value || _manualSyncPending.value) return
+        _actionBusy.value = true
         viewModelScope.launch {
             try {
                 action()
@@ -326,12 +461,14 @@ class SettingsViewModel @Inject constructor(
                 throw cancelled
             } catch (error: Exception) {
                 showSyncIssue(error)
-            }
+            } finally { _actionBusy.value = false }
         }
     }
 
     private fun showSyncIssue(error: Throwable) {
-        _syncErrorMessage.value = error.message ?: context.getString(R.string.sync_rejected_unknown_error)
+        _syncErrorMessage.value = if (error is com.dayforge.data.local.DatabaseRuntimeHost.SessionPreparationUnavailable)
+            context.getString(R.string.session_preparation_failed)
+        else error.message ?: context.getString(R.string.sync_rejected_unknown_error)
         _showSyncError.value = true
     }
 
@@ -339,8 +476,8 @@ class SettingsViewModel @Inject constructor(
      * Logs out the user by clearing tokens and local data.
      */
     fun logout() {
-        viewModelScope.launch {
-            if (showActiveTimerWarningIfNeeded()) return@launch
+        logoutOperation {
+            if (showActiveTimerWarningIfNeeded()) return@logoutOperation
             accountSessionCoordinator.exclusive {
                 clearAccountData()
             }
@@ -352,11 +489,9 @@ class SettingsViewModel @Inject constructor(
      * Called when user chooses "Sync then logout" option.
      */
     fun syncAndLogout(onComplete: () -> Unit) {
-        viewModelScope.launch {
-            if (showActiveTimerWarningIfNeeded()) return@launch
-            _isLoggingOut.value = true
+        logoutOperation {
+            if (showActiveTimerWarningIfNeeded()) return@logoutOperation
             val result = syncManager.syncAndThen { clearAccountData() }
-            _isLoggingOut.value = false
 
             if (result.isSuccess) {
                 onComplete()
@@ -381,14 +516,30 @@ class SettingsViewModel @Inject constructor(
      * Called when user chooses "Direct logout" option.
      */
     fun directLogout(onComplete: () -> Unit) {
-        viewModelScope.launch {
-            if (showActiveTimerWarningIfNeeded()) return@launch
+        logoutOperation {
+            if (showActiveTimerWarningIfNeeded()) return@logoutOperation
             accountSessionCoordinator.exclusive { clearAccountData() }
             onComplete()
         }
     }
 
+    private fun logoutOperation(action: suspend () -> Unit) {
+        if (_isLoggingOut.value || _actionBusy.value || _manualSyncPending.value) return
+        _isLoggingOut.value = true
+        viewModelScope.launch {
+            try { withControlGraph(action) }
+            catch (error: Exception) {
+                if (error is CancellationException) throw error
+                showSyncIssue(error)
+            } finally { _isLoggingOut.value = false }
+        }
+    }
+
     private suspend fun clearAccountData() {
+        if (databaseHost == null) clearAccountDataInGraph()
+        else databaseHost.withLocalDataReset { clearAccountDataInGraph() }
+    }
+    private suspend fun clearAccountDataInGraph() {
         AccountLocalStateCleaner.clear(context) {
             habitRepository.clearAllData(context)
             preferencesManager.clearAccountScopedPreferences()
@@ -398,13 +549,19 @@ class SettingsViewModel @Inject constructor(
         syncManager.resetProgress()
     }
 
-    private suspend fun showActiveTimerWarningIfNeeded(): Boolean {
-        val activeTimer = timeLogDao.getActiveTimeLog() ?: return false
-        val habit = habitDao.getHabitById(activeTimer.habitId)
-        _activeTimerHabitName.value = habit?.name ?: context.getString(R.string.error_unknown_habit)
-        _activeTimerDuration.value = TimerElapsedCalculator.elapsedSeconds(activeTimer, context)
-        _showActiveTimerDialog.value = true
-        return true
+    private suspend fun showActiveTimerWarningIfNeeded(): Boolean = withControlGraph {
+        val publication = databaseHost?.currentControlPublication()
+        val (activeTimer, habit) = settingsReads.activeTimer() ?: return@withControlGraph false
+        val name = habit?.name ?: context.getString(R.string.error_unknown_habit)
+        val duration = TimerElapsedCalculator.elapsedSeconds(activeTimer, context)
+        val publish = {
+            _activeTimerHabitName.value = name
+            _activeTimerDuration.value = duration
+            _showActiveTimerDialog.value = true
+        }
+        if (publication == null) publish()
+        else check(publication.publish(publish)) { "DATABASE_EPOCH_INPUT_EXPIRED" }
+        true
     }
 
     /**
@@ -442,6 +599,42 @@ class SettingsViewModel @Inject constructor(
         val content = configWorkflow.exportConfigToJson()
         return if (configWorkflow.v2?.allowLegacy() == false) null else content
     }
+
+    private fun configSourceAction(block: suspend () -> Unit) { viewModelScope.launch {
+        try { block() } catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) { showSyncIssue(error) }
+    } }
+    internal suspend fun beginConfigExportFrom(frame: ConfigV2UiState) = configWorkflow.v2?.beginExportFrom(frame, true)
+    internal fun openConfigExportChoicesFrom(frame: ConfigV2UiState) = configSourceAction { configWorkflow.v2?.openExportChoicesFrom(frame) }
+    internal fun selectConfigItemFrom(frame: ConfigV2UiState, id: String, checked: Boolean) =
+        configSourceAction { configWorkflow.v2?.selectItemFrom(frame, id, checked) }
+    internal fun selectConfigThemeFrom(frame: ConfigV2UiState, ref: com.dayforge.domain.appearance.ThemeVersionRef, checked: Boolean) =
+        configSourceAction { configWorkflow.v2?.selectThemeFrom(frame, ref, checked) }
+    internal suspend fun beginConfigImportFrom(frame: ConfigV2UiState, recover: Boolean = false) =
+        configWorkflow.v2?.beginImportFrom(frame, recover)
+    internal fun writeConfigExportFrom(ticket: ConfigFilePicker?, uri: Uri?) = configSourceAction { configWorkflow.v2?.writeExportFrom(ticket, uri) }
+    internal fun readConfigImportFrom(ticket: ConfigFilePicker?, uri: Uri?) = configSourceAction { configWorkflow.v2?.readImportFrom(ticket, uri) }
+    internal fun confirmConfigImportFrom(frame: ConfigV2UiState) = configSourceAction {
+        configWorkflow.v2?.confirmImportFrom(frame); appearanceWorkflow.refreshLibrary(force = true)
+    }
+    internal fun abandonConfigImportFrom(frame: ConfigV2UiState) = configSourceAction { configWorkflow.v2?.abandonPreparedFrom(frame) }
+    internal fun dismissConfigPreviewFrom(frame: ConfigV2UiState) = configSourceAction { configWorkflow.v2?.dismissPreviewFrom(frame) }
+    internal fun dismissConfigMessageFrom(frame: ConfigV2UiState) = configSourceAction { configWorkflow.v2?.dismissMessageFrom(frame) }
+    internal fun configPickerFailedFrom(ticket: ConfigFilePicker?) = configSourceAction { configWorkflow.v2?.pickerFailedFrom(ticket) }
+    internal suspend fun beginLegacyPickerFrom(frame: ConfigV2UiState, export: Boolean) = configWorkflow.beginPickerFrom(frame, export)
+    internal fun legacyPickerFailedFrom(ticket: SettingsLegacyPicker?) = configWorkflow.pickerFailedFrom(ticket)
+    internal fun readLegacyImportFrom(ticket: SettingsLegacyPicker?, uri: Uri?) = configSourceAction {
+        if (uri != null && ticket != null) {
+            if (configWorkflow.v2?.allowLegacyFrom(ticket.frame) == false) { configWorkflow.pickerFailedFrom(ticket); return@configSourceAction }
+            if (showActiveTimerWarningIfNeeded()) { configWorkflow.pickerFailedFrom(ticket); return@configSourceAction }
+        }
+        configWorkflow.readImportFrom(ticket, uri)
+    }
+    internal fun writeLegacyExportFrom(ticket: SettingsLegacyPicker?, uri: Uri?) = configSourceAction { configWorkflow.writeExportFrom(ticket, uri) }
+    internal fun confirmLegacyImportFrom(frame: SettingsLegacyUiState) = configSourceAction { configWorkflow.confirmImportFrom(frame) }
+    internal fun cancelLegacyImportFrom(frame: SettingsLegacyUiState) = configWorkflow.cancelImportFrom(frame)
+    internal fun dismissLegacyImportResultFrom(frame: SettingsLegacyUiState) = configWorkflow.dismissImportResultFrom(frame)
+    internal fun dismissLegacyExportResultFrom(frame: SettingsLegacyUiState) = configWorkflow.dismissExportResultFrom(frame)
 
     internal suspend fun beginConfigExport() = configWorkflow.v2?.beginExport(requireSelection = true) == true
     internal fun openConfigExportChoices() { viewModelScope.launch { configWorkflow.v2?.openExportChoices() } }

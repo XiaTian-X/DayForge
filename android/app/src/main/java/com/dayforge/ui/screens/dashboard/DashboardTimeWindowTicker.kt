@@ -19,22 +19,30 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 
 /** Emits refresh ticks only while the dashboard uses time-window filtering. */
-class DashboardTimeWindowTicker @Inject constructor(
-    private val habitRepository: HabitRepository,
-    private val preferencesManager: PreferencesManager
+class DashboardTimeWindowTicker private constructor(
+    private val fixedRepository: HabitRepository?,
+    private val preferencesManager: PreferencesManager,
+    private val host: com.dayforge.data.local.DatabaseRuntimeHost?
 ) {
+    constructor(habitRepository: HabitRepository, preferencesManager: PreferencesManager) : this(habitRepository, preferencesManager, null)
+    @Inject internal constructor(host: com.dayforge.data.local.DatabaseRuntimeHost, preferencesManager: PreferencesManager) :
+        this(null, preferencesManager, host)
     @OptIn(ExperimentalCoroutinesApi::class)
     fun observe(): Flow<Unit> = preferencesManager.filterMode.flatMapLatest { filterMode ->
-            if (filterMode == FilterMode.TIME_WINDOW.value) combine(habitRepository.allHabits,
-                habitRepository.countChanges) { rows, _ -> rows }.flatMapLatest { timeWindowTicks(it, true) }
-            else timeWindowTicks(emptyList(), false)
-        }
+        if (filterMode != FilterMode.TIME_WINDOW.value) timeWindowTicks(emptyList(), false, null)
+        else if (host == null) windowChanges(requireNotNull(fixedRepository))
+        else host.hints { graph -> windowChanges(graph.habitRepository) }
+    }
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun windowChanges(repository: HabitRepository): Flow<Unit> =
+        combine(repository.allHabits, repository.countChanges) { rows, _ -> rows }
+            .flatMapLatest { timeWindowTicks(it, true, repository) }
 
-    private fun timeWindowTicks(originalHabits: List<HabitEntity>, useWindows: Boolean): Flow<Unit> = flow {
+    private fun timeWindowTicks(originalHabits: List<HabitEntity>, useWindows: Boolean, repository: HabitRepository?): Flow<Unit> = flow {
         while (true) {
             val habits = originalHabits.mapNotNull { habit ->
                 if (habit.habitType != HabitType.COUNTING || habit.appearance == null) habit
-                else try { habitRepository.getCountHistory(habit).todayPolicy?.let {
+                else try { requireNotNull(repository).getCountHistory(habit).todayPolicy?.let {
                     habit.copy(targetValue = it.targetValue, isCountdown = it.isCountdown)
                 } } catch (error: Exception) {
                     if (error is kotlinx.coroutines.CancellationException) throw error

@@ -40,10 +40,14 @@ import com.dayforge.ui.components.UnitPicker
 fun CreateMetricScreen(
     viewModel: CreateMetricViewModel = hiltViewModel(),
     creationAuthority: com.dayforge.data.repository.ObjectCreationAuthority? = null,
-    onNavigateBack: () -> Unit
+    onNavigateBack: () -> Unit,
+    creationInput: com.dayforge.data.local.DatabaseCreationInput? = null
 ) {
     val uiState by viewModel.uiState.collectAsState(context = kotlinx.coroutines.Dispatchers.Main)
-    LaunchedEffect(creationAuthority) { creationAuthority?.let(viewModel::beginCreation) }
+    LaunchedEffect(creationInput, creationAuthority) {
+        if (creationInput != null) viewModel.beginSource(creationInput)
+        else creationAuthority?.let(viewModel::beginCreation)
+    }
 
     Scaffold(
         topBar = {
@@ -389,7 +393,7 @@ private fun MetricAppearanceStep(
     uiState: CreateMetricUiState,
     onIconClick: () -> Unit,
     onColorClick: () -> Unit,
-    onHabitToggle: (Long) -> Unit
+    onHabitToggle: (Long, String) -> Unit
 ) {
     // Icon selector
     Card(
@@ -473,13 +477,13 @@ private fun MetricAppearanceStep(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { onHabitToggle(habit.id) }
+                    .clickable { onHabitToggle(habit.id, habit.uuid) }
                     .padding(vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Checkbox(
                     checked = habit.id in uiState.selectedHabitIds,
-                    onCheckedChange = { onHabitToggle(habit.id) }
+                    onCheckedChange = { onHabitToggle(habit.id, habit.uuid) }
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(

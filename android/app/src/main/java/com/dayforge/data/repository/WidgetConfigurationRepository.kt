@@ -103,7 +103,7 @@ class WidgetConfigurationRepository @Inject constructor(
             val valid = publication { if (stillBound()) { display(); published = true } }
             valid && published
         }, { publication.isCurrentWhileAccountLocked() && stillBound() }, publication::legacyRestartClaim,
-            publication.frameOwner, publication.session, publication::isCurrentInMemory)
+            publication.frameOwner, publication.session, publication::isCurrentInMemory, publication::inOriginalReadGraph)
         return WidgetBoundSnapshot(expected, boundPublication)
     }
 
@@ -165,7 +165,8 @@ class WidgetConfigurationRepository @Inject constructor(
                 val current = snapshot.publication { if (ownsBinding()) { render(); written = true } }
                 current && written
             }, { snapshot.publication.isCurrentWhileAccountLocked() && ownsBinding() }, snapshot.publication::legacyRestartClaim,
-                snapshot.publication.frameOwner, snapshot.publication.session, snapshot.publication::isCurrentInMemory)
+                snapshot.publication.frameOwner, snapshot.publication.session, snapshot.publication::isCurrentInMemory,
+                snapshot.publication::inOriginalReadGraph)
             display(selectedPublication)
             if (!snapshot.publication {
                 requireSelection(spec, expected)

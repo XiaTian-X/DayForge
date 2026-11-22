@@ -111,12 +111,11 @@ internal class NextReplicaArchiveInputReader(private val context: Context,
             requireNotNull(original.capabilityRevision), "structure.write" in original.capabilities)) { "SYNC_ARCHIVE_SCOPE_CHANGED" }
         // Establish an already-open, valid icon provider BEFORE any file reader can open a lazy DB.
         val originalIcons = iconDatabaseReader.read(iconContext)
-        val schema = NextReplicaSchemaValidator(context, database, tokens, sessions).validate(original, expectedStorageHash)
-        val requests = NextReplicaRequestProofReader(database, tokens, sessions, preferences, http).read(schema)
-        val configuration = NextReplicaConfigProofReader(database, tokens, sessions).read(requests)
-        val localFacts = NextReplicaLocalFactProofReader(database, tokens, sessions).read(configuration)
+        val business = NextReplicaLocalProofPipeline(database, tokens, sessions, preferences, http)
+            .readValidated(context, original, expectedStorageHash)
+        val localFacts = business.localFacts
+        val requests = localFacts.configuration.requests
         val businessReader = NextReplicaBusinessProofReader(database, tokens, sessions, preferences, http)
-        val business = businessReader.read(localFacts)
         val result = iconFileReader.inspect(iconContext) { files, iconAccess ->
             require(files.metadata == originalIcons.metadata) { "SYNC_ARCHIVE_ICON_INPUT_CHANGED" }
             themeReader.inspect { themes, themeAccess ->

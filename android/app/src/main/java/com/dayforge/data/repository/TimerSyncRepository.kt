@@ -33,28 +33,32 @@ class TimerSyncRepository @Inject constructor(
      * authoritative server session. Active sessions controlled by this device
      * are cancelled first; sessions on another controller remain untouched.
      */
-    suspend fun cancelRejectedCommandAndUseServer(id: Long, deviceId: String) {
+    suspend fun cancelRejectedCommandAndUseServer(id: Long, deviceId: String) =
+        cancelRejected(id, deviceId, null, null)
+
+    internal suspend fun cancelOriginalRejectedCommandAndUseServer(original: TimerCommandEntity,
+        deviceId: String, resolve: suspend (Boolean) -> Unit) =
+        cancelRejected(original.id, deviceId, original, resolve)
+
+    private suspend fun cancelRejected(id: Long, deviceId: String, original: TimerCommandEntity?,
+        resolveOriginal: (suspend (Boolean) -> Unit)?) {
         val rejected = timeLogDao.getRejectedTimerCommand(id)
             ?: throw IllegalStateException("计时同步问题已被处理")
+        check(original == null || rejected == original) { "SYNC_PROBLEM_CHANGED" }
+        suspend fun resolve(remove: Boolean) {
+            if (resolveOriginal != null) resolveOriginal(remove)
+            else timeLogDao.resolveRejectedTimerCommand(rejected.sessionUuid, remove)
+        }
         val status = api.timerStatus(rejected.sessionUuid, deviceId)
         val session = status.session
         when (session?.state) {
-            null, "cancelled" -> timeLogDao.resolveRejectedTimerCommand(
-                rejected.sessionUuid,
-                removeLocalSession = true
-            )
-            "completed" -> timeLogDao.resolveRejectedTimerCommand(
-                rejected.sessionUuid,
-                removeLocalSession = false
-            )
+            null, "cancelled" -> resolve(true)
+            "completed" -> resolve(false)
             "running", "paused" -> {
                 if (session.controllerDeviceId != deviceId) {
                     // The authoritative timer remains on its current controller;
                     // only discard this device's stale local representation.
-                    timeLogDao.resolveRejectedTimerCommand(
-                        rejected.sessionUuid,
-                        removeLocalSession = true
-                    )
+                    resolve(true)
                     return
                 }
                 val occurredAt = maxOf(
@@ -83,10 +87,7 @@ class TimerSyncRepository @Inject constructor(
                 check(result.status == "applied" || result.status == "already_applied") {
                     result.message ?: "服务器拒绝取消计时：${result.errorCode}"
                 }
-                timeLogDao.resolveRejectedTimerCommand(
-                    rejected.sessionUuid,
-                    removeLocalSession = true
-                )
+                resolve(true)
             }
             else -> throw IllegalStateException("未知服务器计时状态：${session.state}")
         }

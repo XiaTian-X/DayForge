@@ -26,6 +26,8 @@ import com.dayforge.widget.base.WidgetActivityTheme
 import com.dayforge.widget.timer.WidgetTimerAction
 import dagger.hilt.android.AndroidEntryPoint
 import java.security.MessageDigest
+import com.dayforge.data.local.DatabaseRuntimeHost
+import com.dayforge.data.local.TokenManager
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -35,7 +37,8 @@ import kotlinx.coroutines.withContext
 /** Confirm a rendered identity, never an ID-only lookup at the later button click. */
 @AndroidEntryPoint
 class ReactivationActivity : ComponentActivity() {
-    @Inject lateinit var habitRepository: HabitRepository
+    @Inject internal lateinit var host: DatabaseRuntimeHost
+    private val habitRepository get() = host.boundGraph().habitRepository
     private var request by mutableStateOf<HabitReactivationRequest?>(null)
     private var submitting by mutableStateOf(false)
 
@@ -48,12 +51,16 @@ class ReactivationActivity : ComponentActivity() {
         lifecycleScope.launch {
             try {
                 val originalIntent = intent
-                request = withContext(Dispatchers.IO) {
+                host.withGraph {
+                val publication = host.currentPublication()
+                val prepared = withContext(Dispatchers.IO) {
                     val fact = originalIntent.getStringExtra(EXTRA_FACT)?.let(WidgetFactClaim::decode)
                     val timer = originalIntent.getStringExtra(EXTRA_TIMER)?.let(WidgetTimerAction::decode)
                     require(timer == null || timer.habitId == habitId) { "WIDGET_RESTART_STALE_DISPLAY" }
                     val legacy = originalIntent.getStringExtra(EXTRA_LEGACY)?.let(LegacyWidgetRestartClaim::decode)
                     habitRepository.prepareWidgetReactivation(habitId, fact, timer?.authority, legacy)
+                }
+                publication.publish { request = prepared }
                 }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
@@ -82,11 +89,14 @@ class ReactivationActivity : ComponentActivity() {
                                 Row(modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
                                     TextButton(onClick = { finish() }) { Text(stringResource(R.string.action_cancel)) }
-                                    Button(enabled = !submitting, onClick = {
+                                    Button(enabled = !submitting, onClick = click@ {
+                                        if (submitting) return@click
                                         submitting = true
                                         lifecycleScope.launch {
                                             try {
-                                                withContext(Dispatchers.IO) { habitRepository.reactivate(prepared, this@ReactivationActivity) }
+                                                host.withGraph {
+                                                    withContext(Dispatchers.IO) { habitRepository.reactivate(prepared, this@ReactivationActivity) }
+                                                }
                                                 Toast.makeText(applicationContext, getString(if (prepared.preservesHistory)
                                                     R.string.restart_completed else R.string.toast_reactivate_success), Toast.LENGTH_SHORT).show()
                                                 finish()

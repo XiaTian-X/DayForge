@@ -27,13 +27,27 @@ internal class ReplicaDifferencePreview internal constructor(
     val candidate: ValidatedReplicaCandidate,
     differences: List<ReplicaDifference>,
     unconfirmedLocalRecords: List<ReplicaUnconfirmedLocalRecord>,
-    val unchangedRecords: Int
+    val unchangedRecords: Int,
+    private val lifetime: CountTrustRecoveryPreview? = null
 ) {
     val differences: List<ReplicaDifference> = Collections.unmodifiableList(differences.toList())
     val unconfirmedLocalRecords: List<ReplicaUnconfirmedLocalRecord> = Collections.unmodifiableList(unconfirmedLocalRecords.toList())
     val hasUnfinishedTimer: Boolean get() = candidate.hasUnfinishedTimer ||
         ReplicaRecoveryReview.UNFINISHED_TIMER in assessment.reviewCounts
     val activationAuthorized: Boolean get() = false
+    internal fun heldBy(hold: CountTrustRecoveryPreview) = ReplicaDifferencePreview(assessment, oldStorage,
+        candidate, differences, unconfirmedLocalRecords, unchangedRecords, hold)
+    internal suspend fun <T> using(owner: CountTrustRuntime, block: suspend () -> T): T =
+        requireNotNull(lifetime) { "SYNC_RECOVERY_PREVIEW_CHANGED" }.use(owner, block)
+    internal fun handedTo(stage: ReplicaSwitchStage) { lifetime?.handoff(stage.recoveryId) }
+    internal val livePreview: Boolean get() = lifetime?.isValid ?: true
+    internal val heldPreview: Boolean get() = lifetime?.isRetained == true
+    internal val handedRecoveryId: String? get() = lifetime?.handedRecoveryId
+    companion object {
+        /** Static disposal also accepts plain read/confirmation values, which own no hold. */
+        fun discard(preview: ReplicaDifferencePreview?) { preview?.lifetime?.close() }
+        fun isLive(preview: ReplicaDifferencePreview?): Boolean = preview?.lifetime?.isValid != false
+    }
 }
 
 /** Complete authority differences + exact local contents. No HTTP, writes, archive or switch.

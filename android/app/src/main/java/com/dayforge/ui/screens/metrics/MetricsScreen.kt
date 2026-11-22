@@ -12,6 +12,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -23,6 +24,8 @@ import com.dayforge.domain.model.CardColorStyle
 import com.dayforge.ui.components.CompactMetricCard
 import com.dayforge.ui.components.MetricCard
 import com.dayforge.domain.model.MetricWithLatestValue
+import com.dayforge.ui.renderedSelection
+import androidx.compose.ui.platform.LocalContext
 
 /**
  * MetricsScreen displays all metrics in a dedicated screen.
@@ -44,10 +47,13 @@ fun MetricsScreen(
     onCreateMetricClick: () -> Unit,
     onMetricClick: (Long) -> Unit,
     onEditMetricClick: (Long) -> Unit = {},
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onMetricSelection: ((com.dayforge.data.local.DatabaseObjectSelection) -> Unit)? = null,
+    onEditMetricSelection: ((com.dayforge.data.local.DatabaseObjectSelection) -> Unit)? = null
 ) {
-    val metricsWithLatest by viewModel.metricsWithLatest.collectAsState()
-    val isInitialized by viewModel.isInitialized.collectAsState()
+    val context = LocalContext.current
+    val metricsWithLatest by viewModel.metricsWithLatest.collectAsStateWithLifecycle()
+    val isInitialized by viewModel.isInitialized.collectAsStateWithLifecycle()
     // Card color style for reactive card rendering (CARD-09)
     val cardColorStyle = com.dayforge.ui.theme.LocalDeviceCardStyle.current
 
@@ -132,7 +138,8 @@ fun MetricsScreen(
                         CompactMetricCard(
                             metric = metricWithLatest.metric,
                             latestValue = metricWithLatest.latestValue,
-                            onClick = { onMetricClick(metricWithLatest.metric.id) },
+                            onClick = { com.dayforge.ui.navigateRenderedDatabaseInput(context, !viewModel.usesSourceEpoch,
+                                metricWithLatest.metric.id, metricWithLatest.renderedSelection(), onMetricClick, onMetricSelection) },
                             cardColorStyle = cardColorStyle,
                             modifier = Modifier.padding(4.dp)
                         )
@@ -154,9 +161,10 @@ fun MetricsScreen(
                             latestValue = metricWithLatest.latestValue,
                             latestLogDate = metricWithLatest.latestLogDate,
                             logs = metricWithLatest.logs,
-                            onClick = { onMetricClick(metricWithLatest.metric.id) },
+                            onClick = { com.dayforge.ui.navigateRenderedDatabaseInput(context, !viewModel.usesSourceEpoch,
+                                metricWithLatest.metric.id, metricWithLatest.renderedSelection(), onMetricClick, onMetricSelection) },
                             onAggregationTypeChange = { aggregationType ->
-                                viewModel.updateAggregationType(metricWithLatest.metric.id, aggregationType)
+                                viewModel.updateAggregationType(metricWithLatest.metric.id, aggregationType, metricWithLatest.renderedSelection())
                             },
                             modifier = Modifier.padding(horizontal = 0.dp, vertical = 0.dp)
                         )

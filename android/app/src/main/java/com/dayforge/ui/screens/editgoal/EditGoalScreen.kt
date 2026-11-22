@@ -16,6 +16,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import com.dayforge.data.local.DatabaseObjectSelection
+import com.dayforge.ui.navigateRenderedDatabaseInput
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -39,23 +42,26 @@ fun EditGoalScreen(
     viewModel: EditGoalViewModel = hiltViewModel(),
     onNavigateBack: () -> Unit,
     onCreateChildHabit: (parentUuid: String) -> Unit,
-    onEditChildHabit: (habitId: Long) -> Unit
+    onEditChildHabit: (habitId: Long) -> Unit,
+    sourceSelection: DatabaseObjectSelection? = null,
+    onEditChildSelection: ((DatabaseObjectSelection) -> Unit)? = null,
+    onCreateChildSelection: ((DatabaseObjectSelection) -> Unit)? = null
 ) {
-    val uiState by viewModel.uiState.collectAsState(context = kotlinx.coroutines.Dispatchers.Main)
+    val observed by viewModel.uiState.collectAsState(context = kotlinx.coroutines.Dispatchers.Main)
+    val uiState = observed
+    val context = LocalContext.current
 
     // Load goal on first composition
-    LaunchedEffect(goalId) {
-        if (uiState.goalId != goalId) {
-            viewModel.loadGoal(goalId)
-        }
+    LaunchedEffect(goalId, sourceSelection) {
+        viewModel.loadGoal(goalId, sourceSelection)
     }
 
     // Refresh children when returning from child habit creation/edit
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner, viewModel, uiState.sourceSelection, uiState.goalUuid, uiState.sourceExpired) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                viewModel.refreshChildren()
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME && uiState.goalUuid != null && !uiState.sourceExpired) {
+                viewModel.refreshChildren(uiState)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -65,10 +71,10 @@ fun EditGoalScreen(
     }
 
     // Navigate back after save or delete
-    LaunchedEffect(uiState.saved) {
-        if (uiState.saved) {
+    LaunchedEffect(uiState.saved, uiState.terminalRequest) {
+        if (uiState.saved && viewModel.terminalIsCurrent(uiState)) {
             onNavigateBack()
-            viewModel.clearSaved()
+            viewModel.clearSaved(uiState)
         }
     }
 
@@ -82,7 +88,7 @@ fun EditGoalScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = viewModel::toggleDeleteDialog) {
+                    IconButton(enabled = !uiState.sourceExpired && uiState.goalId != null && !uiState.isDeleting && !uiState.isSaving, onClick = { viewModel.toggleDeleteDialog(uiState) }) {
                         Icon(
                             Icons.Default.Delete,
                             contentDescription = stringResource(R.string.action_delete),
@@ -93,7 +99,11 @@ fun EditGoalScreen(
             )
         }
     ) { padding ->
-        if (uiState.isLoading) {
+        if (uiState.sourceExpired) {
+            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                Text(stringResource(R.string.database_view_expired))
+            }
+        } else if (uiState.isLoading) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -123,7 +133,7 @@ fun EditGoalScreen(
                 item {
                     OutlinedTextField(
                         value = uiState.name,
-                        onValueChange = viewModel::updateName,
+                        onValueChange = { viewModel.updateName(it, uiState) },
                         label = { Text(stringResource(R.string.edit_habit_name_label)) },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
@@ -134,7 +144,7 @@ fun EditGoalScreen(
                 item {
                     OutlinedTextField(
                         value = uiState.description,
-                        onValueChange = viewModel::updateDescription,
+                        onValueChange = { viewModel.updateDescription(it, uiState) },
                         label = { Text(stringResource(R.string.edit_habit_description_label)) },
                         modifier = Modifier.fillMaxWidth(),
                         minLines = 2
@@ -146,7 +156,7 @@ fun EditGoalScreen(
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { viewModel.toggleIconPicker() },
+                            .clickable { viewModel.toggleIconPicker(uiState) },
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                     ) {
                         Row(
@@ -167,7 +177,7 @@ fun EditGoalScreen(
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { viewModel.toggleColorPicker() },
+                            .clickable { viewModel.toggleColorPicker(uiState) },
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                     ) {
                         Row(
@@ -194,7 +204,7 @@ fun EditGoalScreen(
                     OutlinedTextField(
                         value = uiState.targetCycles?.toString() ?: "",
                         onValueChange = { value ->
-                            viewModel.updateTargetCycles(value.toIntOrNull())
+                            viewModel.updateTargetCycles(value.toIntOrNull(), uiState)
                         },
                         label = { Text(stringResource(R.string.create_goal_target_cycles_label)) },
                         modifier = Modifier.fillMaxWidth(),
@@ -212,7 +222,7 @@ fun EditGoalScreen(
                     ) {
                         FilterChip(
                             selected = uiState.failMode == FailMode.STRICT,
-                            onClick = { viewModel.updateFailMode(FailMode.STRICT) },
+                            onClick = { viewModel.updateFailMode(FailMode.STRICT, uiState) },
                             label = { Text(stringResource(R.string.edit_habit_strict_mode)) },
                             leadingIcon = if (uiState.failMode == FailMode.STRICT) {
                                 { Icon(Icons.Default.Check, null, Modifier.size(18.dp)) }
@@ -220,7 +230,7 @@ fun EditGoalScreen(
                         )
                         FilterChip(
                             selected = uiState.failMode == FailMode.LOOSE,
-                            onClick = { viewModel.updateFailMode(FailMode.LOOSE) },
+                            onClick = { viewModel.updateFailMode(FailMode.LOOSE, uiState) },
                             label = { Text(stringResource(R.string.edit_habit_relaxed_mode)) },
                             leadingIcon = if (uiState.failMode == FailMode.LOOSE) {
                                 { Icon(Icons.Default.Check, null, Modifier.size(18.dp)) }
@@ -273,7 +283,11 @@ fun EditGoalScreen(
                 item {
                     Button(
                         onClick = {
-                            uiState.goalUuid?.let { onCreateChildHabit(it) }
+                            uiState.goalUuid?.let { parentUuid ->
+                                navigateRenderedDatabaseInput(context, viewModel.fixedGraphConstruction,
+                                    goalId, viewModel.parentSelection(uiState),
+                                    { onCreateChildHabit(parentUuid) }, onCreateChildSelection)
+                            }
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -288,7 +302,9 @@ fun EditGoalScreen(
                     items(uiState.children, key = { it.id }) { child ->
                         ChildHabitCard(
                             habit = child,
-                            onEdit = { onEditChildHabit(child.id) },
+                            onEdit = { navigateRenderedDatabaseInput(context, viewModel.fixedGraphConstruction,
+                                child.id, viewModel.childSelection(uiState, child),
+                                onEditChildHabit, onEditChildSelection) },
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
@@ -324,9 +340,9 @@ fun EditGoalScreen(
                 item {
                     Spacer(modifier = Modifier.height(8.dp))
                     Button(
-                        onClick = { viewModel.saveGoal() },
+                        onClick = { viewModel.saveGoal(uiState) },
                         modifier = Modifier.fillMaxWidth(),
-                        enabled = !uiState.isSaving
+                        enabled = uiState.goalId != null && !uiState.sourceExpired && !uiState.isSaving && !uiState.isDeleting
                     ) {
                         if (uiState.isSaving) {
                             CircularProgressIndicator(
@@ -343,35 +359,35 @@ fun EditGoalScreen(
     }
 
     // Icon picker dialog
-    if (uiState.showIconPicker) {
+    if (!uiState.sourceExpired && uiState.showIconPicker) {
         val appearance = uiState.appearance
         if (appearance != null) ObjectAppearancePicker(appearance, false, uiState.editAuthority,
-            onSelected = viewModel::updateAppearance, onDismiss = viewModel::toggleIconPicker)
+            onSelected = { viewModel.updateAppearance(it, uiState) }, onDismiss = { viewModel.toggleIconPicker(uiState) })
         else IconPicker(
             selectedIconId = uiState.iconResId,
-            onIconSelected = viewModel::updateIcon,
-            onDismiss = viewModel::toggleIconPicker
+            onIconSelected = { viewModel.updateIcon(it, uiState) },
+            onDismiss = { viewModel.toggleIconPicker(uiState) }
         )
     }
 
     // Color picker dialog
-    if (uiState.showColorPicker) {
+    if (!uiState.sourceExpired && uiState.showColorPicker) {
         ColorPicker(
             selectedColor = uiState.colorHex,
-            onColorSelected = viewModel::updateColor,
-            onDismiss = viewModel::toggleColorPicker
+            onColorSelected = { viewModel.updateColor(it, uiState) },
+            onDismiss = { viewModel.toggleColorPicker(uiState) }
         )
     }
 
     // Delete confirmation dialog
-    if (uiState.showDeleteDialog) {
+    if (!uiState.sourceExpired && uiState.showDeleteDialog) {
         AlertDialog(
-            onDismissRequest = { viewModel.toggleDeleteDialog() },
+            onDismissRequest = { viewModel.toggleDeleteDialog(uiState) },
             title = { Text(stringResource(R.string.goal_delete_confirm_title)) },
             text = { Text(stringResource(R.string.goal_delete_confirm_message, uiState.name)) },
             confirmButton = {
                 TextButton(
-                    onClick = { viewModel.deleteGoal() },
+                    onClick = { viewModel.deleteGoal(uiState) },
                     enabled = !uiState.isDeleting
                 ) {
                     if (uiState.isDeleting) {
@@ -382,7 +398,7 @@ fun EditGoalScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { viewModel.toggleDeleteDialog() }) {
+                TextButton(enabled = !uiState.isDeleting, onClick = { viewModel.toggleDeleteDialog(uiState) }) {
                     Text(stringResource(R.string.action_cancel))
                 }
             }
@@ -390,22 +406,23 @@ fun EditGoalScreen(
     }
 
     // Children deletion confirmation dialog
-    if (uiState.showDeleteChildrenDialog) {
+    if (!uiState.sourceExpired && uiState.showDeleteChildrenDialog) {
         AlertDialog(
-            onDismissRequest = { viewModel.dismissDeleteChildrenDialog() },
+            onDismissRequest = { viewModel.dismissDeleteChildrenDialog(uiState) },
             title = { Text(stringResource(R.string.dialog_delete_habit_with_children_title)) },
             text = {
                 Text(stringResource(R.string.dialog_delete_habit_with_children_message, uiState.name, uiState.pendingDeleteChildrenCount))
             },
             confirmButton = {
                 TextButton(
-                    onClick = { viewModel.deleteGoalWithChildren() }
+                    enabled = !uiState.isDeleting,
+                    onClick = { viewModel.deleteGoalWithChildren(uiState) }
                 ) {
                     Text(stringResource(R.string.dialog_delete_habit_with_children), color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { viewModel.deleteGoalKeepChildren() }) {
+                TextButton(enabled = !uiState.isDeleting, onClick = { viewModel.deleteGoalKeepChildren(uiState) }) {
                     Text(stringResource(R.string.dialog_delete_habit_keep_children))
                 }
             }
@@ -413,13 +430,13 @@ fun EditGoalScreen(
     }
 
     // Error dialog
-    uiState.errorMessage?.let { error ->
+    uiState.errorMessage?.takeIf { !uiState.sourceExpired }?.let { error ->
         AlertDialog(
-            onDismissRequest = { viewModel.clearError() },
+            onDismissRequest = { viewModel.clearError(uiState) },
             title = { Text(stringResource(R.string.create_goal_error_title)) },
             text = { Text(error) },
             confirmButton = {
-                TextButton(onClick = { viewModel.clearError() }) {
+                TextButton(onClick = { viewModel.clearError(uiState) }) {
                     Text(stringResource(R.string.action_confirm))
                 }
             }

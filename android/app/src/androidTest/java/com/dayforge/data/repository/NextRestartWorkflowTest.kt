@@ -5,6 +5,10 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.dayforge.data.api.NextSyncHttp
 import com.dayforge.data.api.dto.*
 import com.dayforge.data.appearance.MaterialSocketServer
+import com.dayforge.data.local.CountTrustRuntime
+import com.dayforge.data.local.CountTrustRetirementReason
+import com.dayforge.data.repository.NextRestartWorkflowNativeFault.Kind
+import com.dayforge.data.repository.NextRestartWorkflowNativeFault.Targets
 import com.dayforge.data.local.entity.*
 import com.dayforge.domain.model.*
 import kotlinx.coroutines.runBlocking
@@ -186,6 +190,23 @@ class NextRestartWorkflowTest : NextObjectEditorFixture() {
         return http
     }
     private suspend fun durable() = db.withTransaction { nextRestartDatabaseProof(db) }
+    private val nativeFault = NextRestartWorkflowNativeFault()
+    private fun installFaultOnFreshConnection() {
+        storage.isolatedBuilder = { context -> buildDiagnosticFaultDatabase(context, nativeFault, storage.queryCallback) }
+        nativeFault.installOnNextOpen()
+        storage.reopen()
+        assertTrue(db.openHelper.writableDatabase.isOpen)
+        editor = NextObjectEditor(db, tokens, sessions, icons)
+        creator = NextObjectCreator(db, tokens, sessions, icons)
+    }
+    private fun reopenWithoutFault() {
+        storage.reopen()
+        assertTrue(db.openHelper.writableDatabase.isOpen)
+        nativeFault.requireColdFaultAbsent()
+        editor = NextObjectEditor(db, tokens, sessions, icons)
+        creator = NextObjectCreator(db, tokens, sessions, icons)
+    }
+    private suspend fun mainImage() = db.withTransaction { NextReplicaStorageProof(db).readInTransaction().contents }
     private suspend fun acceptedPlan(reference: NextRestartReference) = db.withTransaction {
         NextRestartStore(db).acceptedPlan(access(), reference)
     }
@@ -705,21 +726,28 @@ class NextRestartWorkflowTest : NextObjectEditorFixture() {
         assertEquals(size, wires.size)
     }
     @Test fun replacementFinalDeferredCommitFailureKeepsOriginalSourceAndNoHalfReplacement() = runBlocking {
+        installFaultOnFreshConnection()
         val http = initialize(); val ref = propose(http)
         edit("Atomic new-round edit"); restart(http).sendAndAccept(access(), ref.operationId)
         val merge = merger(http); val state = merge.state(access(), true)!!; val meta = metadata()
         merge.page(access(), state, RoundSyncPullResponse(changes.toList(), cursor, false, time, 1, meta.checkpoints, meta.births))
         val source = db.syncOutboxDao().getAll().single()
-        val before = durable(); val size = wires.size
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER restart_replacement_commit_fault AFTER INSERT ON next_transmissions " +
-            "WHEN NEW.requestId!='${ref.operationId}' BEGIN INSERT INTO next_restart_plan_proofs " +
-            "SELECT '${id(998)}',originHash,transmissionHash,revision,logSequence,deviceId,planJson,planHash FROM next_restart_plan_proofs " +
-            "WHERE operationId='${ref.operationId}'; END")
+        val size = wires.size; val originalWires = wires.map { it.copyOf() }
+        val before = durable(); val image = mainImage()
+        val originalOwner = requireNotNull(CountTrustRuntime.forDatabase(db))
+        nativeFault.arm(Kind.REPLACEMENT_DEFERRED_END, Targets(ref.operationId, source.operationId))
         val failure = rejected { sender(http).sendAndAcceptOperation(access(), source.operationId) }
         assertTrue(failure.toString(), failure.toString().contains("FOREIGN KEY", ignoreCase = true))
-        storage.reopen(); assertEquals(before, durable()); assertEquals(size, wires.size)
+        nativeFault.requireTriggered(failure)
+        assertTrue(originalOwner.isRetired)
+        assertTrue(CountTrustRetirementReason.UNKNOWN_END in originalOwner.retirementReasons)
+        // The original engine END failed. Never read through that retired owner;
+        // a new connection, without TEMP faults, must prove complete disk rollback.
+        reopenWithoutFault()
+        assertNotSame(originalOwner, requireNotNull(CountTrustRuntime.forDatabase(db)))
+        assertEquals(image, mainImage()); assertEquals(before, durable()); assertEquals(size, wires.size)
+        originalWires.indices.forEach { assertArrayEquals(originalWires[it], wires[it]) }
         assertEquals(0, count("next_structural_supersessions")); assertEquals(source, db.syncOutboxDao().getAll().single())
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER restart_replacement_commit_fault")
         runtime(http).syncRounds(); assertEquals(0, count("sync_outbox")); assertEquals("Atomic new-round edit", current().name)
     }
 
@@ -863,20 +891,39 @@ class NextRestartWorkflowTest : NextObjectEditorFixture() {
         }
     }
     @Test fun finalAcceptanceFaultRollsBackMetadataReceiptAndQueueThenColdRetryUsesOriginalBytes() = runBlocking {
+        installFaultOnFreshConnection()
         val http = initialize(); val ref = propose(http)
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER restart_receipt_fault AFTER INSERT ON next_acceptances BEGIN SELECT RAISE(ABORT,'injected receipt fault'); END")
-        rejected { restart(http).sendAndAccept(access(), ref.operationId) }
-        storage.reopen()
+        // Freezing the original journal is its own legitimate commit. Establish the
+        // ACK baseline using a real lost response, never pretend that commit rolled back.
+        dropReply = true
+        val lost = rejected { restart(http).sendAndAccept(access(), ref.operationId) }
+        assertTrue(generateSequence(lost) { it.cause }.any { it is java.io.IOException })
+        assertEquals(1, wires.size); assertEquals(1, count("next_transmissions"))
+        val frozen = requireNotNull(db.nextRequestDao().transmission(NEXT_OPERATION, ref.operationId)).wireBytes.copyOf()
+        assertArrayEquals(frozen, wires.single())
+        val before = durable(); val image = mainImage()
+        nativeFault.arm(Kind.RECEIPT_ABORT, Targets(ref.operationId))
+        val failure = rejected { restart(http).sendAndAccept(access(), ref.operationId) }
+        nativeFault.requireTriggered(failure)
+        assertEquals(2, wires.size); assertEquals(before, durable()); assertEquals(image, mainImage())
+        reopenWithoutFault()
+        assertEquals(image, mainImage()); assertEquals(before, durable())
         assertEquals(0, count("next_acceptances")); assertEquals(2, count("next_challenge_rounds")); assertEquals(1, count("sync_outbox"))
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER restart_receipt_fault")
         runtime(http).syncRounds()
+        assertEquals(3, wires.size); wires.forEach { assertArrayEquals(frozen, it) }
         assertArrayEquals(wires[0], wires[1]); assertEquals(2L, acceptedPlan(ref).first.getValue("revision").jsonPrimitive.long)
     }
     @Test fun originSideEffectDuringFreezeRollsBackJournalAndMaterialization() = runBlocking {
-        val http = initialize(); val ref = propose(http); val before = durable()
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER restart_freeze_fault AFTER INSERT ON next_transmissions BEGIN UPDATE next_request_origins SET intentJson='{}'; END")
-        rejected { restart(http).sendAndAccept(access(), ref.operationId) }
-        assertEquals(before, durable()); assertEquals(0, count("next_restart_materializations")); assertTrue(wires.isEmpty())
+        installFaultOnFreshConnection()
+        val http = initialize(); val ref = propose(http)
+        val before = durable(); val image = mainImage()
+        nativeFault.arm(Kind.FREEZE_ORIGIN, Targets(ref.operationId))
+        val failure = rejected { restart(http).sendAndAccept(access(), ref.operationId) }
+        nativeFault.requireTriggered(failure)
+        assertEquals(before, durable()); assertEquals(image, mainImage())
+        assertEquals(0, count("next_restart_materializations")); assertTrue(wires.isEmpty())
+        reopenWithoutFault(); assertEquals(image, mainImage()); assertEquals(before, durable())
+        assertEquals(0, count("next_restart_materializations")); assertTrue(wires.isEmpty())
     }
     @Test fun changedAccountOrOriginalProofCannotSendOrAcknowledge() = runBlocking {
         val http = initialize(); val ref = propose(http); val access = access()
@@ -912,15 +959,24 @@ class NextRestartWorkflowTest : NextObjectEditorFixture() {
         assertEquals(2L, acceptedPlan(ref).first.getValue("revision").jsonPrimitive.long)
     }
     @Test fun authenticatedPlanProofFaultRollsBackPageButKeepsPriorRealRestartAck() = runBlocking {
+        installFaultOnFreshConnection()
         val http = initialize(); val ref = propose(http)
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER restart_plan_fault AFTER INSERT ON next_restart_plan_proofs BEGIN UPDATE next_request_origins SET intentJson='{}'; END")
-        rejected { runtime(http).syncRounds() }; storage.reopen()
+        // The original restart ACK precedes the Plan page and must remain committed.
+        assertEquals(NextRestartOutcome.COMMITTED, restart(http).sendAndAccept(access(), ref.operationId))
+        assertEquals(1, count("next_acceptances")); assertEquals(0, count("sync_outbox")); assertEquals(1, wires.size)
+        val originalWire = wires.single().copyOf()
+        val before = durable(); val image = mainImage()
+        nativeFault.arm(Kind.PLAN_ORIGIN, Targets(ref.operationId))
+        val failure = rejected { runtime(http).syncRounds() }
+        nativeFault.requireTriggered(failure)
+        assertEquals(before, durable()); assertEquals(image, mainImage())
+        reopenWithoutFault(); assertEquals(image, mainImage()); assertEquals(before, durable())
         assertEquals(1, count("next_acceptances")); assertEquals(0, count("sync_outbox")); assertEquals(0, count("next_restart_plan_proofs"))
         assertEquals(20L, merger(http).state(access(), true)!!.cursor)
         assertEquals(1L, db.syncOutboxDao().getState("plan_node", habit.uuid)!!.revision)
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER restart_plan_fault")
         runtime(http).syncRounds()
-        assertEquals(1, wires.size); assertEquals(2L, acceptedPlan(ref).first.getValue("revision").jsonPrimitive.long)
+        assertEquals(1, wires.size); assertArrayEquals(originalWire, wires.single())
+        assertEquals(2L, acceptedPlan(ref).first.getValue("revision").jsonPrimitive.long)
     }
     @Test fun remoteTombstoneCannotCascadeUnsynchronizedRestartProjectionOrSources() = runBlocking {
         val http = initialize(); val ref = propose(http)

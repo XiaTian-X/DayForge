@@ -186,6 +186,30 @@ class MetricDetailScreenTest {
         }
     }
 
+    @Test fun repeatedDeleteAndRecordCallbacksCreateOnlyOneBusinessOperation() {
+        val id = showMetric()
+        compose.runOnIdle {
+            val model = requireNotNull(viewModel)
+            model.toggleValueInput()
+            repeat(20) { model.recordValue(12.5, "single submission") }
+            assertTrue(model.uiState.value.isRecording)
+        }
+        compose.waitUntil(5_000) { viewModel?.uiState?.value?.isRecording == false }
+        runBlocking { assertEquals(1, storage.database.metricLogDao().getAllLogsForMetric(id).size) }
+        compose.runOnIdle {
+            val model = requireNotNull(viewModel)
+            repeat(20) { model.deleteMetric() }
+            assertTrue(model.uiState.value.isMutating)
+        }
+        compose.waitUntil(5_000) { deleted == 1 }
+        runBlocking {
+            assertNull(storage.database.metricDao().getMetricById(id))
+            assertEquals(1, storage.database.syncOutboxDao().getAll().count {
+                it.recordType == "metric" && it.action == "delete"
+            })
+        }
+    }
+
     @Test
     fun uiState_hasRequiredFields() {
         // Verify UiState structure - logs field is required for TrendChart

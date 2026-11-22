@@ -1,5 +1,9 @@
 package com.dayforge.data.repository
 
+import android.database.sqlite.SQLiteFullException
+import androidx.sqlite.db.SupportSQLiteDatabase
+import androidx.sqlite.db.SupportSQLiteOpenHelper
+import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -18,6 +22,8 @@ import com.dayforge.domain.service.IconMaterialOutcome
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
@@ -33,6 +39,150 @@ import org.junit.runner.RunWith
 /** Actual destination workflow tests; helpers are shared with final completion only. */
 @RunWith(AndroidJUnit4::class)
 class NextReplicaDestinationTest : NextReplicaDestinationFixture() {
+    private val nativePageLimit = DestinationPageLimitFactory()
+    init { storage.isolatedBuilder = { HabitDatabaseProvider.build(it, storage.queryCallback, nativePageLimit) } }
+
+    /** One fixed real storage-full counterexample; no raw handle or SQL escapes. */
+    private inner class DestinationPageLimitFactory : SupportSQLiteOpenHelper.Factory {
+        @Volatile private var native: SupportSQLiteDatabase? = null
+        @Volatile private var limited: SupportSQLiteDatabase? = null
+        @Volatile private var limitPages = 0L
+        @Volatile private var guardDrops: Set<String> = emptySet()
+        private val writer = ThreadLocal<SupportSQLiteDatabase?>()
+        private val claimed = AtomicBoolean()
+        private val dropped = AtomicInteger()
+        private val deleted = AtomicInteger()
+        private val inserts = AtomicInteger()
+        private val ended = AtomicInteger()
+        private val returnedEnds = AtomicInteger()
+        private val thrownEnds = AtomicInteger()
+        private val nativeEndFailure = AtomicReference<Throwable?>()
+        private val originalFull = AtomicReference<SQLiteFullException?>()
+        private val observationFailure = AtomicReference<Throwable?>()
+
+        private fun primary(): SupportSQLiteDatabase = requireNotNull(native).also {
+            check(db.inTransaction() && it.isOpen && it.inTransaction())
+        }
+        private fun pragma(raw: SupportSQLiteDatabase, name: String): Long = raw.query("PRAGMA $name").use {
+            check(it.moveToFirst() && it.getType(0) == android.database.Cursor.FIELD_TYPE_INTEGER)
+            it.getLong(0).also { _ -> check(!it.moveToNext()) }
+        }
+        fun limitToCurrentPages(): Long {
+            check(limited == null && !claimed.get())
+            val raw = primary()
+            val maximum = pragma(raw, "max_page_count")
+            val pages = pragma(raw, "page_count")
+            guardDrops = (ReplicaProjection.TABLES + CountCommandV20Schema.localTables(raw.version)).flatMap { table ->
+                listOf("insert", "update", "delete").map { "DROP TRIGGER `replica_fence_${table}_$it`" }
+            }.toSet()
+            assertEquals(pages, pragma(raw, "max_page_count=$pages"))
+            limitPages = pages; limited = raw
+            return maximum
+        }
+        fun restore(maximum: Long) {
+            val raw = primary()
+            check(limited === raw && writer.get() == null)
+            assertEquals(maximum, pragma(raw, "max_page_count=$maximum"))
+            limited = null
+        }
+        fun requireReplacementFailure(failure: Throwable) {
+            val raw = requireNotNull(limited)
+            assertSame(raw, native); assertFalse(raw.inTransaction())
+            assertTrue("The original approved guard DROP claimed the real writer", claimed.get())
+            assertTrue("Original guard DDL really completed", dropped.get() > 0)
+            assertTrue("Original replacement DELETE really completed", deleted.get() > 0)
+            assertTrue("Original projection INSERT was really attempted", inserts.get() > 0)
+            val original = requireNotNull(originalFull.get())
+            assertTrue("The same native replacement SQLiteFull escaped", generateSequence(failure) { it.cause }.any { it === original })
+            assertEquals("Actual outer business END was observed", 1, ended.get())
+            assertEquals("END has one actual returned or thrown result", 1, returnedEnds.get() + thrownEnds.get())
+            assertTrue((returnedEnds.get() == 0) == (nativeEndFailure.get() != null))
+            assertNull("Observation must not replace a native error", observationFailure.get())
+            // SQLITE_FULL may auto-rollback before Android issues its own ROLLBACK.
+            // Neither END result nor Android's cleared transaction stack proves SQL fate.
+            android.util.Log.d("DestinationSqlFullFault", "guard_drops=${dropped.get()} deletes=${deleted.get()} " +
+                "insert_attempts=${inserts.get()} end_returned=${returnedEnds.get()} end_threw=${thrownEnds.get()} " +
+                "end_error_type=${nativeEndFailure.get()?.javaClass?.simpleName ?: "none"}")
+        }
+        private fun execute(raw: SupportSQLiteDatabase, sql: String, action: () -> Unit) {
+            if (limited !== raw) { action(); return }
+            val drop = sql in guardDrops
+            if (drop && writer.get() == null) {
+                check(primary() === raw && pragma(raw, "max_page_count") == limitPages)
+                check(claimed.compareAndSet(false, true))
+                writer.set(raw)
+            }
+            if (writer.get() !== raw) { action(); return }
+            check(raw.inTransaction())
+            val delete = ReplicaProjection.TABLES.any { sql == "DELETE FROM `$it`" }
+            val insert = ReplicaProjection.TABLES.any { sql.startsWith("INSERT INTO `$it`(") }
+            if (insert) inserts.incrementAndGet()
+            try {
+                action()
+                if (drop) dropped.incrementAndGet()
+                if (delete) deleted.incrementAndGet()
+            } catch (failure: SQLiteFullException) {
+                originalFull.compareAndSet(null, failure)
+                throw failure
+            }
+        }
+        override fun create(configuration: SupportSQLiteOpenHelper.Configuration): SupportSQLiteOpenHelper {
+            check(configuration.context.packageName == "com.dayforge.testbed")
+            var original: SupportSQLiteDatabase? = null; var adapted: SupportSQLiteDatabase? = null
+            val monitor = Any()
+            fun wrap(raw: SupportSQLiteDatabase): SupportSQLiteDatabase = synchronized(monitor) {
+                check(limited == null || limited === raw) { "Quota cannot move to another live owner" }
+                if (original !== raw) {
+                    original = raw; native = raw
+                    adapted = object : SupportSQLiteDatabase by raw {
+                        override fun execSQL(sql: String) = execute(raw, sql) { raw.execSQL(sql) }
+                        override fun execSQL(sql: String, bindArgs: Array<out Any?>) = execute(raw, sql) { raw.execSQL(sql, bindArgs) }
+                        override fun endTransaction() {
+                            if (limited !== raw || writer.get() !== raw) {
+                                if (limited !== raw) writer.remove()
+                                raw.endTransaction(); return
+                            }
+                            var returned = false
+                            var endingFailure: Throwable? = null
+                            try { raw.endTransaction(); returned = true }
+                            catch (failure: Throwable) { endingFailure = failure; throw failure }
+                            finally {
+                                try {
+                                    if (!raw.inTransaction()) {
+                                        try {
+                                            ended.incrementAndGet()
+                                            if (returned) returnedEnds.incrementAndGet()
+                                            else {
+                                                check(nativeEndFailure.compareAndSet(null, requireNotNull(endingFailure)))
+                                                thrownEnds.incrementAndGet()
+                                            }
+                                        } finally { writer.remove() }
+                                    }
+                                } catch (observation: Throwable) { observationFailure.compareAndSet(null, observation) }
+                            }
+                        }
+                    }
+                }
+                requireNotNull(adapted)
+            }
+            val parent = configuration.callback
+            val callback = object : SupportSQLiteOpenHelper.Callback(parent.version) {
+                override fun onConfigure(db: SupportSQLiteDatabase) = parent.onConfigure(wrap(db))
+                override fun onCreate(db: SupportSQLiteDatabase) = parent.onCreate(wrap(db))
+                override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = parent.onUpgrade(wrap(db), oldVersion, newVersion)
+                override fun onDowngrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = parent.onDowngrade(wrap(db), oldVersion, newVersion)
+                override fun onOpen(db: SupportSQLiteDatabase) = parent.onOpen(wrap(db))
+                override fun onCorruption(db: SupportSQLiteDatabase) = parent.onCorruption(wrap(db))
+            }
+            val helper = FrameworkSQLiteOpenHelperFactory().create(SupportSQLiteOpenHelper.Configuration.builder(configuration.context)
+                .name(configuration.name).callback(callback).noBackupDirectory(configuration.useNoBackupDirectory).build())
+            return object : SupportSQLiteOpenHelper by helper {
+                override val writableDatabase get() = wrap(helper.writableDatabase)
+                override val readableDatabase get() = wrap(helper.readableDatabase)
+            }
+        }
+    }
+
     @Test fun actualCatchupPublishesOneNewCheckpointPreservesOriginalArchiveAndKeepsAllConsumersFrozen() = runBlocking<Unit> {
         initialize(); val initial = workflow().bindDestination(committed())
         val archiveBytes = archive(initial).readBytes(); val oldSql = ReplicaProjection.capture(db).hash
@@ -81,19 +231,23 @@ class NextReplicaDestinationTest : NextReplicaDestinationFixture() {
                 canonical("metric", id(it), NextStructureMapper.writeMetric(metric.copy(uuid = id(it), name = "Catchup metric $it",
                     description = "x".repeat(1000))))
             })) } }
-        val database = db.openHelper.writableDatabase
-        fun pragma(name: String) = database.query("PRAGMA $name").use { check(it.moveToFirst()); it.getLong(0) }
-        // Same bounded real SQLiteFull injection used by the original COMMIT regression.
-        // The primary connection's storage limit changes neither schema nor production code.
-        val maximum = db.withTransaction {
-            val previous = pragma("max_page_count"); val pages = pragma("page_count")
-            assertEquals(pages, pragma("max_page_count=$pages")); previous
-        }
+        // The original real quota is applied to Room's actual native writer below the unchanged SQL guard.
+        val maximum = db.withTransaction { nativePageLimit.limitToCurrentPages() }
+        var failure: Throwable? = null
         try {
             val error = rejected { workflow().catchUp(initial) }
             assertTrue("Must exercise actual SQLiteFull rollback, got $error", generateSequence(error as Throwable?) { it.cause }
                 .any { it is android.database.sqlite.SQLiteFullException })
-        } finally { db.withTransaction { assertEquals(maximum, pragma("max_page_count=$maximum")) } }
+            nativePageLimit.requireReplacementFailure(error)
+        } catch (error: Throwable) { failure = error; throw error }
+        finally {
+            try { withContext(NonCancellable) { db.withTransaction { nativePageLimit.restore(maximum) } } }
+            catch (cleanup: Throwable) {
+                val original = failure
+                if (original == null) throw cleanup
+                if (original !== cleanup) original.addSuppressed(cleanup)
+            }
+        }
         val pending = tokens.activeReplicaStage()!!
         assertEquals(ReplicaSwitchPhase.CATCHUP_COMMITTING, pending.phase); assertEquals(7L, pending.generation)
         assertEquals(ReplicaCatchupFate.PREVIOUS, NextReplicaCommitStore(db, tokens, sessions).catchupFate(pending))

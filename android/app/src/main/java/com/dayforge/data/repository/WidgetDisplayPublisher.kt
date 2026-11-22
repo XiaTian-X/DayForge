@@ -22,19 +22,28 @@ import kotlinx.coroutines.flow.asStateFlow
  * repositories/the account lock, write business data, or start detached work.
  */
 @Singleton
-class WidgetDisplayPublisher @Inject constructor(
-    private val tokens: TokenManager,
-    private val sessions: AccountSessionCoordinator,
-    private val replica: ReplicaPresentationRepository
+class WidgetDisplayPublisher private constructor(
+    private val tokens: TokenManager, private val sessions: AccountSessionCoordinator,
+    private val fixedReplica: ReplicaPresentationRepository?,
+    private val host: com.dayforge.data.local.DatabaseRuntimeHost?
 ) {
-    private class Scope(val stamp: Any, val access: LocalCoreWriteAccess?)
+    constructor(tokens: TokenManager, sessions: AccountSessionCoordinator, replica: ReplicaPresentationRepository) :
+        this(tokens, sessions, replica, null)
+    @Inject internal constructor(tokens: TokenManager, sessions: AccountSessionCoordinator,
+        host: com.dayforge.data.local.DatabaseRuntimeHost) : this(tokens, sessions, null, host)
+    private val replica get() = fixedReplica ?: requireNotNull(host).boundGraph().replicaPresentationRepository
+    private suspend fun <T> withGraph(block: suspend () -> T): T =
+        if (host == null) block() else host.withGraph { block() }
+    private class Scope(val stamp: Any, val access: LocalCoreWriteAccess?,
+        val epoch: com.dayforge.data.local.DatabaseEpochPublication?, val storageId: String?)
     internal class Publication(
         private val guardedPublish: suspend (suspend () -> Unit) -> Boolean,
         private val current: suspend () -> Boolean,
         private val legacyRestart: (com.dayforge.data.local.entity.HabitEntity) -> LegacyWidgetRestartClaim?,
         val frameOwner: String?,
         val session: com.dayforge.data.local.LocalDataSession?,
-        private val memoryCurrent: () -> Boolean
+        private val memoryCurrent: () -> Boolean,
+        private val withReadGraph: suspend (suspend () -> Boolean) -> Boolean
     ) {
         /** Display provenance only, never command authority. Stamp WITH the full frame transaction. */
         fun stampFrame(preferences: MutablePreferences) {
@@ -44,20 +53,22 @@ class WidgetDisplayPublisher @Inject constructor(
         fun isCurrentInMemory(): Boolean = memoryCurrent()
         suspend operator fun invoke(display: suspend () -> Unit): Boolean = guardedPublish(display)
         suspend fun renderPrepared(onReadFailure: suspend (Exception) -> Unit,
-            prepare: suspend () -> (suspend () -> Unit)): Boolean {
+            prepare: suspend () -> (suspend () -> Unit)): Boolean = withReadGraph {
             val display = try { prepare() } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 invoke { onReadFailure(error) }
-                return false
+                return@withReadGraph false
             }
-            return invoke(display)
+            invoke(display)
         }
+        internal suspend fun inOriginalReadGraph(body: suspend () -> Boolean): Boolean = withReadGraph(body)
         /** Only a writer ALREADY holding the shared account lock may use this read-only check. */
         suspend fun isCurrentWhileAccountLocked(): Boolean = current()
         /** Pure display claim from the original pre-read scope; publication still verifies that scope. */
         fun legacyRestartClaim(habit: com.dayforge.data.local.entity.HabitEntity): LegacyWidgetRestartClaim? = legacyRestart(habit)
     }
     @Volatile private var blocked = false
+    @Volatile private var graphBlocked = false
     @Volatile private var stamp = Any()
     private val mutableInvalidations = MutableStateFlow(stamp)
     internal val invalidations = mutableInvalidations.asStateFlow()
@@ -68,6 +79,12 @@ class WidgetDisplayPublisher @Inject constructor(
             mutableInvalidations.value = stamp
         }
     }
+    private val graphListener = object : com.dayforge.data.local.DatabaseRuntimeHost.MemoryListener {
+        override fun transition(blocked: Boolean) {
+            graphBlocked = blocked; stamp = Any(); mutableInvalidations.value = stamp
+        }
+    }
+    private val graphRegistration = host?.observeMemory(graphListener)
     init { tokens.registerIconCache(invalidator) }
 
     /**
@@ -79,9 +96,9 @@ class WidgetDisplayPublisher @Inject constructor(
     suspend fun renderPrepared(
         onReadFailure: suspend (Exception) -> Unit,
         prepare: suspend () -> (suspend () -> Unit)
-    ): Boolean {
-        val publication = capturePublication() ?: return false
-        return publication.renderPrepared(onReadFailure, prepare)
+    ): Boolean = withGraph {
+        val publication = capturePublication() ?: return@withGraph false
+        publication.renderPrepared(onReadFailure, prepare)
     }
 
     /**
@@ -89,43 +106,50 @@ class WidgetDisplayPublisher @Inject constructor(
      * typed publication already owns a stronger writer boundary, or a display and its alarm
      * need the same original scope. Never invoke inside an already-held account lock.
      */
-    internal suspend fun capturePublication(): Publication? {
+    internal suspend fun capturePublication(): Publication? = withGraph {
         val scope = sessions.exclusive {
             val captured = stamp
             val access = tokens.localCoreWriteAccess()
-            if (blocked || captured !== stamp || tokens.replicaSwitchPending() ||
-                !replica.isOpenWhileAccountLocked()) null else Scope(captured, access)
-        } ?: return null
-        return Publication({ display -> publish(scope, display) }, { isCurrent(scope) }, { habit ->
-            if (habit.appearance != null) null else scope.access?.let { LegacyWidgetRestartClaim.displayed(habit, it) }
-        }, frameOwner(scope.access), scope.access?.session, { !blocked && scope.stamp === stamp })
+            if (blocked || graphBlocked || captured !== stamp || tokens.replicaSwitchPending()) null
+            else replica.publicationSourceWhileAccountLocked()?.let { source ->
+                Scope(captured, access, host?.currentPublication(), source.storageId)
+            }
+        } ?: return@withGraph null
+        Publication({ display -> publish(scope, display) }, { isCurrent(scope) }, { habit ->
+            if (habit.appearance != null) null else scope.access?.let { LegacyWidgetRestartClaim.displayed(habit, it, scope.storageId) }
+        }, frameOwner(scope.access, scope.storageId), scope.access?.session,
+            { !blocked && !graphBlocked && scope.stamp === stamp && scope.epoch?.isCurrentInMemory() != false },
+            { body -> withGraph { if (scope.epoch?.isCurrentInMemory() == false) false else body() } })
     }
 
-    private suspend fun publish(scope: Scope, display: suspend () -> Unit): Boolean = sessions.exclusive {
-        if (!isCurrent(scope)) return@exclusive false
-        currentCoroutineContext().ensureActive()
-        display()
-        true
+    private suspend fun publish(scope: Scope, display: suspend () -> Unit): Boolean = withGraph {
+        sessions.exclusive {
+            if (!isCurrent(scope)) return@exclusive false
+            currentCoroutineContext().ensureActive()
+            display()
+            true
+        }
     }
 
     private suspend fun isCurrent(scope: Scope): Boolean {
         val access = tokens.localCoreWriteAccess()
-        return !blocked && !tokens.replicaSwitchPending() && scope.stamp === stamp && access == scope.access &&
-            replica.isOpenWhileAccountLocked()
+        return !blocked && !graphBlocked && scope.epoch?.isCurrentInMemory() != false &&
+            !tokens.replicaSwitchPending() && scope.stamp === stamp && access == scope.access &&
+            replica.publicationSourceWhileAccountLocked()?.let { it.storageId == scope.storageId } == true
     }
 
     internal companion object {
         val FRAME_OWNER_KEY = stringPreferencesKey("dayforgeFrameOwnerV1")
 
         /** Stable across process death/cursor/token refresh; different login, replica or permissions cannot inherit a frame. */
-        private fun frameOwner(access: LocalCoreWriteAccess?): String? {
+        private fun frameOwner(access: LocalCoreWriteAccess?, storageId: String?): String? {
             access ?: return null // Anonymous state can never bless persisted personal content.
             val session = access.session
             val fields = listOf(session.authentication.userId, session.authentication.generation,
                 session.serverInstanceId, session.syncEpoch, access.capturedDeviceId,
-                access.capabilities?.sorted()?.joinToString("\n"))
+                access.capabilities?.sorted()?.joinToString("\n"), storageId)
             val value = buildString {
-                append("widget-frame-v1;")
+                append("widget-frame-v2;")
                 fields.forEach { field -> if (field == null) append("-1:") else { append(field.length); append(':'); append(field) } }
             }
             return java.security.MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))

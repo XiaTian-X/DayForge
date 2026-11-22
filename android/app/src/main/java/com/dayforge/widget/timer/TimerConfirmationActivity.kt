@@ -19,6 +19,8 @@ import com.dayforge.data.repository.NextTimerWriter
 import com.dayforge.data.repository.LegacyWidgetTimerClaim
 import com.dayforge.domain.service.TimerServiceController
 import dagger.hilt.android.AndroidEntryPoint
+import com.dayforge.data.local.DatabaseRuntimeHost
+import com.dayforge.data.local.TokenManager
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.catch
@@ -35,7 +37,9 @@ import kotlinx.coroutines.launch
 @AndroidEntryPoint
 class TimerConfirmationActivity : ComponentActivity() {
 
-    @Inject lateinit var writer: NextTimerWriter
+    @Inject internal lateinit var host: DatabaseRuntimeHost
+    @Inject lateinit var tokens: TokenManager
+    private val writer get() = host.boundGraph().nextTimerWriter
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -51,7 +55,7 @@ class TimerConfirmationActivity : ComponentActivity() {
             return
         }
         lifecycleScope.launch {
-            writer.accessChanges.catch { finish() }.collect { access ->
+            tokens.coreAccessChanges.catch { finish() }.collect { access ->
                 val session = claim?.authority?.session() ?: requireNotNull(legacy).identity.session()
                 val device = claim?.authority?.deviceId ?: legacy?.identity?.deviceId
                 if (access == null || access.session != session || access.capturedDeviceId != device) finish()
@@ -59,17 +63,23 @@ class TimerConfirmationActivity : ComponentActivity() {
         }
 
         setContent {
+            var submitting by remember { mutableStateOf(false) }
             var currentHabitName by remember { mutableStateOf<String?>(null) }
             var newHabitName by remember { mutableStateOf<String?>(null) }
             var ready by remember { mutableStateOf(false) }
 
             LaunchedEffect(Unit) {
                 try {
+                    host.withGraph {
+                    val publication = host.currentPublication()
                     val display = if (claim != null) writer.requireWidgetStart(habitId, claim.authority, requireNotNull(claim.startGuard))
                         else writer.requireLegacyWidgetStart(requireNotNull(legacy))
-                    currentHabitName = display.incumbentName
-                    newHabitName = display.requestedName
-                    ready = true
+                    publication.publish {
+                        currentHabitName = display.incumbentName
+                        newHabitName = display.requestedName
+                        ready = true
+                    }
+                    }
                 } catch (error: Exception) {
                     if (error is CancellationException) throw error
                     android.util.Log.w("TimerConfirmation", "Stale switch confirmation", error)
@@ -84,7 +94,7 @@ class TimerConfirmationActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
-                    Dialog(onDismissRequest = { finish() }) {
+                    Dialog(onDismissRequest = { if (!submitting) finish() }) {
                         Card(
                             modifier = Modifier.padding(16.dp),
                             elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
@@ -118,21 +128,25 @@ class TimerConfirmationActivity : ComponentActivity() {
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)
                                 ) {
-                                    TextButton(onClick = { finish() }) {
+                                    TextButton(enabled = !submitting, onClick = { finish() }) {
                                         Text(stringResource(R.string.action_cancel))
                                     }
 
                                     Button(
-                                        enabled = ready,
-                                        onClick = {
+                                        enabled = ready && !submitting,
+                                        onClick = click@ {
+                                            if (submitting) return@click
+                                            submitting = true
                                             lifecycleScope.launch {
                                                 try {
+                                                    host.withGraph {
                                                     if (claim != null) writer.requireWidgetStart(habitId, claim.authority, requireNotNull(claim.startGuard))
                                                     else writer.requireLegacyWidgetStart(requireNotNull(legacy))
                                                     TimerServiceController.startTimer(
                                                         this@TimerConfirmationActivity, habitId, targetMinutes,
                                                         authority = claim?.authority, startGuard = claim?.startGuard, legacyWidget = legacy
                                                     )
+                                                    }
                                                 } catch (error: Exception) {
                                                     if (error is CancellationException) throw error
                                                     android.util.Log.w("TimerConfirmation", "Switch rejected", error)
@@ -142,7 +156,8 @@ class TimerConfirmationActivity : ComponentActivity() {
                                             }
                                         }
                                     ) {
-                                        Text(stringResource(R.string.action_confirm))
+                                        if (submitting) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                        else Text(stringResource(R.string.action_confirm))
                                     }
                                 }
                             }

@@ -51,6 +51,8 @@ import com.dayforge.ui.navigation.Screen
 import com.dayforge.ui.navigation.ReplicaPresentationGate
 import com.dayforge.ui.navigation.ReplicaNavigationLifetime
 import com.dayforge.ui.screens.recovery.ReplicaRecoveryRoot
+import com.dayforge.ui.screens.recovery.SessionPreparationRoot
+import com.dayforge.ui.screens.recovery.SessionPreparationViewModel
 import com.dayforge.ui.screens.recovery.ReplicaRecoveryViewModel
 import com.dayforge.domain.service.ReplicaPresentationController
 import com.dayforge.ui.theme.DayForgeTheme
@@ -66,6 +68,7 @@ class MainActivity : AppCompatActivity() {
 
     // Survives removal of the frozen business graph; never a business navigation store.
     private val recoveryModel: ReplicaRecoveryViewModel by viewModels()
+    private val preparationModel: SessionPreparationViewModel by viewModels()
 
     private var reminderRequest by mutableStateOf<ReminderDetailRequest?>(null)
 
@@ -93,30 +96,32 @@ class MainActivity : AppCompatActivity() {
 
         setContent {
             ReplicaRecoveryRoot(replicaPresentation, recoveryModel) {
-                ReplicaPresentationGate(replicaPresentation) { permit ->
-                    val themeState by themeController.state.collectAsState()
+                SessionPreparationRoot(preparationModel, recoveryModel::show) {
+                    ReplicaPresentationGate(replicaPresentation) { permit ->
+                        val themeState by themeController.state.collectAsState()
 
-                    // Calculate WindowSizeClass - auto-updates on resize/rotation
-                    val windowSizeClass: WindowSizeClass = calculateWindowSizeClass(this)
+                        // Calculate WindowSizeClass - auto-updates on resize/rotation
+                        val windowSizeClass: WindowSizeClass = calculateWindowSizeClass(this)
 
-                    val loaded = (themeState as? DeviceThemeLoadState.Ready)?.theme
-                    if (loaded == null) {
-                        var recovering by remember { mutableStateOf(false) }
-                        if (recovering) ThemeRecoveryScreen(onBack = { recovering = false })
-                        else ThemeLoadScreen(themeState, themeController::retry, onManage = { recovering = true })
-                    } else DayForgeTheme(theme = loaded) {
-                        CompositionLocalProvider(LocalAccountIcons provides iconController) {
-                            ReplicaNavigationLifetime(permit) {
-                                val navController = rememberNavController()
-                                MainScreen(
-                                    activity = this@MainActivity,
-                                    navController = navController,
-                                    tokenManager = tokenManager,
-                                    preferencesManager = preferencesManager,
-                                    windowSizeClass = windowSizeClass,
-                                    reminderRequest = reminderRequest,
-                                    onReminderConsumed = { if (reminderRequest == it) reminderRequest = null }
-                                )
+                        val loaded = (themeState as? DeviceThemeLoadState.Ready)?.theme
+                        if (loaded == null) {
+                            var recovering by remember { mutableStateOf(false) }
+                            if (recovering) ThemeRecoveryScreen(onBack = { recovering = false })
+                            else ThemeLoadScreen(themeState, themeController::retry, onManage = { recovering = true })
+                        } else DayForgeTheme(theme = loaded) {
+                            CompositionLocalProvider(LocalAccountIcons provides iconController) {
+                                ReplicaNavigationLifetime(permit) {
+                                    val navController = rememberNavController()
+                                    MainScreen(
+                                        activity = this@MainActivity,
+                                        navController = navController,
+                                        tokenManager = tokenManager,
+                                        preferencesManager = preferencesManager,
+                                        windowSizeClass = windowSizeClass,
+                                        reminderRequest = reminderRequest,
+                                        onReminderConsumed = { if (reminderRequest == it) reminderRequest = null }
+                                    )
+                                }
                             }
                         }
                     }
@@ -219,15 +224,24 @@ fun MainScreen(
             }
         }
     ) { contentModifier ->
+        androidx.compose.foundation.layout.Column(contentModifier) {
+        if (isOnMainTab) {
+            // The panel is outside NavHost's composition but belongs to its authenticated
+            // graph. Keep Hilt/default extras and SavedState tied to that actual entry,
+            // whose store is cleared by logout and the existing replica lifetime fence.
+            val owner = com.dayforge.ui.navigation.businessGraphOwner(navController, requireNotNull(navBackStackEntry))
+            com.dayforge.ui.recovery.CountCommandRecoveryPanel(androidx.hilt.navigation.compose.hiltViewModel(owner))
+        }
         HabitNavGraph(
             navController = navController,
             tokenManager = tokenManager,
             selectedTab = selectedTab,
             onTabSelected = { selectedTab = it },
             windowSizeClass = windowSizeClass,
-            modifier = contentModifier,
+            modifier = androidx.compose.ui.Modifier.weight(1f),
             reminderRequest = reminderRequest,
             onReminderConsumed = onReminderConsumed
         )
+        }
     }
 }

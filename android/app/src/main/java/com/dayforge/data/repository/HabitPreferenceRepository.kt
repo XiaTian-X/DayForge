@@ -7,6 +7,7 @@ import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.domain.service.AccountSessionCoordinator
+import com.dayforge.domain.service.CompletionActionTiming
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
@@ -39,7 +40,10 @@ class HabitPreferenceRepository @Inject constructor(private val database: HabitD
                 withContext(Dispatchers.IO) { sessions.exclusive {
                     if (!replica.isOpenWhileAccountLocked()) return@exclusive emptySet()
                     val session = tokens.localFactAccess()?.session ?: return@exclusive emptySet()
-                    val rows = database.withTransaction { database.habitDao().getVisibleHabitsOnce() }
+                    val rows = database.withTransaction {
+                        if (CompletionActionTiming.enabled) CompletionActionTiming.markReadCaller(CompletionActionTiming.ReadCaller.PENDING_LEGACY)
+                        database.habitDao().getVisibleHabitsOnce()
+                    }
                     val pending = preferences.pendingMetricHabitUuids(session, rows.map { it.uuid }.toSet()).first()
                     check(tokens.localFactAccess()?.session == session) { "HABIT_PREFERENCE_SESSION_CHANGED" }
                     rows.filter { it.uuid in pending }.mapTo(mutableSetOf()) { it.id }
@@ -52,7 +56,7 @@ class HabitPreferenceRepository @Inject constructor(private val database: HabitD
 
     internal suspend fun read(expected: HabitEntity, expectedSession: LocalDataSession? = null,
         widgetIdentity: LegacyWidgetRestartClaim? = null): HabitPreferenceSnapshot = withContext(Dispatchers.IO) {
-        sessions.exclusive {
+        sessions.exclusive(AccountSessionCoordinator.Work.PROMPT_PREFERENCE_READ) {
             check(replica.isOpenWhileAccountLocked()) { "HABIT_PREFERENCE_RECOVERY_PENDING" }
             val session = requireNotNull(tokens.localFactAccess()?.session) { "HABIT_PREFERENCE_LOGIN_REQUIRED" }
             check(expectedSession == null || session == expectedSession) { "HABIT_PREFERENCE_SESSION_CHANGED" }
@@ -61,10 +65,9 @@ class HabitPreferenceRepository @Inject constructor(private val database: HabitD
                 database.withTransaction { requireNotNull(widgetVerifier).requireIdentity(it, requirePlan = false) }
             }
             requireRow(expected.id, expected.uuid)
-            val notification = preferences.getHabitNotificationEnabled(session, expected.uuid).first()
-            val neverAsk = preferences.getNeverAskAgain(session, expected.uuid).first()
+            val values = preferences.readHabitPreferences(session, expected.uuid)
             check(tokens.localFactAccess()?.session == session) { "HABIT_PREFERENCE_SESSION_CHANGED" }
-            HabitPreferenceSnapshot(HabitPreferenceClaim(session, expected.id, expected.uuid, widgetIdentity), notification, neverAsk)
+            HabitPreferenceSnapshot(HabitPreferenceClaim(session, expected.id, expected.uuid, widgetIdentity), values.notifications, values.neverAsk)
         }
     }
 

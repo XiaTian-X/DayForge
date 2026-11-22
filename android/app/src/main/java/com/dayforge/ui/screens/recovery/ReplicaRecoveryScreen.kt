@@ -251,4 +251,5 @@ private fun reviewMessage(kind: ReplicaRecoveryReview) = when (kind) {
     ReplicaRecoveryReview.METRIC_DRAFT -> R.string.replica_recovery_metric_drafts
     ReplicaRecoveryReview.CONFIGURATION_JOURNAL -> R.string.replica_recovery_config_pending
     ReplicaRecoveryReview.SNAPSHOT_CANDIDATE -> R.string.replica_recovery_snapshot_pending
+    ReplicaRecoveryReview.LOCAL_COMMAND_RECOVERY -> R.string.replica_recovery_local_commands
 }

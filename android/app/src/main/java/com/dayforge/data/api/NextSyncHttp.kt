@@ -556,7 +556,7 @@ internal class NextSyncHttp private constructor(
         suspend fun authorize(tokens: TokenManager, context: LocalSyncAccess, recoveryReadOnly: Boolean = false) {
             if (!recoveryReadOnly && tokens.replicaSwitchPending())
                 throw IOException(com.dayforge.data.local.ReplicaSwitchGuard.PENDING)
-            if (tokens.syncAuthenticationSnapshot(context) == null) throw IOException("SYNC_SESSION_CHANGED")
+            if (!tokens.isCurrentSyncAuthorityForValidation(context)) throw IOException("SYNC_SESSION_CHANGED")
         }
     }
 }

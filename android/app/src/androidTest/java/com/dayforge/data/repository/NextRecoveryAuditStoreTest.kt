@@ -197,7 +197,9 @@ class NextRecoveryAuditStoreTest : NextObjectEditorFixture() {
         return terminal(preview(http, refuse(http, a.operationId))).also { failing = false }
     }
     private suspend fun preservation(recoveryId: String = id(9000)) = db.withTransaction {
-        NextRecoveryPreservationStore(db).snapshot(recoveryId)
+        // Cross-transaction comparison covers every protected byte/schema/command; the actual
+        // confirmation separately proves the transaction-local control delta before commit.
+        NextRecoveryPreservationStore(db).snapshot(recoveryId).values
     }
     private suspend fun sourceProofs() = db.withTransaction {
         NextRequestSql.sources(sql, "sync_outbox") to NextRequestSql.sources(sql, "timer_command_outbox")
@@ -278,6 +280,25 @@ class NextRecoveryAuditStoreTest : NextObjectEditorFixture() {
         sql.execSQL("DELETE FROM next_recovery_audit_payloads WHERE recoveryId=? AND payloadKey='manifest'", arrayOf(saved.id))
         val ref = payloads.write(saved.id, "manifest", NextRecoveryAuditCodec.encode(value))
         sql.execSQL("UPDATE next_recovery_audits SET manifestHash=? WHERE recoveryId=?", arrayOf(ref.hash, saved.id))
+    }
+
+    @Test fun retiredCountOwnerStillConfirmsOriginalRecoveryWithoutRevivingTrustedState() = runBlocking<Unit> {
+        val (http, _) = initialize()
+        val original = edit("Rejected edit with retired count owner")
+        val ticket = prepare(preview(http, refuse(http, original.operationId)))
+        val owner = requireNotNull(com.dayforge.data.local.CountTrustRuntime.forDatabase(db))
+        db.withTransaction { owner.maintenance(db) { owner.retireFastPathForRecovery() } }
+        assertTrue(owner.isRetired)
+        val before = db.withTransaction { requireNotNull(CountTrustRecoveryControl.read(db)) }
+        val preserved = preservation(ticket.recoveryId)
+        val proof = confirm(ticket)
+        assertEquals(ticket.recoveryId, proof.recoveryId)
+        assertEquals(preserved, preservation(ticket.recoveryId))
+        val after = db.withTransaction { requireNotNull(CountTrustRecoveryControl.read(db)) }
+        assertEquals(before.storageId, after.storageId)
+        assertTrue(after.generation > before.generation); assertEquals(1L, after.dirty)
+        assertTrue(owner.isRetired); assertEquals(0, count("count_trust_root"))
+        assertEquals(proof, confirm(ticket))
     }
 
     @Test fun ordinaryRecoveryPreservesRunningTimerOnceAndAcceptedHistoryAlongsideEarlierAudit() = runBlocking<Unit> {

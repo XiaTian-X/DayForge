@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -37,6 +38,9 @@ import com.dayforge.domain.model.CardColorStyle
 import com.dayforge.ui.components.GoalCompletionDialog
 import com.dayforge.ui.components.ParentHabitCard
 import com.dayforge.ui.components.PostCheckInDialog
+import com.dayforge.ui.TimerLaunchInput
+import com.dayforge.ui.renderedSelection
+import com.dayforge.data.local.DatabaseObjectSelection
 import kotlinx.coroutines.launch
 
 /**
@@ -64,37 +68,89 @@ fun NestedScreen(
     onEditGoalClick: (Long) -> Unit = {},
     onCreateGoalClick: () -> Unit = {},
     onMetricClick: (Long) -> Unit = {},
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onHabitSelection: ((DatabaseObjectSelection) -> Unit)? = null,
+    onEditHabitSelection: ((DatabaseObjectSelection) -> Unit)? = null,
+    onMetricSelection: ((DatabaseObjectSelection) -> Unit)? = null,
+    onEditGoalSelection: ((DatabaseObjectSelection) -> Unit)? = null
 ) {
-    val topLevelHabitsWithChildren by viewModel.topLevelHabitsWithChildren.collectAsState()
-    val isInitialized by viewModel.isInitialized.collectAsState()
-    val readError by viewModel.readError.collectAsState()
-    val activeTimer by viewModel.activeTimerState.collectAsState()
-    val pendingMetricHabits by viewModel.pendingMetricHabits.collectAsState()
-    val linkedMetricsByHabit by viewModel.linkedMetricsByHabit.collectAsState()
-    val postCheckInState by viewModel.postCheckInState.collectAsState()
-    val expandedParentUuids by viewModel.expandedParentUuids.collectAsState()
+    val topLevelHabitsWithChildren by viewModel.topLevelHabitsWithChildren.collectAsStateWithLifecycle()
+    val busyHabitIds by viewModel.busyHabitIds.collectAsStateWithLifecycle()
+    val countButtonFrame by viewModel.countButtonFrame.collectAsStateWithLifecycle()
+    val fixedCountButtons by viewModel.fixedCountButtonModels.collectAsStateWithLifecycle()
+    val countButtons = if (viewModel.fixedGraphConstruction) fixedCountButtons else countButtonFrame?.value.orEmpty()
+    val isInitialized by viewModel.isInitialized.collectAsStateWithLifecycle()
+    val readError by viewModel.readError.collectAsStateWithLifecycle()
+    val fixedActiveTimer by viewModel.activeTimerState.collectAsStateWithLifecycle()
+    val activeTimerFrameValue by viewModel.activeTimerFrame.collectAsStateWithLifecycle()
+    val renderedActiveTimerFrame = activeTimerFrameValue
+    val activeTimer = if (viewModel.fixedGraphConstruction) fixedActiveTimer else renderedActiveTimerFrame?.value ?: null
+    val pendingMetricHabits by viewModel.pendingMetricHabits.collectAsStateWithLifecycle()
+    val fixedLinkedMetricsByHabit by viewModel.linkedMetricsByHabit.collectAsStateWithLifecycle()
+    val linkedMetricFrameValue by viewModel.linkedMetricFrame.collectAsStateWithLifecycle()
+    val renderedLinkedMetricFrame = linkedMetricFrameValue
+    val linkedMetricsByHabit = if (viewModel.fixedGraphConstruction) fixedLinkedMetricsByHabit else renderedLinkedMetricFrame?.value ?: emptyMap()
+    val fixedPostCheckInState by viewModel.postCheckInState.collectAsStateWithLifecycle()
+    val postCheckInFrameValue by viewModel.postCheckInFrame.collectAsStateWithLifecycle()
+    val renderedPostCheckInFrame = postCheckInFrameValue
+    val postCheckInState = if (viewModel.fixedGraphConstruction) fixedPostCheckInState else renderedPostCheckInFrame?.value ?: null
+    val expandedParentUuids by viewModel.expandedParentUuids.collectAsStateWithLifecycle()
     // Card color style for reactive card rendering (CARD-09)
     val cardColorStyle = com.dayforge.ui.theme.LocalDeviceCardStyle.current
-    val showGoalDialog by viewModel.showGoalDialog.collectAsState()
-    val goalHabitId by viewModel.goalHabitId.collectAsState()
-    val goalProgress by viewModel.goalProgress.collectAsState()
-    val goalTarget by viewModel.goalTarget.collectAsState()
+    val goalDialogFrameValue by viewModel.goalDialogFrame.collectAsStateWithLifecycle()
+    val renderedGoalDialogFrame = goalDialogFrameValue
+    val reactivationDialogFrameValue by viewModel.reactivationDialogFrame.collectAsStateWithLifecycle()
+    val renderedReactivationDialogFrame = reactivationDialogFrameValue
+    val deletionDialogFrameValue by viewModel.deletionDialogFrame.collectAsStateWithLifecycle()
+    val renderedDeletionDialogFrame = deletionDialogFrameValue
+    val fixedShowGoalDialog by viewModel.showGoalDialog.collectAsStateWithLifecycle()
+    val showGoalDialog = if (viewModel.fixedGraphConstruction) fixedShowGoalDialog else renderedGoalDialogFrame?.value?.show ?: false
+    val fixedGoalHabitId by viewModel.goalHabitId.collectAsStateWithLifecycle()
+    val goalHabitId = if (viewModel.fixedGraphConstruction) fixedGoalHabitId else renderedGoalDialogFrame?.value?.habitId ?: null
+    val fixedGoalProgress by viewModel.goalProgress.collectAsStateWithLifecycle()
+    val goalProgress = if (viewModel.fixedGraphConstruction) fixedGoalProgress else renderedGoalDialogFrame?.value?.progress ?: 0
+    val fixedGoalTarget by viewModel.goalTarget.collectAsStateWithLifecycle()
+    val goalTarget = if (viewModel.fixedGraphConstruction) fixedGoalTarget else renderedGoalDialogFrame?.value?.target ?: 0
     // Reactivation dialog states
-    val showReactivationDialog by viewModel.showReactivationDialog.collectAsState()
-    val reactivationHabitName by viewModel.reactivationHabitName.collectAsState()
-    val reactivationPreservesHistory by viewModel.reactivationPreservesHistory.collectAsState()
+    val fixedShowReactivationDialog by viewModel.showReactivationDialog.collectAsStateWithLifecycle()
+    val showReactivationDialog = if (viewModel.fixedGraphConstruction) fixedShowReactivationDialog else renderedReactivationDialogFrame?.value?.show ?: false
+    val fixedReactivationHabitId by viewModel.reactivationHabitId.collectAsStateWithLifecycle()
+    val reactivationHabitId = if (viewModel.fixedGraphConstruction) fixedReactivationHabitId else renderedReactivationDialogFrame?.value?.habitId ?: null
+    val fixedReactivationHabitName by viewModel.reactivationHabitName.collectAsStateWithLifecycle()
+    val reactivationHabitName = if (viewModel.fixedGraphConstruction) fixedReactivationHabitName else renderedReactivationDialogFrame?.value?.habitName ?: ""
+    val fixedReactivationPreservesHistory by viewModel.reactivationPreservesHistory.collectAsStateWithLifecycle()
+    val reactivationPreservesHistory = if (viewModel.fixedGraphConstruction) fixedReactivationPreservesHistory else renderedReactivationDialogFrame?.value?.preservesHistory ?: false
     // Children deletion dialog state
-    val showChildrenDialog by viewModel.showChildrenDialog.collectAsState()
+    val fixedShowChildrenDialog by viewModel.showChildrenDialog.collectAsStateWithLifecycle()
+    val showChildrenDialog = if (viewModel.fixedGraphConstruction) fixedShowChildrenDialog else renderedDeletionDialogFrame?.value ?: null
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
+    val renderedTree = topLevelHabitsWithChildren
+    fun habitSelection(id: Long): DatabaseObjectSelection? =
+        renderedTree.firstOrNull { it.habit.id == id }?.renderedSelection()
+            ?: renderedTree.asSequence().flatMap { it.children.asSequence() }.firstOrNull { it.habit.id == id }?.renderedSelection()
+    fun navigateHabit(id: Long, edit: Boolean = false, goal: Boolean = false) = com.dayforge.ui.navigateRenderedDatabaseInput(
+        context, viewModel.fixedGraphConstruction, id, habitSelection(id),
+        if (goal) onEditGoalClick else if (edit) onEditHabitClick else onHabitClick,
+        if (goal) onEditGoalSelection else if (edit) onEditHabitSelection else onHabitSelection)
+
+
+    fun metricSelection(id: Long): DatabaseObjectSelection? {
+        val frame = renderedLinkedMetricFrame ?: return null
+        val metric = frame.value.values.asSequence().flatMap { it.asSequence() }.firstOrNull { it.metricId == id } ?: return null
+        val uuid = metric.metricUuid ?: return null
+        return DatabaseObjectSelection.metric(id, uuid, frame.publication)
+    }
+    fun navigateMetric(id: Long) = com.dayforge.ui.navigateRenderedDatabaseInput(context,
+        viewModel.fixedGraphConstruction, id, metricSelection(id), onMetricClick, onMetricSelection)
+
     // Get goal habit name for dialog
-    val goalHabitName = remember(goalHabitId, topLevelHabitsWithChildren) {
+    val goalHabitName = remember(goalHabitId, renderedTree, renderedGoalDialogFrame) {
         goalHabitId?.let { id ->
-            topLevelHabitsWithChildren
+            renderedTree
                 .flatMap { it.children }
-                .find { it.habit.id == id }
+                .find { it.habit.id == id && (viewModel.fixedGraphConstruction || it.habit.uuid == renderedGoalDialogFrame?.value?.habitUuid) }
                 ?.habit
                 ?.name
         } ?: ""
@@ -103,8 +159,19 @@ fun NestedScreen(
     // Battery guidance and confirmation dialog states
     var showBatteryGuidanceDialog by remember { mutableStateOf(false) }
     var showTimerConfirmation by remember { mutableStateOf(false) }
-    var pendingTimerHabitId by remember { mutableStateOf<Long?>(null) }
-    var pendingTimerTarget by remember { mutableStateOf(0) }
+    var pendingTimer by remember { mutableStateOf<TimerLaunchInput?>(null) }
+    var permissionTimer by remember { mutableStateOf<TimerLaunchInput?>(null) }
+    val renderedPendingTimer = pendingTimer
+    fun timerInput(habitId: Long, target: Int) = TimerLaunchInput(habitId, target, habitSelection(habitId), renderedActiveTimerFrame)
+    fun rejectTimerInput() { Toast.makeText(context, R.string.database_view_expired, Toast.LENGTH_LONG).show() }
+    fun acceptPendingTimer(): TimerLaunchInput? {
+        val original = renderedPendingTimer
+        if (original == null || pendingTimer !== original || !original.isCurrentFor(viewModel.fixedGraphConstruction)) {
+            rejectTimerInput(); return null
+        }
+        pendingTimer = null
+        return original
+    }
 
     // Notification permission launcher (Android 13+)
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -113,27 +180,34 @@ fun NestedScreen(
         if (!isGranted) {
             Toast.makeText(context, context.getString(R.string.toast_notification_permission_denied), Toast.LENGTH_SHORT).show()
         }
-        pendingTimerHabitId?.let { habitId ->
-            viewModel.startTimer(habitId, pendingTimerTarget)
+        val original = permissionTimer
+        permissionTimer = null
+        if (original != null) {
+            if (original.isCurrentFor(viewModel.fixedGraphConstruction))
+                viewModel.startTimer(original.habitId, original.targetMinutes, original.selection)
+            else rejectTimerInput()
         }
-        pendingTimerHabitId = null
     }
 
     // Helper function to check and request notification permission
-    fun checkNotificationPermissionAndStartTimer(habitId: Long, targetMinutes: Int) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val permissionStatus = ContextCompat.checkSelfPermission(
-                context, Manifest.permission.POST_NOTIFICATIONS
-            )
-            if (permissionStatus == PackageManager.PERMISSION_GRANTED) {
-                viewModel.startTimer(habitId, targetMinutes)
-            } else {
-                pendingTimerHabitId = habitId
-                pendingTimerTarget = targetMinutes
-                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
-        } else {
-            viewModel.startTimer(habitId, targetMinutes)
+    fun checkNotificationPermissionAndStartTimer(original: TimerLaunchInput) {
+        if (!original.isCurrentFor(viewModel.fixedGraphConstruction)) { rejectTimerInput(); return }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            // A second click is not allowed to replace the original in-flight permission input.
+            if (permissionTimer != null) { rejectTimerInput(); return }
+            permissionTimer = original
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else viewModel.startTimer(original.habitId, original.targetMinutes, original.selection)
+    }
+    fun continuePendingTimer() {
+        val original = acceptPendingTimer() ?: return
+        checkNotificationPermissionAndStartTimer(original)
+    }
+    LaunchedEffect(renderedTree, pendingTimer) {
+        val original = pendingTimer
+        if (original != null && !original.isCurrentFor(viewModel.fixedGraphConstruction) && pendingTimer === original) {
+            pendingTimer = null; showTimerConfirmation = false; showBatteryGuidanceDialog = false
         }
     }
 
@@ -144,8 +218,7 @@ fun NestedScreen(
         // Check if there's an active timer for a different habit
         if (currentTimer != null && currentTimer.habitId != habitId) {
             // Show confirmation dialog
-            pendingTimerHabitId = habitId
-            pendingTimerTarget = targetMinutes
+            pendingTimer = timerInput(habitId, targetMinutes)
             showTimerConfirmation = true
         } else if (currentTimer?.habitId == habitId) {
             // Timer already running for this habit, ignore
@@ -153,16 +226,17 @@ fun NestedScreen(
             // No active timer, check battery guidance
             scope.launch {
                 if (viewModel.shouldShowBatteryGuidance()) {
-                    pendingTimerHabitId = habitId
-                    pendingTimerTarget = targetMinutes
+                    pendingTimer = timerInput(habitId, targetMinutes)
                     showBatteryGuidanceDialog = true
                 } else {
-                    checkNotificationPermissionAndStartTimer(habitId, targetMinutes)
+                    checkNotificationPermissionAndStartTimer(timerInput(habitId, targetMinutes))
                 }
             }
         }
     }
 
+    CompositionLocalProvider(com.dayforge.ui.LocalInFlightHabitIds provides busyHabitIds,
+        com.dayforge.ui.LocalCountButtonModels provides countButtons) {
     Scaffold(
         floatingActionButton = {
             FloatingActionButton(
@@ -196,7 +270,7 @@ fun NestedScreen(
         } else if (readError) {
             com.dayforge.ui.components.DataReadFailure(viewModel::retryRead,
                 Modifier.fillMaxSize().padding(padding))
-        } else if (topLevelHabitsWithChildren.isEmpty()) {
+        } else if (renderedTree.isEmpty()) {
             // Empty state
             Column(
                 modifier = modifier
@@ -237,7 +311,7 @@ fun NestedScreen(
                     verticalItemSpacing = 8.dp  // 瀑布流垂直间距
                 ) {
                     items(
-                        items = topLevelHabitsWithChildren,
+                        items = renderedTree,
                         key = { it.habit.uuid }
                     ) { parentWithChildren ->
                         val isExpanded = expandedParentUuids.contains(parentWithChildren.habit.uuid)
@@ -254,57 +328,57 @@ fun NestedScreen(
                             nextCheckInDate = parentWithChildren.nextCheckInDate,
                             dayProgress = parentWithChildren.dayProgress,
                             isExpanded = isExpanded,  // Use existing expanded state
-                            onClick = { onEditGoalClick(parentWithChildren.habit.id) },
+                            onClick = { navigateHabit(parentWithChildren.habit.id, goal = true) },
                             onExpandToggle = {
-                                viewModel.toggleParentExpand(parentWithChildren.habit.uuid)  // Use existing viewModel
+                                viewModel.toggleParentExpand(parentWithChildren.habit.uuid, parentWithChildren.renderedSelection())  // Use existing viewModel
                             },
                             onChildCheckIn = { habitId, value ->
-                                viewModel.logCompletion(habitId, value)
+                                viewModel.logCompletion(habitId, value, selection = habitSelection(habitId))
                             },
                             onChildUndo = { habitId ->
                                 val child = parentWithChildren.children.find { it.habit.id == habitId }
                                 if (child != null && child.lastCompletionId != null) {
-                                    viewModel.undoCompletion(child.lastCompletionId)
+                                    viewModel.undoCompletion(child.lastCompletionId, selection = child.renderedSelection())
                                 }
                             },
                             onChildIncrement = { habitId ->
-                                viewModel.incrementCount(habitId)
+                                viewModel.incrementCount(habitId, selection = habitSelection(habitId))
                             },
                             onChildDecrement = { habitId ->
                                 val child = parentWithChildren.children.find { it.habit.id == habitId }
                                 if (child != null && child.displayIsCountdown) {
-                                    viewModel.incrementCount(habitId)
+                                    viewModel.incrementCount(habitId, selection = habitSelection(habitId))
                                 } else {
-                                    viewModel.decrementCount(habitId)
+                                    viewModel.decrementCount(habitId, selection = habitSelection(habitId))
                                 }
                             },
                             onChildTimerStart = { habitId, targetMinutes ->
                                 handleTimerStart(habitId, targetMinutes)
                             },
-                            onChildTimerPause = { viewModel.pauseTimer() },
-                            onChildTimerResume = { viewModel.resumeTimer() },
-                            onChildTimerStop = { viewModel.stopTimer() },
+                            onChildTimerPause = { viewModel.pauseTimer(renderedActiveTimerFrame) },
+                            onChildTimerResume = { viewModel.resumeTimer(renderedActiveTimerFrame) },
+                            onChildTimerStop = { viewModel.stopTimer(renderedActiveTimerFrame) },
                             activeTimer = activeTimer,
                             pendingMetricHabits = pendingMetricHabits,
                             linkedMetricsByHabit = linkedMetricsByHabit,
-                            onMetricClick = onMetricClick,
+                            onMetricClick = { metricId -> navigateMetric(metricId) },
                             onRecordMetrics = { habitId ->
                                 scope.launch {
                                     val habit = parentWithChildren.children.find { it.habit.id == habitId }?.habit
                                     if (habit != null) {
-                                        viewModel.checkAndShowPostCheckInDialog(habitId, habit.name)
+                                        viewModel.checkAndShowPostCheckInDialog(habitId, habit.name, habitSelection(habitId))
                                     }
                                 }
                             },
                             onChildReactivation = { habitId ->
-                                viewModel.showReactivationDialog(habitId)
+                                viewModel.showReactivationDialog(habitId, selection = habitSelection(habitId))
                             },
-                            onChildClick = { habitId -> onHabitClick(habitId) },
-                            onChildEdit = { habitId -> onEditHabitClick(habitId) },
+                            onChildClick = { habitId -> navigateHabit(habitId) },
+                            onChildEdit = { habitId -> navigateHabit(habitId, edit = true) },
                             onChildDelete = { habitId ->
                                 val child = parentWithChildren.children.find { it.habit.id == habitId }
                                 if (child != null) {
-                                    viewModel.deleteHabit(child.habit)
+                                    viewModel.deleteHabit(child.habit, selection = child.renderedSelection())
                                 }
                             },
                             modifier = Modifier.width(420.dp) // Fixed width per cell (increased for better display)
@@ -318,7 +392,7 @@ fun NestedScreen(
                     contentPadding = PaddingValues(vertical = 8.dp)
                 ) {
                     items(
-                        items = topLevelHabitsWithChildren,
+                        items = renderedTree,
                         key = { it.habit.uuid }
                     ) { parentWithChildren ->
                         val isExpanded = expandedParentUuids.contains(parentWithChildren.habit.uuid)
@@ -334,67 +408,67 @@ fun NestedScreen(
                             nextCheckInDate = parentWithChildren.nextCheckInDate,
                             dayProgress = parentWithChildren.dayProgress,
                             isExpanded = isExpanded,
-                            onClick = { onEditGoalClick(parentWithChildren.habit.id) },
+                            onClick = { navigateHabit(parentWithChildren.habit.id, goal = true) },
                             onExpandToggle = {
-                                viewModel.toggleParentExpand(parentWithChildren.habit.uuid)
+                                viewModel.toggleParentExpand(parentWithChildren.habit.uuid, parentWithChildren.renderedSelection())
                             },
                             onChildCheckIn = { habitId, value ->
-                                viewModel.logCompletion(habitId, value)
+                                viewModel.logCompletion(habitId, value, selection = habitSelection(habitId))
                             },
                             onChildUndo = { habitId ->
                                 val child = parentWithChildren.children.find { it.habit.id == habitId }
                                 if (child != null && child.lastCompletionId != null) {
-                                    viewModel.undoCompletion(child.lastCompletionId)
+                                    viewModel.undoCompletion(child.lastCompletionId, selection = child.renderedSelection())
                                 }
                             },
                             onChildIncrement = { habitId ->
-                                viewModel.incrementCount(habitId)
+                                viewModel.incrementCount(habitId, selection = habitSelection(habitId))
                             },
                             onChildDecrement = { habitId ->
                                 val child = parentWithChildren.children.find { it.habit.id == habitId }
                                 if (child != null && child.displayIsCountdown) {
-                                    viewModel.incrementCount(habitId)
+                                    viewModel.incrementCount(habitId, selection = habitSelection(habitId))
                                 } else {
-                                    viewModel.decrementCount(habitId)
+                                    viewModel.decrementCount(habitId, selection = habitSelection(habitId))
                                 }
                             },
                             onChildTimerStart = { habitId, targetMinutes ->
                                 handleTimerStart(habitId, targetMinutes)
                             },
                             onChildTimerPause = {
-                                viewModel.pauseTimer()
+                                viewModel.pauseTimer(renderedActiveTimerFrame)
                             },
                             onChildTimerResume = {
-                                viewModel.resumeTimer()
+                                viewModel.resumeTimer(renderedActiveTimerFrame)
                             },
                             onChildTimerStop = {
-                                viewModel.stopTimer()
+                                viewModel.stopTimer(renderedActiveTimerFrame)
                             },
                             activeTimer = activeTimer,
                             pendingMetricHabits = pendingMetricHabits,
                             linkedMetricsByHabit = linkedMetricsByHabit,
-                            onMetricClick = onMetricClick,
+                            onMetricClick = { metricId -> navigateMetric(metricId) },
                             onRecordMetrics = { habitId ->
                                 scope.launch {
                                     val habit = parentWithChildren.children.find { it.habit.id == habitId }?.habit
                                     if (habit != null) {
-                                        viewModel.checkAndShowPostCheckInDialog(habitId, habit.name)
+                                        viewModel.checkAndShowPostCheckInDialog(habitId, habit.name, habitSelection(habitId))
                                     }
                                 }
                             },
                             onChildReactivation = { habitId ->
-                                viewModel.showReactivationDialog(habitId)
+                                viewModel.showReactivationDialog(habitId, selection = habitSelection(habitId))
                             },
                             onChildClick = { habitId ->
-                                onHabitClick(habitId)
+                                navigateHabit(habitId)
                             },
                             onChildEdit = { habitId ->
-                                onEditHabitClick(habitId)
+                                navigateHabit(habitId, edit = true)
                             },
                             onChildDelete = { habitId ->
                                 val child = parentWithChildren.children.find { it.habit.id == habitId }
                                 if (child != null) {
-                                    viewModel.deleteHabit(child.habit)
+                                    viewModel.deleteHabit(child.habit, selection = child.renderedSelection())
                                 }
                             },
                             modifier = Modifier
@@ -405,13 +479,15 @@ fun NestedScreen(
         }
     }
 
+    }
     // Battery optimization guidance dialog
     if (showBatteryGuidanceDialog) {
         AlertDialog(
-            onDismissRequest = {
+            onDismissRequest = dismissBattery@{
+                if (pendingTimer !== renderedPendingTimer || renderedPendingTimer?.isCurrentFor(viewModel.fixedGraphConstruction) != true) return@dismissBattery
                 showBatteryGuidanceDialog = false
                 scope.launch {
-                    viewModel.markBatteryGuidanceShown()
+                    viewModel.markBatteryGuidanceShown(renderedPendingTimer?.selection)
                 }
             },
             title = { Text(stringResource(R.string.dialog_battery_optimization_title)) },
@@ -420,10 +496,11 @@ fun NestedScreen(
             },
             confirmButton = {
                 TextButton(
-                    onClick = {
+                    onClick = timerAction@{
+                        if (pendingTimer !== renderedPendingTimer || renderedPendingTimer?.isCurrentFor(viewModel.fixedGraphConstruction) != true) { rejectTimerInput(); return@timerAction }
                         showBatteryGuidanceDialog = false
                         scope.launch {
-                            viewModel.markBatteryGuidanceShown()
+                            viewModel.markBatteryGuidanceShown(renderedPendingTimer?.selection)
                         }
                         try {
                             val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
@@ -440,10 +517,7 @@ fun NestedScreen(
                                 Toast.makeText(context, context.getString(R.string.toast_cannot_open_settings), Toast.LENGTH_SHORT).show()
                             }
                         }
-                        pendingTimerHabitId?.let { habitId ->
-                            checkNotificationPermissionAndStartTimer(habitId, pendingTimerTarget)
-                        }
-                        pendingTimerHabitId = null
+                        continuePendingTimer()
                     }
                 ) {
                     Text(stringResource(R.string.dialog_battery_optimization_settings))
@@ -451,15 +525,13 @@ fun NestedScreen(
             },
             dismissButton = {
                 TextButton(
-                    onClick = {
+                    onClick = timerAction@{
+                        if (pendingTimer !== renderedPendingTimer || renderedPendingTimer?.isCurrentFor(viewModel.fixedGraphConstruction) != true) { rejectTimerInput(); return@timerAction }
                         showBatteryGuidanceDialog = false
                         scope.launch {
-                            viewModel.markBatteryGuidanceShown()
+                            viewModel.markBatteryGuidanceShown(renderedPendingTimer?.selection)
                         }
-                        pendingTimerHabitId?.let { habitId ->
-                            checkNotificationPermissionAndStartTimer(habitId, pendingTimerTarget)
-                        }
-                        pendingTimerHabitId = null
+                        continuePendingTimer()
                     }
                 ) {
                     Text(stringResource(R.string.dialog_battery_optimization_later))
@@ -471,17 +543,15 @@ fun NestedScreen(
     // Multi-timer confirmation dialog
     if (showTimerConfirmation) {
         AlertDialog(
-            onDismissRequest = { showTimerConfirmation = false },
+            onDismissRequest = { if (pendingTimer === renderedPendingTimer) { showTimerConfirmation = false; pendingTimer = null } },
             title = { Text(stringResource(R.string.dialog_timer_switch_title)) },
             text = { Text(stringResource(R.string.dialog_timer_switch_fallback)) },
             confirmButton = {
                 TextButton(
-                    onClick = {
+                    onClick = timerAction@{
+                        if (pendingTimer !== renderedPendingTimer || renderedPendingTimer?.isCurrentFor(viewModel.fixedGraphConstruction) != true) { rejectTimerInput(); return@timerAction }
                         showTimerConfirmation = false
-                        pendingTimerHabitId?.let { habitId ->
-                            checkNotificationPermissionAndStartTimer(habitId, pendingTimerTarget)
-                        }
-                        pendingTimerHabitId = null
+                        continuePendingTimer()
                     }
                 ) {
                     Text(stringResource(R.string.action_confirm))
@@ -489,9 +559,10 @@ fun NestedScreen(
             },
             dismissButton = {
                 TextButton(
-                    onClick = {
+                    onClick = timerAction@{
+                        if (pendingTimer !== renderedPendingTimer || renderedPendingTimer?.isCurrentFor(viewModel.fixedGraphConstruction) != true) { rejectTimerInput(); return@timerAction }
                         showTimerConfirmation = false
-                        pendingTimerHabitId = null
+                        if (pendingTimer === renderedPendingTimer) pendingTimer = null
                     }
                 ) {
                     Text(stringResource(R.string.action_cancel))
@@ -503,44 +574,65 @@ fun NestedScreen(
     // Post-check-in dialog for recording linked metrics
     postCheckInState?.let { state ->
         if (state.show && state.linkedMetrics.isNotEmpty()) {
+            suspend fun finishSubmittedMetrics(neverAskAgain: Boolean) {
+                com.dayforge.domain.service.afterCommittedAction {
+                    if (neverAskAgain) viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid,
+                        state.timerPrompt, state.preferenceClaim, state.factPrompt, frame = renderedPostCheckInFrame)
+                    viewModel.dismissPostCheckInDialog(state, renderedPostCheckInFrame)
+                }
+            }
             PostCheckInDialog(
                 habitName = state.habitName,
                 linkedMetrics = state.linkedMetrics,
+                submissionProgress = state.factPrompt?.submissionPhase,
+                savedSubmission = { state.factPrompt?.savedSubmissionForDisplay() },
+                onContinue = if (state.factPrompt?.submissionPhase != null) ({
+                    try {
+                        val prompt = requireNotNull(state.factPrompt)
+                        val saved = requireNotNull(prompt.savedSubmissionForDisplay())
+                        if (viewModel.continueSavedMetricDelivery(state.habitId, prompt, renderedPostCheckInFrame))
+                            finishSubmittedMetrics(saved.neverAskAgain)
+                    } catch (error: Exception) {
+                        if (error is kotlinx.coroutines.CancellationException) throw error
+                        Toast.makeText(context, com.dayforge.ui.actionFailureMessage(context, error), Toast.LENGTH_LONG).show()
+                    }
+                }) else null,
                 promptIdentity = state.oneTimePrompt?.eventUuid,
                 missingTargets = state.oneTimePrompt?.entries?.filterNot { it.available }?.map { it.name }.orEmpty(),
-                onRefreshMetadata = if (state.oneTimePrompt != null) viewModel::refreshPostCheckInMetadata else null,
+                onRefreshMetadata = if (state.oneTimePrompt != null) { { viewModel.refreshPostCheckInMetadata(renderedPostCheckInFrame) } } else null,
                 initialInputs = state.oneTimePrompt?.entries?.associate { it.metricId to (it.input to it.note) }.orEmpty(),
-                onDraftChange = { inputs -> state.oneTimePrompt?.let { viewModel.savePostCheckInDraft(it.eventUuid, inputs) } },
+                onDraftChange = { inputs -> state.oneTimePrompt?.let { viewModel.savePostCheckInDraft(it.eventUuid, inputs, renderedPostCheckInFrame) } },
                 onRecord = { values, neverAskAgain ->
-                    scope.launch {
+                    run record@ {
                         try {
-                            if (!viewModel.recordMetricValues(state.habitId, values, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim)) return@launch
-                            if (neverAskAgain) {
-                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim)
-                            }
-                            viewModel.dismissPostCheckInDialog()
+                            if (!viewModel.recordMetricValues(state.habitId, values, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim, state.factPrompt, frame = renderedPostCheckInFrame, neverAskAgain = neverAskAgain)) return@record
+                            finishSubmittedMetrics(neverAskAgain)
                         } catch (error: Exception) {
                             if (error is kotlinx.coroutines.CancellationException) throw error
-                            Toast.makeText(context, context.getString(R.string.metric_error_record_failed,
-                                error.message.orEmpty()), Toast.LENGTH_LONG).show()
+                            Toast.makeText(context, com.dayforge.ui.actionFailureMessage(context, error), Toast.LENGTH_LONG).show()
                         }
                     }
                 },
                 onSkip = { neverAskAgain ->
-                    scope.launch {
+                    run {
                         try {
                             if (neverAskAgain) {
-                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim)
+                                viewModel.setNeverAskAgain(state.habitId, true, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim, state.factPrompt, frame = renderedPostCheckInFrame)
                             }
-                            viewModel.skipPostCheckInDialog(state.habitId, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim)
+                            viewModel.skipPostCheckInDialog(state.habitId, state.oneTimePrompt?.eventUuid, state.timerPrompt, state.preferenceClaim, state.factPrompt, frame = renderedPostCheckInFrame)
                         } catch (error: Exception) {
                             if (error is kotlinx.coroutines.CancellationException) throw error
-                            Toast.makeText(context, context.getString(R.string.metric_error_record_failed,
-                                error.message.orEmpty()), Toast.LENGTH_LONG).show()
+                            Toast.makeText(context, com.dayforge.ui.actionFailureMessage(context, error), Toast.LENGTH_LONG).show()
                         }
                     }
                 },
-                onDismiss = { viewModel.dismissPostCheckInDialog() }
+                onDismiss = {
+                    try { viewModel.dismissPostCheckInDialog(state, renderedPostCheckInFrame) }
+                    catch (error: Exception) {
+                        if (error is kotlinx.coroutines.CancellationException) throw error
+                        Toast.makeText(context, com.dayforge.ui.actionFailureMessage(context, error), Toast.LENGTH_LONG).show()
+                    }
+                }
             )
         }
     }
@@ -548,30 +640,31 @@ fun NestedScreen(
     // Goal completion dialog for habits that reached targetCycles
     if (showGoalDialog) {
         GoalCompletionDialog(
+            busy = goalHabitId in busyHabitIds,
             habitName = goalHabitName,
             progress = goalProgress,
             target = goalTarget,
-            onConfirm = { viewModel.confirmGoalCompletion() },
-            onDismiss = { viewModel.dismissGoalDialog() }
+            onConfirm = { viewModel.confirmGoalCompletion(renderedGoalDialogFrame) },
+            onDismiss = { viewModel.dismissGoalDialog(renderedGoalDialogFrame) }
         )
     }
 
     // Reactivation dialog for failed habits
     if (showReactivationDialog) {
         AlertDialog(
-            onDismissRequest = { viewModel.dismissReactivationDialog() },
+            onDismissRequest = { viewModel.dismissReactivationDialog(renderedReactivationDialogFrame) },
             title = { Text(stringResource(R.string.dialog_reactivate_confirm)) },
             text = {
                 Text(stringResource(if (reactivationPreservesHistory) R.string.restart_message
                     else R.string.nested_reactivation_message, reactivationHabitName))
             },
             confirmButton = {
-                TextButton(onClick = { viewModel.confirmReactivation() }) {
+                TextButton(enabled = reactivationHabitId !in busyHabitIds, onClick = { viewModel.confirmReactivation(renderedReactivationDialogFrame) }) {
                     Text(stringResource(R.string.action_confirm_activate), color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { viewModel.dismissReactivationDialog() }) {
+                TextButton(enabled = reactivationHabitId !in busyHabitIds, onClick = { viewModel.dismissReactivationDialog(renderedReactivationDialogFrame) }) {
                     Text(stringResource(R.string.action_cancel))
                 }
             }
@@ -581,20 +674,21 @@ fun NestedScreen(
     // Children deletion confirmation dialog
     showChildrenDialog?.let { deleteInfo ->
         AlertDialog(
-            onDismissRequest = { viewModel.dismissChildrenDialog() },
+            onDismissRequest = { viewModel.dismissChildrenDialog(renderedDeletionDialogFrame) },
             title = { Text(stringResource(R.string.dialog_delete_habit_with_children_title)) },
             text = {
                 Text(stringResource(R.string.dialog_delete_habit_with_children_message, deleteInfo.habit.name, deleteInfo.childCount))
             },
             confirmButton = {
                 TextButton(
-                    onClick = { viewModel.deleteHabitWithChildren() }
+                    enabled = deleteInfo.habit.id !in busyHabitIds,
+                    onClick = { viewModel.deleteHabitWithChildren(renderedDeletionDialogFrame) }
                 ) {
                     Text(stringResource(R.string.dialog_delete_habit_with_children), color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { viewModel.deleteHabitKeepChildren() }) {
+                TextButton(enabled = deleteInfo.habit.id !in busyHabitIds, onClick = { viewModel.deleteHabitKeepChildren(renderedDeletionDialogFrame) }) {
                     Text(stringResource(R.string.dialog_delete_habit_keep_children))
                 }
             }

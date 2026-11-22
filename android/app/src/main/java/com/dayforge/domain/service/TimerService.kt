@@ -13,15 +13,10 @@ import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
 import com.dayforge.data.api.SyncV2Api
 import com.dayforge.data.api.dto.TimerHeartbeatRequest
-import com.dayforge.data.local.dao.TimeLogDao
-import com.dayforge.data.local.dao.HabitDao
-import com.dayforge.data.local.dao.HabitMetricLinkDao
 import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.data.local.entity.TimerCommandEntity
 import com.dayforge.data.local.entity.TimerSegmentEntity
-import com.dayforge.data.repository.NextTimerWriter
 import com.dayforge.data.repository.LegacyWidgetTimerClaim
-import com.dayforge.data.repository.LegacyWidgetRestartClaim
 import com.dayforge.domain.model.TimerActionAuthority
 import kotlinx.coroutines.CancellationException
 import com.dayforge.util.DateTimeUtils
@@ -39,6 +34,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.time.ZoneId
@@ -86,14 +82,10 @@ class TimerService : Service() {
     }
 
     // Dependency injection
-    @Inject
-    lateinit var timeLogDao: TimeLogDao
-
-    @Inject
-    lateinit var habitDao: HabitDao
-
-    @Inject
-    lateinit var habitMetricLinkDao: HabitMetricLinkDao
+    @Inject internal lateinit var databaseHost: com.dayforge.data.local.DatabaseRuntimeHost
+    private val timeLogDao get() = databaseHost.boundGraph().timeLogDao
+    private val habitDao get() = databaseHost.boundGraph().habitDao
+    private val habitMetricLinkDao get() = databaseHost.boundGraph().habitMetricLinkDao
 
     @Inject
     lateinit var preferencesManager: PreferencesManager
@@ -107,8 +99,8 @@ class TimerService : Service() {
     @Inject
     lateinit var autoSyncCoordinator: AutoSyncCoordinator
 
-    @Inject lateinit var timerWriter: NextTimerWriter
-    @Inject lateinit var timerHistoryReader: com.dayforge.data.repository.TimerHistoryReader
+    private val timerWriter get() = databaseHost.boundGraph().nextTimerWriter
+    private val timerHistoryReader get() = databaseHost.boundGraph().timerHistoryReader
 
     // Coroutine scope for database operations
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -141,6 +133,72 @@ class TimerService : Service() {
     private var actionLegacyWidget: LegacyWidgetTimerClaim? = null
     private var maximumDurationSeconds: Int? = null
 
+    private data class TimerPresentation(val habitId: Long, val targetMinutes: Int, val isCountdown: Boolean,
+        val isPaused: Boolean, val startTime: Long, val accumulatedPause: Long, val activeElapsed: Long,
+        val anchor: Long?, val bootCount: Int?, val sessionUuid: String?, val controlGeneration: Int,
+        val maximumDurationSeconds: Int?, val authority: TimerActionAuthority?, val legacy: LegacyWidgetTimerClaim?,
+        val source: com.dayforge.data.local.DatabaseEpochPublication)
+    @Volatile private var presentation: TimerPresentation? = null
+    private var sourceRegistration: Any? = null
+    // A null-action system recovery request contains no old business input or transition.
+    // If metadata preparation needs attention, retain only this read/republication intent.
+    private var pendingPreparationRecovery = false
+    private val sourceRechecks = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.CONFLATED)
+    private val sourceListener = object : com.dayforge.data.local.DatabaseRuntimeHost.MemoryListener {
+        override fun transition(blocked: Boolean) {
+            val old = presentation
+            if (blocked || old?.source?.isCurrentInMemory() != true) {
+                presentation = null // Synchronous memory revocation, never SQL/Binder/cancel here.
+                sourceRechecks.trySend(Unit)
+            }
+        }
+    }
+
+    private fun publishCurrentNotificationState(): Boolean {
+        val source = databaseHost.currentPublication()
+        val value = TimerPresentation(habitId, targetMinutes, isCountdown, isPaused, startTime,
+            accumulatedPauseDuration, activeElapsedAtAnchor, elapsedRealtimeAnchor, timerBootCount,
+            timerSessionUuid, controlGeneration, maximumDurationSeconds, activeAuthority, activeLegacyWidget, source)
+        val published = source.publish { presentation = value }
+        if (!published) { presentation = null; sourceRechecks.trySend(Unit) }
+        return published
+    }
+    private fun elapsedSeconds(value: TimerPresentation): Int {
+        if (value.startTime == 0L) return 0
+        val elapsed = if (value.isPaused) value.activeElapsed.coerceAtLeast(0)
+        else if (value.anchor != null && value.bootCount == currentBootCount())
+            (value.activeElapsed + SystemClock.elapsedRealtime() - value.anchor).coerceAtLeast(0)
+        else maxOf(value.activeElapsed, System.currentTimeMillis() - value.startTime - value.accumulatedPause).coerceAtLeast(0)
+        return (elapsed / 1_000L).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
+    }
+
+    private suspend fun withTimerGraph(work: com.dayforge.data.local.DatabaseRuntimeHost.Work =
+        com.dayforge.data.local.DatabaseRuntimeHost.Work.COMMAND, body: suspend () -> Unit) {
+        try { databaseHost.withGraph(work) {
+            if (work == com.dayforge.data.local.DatabaseRuntimeHost.Work.CONTROL &&
+                databaseHost.sessionPreparation.value !is com.dayforge.data.local.SessionPreparationState.Satisfied)
+                throw com.dayforge.data.local.DatabaseRuntimeHost.SessionPreparationUnavailable(databaseHost.sessionPreparation.value)
+            body()
+        } }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: com.dayforge.data.local.DatabaseRuntimeHost.SessionPreparationUnavailable) {
+            // A preparation refusal has not executed a timer transition. Keep any running
+            // timer and its anchors; never turn it into STOP/DISCARD or replay its command.
+            if (currentLogId == 0L && !pendingPreparationRecovery) stopServiceAndClearNotification()
+        }
+        catch (failure: Exception) {
+            Log.e(TAG, "Timer database lifetime unavailable; persistent state retained", failure)
+            clearState(); stopServiceAndClearNotification()
+        }
+    }
+    private fun graphOutcomeIsUnknown(): Boolean {
+        val runtime = com.dayforge.data.local.CountTrustRuntime.forDatabase(databaseHost.boundGraph().database)
+        return runtime?.retirementReasons?.any { it in setOf(
+            com.dayforge.data.local.CountTrustRetirementReason.UNKNOWN_BEGIN,
+            com.dayforge.data.local.CountTrustRetirementReason.UNKNOWN_END,
+            com.dayforge.data.local.CountTrustRetirementReason.TRANSACTION_STATE_UNKNOWN) } == true
+    }
+
     private lateinit var notificationManager: NotificationManager
     private lateinit var notificationFactory: TimerNotificationFactory
 
@@ -149,35 +207,68 @@ class TimerService : Service() {
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationFactory = TimerNotificationFactory(this)
         notificationFactory.createChannel(notificationManager)
+        sourceRegistration = databaseHost.observeMemory(sourceListener)
+        serviceScope.launch {
+            databaseHost.sessionPreparation.collect { preparation ->
+                if (preparation is com.dayforge.data.local.SessionPreparationState.Satisfied) commandMutex.withLock {
+                    if (pendingPreparationRecovery) withTimerGraph(com.dayforge.data.local.DatabaseRuntimeHost.Work.CONTROL) {
+                        // A fresh independent current-owner read, never the rejected action.
+                        pendingPreparationRecovery = false
+                        recoverPersistedTimer()
+                    }
+                }
+            }
+        }
+        serviceScope.launch {
+            for (event in sourceRechecks) commandMutex.withLock {
+                if (currentLogId > 0L) withTimerGraph(com.dayforge.data.local.DatabaseRuntimeHost.Work.COMMAND) {
+                    preserveRunningTimerAfterRejectedWidgetCommand()
+                }
+            }
+        }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    override fun onStartCommand(received: Intent?, flags: Int, startId: Int): Int {
+        val intent = received?.let(::Intent) // Freeze the command's scalar/string extras before asynchronous work.
         // A service promoted with startForegroundService must enter the foreground
         // before Room recovery can run. The placeholder is replaced as soon as
         // persisted state has been restored on the IO dispatcher.
         startForegroundWithNotification()
         val action = intent?.action
         val hasLegacyWidgetClaim = LegacyWidgetTimerClaim.isPresent(intent)
+        val hasActionAuthority = TimerActionAuthority.isPresent(intent)
+        val unclaimedSystemRecovery = action == null && !hasLegacyWidgetClaim && !hasActionAuthority
         val expectedHabitId = intent?.getLongExtra(EXTRA_HABIT_ID, 0L)?.takeIf { it > 0 }
         serviceScope.launch {
             commandMutex.withLock {
+                if (unclaimedSystemRecovery) pendingPreparationRecovery = true
+                // Only the original null-action persisted-state recovery is CONTROL.
+                // Explicit user/OS commands, threshold stops and heartbeat are ordinary work.
+                withTimerGraph(if (action == null) com.dayforge.data.local.DatabaseRuntimeHost.Work.CONTROL
+                    else com.dayforge.data.local.DatabaseRuntimeHost.Work.COMMAND) {
                 runCatching {
                     val knownAction = action in setOf(ACTION_START, ACTION_PAUSE, ACTION_RESUME, ACTION_STOP, ACTION_DISCARD)
                     // A malformed or misrouted explicit claim is never a system recovery entry.
                     require(!hasLegacyWidgetClaim || knownAction) { "LEGACY_WIDGET_TIMER_ACTION_REQUIRED" }
+                    require(action != null || !hasActionAuthority) { "TIMER_ACTION_REQUIRED" }
                     actionAuthority = TimerActionAuthority.read(intent)
                     actionLegacyWidget = LegacyWidgetTimerClaim.read(intent)
                     require(!hasLegacyWidgetClaim || actionLegacyWidget != null) { "LEGACY_WIDGET_TIMER_CLAIM_REQUIRED" }
                     require(actionAuthority == null || actionLegacyWidget == null)
-                    if (knownAction)
+                    if (knownAction) {
+                        // Old unbound notification formats are rejected, never converted to
+                        // a new current-owner command. The explicit null-action system recovery
+                        // below is a separate read/republication entry.
+                        require(actionAuthority != null || actionLegacyWidget != null) { "TIMER_ACTION_SOURCE_REQUIRED" }
                         timerWriter.requireAction(requireNotNull(expectedHabitId), actionAuthority, actionLegacyWidget)
+                    }
                     when (action) {
                         ACTION_START -> handleStart(intent)
                         ACTION_PAUSE -> handlePause(expectedHabitId)
                         ACTION_RESUME -> handleResume(expectedHabitId)
                         ACTION_STOP -> handleStop(expectedHabitId)
                         ACTION_DISCARD -> handleDiscard(expectedHabitId)
-                        null -> recoverPersistedTimer()
+                        null -> { pendingPreparationRecovery = false; recoverPersistedTimer() }
                         else -> stopIfNoPersistedTimer()
                     }
                 }.onFailure { error ->
@@ -186,13 +277,18 @@ class TimerService : Service() {
                     // A rejected widget command does not become the owner of a different persisted timer.
                     actionAuthority = null
                     actionLegacyWidget = null
-                    if (hasLegacyWidgetClaim) {
+                    if (graphOutcomeIsUnknown()) {
+                        // Do not queue a new SQLite writer behind an uncertain original END.
+                        // The Host's actual native drain and original persistent recovery own it.
+                        clearState(); stopServiceAndClearNotification()
+                    } else if (action != null) {
                         preserveRunningTimerAfterRejectedWidgetCommand()
-                    } else if (action == null) {
+                    } else {
                         // Failed current-owner recovery must not fall through to an unbound recovery.
                         clearState()
                         stopServiceAndClearNotification()
-                    } else stopIfNoPersistedTimer()
+                    }
+                }
                 }
             }
         }
@@ -203,6 +299,9 @@ class TimerService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        presentation = null
+        sourceRegistration = null
+        sourceRechecks.close()
         tickerJob?.cancel()
         serviceScope.cancel()
     }
@@ -217,94 +316,106 @@ class TimerService : Service() {
         tickerJob = serviceScope.launch {
             while (isActive) {
                 delay(1000)  // Check every second
-                if (!isPaused) {
+                val view = presentation?.takeIf { it.source.isCurrentInMemory() } ?: continue
+                if (!view.isPaused) {
                     // Update notification with current elapsed time
                     updateNotification()
 
                     // Conflated display work is owned by this foreground service.
-                    widgetTicker.tick(habitId)
+                    widgetTicker.tick(view.habitId)
 
                     // Countdown mode: check for auto-complete at zero
                     // Per TIMER-06: countdown stops at zero, cannot exceed target
-                    if (isCountdown) {
-                        val elapsedSeconds = calculateElapsedSeconds()
-                        val targetSeconds = targetMinutes * 60
+                    if (view.isCountdown) {
+                        val elapsedSeconds = elapsedSeconds(view)
+                        val targetSeconds = view.targetMinutes * 60
                         val remainingSeconds = targetSeconds - elapsedSeconds
 
                         if (remainingSeconds <= 0) {
                             // Per TIMER-05: countdown auto-completes at zero and records TimeLogEntity
                             showCountdownCompleteNotification()
-                            launchTerminalStop()
+                            launchTerminalStop(view)
                             return@launch  // Exit ticker loop
                         }
                     } else {
                         // Countup mode: check for target completion notification
                         // Per TIMER-07: countup mode continues past target
-                        if (targetMinutes > 0 && !targetReachedNotified) {
-                            val elapsedSeconds = calculateElapsedSeconds()
-                            val targetSeconds = targetMinutes * 60
+                        if (view.targetMinutes > 0 && !targetReachedNotified) {
+                            val elapsedSeconds = elapsedSeconds(view)
+                            val targetSeconds = view.targetMinutes * 60
 
                             if (elapsedSeconds >= targetSeconds) {
-                                showTargetReachedNotification()
-                                targetReachedNotified = true
+                                commandMutex.withLock {
+                                    if (presentation === view && view.source.isCurrentInMemory()) {
+                                        showTargetReachedNotification(); targetReachedNotified = true
+                                    }
+                                }
                             }
                         }
 
                         // Check for threshold (D-07: target × 3, D-08: auto-stop)
-                        val thresholdMinutes = targetMinutes * THRESHOLD_MULTIPLIER
-                        if (thresholdMinutes > 0 && targetMinutes > 0) {
-                            val elapsedSeconds = calculateElapsedSeconds()
+                        val thresholdMinutes = view.targetMinutes * THRESHOLD_MULTIPLIER
+                        if (thresholdMinutes > 0 && view.targetMinutes > 0) {
+                            val elapsedSeconds = elapsedSeconds(view)
                             val elapsedMinutes = elapsedSeconds / 60
 
-                            if (elapsedMinutes >= thresholdMinutes || maximumDurationSeconds?.let { elapsedSeconds >= it } == true) {
+                            if (elapsedMinutes >= thresholdMinutes || view.maximumDurationSeconds?.let { elapsedSeconds >= it } == true) {
                                 // Auto-stop: show notification and stop timer
                                 showThresholdReachedNotification()
-                                launchTerminalStop()
+                                launchTerminalStop(view)
                                 return@launch  // Exit ticker loop
                             }
                         }
-                        if (targetMinutes == 0 && maximumDurationSeconds?.let { calculateElapsedSeconds() >= it } == true) {
+                        if (view.targetMinutes == 0 && view.maximumDurationSeconds?.let { elapsedSeconds(view) >= it } == true) {
                             showThresholdReachedNotification()
-                            launchTerminalStop()
+                            launchTerminalStop(view)
                             return@launch
                         }
                     }
                 }
-                maybeHeartbeat()
+                maybeHeartbeat(view)
             }
         }
     }
 
-    private fun launchTerminalStop() {
-        val capturedAuthority = activeAuthority
-        val capturedLegacy = activeLegacyWidget
-        val capturedHabitId = habitId
+    private fun launchTerminalStop(view: TimerPresentation) {
+        val capturedAuthority = view.authority
+        val capturedLegacy = view.legacy
+        val capturedHabitId = view.habitId
         serviceScope.launch {
             commandMutex.withLock {
+                withTimerGraph {
                 actionAuthority = capturedAuthority
                 actionLegacyWidget = capturedLegacy
-                runCatching { handleStop(capturedHabitId.takeIf { it > 0 }) }
+                runCatching {
+                    timerWriter.requireAction(capturedHabitId, capturedAuthority, capturedLegacy)
+                    handleStop(capturedHabitId.takeIf { it > 0 })
+                }
                     .onFailure { if (it is CancellationException) throw it; Log.e(TAG, "Automatic timer stop failed", it); stopServiceAndClearNotification() }
+                }
             }
         }
     }
 
-    private suspend fun maybeHeartbeat() {
+    private suspend fun maybeHeartbeat(view: TimerPresentation) {
         val now = SystemClock.elapsedRealtime()
         if (now - lastHeartbeatAttemptAt < HEARTBEAT_INTERVAL_MILLIS) return
         lastHeartbeatAttemptAt = now
         // The formal v5 coordinator owns bound network traffic; never send a typed session to v4.
-        if (activeAuthority != null) { autoSyncCoordinator.enqueueNow(); return }
-        val sessionUuid = timerSessionUuid ?: return
+        if (view.authority != null) { autoSyncCoordinator.enqueueNow(); return }
+        val sessionUuid = view.sessionUuid ?: return
         val deviceId = tokenManager.syncDeviceId.first() ?: run {
             autoSyncCoordinator.enqueueNow()
             return
         }
+        withTimerGraph {
+        if (!view.source.isCurrentInMemory()) return@withTimerGraph
         runCatching {
             syncApi.heartbeatTimer(
                 sessionUuid,
-                TimerHeartbeatRequest(deviceId, controlGeneration)
+                TimerHeartbeatRequest(deviceId, view.controlGeneration)
             )
+        }.onFailure { if (it is CancellationException) throw it }
         }
     }
 
@@ -385,7 +496,7 @@ class TimerService : Service() {
 
         val todayStart = DateTimeUtils.startOfDayMillis()
         val todayEnd = DateTimeUtils.startOfNextDayMillis(todayStart)
-        val completedSecondsToday: Long = if (requestedHabit.appearance != null) timerHistoryReader.read(requestedHabit).todaySeconds else timeLogDao.getCompletedDurationSecondsForDate(
+        val completedSecondsToday: Long = if (requestedHabit.appearance != null) timerHistoryReader.readProjection(requestedHabit).todaySeconds else timeLogDao.getCompletedDurationSecondsForDate(
             requestedHabitId,
             java.time.LocalDate.now().toString(),
             todayStart,
@@ -430,7 +541,7 @@ class TimerService : Service() {
         val sessionUuid = UUID.randomUUID().toString()
         timerSessionUuid = sessionUuid
         val capturedTimezone = requireNotNull(timerTimezone)
-        currentLogId = timerWriter.write(habitId, actionAuthority, actionLegacyWidget) { timeLogDao.insertSyncedTimer(
+        currentLogId = timerWriter.write(habitId, actionAuthority, actionLegacyWidget) { timerWriter.applyTransition(com.dayforge.data.repository.TimerTransition.Start(
             TimeLogEntity(
                 habitId = habitId,
                 startTime = startTime,
@@ -463,16 +574,19 @@ class TimerService : Service() {
                 sequence = 1,
                 startedAt = startTime
             )
-        ) }
+        )) }
         activeAuthority = if (actionLegacyWidget != null) null else timerWriter.capture(habitId)
         activeLegacyWidget = actionLegacyWidget?.running(sessionUuid, nextCommandSequence)
         maximumDurationSeconds = timerWriter.policy(habitId, sessionUuid)?.maxDurationSeconds
+        publishCurrentNotificationState()
         updateNotification()
         autoSyncCoordinator.enqueueNow()
         startTicker()
     }
 
     private suspend fun recoverPersistedTimer() {
+        activeAuthority = null; activeLegacyWidget = null
+        actionAuthority = null; actionLegacyWidget = null
         val existingLog = timeLogDao.getActiveTimeLog()
         if (existingLog != null) {
             val currentHabit = requireNotNull(habitDao.getHabitById(existingLog.habitId))
@@ -515,13 +629,15 @@ class TimerService : Service() {
         timerBootCount = log.timerBootCount
         targetReachedNotified = targetMinutes > 0 &&
             calculateElapsedSeconds() >= targetMinutes * 60
-        return true
+        return publishCurrentNotificationState()
     }
 
     private suspend fun ensureRestoredState(expectedHabitId: Long?): Boolean {
-        val inMemoryMatches = currentLogId > 0L && timerSessionUuid != null &&
-            (expectedHabitId == null || habitId == expectedHabitId) &&
-            (actionLegacyWidget == null || actionLegacyWidget?.sessionUuid == timerSessionUuid)
+        val expectedSession = actionAuthority?.sessionUuid ?: actionLegacyWidget?.sessionUuid
+        val expectedSequence = actionAuthority?.nextSequence ?: actionLegacyWidget?.nextSequence
+        val inMemoryMatches = presentation?.source?.isCurrentInMemory() == true && currentLogId > 0L && timerSessionUuid != null &&
+            (expectedHabitId == null || habitId == expectedHabitId) && expectedSession == timerSessionUuid &&
+            expectedSequence == nextCommandSequence
         if (inMemoryMatches) return true
 
         val active = timeLogDao.getActiveTimeLog() ?: return false
@@ -585,7 +701,7 @@ class TimerService : Service() {
         } else {
             maxOf(System.currentTimeMillis(), (log.timerLastCommandAt ?: log.startTime) + 1)
         }
-        timerWriter.write(log.habitId, actionAuthority, actionLegacyWidget, legacySwitchTarget) { timeLogDao.finishTimerAndQueue(
+        timerWriter.write(log.habitId, actionAuthority, actionLegacyWidget, legacySwitchTarget) { timerWriter.applyTransition(com.dayforge.data.repository.TimerTransition.Stop(
             id = log.id,
             endTime = endTime,
             durationSeconds = durationSeconds,
@@ -601,21 +717,7 @@ class TimerService : Service() {
                 activeElapsedMillis = durationSeconds * 1_000L
             ),
             wasPaused = log.isPaused
-        )
-        persistDayAllocations(log.id) }
-    }
-
-    private suspend fun persistDayAllocations(logId: Long) {
-        val completed = timeLogDao.getById(logId) ?: return
-        val timezone = completed.timerTimezone ?: ZoneId.systemDefault().id
-        val allocations = DurationDayAllocator.allocate(
-            sessionUuid = completed.uuid,
-            habitId = completed.habitId,
-            timezone = timezone,
-            segments = timeLogDao.getTimerSegments(completed.uuid),
-            maximumDurationMillis = completed.timerActiveElapsedMillis
-        )
-        timeLogDao.replaceDayAllocations(completed.uuid, allocations)
+        )) }
     }
 
     private suspend fun cancelInterruptedTimer(log: TimeLogEntity, legacySwitchTarget: LegacyWidgetTimerClaim? = null) {
@@ -623,7 +725,7 @@ class TimerService : Service() {
             System.currentTimeMillis(),
             (log.timerLastCommandAt ?: log.startTime) + 1
         )
-        timerWriter.write(log.habitId, actionAuthority, actionLegacyWidget, legacySwitchTarget) { timeLogDao.deleteTimerAndQueue(
+        timerWriter.write(log.habitId, actionAuthority, actionLegacyWidget, legacySwitchTarget) { timerWriter.applyTransition(com.dayforge.data.repository.TimerTransition.Cancel(
             log,
             timerCommand(
                 log.uuid,
@@ -632,7 +734,7 @@ class TimerService : Service() {
                 commandAt,
                 log.timerControlGeneration
             )
-        ) }
+        )) }
     }
 
     private fun nextCommandTime(): Long {
@@ -672,7 +774,7 @@ class TimerService : Service() {
         val commandAt = nextRunningBoundary(activeElapsed)
         val sessionUuid = requireNotNull(timerSessionUuid)
         val sequence = nextCommandSequence
-        timerWriter.write(habitId, actionAuthority, actionLegacyWidget) { timeLogDao.updatePauseAndQueue(
+        timerWriter.write(habitId, actionAuthority, actionLegacyWidget) { timerWriter.applyTransition(com.dayforge.data.repository.TimerTransition.Pause(
             id = currentLogId,
             isPaused = true,
             pausedAt = commandAt,
@@ -687,7 +789,7 @@ class TimerService : Service() {
                 activeElapsedMillis = activeElapsed
             ),
             resumedSegment = null
-        ) }
+        )) }
 
         activeElapsedAtAnchor = activeElapsed
         elapsedRealtimeAnchor = null
@@ -697,6 +799,7 @@ class TimerService : Service() {
         activeAuthority = if (actionLegacyWidget != null) null else timerWriter.capture(habitId)
         // A successful ordinary App control explicitly takes over its existing v4 path.
         activeLegacyWidget = actionLegacyWidget?.running(sessionUuid, nextCommandSequence)
+        publishCurrentNotificationState()
         notifyWidgetUpdate()
         autoSyncCoordinator.enqueueNow()
         updateNotification()
@@ -717,7 +820,7 @@ class TimerService : Service() {
         val resumedBootCount = currentBootCount()
         val sessionUuid = requireNotNull(timerSessionUuid)
         val sequence = nextCommandSequence
-        timerWriter.write(habitId, actionAuthority, actionLegacyWidget) { timeLogDao.updatePauseAndQueue(
+        timerWriter.write(habitId, actionAuthority, actionLegacyWidget) { timerWriter.applyTransition(com.dayforge.data.repository.TimerTransition.Pause(
             id = currentLogId,
             isPaused = false,
             pausedAt = null,
@@ -733,7 +836,7 @@ class TimerService : Service() {
                 sequence = sequence,
                 startedAt = resumedAt
             )
-        ) }
+        )) }
 
         accumulatedPauseDuration = resumedAccumulatedPause
         isPaused = false
@@ -743,6 +846,7 @@ class TimerService : Service() {
         nextCommandSequence = sequence + 1
         activeAuthority = if (actionLegacyWidget != null) null else timerWriter.capture(habitId)
         activeLegacyWidget = actionLegacyWidget?.running(sessionUuid, nextCommandSequence)
+        publishCurrentNotificationState()
         notifyWidgetUpdate()
         autoSyncCoordinator.enqueueNow()
         updateNotification()
@@ -818,7 +922,7 @@ class TimerService : Service() {
 
             val sessionUuid = requireNotNull(timerSessionUuid)
             val sequence = nextCommandSequence
-            timerWriter.write(habitId, actionAuthority, actionLegacyWidget) { timeLogDao.finishTimerAndQueue(
+            timerWriter.write(habitId, actionAuthority, actionLegacyWidget) { timerWriter.applyTransition(com.dayforge.data.repository.TimerTransition.Stop(
                 id = logIdToStop,
                 endTime = endTime,
                 durationSeconds = durationSeconds,
@@ -830,8 +934,7 @@ class TimerService : Service() {
                     activeElapsedMillis = activeElapsedMillis
                 ),
                 wasPaused = isPaused
-            )
-            persistDayAllocations(logIdToStop) }
+            )) }
             nextCommandSequence = sequence + 1
             timerWriter.publishCompletion(stoppedHabitId, actionAuthority, actionLegacyWidget) { habit, progress ->
             autoSyncCoordinator.enqueueNow()
@@ -862,9 +965,7 @@ class TimerService : Service() {
                                 habit.name,
                                 progress,
                                 habit.targetCycles,
-                                legacyIdentity = actionLegacyWidget?.identity ?: habit.takeIf { it.appearance == null }?.let {
-                                    LegacyWidgetRestartClaim.displayed(it, requireNotNull(tokenManager.localCoreWriteAccess()))
-                                },
+                                legacyIdentity = actionLegacyWidget?.identity,
                                 timerCompletion = actionAuthority?.let {
                                     com.dayforge.data.repository.TimerCompletionFollowUpClaim.displayed(habit, it)
                                 }
@@ -910,7 +1011,7 @@ class TimerService : Service() {
                     System.currentTimeMillis(),
                     (logToDelete.timerLastCommandAt ?: logToDelete.startTime) + 1
                 )
-                timerWriter.write(habitId, actionAuthority, actionLegacyWidget) { timeLogDao.deleteTimerAndQueue(
+                timerWriter.write(habitId, actionAuthority, actionLegacyWidget) { timerWriter.applyTransition(com.dayforge.data.repository.TimerTransition.Cancel(
                     logToDelete,
                     timerCommand(
                         logToDelete.uuid,
@@ -919,7 +1020,7 @@ class TimerService : Service() {
                         commandAt,
                         logToDelete.timerControlGeneration
                     )
-                ) }
+                )) }
             }
             autoSyncCoordinator.enqueueNow()
         }
@@ -950,6 +1051,7 @@ class TimerService : Service() {
 
     /** Rejection may keep an already-owned timer, but must not acquire a persisted one. */
     private suspend fun preserveRunningTimerAfterRejectedWidgetCommand() {
+        if (graphOutcomeIsUnknown()) { clearState(); stopServiceAndClearNotification(); return }
         val preserved = try {
             val persisted = timeLogDao.getActiveTimeLog()
             val alreadyRunning = tickerJob?.isActive == true && currentLogId > 0L && timerSessionUuid != null &&
@@ -963,6 +1065,7 @@ class TimerService : Service() {
             false
         }
         if (preserved) {
+            publishCurrentNotificationState()
             updateNotification()
             notifyWidgetUpdate()
         } else {
@@ -980,6 +1083,7 @@ class TimerService : Service() {
     }
 
     private fun clearState() {
+        presentation = null
         currentLogId = 0L
         habitId = 0L
         targetMinutes = 0
@@ -1007,15 +1111,15 @@ class TimerService : Service() {
      * Starts the foreground service with notification.
      */
     private fun startForegroundWithNotification() {
-        val elapsedSeconds = calculateElapsedSeconds()
+        val view = presentation?.takeIf { it.source.isCurrentInMemory() }
         val notification = notificationFactory.createTimerNotification(
-            elapsedSeconds = elapsedSeconds,
-            isPaused = isPaused,
-            targetMinutes = targetMinutes,
-            isCountdown = isCountdown,
-            habitId = habitId,
-            authority = activeAuthority,
-            legacyWidget = activeLegacyWidget
+            elapsedSeconds = view?.let(::elapsedSeconds) ?: 0,
+            isPaused = view?.isPaused ?: false,
+            targetMinutes = view?.targetMinutes ?: 0,
+            isCountdown = view?.isCountdown ?: false,
+            habitId = view?.habitId ?: 0,
+            authority = view?.authority,
+            legacyWidget = view?.legacy
         )
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -1034,15 +1138,15 @@ class TimerService : Service() {
      * Updates the notification with current timer state.
      */
     private fun updateNotification() {
-        val elapsedSeconds = calculateElapsedSeconds()
+        val view = presentation?.takeIf { it.source.isCurrentInMemory() }
         val notification = notificationFactory.createTimerNotification(
-            elapsedSeconds = elapsedSeconds,
-            isPaused = isPaused,
-            targetMinutes = targetMinutes,
-            isCountdown = isCountdown,
-            habitId = habitId,
-            authority = activeAuthority,
-            legacyWidget = activeLegacyWidget
+            elapsedSeconds = view?.let(::elapsedSeconds) ?: 0,
+            isPaused = view?.isPaused ?: false,
+            targetMinutes = view?.targetMinutes ?: 0,
+            isCountdown = view?.isCountdown ?: false,
+            habitId = view?.habitId ?: 0,
+            authority = view?.authority,
+            legacyWidget = view?.legacy
         )
         notificationManager.notify(NOTIFICATION_ID, notification)
     }

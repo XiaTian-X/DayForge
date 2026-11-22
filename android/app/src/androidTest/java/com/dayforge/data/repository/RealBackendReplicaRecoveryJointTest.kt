@@ -7,6 +7,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ActivityScenario
@@ -48,7 +49,22 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class RealBackendReplicaRecoveryJointTest {
     @get:Rule(order = 0) val widgets = IsolatedWidgetRefreshRule()
-    @get:Rule(order = 1) val storage = PhysicalDatabaseRule()
+    @get:Rule(order = 1) val epochs = PhysicalDatabaseEpochFixture().also { fixture ->
+        fixture.beforeCleanup = { ownerFailure?.let { throw it }; check(ownersClosed) { "RECOVERY_JOINT_OWNERS_NOT_JOINED" } }
+        fixture.beforeDatabaseDeletion = {
+            check(ownersClosed && fixture.host.lifecycleEnded)
+            // Only known-close disposal restores the original whole Preferences once.
+            // A pending-stage clearTokens refusal prevents this callback and preserves evidence.
+            originalPreferences?.let { previous ->
+                dataStore.updateData { previous }
+                check(dataStore.data.first() == previous) { "RECOVERY_JOINT_PREFERENCES_NOT_RESTORED" }
+            }
+            for (name in listOf("account-icons-v1", "replica-archives-v1")) {
+                val owned = File(app.filesDir, name)
+                assertTrue(!owned.exists() || owned.deleteRecursively())
+            }
+        }
+    }
     @get:Rule(order = 2) val hilt = HiltAndroidRule(this)
     @get:Rule(order = 3) val compose = createEmptyComposeRule()
     @Inject lateinit var icons: AccountIconController
@@ -58,16 +74,35 @@ class RealBackendReplicaRecoveryJointTest {
     @Inject lateinit var preferences: PreferencesManager
     @Inject lateinit var auth: AuthApi
     @Inject lateinit var business: BusinessSyncRepository
-    @Inject lateinit var habits: HabitRepository
-    @Inject lateinit var habitPreferences: HabitPreferenceRepository
-    @Inject lateinit var metrics: MetricRepository
-    @Inject lateinit var creator: NextObjectCreator
     @Inject lateinit var presentation: ReplicaPresentationController
     @Inject lateinit var dataStore: DataStore<Preferences>
     @Inject internal lateinit var materialHttp: AccountIconHttp
     @Inject internal lateinit var http: NextSyncHttp
     private val app get() = InstrumentationRegistry.getInstrumentation().targetContext
-    private val db get() = storage.database
+    private val graph get() = epochs.host.boundGraph()
+    private val db get() = graph.database
+    private val habitPreferences get() = graph.habitPreferenceRepository
+    private val metrics get() = graph.metricRepository
+    private val creator get() = graph.nextObjectCreator
+    private var connected = false
+    private val methodOwnerMonitor = Any()
+    private var methodClosing = false
+    private var methodJob: Job? = null
+    private var ownersClosed = false
+    private var ownerFailure: Throwable? = null
+    private fun <T> journey(block: suspend CoroutineScope.() -> T): T = runBlocking {
+        val running = requireNotNull(currentCoroutineContext()[Job])
+        synchronized(methodOwnerMonitor) {
+            // JUnit timeout cleanup may run before this worker reaches registration.
+            check(!methodClosing && methodJob == null) { "JOINT_METHOD_REGISTRATION_CLOSED" }
+            methodJob = running
+        }
+        block()
+    }
+    private suspend fun <T> withCurrent(block: suspend () -> T): T = epochs.host.withGraph { block() }
+    /** Test oracle only: frozen ledger reads must not upgrade to ordinary business access. */
+    private suspend fun <T> control(block: suspend () -> T): T =
+        epochs.host.withGraph(DatabaseRuntimeHost.Work.CONTROL) { block() }
     private var scenario: ActivityScenario<MainActivity>? = null
     private lateinit var model: ReplicaRecoveryViewModel
     private lateinit var restoredUrl: String
@@ -107,10 +142,10 @@ class RealBackendReplicaRecoveryJointTest {
         require(sourceUrl != restoredUrl)
         installation = requireNotNull(args.getString("dayforgeRecoveryInstallationId"))
         require(installation == id(1))
-        hilt.inject()
+        hilt.inject(); epochs.connect(); connected = true
         originalPreferences = dataStore.data.first()
         sessions.exclusive { tokens.clearTokens() }
-        habits.clearAllData(app)
+        epochs.clearAndAwaitReplacement()
         assertFalse(app.getDatabasePath(AccountIconDatabase.NAME).exists())
         // Public fixture installation only. Registration and all authority come from real APIs.
         dataStore.edit { it[stringPreferencesKey("sync_installation_id")] = installation }
@@ -121,34 +156,47 @@ class RealBackendReplicaRecoveryJointTest {
     }
 
     @After fun cleanup() = runBlocking<Unit> {
-        val job = if (::model.isInitialized) model.viewModelScope.coroutineContext[Job] else null
-        scenario?.close()
-        withTimeout(10_000) { job?.join() }
-        if (::presentation.isInitialized) { presentation.close(); presentation.awaitClosed() }
-        if (::icons.isInitialized) { icons.awaitImages(); icons.close() }
-        if (::themes.isInitialized) themes.close()
-        // Dispose the isolated fixture after every outcome, including a pending recovery.
-        // Do not call production reset/cancel or claim the failed replica was recovered.
-        // Its callers/controllers are already joined above; restore the exact pre-test DS
-        // snapshot so this case cannot poison another Hilt fixture in the same test process.
-        check(app.packageName == "com.dayforge.testbed")
-        originalPreferences?.let { previous -> dataStore.updateData { previous } }
-        assertTrue(app.deleteDatabase(AccountIconDatabase.NAME) || !app.getDatabasePath(AccountIconDatabase.NAME).exists())
-        for (name in listOf("account-icons-v1", "replica-archives-v1")) {
-            val owned = File(app.filesDir, name)
-            assertTrue(!owned.exists() || owned.deleteRecursively())
+        val ownedMethod = synchronized(methodOwnerMonitor) {
+            methodClosing = true
+            methodJob
         }
+        try {
+            withTimeout(5_000) { ownedMethod?.cancelAndJoin() }
+            check(ownedMethod?.isCompleted != false)
+            val job = if (::model.isInitialized) model.viewModelScope.coroutineContext[Job] else null
+            var activityJob: Job? = null
+            scenario?.onActivity { activityJob = requireNotNull(it.lifecycleScope.coroutineContext[Job]) }
+            scenario?.close()
+            withTimeout(10_000) { job?.join() }
+            withTimeout(5_000) { activityJob?.join() }
+            check(job?.isCompleted != false && activityJob?.isCompleted != false)
+            if (::presentation.isInitialized) { presentation.close(); presentation.awaitClosed() }
+            if (::icons.isInitialized) { icons.awaitImages(); icons.close() }
+            if (::themes.isInitialized) withTimeout(5_000) { themes.close() }
+            if (connected) { shutdownTestHost(epochs.host); check(epochs.host.lifecycleEnded) }
+            check(app.packageName == "com.dayforge.testbed"); ownersClosed = true
+            // Do not bypass clearTokens' pending/unknown guard. EpochFixture may preserve
+            // failed state instead of reaching beforeDatabaseDeletion; never fake a cancel.
+        } catch (failure: Throwable) { ownerFailure = failure; throw failure }
     }
 
     private suspend fun settle(timeoutMillis: Long = 60_000): ReplicaRecoveryUiState =
         withTimeout(timeoutMillis) { model.state.first { it.checked && !it.busy } }
     private suspend fun click(tag: String, timeoutMillis: Long = 60_000) {
         val started = SystemClock.elapsedRealtime()
-        // Fixed UI tags and phase/notice only; never log credentials or review payloads.
+        // Fixed UI tags, state flags and phase/notice only; never credentials or review payloads.
         android.util.Log.i("RecoveryJoint", "Click $tag started")
         compose.onNodeWithTag("replica-recovery-list").performScrollToNode(hasTestTag(tag))
         compose.onNodeWithTag(tag).performClick()
-        val settled = settle(timeoutMillis)
+        model.state.value.let { clicked ->
+            android.util.Log.i("RecoveryJoint", "Click $tag returned visible=${clicked.visible} " +
+                "checked=${clicked.checked} busy=${clicked.busy}")
+        }
+        // Dismiss closes the surface; it does not re-inspect a state invalidated by a Host switch.
+        // The journey still requires the actual recovery node to disappear before new business.
+        val settled = if (tag == "replica-recovery-close") {
+            withTimeout(timeoutMillis) { model.state.first { !it.visible && !it.busy } }
+        } else settle(timeoutMillis)
         android.util.Log.i("RecoveryJoint", "Click $tag settled in ${SystemClock.elapsedRealtime() - started}ms " +
             "notice=${settled.notice} phase=${settled.stage?.phase}")
     }
@@ -160,14 +208,14 @@ class RealBackendReplicaRecoveryJointTest {
         settle()
         compose.onNodeWithTag("replica-recovery-password").assertDoesNotExist()
     }
-    private suspend fun names() = db.habitDao().getAllHabitsOnce().associate { it.uuid to it.name }
+    private suspend fun names() = control { db.habitDao().getAllHabitsOnce().associate { it.uuid to it.name } }
     private fun archive(stage: ReplicaSwitchStage) = File(app.filesDir,
         "replica-archives-v1/${stage.accountId}/${stage.serverInstanceId}/${stage.oldEpoch}/${requireNotNull(stage.archive).archiveId}.candidate")
 
     // 2026-10-13: user-approved complete real recovery journey; ordinary cases stay at 150 seconds.
-    @Test(timeout = 300_000) fun restoredBackendRequiresFreshLoginAndConsentRetainsArchiveAndResumesOrdinarySync() = runBlocking<Unit> {
+    @Test(timeout = 300_000) fun restoredBackendRequiresFreshLoginAndConsentRetainsArchiveAndResumesOrdinarySync() = journey<Unit> {
         assertEquals(mapOf(id(101) to "Recovery acknowledged change", id(102) to "Recovery acknowledged missing"), names())
-        assertFalse(db.nextRequestDao().hasAny()); assertTrue(db.syncOutboxDao().getAll().isEmpty())
+        control { assertFalse(db.nextRequestDao().hasAny()); assertTrue(db.syncOutboxDao().getAll().isEmpty()) }
         val original = requireNotNull(tokens.localSyncAccess())
         val oldContext = icons.capture()
         step("source real material download") {
@@ -182,19 +230,21 @@ class RealBackendReplicaRecoveryJointTest {
         val originalBytes = icons.withReplicaRuntime { it.store.read(oldContext, id(201), blob.sha256) }
         assertEquals(blob.sha256, hash(originalBytes))
         val originalTheme = themes.current().saved
-        val retainedPreference = habitPreferences.read(requireNotNull(db.habitDao().getHabitByUuid(id(101))))
-        val missingPreference = habitPreferences.read(requireNotNull(db.habitDao().getHabitByUuid(id(102))))
+        val retainedPreference = withCurrent { habitPreferences.read(requireNotNull(db.habitDao().getHabitByUuid(id(101)))) }
+        val missingPreference = withCurrent { habitPreferences.read(requireNotNull(db.habitDao().getHabitByUuid(id(102)))) }
         for (saved in listOf(retainedPreference, missingPreference)) {
-            habitPreferences.setNotification(saved.claim, false)
-            habitPreferences.setNeverAskAgain(saved.claim, true)
+            withCurrent {
+                habitPreferences.setNotification(saved.claim, false)
+                habitPreferences.setNeverAskAgain(saved.claim, true)
+            }
         }
-        val oldProjection = ReplicaProjection.capture(db).hash
+        val oldProjection = control { ReplicaProjection.capture(db).hash }
         preferences.setServerUrl(restoredUrl); preferences.setActiveServerUrl(null)
         step("ordinary sync refuses changed epoch") {
             val failure = runCatching { business.sync() }.exceptionOrNull()
             assertTrue("Expected explicit recovery requirement, got ${failure?.javaClass?.simpleName}", failure is NextReplicaRecoveryRequired)
             assertEquals(original, tokens.localSyncAccess())
-            assertEquals(oldProjection, ReplicaProjection.capture(db).hash)
+            assertEquals(oldProjection, control { ReplicaProjection.capture(db).hash })
         }
         step("actual MainActivity settings recovery entry") {
             assertTrue("The actual local problem snapshot must recognize the next replica",
@@ -230,7 +280,7 @@ class RealBackendReplicaRecoveryJointTest {
         step("old JWT and wrong owner cannot authorize recovery") {
             click("replica-recovery-preview")
             assertEquals(ReplicaRecoveryError.AUTHENTICATION, model.state.value.error)
-            assertNull(tokens.activeReplicaStage()); assertEquals(oldProjection, ReplicaProjection.capture(db).hash)
+            assertNull(tokens.activeReplicaStage()); assertEquals(oldProjection, control { ReplicaProjection.capture(db).hash })
             val credentials = requireNotNull(tokens.authenticationSnapshot())
             login("joint-recovery-isolated")
             assertEquals(ReplicaRecoveryError.ACCOUNT, model.state.value.error)
@@ -276,7 +326,7 @@ class RealBackendReplicaRecoveryJointTest {
             click("replica-recovery-resume", timeoutMillis = 90_000)
             assertEquals(ReplicaRecoveryNotice.COMPLETED, model.state.value.notice)
             assertNull(tokens.activeReplicaStage())
-            assertEquals(NextReplicaFenceEntity.CLOSED, db.nextReplicaFenceDao().state()!!.mode)
+            assertEquals(NextReplicaFenceEntity.CLOSED, control { db.nextReplicaFenceDao().state()!!.mode })
             assertEquals(ReplicaSwitchPhase.COMPLETED, tokens.replicaStage(stage.recoveryId)!!.phase)
         }
         val current = requireNotNull(tokens.localSyncAccess())
@@ -295,24 +345,24 @@ class RealBackendReplicaRecoveryJointTest {
         val jobs = icons.transferJobs(context)
         assertTrue(jobs.isNotEmpty()); assertTrue(jobs.all { it.kind == IconTransferKind.DOWNLOAD && it.state == IconTransferState.COMPLETE })
         assertEquals(mapOf(id(101) to "Recovery original", id(103) to "Recovery restored addition"), names())
-        val retained = habitPreferences.read(requireNotNull(db.habitDao().getHabitByUuid(id(101))))
-        val added = habitPreferences.read(requireNotNull(db.habitDao().getHabitByUuid(id(103))))
+        val retained = withCurrent { habitPreferences.read(requireNotNull(db.habitDao().getHabitByUuid(id(101)))) }
+        val added = withCurrent { habitPreferences.read(requireNotNull(db.habitDao().getHabitByUuid(id(103)))) }
         assertFalse(retained.notificationEnabled); assertTrue(retained.neverAsk)
         assertEquals(missingPreference.claim.habitId, added.claim.habitId) // Prove actual numeric-ID reuse.
         assertTrue(added.notificationEnabled); assertFalse(added.neverAsk)
-        assertTrue(runCatching { habitPreferences.setNotification(missingPreference.claim, false) }.isFailure)
-        assertTrue(habitPreferences.read(requireNotNull(db.habitDao().getHabitByUuid(id(103)))).notificationEnabled)
+        assertTrue(runCatching { withCurrent { habitPreferences.setNotification(missingPreference.claim, false) } }.isFailure)
+        assertTrue(withCurrent { habitPreferences.read(requireNotNull(db.habitDao().getHabitByUuid(id(103)))).notificationEnabled })
         step("ordinary UI and new metric sync after recovery") {
             withTimeout(10_000) { presentation.state.first { it is ReplicaPresentationState.Open } }
             click("replica-recovery-close")
             compose.onNodeWithTag("replica-recovery-list").assertDoesNotExist()
-            val metricId = metrics.createMetric(MetricEntity(name = "Recovery new metric", unit = "kg", iconResId = 0,
+            val metricId = withCurrent { metrics.createMetric(MetricEntity(name = "Recovery new metric", unit = "kg", iconResId = 0,
                 colorHex = "#123456", appearance = ObjectAppearance(IconReference.Role("metric.weight"), "#123456", "theme")),
-                creationAuthority = creator.capture())
-            val metric = requireNotNull(db.metricDao().getMetricById(metricId))
-            val operation = db.syncOutboxDao().getAll().single()
+                creationAuthority = creator.capture()) }
+            val metric = withCurrent { requireNotNull(db.metricDao().getMetricById(metricId)) }
+            val operation = withCurrent { db.syncOutboxDao().getAll().single() }
             assertEquals("metric", operation.recordType); assertEquals(metric.uuid, operation.entityUuid)
-            val origin = requireNotNull(db.nextRequestDao().origin(NEXT_OPERATION, operation.operationId))
+            val origin = withCurrent { requireNotNull(db.nextRequestDao().origin(NEXT_OPERATION, operation.operationId)) }
             assertEquals(current.session.authentication.userId, origin.accountId)
             assertEquals(current.session.syncEpoch, origin.syncEpoch)
             business.sync()
@@ -320,18 +370,20 @@ class RealBackendReplicaRecoveryJointTest {
             assertEquals(setOf(metric.uuid), snapshot.changes.filter { it.entityType == "metric" }.map { it.entityUuid }.toSet())
             assertEquals(setOf(id(101), id(103)), snapshot.changes.filter { it.entityType == "plan_node" }.map { it.entityUuid }.toSet())
             // Accepted work retains its original proof; only the active outbox becomes empty.
-            assertTrue(db.nextRequestDao().hasAny()); assertTrue(db.syncOutboxDao().getAll().isEmpty())
-            assertEquals(origin, db.nextRequestDao().origin(NEXT_OPERATION, operation.operationId))
-            val sent = requireNotNull(db.nextRequestDao().transmission(NEXT_OPERATION, operation.operationId))
-            assertEquals(current.session.syncEpoch, sent.syncEpoch)
-            assertEquals(current.deviceId, sent.deviceId)
-            val accepted = requireNotNull(db.nextRequestDao().acceptance(NEXT_OPERATION, operation.operationId))
-            assertEquals(hash(sent.wireBytes), sent.wireHash)
-            val sql = db.openHelper.writableDatabase
-            assertEquals(NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?",
-                arrayOf(NEXT_OPERATION, operation.operationId)), accepted.transmissionHash)
-            assertEquals(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?",
-                arrayOf(NEXT_OPERATION, operation.operationId)), accepted.originHash)
+            control {
+                assertTrue(db.nextRequestDao().hasAny()); assertTrue(db.syncOutboxDao().getAll().isEmpty())
+                assertEquals(origin, db.nextRequestDao().origin(NEXT_OPERATION, operation.operationId))
+                val sent = requireNotNull(db.nextRequestDao().transmission(NEXT_OPERATION, operation.operationId))
+                assertEquals(current.session.syncEpoch, sent.syncEpoch)
+                assertEquals(current.deviceId, sent.deviceId)
+                val accepted = requireNotNull(db.nextRequestDao().acceptance(NEXT_OPERATION, operation.operationId))
+                assertEquals(hash(sent.wireBytes), sent.wireHash)
+                val sql = db.openHelper.writableDatabase
+                assertEquals(NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?",
+                    arrayOf(NEXT_OPERATION, operation.operationId)), accepted.transmissionHash)
+                assertEquals(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?",
+                    arrayOf(NEXT_OPERATION, operation.operationId)), accepted.originHash)
+            }
             assertArrayEquals(archiveBytes, archive(stage).readBytes())
         }
     }

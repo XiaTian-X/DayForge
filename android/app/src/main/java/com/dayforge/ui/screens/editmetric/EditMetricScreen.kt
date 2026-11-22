@@ -50,13 +50,16 @@ fun EditMetricScreen(
     metricId: Long,
     viewModel: EditMetricViewModel = hiltViewModel(),
     onNavigateBack: () -> Unit,
-    onMetricDeleted: () -> Unit = {}
+    onMetricDeleted: () -> Unit = {},
+    sourceSelection: com.dayforge.data.local.DatabaseObjectSelection? = null
 ) {
-    val uiState by viewModel.uiState.collectAsState(context = kotlinx.coroutines.Dispatchers.Main)
+    LaunchedEffect(viewModel, sourceSelection) { viewModel.adoptSource(sourceSelection) }
+    val observedUiState by viewModel.uiState.collectAsState(context = kotlinx.coroutines.Dispatchers.Main)
+    val uiState = observedUiState // Data-derived input and write basis remain paired.
 
     // Navigate back after save
     LaunchedEffect(uiState.isSaved) {
-        if (uiState.isSaved) {
+        if (uiState.isSaved && viewModel.isTerminalCurrent(uiState)) {
             onNavigateBack()
         }
     }
@@ -82,6 +85,10 @@ fun EditMetricScreen(
                 contentAlignment = Alignment.Center
             ) {
                 CircularProgressIndicator()
+            }
+        } else if (uiState.sourceExpired) {
+            Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                Text(stringResource(R.string.database_view_expired))
             }
         } else if (uiState.errorMessage == stringResource(R.string.toast_metric_not_found)) {
             // Error state - metric not found
@@ -406,9 +413,9 @@ fun EditMetricScreen(
 
                 // Save button
                 Button(
-                    onClick = { viewModel.saveMetric() },
+                    onClick = { viewModel.saveMetric(uiState) },
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = uiState.isValid && !uiState.isSaving
+                    enabled = uiState.isValid && !uiState.isSaving && !uiState.sourceExpired
                 ) {
                     if (uiState.isSaving) {
                         CircularProgressIndicator(
@@ -424,7 +431,7 @@ fun EditMetricScreen(
     }
 
     // Dialogs
-    if (uiState.showUnitPicker) {
+    if (!uiState.sourceExpired && uiState.showUnitPicker) {
         UnitPicker(
             selectedUnit = uiState.unit,
             onUnitSelected = viewModel::updateUnit,
@@ -432,7 +439,7 @@ fun EditMetricScreen(
         )
     }
 
-    if (uiState.showIconPicker) {
+    if (!uiState.sourceExpired && uiState.showIconPicker) {
         val appearance = uiState.appearance
         if (appearance != null) ObjectAppearancePicker(appearance, false, uiState.editAuthority,
             onSelected = viewModel::updateAppearance, onDismiss = viewModel::toggleIconPicker)
@@ -443,7 +450,7 @@ fun EditMetricScreen(
         )
     }
 
-    if (uiState.showColorPicker) {
+    if (!uiState.sourceExpired && uiState.showColorPicker) {
         ColorPicker(
             selectedColor = uiState.colorHex,
             onColorSelected = viewModel::updateColor,
@@ -452,7 +459,7 @@ fun EditMetricScreen(
     }
 
     // Duplicate name error dialog
-    if (uiState.showDuplicateDialog) {
+    if (!uiState.sourceExpired && uiState.showDuplicateDialog) {
         AlertDialog(
             onDismissRequest = { viewModel.dismissDuplicateDialog() },
             title = { Text(stringResource(R.string.dialog_cannot_save_title)) },

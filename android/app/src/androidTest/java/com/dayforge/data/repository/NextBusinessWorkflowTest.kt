@@ -59,21 +59,47 @@ class NextBusinessWorkflowTest : NextObjectEditorFixture() {
         val repo = creatingMetrics()
         val vm = withContext(Dispatchers.Main) { own(MetricDetailViewModel(app, db.metricDao(), db.metricLogDao(),
             db.habitMetricLinkDao(), db.habitDao(), repo, SavedStateHandle(mapOf("metricId" to metric.id)))) }
-        withTimeout(5000) { vm.uiState.first { !it.isLoading && it.writeAuthority != null } }
-        withContext(Dispatchers.Main) { vm.recordValue(4.25, "real entry") }
-        withTimeout(5000) { vm.uiState.first { it.logs.size == 1 } }
+        suspend fun awaitState(stage: String,
+            ready: (com.dayforge.ui.screens.metricdetail.MetricDetailUiState) -> Boolean) {
+            val started = android.os.SystemClock.elapsedRealtimeNanos()
+            var completed = false
+            try {
+                withTimeout(5000) { vm.uiState.first { ready(it) } }
+                completed = true
+            } finally {
+                if (!completed) {
+                    // Passive failure-stage diagnostics only: no SQL/auth/extra collector, no
+                    // displayed content, IDs, metric values, notes or error text are logged.
+                    val state = vm.uiState.value
+                    android.util.Log.i("MetricDetailWorkflowGate", "stage=$stage completed=false " +
+                        "elapsed_ns=${android.os.SystemClock.elapsedRealtimeNanos() - started} " +
+                        "loading=${state.isLoading} metric=${state.metric != null} authority=${state.writeAuthority != null} " +
+                        "input=${state.showValueInput} recording=${state.isRecording} mutating=${state.isMutating} " +
+                        "logs=${state.logs.size} links=${state.links.size} error=${state.errorMessage != null} " +
+                        "sum=${state.metric?.aggregationType == "sum"} unlink=${state.showUnlinkConfirm != null}")
+                }
+            }
+        }
+        awaitState("initial_authority") { !it.isLoading && it.writeAuthority != null }
+        withContext(Dispatchers.Main) {
+            assertFalse(vm.uiState.value.showValueInput)
+            vm.toggleValueInput()
+            assertTrue("Follow the actual detail input -> confirm workflow", vm.uiState.value.showValueInput)
+            vm.recordValue(4.25, "real entry")
+        }
+        awaitState("recorded_log") { it.logs.size == 1 }
         val queue = db.syncOutboxDao().getAll().single()
         assertEquals(5, originalIntent(queue).protocol)
         val (http, _) = channel { successReply(it) }
         assertNotNull(sender(http).sendAndAcceptOperation(access(), queue.operationId))
         withContext(Dispatchers.Main) { vm.updateAggregationType("sum") }
-        withTimeout(5000) { vm.uiState.first { it.metric?.aggregationType == "sum" } }
+        awaitState("aggregation_sum") { it.metric?.aggregationType == "sum" }
         val changed = db.metricDao().getMetricById(metric.id)!!
         repo.linkHabits(changed, setOf(habit.id), repo.getMetricForEditing(metric.id).authority)
-        withTimeout(5000) { vm.uiState.first { it.links.size == 1 } }
+        awaitState("linked_habit") { it.links.size == 1 }
         val link = vm.uiState.value.links.single().link
         withContext(Dispatchers.Main) { vm.showUnlinkConfirm(link.id); vm.unlinkHabit() }
-        withTimeout(5000) { vm.uiState.first { it.links.isEmpty() && it.showUnlinkConfirm == null } }
+        awaitState("unlinked_habit") { it.links.isEmpty() && it.showUnlinkConfirm == null }
         assertTrue(db.syncOutboxDao().getAll().all { originalIntent(it).protocol == 5 })
         assertEquals(1, db.metricLogDao().countAll())
         assertNull(vm.uiState.value.errorMessage)

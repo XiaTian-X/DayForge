@@ -36,6 +36,9 @@ internal class NextReplicaStageStore(private val database: HabitDatabase, privat
             actual
         } else {
             check(sql == null || sql.mode == NextReplicaFenceEntity.CLOSED) { "SYNC_REPLICA_FENCE_CHANGED" }
+            // Re-read under THIS account/Room boundary, immediately before the durable
+            // FREEZING pointer; an earlier preview is not a business-write barrier.
+            ReplicaCommandRecoveryGuard(database, tokens).requireNewStageClearInTransaction(stage.original)
             tokens.persistReplicaStage(null, stage)
         }
     } }
@@ -58,8 +61,8 @@ internal class NextReplicaStageStore(private val database: HabitDatabase, privat
         receipt: com.dayforge.data.local.ReplicaStageArchive): ReplicaSwitchStage = exclusive {
         database.withTransaction {
             check(database.nextReplicaFenceDao().state() == expected.fence) { "SYNC_REPLICA_FENCE_CHANGED" }
-            check(NextReplicaSourceClosure.storage(NextReplicaStorageProof(database).readInTransaction(), expected.fence) ==
-                expected.sourceHash) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
+            check(NextReplicaSourceClosure.matchesStorage(NextReplicaStorageProof(database).readInTransaction(), expected.fence,
+                expected.sourceHash)) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
             tokens.persistReplicaStage(expected, expected.transition(ReplicaSwitchPhase.ARCHIVE_VERIFIED, receipt))
         }
     }
@@ -68,8 +71,8 @@ internal class NextReplicaStageStore(private val database: HabitDatabase, privat
         target: com.dayforge.data.local.ReplicaStageTarget): ReplicaSwitchStage = exclusive {
         database.withTransaction {
             check(database.nextReplicaFenceDao().state() == expected.fence &&
-                NextReplicaSourceClosure.storage(NextReplicaStorageProof(database).readInTransaction(), expected.fence) ==
-                expected.sourceHash) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
+                NextReplicaSourceClosure.matchesStorage(NextReplicaStorageProof(database).readInTransaction(), expected.fence,
+                expected.sourceHash)) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
             tokens.persistReplicaStage(expected, expected.transition(ReplicaSwitchPhase.COMMITTING, destination = target))
         }
     }

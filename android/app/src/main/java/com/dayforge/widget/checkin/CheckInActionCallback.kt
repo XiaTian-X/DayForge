@@ -19,6 +19,19 @@ class CheckInActionCallback : ActionCallback {
             val claim = LegacyWidgetFactClaim.decode(requireNotNull(parameters[LEGACY_PROOF]))
             val action = parameters[ActionParameters.Key<String>("action")] ?: "toggle"
             require(claim.identity.habitId == habitId && claim.action == action) { "LEGACY_WIDGET_ACTION_CHANGED" }
+            if (action == "increment" || action == "decrement") {
+                // Old installed Glance callbacks contain a reusable rendered basis, not a
+                // stable per-tap command identity. Never invent a fresh ID or replay business
+                // from this upgrade residue. New COUNT renders use the direct task entry.
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                    android.widget.Toast.makeText(context,
+                        context.getString(com.dayforge.R.string.widget_count_action_refresh_required),
+                        android.widget.Toast.LENGTH_LONG).show()
+                }
+                WidgetRefreshScheduler.request(context)
+                return
+            }
+            WidgetEntryPoint.withGraph(context) {
             val workflow = WidgetEntryPoint.from(context).legacyFactWorkflow()
             val committed = workflow.perform(context, claim)
             if (committed.result.goalReached) {
@@ -36,6 +49,7 @@ class CheckInActionCallback : ActionCallback {
             }
             if (committed.added && !committed.result.goalReached)
                 MetricPromptHelper.checkAndShowMetricPrompt(context, habitId, committed.identity)
+            }
         } catch (error: Exception) {
             if (error is CancellationException) throw error
             Log.w(TAG, "Expired legacy widget action", error)

@@ -11,6 +11,8 @@ import com.dayforge.domain.service.TimerManager
 import com.dayforge.domain.service.TimerServiceController
 import com.dayforge.widget.checkin.MetricPromptActivity
 import dagger.hilt.android.AndroidEntryPoint
+import com.dayforge.data.local.DatabaseRuntimeHost
+import com.dayforge.data.local.TokenManager
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -18,13 +20,15 @@ import kotlinx.coroutines.launch
 /** Direct Glance Activity entry: no callback/service trampoline and no recaptured action authority. */
 @AndroidEntryPoint
 class WidgetTimerActionActivity : ComponentActivity() {
-    @Inject lateinit var writer: NextTimerWriter
+    @Inject internal lateinit var host: DatabaseRuntimeHost
+    private val writer get() = host.boundGraph().nextTimerWriter
     @Inject lateinit var timers: TimerManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         lifecycleScope.launch {
             try {
+                host.withGraph {
                 val claim = requireNotNull(WidgetTimerAction.read(intent))
                 val ticket = claim.authority
                 when (intent.action) {
@@ -48,6 +52,7 @@ class WidgetTimerActionActivity : ComponentActivity() {
                         }
                     }
                     else -> error("TIMER_WIDGET_UNKNOWN_ACTION")
+                }
                 }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error

@@ -15,6 +15,9 @@ from uuid import UUID
 JOINT_CLASS = "com.dayforge.data.repository.RealBackendJointTest"
 JOINT_MATERIAL_CLASS = "com.dayforge.data.repository.RealBackendMaterialJointTest"
 JOINT_SCHEDULER_CLASS = "com.dayforge.data.repository.RealBackendSchedulerJointTest"
+JOINT_RECOVERY_401_CLASS = (
+    "com.dayforge.ui.screens.recovery.ReplicaRecoveryPreviewHostTest"
+)
 JOINT_RECOVERY_CLASS = (
     "com.dayforge.data.repository.RealBackendReplicaRecoveryJointTest"
 )
@@ -57,7 +60,12 @@ def fixture_environment(repo):
 @contextlib.contextmanager
 def _ordinary_backend_for_cases(gate, expected):
     if not any(
-        name in {JOINT_CLASS, JOINT_MATERIAL_CLASS, JOINT_SCHEDULER_CLASS}
+        name in {
+            JOINT_CLASS,
+            JOINT_MATERIAL_CLASS,
+            JOINT_SCHEDULER_CLASS,
+            JOINT_RECOVERY_401_CLASS,
+        }
         for name, _ in expected
     ):
         yield []

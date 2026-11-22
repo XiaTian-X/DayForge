@@ -7,7 +7,12 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flow
@@ -30,9 +35,23 @@ class PreferencesManager @Inject constructor(
 ) {
     init { require(tokens == null || tokens.usesPreferences(dataStore)) }
     internal fun usesPreferences(value: DataStore<Preferences>) = dataStore === value
-    private suspend fun editOrdinary(block: suspend (MutablePreferences) -> Unit): Preferences = dataStore.edit {
-        ReplicaSwitchGuard.requireOpen(it)
-        block(it)
+    internal fun requireTokenOwner(expected: TokenManager) {
+        require(tokens === expected) { "COMMAND_METRIC_PREFERENCE_OWNER_CHANGED" }
+    }
+    private suspend fun editOrdinary(block: suspend (MutablePreferences) -> Unit): Preferences {
+        val caller = currentCoroutineContext()
+        // DataStore's actor can persist after its caller is cancelled. Keep the caller's
+        // existing account lock until that write finishes, then propagate cancellation.
+        val result = withContext(NonCancellable) {
+            dataStore.edit {
+                caller.ensureActive()
+                ReplicaSwitchGuard.requireOpen(it)
+                block(it)
+                caller.ensureActive()
+            }
+        }
+        caller.ensureActive()
+        return result
     }
     companion object {
         private val LAST_SYNC_TIMESTAMP_KEY = longPreferencesKey("last_sync_timestamp")
@@ -292,7 +311,34 @@ class PreferencesManager @Inject constructor(
     internal suspend fun removePendingMetricHabit(session: LocalDataSession, habitUuid: String) =
         editHabitPreference(session, habitUuid) { it.copy(pending = false, pendingEpoch = null) }
 
+    /** Read-only absence for historical COUNT metric delivery. The old hint is habit/epoch
+     * scoped, with no command/source identity. True, malformed, or an unpromoted old record
+     * is not permission to clear it. No promotion, default-on-decode-failure or DataStore write.
+     */
+    internal suspend fun hasNoPendingHintForHistoricalCount(session: LocalDataSession, habitUuid: String,
+        expectedTokens: TokenManager): Boolean {
+        require(tokens === expectedTokens) { "COMMAND_METRIC_PREFERENCE_OWNER_CHANGED" }
+        val values = dataStore.data.first()
+        ReplicaSwitchGuard.requireOpen(values)
+        expectedTokens.requireHabitPreferenceSession(values, session)
+        val rawValues = values.asMap()
+        if (rawValues.containsKey(PENDING_METRIC_HABITS_KEY)) return false
+        val bindings = listOfNotNull(StableHabitBinding.capture(session, habitUuid),
+            if (session.serverInstanceId == null) null else
+                StableHabitBinding.capture(session.copy(serverInstanceId = null, syncEpoch = null), habitUuid))
+        return bindings.all { binding ->
+            val raw = rawValues[HabitDevicePreferences.key(binding)]
+            if (raw == null) true else if (raw !is String) false else HabitDevicePreferences.decode(raw)?.let {
+                it.binding == binding && !it.pending && it.pendingEpoch == null
+            } == true
+        }
+    }
+
     internal val habitPreferenceChanges: Flow<Unit> = dataStore.data.map { Unit }
+
+    /** One promotion/read for fields consumed together; still authenticates the actor snapshot. */
+    internal suspend fun readHabitPreferences(session: LocalDataSession, uuid: String): HabitDevicePreferences =
+        habitPreference(session, uuid).first()
 
     private fun hasHabitPreferenceSession(values: Preferences, session: LocalDataSession): Boolean = try {
         requireNotNull(tokens) { "HABIT_PREFERENCE_TOKENS_REQUIRED" }.requireHabitPreferenceSession(values, session); true
@@ -421,7 +467,7 @@ class PreferencesManager @Inject constructor(
      */
     val dateChangeTrigger: Flow<Long> = dataStore.data.map { prefs ->
         prefs[LAST_SEEN_DATE_KEY] ?: 0L
-    }.combine(calendar.changes) { date, _ -> date }
+    }.distinctUntilChanged().combine(calendar.changes) { date, _ -> date }
 
     /**
      * Updates the last seen date to today.

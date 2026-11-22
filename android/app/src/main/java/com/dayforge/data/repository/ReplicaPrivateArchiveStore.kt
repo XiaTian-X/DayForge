@@ -63,9 +63,10 @@ internal class ReplicaPrivateArchiveStore(filesDirectory: File, private val io: 
         val ns = input.icons.original.session.let {
             AccountIconNamespace(it.authentication.userId, requireNotNull(it.serverInstanceId), requireNotNull(it.syncEpoch))
         }
+        ReplicaStorageBudget.requireWithin(input.storage.contents)
         val jsonEntries = listOf("input.json" to input.manifest, "business.json" to input.storage.contents,
             "icons.json" to input.icons.contents).map { (name, value) ->
-            val measured = measure(value, checkpoint)
+            val measured = measure(value, if (name == "business.json") ReplicaStorageBudget.RAW_LIMIT else JSON_LIMIT, checkpoint)
             val expected = when (name) { "input.json" -> input.hash; "business.json" -> input.storage.hash; else -> input.icons.hash }
             require(measured.second == expected) { "SYNC_ARCHIVE_ENCODING_CHANGED" }
             ReplicaArchiveEntry(name, measured.first, expected) to value
@@ -166,12 +167,12 @@ internal class ReplicaPrivateArchiveStore(filesDirectory: File, private val io: 
         authorize(); intent
     }
 
-    private fun measure(value: JsonObject, checkpoint: () -> Unit): Pair<Long, String> {
+    private fun measure(value: JsonObject, limit: Long, checkpoint: () -> Unit): Pair<Long, String> {
         val digest = MessageDigest.getInstance("SHA-256"); var count = 0L
         Json.encodeToStream(JsonObject.serializer(), value, object : OutputStream() {
             override fun write(value: Int) = write(byteArrayOf(value.toByte()), 0, 1)
             override fun write(bytes: ByteArray, offset: Int, size: Int) {
-                checkpoint(); count += size; require(count <= JSON_LIMIT) { "SYNC_ARCHIVE_ENTRY_TOO_LARGE" }
+                checkpoint(); count += size; require(count <= limit) { "SYNC_ARCHIVE_ENTRY_TOO_LARGE" }
                 digest.update(bytes, offset, size)
             }
         })
@@ -186,7 +187,8 @@ internal class ReplicaPrivateArchiveStore(filesDirectory: File, private val io: 
                 else entry.name.matches(Regex("icons/([0-9a-f]{64}|\\.install-[0-9a-f-]{36}\\.part)")) ||
                     entry.name.matches(Regex("themes/([0-9a-f-]{36}-[1-9][0-9]{0,9}\\.json|\\.theme-[0-9a-f-]{36}\\.part)"))
             require(valid && entry.name.length <= 160 && entry.contentHash.matches(Regex("[0-9a-f]{64}"))) { "SYNC_ARCHIVE_ENTRY_INVALID" }
-            val limit = if (index < 3) JSON_LIMIT else if (entry.name.startsWith("icons/")) 2_097_152L else 1_048_576L
+            val limit = if (index == 1) ReplicaStorageBudget.RAW_LIMIT else if (index < 3) JSON_LIMIT
+                else if (entry.name.startsWith("icons/")) 2_097_152L else 1_048_576L
             require(entry.byteLength in 0..limit)
             total += 12 + entry.name.length + entry.byteLength
             require(total <= ARCHIVE_LIMIT) { "SYNC_ARCHIVE_TOO_LARGE" }
@@ -221,7 +223,13 @@ internal class ReplicaPrivateArchiveStore(filesDirectory: File, private val io: 
             val name = ByteArray(entry.name.length); input.readFully(name)
             require(name.contentEquals(entry.name.toByteArray(Charsets.US_ASCII)) && input.readLong() == entry.byteLength) { "SYNC_ARCHIVE_ENTRY_INVALID" }
             var remaining = entry.byteLength; val content = MessageDigest.getInstance("SHA-256")
-            val captured = if (captureIcons && entry.name == "icons.json") ByteArray(entry.byteLength.toInt()) else null
+            // A larger physical entry is not permission for larger business data. On every
+            // cold readback independently validate the exact owned-metadata allowance, using
+            // bytes read from this same hash/EOF-verified descriptor. Old <=32 MiB entries
+            // remain byte-for-byte readable under the original framing and hash contract.
+            val checkBusinessBudget = entry.name == "business.json" && entry.byteLength > ReplicaStorageBudget.BUSINESS_LIMIT
+            val captured = if (checkBusinessBudget || captureIcons && entry.name == "icons.json")
+                ByteArray(entry.byteLength.toInt()) else null
             while (remaining > 0) {
                 checkpoint(); val amount = minOf(remaining, buffer.size.toLong()).toInt()
                 val offset = (entry.byteLength - remaining).toInt()
@@ -229,7 +237,13 @@ internal class ReplicaPrivateArchiveStore(filesDirectory: File, private val io: 
                 captured?.let { buffer.copyInto(it, offset, 0, amount) }
             }
             require(hash(content.digest()) == entry.contentHash) { "SYNC_ARCHIVE_CONTENT_INVALID" }
-            if (captured != null) icons = captured
+            if (checkBusinessBudget) {
+                val bytes = requireNotNull(captured)
+                val text = strictAppearanceJson(bytes, ReplicaStorageBudget.RAW_LIMIT.toInt(), checkpoint) {
+                    error("SYNC_ARCHIVE_BUSINESS_$it")
+                }
+                ReplicaStorageBudget.requireWithin(Json.parseToJsonElement(text).let { it as JsonObject }, entry.byteLength)
+            } else if (captured != null) icons = captured
         }
         require(input.readInt() == 0 && input.read() == -1 && hash(digest.digest()) == receipt.contentHash) { "SYNC_ARCHIVE_CONTENT_INVALID" }
         val after = Os.fstat(fd); verify(); checkpoint()

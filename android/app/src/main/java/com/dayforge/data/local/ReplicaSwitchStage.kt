@@ -72,6 +72,13 @@ internal data class ReplicaStageCompletion(val materialHash: String, val authent
 @Serializable
 internal data class ReplicaStageArchiveEntry(val name: String, val byteLength: Long, val contentHash: String)
 
+/** Data capacity stays unchanged; the additive local proof schema has a separate fixed cap. */
+internal object ReplicaArchiveLimits {
+    const val BUSINESS_BYTES = 32 * 1024 * 1024L
+    const val OWNED_METADATA_BYTES = 512 * 1024L
+    const val RAW_STORAGE_BYTES = BUSINESS_BYTES + OWNED_METADATA_BYTES
+}
+
 /** Durable private receipt only; actual file verification remains mandatory after every reopen. */
 @Serializable
 internal data class ReplicaStageArchive(val archiveId: String, val inputHash: String,
@@ -81,8 +88,12 @@ internal data class ReplicaStageArchive(val archiveId: String, val inputHash: St
         require(listOf(inputHash, contentHash).all { it.matches(replicaStageHashPattern) })
         require(entries.map { it.name }.distinct().size == entries.size &&
             entries.take(3).map { it.name } == listOf("input.json", "business.json", "icons.json"))
-        require(entries.first().contentHash == inputHash && entries.all { it.name.length in 1..160 &&
-            it.byteLength in 0..32L * 1024 * 1024 && it.contentHash.matches(replicaStageHashPattern) })
+        require(entries.first().contentHash == inputHash && entries.withIndex().all { (index, entry) ->
+            // business.json may additionally contain only the separately bounded owned v19
+            // metadata. Creation AND cold file readback enforce the original data budget.
+            val limit = if (index == 1) ReplicaArchiveLimits.RAW_STORAGE_BYTES else ReplicaArchiveLimits.BUSINESS_BYTES
+            entry.name.length in 1..160 && entry.byteLength in 0..limit && entry.contentHash.matches(replicaStageHashPattern)
+        })
     }
 }
 

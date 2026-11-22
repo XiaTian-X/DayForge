@@ -21,6 +21,8 @@ import com.dayforge.domain.service.TimerServiceController
 import com.dayforge.data.repository.LegacyWidgetTimerClaim
 import com.dayforge.data.repository.NextTimerWriter
 import dagger.hilt.android.AndroidEntryPoint
+import com.dayforge.data.local.DatabaseRuntimeHost
+import com.dayforge.data.local.TokenManager
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -42,7 +44,9 @@ import kotlinx.coroutines.flow.catch
  */
 @AndroidEntryPoint
 class CountdownDiscardActivity : ComponentActivity() {
-    @Inject lateinit var writer: NextTimerWriter
+    @Inject internal lateinit var host: DatabaseRuntimeHost
+    @Inject lateinit var tokens: TokenManager
+    private val writer get() = host.boundGraph().nextTimerWriter
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -69,17 +73,24 @@ class CountdownDiscardActivity : ComponentActivity() {
             return
         }
         if (legacy != null) lifecycleScope.launch {
-            writer.accessChanges.catch { finish() }.collect { access ->
+            tokens.coreAccessChanges.catch { finish() }.collect { access ->
                 if (access == null || access.session != legacy.identity.session() ||
                     access.capturedDeviceId != legacy.identity.deviceId) finish()
             }
         }
 
         setContent {
-            var ready by remember { mutableStateOf(legacy == null) }
+            var submitting by remember { mutableStateOf(false) }
+            var ready by remember { mutableStateOf(false) }
             LaunchedEffect(Unit) {
-                if (legacy != null) try { writer.requireLegacyWidgetAction(legacy); ready = true }
-                catch (error: Exception) { if (error is CancellationException) throw error; finish() }
+                try {
+                    host.withGraph {
+                        val publication = host.currentPublication()
+                        if (legacy != null) writer.requireLegacyWidgetAction(legacy)
+                        else writer.requireAction(habitId, requireNotNull(authority))
+                        publication.publish { ready = true }
+                    }
+                } catch (error: Exception) { if (error is CancellationException) throw error; finish() }
             }
             WidgetActivityTheme(this) {
                 val context = LocalContext.current
@@ -88,7 +99,7 @@ class CountdownDiscardActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
-                    Dialog(onDismissRequest = { finish() }) {
+                    Dialog(onDismissRequest = { if (!submitting) finish() }) {
                         Card(
                             modifier = Modifier.padding(16.dp),
                             elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
@@ -117,26 +128,32 @@ class CountdownDiscardActivity : ComponentActivity() {
                                     horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)
                                 ) {
                                     // "继续计时" button - just dismiss, timer continues
-                                    TextButton(onClick = { finish() }) {
+                                    TextButton(enabled = !submitting, onClick = { finish() }) {
                                         Text(stringResource(R.string.action_continue_timer))
                                     }
 
                                     // "放弃" button - discard the session
                                     Button(
-                                        enabled = ready,
-                                        onClick = {
+                                        enabled = ready && !submitting,
+                                        onClick = click@ {
+                                            if (submitting) return@click
+                                            submitting = true
                                             lifecycleScope.launch {
                                                 try {
-                                                    if (legacy != null) writer.requireLegacyWidgetAction(legacy)
-                                                    TimerServiceController.discardTimer(this@CountdownDiscardActivity,
-                                                        habitId, targetMinutes, authority, legacy)
+                                                    host.withGraph {
+                                                        if (legacy != null) writer.requireLegacyWidgetAction(legacy)
+                                                        else writer.requireAction(habitId, requireNotNull(authority))
+                                                        TimerServiceController.discardTimer(this@CountdownDiscardActivity,
+                                                            habitId, targetMinutes, authority, legacy)
+                                                    }
                                                 } catch (error: Exception) {
                                                     if (error is CancellationException) throw error
                                                 } finally { finish() }
                                             }
                                         }
                                     ) {
-                                        Text(stringResource(R.string.action_discard))
+                                        if (submitting) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                        else Text(stringResource(R.string.action_discard))
                                     }
                                 }
                             }

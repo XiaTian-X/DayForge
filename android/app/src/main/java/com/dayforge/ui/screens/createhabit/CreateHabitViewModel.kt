@@ -17,6 +17,7 @@ import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.HabitRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -62,23 +63,39 @@ data class CreateHabitUiState(
     // Metric linking (optional)
     val availableMetrics: List<MetricEntity> = emptyList(),
     val selectedMetricIds: Set<Long> = emptySet(),
+    val selectedMetricUuids: Map<Long, String> = emptyMap(),
     val appearance: com.dayforge.domain.model.ObjectAppearance? = null,
     val creationAuthority: com.dayforge.data.repository.ObjectCreationAuthority? = null
 )
 
 @HiltViewModel
-class CreateHabitViewModel @Inject constructor(
-    private val habitRepository: HabitRepository,
-    private val habitDao: HabitDao,
-    private val metricDao: MetricDao,
+class CreateHabitViewModel private constructor(
+    private val fixedHabitRepository: HabitRepository?,
+    private val fixedReads: com.dayforge.data.repository.CreationReadRepository?,
     private val preferencesManager: PreferencesManager,
-    @param:ApplicationContext private val context: Context
+    @param:ApplicationContext private val context: Context,
+    private val databases: com.dayforge.data.local.DatabaseRuntimeHost?
 ) : ViewModel() {
+    constructor(habitRepository: HabitRepository, habitDao: HabitDao, metricDao: MetricDao,
+        preferencesManager: PreferencesManager, context: Context) : this(habitRepository,
+        com.dayforge.data.repository.CreationReadRepository(habitDao, metricDao), preferencesManager, context, null)
+    @Inject internal constructor(databases: com.dayforge.data.local.DatabaseRuntimeHost,
+        preferencesManager: PreferencesManager, @ApplicationContext context: Context) :
+        this(null, null, preferencesManager, context, databases)
+    private val habitRepository get() = databases?.boundGraph()?.habitRepository ?: requireNotNull(fixedHabitRepository)
+    private val reads get() = databases?.boundGraph()?.creationReadRepository ?: requireNotNull(fixedReads)
 
-    private val _uiState = MutableStateFlow(CreateHabitUiState())
+    private val expiredMessage = context.getString(R.string.database_view_expired)
+    private val _uiState = com.dayforge.ui.CreationState(databases, CreateHabitUiState(),
+        { CreateHabitUiState(errorMessage = expiredMessage) })
     val uiState: StateFlow<CreateHabitUiState> = _uiState.asStateFlow()
 
     /** Called by coordinated next navigation; the current v4 navigation never manufactures a ticket. */
+    internal fun beginSource(input: com.dayforge.data.local.DatabaseCreationInput) {
+        _uiState.bind(input)
+        input.authority?.let(::beginCreation)
+    }
+
     fun beginCreation(authority: com.dayforge.data.repository.ObjectCreationAuthority) {
         val current = _uiState.value
         if (current.creationAuthority === authority) return
@@ -109,14 +126,16 @@ class CreateHabitViewModel @Inject constructor(
      * Lazy loading to avoid database query on ViewModel init.
      */
     fun loadTopLevelHabitsIfNeeded() {
-        if (hasLoadedTopLevelHabits) return
+        if (!_uiState.isCurrent() || hasLoadedTopLevelHabits) return
         hasLoadedTopLevelHabits = true
 
-        habitDao.getTopLevelHabits()
-            .onEach { habits ->
-                _uiState.value = _uiState.value.copy(topLevelHabits = habits)
+        viewModelScope.launch {
+            _uiState.withGraph(com.dayforge.data.local.DatabaseRuntimeHost.Work.OBSERVATION) {
+                reads.topLevelHabits().collect { habits ->
+                    _uiState.value = _uiState.value.copy(topLevelHabits = habits)
+                }
             }
-            .launchIn(viewModelScope)
+        }
     }
 
     /**
@@ -124,14 +143,16 @@ class CreateHabitViewModel @Inject constructor(
      * Lazy loading to avoid database query on ViewModel init.
      */
     fun loadMetricsIfNeeded() {
-        if (hasLoadedMetrics) return
+        if (!_uiState.isCurrent() || hasLoadedMetrics) return
         hasLoadedMetrics = true
 
-        metricDao.getAllActiveMetrics()
-            .onEach { metrics ->
-                _uiState.value = _uiState.value.copy(availableMetrics = metrics)
+        viewModelScope.launch {
+            _uiState.withGraph(com.dayforge.data.local.DatabaseRuntimeHost.Work.OBSERVATION) {
+                reads.activeMetrics().collect { metrics ->
+                    _uiState.value = _uiState.value.copy(availableMetrics = metrics)
+                }
             }
-            .launchIn(viewModelScope)
+        }
     }
 
     fun updateName(name: String) {
@@ -240,14 +261,19 @@ class CreateHabitViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(bestTime = null)
     }
 
-    fun toggleMetricSelection(metricId: Long) {
+    fun toggleMetricSelection(metricId: Long, expectedUuid: String? = null) {
+        if (!_uiState.isCurrent()) return
+        if (databases != null) require(expectedUuid != null) { "DATABASE_EPOCH_INPUT_REQUIRED" }
         val currentSelection = _uiState.value.selectedMetricIds
         val newSelection = if (metricId in currentSelection) {
             currentSelection - metricId
         } else {
             currentSelection + metricId
         }
-        _uiState.value = _uiState.value.copy(selectedMetricIds = newSelection)
+        val identities = if (metricId in newSelection && expectedUuid != null)
+            _uiState.value.selectedMetricUuids + (metricId to expectedUuid)
+            else _uiState.value.selectedMetricUuids - metricId
+        _uiState.value = _uiState.value.copy(selectedMetricIds = newSelection, selectedMetricUuids = identities)
     }
 
     fun toggleIconPicker() {
@@ -291,6 +317,7 @@ class CreateHabitViewModel @Inject constructor(
 
     fun saveHabit(predefinedUuid: String? = null, onSaveDraft: ((HabitDraft) -> Unit)? = null) {
         // Immediate synchronous check - prevents rapid clicks before StateFlow updates
+        if (!_uiState.isCurrent()) return
         if (isSavingInProgress || _uiState.value.savedDraft || _uiState.value.savedHabitId != null) return
 
         val currentState = _uiState.value
@@ -337,6 +364,7 @@ class CreateHabitViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
+                _uiState.withGraph {
                 if (onSaveDraft != null) {
                     onSaveDraft(HabitDraft(
                         name = currentState.name, description = currentState.description,
@@ -345,11 +373,12 @@ class CreateHabitViewModel @Inject constructor(
                         targetValue = currentState.targetValue ?: 1, isCountdown = currentState.isCountdown,
                         targetCycles = currentState.targetCycles, failMode = currentState.failMode,
                         bestTime = currentState.bestTime, selectedMetricIds = currentState.selectedMetricIds,
+                        selectedMetricUuids = currentState.selectedMetricUuids.takeIf { databases != null },
                         appearance = currentState.appearance,
                         completionPolicy = if (currentState.creationAuthority != null) "recurring" else null
                     ))
                     _uiState.value = _uiState.value.copy(isSaving = false, savedDraft = true)
-                    return@launch
+                    return@withGraph
                 }
                 val habitId = habitRepository.createHabit(
                     name = currentState.name,
@@ -369,7 +398,8 @@ class CreateHabitViewModel @Inject constructor(
                     selectedMetricIds = currentState.selectedMetricIds,
                     appearance = currentState.appearance,
                     completionPolicy = if (currentState.creationAuthority != null) "recurring" else null,
-                    creationAuthority = currentState.creationAuthority
+                    creationAuthority = currentState.creationAuthority,
+                    expectedMetricUuids = currentState.selectedMetricUuids.takeIf { databases != null }
                 )
 
                 _uiState.value = _uiState.value.copy(
@@ -379,6 +409,7 @@ class CreateHabitViewModel @Inject constructor(
                     showColorPicker = false,
                     showPresetDialog = false
                 )
+                }
             } catch (e: CancellationException) {
                 _uiState.value = _uiState.value.copy(isSaving = false)
                 throw e

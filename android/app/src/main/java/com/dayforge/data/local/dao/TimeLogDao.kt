@@ -97,6 +97,9 @@ interface TimeLogDao {
     @Query("SELECT * FROM timer_segments WHERE sessionUuid = :sessionUuid ORDER BY sequence")
     suspend fun getTimerSegments(sessionUuid: String): List<TimerSegmentEntity>
 
+    @Query("SELECT * FROM timer_segments WHERE sessionUuid IN (:sessions) ORDER BY sessionUuid, sequence LIMIT 257")
+    suspend fun getHistorySegmentHints(sessions: List<String>): List<TimerSegmentEntity>
+
     @Query("DELETE FROM timer_segments WHERE sessionUuid = :sessionUuid")
     suspend fun deleteTimerSegments(sessionUuid: String)
 
@@ -108,6 +111,9 @@ interface TimeLogDao {
 
     @Query("SELECT * FROM timelog_day_allocations WHERE sessionUuid = :sessionUuid ORDER BY localDate")
     suspend fun getDayAllocations(sessionUuid: String): List<TimeLogDayAllocationEntity>
+
+    @Query("SELECT * FROM timelog_day_allocations WHERE sessionUuid IN (:sessions) ORDER BY sessionUuid, localDate LIMIT 257")
+    suspend fun getHistoryAllocationHints(sessions: List<String>): List<TimeLogDayAllocationEntity>
 
     @Transaction
     suspend fun replaceDayAllocations(

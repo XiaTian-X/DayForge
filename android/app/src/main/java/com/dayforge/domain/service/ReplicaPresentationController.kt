@@ -21,11 +21,19 @@ internal class ReplicaDisplayPermit internal constructor(val lifetime: Long, pri
 }
 
 @Singleton
-class ReplicaPresentationController @Inject constructor(tokens: TokenManager,
-    private val repository: ReplicaPresentationRepository) : AutoCloseable {
+class ReplicaPresentationController private constructor(tokens: TokenManager,
+    private val fixed: ReplicaPresentationRepository?, private val host: com.dayforge.data.local.DatabaseRuntimeHost?) : AutoCloseable {
+    constructor(tokens: TokenManager, repository: ReplicaPresentationRepository) : this(tokens, repository, null)
+    @Inject internal constructor(tokens: TokenManager, host: com.dayforge.data.local.DatabaseRuntimeHost) : this(tokens, null, host)
+    private val changes get() = host?.controlHints { it.replicaPresentationRepository.changes } ?: requireNotNull(fixed).changes
+    private suspend fun inspect() = if (host == null) Triple(requireNotNull(fixed).inspect(), null, null)
+        else host.controlSnapshot {
+            it.replicaPresentationRepository.inspect() to host.currentPublication()
+        }.let { Triple(it.value.first, it.publication, it.value.second) }
     private val monitor = Any()
     private var version = 0L
     private var blocked = false
+    private var graphBlocked = false
     private var closed = false
     private val reload = Channel<Unit>(Channel.CONFLATED)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -39,35 +47,63 @@ class ReplicaPresentationController @Inject constructor(tokens: TokenManager,
             Unit
         }
     }
+    private val graphListener = object : com.dayforge.data.local.DatabaseRuntimeHost.MemoryListener {
+        override fun transition(blocked: Boolean) = synchronized(monitor) {
+            version++; graphBlocked = blocked
+            mutable.value = ReplicaPresentationState.Checking
+            reload.trySend(Unit)
+            Unit
+        }
+    }
+    private val graphRegistration = host?.observeMemory(graphListener)
     init {
         tokens.registerReplicaPresentation(cache)
         scope.launch {
-            merge(repository.changes, reload.receiveAsFlow()).collectLatest {
-                val stamp = synchronized(monitor) { if (blocked || closed) null else version } ?: return@collectLatest
-                val check = try { repository.inspect() } catch (error: Exception) {
+            merge(changes, reload.receiveAsFlow()).collectLatest {
+                val stamp = synchronized(monitor) { if (blocked || graphBlocked || closed) null else version } ?: return@collectLatest
+                val (check, epoch, businessEpoch) = try { inspect() } catch (error: Exception) {
                     if (error is CancellationException) throw error
-                    ReplicaPresentationCheck(ReplicaPresentationProblem.DAMAGED_STATE)
+                    Triple(ReplicaPresentationCheck(ReplicaPresentationProblem.DAMAGED_STATE), null, null)
                 }
-                synchronized(monitor) {
-                    if (!closed && !blocked && stamp == version) {
-                        if (check.problem != null) {
-                            if (mutable.value is ReplicaPresentationState.Open) version++
-                            mutable.value = ReplicaPresentationState.Pending(check)
-                        }
-                        else if (mutable.value !is ReplicaPresentationState.Open) {
-                            // Captures this exact issued permit; stale collectors/cancel/ABA cannot revive it.
-                            lateinit var permit: ReplicaDisplayPermit
-                            permit = ReplicaDisplayPermit(stamp) { synchronized(monitor) {
-                                !closed && !blocked && version == stamp &&
-                                    (mutable.value as? ReplicaPresentationState.Open)?.permit === permit
-                            } }
-                            mutable.value = ReplicaPresentationState.Open(permit)
-                        }
-                    }
-                }
+                publishCheck(stamp, check, epoch, businessEpoch)
             }
         }
     }
+    private fun publishCheck(stamp: Long, check: ReplicaPresentationCheck,
+        epoch: com.dayforge.data.local.DatabaseEpochPublication?,
+        businessEpoch: com.dayforge.data.local.DatabaseEpochPublication?) {
+        fun assign(): Boolean = synchronized(monitor) {
+            if (closed || blocked || graphBlocked || stamp != version) false
+            else {
+                fun update() {
+                    if (check.problem != null) {
+                        if (mutable.value is ReplicaPresentationState.Open) version++
+                        mutable.value = ReplicaPresentationState.Pending(check)
+                    } else if (businessEpoch?.isCurrentInMemory() == false) {
+                        if (mutable.value is ReplicaPresentationState.Open) version++
+                        mutable.value = ReplicaPresentationState.Checking
+                    } else if (mutable.value !is ReplicaPresentationState.Open) {
+                        lateinit var permit: ReplicaDisplayPermit
+                        permit = ReplicaDisplayPermit(stamp) { canRender(permit, stamp, epoch, businessEpoch) }
+                        mutable.value = ReplicaPresentationState.Open(permit)
+                    }
+                }
+                if (epoch == null) { update(); true } else epoch.publish(::update)
+            }
+        }
+        if (epoch == null) assign() else epoch.withSourceFence(::assign)
+    }
+    private fun canRender(permit: ReplicaDisplayPermit, stamp: Long,
+        epoch: com.dayforge.data.local.DatabaseEpochPublication?,
+        businessEpoch: com.dayforge.data.local.DatabaseEpochPublication?): Boolean {
+        fun current(): Boolean = synchronized(monitor) {
+            !closed && !blocked && !graphBlocked && version == stamp &&
+                (mutable.value as? ReplicaPresentationState.Open)?.permit === permit && epoch?.isCurrentInMemory() != false &&
+                businessEpoch?.isCurrentInMemory() != false
+        }
+        return if (epoch == null) current() else epoch.withSourceFence(::current)
+    }
+
     /** Read-only recheck, not a network retry or a recovery command. */
     fun retry() { reload.trySend(Unit) }
     override fun close() {

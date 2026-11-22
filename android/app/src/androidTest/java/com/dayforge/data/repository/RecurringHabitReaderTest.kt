@@ -15,14 +15,17 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class RecurringHabitReaderTest : NextObjectEditorFixture() {
     private suspend fun proof() = db.withTransaction { nextRestartDatabaseProof(db) }
+    private fun readAssertions() = CountConsumerReadFixtureAssertions(db, tokens, sessions)
 
     @Test fun partialCountIsActivityButNotCompletionAndNeverChangesTheAuthorityBearingRow() = runBlocking<Unit> {
         register()
         val repo = creatingHabits()
         repo.logCompletion(app, habit.id, 6)
         val current = requireNotNull(repo.getHabitById(habit.id))
-        val before = proof()
+        val assertions = readAssertions()
+        val before = assertions.capture()
         val view = repo.getRecurringSnapshot(current)
+        val qualified = assertions.assertFirstReadOnly(before)
         val history = requireNotNull(view.countHistory)
         val today = DateTimeUtils.today()
         assertEquals(6L, history.todayQuantity)
@@ -37,7 +40,11 @@ class RecurringHabitReaderTest : NextObjectEditorFixture() {
             db.completionDao(), db.timeLogDao(), countHistoryReader = counts).calculate(current)
         assertEquals(view.activityRate, stats.activityRate); assertFalse(stats.completedToday)
         assertEquals(current, requireNotNull(repo.getHabitById(current.id)))
-        assertEquals(before, proof())
+        assertions.assertUnchanged(qualified)
+        val warm = repo.getRecurringSnapshot(current)
+        assertEquals(view.habit, warm.habit); assertEquals(view.countHistory, warm.countHistory)
+        assertEquals(view.authority.original, warm.authority.original)
+        assertions.assertUnchanged(qualified)
     }
 
     @Test fun stalePlanAndChangedAccountCannotReturnACombinedProjectionOrRepairOriginalFacts() = runBlocking<Unit> {
@@ -47,16 +54,24 @@ class RecurringHabitReaderTest : NextObjectEditorFixture() {
         val expected = requireNotNull(repo.getHabitById(habit.id))
         db.habitDao().updateActivityRate(habit.id, 7)
         val changed = proof()
-        assertEquals("RECURRING_READ_ACTIVITY_CHANGED", rejected { repo.getRecurringSnapshot(expected) }.message)
+        val stale = rejected { repo.getRecurringSnapshot(expected) }
+        assertTrue(stale is HabitReadSnapshotChanged)
+        assertEquals("RECURRING_READ_ACTIVITY_CHANGED", stale.message)
         assertEquals(changed, proof())
         val current = requireNotNull(repo.getHabitById(habit.id))
+        val assertions = readAssertions()
+        val beforeValid = assertions.capture()
         assertEquals(current, repo.getRecurringSnapshot(current).habit)
+        val qualified = assertions.assertFirstReadOnly(beforeValid)
+        val accepted = proof()
         tokens.saveLoginSession("synthetic-other", "synthetic-refresh", "other", id(50), false)
-        rejected { repo.getRecurringSnapshot(current) }
-        assertEquals(changed, proof())
+        assertFalse(rejected { repo.getRecurringSnapshot(current) } is HabitReadSnapshotChanged)
+        assertEquals(accepted, proof())
+        assertions.assertUnchanged(qualified)
         tokens.saveLoginSession("synthetic-return", "synthetic-refresh", "member", id(1), false)
         register()
         assertEquals(3L, requireNotNull(repo.getRecurringSnapshot(current).countHistory).todayQuantity)
-        assertEquals(changed, proof())
+        assertEquals(accepted, proof())
+        assertions.assertUnchanged(qualified)
     }
 }

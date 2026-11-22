@@ -1,5 +1,6 @@
 package com.dayforge.data.repository
 
+import androidx.room.withTransaction
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.dayforge.data.api.NextSyncHttp
 import com.dayforge.data.appearance.MaterialSocketServer
@@ -19,6 +20,19 @@ import org.junit.runner.RunWith
 /** Real local delete/confirmation, retained facts and original HTTP journals, without activation. */
 @RunWith(AndroidJUnit4::class)
 class NextPlanDeletionWorkflowTest : NextObjectEditorFixture() {
+    private val nativeFault = NextPlanDeletionNativeFault()
+    init { storage.isolatedBuilder = { context -> buildDiagnosticFaultDatabase(context, nativeFault, storage.queryCallback) } }
+    private fun installFaultOnFreshConnection() {
+        nativeFault.installOnNextOpen()
+        reopen()
+        assertTrue(db.openHelper.writableDatabase.isOpen)
+    }
+    private fun reopenWithoutFault() {
+        reopen()
+        assertTrue(db.openHelper.writableDatabase.isOpen)
+        nativeFault.requireColdFaultAbsent()
+    }
+    private suspend fun mainImage() = db.withTransaction { NextReplicaStorageProof(db).readInTransaction().contents }
     private val canonical = mutableMapOf<String, JsonObject>()
     private val replies = mutableMapOf<String, MaterialSocketServer.Reply>()
 
@@ -209,16 +223,18 @@ class NextPlanDeletionWorkflowTest : NextObjectEditorFixture() {
     }
 
     @Test fun lateOriginFailureRollsBackHiddenNamesQueuesAndHierarchyAndActiveTimerCannotBeDeleted() = runBlocking<Unit> {
+        installFaultOnFreshConnection()
         val task = once()
         val before = db.syncOutboxDao().getAll()
-        db.openHelper.writableDatabase.execSQL("""CREATE TRIGGER fail_delete_origin BEFORE INSERT ON next_request_origins
-            WHEN (SELECT action FROM sync_outbox WHERE id=NEW.queueId)='delete'
-            BEGIN SELECT RAISE(ABORT,'delete origin unavailable'); END""")
-        rejected { creatingHabits().deleteHabit(task, app) }
+        val beforeMain = mainImage()
+        nativeFault.armOrigin(task.uuid)
+        val failure = rejected { creatingHabits().deleteHabit(task, app) }
+        nativeFault.requireTriggered(failure)
+        assertEquals("Original delete-origin ABORT must roll back every main row and schema", beforeMain, mainImage())
         assertEquals(task, db.habitDao().getHabitById(task.id)); assertEquals(before, db.syncOutboxDao().getAll())
-        reopen()
+        reopenWithoutFault()
+        assertEquals(beforeMain, mainImage())
         assertEquals(task, db.habitDao().getVisibleHabitById(task.id))
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_delete_origin")
         val running = start()
         val withTimer = db.syncOutboxDao().getAll()
         rejected { creatingHabits().deleteHabit(timerHabit, app) }
@@ -268,17 +284,34 @@ class NextPlanDeletionWorkflowTest : NextObjectEditorFixture() {
         rejected { sender(http).sendAndAcceptOperation(access(), deletion.operationId) }
         val frozen = transmission(NEXT_OPERATION, deletion.operationId).wireBytes.copyOf()
         assertNotNull(db.habitDao().getHabitById(task.id)); assertNull(db.habitDao().getVisibleHabitById(task.id))
-        reopen()
-        db.openHelper.writableDatabase.execSQL("""CREATE TRIGGER fail_delete_ack BEFORE INSERT ON next_acceptances
-            WHEN NEW.requestId='${deletion.operationId}' BEGIN SELECT RAISE(ABORT,'delete ack unavailable'); END""")
-        rejected { sender(http).sendAndAcceptOperation(access(), deletion.operationId) }
+        installFaultOnFreshConnection()
+        // Real retransmission may legitimately commit its send journal. Capture the rollback
+        // baseline only after that original send returns its real delivery, before local ACK.
+        val delivery = requireNotNull(sender(http).sendOperation(access(), deletion.operationId))
+        assertArrayEquals(frozen, transmission(NEXT_OPERATION, deletion.operationId).wireBytes)
+        val origin = originalIntent(deletion)
+        val beforeAck = mainImage()
+        nativeFault.armAck(deletion.operationId, task.uuid)
+        val failure = rejected { sender(http).acceptOperation(delivery) }
+        nativeFault.requireTriggered(failure)
+        assertEquals("Actual receipt ABORT must roll back only the ACK transaction", beforeAck, mainImage())
         assertNotNull(db.habitDao().getHabitById(task.id)); assertNull(db.habitDao().getVisibleHabitById(task.id))
-        reopen()
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_delete_ack")
-        accept(http, deletion)
+        assertEquals(origin, originalIntent(deletion))
+        assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, deletion.operationId))
+        reopenWithoutFault()
+        assertEquals(beforeAck, mainImage())
+        val requestCount = server.requests.size
+        assertEquals(NextOperationAcceptance.COMMITTED, sender(http).acceptOperation(delivery))
+        assertEquals(requestCount, server.requests.size)
         assertNull(db.habitDao().getHabitById(task.id))
         val requests = server.requests.filter { it.path.endsWith("/push") && wireOperation(it)["action"] == JsonPrimitive("delete") }
         assertTrue(requests.size >= 2); requests.forEach { assertArrayEquals(frozen, it.body) }
+        val accepted = mainImage()
+        reopenWithoutFault()
+        assertEquals(NextOperationAcceptance.REPLAYED, sender(http).sendAndAcceptOperation(access(), deletion.operationId))
+        assertEquals(requestCount, server.requests.size)
+        assertEquals(origin, originalIntent(deletion)); assertNull(db.habitDao().getHabitById(task.id))
+        assertEquals(accepted, mainImage())
     }
 
     @Test fun realEditorDoesNotNavigateOnStaleAccountDeletionAndKnownReadOnlyDeletionIsAtomic() = runBlocking<Unit> {

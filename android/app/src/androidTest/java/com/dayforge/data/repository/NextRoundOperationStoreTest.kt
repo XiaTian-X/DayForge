@@ -1,7 +1,10 @@
 package com.dayforge.data.repository
 
 import androidx.room.withTransaction
+import androidx.room.RoomDatabase
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.dayforge.data.repository.NextRoundOperationNativeFault.Kind
+import com.dayforge.data.repository.NextRoundOperationNativeFault.Targets
 import com.dayforge.data.api.NextSyncHttp
 import com.dayforge.data.api.dto.*
 import com.dayforge.data.appearance.MaterialSocketServer
@@ -9,9 +12,12 @@ import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.TimerCommandEntity
 import com.dayforge.domain.model.*
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import java.time.LocalDate
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -19,6 +25,32 @@ import org.junit.runner.RunWith
 /** Actual NEW source → frozen round HTTP → common Room ACK; physical file DB and cold reopen. */
 @RunWith(AndroidJUnit4::class)
 class NextRoundOperationStoreTest : NextCoreRequestFixture() {
+    private val nativeFault = NextRoundOperationNativeFault()
+    private val readQueries = AtomicInteger()
+    private val initialScans = AtomicInteger()
+    private val roundAudits = AtomicInteger()
+    init {
+        storage.queryCallback = object : RoomDatabase.QueryCallback {
+            override fun onQuery(sqlQuery: String, bindArgs: List<Any?>) {
+                readQueries.incrementAndGet()
+                if (sqlQuery.startsWith("PRAGMA table_info(next_challenge_")) roundAudits.incrementAndGet()
+                if (sqlQuery.startsWith("SELECT CASE WHEN typeof(id)") && "recordType='habit'" in sqlQuery)
+                    initialScans.incrementAndGet()
+            }
+        }
+        storage.isolatedBuilder = { context -> buildDiagnosticFaultDatabase(context, nativeFault, storage.queryCallback) }
+    }
+    private fun installFaultOnFreshConnection() {
+        nativeFault.installOnNextOpen()
+        storage.reopen()
+        assertTrue(db.openHelper.writableDatabase.isOpen)
+    }
+    private fun reopenWithoutFault() {
+        storage.reopen()
+        assertTrue(db.openHelper.writableDatabase.isOpen)
+        nativeFault.requireColdFaultAbsent()
+    }
+    private suspend fun mainImage() = db.withTransaction { NextReplicaStorageProof(db).readInTransaction().contents }
     private val json = Json { encodeDefaults = true }
     private fun initial(activity: String) = ChallengeRoundRecord(initialChallengeRoundHead(activity), null, null, null)
     private fun restarted() = ChallengeRoundRecord(ChallengeRoundHead(habit.uuid, id(301), 1), id(4), id(302),
@@ -72,6 +104,190 @@ class NextRoundOperationStoreTest : NextCoreRequestFixture() {
             NextCountDayStore(db).capture(current, fact)
             db.completionDao().insert(fact)
         }
+    }
+
+    @Test fun writerAuditsCompleteRoundsOncePerPrepareAndAgainAfterBusinessWrites() = runBlocking {
+        val (http, _) = channel { roundReply(it) }; initialize(http)
+        val shown = producer().captureRounds()
+        roundAudits.set(0)
+        producer().writeRounds(shown) {
+            assertEquals("Each of the three round tables is completely audited before writing", 3, roundAudits.get())
+            roundAudits.set(0)
+            db.metricDao().update(metric.copy(name = "phase snapshot metric"))
+        }
+        assertEquals("Final audit must reread all three tables once, not borrow preparation", 3, roundAudits.get())
+        assertEquals("phase snapshot metric", db.metricDao().getMetricById(metric.id)!!.name)
+        assertEquals(1, count("sync_outbox")); assertEquals(1, count("next_request_origins"))
+    }
+
+    @Test fun capturedRoundReadCannotEscapeItsPhaseJobDatabaseOrAuthorityAndCannotBeMutated() = runBlocking<Unit> {
+        val (http, _) = channel { roundReply(it) }; initialize(http)
+        val access = access()
+        var captured: NextChallengeReadSnapshot? = null
+        db.withTransaction {
+            NextEvidenceReadSession.read(db) {
+                roundAudits.set(0)
+                val snapshot = NextChallengeReadSnapshot.capture(db, access)
+                captured = snapshot
+                val original = snapshot.borrow(db, access)
+                val pending = NextRoundPendingInitialStore(db)
+                repeat(3) { assertTrue(pending.read(access, snapshot).isEmpty()) }
+                assertEquals(3, roundAudits.get())
+                rejected { snapshot.borrow(db, access.copy(deviceId = id(99))) }
+                coroutineScope { async { rejected { snapshot.borrow(db, access) } }.await() }
+                val samePath = androidx.room.Room.databaseBuilder(app, com.dayforge.data.local.HabitDatabase::class.java,
+                    requireNotNull(db.openHelper.databaseName)).build()
+                try { rejected { snapshot.borrow(samePath, access) } } finally { samePath.close() }
+                assertTrue(rejected { (original.second.checkpoints as MutableList<*>).clear() } is UnsupportedOperationException)
+                assertTrue(rejected { (original.second.checkpoints.first().records as MutableList<*>).clear() } is UnsupportedOperationException)
+                assertTrue(rejected { (original.second.births as MutableList<*>).clear() } is UnsupportedOperationException)
+                assertEquals(original, snapshot.borrow(db, access))
+            }
+            rejected { requireNotNull(captured).borrow(db, access) }
+            NextEvidenceReadSession.read(db) {
+                rejected { NextRoundPendingInitialStore(db).read(access, requireNotNull(captured)) }
+                assertNotNull(NextChallengeReadSnapshot.capture(db, access).borrow(db, access))
+            }
+        }
+        rejected { requireNotNull(captured).borrow(db, access) }
+        rejected { NextChallengeReadSnapshot.capture(db, access) }
+    }
+
+    @Test fun birthInsertedAfterPreparationStillRejectsAndRollsBackWholeFact() = runBlocking {
+        val (http, _) = channel { roundReply(it) }; initialize(http)
+        installFaultOnFreshConnection()
+        val shown = producer().captureRounds()
+        nativeFault.arm(Kind.LATE_BIRTH, Targets(id(210), roundUuid = initialChallengeRoundUuid(habit.uuid), insertedBirthUuid = id(911)))
+        val failure = rejected { countFact(shown) }
+        nativeFault.requireTriggered(failure)
+        assertEquals(0, count("completions")); assertEquals(0, count("count_days"))
+        assertEquals(0, count("sync_outbox")); assertEquals(0, count("next_request_origins"))
+        assertEquals(0, count("next_challenge_births"))
+        countFact(shown)
+        assertEquals(1, count("completions")); assertEquals(1, count("sync_outbox"))
+    }
+
+    @Test fun currentCaptureMatchesIndependentProofAndFinalVerificationScansPendingRootsOnce() = runBlocking<Unit> {
+        val (http, _) = channel { roundReply(it) }; initialize(http)
+        val fresh = createPendingActivity()
+        val shown = producer().captureRounds()
+        val access = access()
+        val (captured, before) = db.withTransaction {
+            val store = NextRoundPendingInitialStore(db)
+            readQueries.set(0)
+            val (state, expectedMetadata) = NextChallengeStore(db).activeInTransaction(access)
+            val expected = store.read(access, expectedMetadata)
+            val independentQueries = readQueries.get()
+            readQueries.set(0)
+            val captured = store.capture(access)
+            assertEquals(state, captured.state); assertEquals(expectedMetadata, captured.metadata)
+            assertEquals(expected, captured.initials); assertTrue(captured.initials.containsKey(fresh.uuid))
+            assertTrue(readQueries.get() < independentQueries)
+            val verifier = NextRoundOperationCapture(db, shown, captured.metadata,
+                db.habitDao().getAllHabitsOnce(), captured.initials)
+            initialScans.set(0)
+            NextEvidenceReadSession.read(db) {
+                verifier.verify(NextChallengeReadSnapshot.capture(db, access))
+            }
+            assertEquals(1, initialScans.get())
+            rejected { store.read(access, metadata(restart = true)) }
+            val sql = db.openHelper.writableDatabase
+            val manualTransaction = rejected { sql.execSQL("SAVEPOINT damaged_capture") }
+            assertTrue(manualTransaction is IllegalStateException)
+            assertEquals("COUNT_TRUST_SQL_DENIED", manualTransaction.message)
+            captured to NextReplicaStorageProof(db).readInTransaction().contents
+        }
+        // Let the real validation failure escape the Room transaction. Catching it inside
+        // would commit the damaged marker; raw SAVEPOINT cannot bypass the controlled owner.
+        for (damagedHash in listOf("bad", "0".repeat(64))) {
+            val damage = rejected { db.withTransaction {
+                val sql = db.openHelper.writableDatabase
+                sql.query("SELECT metadataHash FROM next_challenge_state").use { c ->
+                    assertTrue(c.moveToFirst()); assertNotEquals(damagedHash, c.getString(0)); assertFalse(c.moveToNext())
+                }
+                sql.execSQL("UPDATE next_challenge_state SET metadataHash=?", arrayOf(damagedHash))
+                sql.query("SELECT metadataHash FROM next_challenge_state").use { c ->
+                    assertTrue(c.moveToFirst()); assertEquals(damagedHash, c.getString(0)); assertFalse(c.moveToNext())
+                }
+                NextRoundPendingInitialStore(db).capture(access)
+                fail("Damaged metadata was accepted")
+            } }
+            assertTrue(damage is IllegalArgumentException)
+            if (damagedHash.length == 64) assertEquals("SYNC_CHALLENGE_PROOF_CHANGED", damage.message)
+            db.withTransaction {
+                assertEquals(before, NextReplicaStorageProof(db).readInTransaction().contents)
+                assertEquals(captured, NextRoundPendingInitialStore(db).capture(access))
+            }
+        }
+        rejected { NextRoundPendingInitialStore(db).capture(access) }
+    }
+
+    @Test fun lateOriginOnlyCreationDamageStillRollsBackTheNewFactAndRetries() = runBlocking<Unit> {
+        val (http, _) = channel { roundReply(it) }; initialize(http)
+        val fresh = createPendingActivity()
+        val row = db.syncOutboxDao().getAll().single()
+        val origin = requireNotNull(db.nextRequestDao().origin(NEXT_OPERATION, row.operationId))
+        installFaultOnFreshConnection()
+        nativeFault.arm(Kind.CREATION_FLAG, Targets(id(502), requestId = row.operationId, queueId = row.id))
+        val failure = rejected { pendingCount(fresh) }
+        nativeFault.requireTriggered(failure)
+        assertEquals(origin, db.nextRequestDao().origin(NEXT_OPERATION, row.operationId))
+        assertEquals(row, db.syncOutboxDao().getById(row.id))
+        assertNull(db.completionDao().getCompletionByUuid(id(502)))
+        assertEquals(0, count("count_days")); assertEquals(1, count("next_request_origins"))
+        reopenWithoutFault(); pendingCount(fresh)
+        assertEquals(3, db.completionDao().getCompletionByUuid(id(502))!!.value)
+        assertEquals(2, count("next_request_origins"))
+    }
+
+    @Test fun missingReceiptAndTransmissionFromPrepareCannotHideTheirLateInsertionAtFinalAudit() = runBlocking<Unit> {
+        val (http, _) = channel { roundReply(it) }; initialize(http)
+        val fresh = createPendingActivity()
+        val row = db.syncOutboxDao().getAll().single()
+        val origin = requireNotNull(db.nextRequestDao().origin(NEXT_OPERATION, row.operationId))
+        installFaultOnFreshConnection()
+        val shown = producer().captureRounds()
+        val access = access()
+        for (fault in listOf(Kind.ABSENT_RECEIPT, Kind.ABSENT_TRANSMISSION)) {
+            // Preparation proves absence; only the later actual NEW fact origin's trigger inserts the row.
+            assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, row.operationId))
+            assertNull(db.nextRequestDao().transmission(NEXT_OPERATION, row.operationId))
+            nativeFault.arm(fault, Targets(id(502), requestId = row.operationId, queueId = row.id,
+                accountId = origin.accountId, serverId = access.session.serverInstanceId,
+                epoch = access.session.syncEpoch, deviceId = access.deviceId))
+            val failure = rejected { pendingCount(fresh, shown) }
+            nativeFault.requireTriggered(failure)
+            assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, row.operationId))
+            assertNull(db.nextRequestDao().transmission(NEXT_OPERATION, row.operationId))
+            assertEquals(origin, db.nextRequestDao().origin(NEXT_OPERATION, row.operationId))
+            assertEquals(listOf(row), db.syncOutboxDao().getAll())
+            assertNull(db.completionDao().getCompletionByUuid(id(502)))
+            assertEquals(0, count("count_days")); assertEquals(1, count("next_request_origins"))
+            assertEquals(0, count("next_challenge_births"))
+            assertEquals(20L, merger(http).state(access, true)!!.cursor)
+        }
+        reopenWithoutFault(); pendingCount(fresh, shown)
+        assertEquals(3, db.completionDao().getCompletionByUuid(id(502))!!.value)
+        assertEquals(2, count("next_request_origins")); assertEquals(1, count("count_days"))
+        assertNull(db.nextRequestDao().acceptance(NEXT_OPERATION, row.operationId))
+        assertNull(db.nextRequestDao().transmission(NEXT_OPERATION, row.operationId))
+    }
+
+    @Test fun writerInsideReadEvidenceSessionRejectsBeforeAccountLockAndBeforeBusinessCallback() = runBlocking<Unit> {
+        val (http, _) = channel { roundReply(it) }; initialize(http)
+        val shown = producer().captureRounds()
+        val originalMetric = requireNotNull(db.metricDao().getMetricById(metric.id))
+        kotlinx.coroutines.withTimeout(5_000) { sessions.exclusive { db.withTransaction {
+            NextEvidenceReadSession.read(db) {
+                val error = rejected { producer().writeRounds(shown) { fail("Read session entered business callback") } }
+                assertEquals("EVIDENCE_READ_WRITE_FORBIDDEN", error.message)
+            }
+        } } }
+        assertEquals(0, count("sync_outbox")); assertEquals(0, count("next_request_origins"))
+        assertEquals(originalMetric, db.metricDao().getMetricById(metric.id))
+        producer().writeRounds(shown) { metrics().updateMetric(originalMetric.copy(name = "After read scope")) }
+        assertEquals("After read scope", db.metricDao().getMetricById(metric.id)!!.name)
+        assertEquals(1, count("sync_outbox")); assertEquals(1, count("next_request_origins"))
     }
 
     @Test fun actualMetricWriteFrozenSendAckAndColdReplayDoNotAdvanceCursorOrOverwriteLaterEdit() = runBlocking {
@@ -193,17 +409,18 @@ class NextRoundOperationStoreTest : NextCoreRequestFixture() {
         val (http, _) = channel { roundReply(it) }; initialize(http)
         countFact(producer().captureRounds())
         val row = db.syncOutboxDao().getAll().single()
+        installFaultOnFreshConnection()
         val store = sender(http); val delivery = store.sendOperation(access(), row.operationId)!!
         rejected { store.acceptOperation(delivery.copy(challengeMetadata = null)) }
         rejected { store.acceptOperation(delivery.copy(challengeMetadata = metadata())) }
         rejected { store.acceptOperation(delivery.copy(challengeMetadata = metadata(true,
             listOf(ChallengeBirth("activity_event", row.entityUuid, restarted().head))))) }
         assertUnaccepted(row)
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER round_ack_fault AFTER INSERT ON next_challenge_births BEGIN UPDATE metrics SET name='wrong side effect'; END")
-        rejected { store.acceptOperation(delivery) }
+        nativeFault.arm(Kind.WRONG_METRIC, Targets(row.entityUuid))
+        val failure = rejected { store.acceptOperation(delivery) }
+        nativeFault.requireTriggered(failure)
         assertUnaccepted(row); assertEquals(metric.name, db.metricDao().getMetricByUuid(metric.uuid)!!.name)
         assertEquals(0, count("next_challenge_births")); assertEquals(20L, merger(http).state(access(), true)!!.cursor)
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER round_ack_fault")
         assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
     }
 
@@ -211,11 +428,13 @@ class NextRoundOperationStoreTest : NextCoreRequestFixture() {
         val (http, _) = channel { roundReply(it) }; initialize(http)
         countFact(producer().captureRounds())
         val row = db.syncOutboxDao().getAll().single()
+        installFaultOnFreshConnection()
         val store = sender(http); val delivery = store.sendOperation(access(), row.operationId)!!
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER round_receipt_fault AFTER INSERT ON next_acceptances BEGIN UPDATE next_challenge_state SET metadataHash='bad'; END")
-        rejected { store.acceptOperation(delivery) }
+        nativeFault.arm(Kind.BAD_METADATA, Targets(row.entityUuid, requestId = row.operationId))
+        val failure = rejected { store.acceptOperation(delivery) }
+        nativeFault.requireTriggered(failure)
         assertUnaccepted(row); assertEquals(0, count("next_challenge_births"))
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER round_receipt_fault"); storage.reopen()
+        reopenWithoutFault()
         assertEquals(NextOperationAcceptance.COMMITTED, sender(http).acceptOperation(delivery))
         assertEquals(NextOperationAcceptance.REPLAYED, sender(http).sendAndAcceptOperation(access(), row.operationId))
     }
@@ -224,19 +443,24 @@ class NextRoundOperationStoreTest : NextCoreRequestFixture() {
         val (http, _) = channel { roundReply(it) }; initialize(http)
         countFact(producer().captureRounds())
         val row = db.syncOutboxDao().getAll().single()
+        installFaultOnFreshConnection()
         val store = sender(http); val delivery = store.sendOperation(access(), row.operationId)!!
-        val sql = db.openHelper.writableDatabase
-        sql.execSQL("CREATE TABLE round_commit_guard (value TEXT PRIMARY KEY, FOREIGN KEY(value) REFERENCES next_challenge_rounds(roundUuid) DEFERRABLE INITIALLY DEFERRED)")
-        sql.execSQL("CREATE TRIGGER round_commit_fault AFTER INSERT ON next_acceptances BEGIN INSERT INTO round_commit_guard(value) VALUES('" + id(999) + "'); END")
-        rejected { store.acceptOperation(delivery) }
-        // A deferred COMMIT failure can leave the framework writer in a native transaction.
-        // Close the real file first, as after process death; a WAL reader is not rollback proof.
-        storage.reopen()
-        assertUnaccepted(row); assertEquals(0, count("next_challenge_births")); assertEquals(0, count("round_commit_guard"))
+        val originalOwner = requireNotNull(com.dayforge.data.local.CountTrustRuntime.forDatabase(db))
+        val before = mainImage()
+        nativeFault.arm(Kind.DEFERRED_END, Targets(row.entityUuid, requestId = row.operationId))
+        val failure = rejected { store.acceptOperation(delivery) }
+        nativeFault.requireTriggered(failure) // Real actor, FK violation, successful-mark and original engine END error.
+        assertTrue(originalOwner.isRetired)
+        assertTrue(com.dayforge.data.local.CountTrustRetirementReason.UNKNOWN_END in originalOwner.retirementReasons)
+        // A failed native END is not a rollback certificate; read the actual file through a new owner.
+        reopenWithoutFault()
+        assertNotSame(originalOwner, requireNotNull(com.dayforge.data.local.CountTrustRuntime.forDatabase(db)))
+        assertEquals("Every main row, receipt, queue, root and schema must roll back", before, mainImage())
+        assertUnaccepted(row); assertEquals(0, count("next_challenge_births"))
+        // The old test-only main guard table is replaced by real TEMP FK state, absent after cold reopening.
+        nativeFault.requireColdFaultAbsent()
         assertEquals(20L, merger(http).state(access(), true)!!.cursor)
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER round_commit_fault")
-        db.openHelper.writableDatabase.execSQL("DROP TABLE round_commit_guard")
-        storage.reopen()
+        reopenWithoutFault()
         assertEquals(NextOperationAcceptance.COMMITTED, sender(http).acceptOperation(delivery))
     }
 
@@ -253,12 +477,13 @@ class NextRoundOperationStoreTest : NextCoreRequestFixture() {
         assertEquals(metric.name, db.metricDao().getMetricByUuid(metric.uuid)!!.name)
         countFact(producer().captureRounds())
         val row = db.syncOutboxDao().getAll().single()
+        installFaultOnFreshConnection()
         val store = sender(http); val delivery = store.sendOperation(access(), row.operationId)!!
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER round_cursor_fault AFTER INSERT ON next_acceptances BEGIN UPDATE next_sync_state SET cursor=cursor+1,generation=generation+1; UPDATE next_challenge_state SET cursor=cursor+1,generation=generation+1; END")
-        rejected { store.acceptOperation(delivery) }
+        nativeFault.arm(Kind.COHERENT_CURSOR, Targets(row.entityUuid, requestId = row.operationId))
+        val failure = rejected { store.acceptOperation(delivery) }
+        nativeFault.requireTriggered(failure)
         assertUnaccepted(row); assertEquals(0, count("next_challenge_births"))
         assertEquals(before, merger(http).state(access(), true))
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER round_cursor_fault")
         assertEquals(NextOperationAcceptance.COMMITTED, store.acceptOperation(delivery))
         assertEquals(before, merger(http).state(access(), true))
     }
@@ -441,12 +666,13 @@ class NextRoundOperationStoreTest : NextCoreRequestFixture() {
         val (http, _) = channel { roundReply(it) }; initialize(http)
         val fresh = createPendingActivity(); val row = db.syncOutboxDao().getAll().single()
         val origin = db.nextRequestDao().origin(NEXT_OPERATION, row.operationId)!!
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER pending_root_fault AFTER INSERT ON next_request_origins BEGIN UPDATE sync_outbox SET referenceUuid='TIMER' WHERE id=${row.id}; END")
-        rejected { pendingCount(fresh) }
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER pending_root_fault")
+        installFaultOnFreshConnection()
+        nativeFault.arm(Kind.ROOT_SOURCE, Targets(id(502), requestId = row.operationId, queueId = row.id))
+        val failure = rejected { pendingCount(fresh) }
+        nativeFault.requireTriggered(failure)
         assertEquals(row, db.syncOutboxDao().getById(row.id)); assertEquals(origin, db.nextRequestDao().origin(NEXT_OPERATION, row.operationId))
         assertNull(db.completionDao().getCompletionByUuid(id(502))); assertEquals(0, count("count_days")); assertEquals(1, count("next_request_origins"))
-        storage.reopen(); pendingCount(fresh)
+        reopenWithoutFault(); pendingCount(fresh)
         assertEquals(2, count("next_request_origins")); assertEquals(3, db.completionDao().getCompletionByUuid(id(502))!!.value)
         assertEquals(0, count("next_challenge_births")); assertEquals(20L, merger(http).state(access(), true)!!.cursor)
     }

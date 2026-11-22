@@ -38,153 +38,180 @@ internal class ReplicaBusinessProof internal constructor(val localFacts: Replica
 internal class NextReplicaBusinessProofReader(private val database: HabitDatabase, private val tokens: TokenManager,
     private val sessions: AccountSessionCoordinator, private val preferences: PreferencesManager, private val http: NextSyncHttp) {
     suspend fun read(localFacts: ReplicaLocalFactProof): ReplicaBusinessProof = withContext(Dispatchers.IO) {
+        ReplicaFactRecoveryReadScope.withSnapshot(database, tokens, sessions, localFacts.configuration.requests.original) { factScope ->
+            readInScope(localFacts, factScope)
+        }
+    }
+
+    internal suspend fun readInSnapshot(localFacts: ReplicaLocalFactProof,
+        observed: ReplicaStorageSnapshot): ReplicaBusinessProof =
+        ReplicaFactRecoveryReadScope.withinSnapshot(database, tokens, sessions, localFacts.configuration.requests.original, observed) { factScope ->
+            readInScope(localFacts, factScope)
+        }
+
+    private suspend fun readInScope(localFacts: ReplicaLocalFactProof,
+        factScope: ReplicaFactRecoveryReadScope): ReplicaBusinessProof {
         val requests = localFacts.configuration.requests
-        ReplicaFactRecoveryReadScope.withSnapshot(database, tokens, sessions, requests.original) { factScope ->
-            val storage = NextReplicaStorageProof(database).readInTransaction()
-            require(storage.hash == requests.storageHash) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
-            val tables = storage.contents.getValue("tables").jsonObject
-            val businessTables = listOf("habits", "metrics", "habit_metric_links", "completions", "timelogs", "metric_logs")
-            // Audit the raw representation BEFORE Room's Int/Boolean and JSON conversions.
-            for (table in businessTables + listOf("timer_segments", "timelog_day_allocations")) {
-                for (raw in tables.getValue(table).jsonArray) auditRaw(table, raw.jsonObject)
+        val storage = factScope.storage()
+        require(storage.hash == requests.storageHash) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
+        val tables = storage.contents.getValue("tables").jsonObject
+        val businessTables = listOf("habits", "metrics", "habit_metric_links", "completions", "timelogs", "metric_logs")
+        // Audit the raw representation BEFORE Room's Int/Boolean and JSON conversions.
+        for (table in businessTables + listOf("timer_segments", "timelog_day_allocations")) {
+            for (raw in tables.getValue(table).jsonArray) auditRaw(table, raw.jsonObject)
+        }
+        val shadows = linkedMapOf<ReplicaRecordKey, SyncV2Change>()
+        NextAuthorityShadowReader(database).readInTransaction { shadows[ReplicaRecordKey(it.entityType, it.entityUuid)] = it }
+        val habits = database.habitDao().getAllHabitsOnce()
+        val metrics = database.metricDao().getAllMetricsOnce()
+        require(habits.map { it.uuid }.distinct().size == habits.size && metrics.map { it.uuid }.distinct().size == metrics.size)
+        val parents = habits.associateBy { it.uuid }
+        val habitsById = habits.associateBy { it.id }
+        val metricsById = metrics.associateBy { it.id }
+        val records = linkedMapOf<ReplicaRecordKey, JsonObject>()
+        val unconfirmed = linkedSetOf<ReplicaRecordKey>()
+        val submissions = localFacts.submissions.associateBy { it.entityType to it.entityUuid }
+        require(submissions.size == localFacts.submissions.size)
+        val currentRaw = businessTables.associateWith { table ->
+            tables.getValue(table).jsonArray.map { it.jsonObject }.associateBy { raw ->
+                raw.getValue("uuid").jsonObject.getValue("value").jsonPrimitive.content.also { require(isContractUuid(it)) }
+            }.also { require(it.size == tables.getValue(table).jsonArray.size) { "SYNC_RECOVERY_PROJECTION_DUPLICATE" } }
+        }
+        fun record(table: String, type: String, uuid: String, confirmed: Boolean) {
+            val key = ReplicaRecordKey(type, uuid)
+            require(records.put(key, currentRaw.getValue(table).getValue(uuid)) == null) { "SYNC_RECOVERY_PROJECTION_DUPLICATE" }
+            if (!confirmed) unconfirmed += key
+        }
+        fun authority(type: String, uuid: String) = shadows[ReplicaRecordKey(type, uuid)]?.takeIf { it.operation == "upsert" }
+        val once = OneTimeLocalIntentStore(database, tokens, sessions, preferences)
+        val core = NextCoreRequestStore(database, tokens, sessions, http)
+        val onceFacts = OneTimeAcceptedEventStore(database, tokens, sessions, once,
+            timerRequests = NextTimerRequestStore(database, tokens, sessions, core))
+        var unfinished = false
+        val today = LocalDate.of(2000, 1, 1) // Recovery selects no calendar window; every retained row is audited.
+        for (habit in habits) {
+            currentCoroutineContext().ensureActive()
+            NextStructureMapper.writePlan(habit)
+            require(habit.activityRate in 0..100)
+            habit.parentHabitId?.let { parent ->
+                val goal = requireNotNull(parents[parent]) { "SYNC_RECOVERY_PARENT_INVALID" }
+                require(habit.habitType != HabitType.GOAL && goal.habitType == HabitType.GOAL && goal.parentHabitId == null &&
+                    shadows[ReplicaRecordKey("plan_node", parent)]?.operation != "delete") { "SYNC_RECOVERY_PARENT_INVALID" }
             }
-            val shadows = linkedMapOf<ReplicaRecordKey, SyncV2Change>()
-            NextAuthorityShadowReader(database).readInTransaction { shadows[ReplicaRecordKey(it.entityType, it.entityUuid)] = it }
-            val habits = database.habitDao().getAllHabitsOnce()
-            val metrics = database.metricDao().getAllMetricsOnce()
-            require(habits.map { it.uuid }.distinct().size == habits.size && metrics.map { it.uuid }.distinct().size == metrics.size)
-            val parents = habits.associateBy { it.uuid }
-            val habitsById = habits.associateBy { it.id }
-            val metricsById = metrics.associateBy { it.id }
-            val records = linkedMapOf<ReplicaRecordKey, JsonObject>()
-            val unconfirmed = linkedSetOf<ReplicaRecordKey>()
-            val submissions = localFacts.submissions.associateBy { it.entityType to it.entityUuid }
-            require(submissions.size == localFacts.submissions.size)
-            val currentRaw = businessTables.associateWith { table ->
-                tables.getValue(table).jsonArray.map { it.jsonObject }.associateBy { raw ->
-                    raw.getValue("uuid").jsonObject.getValue("value").jsonPrimitive.content.also { require(isContractUuid(it)) }
-                }.also { require(it.size == tables.getValue(table).jsonArray.size) { "SYNC_RECOVERY_PROJECTION_DUPLICATE" } }
-            }
-            fun record(table: String, type: String, uuid: String, confirmed: Boolean) {
-                val key = ReplicaRecordKey(type, uuid)
-                require(records.put(key, currentRaw.getValue(table).getValue(uuid)) == null) { "SYNC_RECOVERY_PROJECTION_DUPLICATE" }
-                if (!confirmed) unconfirmed += key
-            }
-            fun authority(type: String, uuid: String) = shadows[ReplicaRecordKey(type, uuid)]?.takeIf { it.operation == "upsert" }
-            val once = OneTimeLocalIntentStore(database, tokens, sessions, preferences)
-            val core = NextCoreRequestStore(database, tokens, sessions, http)
-            val onceFacts = OneTimeAcceptedEventStore(database, tokens, sessions, once,
-                timerRequests = NextTimerRequestStore(database, tokens, sessions, core))
-            var unfinished = false
-            val today = LocalDate.of(2000, 1, 1) // Recovery selects no calendar window; every retained row is audited.
-            for (habit in habits) {
-                currentCoroutineContext().ensureActive()
-                NextStructureMapper.writePlan(habit)
-                require(habit.activityRate in 0..100)
-                habit.parentHabitId?.let { parent ->
-                    val goal = requireNotNull(parents[parent]) { "SYNC_RECOVERY_PARENT_INVALID" }
-                    require(habit.habitType != HabitType.GOAL && goal.habitType == HabitType.GOAL && goal.parentHabitId == null &&
-                        shadows[ReplicaRecordKey("plan_node", parent)]?.operation != "delete") { "SYNC_RECOVERY_PARENT_INVALID" }
-                }
-                val shadow = authority("plan_node", habit.uuid)
-                record("habits", "plan_node", habit.uuid, shadow != null &&
-                    NextStructureMapper.readPlan(shadow.payload, habit.uuid, shadow.revision, habit) == habit)
-                val completions = database.completionDao().getCompletionsByHabit(habit.id).first()
-                if (habit.completionPolicy == "one_and_done") {
-                    once.readInTransaction(habit.uuid, requests.original.session)
-                    for (fact in completions) {
-                        validateDate(fact.actualCompletedAt, fact.recordedTimezone, fact.recordedLocalDate, fact.timeMetadataSource)
-                        require(fact.date == LocalDate.parse(fact.recordedLocalDate).atStartOfDay(ZoneId.of(fact.recordedTimezone)).toInstant().toEpochMilli()) {
+            val shadow = authority("plan_node", habit.uuid)
+            record("habits", "plan_node", habit.uuid, shadow != null &&
+                NextStructureMapper.readPlan(shadow.payload, habit.uuid, shadow.revision, habit) == habit)
+            val completions = database.completionDao().getCompletionsByHabit(habit.id).first()
+            if (habit.completionPolicy == "one_and_done") {
+                // Recovery audits every retained fact inside a native no-write snapshot.
+                // The ordinary warm reader may open schema maintenance and cannot be used here.
+                once.readOriginalInTransaction(habit.uuid, requests.original.session)
+                for (fact in completions) {
+                    validateDate(fact.actualCompletedAt, fact.recordedTimezone, fact.recordedLocalDate, fact.timeMetadataSource)
+                    require(fact.date == LocalDate.parse(fact.recordedLocalDate).atStartOfDay(ZoneId.of(fact.recordedTimezone)).toInstant().toEpochMilli()) {
+                        "SYNC_RECOVERY_FACT_PROJECTION_INVALID"
+                    }
+                    val accepted = authority("activity_event", fact.uuid)
+                    if (accepted != null) {
+                        val incoming = onceFacts.completion(OneTimeServerFact(accepted.payload, accepted.revision), habit)
+                        require(fact.copy(id = 0, createdAt = incoming.createdAt, timeMetadataSource = "server", date = incoming.date) == incoming) {
                             "SYNC_RECOVERY_FACT_PROJECTION_INVALID"
                         }
-                        val accepted = authority("activity_event", fact.uuid)
-                        if (accepted != null) {
-                            val incoming = onceFacts.completion(OneTimeServerFact(accepted.payload, accepted.revision), habit)
-                            require(fact.copy(id = 0, createdAt = incoming.createdAt, timeMetadataSource = "server", date = incoming.date) == incoming) {
-                                "SYNC_RECOVERY_FACT_PROJECTION_INVALID"
-                            }
-                        } else {
-                            val submission = submissions["activity_event" to fact.uuid]
-                            require(submission != null && once.payload(fact) == submission.payloadJson) { "SYNC_RECOVERY_FACT_PROJECTION_INVALID" }
-                        }
-                        record("completions", "activity_event", fact.uuid, accepted != null)
+                    } else {
+                        val submission = submissions["activity_event" to fact.uuid]
+                        require(submission != null && once.payload(fact) == submission.payloadJson) { "SYNC_RECOVERY_FACT_PROJECTION_INVALID" }
                     }
-                    require(database.timeLogDao().getAllTimeLogsForHabit(habit.id).isEmpty() && database.countDayDao().forHabit(habit.id).isEmpty())
-                } else if (habit.habitType != HabitType.GOAL) {
-                    val evidence = RecurringCompletionEvidenceReader(database, tokens, sessions).recoveryInTransaction(habit, today, factScope)
-                    require(evidence.completions.size == completions.size)
-                    for (fact in evidence.completions) {
-                        val accepted = authority("activity_event", fact.uuid)
-                        // A known quantity with an unknown historical count rule is still a review,
-                        // never an excuse to adopt today's editable target/countdown configuration.
-                        val unknownRule = accepted?.payload?.let { body ->
-                            body["event_type"] in setOf(JsonPrimitive("count_delta"), JsonPrimitive("count_snapshot")) &&
-                                NextCommonFactMapper.countPolicy(body) == null
-                        } == true
-                        record("completions", "activity_event", fact.uuid, accepted != null && !unknownRule)
-                    }
-                    val timers = TimerHistoryReader(database, tokens, sessions).recoveryInTransaction(habit, today, factScope)
-                    for (log in timers.logs) record("timelogs", "activity_event", log.uuid,
-                        authority("activity_event", log.uuid) != null)
-                    unfinished = unfinished || timers.hasUnfinishedTimer
-                } else require(completions.isEmpty() && database.timeLogDao().getAllTimeLogsForHabit(habit.id).isEmpty() &&
-                    database.countDayDao().forHabit(habit.id).isEmpty()) { "SYNC_RECOVERY_GOAL_FACT_INVALID" }
-            }
-            for (metric in metrics) {
-                currentCoroutineContext().ensureActive()
-                NextStructureMapper.writeMetric(metric)
-                val shadow = authority("metric", metric.uuid)
-                record("metrics", "metric", metric.uuid, shadow != null &&
-                    NextStructureMapper.readMetric(shadow.payload, metric.uuid, shadow.revision, metric) == metric)
-                for (log in database.metricLogDao().getAllLogsForMetric(metric.id)) {
-                    validateDate(log.date, log.recordedTimezone, log.recordedLocalDate, log.timeMetadataSource)
-                    val body = SyncV2Mapper.metricObservation(log, metric.uuid)
-                    validateNextSyncOperation(SyncV2Operation(log.uuid, "metric_observation", log.uuid, "upsert", payload = body))
-                    val accepted = authority("metric_observation", log.uuid)
-                    record("metric_logs", "metric_observation", log.uuid, accepted != null &&
-                        NextCommonFactMapper.observation(accepted, metric, log) == log)
+                    record("completions", "activity_event", fact.uuid, accepted != null)
                 }
-            }
-            for (link in database.habitMetricLinkDao().getAllLinksOnce()) {
-                currentCoroutineContext().ensureActive()
-                val habit = requireNotNull(habitsById[link.habitId])
-                val metric = requireNotNull(metricsById[link.metricId])
-                require(habit.habitType != HabitType.GOAL && habit.uuid == link.habitUuid && metric.uuid == link.metricUuid)
-                NextCommonFactMapper.validateLinkWrite(SyncV2Mapper.link(link))
-                val accepted = authority("activity_metric_link", link.uuid)
-                record("habit_metric_links", "activity_metric_link", link.uuid, accepted != null &&
-                    NextCommonFactMapper.link(accepted, habit, metric, link) == link)
-            }
-            // No hidden row may disappear because a DAO selected only active/current-round records.
-            require(records.size == businessTables.sumOf { currentRaw.getValue(it).size }) { "SYNC_RECOVERY_PROJECTION_INCOMPLETE" }
-            val reverts = shadows.values.filter { it.operation == "upsert" && it.entityType == "activity_event" &&
-                it.payload["one_time"].let { onceBody -> onceBody == null || onceBody == JsonNull } &&
-                it.payload["event_type"] == JsonPrimitive("revert") }.mapTo(hashSetOf()) {
-                    it.payload.getValue("activity_uuid").jsonPrimitive.content to it.payload.getValue("reverts_event_uuid").jsonPrimitive.content
+                require(database.timeLogDao().getAllTimeLogsForHabit(habit.id).isEmpty() && database.countDayDao().forHabit(habit.id).isEmpty())
+            } else if (habit.habitType != HabitType.GOAL) {
+                val evidence = RecurringCompletionEvidenceReader(database, tokens, sessions).recoveryInTransaction(habit, today, factScope)
+                require(evidence.completions.size == completions.size)
+                for (fact in evidence.completions) {
+                    val accepted = authority("activity_event", fact.uuid)
+                    // A known quantity with an unknown historical count rule is still a review,
+                    // never an excuse to adopt today's editable target/countdown configuration.
+                    val unknownRule = accepted?.payload?.let { body ->
+                        body["event_type"] in setOf(JsonPrimitive("count_delta"), JsonPrimitive("count_snapshot")) &&
+                            NextCommonFactMapper.countPolicy(body) == null
+                    } == true
+                    record("completions", "activity_event", fact.uuid, accepted != null && !unknownRule)
                 }
-            val gaps = linkedSetOf<ReplicaRecordKey>()
-            fun deleted(type: String, id: String) = shadows[ReplicaRecordKey(type, id)]?.operation == "delete"
-            for ((key, shadow) in shadows) {
-                currentCoroutineContext().ensureActive()
-                if (shadow.operation == "delete" || key in records) continue
-                val body = shadow.payload
-                val provenAbsence = when (key.kind) {
-                    "plan_node", "metric" -> false
-                    "activity_metric_link" -> deleted("plan_node", body.getValue("activity_uuid").jsonPrimitive.content) ||
-                        deleted("metric", body.getValue("metric_uuid").jsonPrimitive.content)
-                    "metric_observation" -> deleted("metric", body.getValue("metric_uuid").jsonPrimitive.content)
-                    "activity_event" -> {
-                        val activity = body.getValue("activity_uuid").jsonPrimitive.content
-                        val ordinary = body["one_time"].let { it == null || it == JsonNull }
-                        deleted("plan_node", activity) || ordinary && (body["event_type"] == JsonPrimitive("revert") || activity to key.identity in reverts)
-                    }
-                    else -> error("SYNC_RECOVERY_PROJECTION_KIND_INVALID")
-                }
-                if (!provenAbsence) gaps += key
-            }
-            require(NextReplicaStorageProof(database).readInTransaction().hash == requests.storageHash) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
-            ReplicaBusinessProof(localFacts, records, unconfirmed, gaps, unfinished)
+                val timers = TimerHistoryReader(database, tokens, sessions).recoveryInTransaction(habit, today, factScope)
+                for (log in timers.logs) record("timelogs", "activity_event", log.uuid,
+                    authority("activity_event", log.uuid) != null)
+                unfinished = unfinished || timers.hasUnfinishedTimer
+            } else require(completions.isEmpty() && database.timeLogDao().getAllTimeLogsForHabit(habit.id).isEmpty() &&
+                database.countDayDao().forHabit(habit.id).isEmpty()) { "SYNC_RECOVERY_GOAL_FACT_INVALID" }
         }
+        for (metric in metrics) {
+            currentCoroutineContext().ensureActive()
+            NextStructureMapper.writeMetric(metric)
+            val shadow = authority("metric", metric.uuid)
+            record("metrics", "metric", metric.uuid, shadow != null &&
+                NextStructureMapper.readMetric(shadow.payload, metric.uuid, shadow.revision, metric) == metric)
+            for (log in database.metricLogDao().getAllLogsForMetric(metric.id)) {
+                validateDate(log.date, log.recordedTimezone, log.recordedLocalDate, log.timeMetadataSource)
+                val body = SyncV2Mapper.metricObservation(log, metric.uuid)
+                validateNextSyncOperation(SyncV2Operation(log.uuid, "metric_observation", log.uuid, "upsert", payload = body))
+                val accepted = authority("metric_observation", log.uuid)
+                record("metric_logs", "metric_observation", log.uuid, accepted != null &&
+                    NextCommonFactMapper.observation(accepted, metric, log) == log)
+            }
+        }
+        for (link in database.habitMetricLinkDao().getAllLinksOnce()) {
+            currentCoroutineContext().ensureActive()
+            val habit = requireNotNull(habitsById[link.habitId])
+            val metric = requireNotNull(metricsById[link.metricId])
+            require(habit.habitType != HabitType.GOAL && habit.uuid == link.habitUuid && metric.uuid == link.metricUuid)
+            NextCommonFactMapper.validateLinkWrite(SyncV2Mapper.link(link))
+            val accepted = authority("activity_metric_link", link.uuid)
+            record("habit_metric_links", "activity_metric_link", link.uuid, accepted != null &&
+                NextCommonFactMapper.link(accepted, habit, metric, link) == link)
+        }
+        // No hidden row may disappear because a DAO selected only active/current-round records.
+        require(records.size == businessTables.sumOf { currentRaw.getValue(it).size }) { "SYNC_RECOVERY_PROJECTION_INCOMPLETE" }
+        val reverts = shadows.values.filter { it.operation == "upsert" && it.entityType == "activity_event" &&
+            it.payload["one_time"].let { onceBody -> onceBody == null || onceBody == JsonNull } &&
+            it.payload["event_type"] == JsonPrimitive("revert") }.mapTo(hashSetOf()) {
+                it.payload.getValue("activity_uuid").jsonPrimitive.content to it.payload.getValue("reverts_event_uuid").jsonPrimitive.content
+            }
+        val gaps = linkedSetOf<ReplicaRecordKey>()
+        fun deleted(type: String, id: String) = shadows[ReplicaRecordKey(type, id)]?.operation == "delete"
+        for ((key, shadow) in shadows) {
+            currentCoroutineContext().ensureActive()
+            if (shadow.operation == "delete" || key in records) continue
+            val body = shadow.payload
+            val provenAbsence = when (key.kind) {
+                "plan_node", "metric" -> false
+                "activity_metric_link" -> deleted("plan_node", body.getValue("activity_uuid").jsonPrimitive.content) ||
+                    deleted("metric", body.getValue("metric_uuid").jsonPrimitive.content)
+                "metric_observation" -> deleted("metric", body.getValue("metric_uuid").jsonPrimitive.content)
+                "activity_event" -> {
+                    val activity = body.getValue("activity_uuid").jsonPrimitive.content
+                    val ordinary = body["one_time"].let { it == null || it == JsonNull }
+                    deleted("plan_node", activity) || ordinary && (body["event_type"] == JsonPrimitive("revert") || activity to key.identity in reverts)
+                }
+                else -> error("SYNC_RECOVERY_PROJECTION_KIND_INVALID")
+            }
+            if (!provenAbsence) gaps += key
+        }
+        // This participant is already inside the fresh-authorized fact scope and binds
+        // the complete raw input. RAW capture itself must retain damaged bytes without
+        // claiming trust. Only this business-proof boundary authenticates the live root;
+        // a retained root additionally proves the complete new/old native partition.
+        val sql = database.openHelper.writableDatabase
+        if (sql.version == CountCommandV20Schema.VERSION) {
+            val caller = currentCoroutineContext()
+            val envelope = CountCommandStorageInitialization.verifyRootAnchor(sql)
+            if (envelope.header.mode == CountCommandRootCodec.Mode.ACCOUNT_BOUND_RETAINED)
+                CountCommandRetainedPartition.verify(sql, envelope) {
+                    caller.ensureActive(); check(database.inTransaction() && sql.inTransaction())
+                }
+            factScope.borrow(database, tokens)
+        }
+        require(factScope.storage().hash == requests.storageHash) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
+        return ReplicaBusinessProof(localFacts, records, unconfirmed, gaps, unfinished)
     }
 
     private suspend fun auditRaw(table: String, row: JsonObject) {
