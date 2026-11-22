@@ -24,6 +24,15 @@ JVM_CLASSES = {
 }
 
 
+def kotlin_startup_heap(args):
+    """Read only a standalone JVM -Xmx before the Kotlin daemon entry point."""
+    entrypoint = "org.jetbrains.kotlin.daemon.KotlinCompileDaemon"
+    if entrypoint not in args:
+        return None
+    return next((arg for arg in reversed(args[:args.index(entrypoint)])
+                 if re.fullmatch(r"-Xmx[1-9][0-9]*[kKmMgG]?", arg)), None)
+
+
 def snapshot():
     """Read only public JVM counters and memory accounting on the hosted Linux runner."""
     mem = Path("/proc/meminfo").read_text().splitlines()
@@ -52,6 +61,7 @@ def snapshot():
             jvm = {"role": role, "pid": int(proc.name), "cpu_seconds": round(cpu_seconds, 2), "rss_kib": rss}
             sample["jvms"].append(jvm)
             if role == "kotlin":
+                jvm["startup_xmx"] = kotlin_startup_heap(args)
                 stats = subprocess.run(["jstat", "-gcutil", proc.name], capture_output=True, text=True, timeout=3)
                 rows = stats.stdout.strip().splitlines()
                 if stats.returncode == 0 and len(rows) == 2:
@@ -88,6 +98,7 @@ def resource_samples(gate, lane):
                 out.flush()
                 jvms = ", ".join(
                     f"{j['role']}[{j['pid']}] cpu_s={j['cpu_seconds']} rss_kib={j['rss_kib']}"
+                    + (f" xmx={j['startup_xmx']}" if j.get("startup_xmx") else "")
                     for j in sample.get("jvms", ())
                 )
                 print(f"Build sample: last_reported_task={sample.get('last_reported_task', 'unknown')} "
@@ -108,13 +119,14 @@ def resource_samples(gate, lane):
 def build(gate, lane):
     check_global_arguments(gate.repo)
     tasks = TASKS[lane]
-    budget = {"mode": "hosted_build", "lane": lane, "tasks": tasks,
+    options = ["-Pkotlin.daemon.jvmargs=-Xmx6144m"] if lane == "instrumentation" else []
+    budget = {"mode": "hosted_build", "lane": lane, "tasks": tasks, "gradle_options": options,
               "command_timeout_seconds": gate.build_timeout_seconds,
               "checkout_sha": os.environ.get("GITHUB_SHA"), "run_id": os.environ.get("GITHUB_RUN_ID")}
     (gate.run / "build-budget.json").write_text(json.dumps(budget, indent=2) + "\n")
     # A single invocation per runner preserves the existing per-build warning gate.
     with resource_samples(gate, lane):
-        gate.execute("build", ["./gradlew", "--no-daemon", *tasks], gate.build_timeout_seconds)
+        gate.execute("build", ["./gradlew", "--no-daemon", *options, *tasks], gate.build_timeout_seconds)
     gate.check_warnings()
     if lane == "instrumentation":
         outputs = gate.apks()

@@ -2920,6 +2920,10 @@ Gradle 日志/原始 XML/覆盖率文件和成功清单；成功清单记录 APK
 | 应用与 lint | `lintDebug`、`assembleDebug` | 30／35／40 分钟 |
 | 隔离应用与完整测试 APK | `assembleDeviceTest`、`assembleDeviceTestAndroidTest` | 60／65／70 分钟 |
 
+PR #402 第三次托管运行 `45001437577` 已在独立 runner 完成应用与 lint。完整测试 APK 构建在 3600 秒内停留于 `compileDeviceTestAndroidTestKotlin`。约第 15 至 57 分钟，Kotlin daemon 老年代占用 99.98%–100%，Full GC 累计耗时增加约 2523 秒，宿主可用内存最低仍约 6.2 GiB，cgroup 未记录 OOM kill。该次测试 APK 未产出。
+
+本机同一编译任务在 3 GiB 出现 `GC overhead limit exceeded`；4.5 GiB 配合单个 Gradle worker 的定向预编译通过原空告警预算。项目默认 Kotlin daemon 上限现为 4.5 GiB，Gradle/lint 仍为 3 GiB。托管完整测试 APK 构建单独传入 `-Pkotlin.daemon.jvmargs=-Xmx6144m`。采样从实际 Kotlin daemon 启动参数中仅记录独立的 `-Xmx` 字段，可与声明容量和 GC 变化核对。完整托管构建是否成功以对应提交终态为准。
+
 每个 runner 独立检查原编译告警预算，保留构建日志和实际产物 SHA-256。完整测试 APK 构建每三分钟记录最近报告的 Gradle 任务、Gradle/Kotlin 进程累计 CPU 和驻留内存、可取得的 Kotlin GC 计数及宿主内存数据，JSONL 和 Actions 日志中的简要采样可用于区分持续编译、内存压力和长期无进展。设备上的测试仍从原真机入口执行，本地 `android-build` 仍一次执行四项任务。
 后端整套锁定串行测试增长后，两次托管运行持续通过到 90%/91% 才触及原 15 分钟作业上限，
 因此历史上先调整为 25 分钟；不改变测试范围、断言、告警预算或原用例内部期限。
@@ -2986,7 +2990,7 @@ warning 提升为 error。Kotlin、javac 与 Android 资源编译警告由
 完整重编译后观察到的减少才可以用于下调预算；主机 SDK/命令行工具不匹配之类的环境提示
 不属于代码警告预算。
 
-编译容量与测试容量分开验证。项目显式 Kotlin 堆为 3 GiB、Gradle 堆仍为 2 GiB；
+编译容量与测试容量分开验证。PR #373 当时将 Kotlin 堆设为 3 GiB、Gradle 堆保留 2 GiB；
 由 PR #373 精确 head 的 CI38012840531 attempt1 在 compileDeviceTestKotlin 报
 GC overhead / OOMErrorException（build5分45秒）触发，不调整原测试/构建期限。
 纯编译配置变化先核对实际属性、根检查及精确 head 的远端 android-build 冷编译；

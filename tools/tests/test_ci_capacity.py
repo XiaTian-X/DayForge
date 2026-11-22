@@ -144,8 +144,27 @@ class CiCapacityTest(unittest.TestCase):
                             self.assertEqual(hosted.digest(gate.build / rel), digest)
                     tasks = ["lintDebug", "assembleDebug"] if lane == "app" else [
                         "assembleDeviceTest", "assembleDeviceTestAndroidTest"]
-                    run.assert_called_once_with("build", ["./gradlew", "--no-daemon", *tasks], gate.build_timeout_seconds)
-                    self.assertEqual(tasks, json.loads((gate.run / "build-budget.json").read_text())["tasks"])
+                    options = ["-Pkotlin.daemon.jvmargs=-Xmx6144m"] if lane == "instrumentation" else []
+                    run.assert_called_once_with("build", ["./gradlew", "--no-daemon", *options, *tasks], gate.build_timeout_seconds)
+                    budget = json.loads((gate.run / "build-budget.json").read_text())
+                    self.assertEqual(tasks, budget["tasks"])
+                    self.assertEqual(options, budget["gradle_options"])
+
+    def test_compiler_heap_is_separate_and_observation_excludes_unrelated_values(self):
+        props = (ROOT / "android/gradle.properties").read_text()
+        self.assertEqual(["-Xmx4608m"], re.findall(r"^kotlin\.daemon\.jvmargs=(.*)$", props, re.M))
+        gradle, = re.findall(r"^org\.gradle\.jvmargs=(.*)$", props, re.M)
+        self.assertEqual(["-Xmx3072m"], [arg for arg in gradle.split() if arg.startswith("-Xmx")])
+        script = ROOT / ".github/scripts/hosted_android_build.py"
+        spec = importlib.util.spec_from_file_location("hosted_android_build", script)
+        hosted = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hosted)
+        main = "org.jetbrains.kotlin.daemon.KotlinCompileDaemon"
+        self.assertEqual("-Xmx6144m", hosted.kotlin_startup_heap(
+            ["java", "-Xmx3G", "-Dexample=-Xmx2G", "-Xmx6144m", main, "-Xmx1G"]))
+        for args in (["java", main, "-Xmx6144m"], ["java", "-Xmx6144m", "OtherMain"],
+                     ["java", "-Xmx6144m-extra", "-Dexample=-Xmx1G", main]):
+            self.assertIsNone(hosted.kotlin_startup_heap(args))
 
     def test_physical_shard_capacity_is_explicit_and_user_approved(self):
         self.assertEqual(3, SHARDS)
