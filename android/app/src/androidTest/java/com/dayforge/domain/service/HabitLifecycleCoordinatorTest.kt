@@ -29,15 +29,91 @@ class HabitLifecycleCoordinatorTest {
     private lateinit var context: Context
     private lateinit var habitRepository: HabitRepository
     private lateinit var coordinator: HabitLifecycleCoordinator
+    private lateinit var accountListener: com.dayforge.data.local.PersonalDataDisplayMemory.Listener
 
     @Before
     fun setUp() {
         context = mockk(relaxed = true)
         habitRepository = mockk()
+        io.mockk.every { habitRepository.registerCompletionConsumer(any()) } answers {
+            accountListener = firstArg(); Unit
+        }
         coEvery { habitRepository.prepareReactivation(any()) } answers {
             HabitReactivationRequest(firstArg(), null)
         }
         coordinator = HabitLifecycleCoordinator(context, habitRepository)
+    }
+
+    private fun typedSnapshot(active: Boolean = true) = mockk<com.dayforge.data.repository.WidgetFactSnapshot> {
+        io.mockk.every { habit } returns this@HabitLifecycleCoordinatorTest.habit(targetCycles = 1).copy(isActive = active,
+            completionPolicy = "recurring", appearance = com.dayforge.domain.model.ObjectAppearance(
+                com.dayforge.domain.model.IconReference.Role("habit.custom"), "#123456", "object"))
+        io.mockk.every { targetProgress } returns 1
+    }
+
+    @Test fun typedGoalUsesKnownSuccessorForBothChoicesWithoutFreshNumericIdMutation() = runTest {
+        coEvery { habitRepository.publishCompletion(any(), any(), any(), any()) } coAnswers { arg<suspend () -> Unit>(3).invoke() }
+        for (complete in listOf(true, false)) {
+            val original = typedSnapshot()
+            val next = typedSnapshot(active = !complete)
+            coEvery { habitRepository.applyCompletionGoal(context, original, complete) } returns next
+            var followed: com.dayforge.data.repository.WidgetFactSnapshot? = null
+            coordinator.showGoalCompletion(original) { source, current ->
+                assertTrue(current()); followed = source
+            }
+            val action = coordinator.captureGoalCompletion(complete)
+            assertTrue(action())
+            assertTrue(followed === next)
+            assertFalse(coordinator.showGoalDialog.value)
+            assertFalse(action())
+            coVerify(exactly = 1) { habitRepository.applyCompletionGoal(context, original, complete) }
+        }
+        coVerify(exactly = 0) { habitRepository.updateIsActive(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { habitRepository.updateFailMode(any(), any(), any(), any()) }
+    }
+
+    @Test fun capturedGoalButtonCannotAdoptNewDialogAndLateResultCannotClearIt() = runTest {
+        coEvery { habitRepository.publishCompletion(any(), any(), any(), any()) } coAnswers { arg<suspend () -> Unit>(3).invoke() }
+        val original = typedSnapshot()
+        val replacement = typedSnapshot()
+        coordinator.showGoalCompletion(original) { _, _ -> error("Old continuation cannot run") }
+        val old = coordinator.captureGoalCompletion(true)
+        coordinator.showGoalCompletion(replacement) { _, _ -> }
+        assertFalse(old())
+        coVerify(exactly = 0) { habitRepository.applyCompletionGoal(any(), any(), any()) }
+        val current = coordinator.captureGoalCompletion(true)
+        coEvery { habitRepository.applyCompletionGoal(context, replacement, true) } coAnswers {
+            coordinator.showGoalCompletion(original) { _, _ -> }
+            typedSnapshot(active = false)
+        }
+        assertFalse(current())
+        assertTrue(coordinator.showGoalDialog.value)
+    }
+
+    @Test fun accountTransitionClearsAllGoalTextAndRejectsLatePublication() = runTest {
+        coEvery { habitRepository.publishCompletion(any(), any(), any(), any()) } coAnswers { arg<suspend () -> Unit>(3).invoke() }
+        val original = typedSnapshot()
+        coordinator.showGoalCompletion(original) { _, _ -> }
+        val pending = coordinator.captureGoalCompletion(true)
+        accountListener.transition(true)
+        accountListener.transition(false)
+        assertFalse(coordinator.showGoalDialog.value)
+        assertNull(coordinator.goalHabitId.value)
+        assertEquals(0, coordinator.goalTarget.value)
+        assertEquals(0, coordinator.goalProgress.value)
+        assertFalse(pending())
+        coEvery { habitRepository.publishCompletion(any(), any(), any(), any()) } coAnswers {
+            accountListener.transition(true); accountListener.transition(false)
+            arg<suspend () -> Unit>(3).invoke()
+        }
+        coordinator.showGoalCompletion(original) { _, _ -> }
+        assertFalse(coordinator.showGoalDialog.value)
+        assertNull(coordinator.goalHabitId.value)
+    }
+
+    @Test fun typedGoalCannotUseLegacyLongOnlyEntry() {
+        val result = runCatching { coordinator.showGoalCompletion(typedSnapshot().habit, 1) }
+        assertEquals("COMPLETION_FOLLOW_UP_REQUIRED", result.exceptionOrNull()?.message)
     }
 
     @Test
@@ -82,26 +158,27 @@ class HabitLifecycleCoordinatorTest {
 
     @Test
     fun confirm_goal_deactivates_habit_and_closes_dialog() = runTest {
-        coordinator.showGoalCompletion(habit(targetCycles = 1), progress = 1)
-        coJustRun { habitRepository.updateIsActive(7L, false, context) }
+        val original = habit(targetCycles = 1)
+        coordinator.showGoalCompletion(original, progress = 1)
+        coJustRun { habitRepository.updateIsActive(7L, false, context, expectedHabitUuid = original.uuid) }
 
         val confirmed = coordinator.confirmGoalCompletion()
 
         assertTrue(confirmed)
         assertFalse(coordinator.showGoalDialog.value)
-        coVerify(exactly = 1) { habitRepository.updateIsActive(7L, false, context) }
+        coVerify(exactly = 1) { habitRepository.updateIsActive(7L, false, context, expectedHabitUuid = original.uuid) }
     }
 
     @Test
     fun dismiss_strict_goal_switches_to_loose_and_closes_dialog() = runTest {
         val habit = habit(targetCycles = 1, failMode = FailMode.STRICT)
         coordinator.showGoalCompletion(habit, progress = 1)
-        coJustRun { habitRepository.updateFailMode(7L, FailMode.LOOSE, context) }
+        coJustRun { habitRepository.updateFailMode(7L, FailMode.LOOSE, context, expectedHabitUuid = habit.uuid) }
 
         coordinator.dismissGoalDialog(habit)
 
         assertFalse(coordinator.showGoalDialog.value)
-        coVerify(exactly = 1) { habitRepository.updateFailMode(7L, FailMode.LOOSE, context) }
+        coVerify(exactly = 1) { habitRepository.updateFailMode(7L, FailMode.LOOSE, context, expectedHabitUuid = habit.uuid) }
     }
 
     @Test
@@ -154,13 +231,14 @@ class HabitLifecycleCoordinatorTest {
 
     @Test
     fun failedGoalCommitKeepsDialogVisibleForRetry() = runTest {
-        coordinator.showGoalCompletion(habit(targetCycles = 3), progress = 3)
+        val original = habit(targetCycles = 3)
+        coordinator.showGoalCompletion(original, progress = 3)
         val failure = java.io.IOException("goal update failed")
-        coEvery { habitRepository.updateIsActive(7L, false, context) } throws failure
+        coEvery { habitRepository.updateIsActive(7L, false, context, expectedHabitUuid = original.uuid) } throws failure
         assertEquals(failure, runCatching { coordinator.confirmGoalCompletion() }.exceptionOrNull())
         assertTrue(coordinator.showGoalDialog.value)
         assertEquals(7L, coordinator.goalHabitId.value)
-        coJustRun { habitRepository.updateIsActive(7L, false, context) }
+        coJustRun { habitRepository.updateIsActive(7L, false, context, expectedHabitUuid = original.uuid) }
         assertTrue(coordinator.confirmGoalCompletion())
         assertFalse(coordinator.showGoalDialog.value)
     }

@@ -22,7 +22,6 @@ import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import com.dayforge.R
-import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.widget.base.StatusLabels
 import com.dayforge.widget.base.WidgetColorResolver
 import com.dayforge.widget.base.WidgetEmptyStates
@@ -105,7 +104,7 @@ class CountingWidget : GlanceAppWidget() {
         private suspend fun prepareWidgetData(context: Context, glanceId: GlanceId, habitId: Long,
             publication: com.dayforge.data.repository.WidgetDisplayPublisher.Publication): suspend () -> Unit {
             val appContext = context.applicationContext
-            val database = HabitDatabaseProvider.getInstance(appContext)
+            val database = com.dayforge.di.WidgetEntryPoint.database(appContext)
             val habit = database.habitDao().getVisibleHabitById(habitId)
 
             if (habit == null) {

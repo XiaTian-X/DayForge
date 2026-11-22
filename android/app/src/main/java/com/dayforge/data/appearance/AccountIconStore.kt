@@ -92,12 +92,22 @@ internal class AccountIconStore(private val metadata: AccountIconRepository, pri
         else metadata.markDownloadedReady(context, assetId, before.reservation, profile)
     }
 
-    suspend fun read(context: AccountIconContext, assetId: String, hash: String): ByteArray {
+    suspend fun read(context: AccountIconContext, assetId: String, hash: String): ByteArray =
+        readOwned(context, assetId, hash, null)
+
+    /** Display-only decode reuse; all live authority, receipts, paths and actual bytes are checked. */
+    suspend fun readForDisplay(context: AccountIconContext, assetId: String, previous: IconRaster): ByteArray =
+        readOwned(context, assetId, previous.blob.sha256, previous)
+
+    private suspend fun readOwned(context: AccountIconContext, assetId: String, hash: String,
+        previous: IconRaster?): ByteArray {
         metadata.installation(context, assetId, hash)
         val result = files.exclusive(context.namespace, create = false, beforeAccess = { metadata.reauthorize(context) }) { directory ->
             val before = metadata.installation(context, assetId, hash)
             val profile = requireNotNull(before.validationProfile) { "ICON_NOT_READY" }
-            val bytes = (directory ?: throw IOException("ICON_FILES_MISSING")).files.read(before.reservation.blob, profile)
+            val owned = (directory ?: throw IOException("ICON_FILES_MISSING")).files
+            val bytes = if (previous == null) owned.read(before.reservation.blob, profile)
+                else owned.readForDisplay(before.reservation.blob, profile, previous)
             check(metadata.installation(context, assetId, hash) == before) { "ICON_INSTALL_CHANGED" }
             bytes
         }

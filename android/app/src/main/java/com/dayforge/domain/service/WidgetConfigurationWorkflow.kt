@@ -20,20 +20,28 @@ import javax.inject.Inject
 
 internal enum class WidgetConfigurationKind { CHECK_IN, COUNTING, TIMER }
 
-class WidgetConfigurationWorkflow @Inject constructor(
-    @param:ApplicationContext private val context: Context,
-    private val repository: WidgetConfigurationRepository
+class WidgetConfigurationWorkflow private constructor(
+    private val context: Context, private val fixedRepository: WidgetConfigurationRepository?,
+    private val host: com.dayforge.data.local.DatabaseRuntimeHost?
 ) {
-    internal val changes get() = repository.changes
-    internal suspend fun current(snapshot: WidgetConfigurationSnapshot) = repository.isCurrent(snapshot)
+    constructor(context: Context, repository: WidgetConfigurationRepository) : this(context, repository, null)
+    @Inject internal constructor(@ApplicationContext context: Context, host: com.dayforge.data.local.DatabaseRuntimeHost) :
+        this(context, null, host)
+    private val repository get() = fixedRepository ?: requireNotNull(host).boundGraph().widgetConfigurationRepository
+    private suspend fun <T> withGraph(block: suspend () -> T): T = if (host == null) block() else host.withGraph { block() }
+
+    internal val changes get() = if (host == null) repository.changes else host.hints { it.widgetConfigurationRepository.changes }
+    internal suspend fun current(snapshot: WidgetConfigurationSnapshot) = withGraph { repository.isCurrent(snapshot) }
     internal suspend fun load(kind: WidgetConfigurationKind, widgetId: Int): WidgetConfigurationSnapshot =
-        repository.load(spec(kind), widgetId)
+        withGraph { repository.load(spec(kind), widgetId) }
 
     internal suspend fun bound(kind: WidgetConfigurationKind, id: GlanceId) =
-        repository.bound(spec(kind), GlanceAppWidgetManager(context).getAppWidgetId(id))
+        withGraph { repository.bound(spec(kind), GlanceAppWidgetManager(context).getAppWidgetId(id)) }
 
     /** All ordinary refreshes resolve the stable selection first, including explicit retry. */
-    internal suspend fun refresh(kind: WidgetConfigurationKind, id: GlanceId, expectedHabitId: Long? = null) {
+    internal suspend fun refresh(kind: WidgetConfigurationKind, id: GlanceId, expectedHabitId: Long? = null) =
+        withGraph { refreshInGraph(kind, id, expectedHabitId) }
+    private suspend fun refreshInGraph(kind: WidgetConfigurationKind, id: GlanceId, expectedHabitId: Long?) {
         val bound = bound(kind, id) ?: return
         val habit = bound.habit
         if (habit == null) {
@@ -57,7 +65,9 @@ class WidgetConfigurationWorkflow @Inject constructor(
                 TimerWidget.PREFS_NAME, TimerWidget.PREF_HABIT_ID_PREFIX, TimerWidgetReceiver::class.java)
         }
 
-    internal suspend fun configure(snapshot: WidgetConfigurationSnapshot, habit: HabitEntity) {
+    internal suspend fun configure(snapshot: WidgetConfigurationSnapshot, habit: HabitEntity) =
+        withGraph { configureInGraph(snapshot, habit) }
+    private suspend fun configureInGraph(snapshot: WidgetConfigurationSnapshot, habit: HabitEntity) {
         repository.configure(snapshot, habit) { publication ->
             val id = GlanceAppWidgetManager(context).getGlanceIdBy(snapshot.widgetId)
             val widget = when (snapshot.spec.type) {

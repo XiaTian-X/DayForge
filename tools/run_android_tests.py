@@ -27,13 +27,40 @@ from tools.android_joint_backend import backend_for_cases
 
 SHARDS = 3
 SHARD_TIMEOUT_SECONDS = 10800
+BUILD_TIMEOUT_SECONDS = 1200
+BUILD_MAX_TIMEOUT_SECONDS = 3600
 TARGETED_TIMEOUT_SECONDS = 2700
+TARGETED_MAX_TIMEOUT_SECONDS = 10800
 TARGET = "com.dayforge.testbed"
 TEST_PACKAGE = TARGET + ".test"
 COMPONENT = TEST_PACKAGE + "/com.dayforge.HiltTestRunner"
 RESULTS = "outputs/androidTest-results/connected/deviceTest"
 COVERAGE_INPUT = "outputs/code_coverage/deviceTestAndroidTest/connected"
 COVERAGE_REPORT = "reports/coverage/androidTest/deviceTest/connected"
+
+
+def build_timeout_seconds(value: str | None) -> int:
+    """Whole build command only; freeze before device access, independently of test deadlines."""
+    if value is None:
+        return BUILD_TIMEOUT_SECONDS
+    if not re.fullmatch(r"[1-9][0-9]{3}", value):
+        raise ValueError("DAYFORGE_BUILD_TIMEOUT_SECONDS must be an integer from 1200 to 3600")
+    seconds = int(value)
+    if not BUILD_TIMEOUT_SECONDS <= seconds <= BUILD_MAX_TIMEOUT_SECONDS:
+        raise ValueError("DAYFORGE_BUILD_TIMEOUT_SECONDS must be an integer from 1200 to 3600")
+    return seconds
+
+
+def targeted_timeout_seconds(value: str | None) -> int:
+    """Whole targeted command budget only; resolve before device access/build and freeze it."""
+    if value is None:
+        return TARGETED_TIMEOUT_SECONDS
+    if not re.fullmatch(r"[1-9][0-9]{3,4}", value):
+        raise ValueError("DAYFORGE_TARGETED_TIMEOUT_SECONDS must be an integer from 2700 to 10800")
+    seconds = int(value)
+    if not TARGETED_TIMEOUT_SECONDS <= seconds <= TARGETED_MAX_TIMEOUT_SECONDS:
+        raise ValueError("DAYFORGE_TARGETED_TIMEOUT_SECONDS must be an integer from 2700 to 10800")
+    return seconds
 
 
 def selected_classes(names: list[str] | tuple[str, ...]) -> tuple[str, ...]:
@@ -235,7 +262,14 @@ def command(
 
 
 class Gate:
-    def __init__(self, repo: Path):
+    def __init__(self, repo: Path, *, build_timeout: int | None = None):
+        self.build_timeout_seconds = build_timeout_seconds(
+            os.environ.get("DAYFORGE_BUILD_TIMEOUT_SECONDS")
+            if build_timeout is None else str(build_timeout)
+        )
+        self.targeted_timeout_seconds = targeted_timeout_seconds(
+            os.environ.get("DAYFORGE_TARGETED_TIMEOUT_SECONDS")
+        )
         self.repo = repo
         self.android = repo / "android"
         self.build = self.android / "app/build"
@@ -315,17 +349,26 @@ class Gate:
         if shards:
             shards = selected_shards(shards)
         check_global_arguments(self.repo)
+        build_tasks = [
+            "lintDebug", "assembleDebug", "assembleDeviceTest", "assembleDeviceTestAndroidTest",
+        ]
+        mode = "build_only" if build_only else "full"
+        if classes:
+            mode = "targeted"
+        elif shards:
+            mode = "selected_shards"
+        # This is a declared budget, not success evidence; retain it even if build fails.
+        (self.run / "build-budget.json").write_text(json.dumps({
+            "format": 1,
+            "scope": "build",
+            "mode": mode,
+            "selected_classes": list(classes),
+            "selected_shards": list(shards),
+            "command_timeout_seconds": self.build_timeout_seconds,
+            "tasks": build_tasks,
+        }, indent=2) + "\n")
         self.execute(
-            "build",
-            [
-                "./gradlew",
-                "--no-daemon",
-                "lintDebug",
-                "assembleDebug",
-                "assembleDeviceTest",
-                "assembleDeviceTestAndroidTest",
-            ],
-            1200,
+            "build", ["./gradlew", "--no-daemon", *build_tasks], self.build_timeout_seconds,
         )
         self.check_warnings()
         if build_only:
@@ -553,9 +596,20 @@ class Gate:
         discovery_log: Path,
     ) -> None:
         print(
-            f"Scoped physical run: {len(expected)} cases in {len(classes)} explicit classes; NOT the full gate.",
+            f"Scoped physical run: {len(expected)} cases in {len(classes)} explicit classes; "
+            f"whole-command budget {self.targeted_timeout_seconds}s; NOT the full gate.",
             flush=True,
         )
+        # Write before execution so a failed/timed-out run retains its actual declared budget.
+        (self.run / "targeted-budget.json").write_text(json.dumps({
+            "format": 1,
+            "scope": "targeted",
+            "selected_classes": list(classes),
+            "command_timeout_seconds": self.targeted_timeout_seconds,
+            "gradle_timeout_seconds": self.targeted_timeout_seconds,
+            "case_timeout_msec": 150000,
+            "build_timeout_seconds": self.build_timeout_seconds,
+        }, indent=2) + "\n")
         self.execute(
             "targeted",
             [
@@ -563,13 +617,14 @@ class Gate:
                 "--no-daemon",
                 "connectedDeviceTestAndroidTest",
                 "-Pdayforge.deviceTestScope=targeted",
+                f"-Pdayforge.targetedTimeoutSeconds={self.targeted_timeout_seconds}",
                 "-Pandroid.testInstrumentationRunnerArguments.log=false",
                 "-Pandroid.testInstrumentationRunnerArguments.timeout_msec=150000",
                 "-Pandroid.testInstrumentationRunnerArguments.class="
                 + ",".join(classes),
                 *self.joint_arguments,
             ],
-            TARGETED_TIMEOUT_SECONDS,
+            self.targeted_timeout_seconds,
         )
         if hashes != [digest(path) for path in apks]:
             raise ValueError("APKs changed during scoped verification")
@@ -588,6 +643,7 @@ class Gate:
             "format": 1,
             "status": "targeted_complete",
             "scope": "targeted",
+            "command_timeout_seconds": self.targeted_timeout_seconds,
             "selected_classes": list(classes),
             "cases": len(actual),
             "apk_sha256": hashes,
@@ -681,6 +737,8 @@ class Gate:
 def main() -> int:
     try:
         build_only, classes, shards = parse_arguments(sys.argv[1:])
+        targeted_timeout_seconds(os.environ.get("DAYFORGE_TARGETED_TIMEOUT_SECONDS"))
+        build_budget = build_timeout_seconds(os.environ.get("DAYFORGE_BUILD_TIMEOUT_SECONDS"))
     except ValueError as error:
         print(
             f"{error}\nUsage: python -m tools.run_android_tests [--build-only | --classes CLASS ... | --shards INDEX ...]",
@@ -701,7 +759,7 @@ def main() -> int:
                     text=True,
                     timeout=30,
                 ).strip()
-            gate = Gate(Path(__file__).resolve().parents[1])
+            gate = Gate(Path(__file__).resolve().parents[1], build_timeout=build_budget)
             try:
                 gate.run_gate(build_only=build_only, classes=classes, shards=shards)
             except BaseException as primary:

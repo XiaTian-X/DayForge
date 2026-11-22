@@ -13,7 +13,31 @@ internal class NextRoundWriteScope internal constructor(
     internal val metadataJson: String,
     internal val pendingInitials: Map<String, NextPendingInitial> = emptyMap(),
     internal val pendingRestarts: Map<String, NextRestartReference> = emptyMap()
-)
+) {
+    // Pure index of these immutable displayed bytes, NOT a current database/permission proof.
+    // Writers still audit fresh metadata and compare their original displayed ticket.
+    internal val completionRounds: CompletionRoundIndex by lazy { CompletionRoundIndex(metadataJson) }
+}
+
+internal class CompletionRoundIndex(metadataJson: String) {
+    private val heads: Map<String, ChallengeRoundHead>
+    private val known: Map<String, Set<ChallengeRoundHead>>
+    private val births: Map<String, ChallengeRoundHead>
+    private val timerBirths: Map<String, ChallengeRoundHead>
+    init {
+        // Decode still runs all ChallengeMetadata/Checkpoint constructors and chain validation.
+        val metadata = Json.decodeFromString<ChallengeMetadata>(metadataJson)
+        heads = metadata.checkpoints.associate { it.head.activityUuid to it.head }
+        known = metadata.checkpoints.associate { it.head.activityUuid to it.records.mapTo(hashSetOf()) { record -> record.head } }
+        births = metadata.births.filter { it.entityType == "activity_event" }.associate { it.entityUuid to it.head }
+        timerBirths = metadata.births.filter { it.entityType == "timer_session" }.associate { it.entityUuid to it.head }
+    }
+    fun head(activity: String): ChallengeRoundHead? = heads[activity]
+    fun contains(activity: String, head: ChallengeRoundHead): Boolean = head in known[activity].orEmpty()
+    fun birth(event: String): ChallengeRoundHead? = births[event]
+    fun timerBirth(session: String): ChallengeRoundHead? = timerBirths[session]
+    fun knownHeads(activity: String): Set<ChallengeRoundHead> = known[activity].orEmpty().toSet()
+}
 
 /** Transaction participant for NEW operations and local timer sources. Not a restart producer. */
 internal class NextRoundOperationCapture(
@@ -51,8 +75,7 @@ internal class NextRoundOperationCapture(
             require(expected == actual) { "SYNC_CHALLENGE_STALE_ACTION" }
             val latest = before.checkpoints.single { it.head == actual }.records.single { it.head == actual }
             latest.restartIntent?.let { intent ->
-                val sql = database.openHelper.writableDatabase
-                requireNotNull(NextRequestSql.rowHash(sql, "sync_entity_state", "entityType=? AND entityUuid=?",
+                requireNotNull(NextRequestSql.rowHash(database, "sync_entity_state", "entityType=? AND entityUuid=?",
                     arrayOf("plan_node", activity)))
                 val shadow = requireNotNull(database.syncOutboxDao().getState("plan_node", activity))
                 require(!shadow.deleted && shadow.revision >= Math.addExact(intent.expectedPlanRevision, 1L) &&
@@ -73,7 +96,7 @@ internal class NextRoundOperationCapture(
         // An omitted/deleted old activity must never be guessed into generation zero.
         require(expected == null && existing.none { it.uuid == activity }) { "SYNC_CHALLENGE_HEAD_REQUIRED" }
         val sql = database.openHelper.writableDatabase
-        require(NextRequestSql.rowHash(sql, "sync_entity_state", "entityType=? AND entityUuid=?",
+        require(NextRequestSql.rowHash(database, "sync_entity_state", "entityType=? AND entityUuid=?",
             arrayOf("plan_node", activity)) == null) { "SYNC_CHALLENGE_HEAD_REQUIRED" }
         require(!sql.query("SELECT 1 FROM next_request_origins WHERE intentJson LIKE ? LIMIT 1",
             arrayOf("%$activity%")).use { it.moveToFirst() }) { "SYNC_CHALLENGE_HEAD_REQUIRED" }
@@ -162,7 +185,7 @@ internal class NextRoundOperationCapture(
             } } }
         require(ids.size <= 10000)
         val matches = ids.mapNotNull { id ->
-            requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, id)))
+            requireNotNull(NextRequestSql.rowHash(database, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, id)))
             val row = requireNotNull(database.nextRequestDao().origin(NEXT_OPERATION, id))
             val source = roundOperationIntent(row.intentJson) ?: return@mapNotNull null
             val operation = source.operation
@@ -172,7 +195,7 @@ internal class NextRoundOperationCapture(
                 source.capturedDeviceId == scope.access.deviceId && operation.operationId == id &&
                 operation.payload["activity_uuid"] == JsonPrimitive(activity) &&
                 operation.payload["reverts_event_uuid"].let { it == null || it == JsonNull } &&
-                NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(row.queueId)) == row.sourceHash &&
+                NextRequestSql.rowHash(database, "sync_outbox", "id=?", arrayOf(row.queueId)) == row.sourceHash &&
                 database.nextRequestDao().acceptance(NEXT_OPERATION, id) == null)
             requireNotNull(source.context.head).also { head ->
                 source.restartFrontier?.let {
@@ -188,20 +211,21 @@ internal class NextRoundOperationCapture(
     private fun known(head: ChallengeRoundHead) = before.checkpoints.any { point -> point.records.any { it.head == head } } ||
         pendingInitials[head.activityUuid]?.head == head || freshHeads[head.activityUuid] == head
 
-    suspend fun verify(after: ChallengeMetadata) {
+    suspend fun verify(snapshot: NextChallengeReadSnapshot) {
+        val after = snapshot.borrow(database, scope.access).second
         require(after == before) { "SYNC_CHALLENGE_SOURCE_CHANGED" }
         for (source in goalFrontiers) for (item in requireNotNull(source.goalChildFrontier))
             NextGoalChildFrontierStore(database).validateCaptured(item, source.operation, scope.access)
         // Inherited timer successors do not call current(): their birth must not follow today's
         // head. Re-audit all prior pending roots once, including origin-only late trigger faults.
+        // This is the fresh POST-write proof, never the pre-write pendingInitials snapshot.
+        val actualPending = NextRoundPendingInitialStore(database).read(scope.access, snapshot)
         if (pendingInitials.isNotEmpty()) {
-            val actualPending = NextRoundPendingInitialStore(database).read(scope.access, after)
             require(pendingInitials.all { (activity, proof) -> actualPending[activity] == proof }) {
                 "SYNC_CHALLENGE_INITIAL_SOURCE_CHANGED"
             }
         }
-        require(NextRestartStore(database).pending(scope.access, after,
-            NextRoundPendingInitialStore(database).read(scope.access, after)) == pendingRestarts) { "SYNC_RESTART_SOURCE_CHANGED" }
+        require(NextRestartStore(database).pending(scope.access, after, actualPending) == pendingRestarts) { "SYNC_RESTART_SOURCE_CHANGED" }
         for (reference in capturedRestarts) NextRestartBindingStore(database).captured(scope.access, reference)
         for (activity in touched) {
             val actual = pendingRestarts[activity]?.head ?: before.checkpoints.singleOrNull { it.head.activityUuid == activity }?.head

@@ -12,6 +12,9 @@ import com.dayforge.util.DateTimeUtils
 import java.time.LocalDate
 import java.time.ZoneId
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.Dispatchers
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -19,6 +22,54 @@ import org.junit.runner.RunWith
 /** Formal repository/service consumers, original quantities, physical Room and account barriers. */
 @RunWith(AndroidJUnit4::class)
 class CountConsumerWorkflowTest : NextObjectEditorFixture() {
+    @Test fun queuedCountdownClicksStopAtTheOriginalDayTargetWithoutExtraFactsOrOutbox() = runBlocking<Unit> {
+        edit(2, true)
+        val repo = creatingHabits()
+        val service = CheckInService(repo, db.completionDao(), db.timeLogDao())
+        service.incrementCount(app, habit.id)
+        // A plan edit must not turn today's already captured countdown into an unlimited count.
+        edit(10, false)
+        val before = db.syncOutboxDao().getAll().size
+        val results = (1..3).map { async(Dispatchers.IO) {
+            service.incrementCount(app, habit.id) as CheckInResult.Success
+        } }.awaitAll()
+        assertEquals(1, results.count { it.recorded })
+        assertEquals(2, results.count { !it.recorded && it.completed && !it.goalReached })
+        val state = reader().read(current())
+        assertEquals(CountDayPolicy(2, true), state.todayPolicy)
+        assertEquals(2L, state.todayQuantity)
+        assertEquals(2, state.completions.size)
+        assertEquals(before + 1, db.syncOutboxDao().getAll().size)
+        val queued = db.syncOutboxDao().getAll()
+        assertEquals(0L, repo.logCompletion(app, habit.id))
+        assertEquals(queued, db.syncOutboxDao().getAll())
+        service.decrementCount(app, habit.id)
+        assertTrue((service.incrementCount(app, habit.id) as CheckInResult.Success).recorded)
+        assertEquals(2L, reader().read(current()).todayQuantity)
+    }
+
+    @Test fun concurrentAscendingClicksRemainValidAfterReachingTarget() = runBlocking<Unit> {
+        edit(1, false)
+        val service = CheckInService(creatingHabits(), db.completionDao(), db.timeLogDao())
+        val results = (1..3).map { async(Dispatchers.IO) {
+            service.incrementCount(app, habit.id) as CheckInResult.Success
+        } }.awaitAll()
+        assertTrue(results.all { it.recorded && it.completed })
+        assertEquals(3L, reader().read(current()).todayQuantity)
+        assertEquals(3, count("completions"))
+    }
+
+    @Test fun concurrentDecrementsDoNotConsumeTheSameTypedFactTwice() = runBlocking<Unit> {
+        val service = CheckInService(creatingHabits(), db.completionDao(), db.timeLogDao())
+        repeat(3) { service.incrementCount(app, habit.id) }
+        (1..3).map { async(Dispatchers.IO) { service.decrementCount(app, habit.id) } }.awaitAll()
+        val state = reader().read(current())
+        assertEquals(0L, state.todayQuantity)
+        assertTrue(state.completions.isEmpty())
+        assertEquals(CountDayPolicy(10, false), state.todayPolicy)
+        assertEquals(0, count("completions"))
+    }
+
     private suspend fun current() = requireNotNull(db.habitDao().getHabitById(habit.id))
     private fun reader() = CountHistoryReader(db, tokens, sessions)
     private fun calculator() = HabitStatusCalculator(FailureChecker(db.completionDao(), db.timeLogDao(), reader()),

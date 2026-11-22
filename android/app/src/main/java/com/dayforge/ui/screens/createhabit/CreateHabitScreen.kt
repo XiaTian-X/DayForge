@@ -45,16 +45,19 @@ fun CreateHabitScreen(
     parentUuid: String? = null,
     onSaveDraft: ((com.dayforge.data.model.HabitDraft) -> Unit)? = null,
     creationAuthority: com.dayforge.data.repository.ObjectCreationAuthority? = null,
-    onNavigateBack: () -> Unit
+    onNavigateBack: () -> Unit,
+    creationInput: com.dayforge.data.local.DatabaseCreationInput? = null
 ) {
     val uiState by viewModel.uiState.collectAsState(context = kotlinx.coroutines.Dispatchers.Main)
-    LaunchedEffect(creationAuthority) { creationAuthority?.let(viewModel::beginCreation) }
+    LaunchedEffect(creationInput, creationAuthority) {
+        if (creationInput != null) viewModel.beginSource(creationInput)
+        else creationAuthority?.let(viewModel::beginCreation)
+    }
 
     // Set parent UUID if provided from navigation
-    LaunchedEffect(parentUuid) {
-        if (parentUuid != null) {
-            viewModel.setParentUuid(parentUuid)
-        }
+    LaunchedEffect(parentUuid, creationInput) {
+        if (creationInput != null) viewModel.beginSource(creationInput)
+        if (parentUuid != null) viewModel.setParentUuid(parentUuid)
     }
 
     Scaffold(
@@ -610,13 +613,13 @@ fun CreateHabitScreen(
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .clickable { viewModel.toggleMetricSelection(metric.id) }
+                                        .clickable { viewModel.toggleMetricSelection(metric.id, metric.uuid) }
                                         .padding(vertical = 4.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Checkbox(
                                         checked = metric.id in uiState.selectedMetricIds,
-                                        onCheckedChange = { viewModel.toggleMetricSelection(metric.id) }
+                                        onCheckedChange = { viewModel.toggleMetricSelection(metric.id, metric.uuid) }
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(

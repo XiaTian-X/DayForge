@@ -23,7 +23,8 @@ data class TimerActionAuthority internal constructor(
     internal val originalPlan: String?,
     @Serializable(with = ContractIntegerSerializer::class)
     internal val challengeContract: Int = 0,
-    internal val challengeHead: ChallengeRoundHead? = null
+    internal val challengeHead: ChallengeRoundHead? = null,
+    internal val storageId: String? = null
 ) {
     internal fun validate() {
         require(listOf(accountId, authenticationGeneration, habitUuid).all(::isContractUuid))
@@ -34,6 +35,7 @@ data class TimerActionAuthority internal constructor(
         require((sessionUuid == null) == (originalPlan != null))
         require(challengeContract in 0..1 && (challengeContract == 1) == (challengeHead != null))
         challengeHead?.let { require(it.activityUuid == habitUuid && deviceId != null && serverInstanceId != null) }
+        storageId?.let { require(isContractUuid(it)) }
     }
     internal fun session() = LocalDataSession(AuthenticationSession(accountId, authenticationGeneration), serverInstanceId, syncEpoch)
     internal fun attach(intent: Intent) {
@@ -44,10 +46,12 @@ data class TimerActionAuthority internal constructor(
             .appendPath(serverInstanceId ?: "offline").appendPath(syncEpoch ?: "offline")
             .appendPath(deviceId ?: "unregistered")
             .appendPath(challengeContract.toString()).appendPath(challengeHead?.roundUuid ?: "plain")
-            .appendPath(nextSequence?.toString() ?: "new").appendPath(intent.action ?: "confirm").build()
+            .appendPath(nextSequence?.toString() ?: "new").appendPath(storageId ?: "unbound-replica")
+            .appendPath(intent.action ?: "confirm").build()
     }
     companion object {
         private const val EXTRA = "com.dayforge.timer.authority"
+        internal fun isPresent(intent: Intent?): Boolean = intent?.hasExtra(EXTRA) == true
         internal fun read(intent: Intent?): TimerActionAuthority? = intent?.getStringExtra(EXTRA)?.let {
             require(it.length <= 65_536)
             try {

@@ -23,12 +23,16 @@ internal fun widgetFactAction(context: Context, habitId: Long, action: String, p
     if (proof != null) {
         val claim = WidgetFactClaim.decode(proof)
         require(claim.habitId == habitId)
-        actionStartActivity(claim.actionIntent(context, if (action == "decrement") "increment" else action))
+        val actual = if (action == "decrement") "increment" else action
+        actionStartActivity(if (claim.countPolicy != null) CountWidgetActionActivity.typedIntent(context, claim, actual)
+            else claim.actionIntent(context, actual))
     } else {
         val legacy = legacyProof?.let { com.dayforge.data.repository.LegacyWidgetFactClaim.decode(it).also { claim ->
             require(claim.identity.habitId == habitId)
         }.forAction(action).encode() }
-        actionRunCallback<CheckInActionCallback>(if (legacy == null) actionParametersOf(
+        if (legacy != null && action in setOf("increment", "decrement"))
+            actionStartActivity(CountWidgetActionActivity.legacyIntent(context, com.dayforge.data.repository.LegacyWidgetFactClaim.decode(legacy)))
+        else actionRunCallback<CheckInActionCallback>(if (legacy == null) actionParametersOf(
             ActionParameters.Key<Long>("habitId") to habitId,
             ActionParameters.Key<String>("action") to action)
         else actionParametersOf(ActionParameters.Key<Long>("habitId") to habitId,

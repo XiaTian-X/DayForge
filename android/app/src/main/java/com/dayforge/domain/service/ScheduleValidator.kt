@@ -82,10 +82,9 @@ object ScheduleValidator {
      * @param createdAt The habit's creation timestamp
      * @return LocalDate of the next check-in day, or today if check-in is allowed
      */
-    fun getNextCheckInDate(schedule: HabitSchedule, createdAt: Long): LocalDate {
-        val today = LocalDate.now()
-
-        if (isCheckInAllowedToday(schedule, createdAt)) {
+    fun getNextCheckInDate(schedule: HabitSchedule, createdAt: Long,
+        today: LocalDate = LocalDate.now(), zone: ZoneId = ZoneId.systemDefault()): LocalDate {
+        if (schedule is HabitSchedule.Once || isCheckInAllowedOnDate(schedule, createdAt, today, zone)) {
             return today
         }
 
@@ -96,7 +95,7 @@ object ScheduleValidator {
                 if (schedule.daysOfWeek.isEmpty()) {
                     // Original logic
                     val creationDate = Instant.ofEpochMilli(createdAt)
-                        .atZone(ZoneId.systemDefault())
+                        .atZone(zone)
                         .toLocalDate()
                     val daysSinceCreation = ChronoUnit.DAYS.between(creationDate, today).toInt()
                     val daysUntilNext = 7 - (daysSinceCreation % 7)
@@ -131,7 +130,7 @@ object ScheduleValidator {
             }
             is HabitSchedule.Custom -> {
                 val creationDate = Instant.ofEpochMilli(createdAt)
-                    .atZone(ZoneId.systemDefault())
+                    .atZone(zone)
                     .toLocalDate()
                 val daysSinceCreation = ChronoUnit.DAYS.between(creationDate, today).toInt()
                 val daysUntilNext = schedule.frequencyDays - (daysSinceCreation % schedule.frequencyDays)
@@ -149,7 +148,8 @@ object ScheduleValidator {
      * @param date The date to check
      * @return true if check-in is allowed on the given date, false otherwise
      */
-    fun isCheckInAllowedOnDate(schedule: HabitSchedule, createdAt: Long, date: LocalDate): Boolean {
+    fun isCheckInAllowedOnDate(schedule: HabitSchedule, createdAt: Long, date: LocalDate,
+        zone: ZoneId = ZoneId.systemDefault()): Boolean {
         return when (schedule) {
             is HabitSchedule.Once -> false // No recurring due days, missed-day failures or success-rate denominator.
             is HabitSchedule.Daily -> true
@@ -157,7 +157,7 @@ object ScheduleValidator {
                 if (schedule.daysOfWeek.isEmpty()) {
                     // Original logic
                     val creationDate = Instant.ofEpochMilli(createdAt)
-                        .atZone(ZoneId.systemDefault())
+                        .atZone(zone)
                         .toLocalDate()
                     val daysSinceCreation = ChronoUnit.DAYS.between(creationDate, date).toInt()
                     daysSinceCreation % 7 == 0
@@ -173,7 +173,7 @@ object ScheduleValidator {
             }
             is HabitSchedule.Custom -> {
                 val creationDate = Instant.ofEpochMilli(createdAt)
-                    .atZone(ZoneId.systemDefault())
+                    .atZone(zone)
                     .toLocalDate()
                 val daysSinceCreation = ChronoUnit.DAYS.between(creationDate, date).toInt()
                 daysSinceCreation % schedule.frequencyDays == 0

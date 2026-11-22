@@ -79,7 +79,7 @@ class IconLibraryViewModel @Inject constructor(internal val icons: AccountIconCo
         stamp = Any()
         failure = null
         if (!keepPickerNotice) pickerNotice = null
-        mutable.value = IconLibraryState()
+        mutable.value = IconLibraryState(loading = open && !blocked)
         reload.value = stamp
     }
     internal fun openPage() = synchronized(monitor) { open = true; page = Any(); invalidate(keepPickerNotice = true) }
@@ -88,7 +88,7 @@ class IconLibraryViewModel @Inject constructor(internal val icons: AccountIconCo
         operation?.cancel()
     }
     internal fun refresh() = synchronized(monitor) {
-        if (operation?.isActive != true && picker == null) invalidate()
+        if (open && !blocked && !mutable.value.loading && operation?.isActive != true && picker == null) invalidate()
     }
     private fun put(request: Any, update: (IconLibraryState) -> IconLibraryState) = synchronized(monitor) {
         if (open && !blocked && stamp === request) mutable.value = update(mutable.value)

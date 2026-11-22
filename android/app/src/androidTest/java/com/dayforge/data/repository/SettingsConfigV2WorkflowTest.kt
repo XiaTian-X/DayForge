@@ -1,6 +1,8 @@
 package com.dayforge.data.repository
 
 import android.content.res.AssetFileDescriptor
+import android.database.sqlite.SQLiteConstraintException
+import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import androidx.activity.ComponentActivity
@@ -16,6 +18,10 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.core.app.ActivityOptionsCompat
 import androidx.lifecycle.viewModelScope
 import androidx.room.withTransaction
+import androidx.sqlite.db.SupportSQLiteDatabase
+import androidx.sqlite.db.SupportSQLiteOpenHelper
+import androidx.sqlite.db.SupportSQLiteStatement
+import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.dayforge.R
 import com.dayforge.data.api.NetworkMonitor
@@ -30,6 +36,8 @@ import io.mockk.mockk
 import java.io.File
 import java.io.FileDescriptor
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import com.dayforge.domain.appearance.ThemeVersionRef
 import com.dayforge.domain.model.ThemeDefinition
 import com.dayforge.domain.model.ObjectAppearance
@@ -53,6 +61,8 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidJUnit4::class)
 class SettingsConfigV2WorkflowTest : NextObjectEditorFixture() {
+    private val nativeFault = ConfigMetricNativeFault()
+    init { storage.isolatedBuilder = { context -> buildDiagnosticFaultDatabase(context, nativeFault) } }
     @get:Rule(order = 0) val compose = createAndroidComposeRule<ComponentActivity>()
     private lateinit var themes: DeviceThemeController
     private var model: SettingsViewModel? = null
@@ -224,11 +234,13 @@ class SettingsConfigV2WorkflowTest : NextObjectEditorFixture() {
         val themeTag = "config-theme-${originalTheme.themeId}:${originalTheme.revision}"
         compose.onNodeWithTag(themeTag).performScrollTo().performClick()
         compose.waitUntil(5000) { ThemeVersionRef(originalTheme.themeId, originalTheme.revision) in first.state.value.selectedThemes }
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER config_theme_business_fault BEFORE INSERT ON metrics " +
-            "BEGIN SELECT RAISE(ABORT,'real business failure after theme install'); END")
+        val originalSchema = schemaImage()
+        nativeFault.arm()
         compose.onNodeWithTag("config-file-confirm").performClick()
         compose.waitUntil(10000) { first.state.value.message == ConfigFileMessage.FAILED && !first.state.value.busy &&
             first.state.value.progress?.phase == ConfigImportPhase.PREPARED }
+        nativeFault.requireFired(); assertEquals(originalSchema, schemaImage())
+        assertEquals(0, count("metrics")); assertEquals(0, count("habit_metric_links"))
         val id = first.state.value.progress!!.importId; val saved = entry(id, source); val installed = saved.plan.themes.single()
         assertFalse(saved.committed); assertEquals(0, count("habits")); assertEquals(0, count("sync_outbox"))
         assertNotEquals(originalTheme.themeId, installed.themeId); assertEquals(1, installed.revision)
@@ -238,7 +250,7 @@ class SettingsConfigV2WorkflowTest : NextObjectEditorFixture() {
         compose.waitUntil(5000) { requireNotNull(model).themeChoices.value.any { it.ref == ref && it.available } }
         assertEquals(originalCatalog.slots.size + 1, themes.catalog()!!.slots.size); assertEquals(selection, themes.current().saved)
         val installedCatalog = themes.catalog()!!
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER config_theme_business_fault")
+        nativeFault.disarm()
         withContext(Dispatchers.Main) { requireNotNull(model).viewModelScope.coroutineContext[Job]!!.cancelAndJoin() }
         model = null
         storage.reopen(); themes.close()
@@ -348,14 +360,16 @@ class SettingsConfigV2WorkflowTest : NextObjectEditorFixture() {
 
     @Test fun realBusinessFailureAndColdWrongFileRecoveryKeepOriginalMappingUntilExplicitExactRetry() = runBlocking<Unit> {
         emptyReplica(); val source = source(); val first = workflow()
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER config_ui_fault BEFORE INSERT ON metrics " +
-            "BEGIN SELECT RAISE(ABORT,'actual business failure'); END")
+        val originalSchema = schemaImage()
+        nativeFault.arm()
         preview(first, source); first.confirmImport()
         assertEquals(ConfigFileMessage.FAILED, first.state.value.message)
+        nativeFault.requireFired(); assertEquals(originalSchema, schemaImage())
+        assertEquals(0, count("metrics")); assertEquals(0, count("habit_metric_links"))
         val importId = requireNotNull(first.state.value.progress).importId; val original = entry(importId, source)
         assertFalse(original.committed); assertEquals(0, count("habits")); assertEquals(0, count("next_request_origins"))
-        assertFalse(first.beginImport()); db.openHelper.writableDatabase.execSQL("DROP TRIGGER config_ui_fault")
-        storage.reopen()
+        assertFalse(first.beginImport()); nativeFault.disarm()
+        storage.reopen(); assertEquals(originalSchema, schemaImage())
         val cold = workflow(); cold.refresh(); assertEquals(importId, cold.state.value.progress!!.importId)
         assertTrue(cold.beginImport(true)); input.writeBytes(source("Different file").exportBytes()); cold.readImport(inputUri)
         assertNull(cold.state.value.preview); assertEquals(ConfigFileMessage.FAILED, cold.state.value.message)
@@ -429,6 +443,14 @@ class SettingsConfigV2WorkflowTest : NextObjectEditorFixture() {
             arrayOf("0".repeat(64), first.operationId))
         flow.refresh(); assertEquals(ConfigFileProfile.UNAVAILABLE, flow.state.value.profile); assertNull(flow.state.value.progress)
         assertFalse(flow.beginImport())
+        // No active group remains. Only the original private owned locator can reach this
+        // exact terminal group again, and it must re-audit the restored real HTTP receipt.
+        db.openHelper.writableDatabase.execSQL("UPDATE next_acceptances SET resultHash=? WHERE requestId=?",
+            arrayOf(real.resultHash, first.operationId))
+        flow.refresh()
+        val restoredTerminal = requireNotNull(flow.state.value.progress)
+        assertEquals(accepted, restoredTerminal); assertEquals(ConfigImportPhase.OPERATIONS_ACCEPTED, restoredTerminal.phase)
+        assertEquals(4, restoredTerminal.accepted); assertEquals(0, count("sync_outbox"))
     }
 
     @Test fun readOnlyNextReplicaCanExportButCannotImportAndOrphanJournalNeverFallsBackToLegacy() = runBlocking<Unit> {
@@ -437,11 +459,11 @@ class SettingsConfigV2WorkflowTest : NextObjectEditorFixture() {
         assertFalse(flow.state.value.canImport); assertFalse(flow.beginImport()); assertTrue(flow.beginExport())
         flow.writeExport(null); assertEquals(0, writes); assertEquals(0, count("next_config_imports"))
         emptyReplica()
-        val sql = db.openHelper.writableDatabase
-        sql.execSQL("PRAGMA foreign_keys=OFF")
-        try { sql.execSQL("INSERT INTO next_config_import_payloads(importId,payloadKind,part,bytes) " +
-            "VALUES(?, 'identities', 0, ?)", arrayOf(id(900), byteArrayOf(0))) }
-        finally { sql.execSQL("PRAGMA foreign_keys=ON") }
+        insertNativeOrphanPayload()
+        // Observe the original real Room writer connection; never force its PRAGMA to pass.
+        db.withTransaction { db.openHelper.writableDatabase.query("PRAGMA foreign_keys").use {
+            assertTrue(it.moveToFirst()); assertEquals(1, it.getInt(0)); assertFalse(it.moveToNext())
+        } }
         flow.refresh(); assertEquals(ConfigFileProfile.NEXT, flow.state.value.profile) // hint cannot authorize a mutation
         register(); flow.refresh(); assertEquals(ConfigFileProfile.UNAVAILABLE, flow.state.value.profile)
         assertFalse(flow.beginImport()); assertEquals(0, count("next_config_imports"))
@@ -521,5 +543,105 @@ class SettingsConfigV2WorkflowTest : NextObjectEditorFixture() {
         assertEquals(0, reads); assertEquals(0, writes)
         assertEquals(before, db.habitDao().getAllHabitsOnce()); assertEquals(metrics, db.metricDao().getAllMetricsOnce())
         assertEquals(0, count("sync_outbox")); assertEquals(0, count("next_config_imports"))
+    }
+
+    private fun schemaImage(): List<List<String?>> = db.openHelper.writableDatabase.query(
+        "SELECT type,name,tbl_name,sql FROM main.sqlite_master ORDER BY type,name").use { cursor ->
+        buildList { while (cursor.moveToNext()) add((0..3).map { if (cursor.isNull(it)) null else cursor.getString(it) }) }
+    }
+
+    /** Fixed malformed fixture data, through an independent native testbed connection only.
+     * It closes before the original controlled reader runs. No production PRAGMA is relaxed. */
+    private fun insertNativeOrphanPayload() {
+        check(app.packageName == "com.dayforge.testbed" && !db.inTransaction())
+        val file = app.getDatabasePath("habit_database").canonicalFile
+        check(file.isFile)
+        SQLiteDatabase.openDatabase(file.path, null, SQLiteDatabase.OPEN_READWRITE).use { raw ->
+            raw.execSQL("PRAGMA foreign_keys=OFF")
+            raw.rawQuery("PRAGMA foreign_keys", null).use { cursor ->
+                check(cursor.moveToFirst() && cursor.getInt(0) == 0 && !cursor.moveToNext())
+            }
+            raw.beginTransaction()
+            try {
+                raw.execSQL("INSERT INTO next_config_import_payloads(importId,payloadKind,part,bytes) " +
+                    "VALUES(?, 'identities', 0, ?)", arrayOf(id(900), byteArrayOf(0)))
+                raw.rawQuery("PRAGMA foreign_key_check(next_config_import_payloads)", null).use { cursor ->
+                    check(cursor.moveToFirst() && cursor.getString(0) == "next_config_import_payloads" &&
+                        cursor.getString(2) == "next_config_imports" && !cursor.moveToNext())
+                }
+                raw.setTransactionSuccessful()
+            } finally { raw.endTransaction() }
+        }
+    }
+
+    /** Engine constraint after one real generated metrics INSERT, inside its original TX.
+     * No DDL or predicate changes: prepare/recovery fingerprint remains exactly the same.
+     * Statements are wrapped at compile time even when not armed; only execution can fault. */
+    private class ConfigMetricNativeFault : SupportSQLiteOpenHelper.Factory {
+        private val armed = AtomicBoolean()
+        private val writes = AtomicInteger(); private val rejections = AtomicInteger()
+        fun arm() { check(writes.get() == 0 && rejections.get() == 0); check(armed.compareAndSet(false, true)) }
+        fun disarm() { armed.set(false) }
+        fun requireFired() {
+            assertEquals("One actual generated metrics INSERT must have executed", 1, writes.get())
+            assertEquals("The fixed duplicate must fail inside SQLite", 1, rejections.get())
+            assertFalse(armed.get())
+        }
+        private fun matches(sql: String): Boolean = sql.startsWith("INSERT OR REPLACE INTO `metrics` (`id`,") ||
+            sql.startsWith("INSERT OR ABORT INTO `metrics` (`id`,")
+        private fun <T> executed(sql: String, raw: SupportSQLiteDatabase, action: () -> T): T {
+            val result = action()
+            if (matches(sql) && armed.compareAndSet(true, false)) {
+                check(raw.inTransaction()) { "CONFIG_TEST_NATIVE_WRITE_OUTSIDE_TRANSACTION" }
+                raw.query("SELECT changes()").use { check(it.moveToFirst() && it.getLong(0) == 1L && !it.moveToNext()) }
+                val inserted = raw.query("SELECT last_insert_rowid()").use {
+                    check(it.moveToFirst()); it.getLong(0).also { _ -> check(!it.moveToNext()) }
+                }
+                raw.query("SELECT count(*) FROM metrics WHERE id=?", arrayOf(inserted)).use {
+                    check(it.moveToFirst() && it.getLong(0) == 1L && !it.moveToNext())
+                }
+                writes.incrementAndGet()
+                try {
+                    raw.execSQL("INSERT INTO metrics SELECT * FROM metrics WHERE id=?", arrayOf(inserted))
+                } catch (failure: SQLiteConstraintException) {
+                    check(failure.message?.contains("UNIQUE constraint failed: metrics.id") == true ||
+                        failure.message?.contains("UNIQUE constraint failed: metrics.uuid") == true) { "CONFIG_TEST_WRONG_NATIVE_CONSTRAINT" }
+                    rejections.incrementAndGet(); throw failure
+                }
+                error("CONFIG_TEST_NATIVE_DUPLICATE_WAS_ACCEPTED")
+            }
+            return result
+        }
+        override fun create(configuration: SupportSQLiteOpenHelper.Configuration): SupportSQLiteOpenHelper {
+            var rawOwner: SupportSQLiteDatabase? = null; var wrapper: SupportSQLiteDatabase? = null; val monitor = Any()
+            fun wrap(raw: SupportSQLiteDatabase): SupportSQLiteDatabase = synchronized(monitor) {
+                if (rawOwner !== raw) { rawOwner = raw; wrapper = object : SupportSQLiteDatabase by raw {
+                    override fun compileStatement(sql: String): SupportSQLiteStatement {
+                        val actual = raw.compileStatement(sql)
+                        return object : SupportSQLiteStatement by actual {
+                            override fun execute() = executed(sql, raw) { actual.execute() }
+                            override fun executeInsert() = executed(sql, raw) { actual.executeInsert() }
+                            override fun executeUpdateDelete() = executed(sql, raw) { actual.executeUpdateDelete() }
+                        }
+                    }
+                } }
+                requireNotNull(wrapper)
+            }
+            val parent = configuration.callback
+            val callback = object : SupportSQLiteOpenHelper.Callback(parent.version) {
+                override fun onConfigure(db: SupportSQLiteDatabase) = parent.onConfigure(wrap(db))
+                override fun onCreate(db: SupportSQLiteDatabase) = parent.onCreate(wrap(db))
+                override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = parent.onUpgrade(wrap(db), oldVersion, newVersion)
+                override fun onDowngrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = parent.onDowngrade(wrap(db), oldVersion, newVersion)
+                override fun onOpen(db: SupportSQLiteDatabase) = parent.onOpen(wrap(db))
+                override fun onCorruption(db: SupportSQLiteDatabase) = parent.onCorruption(wrap(db))
+            }
+            val actual = FrameworkSQLiteOpenHelperFactory().create(SupportSQLiteOpenHelper.Configuration.builder(configuration.context)
+                .name(configuration.name).callback(callback).noBackupDirectory(configuration.useNoBackupDirectory).build())
+            return object : SupportSQLiteOpenHelper by actual {
+                override val readableDatabase get() = wrap(actual.readableDatabase)
+                override val writableDatabase get() = wrap(actual.writableDatabase)
+            }
+        }
     }
 }

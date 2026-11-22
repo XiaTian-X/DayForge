@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal, Optional, overload
+from typing import Any, Literal, Optional, overload
 
 from sqlalchemy import func
 from sqlalchemy.engine import Result
@@ -13,7 +13,8 @@ from src.auth.models import User
 from src.v2.device_service import require_device
 from src.v2.encoding import parse_json
 from src.v2.entity_snapshots import (
-    serialize_activity_event_with_allocations,
+    serialize_activity_event,
+    serialize_day_allocation,
     serialize_link,
     serialize_metric_snapshot,
     serialize_observation,
@@ -25,6 +26,7 @@ from src.v2.models import (
     ActivityEvent,
     ActivityMetricLinkV2,
     ClientDevice,
+    DurationDayAllocation,
     MetricObservation,
     PlanNode,
     SyncChange,
@@ -37,6 +39,37 @@ from src.v2.next_sync_contract import NextSyncBootstrapResponse, NextSyncPullRes
 from src.v2.one_time_recovery import read_one_time_checkpoints
 from src.v2.count_recovery import require_count_history
 from src.v2.challenge_recovery import require_roundless_view, require_challenge_history
+
+
+async def _bootstrap_day_allocations(
+    session: AsyncSession, owner: int
+) -> dict[int, list[dict[str, Any]]]:
+    """Use the same live owner/parent selection and transaction as bootstrap facts."""
+    result = await session.execute(
+        select(DurationDayAllocation)
+        .join(
+            ActivityEvent,
+            col(DurationDayAllocation.activity_event_id) == col(ActivityEvent.id),
+        )
+        .join(PlanNode, col(ActivityEvent.activity_node_id) == col(PlanNode.id))
+        .where(
+            col(ActivityEvent.owner_user_id) == owner,
+            col(ActivityEvent.deleted_at).is_(None),
+            col(ActivityEvent.event_type) == "duration_session",
+            col(PlanNode.owner_user_id) == owner,
+            col(PlanNode.deleted_at).is_(None),
+        )
+        .order_by(
+            col(DurationDayAllocation.activity_event_id),
+            col(DurationDayAllocation.local_date),
+        )
+    )
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for allocation in result.scalars():
+        grouped.setdefault(allocation.activity_event_id, []).append(
+            serialize_day_allocation(allocation)
+        )
+    return grouped
 
 
 def _change_response(
@@ -272,12 +305,27 @@ async def read_bootstrap_snapshot(
         )
         .order_by(col(ActivityEvent.id))
     )
-    for event, activity_uuid in events_result.all():
+    events = events_result.all()
+    # Bootstrap already reads the complete live account snapshot. One scoped join
+    # replaces one allocation query per timer, without an unbounded IN parameter list.
+    allocations = (
+        await _bootstrap_day_allocations(session, require_internal(user.id, "User.id"))
+        if any(event.event_type == "duration_session" for event, _ in events)
+        else {}
+    )
+    for event, activity_uuid in events:
         revert = (
             await session.get(ActivityEvent, event.reverts_event_id)
             if event.reverts_event_id
             else None
         )
+        payload = serialize_activity_event(
+            event, activity_uuid, revert.public_id if revert else None
+        )
+        if event.event_type == "duration_session":
+            payload["day_allocations"] = allocations.get(
+                require_internal(event.id, "ActivityEvent.id"), []
+            )
         synthetic.append(
             SyncChangeResponse.model_validate(
                 {
@@ -286,12 +334,7 @@ async def read_bootstrap_snapshot(
                     "entity_uuid": event.public_id,
                     "operation": "upsert",
                     "revision": event.revision,
-                    "payload": await serialize_activity_event_with_allocations(
-                        session,
-                        event,
-                        activity_uuid,
-                        revert.public_id if revert else None,
-                    ),
+                    "payload": payload,
                     "changed_at": event.updated_at,
                     "origin_device_id": None,
                 }

@@ -2,11 +2,10 @@ package com.dayforge.data.appearance
 
 import android.content.Context
 import android.database.Cursor
-import androidx.room.Room
-import androidx.room.withTransaction
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.dayforge.data.local.LocalIconAccess
-import com.dayforge.data.repository.ReplicaSqlSchema
+import com.dayforge.data.local.ReplicaSqlSchema
+import com.dayforge.data.local.ReplicaRecoveryTiming
 import com.dayforge.data.repository.syncPayloadHash
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -42,28 +41,21 @@ internal class AccountIconRecoveryDatabase(
         // here could create or migrate the source before we get a chance to reject its schema.
         // The enclosing recovery workflow must establish its normal storage baseline first.
         check(database.isOpen) { "ICON_RECOVERY_DATABASE_NOT_OPEN" }
-        val reference = Room.inMemoryDatabaseBuilder(context.applicationContext, AccountIconDatabase::class.java).build()
-        var failure: Throwable? = null
-        try {
-            val expected = reference.withTransaction {
-                val sql = reference.openHelper.writableDatabase
-                sql.execSQL("ANALYZE")
-                ReplicaSqlSchema.read(sql)
-            }
-            val proof = metadata.recoveryTransaction(original) { catalog, transferMetadata ->
+        val expected = ReplicaRecoveryTiming.measure(ReplicaRecoveryTiming.Stage.ICON_REFERENCE) {
+            ReplicaIconReferenceSchema.read(context)
+        }
+        val proof = ReplicaRecoveryTiming.measure(ReplicaRecoveryTiming.Stage.ICON_ACTUAL) {
+            metadata.recoveryTransaction(original) { catalog, transferMetadata ->
                 check(database.inTransaction())
                 val sql = database.openHelper.writableDatabase
                 val actual = ReplicaSqlSchema.read(sql)
                 val optional = setOf("table.sqlite_stat1", "table.sqlite_stat4", "table.android_metadata")
-                require(actual.keys - optional == expected.keys - optional &&
-                    actual.all { (key, value) -> expected[key] == value }) { "ICON_RECOVERY_SCHEMA_INVALID" }
-                require(sql.version == reference.openHelper.writableDatabase.version) { "ICON_RECOVERY_SCHEMA_INVALID" }
-                val expectedIdentity = reference.openHelper.writableDatabase.query("SELECT identity_hash FROM room_master_table WHERE id=42").use {
-                    require(it.moveToFirst() && it.getType(0) == Cursor.FIELD_TYPE_STRING); it.getString(0)
-                }
+                require(actual.keys - optional == expected.objects.keys - optional &&
+                    actual.all { (key, value) -> expected.objects[key] == value }) { "ICON_RECOVERY_SCHEMA_INVALID" }
+                require(sql.version == expected.version) { "ICON_RECOVERY_SCHEMA_INVALID" }
                 sql.query("SELECT id,identity_hash FROM room_master_table ORDER BY id").use {
                     require(it.moveToFirst() && it.getType(0) == Cursor.FIELD_TYPE_INTEGER && it.getLong(0) == 42L &&
-                        it.getType(1) == Cursor.FIELD_TYPE_STRING && it.getString(1) == expectedIdentity && !it.moveToNext()) {
+                        it.getType(1) == Cursor.FIELD_TYPE_STRING && it.getString(1) == expected.roomIdentity && !it.moveToNext()) {
                         "ICON_RECOVERY_SCHEMA_INVALID"
                     }
                 }
@@ -92,14 +84,9 @@ internal class AccountIconRecoveryDatabase(
                 require(size("icon_pack_selection") == (if (catalog.selection.generation == 0L) 0 else 1)) { "ICON_RECOVERY_ROWS_INVALID" }
                 IconRecoveryDatabaseProof(original.access, raw, syncPayloadHash(raw.toString()), catalog, receipts)
             }
-            metadata.reauthorize(original)
-            proof
-        } catch (error: Throwable) { failure = error; throw error }
-        finally {
-            try { reference.close() } catch (close: Throwable) {
-                if (failure == null) throw close else failure.addSuppressed(close)
-            }
         }
+        metadata.reauthorize(original)
+        proof
     }
 
     /** Same canonical scope/rows/hash, including same-count changes. Never repairs a stale proof. */

@@ -93,7 +93,7 @@ class CheckInActionCallbackTest {
     private suspend fun parameters(habitId: Long, action: String, includeAction: Boolean = true): ActionParameters {
         val identity = sessions.exclusive { database.withTransaction {
             LegacyWidgetRestartClaim.displayed(requireNotNull(habitDao.getVisibleHabitById(habitId)),
-                requireNotNull(tokens.localCoreWriteAccess()))
+                requireNotNull(tokens.localCoreWriteAccess()), com.dayforge.data.local.LocalReplicaIdentity.readInTransaction(database))
         } }
         val proof = workflow.capture(identity).forAction(action).encode()
         return if (includeAction) actionParametersOf(ActionParameters.Key<Long>("habitId") to habitId,

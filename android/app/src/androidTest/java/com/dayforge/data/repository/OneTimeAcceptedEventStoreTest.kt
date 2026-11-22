@@ -34,6 +34,10 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class OneTimeAcceptedEventStoreTest {
     @get:Rule val rule = PhysicalDatabaseRule()
+    private val faults = OnceExistingFixtureFault()
+    init { rule.isolatedBuilder = { context ->
+        com.dayforge.data.local.HabitDatabaseProvider.build(context, rule.queryCallback, nativeFactory = faults)
+    } }
     private val db get() = rule.database
     private val sessions = AccountSessionCoordinator()
     private lateinit var tokens: TokenManager
@@ -220,13 +224,16 @@ class OneTimeAcceptedEventStoreTest {
         val command = append()
         val request = sync().prepare(habit.uuid)!!
         val original = queued()
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER fail_ack BEFORE DELETE ON sync_outbox BEGIN SELECT RAISE(ABORT, 'synthetic acknowledgement failure'); END")
-        rejected { sync().acknowledge(request, result(command)) }
-        rule.reopen()
+        faults.arm(OnceExistingFixtureFault.Kind.ACK_QUEUE_ABORT,
+            OnceExistingFixtureFault.Targets(requestId = command.pending.operationId, queueId = original.single().id, eventUuid = command.pending.intent.eventUuid))
+        val failure = requireNotNull(runCatching { sync().acknowledge(request, result(command)) }.exceptionOrNull())
+        faults.requireFailure(failure)
+        rule.reopen(); assertTrue(db.openHelper.writableDatabase.isOpen)
+        faults.requireColdRollback()
         assertEquals(original, queued()); assertEquals(0, local().read(habit.uuid).confirmed.version)
         assertNull(db.syncOutboxDao().getState("activity_event", command.pending.intent.eventUuid))
         db.openHelper.readableDatabase.query("SELECT suppressOutbox FROM sync_control WHERE id=1").use { assertTrue(it.moveToFirst()); assertEquals(0, it.getInt(0)) }
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_ack")
+        faults.clear()
         assertEquals(1, sync().acknowledge(request, result(command)).confirmed.version)
     }
 
@@ -398,12 +405,15 @@ class OneTimeAcceptedEventStoreTest {
     @Test fun firstPreparationFailureRollsBackBindingAndAttemptTogether() = runBlocking {
         val command = append()
         val before = queued()
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER fail_prepare BEFORE UPDATE ON sync_outbox BEGIN SELECT RAISE(ABORT, 'synthetic preparation failure'); END")
-        rejected { sync().prepare(habit.uuid) }
-        rule.reopen()
+        faults.arm(OnceExistingFixtureFault.Kind.PREPARE_ABORT,
+            OnceExistingFixtureFault.Targets(requestId = command.pending.operationId, queueId = before.single().id))
+        val failure = requireNotNull(runCatching { sync().prepare(habit.uuid) }.exceptionOrNull())
+        faults.requireFailure(failure)
+        rule.reopen(); assertTrue(db.openHelper.writableDatabase.isOpen)
+        faults.requireColdRollback()
         assertEquals(before, queued())
         assertNull(db.completionFollowUpDao().transmission(command.pending.operationId))
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_prepare")
+        faults.clear()
         sync().prepare(habit.uuid)
         assertEquals(device, db.completionFollowUpDao().transmission(command.pending.operationId)!!.deviceId)
         assertEquals(1, queued().single().attemptCount)
@@ -518,12 +528,15 @@ class OneTimeAcceptedEventStoreTest {
         val request = sync().prepare(habit.uuid)!!
         val before = queued()
         val binding = db.completionFollowUpDao().transmission(command.pending.operationId)
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER fail_rejection BEFORE UPDATE ON sync_outbox BEGIN SELECT RAISE(ABORT, 'synthetic rejection failure'); END")
-        rejected { sync().reject(request, conflict(command)) }
-        rule.reopen()
+        faults.arm(OnceExistingFixtureFault.Kind.REJECTION_ABORT,
+            OnceExistingFixtureFault.Targets(requestId = command.pending.operationId, queueId = before.single().id))
+        val failure = requireNotNull(runCatching { sync().reject(request, conflict(command)) }.exceptionOrNull())
+        faults.requireFailure(failure)
+        rule.reopen(); assertTrue(db.openHelper.writableDatabase.isOpen)
+        faults.requireColdRollback()
         assertEquals(before, queued())
         assertEquals(binding, db.completionFollowUpDao().transmission(command.pending.operationId))
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_rejection")
+        faults.clear()
         assertEquals(listOf(command.pending.operationId), sync().reject(request, conflict(command)).queue.blockedOperationIds)
     }
 

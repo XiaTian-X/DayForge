@@ -30,6 +30,10 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class OneTimeHistoryStoreTest {
     @get:Rule val rule = PhysicalDatabaseRule()
+    private val faults = OnceExistingFixtureFault()
+    init { rule.isolatedBuilder = { context ->
+        com.dayforge.data.local.HabitDatabaseProvider.build(context, rule.queryCallback, nativeFactory = faults)
+    } }
     private val db get() = rule.database
     private val sessions = AccountSessionCoordinator()
     private lateinit var tokens: TokenManager
@@ -194,21 +198,26 @@ class OneTimeHistoryStoreTest {
         val other = parent()
         val first = history()
         val response = snapshot(habit to first, other to history(other, 2))
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER fail_history BEFORE INSERT ON completions WHEN NEW.habitId=${other.id} BEGIN SELECT RAISE(ABORT, 'synthetic history failure'); END")
-        rejected { sync().restoreHistories(sync().context(), response) }
-        rule.reopen(); empty(); empty(other)
+        faults.arm(OnceExistingFixtureFault.Kind.SECOND_HISTORY_ABORT,
+            OnceExistingFixtureFault.Targets(habitId = other.id, priorHabitId = habit.id, priorFacts = first.size))
+        val failure = requireNotNull(runCatching { sync().restoreHistories(sync().context(), response) }.exceptionOrNull())
+        faults.requireFailure(failure)
+        rule.reopen(); assertTrue(db.openHelper.writableDatabase.isOpen)
+        faults.requireColdRollback(); empty(); empty(other)
         assertNull(db.syncOutboxDao().getState("activity_event", first.first().entityUuid))
         db.openHelper.readableDatabase.query("SELECT suppressOutbox FROM sync_control WHERE id=1").use { assertTrue(it.moveToFirst()); assertEquals(0, it.getInt(0)) }
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_history")
+        faults.clear()
         assertEquals(listOf(3, 2), sync().restoreHistories(sync().context(), response).map { it.confirmed.version })
     }
 
     @Test fun silentlyIgnoredFactCannotBeReportedAsSuccessfulRestoration() = runBlocking {
         // Ignore only the first fact: the final head could otherwise exist while the chain is incomplete.
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER ignore_history BEFORE INSERT ON completions WHEN NEW.oneTimeExpectedVersion=0 BEGIN SELECT RAISE(IGNORE); END")
-        rejected { sync().restoreHistories(sync().context(), snapshot(habit to history())) }
-        rule.reopen(); empty()
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER ignore_history")
+        faults.arm(OnceExistingFixtureFault.Kind.FIRST_HISTORY_IGNORE, OnceExistingFixtureFault.Targets(habitId = habit.id))
+        val failure = requireNotNull(runCatching { sync().restoreHistories(sync().context(), snapshot(habit to history())) }.exceptionOrNull())
+        faults.requireFailure(failure)
+        rule.reopen(); assertTrue(db.openHelper.writableDatabase.isOpen)
+        faults.requireColdRollback(); empty()
+        faults.clear()
     }
 
     @Test fun completeHistoryFillsIncrementalGapsButNeverRegressesOrRewritesAcceptedHistory() = runBlocking {

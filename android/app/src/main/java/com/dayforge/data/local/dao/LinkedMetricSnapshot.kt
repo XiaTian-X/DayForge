@@ -14,5 +14,6 @@ data class LinkedMetricSnapshot(
     val unit: String,
     val decimalPlaces: Int,
     val showInHabitDetail: Boolean,
-    val promptOnComplete: Boolean
+    val promptOnComplete: Boolean,
+    val metricUuid: String? = null
 )

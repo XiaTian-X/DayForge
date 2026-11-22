@@ -46,7 +46,7 @@ class NextObjectCreator @Inject constructor(
 
     // Internal admission is reserved for coordinated v5 navigation. Merely injecting this service
     // does not change the current v4 protocol, register a device or classify existing test data.
-    internal suspend fun capture(): ObjectCreationAuthority = sessions.exclusive {
+    internal suspend fun capture(): ObjectCreationAuthority = sessions.exclusive(AccountSessionCoordinator.Work.CREATE_PREPARE) {
         captureLocked()
     }
 
@@ -93,12 +93,11 @@ class NextObjectCreator @Inject constructor(
 
     internal suspend fun <T> habits(rows: List<HabitEntity>, ticket: ObjectCreationAuthority,
         commit: suspend () -> T): T {
-        for (row in rows) {
+        val references = rows.map { row ->
             NextStructureMapper.writePlan(row)
-            icons.authorizeEditReference(ticket.session, requireNotNull(row.appearance).icon,
-                IconReference.Role(if (row.completionPolicy == "one_and_done") "task.default" else "habit.default"),
-                row.completionPolicy == "one_and_done")
+            requireNotNull(row.appearance).icon to (row.completionPolicy == "one_and_done")
         }
+        icons.authorizeCreationReferences(ticket.session, references)
         return write(ticket, commit)
     }
 

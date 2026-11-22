@@ -10,4 +10,7 @@ import javax.inject.Inject
 class ReminderNavigationViewModel @Inject constructor(private val reminders: HabitReminderController) : ViewModel() {
     suspend fun open(request: ReminderDetailRequest, navigate: (Long) -> Unit): Boolean =
         reminders.openDetail(request, navigate)
+    internal suspend fun openSelection(request: ReminderDetailRequest,
+        navigate: (com.dayforge.data.local.DatabaseObjectSelection) -> Unit): Boolean =
+        reminders.openDetailSelection(request, navigate)
 }

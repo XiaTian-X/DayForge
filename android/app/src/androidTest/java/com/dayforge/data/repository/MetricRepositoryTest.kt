@@ -1,8 +1,7 @@
 package com.dayforge.data.repository
 
-import androidx.test.core.app.ApplicationProvider
 import com.dayforge.data.local.HabitDatabase
-import com.dayforge.data.local.HabitDatabaseProvider
+import com.dayforge.data.local.PhysicalDatabaseRule
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.HabitMetricLinkEntity
 import com.dayforge.data.local.entity.MetricEntity
@@ -29,19 +28,16 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 @HiltAndroidTest
 @RunWith(AndroidJUnit4::class)
 class MetricRepositoryTest {
-    @get:Rule val hilt = HiltAndroidRule(this)
+    // Storage encloses Hilt so its finalizer drains every Host created by injection.
+    @get:Rule(order = 0) val storage = PhysicalDatabaseRule()
+    @get:Rule(order = 1) val hilt = HiltAndroidRule(this)
     @Inject lateinit var guard: StructuralEditGuard
     @Inject lateinit var tokenManager: TokenManager
-    private lateinit var database: HabitDatabase
+    private val database: HabitDatabase get() = storage.database
     private lateinit var repository: MetricRepository
 
     @Before
     fun setup() {
-        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
-        HabitDatabaseProvider.clearInstanceForTesting()
-        context.deleteDatabase("habit_database")
-        check(context.packageName == "com.dayforge.testbed")
-        database = HabitDatabaseProvider.getInstance(context)
         hilt.inject()
         repository = MetricRepository(
             database,
@@ -55,8 +51,6 @@ class MetricRepositoryTest {
     @After
     fun teardown() = runBlocking {
         tokenManager.clearTokens()
-        database.close()
-        HabitDatabaseProvider.clearInstanceForTesting()
     }
 
     @Test

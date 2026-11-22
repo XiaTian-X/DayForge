@@ -47,6 +47,7 @@ class ObjectCreationEntryTest : NextObjectEditorFixture() {
         val model = withContext(Dispatchers.Main) { own(ObjectCreationEntryViewModel(creator)) }
         val form = withContext(Dispatchers.Main) { own(CreateMetricViewModel(app, creatingMetrics(), db.metricDao(), db.habitDao())) }
         compose.setContent { ObjectCreationEntry({}, model) { CreateMetricScreen(form, it, {}) } }
+        compose.waitUntil(5_000) { model.state.value is ObjectCreationEntryState.Ready }
         compose.onNodeWithText(app.getString(R.string.create_metric_screen_title)).assertIsDisplayed()
         assertNull((model.state.value as ObjectCreationEntryState.Ready).authority)
         assertNull(form.uiState.value.creationAuthority); assertNull(form.uiState.value.appearance)
@@ -63,8 +64,8 @@ class ObjectCreationEntryTest : NextObjectEditorFixture() {
         val model = withContext(Dispatchers.Main) { own(ObjectCreationEntryViewModel(creator)) }
         val form = withContext(Dispatchers.Main) { own(CreateMetricViewModel(app, creatingMetrics(), db.metricDao(), db.habitDao())) }
         compose.setContent { ObjectCreationEntry({}, model) { CreateMetricScreen(form, it, {}) } }
-        compose.onNodeWithText(app.getString(R.string.create_metric_screen_title)).assertIsDisplayed()
         compose.waitUntil(5_000) { form.uiState.value.creationAuthority != null }
+        compose.onNodeWithText(app.getString(R.string.create_metric_screen_title)).assertIsDisplayed()
         val authority = (model.state.value as ObjectCreationEntryState.Ready).authority!!
         assertSame(authority, form.uiState.value.creationAuthority); assertNotNull(authority.rounds)
         assertNotNull(form.uiState.value.appearance)

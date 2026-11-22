@@ -47,4 +47,23 @@ class WidgetSummaryReceiverTest {
             assertEquals(2, widgets.requestCount)
         } finally { owner.cancel(); runCurrent(); owner.join() }
     }
+    @OptIn(ExperimentalCoroutinesApi::class, androidx.glance.ExperimentalGlanceApi::class)
+    @Test(timeout = 150_000) fun allSixLastInstanceCallbacksEnqueueWithoutLoadingHistoryInTheBroadcast() = runTest {
+        val owner = Job(); val dispatcher = StandardTestDispatcher(testScheduler)
+        val receivers = listOf<androidx.glance.appwidget.GlanceAppWidgetReceiver>(
+            com.dayforge.widget.checkin.CheckInWidgetReceiver(), com.dayforge.widget.counting.CountingWidgetReceiver(),
+            com.dayforge.widget.timer.TimerWidgetReceiver(), ProgressWidgetReceiver(), MotivationWidgetReceiver(),
+            com.dayforge.widget.focus.FocusWidgetReceiver()).map { spyk(it) }
+        receivers.forEach { receiver ->
+            every { receiver.coroutineContext } returns (owner + dispatcher)
+            every { receiver.goAsync() } returns mockk<BroadcastReceiver.PendingResult>(relaxed = true)
+        }
+        try {
+            receivers.forEachIndexed { index, receiver ->
+                receiver.onDisabled(app)
+                assertEquals(index + 1, widgets.requestCount)
+            }
+        } finally { owner.cancel(); runCurrent(); owner.join() }
+    }
+
 }

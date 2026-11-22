@@ -31,8 +31,9 @@ import org.junit.Rule
 /** Shared per-case physical database, authenticated preferences and real loopback HTTP.
  * Abstract and contains no tests; concrete suites inherit the same rules/setup/cleanup.
  */
-abstract class NextCoreRequestFixture {
-    @get:Rule val storage = PhysicalDatabaseRule()
+abstract class NextCoreRequestFixture internal constructor(
+    @get:Rule val storage: PhysicalDatabaseRule = PhysicalDatabaseRule()
+) {
     internal val db get() = storage.database
     internal val app = InstrumentationRegistry.getInstrumentation().targetContext
     internal val sessions = AccountSessionCoordinator()
@@ -67,13 +68,17 @@ abstract class NextCoreRequestFixture {
 
     internal fun metrics() = MetricRepository(db, db.metricDao(), db.metricLogDao(), db.habitDao(), db.habitMetricLinkDao())
 
+    internal open fun tokenCipher(): TokenCipher = PlaintextTokenCipher
+
+    internal open fun isolatedDataStore(data: androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>) = data
+
     @Before fun setup() = runBlocking<Unit> {
         check(app.packageName == "com.dayforge.testbed")
         directory = Files.createTempDirectory(app.filesDir.toPath(), "next-journal-").toFile()
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        val data = PreferenceDataStoreFactory.create(scope = scope, produceFile = { File(directory, "auth.preferences_pb") })
+        val data = isolatedDataStore(PreferenceDataStoreFactory.create(scope = scope, produceFile = { File(directory, "auth.preferences_pb") }))
         dataStore = data
-        tokens = TokenManager(data); preferences = PreferencesManager(data, tokens = tokens)
+        tokens = TokenManager(data, tokenCipher()); preferences = PreferencesManager(data, tokens = tokens)
         client = OkHttpClient.Builder().addInterceptor(BaseUrlInterceptor(preferences)).addInterceptor(AuthInterceptor(tokens))
             .authenticator(TokenAuthenticator(tokens, preferences, SelectedNetworkTransport())).build()
         tokens.saveLoginSession("synthetic-first", "synthetic-refresh", "member", id(1), false)
@@ -98,17 +103,25 @@ abstract class NextCoreRequestFixture {
     }
 
     @After fun cleanup() = runBlocking<Unit> {
-        var failure: Throwable? = null
-        suspend fun finish(block: suspend () -> Unit) {
-            try { block() } catch (error: Throwable) {
-                if (failure == null) failure = error else failure!!.addSuppressed(error)
+        storage.recoveryCleanup {
+            var failure: Throwable? = null
+            suspend fun finish(block: suspend () -> Unit) {
+                try { block() } catch (error: Throwable) {
+                    if (failure == null) failure = error else if (failure !== error) failure!!.addSuppressed(error)
+                }
             }
+            servers.forEach { finish { it.close() } }
+            finish { if (::client.isInitialized) { client.connectionPool.evictAll(); client.dispatcher.executorService.shutdown() } }
+            finish {
+                if (::scope.isInitialized) {
+                    val dataStoreJob = requireNotNull(scope.coroutineContext[Job])
+                    if (storage.usesRecoveryCleanup) withTimeout(5_000) { dataStoreJob.cancelAndJoin() }
+                    else dataStoreJob.cancelAndJoin()
+                }
+            }
+            finish { if (::directory.isInitialized) storage.afterDatabaseClose { assertTrue(directory.deleteRecursively()) } }
+            failure?.let { throw it }
         }
-        servers.forEach { finish { it.close() } }
-        finish { if (::client.isInitialized) { client.connectionPool.evictAll(); client.dispatcher.executorService.shutdown() } }
-        finish { if (::scope.isInitialized) scope.coroutineContext[Job]!!.cancelAndJoin() }
-        finish { if (::directory.isInitialized) assertTrue(directory.deleteRecursively()) }
-        failure?.let { throw it }
     }
 
     internal fun reply(input: MaterialSocketServer.Input, version: Int = 5): MaterialSocketServer.Reply {

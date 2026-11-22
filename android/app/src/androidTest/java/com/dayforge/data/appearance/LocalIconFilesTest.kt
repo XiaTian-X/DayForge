@@ -38,6 +38,44 @@ class LocalIconFilesTest {
     }
     @After fun cleanup() { assertTrue(parent.deleteRecursively()) }
 
+    @Test fun displayReuseSkipsDecodeButKeepsProfileExactBytesAndOrdinaryFileChecks() {
+        for ((content, media) in listOf(svg to "image/svg+xml", png to "image/png")) {
+            val expected = blob(content, media)
+            val asset = com.dayforge.domain.model.IconAsset(
+                assetId = op, name = "Display proof", purpose = "general", colorMode = "original",
+                light = expected, dark = null)
+            val raster = renderIcon(content, asset, false, IconRasterSize(8, 8), 0)
+            var validations = 0
+            LocalIconFiles(root, object : IconFileIo() {
+                override fun validateImage(bytes: ByteArray, expected: IconBlob) {
+                    validations++; super.validateImage(bytes, expected)
+                }
+            }).use { files ->
+                val profile = files.publish(op, content, expected)
+                val before = validations
+                repeat(3) { assertArrayEquals(content, files.readForDisplay(expected, profile, raster)) }
+                assertEquals(before, validations)
+                assertArrayEquals(content, files.read(expected, profile))
+                assertEquals(before + 1, validations) // Full non-display callers still decode.
+                assertThrows(IllegalArgumentException::class.java) {
+                    files.readForDisplay(expected, "unknown", raster)
+                }
+                val path = File(root, expected.sha256)
+                path.writeBytes(content.copyOf().apply { this[lastIndex] = (this[lastIndex].toInt() xor 1).toByte() })
+                assertThrows(ImageInputException::class.java) { files.readForDisplay(expected, profile, raster) }
+                path.writeBytes(content + 0)
+                assertThrows(ImageInputException::class.java) { files.readForDisplay(expected, profile, raster) }
+                assertTrue(path.delete())
+                errno(OsConstants.ENOENT) { files.readForDisplay(expected, profile, raster) }
+                val target = File(parent, "external-${expected.sha256}").apply { writeBytes(content) }
+                Os.symlink(target.path, path.path)
+                errno(OsConstants.ELOOP) { files.readForDisplay(expected, profile, raster) }
+                assertTrue(path.delete())
+                assertFalse(raster.bitmap.isRecycled)
+            }
+        }
+    }
+
     @Test fun realPngAndSvgPersistAcrossReopenWithoutRewritingExistingFiles() {
         for ((bytes, media) in listOf(svg to "image/svg+xml", png to "image/png")) {
             val expected = blob(bytes, media)

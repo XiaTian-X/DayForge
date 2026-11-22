@@ -4,7 +4,9 @@ import androidx.room.withTransaction
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.dayforge.data.api.NextSyncHttp
 import com.dayforge.data.api.dto.*
-import com.dayforge.data.appearance.MaterialSocketServer
+import com.dayforge.data.appearance.*
+import com.dayforge.domain.service.AccountIconController
+import com.dayforge.domain.service.AccountIconRuntime
 import com.dayforge.data.local.entity.*
 import com.dayforge.data.model.*
 import com.dayforge.domain.model.*
@@ -39,7 +41,8 @@ class NextReplicaBusinessProofReaderTest : NextCoreRequestFixture() {
     private fun merger() = NextSyncMergeStore(db, tokens, sessions, OneTimeAcceptedEventStore(db, tokens, sessions, once()),
         NextTimerRequestStore(db, tokens, sessions, sender(http)))
     private suspend fun initialize(remoteTimer: Boolean = false, changedTimerMode: Boolean = false, withOnce: Boolean = false,
-        withGraph: Boolean = false) {
+        withGraph: Boolean = false, withOnceHistory: Boolean = false) {
+        require(!withOnceHistory || withOnce)
         register()
         db.withTransaction {
             db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
@@ -87,11 +90,32 @@ class NextReplicaBusinessProofReaderTest : NextCoreRequestFixture() {
         } + canonical("metric", metric.uuid, NextStructureMapper.writeMetric(metric)) +
             (if (remoteTimer) listOf(duration()) else emptyList()) + (if (withGraph) listOf(canonical("activity_metric_link", id(15),
                 SyncV2Mapper.link(HabitMetricLinkEntity(habitId = habit.id, habitUuid = habit.uuid, metricId = metric.id,
-                    metricUuid = metric.uuid, uuid = id(15), isActive = false, createdAt = millis, updatedAt = millis)))) else emptyList())
+                    metricUuid = metric.uuid, uuid = id(15), isActive = false, createdAt = millis, updatedAt = millis)))) else emptyList()) +
+            (if (withOnceHistory) listOf(onceHistory(false), onceHistory(true)) else emptyList())
         merger().bootstrap(access(), null, RoundSyncBootstrapResponse(changes, 20, time,
-            listOfNotNull(onceHabit?.let { OneTimeProjection(it.uuid, OneTimeState(0, null, null)) }),
+            listOfNotNull(onceHabit?.let { OneTimeProjection(it.uuid, if (withOnceHistory)
+                OneTimeState(2, id(111), null) else OneTimeState(0, null, null)) }),
             1, meta.checkpoints, meta.births))
     }
+    private fun onceHistory(undo: Boolean) = canonical("activity_event", id(if (undo) 111 else 110), buildJsonObject {
+        val event = id(if (undo) 111 else 110)
+        put("activity_uuid", requireNotNull(onceHabit).uuid); put("event_type", if (undo) "revert" else "check_in")
+        put("value", if (undo) JsonNull else JsonPrimitive("1.0"))
+        put("occurred_at", time); put("received_at", time); put("local_date", "2026-10-06"); put("timezone", "Asia/Shanghai")
+        put("source_type", "app"); put("source_device_id", id(4)); put("note", "Retained once history")
+        put("metadata", buildJsonObject {})
+        for (key in listOf("duration_seconds", "duration_milliseconds", "started_at", "ended_at", "external_event_id")) put(key, JsonNull)
+        put("reverts_event_uuid", if (undo) JsonPrimitive(id(110)) else JsonNull)
+        put("one_time", buildJsonObject {
+            put("event_uuid", event); put("action", if (undo) "undo" else "complete"); put("expected_version", if (undo) 1 else 0)
+            put("expected_head_event_uuid", if (undo) JsonPrimitive(id(110)) else JsonNull)
+            put("reverts_event_uuid", if (undo) JsonPrimitive(id(110)) else JsonNull)
+        })
+        put("one_time_state_after", buildJsonObject {
+            put("version", if (undo) 2 else 1); put("head_event_uuid", event)
+            put("completion_event_uuid", if (undo) JsonNull else JsonPrimitive(event))
+        })
+    })
     private fun duration() = canonical("activity_event", id(30), buildJsonObject {
         val end = Instant.ofEpochMilli(millis + 60_000).toString()
         put("activity_uuid", timerHabit.uuid); put("event_type", "duration_session"); put("value", JsonNull)
@@ -116,8 +140,55 @@ class NextReplicaBusinessProofReaderTest : NextCoreRequestFixture() {
         return db.syncOutboxDao().getAll().last()
     }
     private suspend fun observe(): SyncOutboxEntity {
-        producer().writeRounds(producer().captureRounds()) { metrics().recordValue(metric.id, 21.125, "captured value", millis) }
-        return db.syncOutboxDao().getAll().last()
+        // Only this fixture producer needs real editor material ownership; the original
+        // test lifecycle and all reader assertions retain their existing scope.
+        assertFalse(app.getDatabasePath(AccountIconDatabase.NAME).exists())
+        val iconDatabase = AccountIconDatabase.open(app)
+        val iconMetadata = AccountIconRepository(iconDatabase, tokens, sessions)
+        val iconStore = AccountIconStore(iconMetadata, AccountIconFiles(directory))
+        val imports = AccountIconImport(iconMetadata, iconStore, AccountIconTransfers(iconDatabase, iconMetadata, iconStore))
+        val controller = AccountIconController({ AccountIconRuntime(iconMetadata, iconStore,
+            AccountIconRenderer(iconMetadata, iconStore), imports,
+            AccountIconDocuments(imports, app.contentResolver), {}) }, tokens)
+        return try {
+            val editor = NextObjectEditor(db, tokens, sessions, controller)
+            val repository = MetricRepository(db, db.metricDao(), db.metricLogDao(), db.habitDao(),
+                db.habitMetricLinkDao(), nextObjectEditor = editor)
+            val selected = editor.metric(metric.id)
+            val actual = requireNotNull(selected.value)
+            assertEquals(metric.uuid, actual.uuid); assertNotNull(actual.appearance)
+            val beforeLogs = db.metricLogDao().getAllLogsForMetric(actual.id).associateBy { it.id }
+            val beforeQueue = db.syncOutboxDao().getAll().associateBy { it.id }
+            fun originCount() = db.openHelper.writableDatabase.query("SELECT count(*) FROM main.next_request_origins").use {
+                assertTrue(it.moveToFirst()); it.getLong(0).also { _ -> assertFalse(it.moveToNext()) }
+            }
+            val beforeOrigins = originCount()
+            val observationId = repository.recordValue(actual.id, 21.125, "captured value", millis,
+                authority = requireNotNull(selected.authority), expectedMetricUuid = actual.uuid)
+            val logs = db.metricLogDao().getAllLogsForMetric(actual.id).associateBy { it.id }
+            val observation = logs.getValue(observationId)
+            assertEquals(beforeLogs, logs - observationId); assertEquals(beforeLogs.size + 1, logs.size)
+            assertEquals(actual.id, observation.metricId); assertEquals(21.125, observation.value, 0.0)
+            assertEquals("captured value", observation.note); assertEquals(millis, observation.date)
+            val queue = db.syncOutboxDao().getAll().associateBy { it.id }
+            val queued = queue.getValue((queue.keys - beforeQueue.keys).single())
+            assertEquals(beforeQueue, queue - queued.id); assertEquals(beforeQueue.size + 1, queue.size)
+            assertEquals("metric_log", queued.recordType); assertEquals("upsert", queued.action)
+            assertEquals(observation.uuid, queued.entityUuid); assertEquals(observation.uuid, queued.wireEntityUuid)
+            val origin = requireNotNull(db.nextRequestDao().origin(NEXT_OPERATION, queued.operationId))
+            assertEquals(queued.id, origin.queueId); assertEquals(queued.operationId, origin.requestId)
+            assertEquals(NextRequestSql.sourceHash(queued), origin.sourceHash); assertEquals(5, origin.protocol)
+            val operation = requireNotNull(roundOperationIntent(origin.intentJson)).operation
+            assertEquals(queued.operationId, operation.operationId); assertEquals(observation.uuid, operation.entityUuid)
+            assertEquals("metric_observation", operation.entityType); assertEquals("upsert", operation.action)
+            assertEquals(beforeOrigins + 1, originCount())
+            queued
+        } finally {
+            try { controller.awaitImages() } finally {
+                controller.close(); iconDatabase.close()
+                assertTrue(app.deleteDatabase(AccountIconDatabase.NAME) || !app.getDatabasePath(AccountIconDatabase.NAME).exists())
+            }
+        }
     }
     private suspend fun activeTimer() {
         producer().writeRounds(producer().captureRounds()) {
@@ -288,6 +359,37 @@ class NextReplicaBusinessProofReaderTest : NextCoreRequestFixture() {
             assertEquals(setOf(ReplicaRecordKey("activity_event", id(101))), proof.unconfirmed); assertFalse(proof.activationAuthorized) }
         sqlWrite("UPDATE completions SET date=date+1 WHERE uuid=?", arrayOf(id(101)))
         val changed = localProof(); unchanged { rejected { reader().read(changed) } }
+    }
+    @Test fun validOnceHeadCannotHideCorruptOlderRetainedTransitionDuringReadOnlyRecovery() = runBlocking<Unit> {
+        initialize(withOnce = true, withOnceHistory = true)
+        val activity = requireNotNull(onceHabit)
+        val confirmed = requireNotNull(db.habitDao().getHabitByUuid(activity.uuid))
+        assertEquals(2, confirmed.oneTimeConfirmedVersion); assertEquals(id(111), confirmed.oneTimeConfirmedHeadEventUuid)
+        assertNull(confirmed.oneTimeConfirmedCompletionEventUuid)
+        assertEquals(setOf(id(110), id(111)), db.completionDao().getByHabitOnce(activity.id).map { it.uuid }.toSet())
+        assertTrue(db.syncOutboxDao().getAll().isEmpty())
+        val local = localProof()
+        unchanged {
+            val proof = reader().read(local)
+            assertTrue(proof.records.keys.containsAll(setOf(ReplicaRecordKey("activity_event", id(110)),
+                ReplicaRecordKey("activity_event", id(111)))))
+            assertFalse(proof.hasProjectionReview); assertFalse(proof.activationAuthorized)
+            storage.reopen(); assertEquals(proof.records, reader().read(local).records)
+        }
+        val original = requireNotNull(db.completionDao().getCompletionByUuid(id(110)))
+        // A valid latest undo does not make the retained earlier complete-at-odd-version legal.
+        sqlWrite("UPDATE completions SET oneTimeExpectedVersion=1, oneTimeExpectedHeadEventUuid=? WHERE uuid=?",
+            arrayOf(id(777), original.uuid))
+        val corrupt = requireNotNull(db.completionDao().getCompletionByUuid(original.uuid))
+        val changed = localProof()
+        unchanged {
+            val failure = rejected { reader().read(changed) }
+            assertTrue(failure is OneTimeLocalException)
+            assertEquals(OneTimeLocalException.Reason.INVALID_LOCAL_STATE, (failure as OneTimeLocalException).reason)
+            assertEquals(corrupt, db.completionDao().getCompletionByUuid(original.uuid))
+            assertEquals(confirmed, db.habitDao().getHabitByUuid(activity.uuid))
+            assertTrue(db.syncOutboxDao().getAll().isEmpty())
+        }
     }
     @Test fun originalValuesAndAuthorizationInvalidateEarlierWholeProjectionProof() = runBlocking<Unit> {
         initialize(); val local = localProof(); sqlWrite("UPDATE metrics SET name='Changed' WHERE uuid=?", arrayOf(metric.uuid))

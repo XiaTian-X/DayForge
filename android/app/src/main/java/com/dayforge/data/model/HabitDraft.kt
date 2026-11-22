@@ -20,5 +20,7 @@ data class HabitDraft(
     val bestTime: Long? = null,
     val selectedMetricIds: Set<Long> = emptySet(),
     val appearance: com.dayforge.domain.model.ObjectAppearance? = null,
-    val completionPolicy: String? = null
+    val completionPolicy: String? = null,
+    @kotlinx.serialization.Transient val selectedMetricUuids: Map<Long, String>? = null
+
 )

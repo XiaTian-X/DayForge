@@ -80,23 +80,34 @@ internal class ReplicaRecoveryRepository @Inject constructor(@param:ApplicationC
 
     suspend fun preview(): ReplicaDifferencePreview {
         requireOpenSource()
-        return connection.use { connected ->
+        val hold = CountTrustRuntime.forDatabase(database)?.newRecoveryPreview()
+        var delivered = false
+        try { return connection.use { connected ->
             check(pending() == null) { ReplicaSwitchGuard.PENDING }
             val (original, installation) = sessions.exclusive {
                 requireNotNull(tokens.localSyncAccess()) { "SYNC_RECOVERY_AUTHENTICATION_REQUIRED" } to
                     requireNotNull(tokens.registeredInstallationId()) { "SYNC_RECOVERY_INSTALLATION_UNKNOWN" }
             }
+            val preparation = CountTrustRecoveryPreparation(database, tokens, sessions)
+            business.coordinateReplicaRecovery { preparation.preflight(original) }
             val response = connected.businessHttp.recoveryPreview(original, connected.epoch, installation)
-            differences.capture(candidates.validate(original, installation, response))
-        }
+            // Failed HTTP must not retire this graph. Success repeats the complete original
+            // checks in the cleanup transaction; the preflight confers no later authority.
+            business.coordinateReplicaRecovery { preparation.discardCache(original, hold) }
+            differences.capture(candidates.validate(original, installation, response)).heldBy(
+                requireNotNull(hold) { "COUNT_TRUST_CONTROLLED_DATABASE_REQUIRED" })
+        }.also { delivered = true }
+        } finally { hold?.finishPreparation(delivered) }
     }
 
     suspend fun prepare(preview: ReplicaDifferencePreview): ReplicaSwitchStage {
         requireOpenSource()
-        return owned { connected, runtime, workflow ->
-            check(connected.epoch == preview.candidate.newEpoch) { "SYNC_RECOVERY_ENDPOINT_CHANGED" }
-            check(runtime.metadata.usesAccess(tokens, sessions)) { "SYNC_ARCHIVE_STORE_MISMATCH" }
-            workflow.prepare(preview)
+        return preview.using(requireNotNull(CountTrustRuntime.forDatabase(database))) {
+            owned { connected, runtime, workflow ->
+                check(connected.epoch == preview.candidate.newEpoch) { "SYNC_RECOVERY_ENDPOINT_CHANGED" }
+                check(runtime.metadata.usesAccess(tokens, sessions)) { "SYNC_ARCHIVE_STORE_MISMATCH" }
+                workflow.prepare(preview)
+            }
         }
     }
 

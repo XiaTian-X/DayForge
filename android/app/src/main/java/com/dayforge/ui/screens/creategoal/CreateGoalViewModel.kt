@@ -45,23 +45,40 @@ data class CreateGoalUiState(
 }
 
 @HiltViewModel
-class CreateGoalViewModel @Inject constructor(
+class CreateGoalViewModel private constructor(
     @param:ApplicationContext private val context: Context,
-    private val habitRepository: HabitRepository,
+    private val fixedRepository: HabitRepository?,
+    private val databases: com.dayforge.data.local.DatabaseRuntimeHost?,
     private val savedStateHandle: SavedStateHandle
 ) : ViewModel() {
-    private val _uiState = MutableStateFlow(
-        savedStateHandle.get<String>(DRAFT_KEY)?.let { Json.decodeFromString<CreateGoalUiState>(it) }
-            ?: CreateGoalUiState()
-    )
+    constructor(context: Context, habitRepository: HabitRepository, savedStateHandle: SavedStateHandle) :
+        this(context, habitRepository, null, savedStateHandle)
+    @Inject internal constructor(@ApplicationContext context: Context,
+        databases: com.dayforge.data.local.DatabaseRuntimeHost, savedStateHandle: SavedStateHandle) :
+        this(context, null, databases, savedStateHandle)
+    private suspend fun <T> withRepository(block: suspend (HabitRepository) -> T): T =
+        if (databases == null) block(requireNotNull(fixedRepository))
+        else _uiState.withGraph { block(requireNotNull(it).habitRepository) }
+
+    private val expiredMessage = context.getString(R.string.database_view_expired)
+    private val _uiState = com.dayforge.ui.CreationState(databases,
+        if (databases == null) savedStateHandle.get<String>(DRAFT_KEY)?.let { Json.decodeFromString<CreateGoalUiState>(it) }
+            ?: CreateGoalUiState() else CreateGoalUiState(),
+        { CreateGoalUiState(errorMessage = expiredMessage) })
     val uiState = _uiState.asStateFlow()
 
     private fun update(state: CreateGoalUiState) {
-        savedStateHandle[DRAFT_KEY] = Json.encodeToString(state)
+        if (!_uiState.isCurrent()) return
         _uiState.value = state
+        if (databases == null && _uiState.value === state) savedStateHandle[DRAFT_KEY] = Json.encodeToString(state)
     }
 
-    init { update(_uiState.value) }
+    init { if (databases == null) update(_uiState.value) }
+
+    internal fun beginSource(input: com.dayforge.data.local.DatabaseCreationInput) {
+        _uiState.bind(input)
+        input.authority?.let(::beginCreation)
+    }
 
     fun beginCreation(authority: com.dayforge.data.repository.ObjectCreationAuthority) {
         val current = _uiState.value
@@ -105,16 +122,30 @@ class CreateGoalViewModel @Inject constructor(
     }
 
     fun saveGoal() {
+        if (!_uiState.isCurrent()) return
         val state = _uiState.value
         if (!state.isValid || state.isSaving || state.savedGoalId != null) return
         update(state.copy(isSaving = true, errorMessage = null))
         viewModelScope.launch {
             try {
+                withRepository { habitRepository ->
                 val goal = HabitDraft(id = state.parentUuid, name = state.name, description = state.description,
                     habitType = HabitType.GOAL, iconResId = state.iconResId, colorHex = state.colorHex,
                     targetCycles = state.targetCycles, failMode = state.failMode, appearance = state.appearance)
-                val id = habitRepository.createGoal(goal, state.children, context, state.creationAuthority)
+                val metricIdentities = if (databases == null) null else buildMap<Long, String> {
+                    state.children.forEach { child ->
+                        val identities = requireNotNull(child.selectedMetricUuids) { "DATABASE_EPOCH_INPUT_REQUIRED" }
+                        check(identities.keys == child.selectedMetricIds) { "DATABASE_EPOCH_SELECTION_CHANGED" }
+                        identities.forEach { (id, uuid) ->
+                            val previous = put(id, uuid)
+                            check(previous == null || previous == uuid) { "DATABASE_EPOCH_SELECTION_CHANGED" }
+                        }
+                    }
+                }
+                val id = habitRepository.createGoal(goal, state.children, context, state.creationAuthority,
+                    expectedMetricUuids = metricIdentities)
                 update(_uiState.value.copy(isSaving = false, savedGoalId = id))
+                }
             } catch (e: CancellationException) {
                 update(_uiState.value.copy(isSaving = false))
                 throw e

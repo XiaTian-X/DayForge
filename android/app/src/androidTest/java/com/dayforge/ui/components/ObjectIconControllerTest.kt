@@ -6,6 +6,7 @@ import com.dayforge.domain.appearance.ThemeVersionRef
 import com.dayforge.domain.model.IconReference
 import com.dayforge.domain.service.IconImageHandle
 import com.dayforge.domain.service.IconImageState
+import com.dayforge.domain.service.IconDisplayKey
 import com.dayforge.ui.screens.settings.IconLibraryFixture
 import java.io.File
 import java.util.concurrent.CountDownLatch
@@ -29,6 +30,57 @@ class ObjectIconControllerTest {
             once, theme, dark, IconRasterSize(8, 8), tint)
     }
     private fun pixel(handle: IconImageHandle) = (handle.state.value as IconImageState.Ready).raster.bitmap.getPixel(4, 4)
+
+    @Test fun pageReturnReusesPixelsButRechecksAuthorityAndFileBytesWithoutValidationRendering() = runBlocking {
+        val preview = fixture.install()
+        val ref = IconReference.Asset(fixture.id(11))
+        val key = IconDisplayKey(ref, false, theme, false, IconRasterSize(8, 8), IconLibraryFixture.green)
+        val first = fixture.handle(key)
+        load(first, ref)
+        val ready = first.state.value as IconImageState.Ready
+        first.close()
+        val validations = fixture.validations.get(); val draws = fixture.draws.get()
+        val decrypts = fixture.decrypts.get()
+        val returned = fixture.handle(key)
+        assertSame(ready.raster, (returned.state.value as IconImageState.Ready).raster)
+        load(returned, ref)
+        assertSame(ready.raster, (returned.state.value as IconImageState.Ready).raster)
+        assertEquals(validations, fixture.validations.get()); assertEquals(draws, fixture.draws.get())
+        assertTrue(fixture.decrypts.get() > decrypts) // A display snapshot is NOT cached authority.
+        val ns = preview.context.namespace
+        val file = File(fixture.directory,
+            "account-icons-v1/${ns.accountId}/${ns.serverInstanceId}/${ns.syncEpoch}/${ready.raster.blob.sha256}")
+        val altered = file.readBytes().apply { this[lastIndex] = (this[lastIndex].toInt() xor 1).toByte() }
+        file.writeBytes(altered) // Same-length corruption cannot hide behind the rendered image.
+        load(returned, ref)
+        assertTrue(returned.state.value is IconImageState.Failed)
+        assertSame(IconImageState.Loading, fixture.handle(key).state.value)
+        assertArrayEquals(altered, file.readBytes())
+    }
+
+    @Test fun retainedPageSnapshotsAreInvalidatedBySelectionOwnerServerEpochAndLogout() = runBlocking {
+        fixture.install(); fixture.choose()
+        val ref = IconReference.Role("habit.exercise")
+        val key = IconDisplayKey(ref, false, theme, false, IconRasterSize(8, 8), IconLibraryFixture.green)
+        val first = fixture.handle(key); load(first, ref); first.close()
+        fixture.install(100, 0xff0000ff.toInt()); fixture.choose(100)
+        val changed = fixture.handle(key)
+        assertSame(IconImageState.Loading, changed.state.value)
+        load(changed, ref); assertEquals(0xff0000ff.toInt(), pixel(changed))
+        for (login in listOf<suspend () -> Unit>(
+            { fixture.login(owner = fixture.id(5)) }, { fixture.login(server = fixture.id(6)) },
+            { fixture.login(epoch = fixture.id(7)) }
+        )) {
+            login()
+            assertSame(IconImageState.Empty, changed.state.value)
+            assertSame(IconImageState.Loading, fixture.handle(key).state.value)
+            fixture.login()
+            load(changed, ref); assertEquals(0xff0000ff.toInt(), pixel(changed))
+        }
+        fixture.sessions.exclusive { fixture.tokens.clearTokens() }
+        assertSame(IconImageState.Empty, changed.state.value)
+        assertSame(IconImageState.Loading, fixture.handle(key).state.value)
+    }
 
     @Test fun rolesTrackSelectedStyleButFixedAssetsRemainOwnedAndUnchanged() = runBlocking {
         fixture.install(); fixture.choose()
@@ -98,7 +150,7 @@ class ObjectIconControllerTest {
         assertSame(IconImageState.Empty, handle.state.value); assertNull(handle.requests.value)
         assertFalse(raster.bitmap.isRecycled)
     }
-    @Test fun readyFileCorruptionIsFailureAndExplicitRefreshKeepsOriginalBytes() = runBlocking {
+    @Test fun libraryReadDoesNotReloadVisibleIconsAndExplicitLoadStillRejectsCorruptBytes() = runBlocking {
         val preview = fixture.install()
         val handle = fixture.handle(); val ref = IconReference.Asset(fixture.id(11))
         load(handle, ref); assertEquals(IconLibraryFixture.red, pixel(handle))
@@ -108,7 +160,7 @@ class ObjectIconControllerTest {
         file.writeBytes(byteArrayOf(0))
         val request = handle.requests.value
         fixture.controller.library(fixture.controller.capture())
-        assertNotSame(request, handle.requests.value)
+        assertSame(request, handle.requests.value)
         load(handle, ref)
         assertTrue(handle.state.value is IconImageState.Failed)
         assertArrayEquals(byteArrayOf(0), file.readBytes())

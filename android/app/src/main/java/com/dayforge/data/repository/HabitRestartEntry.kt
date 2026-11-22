@@ -20,7 +20,8 @@ class HabitRestartEntry @Inject internal constructor(private val restart: NextCh
 class HabitReactivationRequest internal constructor(
     val habit: HabitEntity,
     internal val authority: ObjectEditAuthority?,
-    internal val legacyAccess: com.dayforge.data.local.LocalCoreWriteAccess? = null
+    internal val legacyAccess: com.dayforge.data.local.LocalCoreWriteAccess? = null,
+    internal val legacyIdentity: LegacyWidgetRestartClaim? = null
 ) {
     val preservesHistory: Boolean get() = authority?.rounds != null
     private val mutex = Mutex()

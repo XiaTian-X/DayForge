@@ -14,6 +14,7 @@ import com.dayforge.data.model.HabitType
 import com.dayforge.data.repository.HabitRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,15 +24,28 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
-class CreateTempTaskViewModel @Inject constructor(
-    private val habitRepository: HabitRepository,
-    private val habitDao: HabitDao,
-    private val metricDao: MetricDao,
-    @param:ApplicationContext private val context: Context
+class CreateTempTaskViewModel private constructor(
+    private val fixedHabitRepository: HabitRepository?,
+    private val fixedReads: com.dayforge.data.repository.CreationReadRepository?,
+    @param:ApplicationContext private val context: Context,
+    private val databases: com.dayforge.data.local.DatabaseRuntimeHost?
 ) : ViewModel() {
+    constructor(habitRepository: HabitRepository, habitDao: HabitDao, metricDao: MetricDao, context: Context) :
+        this(habitRepository, com.dayforge.data.repository.CreationReadRepository(habitDao, metricDao), context, null)
+    @Inject internal constructor(databases: com.dayforge.data.local.DatabaseRuntimeHost,
+        @ApplicationContext context: Context) : this(null, null, context, databases)
+    private val habitRepository get() = databases?.boundGraph()?.habitRepository ?: requireNotNull(fixedHabitRepository)
+    private val reads get() = databases?.boundGraph()?.creationReadRepository ?: requireNotNull(fixedReads)
 
-    private val _uiState = MutableStateFlow(CreateTempTaskUiState())
+    private val expiredMessage = context.getString(R.string.database_view_expired)
+    private val _uiState = com.dayforge.ui.CreationState(databases, CreateTempTaskUiState(),
+        { CreateTempTaskUiState(errorMessage = expiredMessage) })
     val uiState: StateFlow<CreateTempTaskUiState> = _uiState.asStateFlow()
+
+    internal fun beginSource(input: com.dayforge.data.local.DatabaseCreationInput) {
+        _uiState.bind(input)
+        input.authority?.let(::beginCreation)
+    }
 
     fun beginCreation(authority: com.dayforge.data.repository.ObjectCreationAuthority) {
         val current = _uiState.value
@@ -63,14 +77,16 @@ class CreateTempTaskViewModel @Inject constructor(
      * Lazy loading to avoid database query on ViewModel init.
      */
     fun loadTopLevelHabitsIfNeeded() {
-        if (hasLoadedTopLevelHabits) return
+        if (!_uiState.isCurrent() || hasLoadedTopLevelHabits) return
         hasLoadedTopLevelHabits = true
 
-        habitDao.getTopLevelHabits()
-            .onEach { habits ->
-                _uiState.value = _uiState.value.copy(topLevelHabits = habits)
+        viewModelScope.launch {
+            _uiState.withGraph(com.dayforge.data.local.DatabaseRuntimeHost.Work.OBSERVATION) {
+                reads.topLevelHabits().collect { habits ->
+                    _uiState.value = _uiState.value.copy(topLevelHabits = habits)
+                }
             }
-            .launchIn(viewModelScope)
+        }
     }
 
     /**
@@ -78,14 +94,16 @@ class CreateTempTaskViewModel @Inject constructor(
      * Lazy loading to avoid database query on ViewModel init.
      */
     fun loadMetricsIfNeeded() {
-        if (hasLoadedMetrics) return
+        if (!_uiState.isCurrent() || hasLoadedMetrics) return
         hasLoadedMetrics = true
 
-        metricDao.getAllActiveMetrics()
-            .onEach { metrics ->
-                _uiState.value = _uiState.value.copy(availableMetrics = metrics)
+        viewModelScope.launch {
+            _uiState.withGraph(com.dayforge.data.local.DatabaseRuntimeHost.Work.OBSERVATION) {
+                reads.activeMetrics().collect { metrics ->
+                    _uiState.value = _uiState.value.copy(availableMetrics = metrics)
+                }
             }
-            .launchIn(viewModelScope)
+        }
     }
 
     fun updateName(name: String) {
@@ -107,14 +125,19 @@ class CreateTempTaskViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(parentHabitUuid = uuid)
     }
 
-    fun toggleMetricSelection(metricId: Long) {
+    fun toggleMetricSelection(metricId: Long, expectedUuid: String? = null) {
+        if (!_uiState.isCurrent()) return
+        if (databases != null) require(expectedUuid != null) { "DATABASE_EPOCH_INPUT_REQUIRED" }
         val currentSelection = _uiState.value.selectedMetricIds
         val newSelection = if (metricId in currentSelection) {
             currentSelection - metricId
         } else {
             currentSelection + metricId
         }
-        _uiState.value = _uiState.value.copy(selectedMetricIds = newSelection)
+        val identities = if (metricId in newSelection && expectedUuid != null)
+            _uiState.value.selectedMetricUuids + (metricId to expectedUuid)
+            else _uiState.value.selectedMetricUuids - metricId
+        _uiState.value = _uiState.value.copy(selectedMetricIds = newSelection, selectedMetricUuids = identities)
     }
 
     private fun validateForm(name: String): Boolean {
@@ -135,6 +158,7 @@ class CreateTempTaskViewModel @Inject constructor(
      * - bestTime = null
      */
     fun saveTempTask() {
+        if (!_uiState.isCurrent()) return
         if (isSavingInProgress || _uiState.value.savedHabitId != null) return
 
         val currentState = _uiState.value
@@ -145,6 +169,7 @@ class CreateTempTaskViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
+                _uiState.withGraph {
                 // Create habit with auto-configured values for temporary tasks
                 val habitId = habitRepository.createHabit(
                     name = currentState.name,
@@ -163,13 +188,15 @@ class CreateTempTaskViewModel @Inject constructor(
                     selectedMetricIds = currentState.selectedMetricIds,
                     appearance = currentState.appearance,
                     completionPolicy = if (currentState.creationAuthority != null) "one_and_done" else null,
-                    creationAuthority = currentState.creationAuthority
+                    creationAuthority = currentState.creationAuthority,
+                    expectedMetricUuids = currentState.selectedMetricUuids.takeIf { databases != null }
                 )
 
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,
                     savedHabitId = habitId
                 )
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 _uiState.value = _uiState.value.copy(isSaving = false)
                 throw e

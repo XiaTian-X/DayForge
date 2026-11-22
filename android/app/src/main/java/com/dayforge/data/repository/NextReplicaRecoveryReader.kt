@@ -15,7 +15,7 @@ import kotlinx.coroutines.ensureActive
 
 internal enum class ReplicaRecoveryReview {
     BUSINESS_QUEUE, TIMER_QUEUE, UNKNOWN_RESULT, UNVERIFIED_SOURCE, REJECTION,
-    CONFLICT, UNFINISHED_TIMER, METRIC_DRAFT, CONFIGURATION_JOURNAL, SNAPSHOT_CANDIDATE
+    CONFLICT, UNFINISHED_TIMER, METRIC_DRAFT, CONFIGURATION_JOURNAL, SNAPSHOT_CANDIDATE, LOCAL_COMMAND_RECOVERY
 }
 
 /** A local point-in-time diagnosis, NOT a fresh authentication/snapshot, archive or switch ticket. */
@@ -55,7 +55,7 @@ internal class NextReplicaRecoveryReader(private val database: HabitDatabase, pr
         }
         return run {
             val sql = database.openHelper.writableDatabase
-            require(sql.version == 18) { "SYNC_REPLICA_RECOVERY_SCHEMA_REVIEW_REQUIRED" }
+            require(sql.version == com.dayforge.data.local.CountCommandV20Schema.VERSION) { "SYNC_REPLICA_RECOVERY_SCHEMA_REVIEW_REQUIRED" }
             val tables = sql.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").use { c ->
                 buildSet { while (c.moveToNext()) {
                     require(c.getType(0) == Cursor.FIELD_TYPE_STRING)
@@ -103,6 +103,8 @@ internal class NextReplicaRecoveryReader(private val database: HabitDatabase, pr
             review(ReplicaRecoveryReview.CONFIGURATION_JOURNAL, rows.getValue("next_config_imports"))
             review(ReplicaRecoveryReview.SNAPSHOT_CANDIDATE,
                 count("SELECT COUNT(*) FROM next_recovery_state WHERE phase='awaiting_snapshot'"))
+            review(ReplicaRecoveryReview.LOCAL_COMMAND_RECOVERY,
+                CountCommandRecoveryInventory(database, tokens).pendingInTransaction(expected))
             check(NextChallengeStore(database).activeInTransaction(expected) == checkpoint &&
                 tokens.isCurrentSyncAuthority(expected)) {
                 "SYNC_ACCOUNT_CHANGED"
@@ -114,13 +116,7 @@ internal class NextReplicaRecoveryReader(private val database: HabitDatabase, pr
 
     companion object {
         // Exhaustive current Room inventory. Unknown future collections require explicit review.
-        internal val TABLES = setOf("habits", "completions", "count_days", "timelogs", "metrics", "metric_logs",
-            "habit_metric_links", "sync_outbox", "sync_entity_state", "sync_conflicts", "sync_control",
-            "timer_command_outbox", "timer_segments", "timelog_day_allocations", "local_fact_submissions",
-            "completion_metric_prompts", "one_time_transmissions", "next_recovery_state", "next_request_origins",
-            "next_transmissions", "next_acceptances", "next_structural_dependencies", "next_structural_supersessions",
-            "next_sync_state", "next_rejections", "next_challenge_rounds", "next_challenge_births", "next_challenge_state",
-            "next_restart_materializations", "next_restart_plan_proofs", "next_config_imports", "next_config_import_payloads",
-            "next_recovery_audits", "next_abandoned_requests", "next_recovery_audit_payloads", "next_replica_fence")
+        internal val BUSINESS_TABLES = com.dayforge.data.local.CountTrustSchema.BUSINESS_TABLES
+        internal val TABLES = BUSINESS_TABLES + com.dayforge.data.local.CountCommandV20Schema.currentLocalTables
     }
 }

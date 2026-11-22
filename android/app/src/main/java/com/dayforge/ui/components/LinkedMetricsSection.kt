@@ -37,7 +37,8 @@ data class LinkedMetricInfo(
     val metricId: Long,
     val latestValue: Double?,
     val unit: String,
-    val decimalPlaces: Int
+    val decimalPlaces: Int,
+    val metricUuid: String? = null
 )
 
 /**

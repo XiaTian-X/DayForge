@@ -15,6 +15,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import com.dayforge.data.local.DatabaseRuntimeHost
+import com.dayforge.data.local.DatabaseObjectSelection
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -61,7 +64,9 @@ data class EditMetricUiState(
     val showDuplicateDialog: Boolean = false,
 
     // Error handling
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val sourceSelection: DatabaseObjectSelection? = null,
+    val sourceExpired: Boolean = false
 )
 
 /**
@@ -71,73 +76,111 @@ data class EditMetricUiState(
  * and saves changes back to the database.
  */
 @HiltViewModel
-class EditMetricViewModel @Inject constructor(
+class EditMetricViewModel internal constructor(
     @param:ApplicationContext private val context: Context,
-    private val metricDao: MetricDao,
-    private val metricRepository: MetricRepository,
-    savedStateHandle: SavedStateHandle
+    metricDao: MetricDao?, metricRepository: MetricRepository?, savedStateHandle: SavedStateHandle,
+    private val databases: DatabaseRuntimeHost? = null
 ) : ViewModel() {
-
+    @Inject internal constructor(@ApplicationContext context: Context, databases: DatabaseRuntimeHost,
+        savedStateHandle: SavedStateHandle) : this(context, null, null, savedStateHandle, databases)
+    private val fixedReads = if (databases == null)
+        com.dayforge.data.repository.MetricDetailSourceReader(requireNotNull(metricDao)) else null
+    private val reads get() = databases?.boundGraph()?.metricDetailSourceReader ?: requireNotNull(fixedReads)
+    private val fixedRepository = metricRepository
+    private val metricRepository get() = databases?.boundGraph()?.metricRepository ?: requireNotNull(fixedRepository)
+    internal val usesSourceEpoch: Boolean get() = databases != null
     private val metricId: Long = savedStateHandle["metricId"] ?: 0L
-
-    private val _uiState = MutableStateFlow(EditMetricUiState())
+    private val _uiState = MutableStateFlow(EditMetricUiState(sourceExpired = databases != null))
     val uiState: StateFlow<EditMetricUiState> = _uiState.asStateFlow()
+    @Volatile private var boundSelection: DatabaseObjectSelection? = null
+    @Volatile private var loadGeneration: Any = Any()
+    private var loadJob: kotlinx.coroutines.Job? = null
+    @Volatile private var isSavingInProgress = false
+    private val memoryRegistration = databases?.observeMemory(object : DatabaseRuntimeHost.MemoryListener {
+        override fun transition(blocked: Boolean) {
+            if (blocked || boundSelection?.publication?.isCurrentInMemory() != true) expireSource()
+        }
+    })
+    init { if (databases == null) loadMetric() }
 
-    // Double-click prevention flag
-    @Volatile
-    private var isSavingInProgress = false
+    internal fun isTerminalCurrent(frame: EditMetricUiState): Boolean = databases == null ||
+        !frame.sourceExpired && frame.sourceSelection != null && frame.sourceSelection === boundSelection &&
+            frame.sourceSelection.publication.isCurrentInMemory()
 
-    init {
-        loadMetric()
+    private fun expireSource() {
+        loadGeneration = Any()
+        // An edited draft is still personal data. Until a separate recovery/display
+        // contract exists, every revoked source clears it rather than exempting typed text.
+        _uiState.update { old -> EditMetricUiState(sourceSelection = boundSelection,
+            sourceExpired = true, isLoaded = true, isSaving = old.isSaving,
+            errorMessage = context.getString(R.string.database_view_expired)) }
+    }
+    private fun reportInput(error: Exception) {
+        if (error is kotlinx.coroutines.CancellationException) throw error
+        android.widget.Toast.makeText(context, com.dayforge.ui.actionFailureMessage(context, error), android.widget.Toast.LENGTH_LONG).show()
+    }
+    private fun publish(source: DatabaseObjectSelection?, update: (EditMetricUiState) -> EditMetricUiState): Boolean {
+        if (databases == null) { _uiState.update(update); return true }
+        return source?.publication?.publish { if (boundSelection === source) _uiState.update(update) } == true
+    }
+    private suspend fun <T> withSource(source: DatabaseObjectSelection?, block: suspend () -> T): T {
+        val host = databases ?: return block()
+        return host.withSelection(source, DatabaseObjectSelection.Kind.METRIC) { graph ->
+            val original = requireNotNull(source)
+            check(original.id == metricId) { "DATABASE_EPOCH_SELECTION_CHANGED" }
+            // Absence keeps the original reader/not-found or delete-noop contract. A
+            // present replacement must never be adopted under the old numeric route.
+            graph.metricDetailSourceReader.visibleMetric(metricId)?.let(original::requireMetric)
+            block()
+        }
+    }
+    fun adoptSource(sourceSelection: DatabaseObjectSelection?) {
+        if (databases == null) return
+        try {
+            val source = requireNotNull(sourceSelection) { "DATABASE_EPOCH_INPUT_REQUIRED" }
+            check(source.kind == DatabaseObjectSelection.Kind.METRIC && source.id == metricId &&
+                (boundSelection == null || boundSelection === source) && source.publication.isCurrentInMemory()) {
+                "DATABASE_EPOCH_INPUT_EXPIRED"
+            }
+            if (boundSelection === source && (loadJob?.isActive == true || !_uiState.value.sourceExpired)) return
+            boundSelection = source
+            publish(source) { it.copy(isLoaded = false, errorMessage = null) }
+            loadMetric(source)
+        } catch (error: Exception) { expireSource(); reportInput(error) }
     }
 
     /**
      * Load the existing metric from the database.
      */
-    private fun loadMetric() {
-        viewModelScope.launch {
+    private fun loadMetric(source: DatabaseObjectSelection? = null) {
+        val generation = Any().also { loadGeneration = it }
+        loadJob = viewModelScope.launch {
             try {
-                val snapshot = metricRepository.getMetricForEditing(metricId)
+                val snapshot = withSource(source) { metricRepository.getMetricForEditing(metricId) }
                 val metric = snapshot.value
                 if (metric == null) {
-                    _uiState.value = _uiState.value.copy(
-                        isLoaded = true,
-                        errorMessage = context.getString(R.string.toast_metric_not_found)
-                    )
+                    publish(source) { it.copy(isLoaded = true, errorMessage = context.getString(R.string.toast_metric_not_found)) }
                     return@launch
                 }
-
-                val isCustom = !metric.unit.isNullOrEmpty() &&
-                    !com.dayforge.ui.components.MetricUnits.isPreset(metric.unit)
-
-                _uiState.value = EditMetricUiState(
-                    metricId = metric.id,
-                    name = metric.name,
-                    description = metric.description,
-                    unit = metric.unit,
-                    isUnitCustom = isCustom,
-                    customUnit = if (isCustom) metric.unit else "",
-                    decimalPlaces = metric.decimalPlaces,
-                    aggregationType = metric.aggregationType,
-                    targetDirection = metric.targetDirection,
+                source?.requireMetric(metric)
+                val isCustom = !metric.unit.isNullOrEmpty() && !com.dayforge.ui.components.MetricUnits.isPreset(metric.unit)
+                if (loadGeneration !== generation) return@launch
+                publish(source) { EditMetricUiState(metricId = metric.id, name = metric.name,
+                    description = metric.description, unit = metric.unit, isUnitCustom = isCustom,
+                    customUnit = if (isCustom) metric.unit else "", decimalPlaces = metric.decimalPlaces,
+                    aggregationType = metric.aggregationType, targetDirection = metric.targetDirection,
                     targetValueInput = formatDoubleToString(metric.targetValue, metric.decimalPlaces),
                     targetValueUpperInput = formatDoubleToString(metric.targetValueUpper, metric.decimalPlaces),
-                    iconResId = metric.iconResId,
-                    appearance = metric.appearance,
-                    editAuthority = snapshot.authority,
-                    colorHex = metric.appearance?.accentColor ?: metric.colorHex,
-                    isActive = metric.isActive,
-                    isLoaded = true,
-                    isValid = validateState(
-                        name = metric.name,
-                        unit = metric.unit
-                    )
-                )
-            } catch (error: kotlinx.coroutines.CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                _uiState.value = _uiState.value.copy(isLoaded = true,
-                    errorMessage = context.getString(R.string.toast_save_failed, error.message))
+                    iconResId = metric.iconResId, appearance = metric.appearance, editAuthority = snapshot.authority,
+                    colorHex = metric.appearance?.accentColor ?: metric.colorHex, isActive = metric.isActive,
+                    isLoaded = true, isValid = validateState(metric.name, metric.unit),
+                    sourceSelection = source, sourceExpired = false) }
+            } catch (error: kotlinx.coroutines.CancellationException) { throw error }
+            catch (error: Exception) {
+                if (loadGeneration === generation && !publish(source) { it.copy(isLoaded = true,
+                        errorMessage = context.getString(R.string.toast_save_failed, error.message)) }) {
+                    expireSource(); reportInput(error)
+                }
             }
         }
     }
@@ -157,109 +200,71 @@ class EditMetricViewModel @Inject constructor(
 
     // ========== Field Updates ==========
 
+    private fun editDraft(update: (EditMetricUiState) -> EditMetricUiState) {
+        if (databases == null) { _uiState.update(update); return }
+        val source = boundSelection ?: return
+        source.publication.publish {
+            if (boundSelection === source) _uiState.update { current ->
+                if (current.sourceExpired || current.sourceSelection !== source) current else update(current)
+            }
+        }
+    }
+
     fun updateName(name: String) {
-        val newState = _uiState.value.copy(
-            name = name,
-            errorMessage = null
-        )
-        _uiState.value = newState.copy(
-            isValid = validateState(newState.name, newState.unit)
-        )
+        editDraft { it.copy(name = name, errorMessage = null,
+            isValid = !it.sourceExpired && validateState(name, it.unit)) }
     }
 
     fun updateDescription(description: String) {
-        _uiState.value = _uiState.value.copy(description = description)
+        editDraft { it.copy(description = description) }
     }
 
     fun updateUnit(unit: String) {
-        val isCustom = !unit.isNullOrEmpty() &&
-            !com.dayforge.ui.components.MetricUnits.isPreset(unit)
-        val newState = _uiState.value.copy(
-            unit = unit,
-            isUnitCustom = isCustom,
-            customUnit = if (isCustom) unit else "",
-            showUnitPicker = false,
-            errorMessage = null
-        )
-        _uiState.value = newState.copy(
-            isValid = validateState(newState.name, newState.unit)
-        )
+        val custom = unit.isNotEmpty() && !com.dayforge.ui.components.MetricUnits.isPreset(unit)
+        editDraft { it.copy(unit = unit, isUnitCustom = custom, customUnit = if (custom) unit else "",
+            showUnitPicker = false, errorMessage = null, isValid = !it.sourceExpired && validateState(it.name, unit)) }
     }
 
-    fun updateDecimalPlaces(places: Int) {
-        _uiState.value = _uiState.value.copy(decimalPlaces = places)
-    }
+    fun updateDecimalPlaces(places: Int) { editDraft { it.copy(decimalPlaces = places) } }
 
-    fun updateAggregationType(type: String) {
-        _uiState.value = _uiState.value.copy(aggregationType = type)
-    }
+    fun updateAggregationType(type: String) { editDraft { it.copy(aggregationType = type) } }
 
     fun updateTargetDirection(direction: String?) {
-        val newState = _uiState.value.copy(
-            targetDirection = direction,
-            targetValueInput = if (direction == null) "" else _uiState.value.targetValueInput,
-            targetValueUpperInput = if (direction != "range") "" else _uiState.value.targetValueUpperInput
-        )
-        _uiState.value = newState
+        editDraft { it.copy(targetDirection = direction,
+            targetValueInput = if (direction == null) "" else it.targetValueInput,
+            targetValueUpperInput = if (direction != "range") "" else it.targetValueUpperInput) }
     }
 
     fun updateTargetValueInput(value: String) {
-        val filtered = NumericInputUtils.filterNumericInput(value, _uiState.value.decimalPlaces)
-        _uiState.value = _uiState.value.copy(targetValueInput = filtered)
+        editDraft { it.copy(targetValueInput = NumericInputUtils.filterNumericInput(value, it.decimalPlaces)) }
     }
 
     fun updateTargetValueUpperInput(value: String) {
-        val filtered = NumericInputUtils.filterNumericInput(value, _uiState.value.decimalPlaces)
-        _uiState.value = _uiState.value.copy(targetValueUpperInput = filtered)
+        editDraft { it.copy(targetValueUpperInput = NumericInputUtils.filterNumericInput(value, it.decimalPlaces)) }
     }
 
     fun updateIcon(iconResId: Int) {
-        if (_uiState.value.appearance != null) return
-        _uiState.value = _uiState.value.copy(
-            iconResId = iconResId,
-            showIconPicker = false
-        )
+        editDraft { if (it.appearance != null) it else it.copy(iconResId = iconResId, showIconPicker = false) }
     }
 
     fun updateColor(colorHex: String) {
-        _uiState.value = _uiState.value.copy(
-            colorHex = colorHex,
-            appearance = _uiState.value.appearance?.copy(accentColor = colorHex),
-            showColorPicker = false
-        )
+        editDraft { it.copy(colorHex = colorHex, appearance = it.appearance?.copy(accentColor = colorHex), showColorPicker = false) }
     }
 
     fun updateAppearance(appearance: com.dayforge.domain.model.ObjectAppearance) {
-        if (_uiState.value.appearance == null) return
-        _uiState.value = _uiState.value.copy(appearance = appearance, colorHex = appearance.accentColor,
-            showIconPicker = false)
+        editDraft { if (it.appearance == null || it.sourceExpired) it
+            else it.copy(appearance = appearance, colorHex = appearance.accentColor, showIconPicker = false) }
     }
 
-    fun toggleActive() {
-        _uiState.value = _uiState.value.copy(
-            isActive = !_uiState.value.isActive
-        )
-    }
+    fun toggleActive() { editDraft { it.copy(isActive = !it.isActive) } }
 
     // ========== Dialog Toggles ==========
 
-    fun toggleIconPicker() {
-        _uiState.value = _uiState.value.copy(
-            showIconPicker = !_uiState.value.showIconPicker
-        )
-    }
+    fun toggleIconPicker() { editDraft { it.copy(showIconPicker = !it.showIconPicker) } }
 
-    fun toggleColorPicker() {
-        _uiState.value = _uiState.value.copy(
-            showColorPicker = !_uiState.value.showColorPicker
-        )
-    }
+    fun toggleColorPicker() { editDraft { it.copy(showColorPicker = !it.showColorPicker) } }
 
-    fun toggleUnitPicker() {
-        _uiState.value = _uiState.value.copy(
-            showUnitPicker = !_uiState.value.showUnitPicker
-        )
-    }
+    fun toggleUnitPicker() { editDraft { it.copy(showUnitPicker = !it.showUnitPicker) } }
 
     // ========== Validation ==========
 
@@ -275,92 +280,62 @@ class EditMetricViewModel @Inject constructor(
      * Save changes to the metric.
      * Updates the existing metric in the database.
      */
-    fun saveMetric() {
-        // Prevent double-click
-        if (isSavingInProgress) return
-
+    fun saveMetric(frame: EditMetricUiState? = null) {
+        if (isSavingInProgress || _uiState.value.isSaved) return
         val currentState = _uiState.value
+        if (databases != null) try {
+            val rendered = requireNotNull(frame) { "DATABASE_EPOCH_INPUT_REQUIRED" }
+            check(rendered.sourceSelection != null && rendered.sourceSelection === boundSelection &&
+                currentState.sourceSelection === rendered.sourceSelection && !rendered.sourceExpired &&
+                !currentState.sourceExpired && rendered.sourceSelection.publication.isCurrentInMemory()) {
+                "DATABASE_EPOCH_INPUT_EXPIRED"
+            }
+        } catch (error: Exception) { reportInput(error); return }
         if (!currentState.isValid) return
-
+        val source = currentState.sourceSelection
         isSavingInProgress = true
-        _uiState.value = currentState.copy(isSaving = true)
-
+        if (!publish(source) { it.copy(isSaving = true) }) { isSavingInProgress = false; return }
         viewModelScope.launch {
             try {
-                val existingMetric = metricDao.getVisibleMetricById(metricId)
-                if (existingMetric == null) {
-                    _uiState.value = _uiState.value.copy(
-                        isSaving = false,
-                        errorMessage = context.getString(R.string.toast_metric_not_found)
-                    )
-                    return@launch
-                }
-
-                val trimmedName = currentState.name.trim()
-
-                // Check for duplicate name if name changed
-                if (trimmedName != existingMetric.name) {
-                    val duplicateMetric = metricDao.getMetricByName(trimmedName)
-                    if (duplicateMetric != null) {
-                        _uiState.value = _uiState.value.copy(
-                            isSaving = false,
-                            showDuplicateDialog = true
-                        )
-                        isSavingInProgress = false
-                        return@launch
+                withSource(source) save@ {
+                    val existingMetric = reads.visibleMetric(metricId)
+                    if (existingMetric == null) {
+                        publish(source) { it.copy(isSaving = false, errorMessage = context.getString(R.string.toast_metric_not_found)) }
+                        return@save
                     }
+                    source?.requireMetric(existingMetric)
+                    val trimmedName = currentState.name.trim()
+                    if (trimmedName != existingMetric.name) {
+                        val duplicateMetric = reads.metricByName(trimmedName)
+                        if (duplicateMetric != null) {
+                            publish(source) { it.copy(isSaving = false, showDuplicateDialog = true) }
+                            return@save
+                        }
+                    }
+                    val updatedMetric = existingMetric.copy(name = trimmedName,
+                        description = currentState.description.trim(), unit = currentState.unit,
+                        decimalPlaces = currentState.decimalPlaces, aggregationType = currentState.aggregationType,
+                        targetDirection = currentState.targetDirection, targetValue = currentState.targetValueInput.toDoubleOrNull(),
+                        targetValueUpper = currentState.targetValueUpperInput.toDoubleOrNull(), iconResId = currentState.iconResId,
+                        appearance = currentState.appearance, colorHex = currentState.colorHex, isActive = currentState.isActive,
+                        updatedAt = System.currentTimeMillis())
+                    metricRepository.updateMetric(updatedMetric, currentState.editAuthority)
+                    publish(source) { it.copy(isSaving = false, isSaved = true,
+                        showIconPicker = false, showColorPicker = false, showUnitPicker = false) }
                 }
-
-                val updatedMetric = existingMetric.copy(
-                    name = trimmedName,
-                    description = currentState.description.trim(),
-                    unit = currentState.unit,
-                    decimalPlaces = currentState.decimalPlaces,
-                    aggregationType = currentState.aggregationType,
-                    targetDirection = currentState.targetDirection,
-                    targetValue = currentState.targetValueInput.toDoubleOrNull(),
-                    targetValueUpper = currentState.targetValueUpperInput.toDoubleOrNull(),
-                    iconResId = currentState.iconResId,
-                    appearance = currentState.appearance,
-                    colorHex = currentState.colorHex,
-                    isActive = currentState.isActive,
-                    updatedAt = System.currentTimeMillis()
-                )
-
-                metricRepository.updateMetric(updatedMetric, currentState.editAuthority)
-
-                _uiState.value = _uiState.value.copy(
-                    isSaving = false,
-                    isSaved = true,
-                    showIconPicker = false,
-                    showColorPicker = false,
-                    showUnitPicker = false
-                )
-            } catch (error: kotlinx.coroutines.CancellationException) {
-                throw error
-            } catch (_: DuplicateMetricNameException) {
-                _uiState.value = _uiState.value.copy(
-                    isSaving = false,
-                    showDuplicateDialog = true
-                )
-            } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(
-                    isSaving = false,
-                    errorMessage = context.getString(R.string.toast_save_failed, e.message)
-                )
-            } finally {
-                isSavingInProgress = false
-            }
+            } catch (error: kotlinx.coroutines.CancellationException) { throw error }
+            catch (_: DuplicateMetricNameException) {
+                publish(source) { it.copy(isSaving = false, showDuplicateDialog = true) }
+            } catch (error: Exception) {
+                if (!publish(source) { it.copy(isSaving = false, errorMessage = context.getString(R.string.toast_save_failed, error.message)) })
+                    reportInput(error)
+            } finally { isSavingInProgress = false; _uiState.update { it.copy(isSaving = false) } }
         }
     }
 
-    fun dismissDuplicateDialog() {
-        _uiState.value = _uiState.value.copy(showDuplicateDialog = false)
-    }
+    fun dismissDuplicateDialog() { editDraft { it.copy(showDuplicateDialog = false) } }
 
     // ========== Utility ==========
 
-    fun clearError() {
-        _uiState.value = _uiState.value.copy(errorMessage = null)
-    }
+    fun clearError() { editDraft { it.copy(errorMessage = null) } }
 }

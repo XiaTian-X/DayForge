@@ -47,6 +47,9 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
         val fresh = candidate(previous.assessment.original, previous.candidate.newEpoch,
             previous.candidate.deviceProof.installationId)
         val preview = differences.revalidate(previous, fresh)
+        require((preview.assessment.reviewCounts[ReplicaRecoveryReview.LOCAL_COMMAND_RECOVERY] ?: 0L) == 0L) {
+            "SYNC_RECOVERY_REVIEW_REQUIRED"
+        }
         require(!preview.hasUnfinishedTimer && preview.unconfirmedLocalRecords.isEmpty()) { "SYNC_RECOVERY_REVIEW_REQUIRED" }
         val stage = inputs.inspect(fresh.original, preview.oldStorage.hash) { input, _ ->
             require(!input.hasReview) { "SYNC_RECOVERY_REVIEW_REQUIRED" }
@@ -62,6 +65,9 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
                 fresh.contentHash, fresh.wireHash, fresh.cursor, previousFenceHash = NextReplicaSourceClosure.controlHash(prior))
         }
         stages.begin(stage)
+        // The original durable FREEZING pointer now owns the barrier. The in-flight preview
+        // hold stays retained until the complete prepare call (including actual END) returns.
+        previous.handedTo(stage)
         archiveFrozen(freeze(stage))
     }
 
@@ -102,7 +108,7 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
         }
         val fresh = candidate(expected.original, expected.newEpoch, expected.installationId)
         requireCandidate(expected, fresh)
-        expected.target?.let { require(it == target(fresh)) { "SYNC_RECOVERY_PREVIEW_CHANGED" } }
+        expected.target?.let { require(it == target(fresh, it.schemaHash)) { "SYNC_RECOVERY_PREVIEW_CHANGED" } }
         val (preview, materials) = verifiedInput(expected) { input, _ ->
             val material = materialPreflight(fresh, input).also { it.requireAvailable() }
             differences.capture(fresh) to material
@@ -184,7 +190,8 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
             candidates.validateDestination(read, read.read(http))
         }
         require(!fresh.hasUnfinishedTimer) { "SYNC_RECOVERY_REVIEW_REQUIRED" }
-        val snapshot = ReplicaStageSnapshot(fresh.contentHash, fresh.wireHash, fresh.cursor, target(fresh))
+        val snapshot = ReplicaStageSnapshot(fresh.contentHash, fresh.wireHash, fresh.cursor,
+            target(fresh, expected.publishedSnapshot.target.schemaHash))
         // Fresh same-device grants may advance; same-version drift/schema/cursor regression may not.
         val intent = ReplicaStageCatchup(expected.publishedSnapshot, snapshot, fresh.original.session.authentication.generation)
         val retained = expected.catchup
@@ -217,52 +224,70 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
             return@coordinateReplicaRecovery ReplicaCompletionOutcome.Completed(completed(expected))
         require(material.metadata.usesAccess(tokens, sessions) &&
             inputs.usesDestinationMaterial(material.metadata, material.transfers, material.store)) { "ICON_RECOVERY_STORE_MISMATCH" }
-        val current = catchUpOwned(expected)
-        material.coordinateReplicaCompletion { round ->
-            suspend fun inspectComplete(stage: ReplicaSwitchStage,
-                context: com.dayforge.data.appearance.AccountIconContext): ReplicaMaterialProof {
-                val uses = destinationUses(stage)
-                material.store.restoreReplicaSelection(context)
-                return inputs.inspectDestinationIcons(context) { metadata, files ->
-                    ReplicaMaterialProof.checked(stage, context, uses, metadata, files)
+        val current = ReplicaRecoveryTiming.measure(ReplicaRecoveryTiming.Stage.FINISH_CATCHUP) {
+            catchUpOwned(expected)
+        }
+        ReplicaRecoveryTiming.measure(ReplicaRecoveryTiming.Stage.FINISH_COORDINATED) {
+            material.coordinateReplicaCompletion { round ->
+                suspend fun inspectComplete(stage: ReplicaSwitchStage,
+                    context: com.dayforge.data.appearance.AccountIconContext): ReplicaMaterialProof {
+                    val uses = destinationUses(stage)
+                    material.store.restoreReplicaSelection(context)
+                    return inputs.inspectDestinationIcons(context) { metadata, files ->
+                        ReplicaMaterialProof.checked(stage, context, uses, metadata, files)
+                    }
                 }
-            }
-            val checked = ReplicaMaterialAccess.verified(database, tokens, sessions, archives, current) { context ->
-                val outcome = round(context, transport)
-                if (outcome != IconMaterialOutcome.COMPLETE) {
-                    // Diagnose only under the existing verified lease; no ordinary-access bypass,
-                    // credentials, object identifiers, names, URLs or material contents in logs.
-                    val jobs = material.transfers.jobs(context).groupingBy {
-                        "${it.kind}/${it.state}/${it.failure}"
-                    }.eachCount().toSortedMap()
-                    val checkpoint = material.catalog.next(context).checkpoint
-                    android.util.Log.i("ReplicaMaterials", "Waiting outcome=$outcome jobs=$jobs " +
-                        "catalog=${checkpoint.cursor}/${checkpoint.through}")
-                    outcome to null
+                val checked = ReplicaRecoveryTiming.measure(ReplicaRecoveryTiming.Stage.FINISH_MATERIAL_PROOF) {
+                    ReplicaMaterialAccess.verified(database, tokens, sessions, archives, current) { context ->
+                        val outcome = round(context, transport)
+                        if (outcome != IconMaterialOutcome.COMPLETE) {
+                            // Diagnose only under the existing verified lease; no ordinary-access bypass,
+                            // credentials, object identifiers, names, URLs or material contents in logs.
+                            val jobs = material.transfers.jobs(context).groupingBy {
+                                "${it.kind}/${it.state}/${it.failure}"
+                            }.eachCount().toSortedMap()
+                            val checkpoint = material.catalog.next(context).checkpoint
+                            android.util.Log.i("ReplicaMaterials", "Waiting outcome=$outcome jobs=$jobs " +
+                                "catalog=${checkpoint.cursor}/${checkpoint.through}")
+                            outcome to null
+                        }
+                        else outcome to inspectComplete(current, context)
+                    }
                 }
-                else outcome to inspectComplete(current, context)
+                val proof = checked.second ?: return@coordinateReplicaCompletion ReplicaCompletionOutcome.Waiting(current, checked.first)
+                // Server may have changed during catalog/file IO. Never release the older SQL as
+                // current; next bounded call catches up using a new durable intent.
+                val fresh = ReplicaRecoveryTiming.measure(ReplicaRecoveryTiming.Stage.FINISH_DESTINATION_RECHECK) {
+                    ReplicaDestinationReadAccess.verified(database, tokens, sessions, archives, current) { read ->
+                        candidates.validateDestination(read, read.read(http))
+                    }
+                }
+                if (fresh.hasUnfinishedTimer || fresh.contentHash != current.publishedSnapshot.contentHash ||
+                    fresh.projection.hash != current.publishedSnapshot.target.projectionHash)
+                    return@coordinateReplicaCompletion ReplicaCompletionOutcome.Changed(current)
+                check(proof.access.session.authentication == fresh.original.session.authentication) { "SYNC_REPLICA_RELEASE_PROOF_CHANGED" }
+                val releasing = ReplicaRecoveryTiming.measure(ReplicaRecoveryTiming.Stage.FINISH_RELEASE_CLOSE) {
+                    verifyRetainedArchive(current)
+                    val releasing = if (current.phase == ReplicaSwitchPhase.RELEASING) current else stages.recordRelease(current, proof)
+                    commits.closeForRelease(releasing)
+                    releasing
+                }
+                // Reacquire actual closed-state leases, not the previous object whose phase changed.
+                // Rebuild all files/metadata and archive after SQL close before removing the pointer.
+                val finalProof = ReplicaRecoveryTiming.measure(ReplicaRecoveryTiming.Stage.FINISH_FINAL_PROOF) {
+                    val finalProof = ReplicaMaterialAccess.verified(database, tokens, sessions, archives, releasing) { context ->
+                        inspectComplete(releasing, context)
+                    }
+                    check(finalProof.hash == proof.hash && finalProof.access == proof.access) { "SYNC_REPLICA_RELEASE_PROOF_CHANGED" }
+                    finalProof
+                }
+                // Actual full SQL and current authentication are checked again by final DS CAS.
+                ReplicaCompletionOutcome.Completed(
+                    ReplicaRecoveryTiming.measure(ReplicaRecoveryTiming.Stage.FINISH_PUBLISH) {
+                        stages.publishCompletion(releasing, finalProof)
+                    }
+                )
             }
-            val proof = checked.second ?: return@coordinateReplicaCompletion ReplicaCompletionOutcome.Waiting(current, checked.first)
-            // Server may have changed during catalog/file IO. Never release the older SQL as
-            // current; next bounded call catches up using a new durable intent.
-            val fresh = ReplicaDestinationReadAccess.verified(database, tokens, sessions, archives, current) { read ->
-                candidates.validateDestination(read, read.read(http))
-            }
-            if (fresh.hasUnfinishedTimer || fresh.contentHash != current.publishedSnapshot.contentHash ||
-                fresh.projection.hash != current.publishedSnapshot.target.projectionHash)
-                return@coordinateReplicaCompletion ReplicaCompletionOutcome.Changed(current)
-            check(proof.access.session.authentication == fresh.original.session.authentication) { "SYNC_REPLICA_RELEASE_PROOF_CHANGED" }
-            verifyRetainedArchive(current)
-            val releasing = if (current.phase == ReplicaSwitchPhase.RELEASING) current else stages.recordRelease(current, proof)
-            commits.closeForRelease(releasing)
-            // Reacquire actual closed-state leases, not the previous object whose phase changed.
-            // Rebuild all files/metadata and archive after SQL close before removing the pointer.
-            val finalProof = ReplicaMaterialAccess.verified(database, tokens, sessions, archives, releasing) { context ->
-                inspectComplete(releasing, context)
-            }
-            check(finalProof.hash == proof.hash && finalProof.access == proof.access) { "SYNC_REPLICA_RELEASE_PROOF_CHANGED" }
-            // Actual full SQL and current authentication are checked again by final DS CAS.
-            ReplicaCompletionOutcome.Completed(stages.publishCompletion(releasing, finalProof))
         }
     }
 
@@ -301,9 +326,7 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
 
     private suspend fun destinationUses(stage: ReplicaSwitchStage): List<ConfigIconUse> = sessions.exclusive {
         database.withTransaction {
-            if (stage.phase == ReplicaSwitchPhase.RELEASING) commits.releaseFateInTransaction(stage)
-            else check(commits.fateInTransaction(stage) == ReplicaCommitFate.COMMITTED) { "SYNC_REPLICA_COMMIT_STATE_INVALID" }
-            val projection = ReplicaProjection.capture(database)
+            val projection = commits.destinationProjectionInTransaction(stage)
             val uses = mutableListOf<ConfigIconUse>()
             fun add(appearance: JsonElement, once: Boolean) {
                 uses += ConfigIconUse(Json.decodeFromJsonElement<ObjectAppearance>(appearance).icon, once)
@@ -347,8 +370,15 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
         }
     }
 
-    private suspend fun target(candidate: ValidatedReplicaCandidate) = candidate.deviceProof.let {
-        ReplicaStageTarget(candidate.projection.hash, sessions.exclusive { ReplicaProjection.schemaHash(database) },
+    private suspend fun target(candidate: ValidatedReplicaCandidate, retainedSchemaHash: String? = null) = candidate.deviceProof.let {
+        val schemaHash = sessions.exclusive {
+            if (retainedSchemaHash == null) ReplicaProjection.schemaHash(database)
+            else {
+                require(NextReplicaCompatibilityViews.matchesSchema(database, retainedSchemaHash)) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
+                retainedSchemaHash
+            }
+        }
+        ReplicaStageTarget(candidate.projection.hash, schemaHash,
             it.deviceId, it.capabilityRevision, it.capabilities.sorted(),
             it.isPrimaryEditor, it.structuralEditEnabled)
     }
@@ -378,8 +408,9 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
             require(actual == stage.fence ||
                 ((actual == null || actual.mode == NextReplicaFenceEntity.CLOSED && actual.recoveryId != stage.recoveryId) &&
                     NextReplicaSourceClosure.controlHash(actual) == stage.previousFenceHash)) { "SYNC_REPLICA_FENCE_CHANGED" }
-            require(NextReplicaSourceClosure.storage(NextReplicaStorageProof(database).readInTransaction(), actual) ==
-                stage.sourceHash) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
+            val source = NextReplicaStorageProof(database).readInTransaction()
+            require(NextReplicaSourceClosure.matchesStorage(source, actual, stage.sourceHash)) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
+            ReplicaCommandRecoveryGuard(database, tokens).requireRetainedSourceClearInTransaction(stage, source, actual)
             NextReplicaWriteFence(database).acquire(stage.fence)
         } }
         return stages.recordFrozen(stage)
@@ -402,15 +433,16 @@ internal class NextReplicaRecoveryWorkflow(private val coordinator: BusinessSync
             requireCurrent(stage)
             require(database.nextReplicaFenceDao().state() == stage.fence) { "SYNC_REPLICA_FENCE_CHANGED" }
             NextReplicaStorageProof(database).readInTransaction().also {
-                require(NextReplicaSourceClosure.storage(it, stage.fence) == stage.sourceHash) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
+                require(NextReplicaSourceClosure.matchesStorage(it, stage.fence, stage.sourceHash)) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
+                ReplicaCommandRecoveryGuard(database, tokens).requireRetainedSourceClearInTransaction(stage, it, stage.fence)
             }
         } }
         val result = inputs.inspect(stage.original, raw.hash) { input, access ->
             requireCurrent(stage)
             require(!input.hasReview) { "SYNC_RECOVERY_REVIEW_REQUIRED" }
-            require(NextReplicaSourceClosure.input(input, stage.fence) == stage.inputHash) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
+            require(NextReplicaSourceClosure.matchesInput(input, stage.fence, stage.inputHash)) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
             stage.archive?.let { saved ->
-                require(saved.inputHash == input.hash && saved.entries[1].contentHash == input.storage.hash) {
+                require(NextReplicaSourceClosure.matchesArchiveInput(input, saved.inputHash, saved.entries[1].contentHash)) {
                     "SYNC_ARCHIVE_INPUT_CHANGED"
                 }
                 archives.verify(receipt(stage, saved)) { requireCurrent(stage) }

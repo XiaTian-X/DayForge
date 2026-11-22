@@ -21,7 +21,6 @@ import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
-import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.model.HabitType
 import com.dayforge.domain.service.HabitPriorityCalculator
 import com.dayforge.domain.service.TimeMatchResult
@@ -138,30 +137,33 @@ class FocusWidget : GlanceAppWidget() {
             val appContext = context.applicationContext
             val publication = com.dayforge.di.WidgetEntryPoint.from(appContext).displayPublisher()
                 .capturePublication() ?: return
-            val prepared = try {
-                prepareWidgetData(appContext, glanceId, publication)
-            } catch (error: Exception) {
-                if (error is CancellationException) throw error
-                publication {
-                    Log.w(TAG, "Focus widget source unavailable", error)
-                    updateAppWidgetState(appContext, glanceId) { prefs ->
-                        publication.stampFrame(prefs)
-                        prefs[DATA_LOADED_KEY] = false
-                        prefs[READ_FAILED_KEY] = true
-                        prefs.remove(TIMER_ACTION_PROOF_KEY)
-                        prefs.remove(FACT_ACTION_PROOF_KEY)
-                        prefs.remove(LEGACY_FACT_ACTION_PROOF_KEY)
-                        prefs.remove(LEGACY_TIMER_ACTION_PROOF_KEY)
-                        prefs.remove(LEGACY_RESTART_PROOF_KEY)
+            publication.inOriginalReadGraph {
+                val prepared = try {
+                    prepareWidgetData(appContext, glanceId, publication)
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    publication {
+                        Log.w(TAG, "Focus widget source unavailable", error)
+                        updateAppWidgetState(appContext, glanceId) { prefs ->
+                            publication.stampFrame(prefs)
+                            prefs[DATA_LOADED_KEY] = false
+                            prefs[READ_FAILED_KEY] = true
+                            prefs.remove(TIMER_ACTION_PROOF_KEY)
+                            prefs.remove(FACT_ACTION_PROOF_KEY)
+                            prefs.remove(LEGACY_FACT_ACTION_PROOF_KEY)
+                            prefs.remove(LEGACY_TIMER_ACTION_PROOF_KEY)
+                            prefs.remove(LEGACY_RESTART_PROOF_KEY)
+                        }
                     }
+                    return@inOriginalReadGraph false
                 }
-                return
-            }
-            val published = publication(prepared.display)
-            // Alarm reconciliation reads repositories; it must not reenter the publication lock.
-            if (published) {
-                if (prepared.hasActiveTimer) FocusWidgetAlarmScheduler.scheduleNextRefreshForActiveTimer(appContext, publication::invoke)
-                else FocusWidgetAlarmScheduler.scheduleNextRefresh(appContext, publication::invoke)
+                val published = publication(prepared.display)
+                // Alarm reconciliation reads repositories; it must not reenter the publication lock.
+                if (published) {
+                    if (prepared.hasActiveTimer) FocusWidgetAlarmScheduler.scheduleNextRefreshForActiveTimer(appContext, publication::invoke)
+                    else FocusWidgetAlarmScheduler.scheduleNextRefresh(appContext, publication::invoke)
+                }
+                published
             }
         }
 
@@ -170,7 +172,7 @@ class FocusWidget : GlanceAppWidget() {
         private suspend fun prepareWidgetData(context: Context, glanceId: GlanceId,
             publication: com.dayforge.data.repository.WidgetDisplayPublisher.Publication): PreparedDisplay {
             val appContext = context.applicationContext
-            val database = HabitDatabaseProvider.getInstance(appContext)
+            val database = com.dayforge.di.WidgetEntryPoint.database(appContext)
             val currentTime = ZonedDateTime.now()
 
             val habitStatusCalculator = com.dayforge.di.WidgetEntryPoint.calculator(appContext, database)

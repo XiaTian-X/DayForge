@@ -37,6 +37,7 @@ class LegacyWidgetIdentityVerifier @Inject constructor(
             (!requirePlan || SyncV2Mapper.planNode(habit) == identity.plan)) {
             "LEGACY_WIDGET_STALE_DISPLAY"
         }
+        com.dayforge.data.local.LocalReplicaIdentity.requireInTransaction(database, identity.storageId, "LEGACY_WIDGET_REPLICA_CHANGED")
         check(tokens.localCoreWriteAccess() == access) { "LEGACY_WIDGET_STALE_ACCOUNT" }
         return habit
     }

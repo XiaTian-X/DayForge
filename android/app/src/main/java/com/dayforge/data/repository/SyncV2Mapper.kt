@@ -133,14 +133,19 @@ object SyncV2Mapper {
         }
     }
 
-    fun completion(completion: CompletionEntity, habit: HabitEntity): JsonObject = buildJsonObject {
-        val occurredAt = completion.actualCompletedAt ?: completion.date
-        put("activity_uuid", habit.uuid)
-        put("event_type", if (habit.habitType == HabitType.COUNTING) "count_snapshot" else "check_in")
-        if (habit.habitType == HabitType.COUNTING) put("value", completion.value)
+    fun completion(completion: CompletionEntity, habit: HabitEntity): JsonObject = completionFields(
+        habit.uuid, habit.habitType, completion.value, completion.actualCompletedAt ?: completion.date,
+        completion.recordedLocalDate, completion.recordedTimezone)
+
+    /** Same payload fields, independently usable before SQLite IDs and storage timestamps exist. */
+    internal fun completionFields(activityUuid: String, habitType: HabitType, value: Int,
+        occurredAt: Long, recordedLocalDate: String, recordedTimezone: String): JsonObject = buildJsonObject {
+        put("activity_uuid", activityUuid)
+        put("event_type", if (habitType == HabitType.COUNTING) "count_snapshot" else "check_in")
+        if (habitType == HabitType.COUNTING) put("value", value)
         put("occurred_at", isoInstant(occurredAt))
-        put("local_date", completion.recordedLocalDate)
-        put("timezone", completion.recordedTimezone)
+        put("local_date", recordedLocalDate)
+        put("timezone", recordedTimezone)
         put("source_type", "app")
     }
 

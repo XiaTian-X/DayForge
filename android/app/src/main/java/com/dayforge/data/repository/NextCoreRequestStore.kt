@@ -13,6 +13,7 @@ import com.dayforge.data.local.entity.NextTransmissionEntity
 import com.dayforge.data.local.entity.NextAcceptanceEntity
 import com.dayforge.domain.model.isContractUuid
 import com.dayforge.domain.service.AccountSessionCoordinator
+import com.dayforge.domain.service.CompletionActionTiming
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 
@@ -48,6 +49,8 @@ internal class NextCoreRequestStore(
             materials.requireReady(access, prepared.declarations, prepared.content)
             val round = if (prepared.challengeProfile) channel.roundPushFrozen(prepared.row.wireBytes) else null
             val response = if (round == null) channel.pushFrozen(prepared.row.wireBytes) else NextSyncPushResponse(round.results)
+            if (CompletionActionTiming.enabled) CompletionActionTiming.markAck(
+                CompletionActionTiming.AckStage.PUSH_RESULT_AVAILABLE, prepared.row.requestId)
             requireStillCurrent(access, prepared, memo)
             NextCoreDelivery(access, prepared.row.requestId, response, prepared.proof, round?.metadata(), prepared.importProof)
         }
@@ -74,15 +77,8 @@ internal class NextCoreRequestStore(
     }
 
     internal suspend fun validateTimerJournalInTransaction(origin: NextRequestOriginEntity,
-        transmission: NextTransmissionEntity, access: LocalSyncAccess) {
-        check(database.inTransaction())
-        require(origin.kind == NEXT_TIMER && origin.protocol == 5 && origin.queueId > 0 &&
-            origin.sourceHash.length == 64 && origin.sourceHash.all { it in "0123456789abcdef" } &&
-            (origin.serverInstanceId == null) == (origin.syncEpoch == null))
-        if (origin.serverInstanceId != null && (origin.serverInstanceId != access.session.serverInstanceId ||
-            origin.syncEpoch != access.session.syncEpoch)) rejectNextRequest(NextRequestException.Reason.TRANSMISSION_CONTEXT_CHANGED)
-        validate(origin, transmission, access)
-    }
+        transmission: NextTransmissionEntity, access: LocalSyncAccess) =
+        NextOriginalRequestProofStore(database).validateTimerJournalInTransaction(origin, transmission, access)
 
     private data class Prepared(val row: NextTransmissionEntity, val proof: String, val challengeProfile: Boolean = false,
         val importProof: String? = null, val declarations: Set<String> = emptySet(), val content: Set<String> = emptySet())
@@ -94,43 +90,8 @@ internal class NextCoreRequestStore(
     }
 
     /** Shared immutable-fact receipt proof for count ordering and read-only recovery references. */
-    internal suspend fun recoveryAcceptedFactProof(access: LocalSyncAccess, id: String): Pair<SyncV2Operation, String> {
-        check(database.inTransaction())
-        val sql = database.openHelper.writableDatabase
-        val dao = database.nextRequestDao()
-        val args = arrayOf<Any>(NEXT_OPERATION, id)
-        val originHash = requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", args))
-        val receiptHash = NextRequestSql.rowHash(sql, "next_acceptances", "kind=? AND requestId=?", args)
-            ?: rejectNextRequest(NextRequestException.Reason.CAUSAL_PREDECESSOR_PENDING)
-        val transmissionHash = requireNotNull(NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", args))
-        val original = requireNotNull(dao.origin(NEXT_OPERATION, id))
-        val sent = requireNotNull(dao.transmission(NEXT_OPERATION, id))
-        require(original.kind == NEXT_OPERATION && original.requestId == id && original.protocol == 5 && original.queueId > 0 &&
-            (original.serverInstanceId == null) == (original.syncEpoch == null))
-        if (original.serverInstanceId != null && (original.serverInstanceId != access.session.serverInstanceId || original.syncEpoch != access.session.syncEpoch))
-            rejectNextRequest(NextRequestException.Reason.TRANSMISSION_CONTEXT_CHANGED)
-        validate(original, sent, access)
-        val receipt = requireNotNull(dao.acceptance(NEXT_OPERATION, id))
-        require(receipt.kind == NEXT_OPERATION && receipt.requestId == id && receipt.originHash == originHash &&
-            receipt.transmissionHash == transmissionHash && receipt.resultHash == nextRequestHash(receipt.resultJson.toByteArray(Charsets.UTF_8)))
-        val result = decodeFrozenSyncRequest(receipt.resultJson.toByteArray(Charsets.UTF_8), NextSyncOperationResult.serializer())
-        val operation = decodeNextOperationIntent(original.intentJson)
-        require(result.status == "applied" && operation.entityType in setOf("activity_event", "metric_observation") &&
-            operation.payload["one_time"].let { it == null || it == kotlinx.serialization.json.JsonNull })
-        NextOrdinaryResultMapper.validate(operation, result, requireNotNull(access.deviceId))
-        roundOperationIntent(original.intentJson)?.let { round ->
-            require(round.capturedDeviceId == access.deviceId && original.serverInstanceId == access.session.serverInstanceId &&
-                original.syncEpoch == access.session.syncEpoch)
-            val metadata = NextChallengeStore(database).activeInTransaction(access).second
-            validateRoundResultBinding(decodeFrozenSyncRequest(sent.wireBytes, RoundSyncPushRequest.serializer()),
-                RoundSyncPushResponse(listOf(result), 1, metadata.checkpoints, metadata.births))
-        }
-        require(NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(original.queueId)) == null &&
-            database.syncOutboxDao().getByOperationId(id) == null)
-        check(NextRequestSql.rowHash(sql, "next_acceptances", "kind=? AND requestId=?", args) == receiptHash)
-        return operation to nextRequestHash(listOf(originHash, transmissionHash, receiptHash)
-            .joinToString(";").toByteArray(Charsets.UTF_8))
-    }
+    internal suspend fun recoveryAcceptedFactProof(access: LocalSyncAccess, id: String): Pair<SyncV2Operation, String> =
+        NextAcceptedFactProofStore(database).read(access, id)
 
     /** Bound explicit failure persisted separately; an unknown transport failure is not a rejection. */
     internal suspend fun recordRejection(access: LocalSyncAccess, kind: String, id: String,
@@ -235,11 +196,21 @@ internal class NextCoreRequestStore(
         acceptOperation(delivery, NextStructuralCausalStore.PureMemo())
 
     private suspend fun acceptOperation(delivery: NextCoreDelivery<NextSyncPushResponse>,
-        memo: NextStructuralCausalStore.PureMemo): NextOperationAcceptance = sessions.exclusive {
+        memo: NextStructuralCausalStore.PureMemo): NextOperationAcceptance {
+        if (CompletionActionTiming.enabled) CompletionActionTiming.markAck(
+            CompletionActionTiming.AckStage.ACCEPT_REQUESTED, delivery.requestId)
+        return sessions.exclusive {
+        if (CompletionActionTiming.enabled) CompletionActionTiming.markAck(
+            CompletionActionTiming.AckStage.ACCOUNT_ACQUIRED, delivery.requestId)
         val access = delivery.access
         authorize(access)
         database.withTransaction {
             val sql = database.openHelper.writableDatabase
+            val trust = CountTrustKernel(database, tokens, sessions)
+            val trustAccess = if (com.dayforge.data.local.CountTrustRuntime.forDatabase(database) == null) null else tokens.localCoreWriteAccess()
+            trust.withCapture(trustAccess?.takeIf { it.session == access.session && it.capturedDeviceId == access.deviceId }) { trusted ->
+            var trustedEffects: MutableList<CountTrustAck.Effect>? = null
+            var roundProof: CountTrustRoundAck.Prepared? = null
             NextRequestSql.requireOutboxEnabled(sql)
             val terminals = NextRecoveryAuditStore(database).validatedMembers(access)
             val id = delivery.requestId
@@ -274,7 +245,11 @@ internal class NextCoreRequestStore(
                 val frozen = decodeFrozenSyncRequest(encodeSyncRequest(ChallengeMetadata.serializer(), metadata), ChallengeMetadata.serializer())
                 val response = RoundSyncPushResponse(delivery.result.results, 1, frozen.checkpoints, frozen.births)
                 validateRoundResultBinding(decodeFrozenSyncRequest(transmission.wireBytes, RoundSyncPushRequest.serializer()), response)
-                rounds.acknowledgeInTransaction(access, frozen)
+                val adapter = CountTrustRoundAck(database)
+                roundProof = trusted?.context?.takeIf { it.index.get("global_common") == kotlinx.serialization.json.JsonPrimitive(true) }
+                    ?.let { adapter.prepare(it, access, roundOrigin, requireNotNull(currentCheckpoint), frozen) }
+                roundProof?.let { proof -> adapter.apply(proof); proof.metadata }
+                    ?: rounds.acknowledgeInTransaction(access, frozen)
             }
             val permission = if (operation.entityType in setOf("activity_event", "metric_observation")) "facts.append" else "structure.write"
             if (permission !in access.capabilities) rejectNextRequest(NextRequestException.Reason.PERMISSION_DENIED)
@@ -299,6 +274,7 @@ internal class NextCoreRequestStore(
                 if (NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(rawOrigin.queueId)) != null ||
                     database.syncOutboxDao().getByOperationId(id) != null)
                     rejectNextRequest(NextRequestException.Reason.INVALID_LOCAL_STATE)
+                trustedEffects = roundProof?.effects?.toMutableList()
                 NextOperationAcceptance.REPLAYED
             } else {
                 val verifiedOrigin = origin(access, NEXT_OPERATION, id)
@@ -309,8 +285,31 @@ internal class NextCoreRequestStore(
                 causal.requireHead(queue)
                 if (operation.action == "delete")
                     NextPlanDeletionStore(database).requireReady(queue)
+                val scopedSources = if ((roundOrigin == null || roundProof != null) && importProof == null && trusted?.context?.index?.get("global_common") ==
+                    kotlinx.serialization.json.JsonPrimitive(true)) CountTrustAck.Sources { index, table, where, args ->
+                    val context = requireNotNull(trusted).context
+                    if (where.isNotEmpty()) context.checked(index, table, where, args)
+                    else context.certified(index).onEach { row ->
+                        require(row.table.name == table && context.rows.byIdentity(table, row.identity)?.value == row.value) {
+                            "COUNT_TRUST_CONTENT_CHANGED"
+                        }
+                    }
+                } else null
+                val countAdapter = scopedSources?.let { CountTrustAck(database, it) { habit ->
+                    habit.habitType != com.dayforge.data.model.HabitType.CHECK_IN || requireNotNull(trusted).context.eligible(habit)
+                } }
+                val metricAdapter = scopedSources?.takeIf { trusted?.context?.observations == true }
+                    ?.let { CountTrustMetricAck(database, it) }
+                val countPlan = countAdapter?.let { adapter -> requireNotNull(trusted).context.index.withReadScope {
+                    adapter.prepare(change, operation, requireNotNull(access.deviceId), queue.id, System.currentTimeMillis())
+                } }
+                val metricPlan = if (countPlan != null) null else metricAdapter?.let { adapter ->
+                    requireNotNull(trusted).context.index.withReadScope {
+                        adapter.prepare(change, operation, requireNotNull(access.deviceId), queue.id, System.currentTimeMillis())
+                    }
+                }
                 auditShadow(change.entityType, change.entityUuid)
-                if (operation.action == "upsert" && change.entityType in setOf("activity_event", "metric_observation", "activity_metric_link")) {
+                if (countPlan == null && metricPlan == null && operation.action == "upsert" && change.entityType in setOf("activity_event", "metric_observation", "activity_metric_link")) {
                     // Common-fact revert validation reads historical shadows, including invisible events.
                     val ids = sql.query("SELECT entityUuid FROM sync_entity_state WHERE entityType='activity_event' LIMIT 10001").use { c ->
                         buildList { while (c.moveToNext()) {
@@ -321,7 +320,9 @@ internal class NextCoreRequestStore(
                     require(ids.size <= 10000)
                     ids.forEach { auditShadow("activity_event", it) }
                 }
-                if (operation.action == "delete") NextOrdinaryDeletionStore(database).acceptInTransaction(change, queue.id)
+                if (countPlan != null) trustedEffects = (roundProof?.effects.orEmpty() + requireNotNull(countAdapter).apply(countPlan)).toMutableList()
+                else if (metricPlan != null) trustedEffects = (roundProof?.effects.orEmpty() + requireNotNull(metricAdapter).apply(metricPlan)).toMutableList()
+                else if (operation.action == "delete") NextOrdinaryDeletionStore(database).acceptInTransaction(change, queue.id)
                 else when (operation.entityType) {
                     "plan_node", "metric" -> {
                         NextStructureStore(database).restoreInTransaction(listOf(change), queue.id)
@@ -344,10 +345,22 @@ internal class NextCoreRequestStore(
                     arrayOf(change.entityType, change.entityUuid)))
                 val receipt = NextAcceptanceEntity(NEXT_OPERATION, id, originHash, transmissionHash, nextRequestHash(bytes), resultJson)
                 dao.insertAcceptance(receipt)
+                if (trustedEffects != null) {
+                    val native = requireNotNull(trusted).context.rows
+                    val layout = native.table("next_acceptances")
+                    val fields = mapOf("kind" to receipt.kind, "requestId" to receipt.requestId, "originHash" to receipt.originHash,
+                        "transmissionHash" to receipt.transmissionHash, "resultHash" to receipt.resultHash, "resultJson" to receipt.resultJson)
+                    val expectedReceipt = CountTrustRows.Row(layout, layout.columns.map { name ->
+                        com.dayforge.data.local.CountTrustJournal.Cell(android.database.Cursor.FIELD_TYPE_STRING, fields.getValue(name)) })
+                    trustedEffects!!.add(CountTrustAck.Effect("next_acceptances", null, expectedReceipt))
+                }
                 check(NextRequestSql.rowHash(sql, "next_acceptances", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, id)) != null)
                 check(dao.acceptance(NEXT_OPERATION, id) == receipt)
                 check(NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(queue.id)) == rawOrigin.sourceHash)
+                val expectedQueue = if (trustedEffects == null) null else requireNotNull(trusted).context.rows
+                    .read("sync_outbox", "id=?", arrayOf(queue.id)).single()
                 database.syncOutboxDao().deleteById(queue.id)
+                expectedQueue?.let { trustedEffects!!.add(CountTrustAck.Effect("sync_outbox", it, null)) }
                 check(NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(queue.id)) == null &&
                     database.syncOutboxDao().getByOperationId(id) == null)
                 // Trigger faults must not rewrite durable original evidence while acknowledging.
@@ -373,8 +386,16 @@ internal class NextCoreRequestStore(
                 check(actual.first == currentCheckpoint.first && actual.second == mergedMetadata) { "SYNC_CHALLENGE_ACK_CHANGED" }
             }
             require(NextRecoveryAuditStore(database).validatedMembers(access) == terminals) { "RECOVERY_TERMINAL_CHANGED" }
+            trust.finish(trusted, CountTrustKernel.Mutation.ACK, trustedEffects, roundProof)
+            // Unknown connection/schema activity disables incrementality. The original merger
+            // checks before its writes; check the complete global closure again after callbacks
+            // so an unrecognised trigger cannot smuggle an unrelated invalid shadow past ACK.
+            if (com.dayforge.data.local.CountTrustRuntime.forDatabase(database)?.isRetired == true)
+                check(CountTrustAck.globalCommonHealth(database)) { "COUNT_ACK_UNCONTROLLED_FINAL_STATE" }
             authorize(access)
             outcome
+            }
+        }
         }
     }
 
@@ -464,6 +485,10 @@ internal class NextCoreRequestStore(
         authorize(access)
         database.withTransaction {
             val sql = database.openHelper.writableDatabase
+            val trust = CountTrustKernel(database, tokens, sessions)
+            val trustAccess = if (com.dayforge.data.local.CountTrustRuntime.forDatabase(database) == null) null else tokens.localCoreWriteAccess()
+            trust.withCapture(trustAccess?.takeIf { it.session == access.session && it.capturedDeviceId == access.deviceId }) { trusted ->
+            var timerProof: TimerTrustUpdate? = null
             // Global terminal health belongs at the entry boundary, not the recursive ancestor
             // reader: a missing member must not permit an old source to be resurrected.
             val terminals = NextRecoveryAuditStore(database).validatedMembers(access)
@@ -523,8 +548,13 @@ internal class NextCoreRequestStore(
                 }
                 NextTransmissionEntity(kind, id, origin.queueId, 5, origin.accountId,
                     requireNotNull(access.session.serverInstanceId), requireNotNull(access.session.syncEpoch),
-                    requireNotNull(access.deviceId), nextRequestHash(bytes), bytes).also { dao.insertTransmission(it) }
-            } else requireNotNull(dao.transmission(kind, id))
+                    requireNotNull(access.deviceId), nextRequestHash(bytes), bytes).also {
+                        if (kind == NEXT_TIMER) timerProof = TimerTrustAck(database).prepareSend(trusted, access, origin, it)
+                        dao.insertTransmission(it)
+                    }
+            } else requireNotNull(dao.transmission(kind, id)).also {
+                if (kind == NEXT_TIMER) timerProof = TimerTrustAck(database).prepareSend(trusted, access, origin, it)
+            }
             validate(origin, row, access)
             val proof = requireNotNull(NextRequestSql.rowHash(sql, "next_transmissions", "kind=? AND requestId=?", arrayOf(kind, id)))
             val stored = requireNotNull(dao.transmission(kind, id))
@@ -539,12 +569,15 @@ internal class NextCoreRequestStore(
             }
             NextRequestSql.requireOutboxEnabled(sql)
             require(NextRecoveryAuditStore(database).validatedMembers(access) == terminals) { "RECOVERY_TERMINAL_CHANGED" }
+            if (kind == NEXT_TIMER) trust.finishTimer(trusted, timerProof)
+            else trust.finish(trusted, CountTrustKernel.Mutation.SEND)
             authorize(access)
             require((if (kind == NEXT_OPERATION) roundOperationIntent(origin.intentJson) != null
                 else roundTimerIntent(origin.intentJson) != null) == challengeProfile)
             val declarations = if (kind == NEXT_OPERATION)
                 setOfNotNull(fixedMaterialAsset(decodeNextOperationIntent(origin.intentJson))) else emptySet()
             Prepared(stored, proof, challengeProfile, importProof, declarations, imports.requiredContent)
+            }
         }
     }
 
@@ -621,6 +654,6 @@ internal class NextCoreRequestStore(
         NextOriginalRequestProofStore(database).journal(origin, row, access)
 
     private suspend fun authorize(access: LocalSyncAccess) {
-        if (tokens.syncAuthenticationSnapshot(access) == null) rejectNextRequest(NextRequestException.Reason.STALE_ACCESS)
+        if (!tokens.isCurrentSyncAuthorityForValidation(access)) rejectNextRequest(NextRequestException.Reason.STALE_ACCESS)
     }
 }

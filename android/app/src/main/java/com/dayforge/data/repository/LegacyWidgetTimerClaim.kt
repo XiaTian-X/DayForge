@@ -21,6 +21,7 @@ data class LegacyWidgetTimerClaim internal constructor(
     internal val nextSequence: Int?,
     internal val incumbent: LegacyWidgetTimerIncumbent? = null
 ) {
+    internal val storageId: String? get() = identity.storageId
     internal fun validate() {
         LegacyWidgetRestartClaim.decode(identity.encode())
         require((sessionUuid == null) == (nextSequence == null))
@@ -28,7 +29,8 @@ data class LegacyWidgetTimerClaim internal constructor(
         incumbent?.let {
             LegacyWidgetRestartClaim.decode(it.identity.encode())
             require(isContractUuid(it.sessionUuid) && it.nextSequence > 1 && it.identity.habitId != identity.habitId)
-            require(it.identity.session() == identity.session() && it.identity.deviceId == identity.deviceId)
+            require(it.identity.session() == identity.session() && it.identity.deviceId == identity.deviceId &&
+                it.identity.storageId == identity.storageId)
         }
     }
     fun encode(): String = Json.encodeToString(this)

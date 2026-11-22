@@ -25,7 +25,9 @@ class WidgetUpdateWorker internal constructor(
     private val refreshActivityRates: suspend () -> Unit
 ) : CoroutineWorker(context, params) {
     constructor(context: Context, params: WorkerParameters) : this(context, params, {
-        com.dayforge.di.WidgetEntryPoint.from(context.applicationContext).activityRateRefresher().refresh()
+        com.dayforge.di.WidgetEntryPoint.withGraph(context.applicationContext) {
+            com.dayforge.di.WidgetEntryPoint.from(context.applicationContext).activityRateRefresher().refresh()
+        }
     })
 
     override suspend fun doWork(): Result = try {
@@ -42,6 +44,9 @@ class WidgetUpdateWorker internal constructor(
         Result.success()
     } catch (error: CancellationException) {
         throw error
+    } catch (_: com.dayforge.data.local.DatabaseRuntimeHost.SessionPreparationUnavailable) {
+        // Preparation is a visible local control action, never a midnight cache retry.
+        Result.failure()
     } catch (_: com.dayforge.data.repository.SyncProtocolException) {
         // A frozen/corrupt replica needs explicit recovery, not cache-write retry churn.
         Result.failure()

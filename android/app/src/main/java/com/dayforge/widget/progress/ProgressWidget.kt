@@ -23,7 +23,6 @@ import androidx.glance.text.Text
 import androidx.glance.text.TextAlign
 import androidx.glance.text.TextStyle
 import com.dayforge.R
-import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.di.WidgetEntryPoint
 import com.dayforge.widget.base.WidgetEmptyStates
 import com.dayforge.widget.timer.WidgetTimerRefreshCallback
@@ -60,7 +59,7 @@ class ProgressWidget : GlanceAppWidget() {
 
         private suspend fun prepareWidgetData(context: Context, id: GlanceId,
             publication: com.dayforge.data.repository.WidgetDisplayPublisher.Publication): suspend () -> Unit {
-            val database = HabitDatabaseProvider.getInstance(context.applicationContext)
+            val database = com.dayforge.di.WidgetEntryPoint.database(context.applicationContext)
             val habitDao = database.habitDao()
             val habitStatusCalculator = WidgetEntryPoint.calculator(context, database)
 

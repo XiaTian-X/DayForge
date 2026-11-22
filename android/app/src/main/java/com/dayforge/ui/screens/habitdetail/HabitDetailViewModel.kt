@@ -1,5 +1,7 @@
 package com.dayforge.ui.screens.habitdetail
 
+import kotlinx.coroutines.flow.stateIn
+
 import android.content.Context
 import android.widget.Toast
 import androidx.lifecycle.ViewModel
@@ -22,6 +24,7 @@ import com.dayforge.data.local.entity.TimeLogEntity
 import com.dayforge.data.model.HabitType
 import com.dayforge.data.model.StreakStats
 import com.dayforge.data.repository.HabitRepository
+import com.dayforge.ui.retryChangedHabitSnapshot
 import com.dayforge.domain.service.StreakCalculator
 import com.dayforge.util.DateTimeUtils
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -34,6 +37,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.DecimalFormat
@@ -63,6 +67,8 @@ data class HabitDetailUiState(
     val oneTimeStatus: com.dayforge.domain.model.OneTimeStatus? = null,
     val writeAuthority: com.dayforge.data.repository.ObjectEditAuthority? = null,
     val countHistory: com.dayforge.domain.model.CountHistory? = null,
+    val countActionIdentity: com.dayforge.domain.model.CountActionIdentity? = null,
+    val checkActionIdentity: com.dayforge.domain.model.CheckActionIdentity? = null,
     val activityRate: Int = 100,
     val targetProgress: Int = 0,  // Distinct days completed for habits with targetCycles
     val isLoading: Boolean = true,
@@ -72,54 +78,224 @@ data class HabitDetailUiState(
     val showReactivationDialog: Boolean = false,
     val reactivationHabitName: String = "",
     val reactivationPreservesHistory: Boolean = false,
+    val reactivationInput: com.dayforge.data.repository.HabitReactivationRequest? = null,
     // Metrics for GOAL habits: aggregated from self and children
     val metrics: List<MetricDisplayInfo> = emptyList(),
     // Per NOTIFY-04: Notification enabled state for this habit
     val notificationEnabled: Boolean = true,
-    val preferenceClaim: com.dayforge.data.repository.HabitPreferenceClaim? = null
+    val preferenceClaim: com.dayforge.data.repository.HabitPreferenceClaim? = null,
+    val sourceSelection: com.dayforge.data.local.DatabaseObjectSelection? = null
 )
 
 @HiltViewModel
-class HabitDetailViewModel @Inject constructor(
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+class HabitDetailViewModel internal constructor(
     @param:ApplicationContext private val context: Context,
-    private val habitRepository: HabitRepository,
+    habitRepository: HabitRepository?,
     private val preferencesManager: PreferencesManager,
-    private val timeLogDao: TimeLogDao,
-    private val completionDao: CompletionDao,
-    private val habitDao: HabitDao,
-    private val habitMetricLinkDao: HabitMetricLinkDao,
-    private val metricDao: MetricDao,
-    private val metricLogDao: MetricLogDao,
-    private val habitPreferences: com.dayforge.data.repository.HabitPreferenceRepository? = null
+    timeLogDao: TimeLogDao?,
+    completionDao: CompletionDao?,
+    habitDao: HabitDao?,
+    habitMetricLinkDao: HabitMetricLinkDao?,
+    metricDao: MetricDao?,
+    metricLogDao: MetricLogDao?,
+    habitPreferences: com.dayforge.data.repository.HabitPreferenceRepository? = null,
+    private val countActions: com.dayforge.domain.service.CountActionGate? = null,
+    private val databaseHost: com.dayforge.data.local.DatabaseRuntimeHost? = null,
+    private val linkedMetrics: com.dayforge.ui.metrics.LinkedMetricCoordinator? = null
 ) : ViewModel() {
+    private val fixedHabitRepository = habitRepository
+    private val habitRepository: HabitRepository get() = databaseHost?.boundGraph()?.habitRepository ?: requireNotNull(fixedHabitRepository)
+    private val fixedHabitPreferences = habitPreferences
+    private val habitPreferences: com.dayforge.data.repository.HabitPreferenceRepository? get() = databaseHost?.boundGraph()?.habitPreferenceRepository ?: fixedHabitPreferences
+
+    private val fixedTargetReads = if (databaseHost == null) com.dayforge.data.repository.HabitTargetReadRepository(
+        requireNotNull(habitDao), requireNotNull(timeLogDao), requireNotNull(completionDao),
+        requireNotNull(metricDao), requireNotNull(habitMetricLinkDao), requireNotNull(metricLogDao)) else null
+    private val targetReads: com.dayforge.data.repository.HabitTargetReadRepository
+        get() = databaseHost?.boundGraph()?.habitTargetReadRepository ?: requireNotNull(fixedTargetReads)
+
+    @Inject internal constructor(@ApplicationContext context: Context,
+        databaseHost: com.dayforge.data.local.DatabaseRuntimeHost,
+        preferencesManager: PreferencesManager,
+        countActions: com.dayforge.domain.service.CountActionGate,
+        linkedMetrics: com.dayforge.ui.metrics.LinkedMetricCoordinator
+    ) : this(context, null, preferencesManager, null, null, null, null, null, null, null,
+        countActions, databaseHost, linkedMetrics)
+
+    internal val fixedGraphConstruction: Boolean get() = databaseHost == null
+
+    val postCheckInFrame: StateFlow<com.dayforge.data.local.DatabaseEpochValue<com.dayforge.ui.metrics.LinkedMetricPromptState?>?> =
+        if (databaseHost != null && linkedMetrics != null) com.dayforge.ui.producerEpochFrameState(viewModelScope,
+            databaseHost, com.dayforge.ui.VisibleScreenSharing, linkedMetrics.postCheckInFrames, linkedMetrics::publishPromptFrame)
+        else MutableStateFlow(null)
+    val postCheckInState: StateFlow<com.dayforge.ui.metrics.LinkedMetricPromptState?> =
+        if (databaseHost == null && linkedMetrics != null) linkedMetrics.postCheckInState else MutableStateFlow(null)
+
+    private suspend fun <T> withMetricPrompt(frame: com.dayforge.data.local.DatabaseEpochValue<com.dayforge.ui.metrics.LinkedMetricPromptState?>?,
+        block: suspend (com.dayforge.ui.metrics.LinkedMetricCoordinator) -> T): T {
+        val owner = requireNotNull(linkedMetrics) { "COUNT_PROMPT_CONSUMER_REQUIRED" }
+        return if (databaseHost == null) block(owner) else databaseHost.withSourceGraph(frame?.publication) { block(owner) }
+    }
+    suspend fun recordCountMetrics(state: com.dayforge.ui.metrics.LinkedMetricPromptState,
+        values: List<com.dayforge.ui.components.MetricValueInput>, neverAsk: Boolean,
+        frame: com.dayforge.data.local.DatabaseEpochValue<com.dayforge.ui.metrics.LinkedMetricPromptState?>?) = withMetricPrompt(frame) { owner ->
+        if (!owner.recordMetricValues(state.habitId, values, expectedFactPrompt = state.factPrompt,
+            expectedPreferenceClaim = state.preferenceClaim, frame = frame, neverAskAgain = neverAsk)) return@withMetricPrompt false
+        com.dayforge.domain.service.afterCommittedAction {
+            if (neverAsk) owner.setNeverAskAgain(state.habitId, true, expectedFactPrompt = state.factPrompt,
+                expectedPreferenceClaim = state.preferenceClaim, frame = frame)
+            owner.closePrompt(state, frame)
+        }
+        true
+    }
+    suspend fun continueSavedCountMetrics(state: com.dayforge.ui.metrics.LinkedMetricPromptState,
+        frame: com.dayforge.data.local.DatabaseEpochValue<com.dayforge.ui.metrics.LinkedMetricPromptState?>?) = withMetricPrompt(frame) { owner ->
+        val prompt = requireNotNull(state.factPrompt)
+        val saved = requireNotNull(prompt.savedSubmissionForDisplay())
+        if (!owner.continueSavedMetricDelivery(state.habitId, prompt, frame)) return@withMetricPrompt false
+        com.dayforge.domain.service.afterCommittedAction {
+            if (saved.neverAskAgain) owner.setNeverAskAgain(state.habitId, true, expectedFactPrompt = prompt,
+                expectedPreferenceClaim = state.preferenceClaim, frame = frame)
+            owner.closePrompt(state, frame)
+        }
+        true
+    }
+    suspend fun skipCountMetrics(state: com.dayforge.ui.metrics.LinkedMetricPromptState, neverAsk: Boolean,
+        frame: com.dayforge.data.local.DatabaseEpochValue<com.dayforge.ui.metrics.LinkedMetricPromptState?>?) = withMetricPrompt(frame) { owner ->
+        if (neverAsk) owner.setNeverAskAgain(state.habitId, true, expectedFactPrompt = state.factPrompt,
+            expectedPreferenceClaim = state.preferenceClaim, frame = frame)
+        owner.skipPrompt(state.habitId, expectedFactPrompt = state.factPrompt, expectedPreferenceClaim = state.preferenceClaim, frame = frame)
+    }
+    suspend fun dismissCountMetrics(state: com.dayforge.ui.metrics.LinkedMetricPromptState,
+        frame: com.dayforge.data.local.DatabaseEpochValue<com.dayforge.ui.metrics.LinkedMetricPromptState?>?) =
+        withMetricPrompt(frame) { it.closePrompt(state, frame) }
+
 
     private val _uiState = MutableStateFlow(HabitDetailUiState())
     val uiState: StateFlow<HabitDetailUiState> = _uiState.asStateFlow()
 
-    private var currentHabitId: Long? = null
-    private var habitLoadJob: Job? = null
-    private var reactivationRequest: com.dayforge.data.repository.HabitReactivationRequest? = null
-    private var reactivationGeneration = 0
-    fun retryRead() {
-        val id = currentHabitId ?: return
-        dismissReactivationDialog()
-        currentHabitId = null
-        loadHabit(id) // Restart DAO/preferences subscriptions as well as the projection.
+    private val expiredSourceMessage = context.getString(R.string.database_view_expired)
+    private val presentationMonitor = Any()
+    @Volatile private var routeSelection: com.dayforge.data.local.DatabaseObjectSelection? = null
+    private val sourceListener = object : com.dayforge.data.local.DatabaseRuntimeHost.MemoryListener {
+        override fun transition(blocked: Boolean) {
+            val before = synchronized(presentationMonitor) { _uiState.value }
+            if (blocked || before.sourceSelection?.publication?.isCurrentInMemory() != true) {
+                // A synchronous memory fence only clears presentation. Host owns asynchronous
+                // cancellation/draining; no Room work or coroutine continuation runs here.
+                synchronized(presentationMonitor) { if (_uiState.value.sourceSelection === before.sourceSelection)
+                    _uiState.value = HabitDetailUiState(habitId = before.habitId, isLoading = false,
+                        readError = true, errorMessage = expiredSourceMessage)
+                }
+            }
+        }
+    }
+    private val sourceRegistration = databaseHost?.observeMemory(sourceListener)
+
+    private fun publishState(source: com.dayforge.data.local.DatabaseObjectSelection?,
+        next: () -> HabitDetailUiState): Boolean = if (databaseHost == null) {
+        synchronized(presentationMonitor) { _uiState.value = next() }; true
+    } else {
+        var assigned = false
+        source?.publication?.publish {
+            synchronized(presentationMonitor) { if (routeSelection === source) {
+                _uiState.value = next().copy(sourceSelection = source)
+                assigned = true
+            } }
+        }
+        assigned
     }
 
-    fun loadHabit(habitId: Long) {
+    private suspend fun <T> inSource(source: com.dayforge.data.local.DatabaseObjectSelection?,
+        work: com.dayforge.data.local.DatabaseRuntimeHost.Work = com.dayforge.data.local.DatabaseRuntimeHost.Work.COMMAND,
+        block: suspend () -> T): T {
+        val host = databaseHost ?: return block()
+        check(source != null && source.kind == com.dayforge.data.local.DatabaseObjectSelection.Kind.HABIT) {
+            "DATABASE_EPOCH_INPUT_REQUIRED"
+        }
+        return host.withSourceGraph(source.publication, work) { graph ->
+            source.requireHabit(requireNotNull(graph.habitTargetReadRepository.habit(source.id)))
+            block()
+        }
+    }
+
+    private var currentHabitId: Long? = null
+    // Undo feedback is not an ID-only ticket that may be rebound by a later account/round read.
+    private var lastCountCompletionIdentity: com.dayforge.domain.model.CountActionIdentity? = null
+    private data class CheckCompletionSource(
+        val completionId: Long,
+        val original: com.dayforge.domain.model.CheckActionIdentity,
+        val successor: com.dayforge.domain.model.CheckActionIdentity,
+        val successorDisplayed: Boolean
+    ) {
+        fun accepts(displayed: com.dayforge.domain.model.CheckActionIdentity?) =
+            displayed == successor || (!successorDisplayed && displayed == original)
+    }
+    private var lastCheckCompletionSource: CheckCompletionSource? = null
+    private var habitLoadJob: Job? = null
+    private var readsEnabled = true
+    fun pauseReads() {
+        readsEnabled = false
+        habitLoadJob?.cancel()
+        habitLoadJob = null
+        clearReactivationDialog()
+        // Preserve display/undo state, but recapture write claims before another typed action.
+        synchronized(presentationMonitor) {
+            _uiState.value = _uiState.value.copy(writeAuthority = null, oneTimeStatus = null, preferenceClaim = null,
+                countActionIdentity = null, checkActionIdentity = null)
+        }
+    }
+
+    fun resumeReads() {
+        if (readsEnabled) return
+        readsEnabled = true
+        val id = currentHabitId ?: return
+        currentHabitId = null
+        loadHabit(id, routeSelection)
+    }
+    private var reactivationRequest: com.dayforge.data.repository.HabitReactivationRequest? = null
+    private var reactivationGeneration = 0
+    fun retryRead(rendered: HabitDetailUiState? = null) {
+        if (databaseHost != null) {
+            val frame = actionFrame(rendered) ?: return
+            // An old error's retry must not close a later dialog or restart a newer page.
+            if (frame !== _uiState.value || !frame.readError) return
+        }
+        val id = currentHabitId ?: return
+        clearReactivationDialog()
+        currentHabitId = null
+        loadHabit(id, routeSelection) // Restart DAO/preferences subscriptions as well as the projection.
+    }
+
+    fun loadHabit(habitId: Long, sourceSelection: com.dayforge.data.local.DatabaseObjectSelection? = null) {
+        if (databaseHost != null && (sourceSelection == null || sourceSelection.id != habitId ||
+                sourceSelection.kind != com.dayforge.data.local.DatabaseObjectSelection.Kind.HABIT ||
+                !sourceSelection.publication.isCurrentInMemory())) {
+            habitLoadJob?.cancel()
+            _uiState.value = HabitDetailUiState(habitId = habitId, isLoading = false, readError = true,
+                errorMessage = context.getString(R.string.database_view_expired))
+            return
+        }
+        val sameRoute = routeSelection === sourceSelection
         // Reset if different habit to ensure fresh data load
-        if (currentHabitId != null && currentHabitId != habitId) {
+        if (currentHabitId != null && (currentHabitId != habitId || !sameRoute)) {
+            lastCountCompletionIdentity = null
+            lastCheckCompletionSource = null
             reactivationGeneration++
             reactivationRequest = null
             _uiState.value = HabitDetailUiState(habitId = habitId, isLoading = true)
         }
-        if (currentHabitId == habitId) return
+        if (currentHabitId == habitId && sameRoute) return
         habitLoadJob?.cancel()
         currentHabitId = habitId
+        routeSelection = sourceSelection
+
+        if (!readsEnabled) return
 
         habitLoadJob = viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, habitId = habitId)
+            try { inSource(sourceSelection, com.dayforge.data.local.DatabaseRuntimeHost.Work.OBSERVATION) {
+            publishState(sourceSelection) { _uiState.value.copy(isLoading = true, habitId = habitId) }
 
             // Combine habit info, completions, and notification setting for reactive updates
             // Per NOTIFY-04: Include notification preference to avoid nested collect leak
@@ -128,9 +304,11 @@ class HabitDetailViewModel @Inject constructor(
                 combine(habitRepository.getAllCompletions(), habitRepository.oneTimeChanges,
                     habitRepository.countChanges, preferencesManager.dateChangeTrigger) { rows, _, _, _ -> rows },
                 habitPreferences?.changes ?: kotlinx.coroutines.flow.flowOf(Unit)
-            ) { habit, allCompletions, _ ->
+            ) { habit, allCompletions, _ -> habit to allCompletions }
+                .mapLatest { (habit, allCompletions) ->
                 val notificationEnabled = true
                 try {
+                if (databaseHost != null && habit != null) requireNotNull(sourceSelection).requireHabit(habit)
                 val habitCompletions = allCompletions.filter { it.habitId == habitId }
                 val recurringSnapshot = habit?.takeIf { it.appearance != null && it.completionPolicy == "recurring" &&
                     it.habitType in setOf(HabitType.COUNTING, HabitType.CHECK_IN, HabitType.TIMER) }
@@ -146,9 +324,9 @@ class HabitDetailViewModel @Inject constructor(
                     else if (checkHistory != null) checkHistory.qualifiedDates.size
                     else if (timerHistory != null) timerHistory.qualifiedDates.size
                     else if (habit.habitType == HabitType.TIMER) {
-                        timeLogDao.getDistinctDayCount(habitId)
+                        targetReads.timeDayCount(habitId)
                     } else {
-                        completionDao.getDistinctDayCount(habitId)
+                        targetReads.completionDayCount(habitId)
                     }
                 } else {
                     0
@@ -180,7 +358,7 @@ class HabitDetailViewModel @Inject constructor(
                         display, timerHistory.logs, targetProgress, emptyList(), notificationEnabled,
                         recurringSnapshot = recurringSnapshot)
                 } else if (habit?.habitType == HabitType.TIMER) {
-                    val timeLogs = timeLogDao.getAllTimeLogsForHabit(habitId)
+                    val timeLogs = targetReads.timeHistory(habitId)
                     val targetSeconds = habit.targetValue * 60
 
                     // Get dates where target was met
@@ -218,11 +396,12 @@ class HabitDetailViewModel @Inject constructor(
                 }
                 } catch (error: Exception) {
                     if (error is kotlinx.coroutines.CancellationException) throw error
+                    if (error is com.dayforge.data.repository.HabitReadSnapshotChanged) throw error
                     android.util.Log.e("HabitDetail", "Cannot read personal data; retry remains available", error)
                     LoadResult(null, null, emptyList(), emptyList(), 0, emptyList(), notificationEnabled,
                         errorMessage = error.message ?: "HABIT_READ_UNAVAILABLE")
                 }
-            }.catch { error ->
+            }.retryChangedHabitSnapshot().catch { error ->
                 if (error is kotlinx.coroutines.CancellationException) throw error
                 android.util.Log.e("HabitDetail", "Read source failed; explicit retry restarts the subscription", error)
                 emit(LoadResult(null, null, emptyList(), emptyList(), 0, emptyList(), true,
@@ -234,19 +413,39 @@ class HabitDetailViewModel @Inject constructor(
                         ?.let { habitRepository.getHabitForEditing(it.id) }
                 } catch (error: Exception) {
                     if (error is kotlinx.coroutines.CancellationException) throw error
-                    _uiState.value = HabitDetailUiState(habitId = habitId, isLoading = false, readError = true,
-                        errorMessage = error.message)
+                    publishState(sourceSelection) { HabitDetailUiState(habitId = habitId, isLoading = false, readError = true,
+                        errorMessage = error.message) }
                     return@collect
                 }
                 if (captured != null && captured.value != result.habit) return@collect
+                val countIdentity = try {
+                    result.countHistory?.actionIdentity ?: result.habit
+                        ?.takeIf { it.appearance == null && it.habitType == HabitType.COUNTING }
+                        ?.let { habitRepository.legacyCountIdentity(it) }
+                } catch (error: Exception) {
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    publishState(sourceSelection) { HabitDetailUiState(habitId = habitId, isLoading = false, readError = true,
+                        errorMessage = error.message) }
+                    return@collect
+                }
                 val preference = try { result.habit?.let { habitPreferences?.read(it) } }
                 catch (error: Exception) {
                     if (error is kotlinx.coroutines.CancellationException) throw error
-                    _uiState.value = HabitDetailUiState(habitId = habitId, isLoading = false, readError = true,
-                        errorMessage = error.message)
+                    publishState(sourceSelection) { HabitDetailUiState(habitId = habitId, isLoading = false, readError = true,
+                        errorMessage = error.message) }
                     return@collect
                 }
-                _uiState.value = _uiState.value.copy(
+                val staleCountUndo = countIdentity != null && lastCountCompletionIdentity?.let {
+                    !sameCountScope(it, countIdentity)
+                } == true
+                if (staleCountUndo) lastCountCompletionIdentity = null
+                val checkIdentity = result.recurringSnapshot?.checkHistory?.actionIdentity
+                val staleCheckUndo = lastCheckCompletionSource?.let { !it.accepts(checkIdentity) } == true
+                if (staleCheckUndo) lastCheckCompletionSource = null
+                else lastCheckCompletionSource?.takeIf { it.successor == checkIdentity }?.let {
+                    lastCheckCompletionSource = it.copy(successorDisplayed = true)
+                }
+                publishState(sourceSelection) { _uiState.value.copy(
                     habit = result.habit,
                     writeAuthority = captured?.authority,
                     streakStats = result.streakStats,
@@ -258,13 +457,21 @@ class HabitDetailViewModel @Inject constructor(
                     preferenceClaim = preference?.claim,
                     oneTimeStatus = result.oneTimeStatus,
                     countHistory = result.countHistory,
+                    countActionIdentity = countIdentity,
+                    checkActionIdentity = checkIdentity,
                     activityRate = result.recurringSnapshot?.activityRate ?: result.habit?.activityRate ?: 100,
                     errorMessage = result.errorMessage,
                     readError = result.errorMessage != null,
                     lastCompletionId = if (result.oneTimeStatus != null) result.oneTimeStatus.completionId
+                        else if (staleCountUndo || staleCheckUndo) null
                         else _uiState.value.lastCompletionId,
                     isLoading = false
-                )
+                ) }
+            }
+            } } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                publishState(sourceSelection) { HabitDetailUiState(habitId = habitId, isLoading = false,
+                    readError = true, errorMessage = error.message) }
             }
         }
     }
@@ -276,15 +483,18 @@ class HabitDetailViewModel @Inject constructor(
      * @param habitId The ID of the habit
      * @param enabled True to enable notifications for this habit, false to disable
      */
-    fun toggleNotificationEnabled(claim: com.dayforge.data.repository.HabitPreferenceClaim, enabled: Boolean) {
+    fun toggleNotificationEnabled(claim: com.dayforge.data.repository.HabitPreferenceClaim, enabled: Boolean,
+        rendered: HabitDetailUiState? = null) {
+        val frame = actionFrame(rendered) ?: return
+        if (databaseHost != null && frame.preferenceClaim !== claim) return
         viewModelScope.launch {
-            try {
+            try { inSource(frame.sourceSelection) {
                 requireNotNull(habitPreferences).setNotification(claim, enabled)
                 if (_uiState.value.preferenceClaim === claim)
-                    _uiState.value = _uiState.value.copy(notificationEnabled = enabled)
-            } catch (error: Exception) {
+                    publishState(frame.sourceSelection) { _uiState.value.copy(notificationEnabled = enabled) }
+            } } catch (error: Exception) {
                 if (error is kotlinx.coroutines.CancellationException) throw error
-                _uiState.value = _uiState.value.copy(errorMessage = error.message)
+                publishState(frame.sourceSelection) { _uiState.value.copy(errorMessage = error.message) }
             }
         }
     }
@@ -299,14 +509,14 @@ class HabitDetailViewModel @Inject constructor(
         val todayEnd = DateTimeUtils.startOfNextDayMillis(todayStart)
 
         // Get metric links for the goal habit itself
-        val ownLinks = habitMetricLinkDao.getVisibleLinksForHabit(habit.id)
+        val ownLinks = targetReads.visibleLinks(habit.id)
 
         // Get children and their metric links
         val children = habit.uuid.let { parentUuid ->
-            habitDao.getChildrenByParentUuid(parentUuid).first()
+            targetReads.children(parentUuid).first()
         }
         val childLinks = children.flatMap { child ->
-            habitMetricLinkDao.getVisibleLinksForHabit(child.id)
+            targetReads.visibleLinks(child.id)
         }
 
         // Aggregate all links, deduplicate by metricId
@@ -316,17 +526,17 @@ class HabitDetailViewModel @Inject constructor(
 
         // Build MetricDisplayInfo for each unique metric
         allLinks.mapNotNull { link ->
-            val metric = metricDao.getVisibleMetricById(link.metricId)
+            val metric = targetReads.visibleMetric(link.metricId)
             if (metric == null) return@mapNotNull null
 
             // Get today's logs
-            val todayLogs = metricLogDao.getLogsInRangeSync(link.metricId, todayStart, todayEnd)
+            val todayLogs = targetReads.metricRange(link.metricId, todayStart, todayEnd)
 
             // Calculate current value (raw and formatted)
             val (formattedValue, rawValue) = calculateCurrentValueWithRaw(metric, todayLogs)
 
             // Get all logs to count tracked days
-            val allLogs = metricLogDao.getAllLogsForMetric(link.metricId)
+            val allLogs = targetReads.metricHistory(link.metricId)
             val trackedDays = allLogs.map { DateTimeUtils.startOfDayMillis(it.date) }.distinct().size
 
             // Calculate targetDays and achievementRate based on GOAL habit's targetCycles
@@ -436,45 +646,133 @@ class HabitDetailViewModel @Inject constructor(
         val recurringSnapshot: com.dayforge.data.repository.RecurringHabitSnapshot? = null
     )
 
-    fun logCompletion(value: Int = 1) {
-        val habitId = currentHabitId ?: return
-        val displayed = _uiState.value.habit
-        val authority = _uiState.value.writeAuthority
-        launchCompletion {
-            val completionId = if (displayed?.appearance != null && displayed.completionPolicy == "recurring")
-                habitRepository.logCompletion(context, habitId, value, requireNotNull(authority), displayed.uuid)
-            else habitRepository.logCompletion(context, habitId, value)
-            if (currentHabitId == habitId) {
-                _uiState.value = _uiState.value.copy(
-                    lastCompletionId = completionId
-                )
+    private fun actionFrame(rendered: HabitDetailUiState?): HabitDetailUiState? {
+        val frame = if (databaseHost == null) rendered ?: _uiState.value else rendered
+        if (databaseHost != null && (frame?.sourceSelection == null ||
+                frame.sourceSelection !== routeSelection || frame.habitId != currentHabitId ||
+                !frame.sourceSelection.publication.isCurrentInMemory())) {
+            Toast.makeText(context, R.string.database_view_expired, Toast.LENGTH_LONG).show()
+            return null
+        }
+        return frame
+    }
+
+    fun logCompletion(value: Int = 1, rendered: HabitDetailUiState? = null) {
+        val frame = actionFrame(rendered) ?: return
+        val habitId = frame.habitId
+        val displayed = frame.habit ?: return
+        if (frame.readError) return
+        val authority = frame.writeAuthority
+        val identity = frame.countActionIdentity
+        val checkIdentity = frame.checkActionIdentity
+        launchCompletion(identity, displayed.habitType == HabitType.COUNTING, frame.sourceSelection) {
+            val promptRequest = if (displayed.habitType == HabitType.COUNTING) linkedMetrics?.captureCompletionPrompt() else null
+            if (displayed.appearance != null && displayed.completionPolicy == "recurring" && displayed.habitType == HabitType.CHECK_IN)
+                requireNotNull(checkIdentity) { "CHECK_ACTION_REQUIRED" }
+            val checkSuccessor = checkIdentity?.completionSuccessor(displayed)
+            val mutation = if (displayed.appearance != null && displayed.completionPolicy == "recurring")
+                habitRepository.logCompletionWithReceipt(context, habitId, value, requireNotNull(authority), displayed.uuid,
+                    countIdentity = identity, checkIdentity = checkIdentity)
+            else habitRepository.logCompletionWithReceipt(context, habitId, value, expectedHabitUuid = displayed.uuid, countIdentity = identity)
+            val completionId = mutation.value
+            // A precomputed successor is never evidence that a cancelled/unknown write committed.
+            val checkSource = checkIdentity?.let {
+                CheckCompletionSource(completionId, it, requireNotNull(checkSuccessor),
+                    successorDisplayed = _uiState.value.checkActionIdentity == checkSuccessor)
+            }
+            if (currentHabitId == habitId && completionId != 0L && isCurrentCountDisplay(identity) &&
+                (checkSource == null || checkSource.accepts(_uiState.value.checkActionIdentity))) {
+                lastCountCompletionIdentity = identity
+                lastCheckCompletionSource = checkSource
+                val delivered = publishState(frame.sourceSelection) { _uiState.value.copy(lastCompletionId = completionId) }
+                if (delivered) mutation.command?.let { receipt ->
+                    com.dayforge.domain.service.afterCommittedAction {
+                        if (!receipt.requiresMetricFollowUp) habitRepository.acknowledgeCountResultDelivery(receipt)
+                        else if (linkedMetrics != null) {
+                            if (displayed.appearance != null) {
+                                val source = habitRepository.readCompletionAfterProjected(
+                                    com.dayforge.data.repository.CompletionActionSnapshot(
+                                        com.dayforge.data.repository.ObjectEditSnapshot(displayed, requireNotNull(authority))),
+                                    allowActivation = true, recordedCompletionId = completionId).followUp
+                                check(source.claim.completionUuid == receipt.factUuid) { "COMMAND_FOLLOWUP_SOURCE_CHANGED" }
+                                linkedMetrics.showCompletionPrompt(source, requireNotNull(promptRequest),
+                                    isCurrent = { currentHabitId == habitId && routeSelection === frame.sourceSelection && isCurrentCountDisplay(identity) },
+                                    command = receipt)
+                            } else linkedMetrics.showCountPrompt(requireNotNull(identity), displayed.name, receipt)
+                        }
+                    }
+                }
             }
         }
     }
 
-    fun undoCompletion() {
-        val habitId = currentHabitId ?: return
-        val completionId = _uiState.value.lastCompletionId ?: return
-        val authority = _uiState.value.oneTimeStatus?.authority
-        val recurringAuthority = _uiState.value.writeAuthority
-        launchCompletion {
-            habitRepository.undoCompletion(context, completionId, authority, recurringAuthority)
-            if (currentHabitId == habitId && _uiState.value.lastCompletionId == completionId) {
-                _uiState.value = _uiState.value.copy(
-                    lastCompletionId = null
-                )
+    fun undoCompletion(rendered: HabitDetailUiState? = null) {
+        val frame = actionFrame(rendered) ?: return
+        val habitId = frame.habitId
+        val displayed = frame.habit ?: return
+        if (frame.readError) return
+        val completionId = frame.lastCompletionId ?: return
+        val authority = frame.oneTimeStatus?.authority
+        val recurringAuthority = frame.writeAuthority
+        val identity = frame.countActionIdentity
+        val isTypedCheck = displayed.habitType == HabitType.CHECK_IN && displayed.appearance != null &&
+            displayed.completionPolicy == "recurring"
+        val checkSource = if (isTypedCheck) lastCheckCompletionSource?.takeIf {
+            it.completionId == completionId && it.accepts(_uiState.value.checkActionIdentity)
+        } ?: return else null
+        // A fresh authority may validate the saved successor, but cannot define a new undo identity.
+        val checkIdentity = checkSource?.successor
+        val undoAuthority = if (checkSource != null && _uiState.value.checkActionIdentity != checkIdentity)
+            null else recurringAuthority
+        if (displayed.habitType == HabitType.COUNTING && countActions != null &&
+            (identity == null || lastCountCompletionIdentity?.let { sameCountScope(it, identity) } != true)) return
+        launchCompletion(identity, displayed.habitType == HabitType.COUNTING, frame.sourceSelection) {
+            if (displayed.appearance != null && displayed.completionPolicy == "recurring" && displayed.habitType == HabitType.CHECK_IN)
+                requireNotNull(checkIdentity) { "CHECK_ACTION_REQUIRED" }
+            val mutation = habitRepository.undoCompletionWithReceipt(context, completionId, authority, undoAuthority,
+                countIdentity = identity, checkIdentity = checkIdentity)
+            if (currentHabitId == habitId && _uiState.value.lastCompletionId == completionId && isCurrentCountDisplay(identity) &&
+                (checkSource == null || checkSource.accepts(_uiState.value.checkActionIdentity))) {
+                lastCountCompletionIdentity = null
+                lastCheckCompletionSource = null
+                val delivered = publishState(frame.sourceSelection) { _uiState.value.copy(lastCompletionId = null) }
+                if (delivered) mutation.command?.let { receipt ->
+                    com.dayforge.domain.service.afterCommittedAction { habitRepository.acknowledgeCountResultDelivery(receipt) }
+                }
             }
         }
     }
 
-    private fun launchCompletion(block: suspend () -> Unit) {
-        viewModelScope.launch {
-            try { block() }
+    private val completionActions = com.dayforge.ui.InFlightActions()
+    val busyHabitIds = countActions?.let { gate ->
+        combine(completionActions.active, gate.busyHabitIds) { local, shared -> local + shared }
+            .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, emptySet())
+    } ?: completionActions.active
+
+    private fun isCurrentCountDisplay(identity: com.dayforge.domain.model.CountActionIdentity?): Boolean =
+        identity == null || _uiState.value.countActionIdentity?.let {
+            (countActions == null || countActions.isCurrent(identity)) && sameCountScope(it, identity)
+        } == true
+
+    private fun sameCountScope(first: com.dayforge.domain.model.CountActionIdentity,
+        second: com.dayforge.domain.model.CountActionIdentity) = first.session == second.session &&
+        first.deviceId == second.deviceId && first.habitId == second.habitId &&
+        first.habitUuid == second.habitUuid && first.roundHead == second.roundHead
+
+    private fun launchCompletion(identity: com.dayforge.domain.model.CountActionIdentity? = null,
+        isCount: Boolean = false, source: com.dayforge.data.local.DatabaseObjectSelection? = null,
+        block: suspend () -> Unit) {
+        val id = currentHabitId ?: return
+        val operation: suspend () -> Unit = {
+            try { inSource(source) { block() } }
             catch (error: Exception) {
                 if (error is kotlinx.coroutines.CancellationException) throw error
-                _uiState.value = _uiState.value.copy(errorMessage = error.message)
+                publishState(source) { _uiState.value.copy(errorMessage = error.message) }
             }
         }
+        if (isCount && countActions != null) {
+            if (identity != null) countActions.launch(viewModelScope, identity, operation)
+        } else completionActions.launch(viewModelScope, id, block = operation)
     }
 
     /**
@@ -500,9 +798,9 @@ class HabitDetailViewModel @Inject constructor(
         } else if (habit.habitType == HabitType.TIMER && habit.appearance != null) {
             habitRepository.getTimerHistory(habit).qualifiedDates.size
         } else if (habit.habitType == HabitType.TIMER) {
-            timeLogDao.getDistinctDayCount(habit.id)
+            targetReads.timeDayCount(habit.id)
         } else {
-            completionDao.getDistinctDayCount(habit.id)
+            targetReads.completionDayCount(habit.id)
         }
 
         // Block deactivation if there's progress
@@ -515,10 +813,11 @@ class HabitDetailViewModel @Inject constructor(
      * Per TARGET-02: For reactivation of target-based habits, shows confirmation dialog first.
      * Syncs to server if user is logged in.
      */
-    fun toggleActiveStatus() {
-        launchCompletion {
-            currentHabitId?.let { habitId ->
-                val habit = _uiState.value.habit ?: return@let
+    fun toggleActiveStatus(rendered: HabitDetailUiState? = null) {
+        val frame = actionFrame(rendered) ?: return
+        launchCompletion(source = frame.sourceSelection) {
+            frame.habit?.let { habit ->
+                val habitId = habit.id
                 val newIsActive = !habit.isActive
 
                 // If trying to deactivate, validate first
@@ -541,16 +840,17 @@ class HabitDetailViewModel @Inject constructor(
                     val request = habitRepository.prepareReactivation(habit)
                     if (currentHabitId != habitId || generation != reactivationGeneration) return@let
                     reactivationRequest = request
-                    _uiState.value = _uiState.value.copy(
+                    publishState(frame.sourceSelection) { _uiState.value.copy(
                         showReactivationDialog = true,
                         reactivationHabitName = habit.name,
-                        reactivationPreservesHistory = request.preservesHistory
-                    )
+                        reactivationPreservesHistory = request.preservesHistory,
+                        reactivationInput = request
+                    ) }
                     return@let
                 }
 
                 // Direct toggle for non-target habits or deactivation
-                performToggleActive(habitId, newIsActive)
+                performToggleActive(habit, newIsActive)
             }
         }
     }
@@ -559,9 +859,11 @@ class HabitDetailViewModel @Inject constructor(
      * Confirms the captured restart; challenge profiles retain all previous facts.
      * Per TARGET-02: Called when user confirms the reactivation dialog.
      */
-    fun confirmReactivation() {
-        val request = reactivationRequest ?: return
-        launchCompletion {
+    fun confirmReactivation(rendered: HabitDetailUiState? = null) {
+        val frame = actionFrame(rendered) ?: return
+        val request = if (databaseHost == null) reactivationRequest else frame.reactivationInput
+        if (request == null || request !== reactivationRequest) return
+        launchCompletion(source = frame.sourceSelection) {
             if (currentHabitId == request.habit.id) {
                 habitRepository.reactivate(request, context)
                 Toast.makeText(
@@ -570,7 +872,7 @@ class HabitDetailViewModel @Inject constructor(
                     Toast.LENGTH_SHORT
                 ).show()
             }
-            if (reactivationRequest === request) dismissReactivationDialog()
+            if (reactivationRequest === request) dismissReactivationDialog(frame)
         }
     }
 
@@ -578,14 +880,21 @@ class HabitDetailViewModel @Inject constructor(
      * Dismisses the reactivation confirmation dialog without making changes.
      * Per TARGET-02: Called when user cancels the reactivation dialog.
      */
-    fun dismissReactivationDialog() {
+    fun dismissReactivationDialog(rendered: HabitDetailUiState? = null) {
+        val frame = actionFrame(rendered) ?: return
+        if (rendered != null && (frame.reactivationInput !== reactivationRequest ||
+                frame.sourceSelection !== _uiState.value.sourceSelection)) return
+        clearReactivationDialog()
+    }
+    private fun clearReactivationDialog() {
         reactivationGeneration++
         reactivationRequest = null
-        _uiState.value = _uiState.value.copy(
+        synchronized(presentationMonitor) { _uiState.value = _uiState.value.copy(
             showReactivationDialog = false,
             reactivationHabitName = "",
-            reactivationPreservesHistory = false
-        )
+            reactivationPreservesHistory = false,
+            reactivationInput = null
+        ) }
     }
 
     /**
@@ -593,11 +902,12 @@ class HabitDetailViewModel @Inject constructor(
      * @param habitId The ID of the habit
      * @param newIsActive The new active status
      */
-    private suspend fun performToggleActive(habitId: Long, newIsActive: Boolean) {
+    private suspend fun performToggleActive(habit: HabitEntity, newIsActive: Boolean) {
         habitRepository.updateIsActive(
-            habitId = habitId,
+            habitId = habit.id,
             isActive = newIsActive,
-            context = context
+            context = context,
+            expectedHabitUuid = habit.uuid
         )
     }
 

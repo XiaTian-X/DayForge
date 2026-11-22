@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 import unittest
 
-from tools.run_android_tests import SHARDS, SHARD_TIMEOUT_SECONDS, TARGETED_TIMEOUT_SECONDS
+from tools.run_android_tests import SHARDS, SHARD_TIMEOUT_SECONDS, TARGETED_TIMEOUT_SECONDS, TARGETED_MAX_TIMEOUT_SECONDS
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -75,7 +75,8 @@ class CiCapacityTest(unittest.TestCase):
         self.assertEqual(2700, TARGETED_TIMEOUT_SECONDS)
         runner = (ROOT / "tools/run_android_tests.py").read_text()
         self.assertRegex(runner, r"\n\s+SHARD_TIMEOUT_SECONDS,\n")
-        self.assertRegex(runner, r"\n\s+TARGETED_TIMEOUT_SECONDS,\n")
+        self.assertRegex(runner, r"\n\s+self\.targeted_timeout_seconds,\n")
+        self.assertEqual(10800, TARGETED_MAX_TIMEOUT_SECONDS)
         self.assert_native_task_capacity((ROOT / "android/app/build.gradle.kts").read_text())
         testing = (ROOT / "docs/TESTING.md").read_text()
         self.assertIn("完整三片每片上限180分钟，定向批次仍45分钟", testing)
@@ -92,7 +93,13 @@ class CiCapacityTest(unittest.TestCase):
         self.assertIn('step("explicit consent and confirmed replica switch")', source)
         self.assertIn('step("explicit bounded material resume and final release", timeoutMillis = 90_000)', source)
         self.assertIn('click("replica-recovery-resume", timeoutMillis = 90_000)', source)
-        self.assertIn('val settled = settle(timeoutMillis)', source)
+        self.assertIn('withTimeout(timeoutMillis) { model.state.first { it.checked && !it.busy } }', source)
+        self.assertIn('val settled = if (tag == "replica-recovery-close") {\n'
+                      '            withTimeout(timeoutMillis) { model.state.first { !it.visible && !it.busy } }\n'
+                      '        } else settle(timeoutMillis)', source)
+        self.assertIn('compose.onNodeWithTag(tag).performClick()', source)
+        self.assertIn('click("replica-recovery-close")\n'
+                      '            compose.onNodeWithTag("replica-recovery-list").assertDoesNotExist()', source)
         causal = (ROOT / "android/app/src/androidTest/java/com/dayforge/data/repository/"
                   "NextStructuralCausalStoreTest.kt").read_text()
         self.assertEqual(["180_000"], re.findall(r"@Test\(timeout = (\d[\d_]*)\)", causal))
@@ -100,27 +107,37 @@ class CiCapacityTest(unittest.TestCase):
                       "oneTransactionCapturesThirtyTwoOrderedOriginsWithoutGuessingIntermediateProjection()", causal)
 
     def assert_native_task_capacity(self, gradle):
+        targeted = re.search(
+            r'val targetedDeviceTestTimeoutSeconds = providers\.gradleProperty\("dayforge.targetedTimeoutSeconds"\)'
+            r'\.map \{ value ->\s*require\(value\.matches\(Regex\("\[1-9\]\[0-9\]\{3,4\}"\)\)\) '
+            r'\{ "Targeted timeout must be an integer from 2700 to 10800" \}\s*'
+            r'value\.toLong\(\)\.also \{ require\(it in (\d+)L\.\.(\d+)L\) '
+            r'\{ "Targeted timeout must be an integer from 2700 to 10800" \} \}\s*'
+            r'\}\.orElse\((\d+)L\)', gradle,
+        )
+        self.assertIsNotNone(targeted, "missing bounded native targeted capacity parser")
+        self.assertEqual((TARGETED_TIMEOUT_SECONDS, TARGETED_MAX_TIMEOUT_SECONDS, TARGETED_TIMEOUT_SECONDS),
+                         tuple(map(int, targeted.groups())))
+        self.assertEqual(1, gradle.count('gradleProperty("dayforge.targetedTimeoutSeconds")'))
         capacity = re.search(
             r'val physicalDeviceTestTimeoutSeconds = providers\.gradleProperty\("dayforge.deviceTestScope"\)'
             r'\.map \{ scope ->\s*when \(scope\) \{\s*"full" -> (\d+)L\s*'
-            r'"targeted" -> (\d+)L\s*else -> error\("Unknown DayForge device test scope"\)\s*'
-            r'\}\s*\}\.orElse\((\d+)L\)',
-            gradle,
+            r'"targeted" -> targetedDeviceTestTimeoutSeconds\.get\(\)\s*else -> error\("Unknown DayForge device test scope"\)\s*'
+            r'\}\s*\}\.orElse\((\d+)L\)', gradle,
         )
         self.assertIsNotNone(capacity, "missing explicit full/targeted native capacities")
-        self.assertEqual(
-            (SHARD_TIMEOUT_SECONDS, TARGETED_TIMEOUT_SECONDS, TARGETED_TIMEOUT_SECONDS),
-            tuple(map(int, capacity.groups())),
-        )
+        self.assertEqual((SHARD_TIMEOUT_SECONDS, TARGETED_TIMEOUT_SECONDS), tuple(map(int, capacity.groups())))
         self.assertEqual(1, gradle.count('gradleProperty("dayforge.deviceTestScope")'))
-        task = re.search(
-            r'tasks\.matching \{ it\.name == "connectedDeviceTestAndroidTest" \}'
-            r"\.configureEach \{\s*timeout\.set\(physicalDeviceTestTimeoutSeconds\.map "
-            r"\{ Duration\.ofSeconds\(it\) \}\)\s*\}",
-            gradle,
-        )
-        self.assertIsNotNone(task, "missing exact native task capacity")
-        self.assertEqual(1, gradle.count("timeout.set("))
+        native_tasks = ("connectedDeviceTestAndroidTest", "connectedReleaseCalibrationAndroidTest")
+        for name in native_tasks:
+            task = re.search(
+                r'tasks\.matching \{ it\.name == "' + re.escape(name) + r'" \}'
+                r"\.configureEach \{\s*timeout\.set\(physicalDeviceTestTimeoutSeconds\.map "
+                r"\{ Duration\.ofSeconds\(it\) \}\)\s*\}",
+                gradle,
+            )
+            self.assertIsNotNone(task, "missing exact native task capacity: " + name)
+        self.assertEqual(len(native_tasks), gradle.count("timeout.set("))
         self.assertIn('testInstrumentationRunnerArguments["timeout_msec"] = "150000"', gradle)
 
     def test_native_task_guard_rejects_stale_or_mismatched_limits(self):
@@ -128,12 +145,23 @@ class CiCapacityTest(unittest.TestCase):
         for broken in (
             gradle.replace('"full" -> 10800L', '"full" -> 2700L'),
             gradle.replace('"full" -> 10800L', '"full" -> 1500L'),
-            gradle.replace('"targeted" -> 2700L', '"targeted" -> 10800L'),
-            gradle.replace('"targeted" -> 2700L', '"targeted" -> 900L'),
+            gradle.replace('"targeted" -> targetedDeviceTestTimeoutSeconds.get()', '"targeted" -> 2700L'),
+            gradle.replace('"targeted" -> targetedDeviceTestTimeoutSeconds.get()', '"targeted" -> 10800L'),
+            gradle.replace('2700L..10800L', '900L..10800L'),
+            gradle.replace('2700L..10800L', '2700L..10801L'),
+            gradle.replace('[1-9][0-9]{3,4}', '[0-9]+'),
+            gradle.replace('value.toLong()', 'value.toDouble().toLong()'),
             gradle.replace("orElse(2700L)", "orElse(10800L)"),
             gradle.replace('else -> error("Unknown DayForge device test scope")', 'else -> 10800L'),
             gradle.replace("Duration.ofSeconds(it)", "Duration.ofMinutes(it)"),
             gradle.replace("connectedDeviceTestAndroidTest", "connectedDebugAndroidTest"),
+            gradle.replace("connectedReleaseCalibrationAndroidTest", "connectedReleaseAndroidTest"),
+            gradle.replace(
+                'tasks.matching { it.name == "connectedReleaseCalibrationAndroidTest" }.configureEach {\n'
+                '    timeout.set(physicalDeviceTestTimeoutSeconds.map { Duration.ofSeconds(it) })',
+                'tasks.matching { it.name == "connectedReleaseCalibrationAndroidTest" }.configureEach {\n'
+                '    timeout.set(physicalDeviceTestTimeoutSeconds.map { Duration.ofSeconds(10800) })',
+            ),
             gradle.replace("timeout.set(physicalDeviceTestTimeoutSeconds.map { Duration.ofSeconds(it) })", ""),
             gradle.replace('= "150000"', '= "180000"'),
             gradle + "\ntimeout.set(Duration.ofSeconds(900))\n",

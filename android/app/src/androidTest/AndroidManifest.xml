@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- AGP injects the configured default runner into the FIRST instrumentation node.
+         Keep Hilt first, the original COUNT driver second, and the fixed Replica driver third.
+         All entries are restricted to the existing isolated testbed target/process. -->
+    <instrumentation
+        android:name="com.dayforge.HiltTestRunner"
+        android:targetPackage="com.dayforge.testbed"
+        android:targetProcesses="com.dayforge.testbed"
+        android:functionalTest="true"
+        android:handleProfiling="false" />
+    <instrumentation
+        android:name="com.dayforge.CountCommandProcessDriver"
+        android:targetPackage="com.dayforge.testbed"
+        android:targetProcesses="com.dayforge.testbed"
+        android:functionalTest="true"
+        android:handleProfiling="false" />
+    <instrumentation
+        android:name="com.dayforge.ReplicaCompletionProcessDriver"
+        android:targetPackage="com.dayforge.testbed"
+        android:targetProcesses="com.dayforge.testbed"
+        android:functionalTest="true"
+        android:handleProfiling="false" />
+    <!-- Fixed two-physical-installation acceptance; does not emit JUnit/P1/P2 passes. -->
+    <instrumentation
+        android:name="com.dayforge.DualPhysicalDriver"
+        android:targetPackage="com.dayforge.testbed"
+        android:targetProcesses="com.dayforge.testbed"
+        android:functionalTest="true"
+        android:handleProfiling="false" />
+</manifest>

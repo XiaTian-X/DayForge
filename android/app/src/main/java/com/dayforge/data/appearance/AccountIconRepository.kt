@@ -144,6 +144,15 @@ internal class AccountIconRepository(
         return scoped(context) { catalog(context.namespace).assets[assetId] }
     }
 
+    /** Immutable metadata for one creation graph; scoped still checks fresh authority at both ends. */
+    internal suspend fun assets(context: AccountIconContext, assetIds: Set<String>): Map<String, IconAsset?> {
+        require(assetIds.all(::isContractUuid))
+        return scoped(context) {
+            val current = catalog(context.namespace).assets
+            assetIds.associateWith { current[it] }
+        }
+    }
+
     suspend fun pack(context: AccountIconContext, packId: String, revision: Int): IconPack? {
         require(isContractUuid(packId) && revision > 0)
         return scoped(context) { catalog(context.namespace).packs[packId to revision] }

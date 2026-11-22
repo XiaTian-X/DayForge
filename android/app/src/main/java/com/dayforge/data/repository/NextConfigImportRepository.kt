@@ -73,8 +73,7 @@ internal class NextConfigImportRepository @Inject constructor(
         guarded(preview.original.context) {
             journal.requireNoOtherPending()
             val current = inspectReplacement(preview.original)
-            check(current.fingerprint == preview.fingerprint && current.counts == preview.counts &&
-                current.blockers == preview.blockers) { "CONFIG_REPLACEMENT_PREVIEW_CHANGED" }
+            check(current.sameContents(preview)) { "CONFIG_REPLACEMENT_PREVIEW_CHANGED" }
             check(current.eligible) { "CONFIG_REPLACEMENT_NOT_READY" }
         }
     }
@@ -84,8 +83,7 @@ internal class NextConfigImportRepository @Inject constructor(
         guarded(preview.original.context) {
             journal.requireNoOtherPending(); journal.requireNoActiveReplacement()
             val current = inspectReplacement(preview.original)
-            check(current.fingerprint == preview.fingerprint && current.counts == preview.counts &&
-                current.blockers == preview.blockers) { "CONFIG_REPLACEMENT_PREVIEW_CHANGED" }
+            check(current.sameContents(preview)) { "CONFIG_REPLACEMENT_PREVIEW_CHANGED" }
             check(current.eligible) { "CONFIG_REPLACEMENT_NOT_READY" }
             val plan = NextConfigImportPlan(preview.original.source, NextConfigImportPlan.allocate(preview.original.source,
                 ConfigImportTarget.from(preview.original.context), Instant.now()))

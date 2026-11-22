@@ -13,7 +13,7 @@ internal enum class ReplicaCatchupFate { PREVIOUS, COMMITTED }
 internal enum class ReplicaReleaseFate { FROZEN, CLOSED }
 
 /** Dedicated SQL replacement, not a callback/ordinary writer override. The durable pointer and
- * SQL fence remain active throughout and after COMMIT. Exactly the approved 105 business guards
+ * SQL fence remain active throughout and after COMMIT. Exactly the approved business/local guards
  * are removed/restored inside ONE SQLite transaction; other connections never see absent guards.
  * Actual complete target tables and new checkpoint prove COMMIT, not a UI/DS phase or cursor alone.
  * Rollback restores both original data and DDL. No DDL or files/HTTP escape this transaction.
@@ -25,44 +25,49 @@ internal class NextReplicaCommitStore(private val database: HabitDatabase, priva
         return sessions.exclusive { database.withTransaction { fateInTransaction(stage) } }
     }
 
-    internal suspend fun fateInTransaction(stage: ReplicaSwitchStage, allowClosedOld: Boolean = false): ReplicaCommitFate {
-        check(database.inTransaction())
-        require(stage.phase in setOf(ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED,
-            ReplicaSwitchPhase.DESTINATION_BOUND, ReplicaSwitchPhase.CATCHUP_BOUND))
-        val fence = ReplicaPresentationRepository(database, tokens, sessions).readFenceInTransaction()
-        check(fence == stage.fence || allowClosedOld && fence == stage.fence.copy(mode = com.dayforge.data.local.entity.NextReplicaFenceEntity.CLOSED)) {
-            "SYNC_REPLICA_FENCE_CHANGED"
-        }
-        val snapshot = stage.publishedSnapshot
-        require(ReplicaProjection.schemaHash(database) == snapshot.target.schemaHash) { "SYNC_REPLICA_FENCE_CHANGED" }
-        if (fence == stage.fence && matches(stage, snapshot)) return ReplicaCommitFate.COMMITTED
-        require(stage.phase != ReplicaSwitchPhase.CATCHUP_BOUND) { "SYNC_REPLICA_COMMIT_STATE_INVALID" }
-        val state = database.nextSyncStateDao().rows().singleOrNull()
-        val source = NextReplicaStorageProof(database).readInTransaction()
-        require(NextReplicaSourceClosure.storage(source, requireNotNull(fence)) == stage.sourceHash &&
-            state != null && state.accountId == stage.accountId && state.serverInstanceId == stage.serverInstanceId && state.syncEpoch == stage.oldEpoch) {
-            "SYNC_REPLICA_COMMIT_STATE_INVALID"
-        }
-        return ReplicaCommitFate.OLD
+    internal suspend fun fateInTransaction(stage: ReplicaSwitchStage, allowClosedOld: Boolean = false): ReplicaCommitFate =
+        ReplicaStorageSnapshot.inspect(database) { observed -> fateInSnapshot(stage, allowClosedOld, observed) }
+
+    private suspend fun fateInSnapshot(stage: ReplicaSwitchStage, allowClosedOld: Boolean,
+        observed: ReplicaStorageSnapshot?): ReplicaCommitFate {
+            require(stage.phase in setOf(ReplicaSwitchPhase.COMMITTING, ReplicaSwitchPhase.SQL_COMMITTED,
+                ReplicaSwitchPhase.DESTINATION_BOUND, ReplicaSwitchPhase.CATCHUP_BOUND))
+            val fence = ReplicaPresentationRepository(database, tokens, sessions).readFenceInTransaction()
+            check(fence == stage.fence || allowClosedOld && fence == stage.fence.copy(mode = com.dayforge.data.local.entity.NextReplicaFenceEntity.CLOSED)) {
+                "SYNC_REPLICA_FENCE_CHANGED"
+            }
+            val snapshot = stage.publishedSnapshot
+            require(matchesSchema(snapshot.target.schemaHash, observed)) { "SYNC_REPLICA_FENCE_CHANGED" }
+            if (fence == stage.fence && matches(stage, snapshot, observed)) return ReplicaCommitFate.COMMITTED
+            require(stage.phase != ReplicaSwitchPhase.CATCHUP_BOUND) { "SYNC_REPLICA_COMMIT_STATE_INVALID" }
+            val state = database.nextSyncStateDao().rows().singleOrNull()
+            val source = observed?.storage(database) ?: NextReplicaStorageProof(database).readInTransaction()
+            require(NextReplicaSourceClosure.matchesStorage(source, requireNotNull(fence), stage.sourceHash) &&
+                state != null && state.accountId == stage.accountId && state.serverInstanceId == stage.serverInstanceId && state.syncEpoch == stage.oldEpoch) {
+                "SYNC_REPLICA_COMMIT_STATE_INVALID"
+            }
+            return ReplicaCommitFate.OLD
     }
 
     /** Both sides are complete typed SQL/checkpoint proofs. An intent or DS cursor is not fate. */
-    internal suspend fun catchupFateInTransaction(stage: ReplicaSwitchStage): ReplicaCatchupFate {
-        check(database.inTransaction())
-        require(stage.phase == ReplicaSwitchPhase.CATCHUP_COMMITTING)
-        val control = ReplicaPresentationRepository(database, tokens, sessions).inspectWhileAccountLocked()
-        check(control.problem == ReplicaPresentationProblem.RECOVERY_PENDING && control.phase == stage.phase &&
-            tokens.activeReplicaStage() == stage && database.nextReplicaFenceDao().state() == stage.fence) {
-            "SYNC_REPLICA_STAGE_CHANGED"
+    internal suspend fun catchupFateInTransaction(stage: ReplicaSwitchStage): ReplicaCatchupFate =
+        ReplicaStorageSnapshot.inspect(database) { observed ->
+            require(stage.phase == ReplicaSwitchPhase.CATCHUP_COMMITTING)
+            val presentation = ReplicaPresentationRepository(database, tokens, sessions)
+            val control = if (observed == null) presentation.inspectWhileAccountLocked()
+                else presentation.inspectInTransactionWhileAccountLocked()
+            check(control.problem == ReplicaPresentationProblem.RECOVERY_PENDING && control.phase == stage.phase &&
+                tokens.activeReplicaStage() == stage && database.nextReplicaFenceDao().state() == stage.fence) {
+                "SYNC_REPLICA_STAGE_CHANGED"
+            }
+            val intent = requireNotNull(stage.catchup)
+            require(matchesSchema(intent.previous.target.schemaHash, observed)) { "SYNC_REPLICA_FENCE_CHANGED" }
+            when {
+                matches(stage, intent.next, observed) -> ReplicaCatchupFate.COMMITTED
+                matches(stage, intent.previous, observed) -> ReplicaCatchupFate.PREVIOUS
+                else -> error("SYNC_REPLICA_CATCHUP_STATE_INVALID")
+            }
         }
-        val intent = requireNotNull(stage.catchup)
-        require(ReplicaProjection.schemaHash(database) == intent.previous.target.schemaHash) { "SYNC_REPLICA_FENCE_CHANGED" }
-        return when {
-            matches(stage, intent.next) -> ReplicaCatchupFate.COMMITTED
-            matches(stage, intent.previous) -> ReplicaCatchupFate.PREVIOUS
-            else -> error("SYNC_REPLICA_CATCHUP_STATE_INVALID")
-        }
-    }
 
     suspend fun catchupFate(stage: ReplicaSwitchStage): ReplicaCatchupFate {
         check(!database.inTransaction()) { "SYNC_REPLICA_AMBIENT_TRANSACTION" }
@@ -70,17 +75,33 @@ internal class NextReplicaCommitStore(private val database: HabitDatabase, priva
     }
 
     /** Closing SQL alone never opens consumers: RELEASING and the pointer remain durable. */
-    internal suspend fun releaseFateInTransaction(stage: ReplicaSwitchStage): ReplicaReleaseFate {
-        check(database.inTransaction())
-        require(stage.phase == ReplicaSwitchPhase.RELEASING)
-        val actual = ReplicaPresentationRepository(database, tokens, sessions).readFenceInTransaction()
-        check(tokens.activeReplicaStage() == stage &&
-            (actual == stage.fence || actual == stage.fence.copy(mode = com.dayforge.data.local.entity.NextReplicaFenceEntity.CLOSED)) &&
-            ReplicaProjection.schemaHash(database) == stage.publishedSnapshot.target.schemaHash &&
-            matches(stage, stage.publishedSnapshot)) { "SYNC_REPLICA_RELEASE_STATE_INVALID" }
-        tokens.replicaDestinationAccess(stage)
-        return if (actual == stage.fence) ReplicaReleaseFate.FROZEN else ReplicaReleaseFate.CLOSED
+    internal suspend fun releaseFateInTransaction(stage: ReplicaSwitchStage): ReplicaReleaseFate =
+        ReplicaStorageSnapshot.inspect(database) { observed -> releaseFateInSnapshot(stage, observed) }
+
+    private suspend fun releaseFateInSnapshot(stage: ReplicaSwitchStage,
+        observed: ReplicaStorageSnapshot?): ReplicaReleaseFate {
+            require(stage.phase == ReplicaSwitchPhase.RELEASING)
+            val actual = ReplicaPresentationRepository(database, tokens, sessions).readFenceInTransaction()
+            check(tokens.activeReplicaStage() == stage &&
+                (actual == stage.fence || actual == stage.fence.copy(mode = com.dayforge.data.local.entity.NextReplicaFenceEntity.CLOSED)) &&
+                matchesSchema(stage.publishedSnapshot.target.schemaHash, observed) &&
+                matches(stage, stage.publishedSnapshot, observed)) { "SYNC_REPLICA_RELEASE_STATE_INVALID" }
+            tokens.replicaDestinationAccess(stage)
+            return if (actual == stage.fence) ReplicaReleaseFate.FROZEN else ReplicaReleaseFate.CLOSED
     }
+
+    /** Actual target fate and its immediately consumed projection share one complete,
+     * native no-write observation. Pure projection values may leave this lexical scope;
+     * no snapshot/certificate/authority escapes or is reused across END or material IO.
+     * Unowned databases deliberately keep all original independent full reads.
+     */
+    internal suspend fun destinationProjectionInTransaction(stage: ReplicaSwitchStage): ReplicaProjection =
+        ReplicaStorageSnapshot.inspect(database) { observed ->
+            if (stage.phase == ReplicaSwitchPhase.RELEASING) releaseFateInSnapshot(stage, observed)
+            else check(fateInSnapshot(stage, false, observed) == ReplicaCommitFate.COMMITTED) { "SYNC_REPLICA_COMMIT_STATE_INVALID" }
+            if (observed == null) ReplicaProjection.capture(database)
+            else ReplicaProjection.captureInTransaction(database, observed)
+        }
 
     suspend fun releaseFate(stage: ReplicaSwitchStage): ReplicaReleaseFate {
         check(!database.inTransaction()) { "SYNC_REPLICA_AMBIENT_TRANSACTION" }
@@ -109,13 +130,18 @@ internal class NextReplicaCommitStore(private val database: HabitDatabase, priva
         } }
     }
 
-    private suspend fun matches(stage: ReplicaSwitchStage, snapshot: ReplicaStageSnapshot): Boolean {
+    private suspend fun matchesSchema(expected: String, observed: ReplicaStorageSnapshot?): Boolean =
+        if (observed == null) NextReplicaCompatibilityViews.matchesSchema(database, expected)
+        else NextReplicaCompatibilityViews.matchesSchemaInTransaction(database, expected, observed)
+
+    private suspend fun matches(stage: ReplicaSwitchStage, snapshot: ReplicaStageSnapshot, observed: ReplicaStorageSnapshot?): Boolean {
         check(database.inTransaction())
         val state = database.nextSyncStateDao().rows().singleOrNull() ?: return false
         return state.accountId == stage.accountId && state.serverInstanceId == stage.serverInstanceId &&
             state.syncEpoch == stage.newEpoch && state.deviceId == snapshot.target.deviceId && state.cursor == snapshot.cursor &&
             state.challengeContract == 1 && state.bootstrapHash == snapshot.contentHash && state.batchHash == snapshot.contentHash &&
-            ReplicaProjection.capture(database).hash == snapshot.target.projectionHash
+            (if (observed == null) ReplicaProjection.capture(database)
+                else ReplicaProjection.captureInTransaction(database, observed)).hash == snapshot.target.projectionHash
     }
 
     suspend fun catchup(stage: ReplicaSwitchStage, candidate: ValidatedReplicaCandidate) {
@@ -152,7 +178,18 @@ internal class NextReplicaCommitStore(private val database: HabitDatabase, priva
                 tokens.registeredInstallationId() == stage.installationId) {
                 "SYNC_REPLICA_STAGE_AUTHORITY_CHANGED"
             }
-            if (fateInTransaction(stage) == ReplicaCommitFate.COMMITTED) return@withTransaction
+            var oldSource: ReplicaStorageProof? = null
+            val fate = ReplicaStorageSnapshot.inspect(database) { observed ->
+                fateInSnapshot(stage, allowClosedOld = false, observed = observed).also { result ->
+                    if (result == ReplicaCommitFate.OLD)
+                        oldSource = observed?.storage(database) ?: NextReplicaStorageProof(database).readInTransaction()
+                }
+            }
+            if (fate == ReplicaCommitFate.COMMITTED) return@withTransaction
+            // The immutable source is captured by the original fate observation. Inventory
+            // is read after that observation closes, inside the SAME actual write transaction.
+            ReplicaCommandRecoveryGuard(database, tokens).requireRetainedSourceClearInTransaction(
+                stage, requireNotNull(oldSource), stage.fence)
             replaceProjection(candidate.projection)
             check(database.nextReplicaFenceDao().state() == stage.fence)
             require(fateInTransaction(stage) == ReplicaCommitFate.COMMITTED)
@@ -164,9 +201,22 @@ internal class NextReplicaCommitStore(private val database: HabitDatabase, priva
     /** One transaction owns exact guard removal, all 35 typed tables and DDL/FK restoration. */
     private suspend fun replaceProjection(projection: ReplicaProjection) {
         check(database.inTransaction())
+        CountTrustRuntime.maintenance(database) { replaceProjectionAndDiscardLocalTrust(projection) }
+        // Public projection capture owns its ordinary nested Room read transaction. It must
+        // not inherit proof-maintenance authority; the caller's outer transaction still owns
+        // replacement, this final verification, final authority checks and actual COMMIT.
+        check(database.inTransaction())
+        require(ReplicaProjection.capture(database).hash == projection.hash) { "SYNC_REPLICA_PROJECTION_CHANGED" }
+        currentCoroutineContext().ensureActive()
+    }
+
+    private suspend fun replaceProjectionAndDiscardLocalTrust(projection: ReplicaProjection) {
         val sql = database.openHelper.writableDatabase
         val before = ReplicaSqlSchema.read(sql)
-        val expected = ReplicaProjection.TABLES.flatMap { table -> listOf("insert", "update", "delete").map {
+        val owner = requireNotNull(CountTrustRuntime.forDatabase(database))
+        val primaryReset = owner.preparePrimaryReset(database)
+        val replaced = ReplicaProjection.TABLES + com.dayforge.data.local.CountCommandV20Schema.localTables(sql.version)
+        val expected = replaced.flatMap { table -> listOf("insert", "update", "delete").map {
             "replica_fence_${table}_$it"
         } }.toSet()
         val guards = sql.query("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name LIKE 'replica_fence_%' ORDER BY name").use { c ->
@@ -177,6 +227,8 @@ internal class NextReplicaCommitStore(private val database: HabitDatabase, priva
         }
         require(guards.keys == expected) { "SYNC_REPLICA_FENCE_CHANGED" }
         guards.keys.forEach { sql.execSQL("DROP TRIGGER `$it`") }
+        CountTrustSchema.resetLocalInTransaction(sql)
+        owner.initializePrimaryReset(primaryReset)
         sql.execSQL("PRAGMA defer_foreign_keys=ON")
         sql.query("PRAGMA defer_foreign_keys").use { require(it.moveToFirst() && it.getInt(0) == 1) }
         sql.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
@@ -201,8 +253,8 @@ internal class NextReplicaCommitStore(private val database: HabitDatabase, priva
         sql.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
         guards.values.forEach { sql.execSQL(it) }
         require(ReplicaSqlSchema.read(sql) == before) { "SYNC_REPLICA_FENCE_CHANGED" }
+        owner.finishPrimaryReset(primaryReset)
         sql.query("PRAGMA foreign_key_check").use { require(!it.moveToFirst()) { "SYNC_RECOVERY_FOREIGN_KEY_INVALID" } }
-        require(ReplicaProjection.capture(database).hash == projection.hash) { "SYNC_REPLICA_PROJECTION_CHANGED" }
         currentCoroutineContext().ensureActive()
     }
 

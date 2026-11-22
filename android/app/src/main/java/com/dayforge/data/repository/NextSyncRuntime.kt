@@ -17,7 +17,6 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 internal class NextSyncAttention(val blockedRequests: Set<String>) : IllegalStateException("SYNC_REQUIRES_ATTENTION")
@@ -35,12 +34,14 @@ internal class NextSyncRuntime internal constructor(
     private val sessions: AccountSessionCoordinator,
     private val http: NextSyncHttp,
     private val preferences: PreferencesManager,
-    private val materials: NextMaterialDependencyGate = UnavailableMaterialDependencies
+    private val materials: NextMaterialDependencyGate = UnavailableMaterialDependencies,
+    coordination: com.dayforge.data.local.DatabaseSyncCoordination = com.dayforge.data.local.DatabaseSyncCoordination()
 ) {
     @Inject constructor(database: HabitDatabase, tokens: TokenManager, sessions: AccountSessionCoordinator,
-        http: NextSyncHttp, preferences: PreferencesManager, materials: AccountMaterialDependencyGate) :
-        this(database, tokens, sessions, http, preferences, materials as NextMaterialDependencyGate)
-    private val mutex = Mutex()
+        http: NextSyncHttp, preferences: PreferencesManager, materials: AccountMaterialDependencyGate,
+        coordination: com.dayforge.data.local.DatabaseSyncCoordination) :
+        this(database, tokens, sessions, http, preferences, materials as NextMaterialDependencyGate, coordination)
+    private val mutex = coordination.next
     private val core = NextCoreRequestStore(database, tokens, sessions, http, materials)
     private val timers = NextTimerRequestStore(database, tokens, sessions, core)
     private val localOnce = OneTimeLocalIntentStore(database, tokens, sessions, preferences)

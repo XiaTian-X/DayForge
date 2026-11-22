@@ -13,7 +13,7 @@ import com.dayforge.data.api.AuthApi
 import com.dayforge.data.api.NextSyncHttp
 import com.dayforge.data.api.dto.LoginRequest
 import com.dayforge.data.appearance.*
-import com.dayforge.data.local.PhysicalDatabaseRule
+import com.dayforge.data.local.*
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
 import com.dayforge.data.local.entity.MetricEntity
@@ -35,6 +35,10 @@ import java.security.MessageDigest
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import javax.inject.Inject
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.encodeToString
@@ -54,7 +58,14 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class RealBackendMaterialJointTest {
     @get:Rule(order = 0) val widgets = IsolatedWidgetRefreshRule()
-    @get:Rule(order = 1) val storage = PhysicalDatabaseRule()
+    @get:Rule(order = 1) val epochs = PhysicalDatabaseEpochFixture().also { fixture ->
+        fixture.beforeCleanup = { ownerFailure?.let { failure -> throw failure }; check(ownersClosed) { "MATERIAL_JOINT_OWNERS_NOT_JOINED" } }
+        fixture.beforeDatabaseDeletion = {
+            check(ownersClosed && fixture.host.lifecycleEnded)
+            val owned = File(app.filesDir, "account-icons-v1")
+            assertTrue(!owned.exists() || owned.deleteRecursively())
+        }
+    }
     @get:Rule(order = 2) val hilt = HiltAndroidRule(this)
     @get:Rule(order = 3) val testName = TestName()
     @Inject lateinit var icons: AccountIconController
@@ -64,23 +75,40 @@ class RealBackendMaterialJointTest {
     @Inject lateinit var preferences: PreferencesManager
     @Inject lateinit var auth: AuthApi
     @Inject lateinit var business: BusinessSyncRepository
-    @Inject lateinit var habits: HabitRepository
-    @Inject lateinit var metrics: MetricRepository
-    @Inject lateinit var creator: NextObjectCreator
-    @Inject internal lateinit var exports: NextConfigExportRepository
-    @Inject internal lateinit var imports: NextConfigImportRepository
     @Inject internal lateinit var materialHttp: AccountIconHttp
     @Inject internal lateinit var http: NextSyncHttp
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
     private val app get() = instrumentation.targetContext
-    private val db get() = storage.database
+    private val graph get() = epochs.host.boundGraph()
+    private val db get() = graph.database
+    private val habits get() = graph.habitRepository
+    private val metrics get() = graph.metricRepository
+    private val creator get() = graph.nextObjectCreator
+    private val exports get() = graph.nextConfigExportRepository
+    private val imports get() = graph.nextConfigImportRepository
+    private var connected = false
+    private val methodOwnerMonitor = Any()
+    private var methodClosing = false
+    private var methodJob: Job? = null
+    private var ownersClosed = false
+    private var ownerFailure: Throwable? = null
+    private fun <T> journey(block: suspend CoroutineScope.() -> T): T = runBlocking {
+        val running = requireNotNull(currentCoroutineContext()[Job])
+        synchronized(methodOwnerMonitor) {
+            // JUnit timeout cleanup may run before this worker reaches registration.
+            check(!methodClosing && methodJob == null) { "JOINT_METHOD_REGISTRATION_CLOSED" }
+            methodJob = running
+        }
+        block()
+    }
+    private suspend fun <T> current(block: suspend () -> T): T = epochs.host.withGraph { block() }
     private val wire = Json { encodeDefaults = true }
     private var installedTheme: ThemeVersionRef? = null
     private suspend fun <T> step(name: String, timeout: Long = 30_000, block: suspend () -> T): T {
         val started = SystemClock.elapsedRealtime()
         android.util.Log.i("MaterialJoint", "Starting $name")
         var completed = false
-        return try { withTimeout(timeout) { block() }.also { completed = true } }
+        return try { withTimeout(timeout) { current { block() } }.also { completed = true } }
         catch (error: kotlinx.coroutines.TimeoutCancellationException) {
             throw AssertionError("Joint step timed out: $name", error)
         } finally {
@@ -109,9 +137,9 @@ class RealBackendMaterialJointTest {
         val port = requireNotNull(InstrumentationRegistry.getArguments().getString("dayforgeJointPort")).toInt()
         require(port in 1024..65535)
         assertFalse(app.getDatabasePath(AccountIconDatabase.NAME).exists())
-        hilt.inject()
+        hilt.inject(); epochs.connect(); connected = true
         sessions.exclusive { tokens.clearTokens() }
-        habits.clearAllData(app)
+        epochs.clearAndAwaitReplacement()
         preferences.setActiveServerUrl(null); preferences.setRemoteServerUrl(null)
         preferences.setServerUrl("http://127.0.0.1:$port/")
         login(if (testName.methodName.contains("Config")) "joint-config" else "joint-material")
@@ -125,25 +153,28 @@ class RealBackendMaterialJointTest {
     }
 
     @After fun cleanup() = runBlocking<Unit> {
-        if (::icons.isInitialized) { icons.awaitImages(); icons.close() }
-        if (::themes.isInitialized) {
-            try {
-                // Files and catalog share a lifetime. Remove only the theme this case installed,
-                // through the real journal; shared built-ins/preferences remain paired.
-                installedTheme?.let { themes.delete(it, requireNotNull(themes.catalog()).revision) }
-            } finally { themes.close() }
+        val ownedMethod = synchronized(methodOwnerMonitor) {
+            methodClosing = true
+            methodJob
         }
-        if (::tokens.isInitialized) sessions.exclusive { tokens.clearTokens() }
-        if (::preferences.isInitialized) {
-            preferences.setServerUrl(null); preferences.setActiveServerUrl(null); preferences.setRemoteServerUrl(null)
-        }
-        // Explicit isolated testbed owner only, after actual users have joined.
-        check(app.packageName == "com.dayforge.testbed")
-        assertTrue(app.deleteDatabase(AccountIconDatabase.NAME) || !app.getDatabasePath(AccountIconDatabase.NAME).exists())
-        for (name in listOf("account-icons-v1")) {
-            val owned = File(app.filesDir, name)
-            assertTrue(!owned.exists() || owned.deleteRecursively())
-        }
+        try {
+            withTimeout(5_000) { ownedMethod?.cancelAndJoin() }
+            check(ownedMethod?.isCompleted != false)
+            if (::icons.isInitialized) { icons.awaitImages(); icons.close() }
+            if (::themes.isInitialized) {
+                try {
+                    installedTheme?.let { themes.delete(it, requireNotNull(themes.catalog()).revision) }
+                } finally { withTimeout(5_000) { themes.close() } }
+            }
+            if (connected) { shutdownTestHost(epochs.host); check(epochs.host.lifecycleEnded) }
+            if (::tokens.isInitialized) sessions.exclusive { tokens.clearTokens() }
+            if (::preferences.isInitialized) {
+                preferences.setServerUrl(null); preferences.setActiveServerUrl(null); preferences.setRemoteServerUrl(null)
+            }
+            check(app.packageName == "com.dayforge.testbed")
+            ownersClosed = true
+            // EpochFixture deletes the closed icon/main DBs; owned files wait for its same known-close callback.
+        } catch (failure: Throwable) { ownerFailure = failure; throw failure }
     }
 
     private suspend fun install(): AccountIconContext {
@@ -179,17 +210,17 @@ class RealBackendMaterialJointTest {
         assertTrue(jobs.isNotEmpty()); assertTrue(jobs.all { it.state == IconTransferState.COMPLETE })
     }
 
-    @Test fun realMaterialWorkersUploadAndColdDownloadBothFormatsWithoutSharingAccountPixels() = runBlocking<Unit> {
+    @Test fun realMaterialWorkersUploadAndColdDownloadBothFormatsWithoutSharingAccountPixels() = journey<Unit> {
         val context = install()
-        val metric = metrics.createMetric(MetricEntity(name = "pending material metric", unit = "kg", decimalPlaces = 0,
+        val metric = current { metrics.createMetric(MetricEntity(name = "pending material metric", unit = "kg", decimalPlaces = 0,
             iconResId = 0, colorHex = "#123456", appearance = ObjectAppearance(IconReference.Asset(id(11)), "#123456", "theme")),
-            creationAuthority = creator.capture())
+            creationAuthority = creator.capture()) }
         assertEquals(Result.retry(), step("ordinary reference waits for declaration", 30_000) { businessWorker() })
-        assertTrue(db.syncOutboxDao().getAll().isNotEmpty())
-        assertTrue(db.nextSyncStateDao().rejections().isEmpty())
+        assertTrue(current { db.syncOutboxDao().getAll().isNotEmpty() })
+        assertTrue(current { db.nextSyncStateDao().rejections().isEmpty() })
         materialDone(context)
         assertEquals(Result.success(), step("ordinary reference acknowledgement", 30_000) { businessWorker() })
-        assertNotNull(db.metricDao().getMetricById(metric))
+        assertNotNull(current { db.metricDao().getMetricById(metric) })
         // Replay stability belongs to the material scenario, not every configuration prerequisite.
         val jobs = icons.transferJobs(context)
         assertEquals(materialComplete, materialWorker())
@@ -240,7 +271,7 @@ class RealBackendMaterialJointTest {
             }
             sessions.exclusive { tokens.clearTokens() }
             assertEquals(IconImageState.Empty, handle.state.value)
-            habits.clearAllData(app)
+            epochs.clearAndAwaitReplacement()
             login("joint-core")
             assertNotEquals(context.namespace.accountId, icons.capture().namespace.accountId)
             assertTrue(icons.library(icons.capture()).packs.isEmpty())
@@ -251,7 +282,7 @@ class RealBackendMaterialJointTest {
 
     // User-approved complete-chain exception, measured local commit near 148s on MI6.
     // All other cases keep the runner default 150s; per-phase guards and batch budget stay bounded.
-    @Test(timeout = 300_000) fun realConfigReplacementKeepsAppearanceDefinitionsButUsesNewIdentitiesAndActualBusinessAcks() = runBlocking<Unit> {
+    @Test(timeout = 300_000) fun realConfigReplacementKeepsAppearanceDefinitionsButUsesNewIdentitiesAndActualBusinessAcks() = journey<Unit> {
         val context = step("source pack installation") { install() }
         step("source material acknowledgements", 60_000) { materialDone(context) }
         val themeBefore = themes.current().saved
@@ -274,8 +305,8 @@ class RealBackendMaterialJointTest {
             metrics.recordValue(metric, 12.125, "excluded historical fact")
         }
         assertEquals(Result.success(), step("source fact acknowledgements", 90_000) { businessWorker() })
-        val originalIds = db.habitDao().getAllHabitsOnce().map { it.uuid }.toSet()
-        val onceId = requireNotNull(habits.getHabitById(once)).uuid
+        val originalIds = current { db.habitDao().getAllHabitsOnce().map { it.uuid }.toSet() }
+        val onceId = current { requireNotNull(habits.getHabitById(once)).uuid }
         val default = step("default configuration export") { exports.publish(exports.prepare()) { it } }
         assertFalse(default.manifest.nodes.any { it.name == "joint config once" })
         val source = step("explicit configuration export") {
@@ -299,7 +330,7 @@ class RealBackendMaterialJointTest {
             imports.resume(importId, ValidatedConfigBundle.parse(source.exportBytes()), context)
         }
         assertEquals(3, receipt.nodes); assertEquals(1, receipt.metrics); assertEquals(1, receipt.links)
-        assertEquals(ConfigImportPhase.LOCAL_COMMITTED, imports.progress(importId)!!.phase)
+        assertEquals(ConfigImportPhase.LOCAL_COMMITTED, current { imports.progress(importId)!!.phase })
         step("replacement delete waits for content") {
             val first = sessions.exclusive { db.withTransaction { NextConfigImportStore(db).network(importId).plan.steps.first() } }
             val sender = NextCoreRequestStore(db, tokens, sessions, http, AccountMaterialDependencyGate(icons))
@@ -307,7 +338,7 @@ class RealBackendMaterialJointTest {
                 sender.sendOperation(requireNotNull(tokens.localSyncAccess()), first.operationId)
                 fail("Delete must wait for the cloned material content")
             } catch (_: NextMaterialPending) { /* Local waiting, not a server rejection. */ }
-            assertTrue(db.nextSyncStateDao().rejections().isEmpty())
+            assertTrue(current { db.nextSyncStateDao().rejections().isEmpty() })
             val before = requireNotNull(http.session(requireNotNull(tokens.localSyncAccess())) { it.roundBootstrap() })
             assertEquals(originalIds, before.changes.filter { it.entityType == "plan_node" }.map { it.entityUuid }.toSet())
         }
@@ -317,13 +348,13 @@ class RealBackendMaterialJointTest {
         val accepted = step("replacement progress") { imports.progress(importId)!! }
         assertEquals(ConfigImportPhase.OPERATIONS_ACCEPTED, accepted.phase)
         assertEquals(accepted.total, accepted.accepted)
-        assertTrue(db.syncOutboxDao().getAll().isEmpty())
-        val replaced = db.habitDao().getAllHabitsOnce()
+        assertTrue(current { db.syncOutboxDao().getAll().isEmpty() })
+        val replaced = current { db.habitDao().getAllHabitsOnce() }
         assertEquals(3, replaced.size); assertTrue(replaced.none { it.uuid in originalIds })
-        assertTrue(db.completionDao().getAllCompletionsOnce().isEmpty())
-        assertEquals(0, db.metricLogDao().countAll())
+        assertTrue(current { db.completionDao().getAllCompletionsOnce().isEmpty() })
+        assertEquals(0, current { db.metricLogDao().countAll() })
         val importedOnce = replaced.single { it.completionPolicy == "one_and_done" }
-        assertFalse(habits.getOneTimeStatus(importedOnce.id).completed)
+        assertFalse(current { habits.getOneTimeStatus(importedOnce.id).completed })
         assertEquals(oldPackSelection, icons.library(context).selection)
         assertEquals(themeBefore, themes.current().saved)
         assertEquals(mappedTheme.definition, themes.export(requireNotNull(installedTheme)).definition)
@@ -337,7 +368,7 @@ class RealBackendMaterialJointTest {
         assertArrayEquals(png, nextExport.readBlob(nextExport.manifest.iconPack!!.assets.single { it.assetId == importedAsset }.light.sha256))
         assertEquals(receipt, step("replacement exact replay") { imports.resume(importId, source, context) })
         assertEquals(Result.success(), step("replacement repeated business sync", 90_000) { businessWorker() })
-        assertEquals(replaced, db.habitDao().getAllHabitsOnce())
-        assertEquals(accepted, imports.progress(importId))
+        assertEquals(replaced, current { db.habitDao().getAllHabitsOnce() })
+        assertEquals(accepted, current { imports.progress(importId) })
     }
 }

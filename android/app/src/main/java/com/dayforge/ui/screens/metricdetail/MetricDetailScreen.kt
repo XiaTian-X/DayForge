@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -43,8 +44,10 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -89,13 +92,21 @@ fun MetricDetailScreen(
     onNavigateBack: () -> Unit,
     onEditClick: (Long) -> Unit = {},
     onDeleted: () -> Unit = {},
-    viewModel: MetricDetailViewModel = hiltViewModel()
+    viewModel: MetricDetailViewModel = hiltViewModel(),
+    onEditMetricSelection: ((com.dayforge.data.local.DatabaseObjectSelection) -> Unit)? = null,
+    sourceSelection: com.dayforge.data.local.DatabaseObjectSelection? = null
 ) {
-    val uiState by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
+    LifecycleStartEffect(viewModel, sourceSelection) {
+        viewModel.resumeReads(sourceSelection)
+        onStopOrDispose { viewModel.pauseReads() }
+    }
+    val observedUiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val uiState = observedUiState // Every callback retains this exact rendered frame.
 
     // Navigate back after delete
     LaunchedEffect(uiState.isDeleted) {
-        if (uiState.isDeleted) {
+        if (uiState.isDeleted && viewModel.isTerminalCurrent(uiState)) {
             onDeleted()
         }
     }
@@ -118,7 +129,10 @@ fun MetricDetailScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { onEditClick(metricId) }) {
+                    if (uiState.isMutating) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    IconButton(enabled = !uiState.isMutating && !uiState.isRecording, onClick = { com.dayforge.ui.navigateRenderedDatabaseInput(context, !viewModel.usesSourceEpoch,
+                        metricId, uiState.sourceSelection.takeIf { uiState.metric != null && !uiState.sourceExpired },
+                        onEditClick, onEditMetricSelection) }) {
                         Icon(
                             imageVector = Icons.Default.Edit,
                             contentDescription = stringResource(R.string.content_description_edit)
@@ -225,7 +239,7 @@ fun MetricDetailScreen(
                         uiState.latestValue?.let {
                             Spacer(modifier = Modifier.height(12.dp))
 
-                            val lastLogStr = uiState.logs.firstOrNull()?.date?.let {
+                            val lastLogStr = (uiState.latestLogDate ?: uiState.logs.firstOrNull()?.date)?.let {
                                 val sdf = java.text.SimpleDateFormat("MMM dd", java.util.Locale.getDefault())
                                 sdf.format(java.util.Date(it))
                             }
@@ -268,9 +282,31 @@ fun MetricDetailScreen(
                         }
                     }
 
-                    // Record Value Button
+                    if (uiState.metricSaved) {
+                        Text(stringResource(if (uiState.metricSavePendingDelivery) R.string.independent_metric_pending_delivery
+                            else R.string.independent_metric_saved))
+                        Text(stringResource(R.string.independent_metric_saved_value,
+                            requireNotNull(uiState.metricSavedValue).toString(), uiState.metricSavedUnit.orEmpty()),
+                            modifier = Modifier.onGloballyPositioned { viewModel.deliveredIndependentResult(uiState) })
+                    }
+                    if (uiState.metricEntryEnded) Text(stringResource(R.string.independent_metric_ended),
+                        modifier = Modifier.onGloballyPositioned { viewModel.deliveredIndependentEnd(uiState) })
+                    if (uiState.metricSaveUnknown) Text(stringResource(R.string.independent_metric_unknown))
+                    if (uiState.metricSaveUnknown && uiState.metricSaveReference != null) {
+                        TextButton(enabled = !uiState.isRecording && !uiState.isMutating,
+                            onClick = { viewModel.endIndependentValue(uiState) }) {
+                            Text(stringResource(R.string.independent_metric_check_end))
+                        }
+                    }
+                    if ((uiState.metricSaveUnknown && uiState.metricSaveReference != null) || uiState.metricSavePendingDelivery) {
+                        TextButton(enabled = !uiState.isRecording, onClick = { viewModel.continueIndependentValue(uiState) }) {
+                            Text(stringResource(R.string.action_continue))
+                        }
+                    }
+                    // Keep the original control in place while accepting/saving one command.
                     Button(
-                        onClick = { viewModel.toggleValueInput() },
+                        enabled = !uiState.isRecording && !uiState.isMutating && !uiState.metricSaveUnknown,
+                        onClick = { viewModel.toggleValueInput(uiState) },
                         modifier = Modifier.fillMaxWidth().height(56.dp),
                         shape = MaterialTheme.shapes.large
                     ) {
@@ -292,10 +328,10 @@ fun MetricDetailScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     TrendChart(
                         metric = metric,
-                        logs = uiState.logs,
+                        logs = uiState.trendLogs ?: uiState.logs,
                         modifier = Modifier.fillMaxWidth(),
                         onAggregationTypeChange = { aggregationType ->
-                            viewModel.updateAggregationType(aggregationType.value)
+                            viewModel.updateAggregationType(aggregationType.value, uiState)
                         }
                     )
 
@@ -354,10 +390,10 @@ fun MetricDetailScreen(
                             }
                         }
 
-                        if (uiState.logs.size > 10) {
+                        if ((uiState.totalLogCount ?: uiState.logs.size.toLong()) > 10) {
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
-                                text = stringResource(R.string.metric_more_records, uiState.logs.size - 10),
+                                text = stringResource(R.string.metric_more_records, (uiState.totalLogCount ?: uiState.logs.size.toLong()) - 10),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -401,7 +437,7 @@ fun MetricDetailScreen(
                                         text = linkWithHabit.habitName,
                                         style = MaterialTheme.typography.bodyLarge
                                     )
-                                    IconButton(onClick = { viewModel.showUnlinkConfirm(linkWithHabit.link.id) }) {
+                                    IconButton(onClick = { viewModel.showUnlinkConfirm(linkWithHabit.link.id, uiState) }) {
                                         Icon(
                                             imageVector = Icons.Default.LinkOff,
                                             contentDescription = stringResource(R.string.metric_unlink),
@@ -416,7 +452,7 @@ fun MetricDetailScreen(
                     // Link Habit Button
                     Spacer(modifier = Modifier.height(8.dp))
                     OutlinedButton(
-                        onClick = { viewModel.showLinkHabitDialog() },
+                        onClick = { viewModel.showLinkHabitDialog(uiState) },
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Icon(
@@ -430,7 +466,7 @@ fun MetricDetailScreen(
                     // Delete Section
                     Spacer(modifier = Modifier.height(24.dp))
                     OutlinedButton(
-                        onClick = { viewModel.toggleDeleteConfirm() },
+                        onClick = { viewModel.toggleDeleteConfirm(uiState) },
                         colors = ButtonDefaults.outlinedButtonColors(
                             contentColor = MaterialTheme.colorScheme.error
                         ),
@@ -462,6 +498,7 @@ fun MetricDetailScreen(
         if (uiState.showValueInput) {
             uiState.metric?.let { metric ->
                 MetricValueInput(
+                    busy = uiState.isRecording,
                     metricName = metric.name,
                     unit = metric.unit,
                     decimalPlaces = metric.decimalPlaces,
@@ -469,9 +506,9 @@ fun MetricDetailScreen(
                     targetValue = metric.targetValue,
                     targetDirection = metric.targetDirection,
                     onConfirm = { value, note ->
-                        viewModel.recordValue(value, note)
+                        viewModel.recordValue(value, note, uiState)
                     },
-                    onDismiss = { viewModel.toggleValueInput() }
+                    onDismiss = { viewModel.toggleValueInput(uiState) }
                 )
             }
         }
@@ -480,7 +517,7 @@ fun MetricDetailScreen(
         if (uiState.showDeleteConfirm) {
             uiState.metric?.let { metric ->
                 AlertDialog(
-                    onDismissRequest = { viewModel.toggleDeleteConfirm() },
+                    onDismissRequest = { viewModel.toggleDeleteConfirm(uiState) },
                     title = { Text(text = stringResource(R.string.metric_delete_confirm_title)) },
                     text = {
                         Text(
@@ -489,7 +526,8 @@ fun MetricDetailScreen(
                     },
                     confirmButton = {
                         Button(
-                            onClick = { viewModel.deleteMetric() },
+                            enabled = !uiState.isMutating,
+                            onClick = { viewModel.deleteMetric(uiState) },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.error
                             )
@@ -498,7 +536,7 @@ fun MetricDetailScreen(
                         }
                     },
                     dismissButton = {
-                        TextButton(onClick = { viewModel.toggleDeleteConfirm() }) {
+                        TextButton(enabled = !uiState.isMutating, onClick = { viewModel.toggleDeleteConfirm(uiState) }) {
                             Text(text = stringResource(R.string.action_cancel))
                         }
                     }
@@ -511,7 +549,7 @@ fun MetricDetailScreen(
             val linkWithHabit = uiState.links.find { it.link.id == linkId }
             if (linkWithHabit != null) {
                 AlertDialog(
-                    onDismissRequest = { viewModel.dismissUnlinkConfirm() },
+                    onDismissRequest = { viewModel.dismissUnlinkConfirm(uiState) },
                     title = { Text(text = stringResource(R.string.metric_unlink_confirm_title)) },
                     text = {
                         Text(
@@ -523,12 +561,12 @@ fun MetricDetailScreen(
                         )
                     },
                     confirmButton = {
-                        Button(onClick = { viewModel.unlinkHabit() }) {
+                        Button(enabled = !uiState.isMutating, onClick = { viewModel.unlinkHabit(uiState) }) {
                             Text(text = stringResource(R.string.metric_unlink))
                         }
                     },
                     dismissButton = {
-                        TextButton(onClick = { viewModel.dismissUnlinkConfirm() }) {
+                        TextButton(enabled = !uiState.isMutating, onClick = { viewModel.dismissUnlinkConfirm(uiState) }) {
                             Text(text = stringResource(R.string.action_cancel))
                         }
                     }
@@ -539,7 +577,7 @@ fun MetricDetailScreen(
         // Link Habit Dialog
         if (uiState.showLinkHabit) {
             AlertDialog(
-                onDismissRequest = { viewModel.dismissLinkHabitDialog() },
+                onDismissRequest = { viewModel.dismissLinkHabitDialog(uiState) },
                 title = { Text(text = stringResource(R.string.metric_link_habits_title)) },
                 text = {
                     Column {
@@ -564,7 +602,7 @@ fun MetricDetailScreen(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .clickable(enabled = !habit.isAlreadyLinked) {
-                                                viewModel.toggleHabitSelection(habit.id)
+                                                viewModel.toggleHabitSelection(habit.id, uiState)
                                             }
                                             .padding(vertical = 8.dp),
                                         verticalAlignment = Alignment.CenterVertically
@@ -572,7 +610,7 @@ fun MetricDetailScreen(
                                         Checkbox(
                                             checked = habit.id in uiState.selectedHabitIds || habit.isAlreadyLinked,
                                             onCheckedChange = if (!habit.isAlreadyLinked) {
-                                                { viewModel.toggleHabitSelection(habit.id) }
+                                                { viewModel.toggleHabitSelection(habit.id, uiState) }
                                             } else null,
                                             enabled = !habit.isAlreadyLinked
                                         )
@@ -603,14 +641,14 @@ fun MetricDetailScreen(
                 },
                 confirmButton = {
                     Button(
-                        onClick = { viewModel.linkSelectedHabits() },
-                        enabled = uiState.selectedHabitIds.isNotEmpty()
+                        onClick = { viewModel.linkSelectedHabits(uiState) },
+                        enabled = uiState.selectedHabitIds.isNotEmpty() && !uiState.isMutating
                     ) {
                         Text(text = stringResource(R.string.metric_link_habit))
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = { viewModel.dismissLinkHabitDialog() }) {
+                    TextButton(enabled = !uiState.isMutating, onClick = { viewModel.dismissLinkHabitDialog(uiState) }) {
                         Text(text = stringResource(R.string.action_cancel))
                     }
                 }

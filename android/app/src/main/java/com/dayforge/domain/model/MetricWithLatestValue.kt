@@ -8,5 +8,6 @@ data class MetricWithLatestValue(
     val metric: MetricEntity,
     val latestValue: Double?,
     val latestLogDate: Long?,
-    val logs: List<MetricLogEntity> = emptyList()
+    val logs: List<MetricLogEntity> = emptyList(),
+    val sourceEpoch: com.dayforge.data.local.DatabaseEpochPublication? = null
 )

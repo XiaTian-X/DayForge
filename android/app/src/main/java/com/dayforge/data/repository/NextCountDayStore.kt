@@ -11,6 +11,7 @@ import com.dayforge.data.model.HabitType
 import com.dayforge.domain.model.CountDayPolicy
 import com.dayforge.domain.model.isContractUuid
 import java.time.LocalDate
+import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.json.*
 
 /** D-017 transaction-only day state. Neither undo nor configuration editing deletes it. */
@@ -19,9 +20,32 @@ internal class NextCountDayStore(private val database: HabitDatabase) {
     private val sql get() = database.openHelper.writableDatabase
 
     suspend fun read(habit: HabitEntity, date: String, allowUnbound: Boolean = false): CountDayEntity? {
+        return readWithAcceptedRows(habit, date, allowUnbound, null)
+    }
+
+    /** One sequential read in the caller's transaction. No proof survives this invocation.
+     * Keep per-day raw audits and local-origin/frontier validation; only accepted source reads
+     * are batched. Oversized chunks retain the original per-row allocation path.
+     */
+    suspend fun readForHabit(habit: HabitEntity): List<CountDayEntity> {
+        check(database.inTransaction())
+        return buildList {
+            for (chunk in dao.forHabit(habit.id).chunked(128)) {
+                val ids = chunk.filter { it.originRequestId == null }.map { it.firstEventUuid }.distinct()
+                val accepted = if (ids.isEmpty()) emptyMap() else acceptedFactRows(database, ids)
+                for (candidate in chunk) {
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    add(requireNotNull(readWithAcceptedRows(habit, candidate.localDate, false, accepted)))
+                }
+            }
+        }
+    }
+
+    private suspend fun readWithAcceptedRows(habit: HabitEntity, date: String, allowUnbound: Boolean,
+        acceptedRows: Map<String, SyncEntityStateEntity>?): CountDayEntity? {
         check(database.inTransaction())
         require(LocalDate.parse(date).toString() == date)
-        NextRequestSql.rowHash(sql, "count_days", "habitId=? AND localDate=?", arrayOf(habit.id, date))
+        NextRequestSql.rowHash(database, "count_days", "habitId=? AND localDate=?", arrayOf(habit.id, date))
         return dao.get(habit.id, date)?.also { row ->
             require(row.habitId == habit.id && row.habitUuid == habit.uuid && row.localDate == date &&
                 isContractUuid(row.firstEventUuid) && row.originKind == NEXT_OPERATION)
@@ -30,9 +54,11 @@ internal class NextCountDayStore(private val database: HabitDatabase) {
                 require(row.originHash == null && row.planPredecessorId == null && row.planPredecessorOriginHash == null &&
                     row.planPredecessorDependencyHash == null && row.planQueueWatermark == null && row.capturedDeviceId == null)
                 if (!allowUnbound) {
-                    requireNotNull(NextRequestSql.rowHash(sql, "sync_entity_state", "entityType=? AND entityUuid=?",
-                        arrayOf("activity_event", row.firstEventUuid)))
-                    val state = requireNotNull(database.syncOutboxDao().getState("activity_event", row.firstEventUuid))
+                    val state = if (acceptedRows != null) requireNotNull(acceptedRows[row.firstEventUuid]) else {
+                        requireNotNull(NextRequestSql.rowHash(database, "sync_entity_state", "entityType=? AND entityUuid=?",
+                            arrayOf("activity_event", row.firstEventUuid)))
+                        requireNotNull(database.syncOutboxDao().getState("activity_event", row.firstEventUuid))
+                    }
                     val body = Json.parseToJsonElement(requireNotNull(state.payloadJson)).jsonObject
                     require(!state.deleted && state.payloadHash == syncPayloadHash(state.payloadJson) &&
                         body["activity_uuid"] == JsonPrimitive(habit.uuid) && body["local_date"] == JsonPrimitive(date) &&
@@ -43,7 +69,7 @@ internal class NextCountDayStore(private val database: HabitDatabase) {
                 require(isContractUuid(row.originRequestId) && row.planQueueWatermark != null && row.planQueueWatermark >= 0)
                 row.capturedDeviceId?.let { require(isContractUuid(it)) }
                 val origin = requireNotNull(database.nextRequestDao().origin(NEXT_OPERATION, row.originRequestId))
-                require(row.originHash == NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?",
+                require(row.originHash == NextRequestSql.rowHash(database, "next_request_origins", "kind=? AND requestId=?",
                     arrayOf(NEXT_OPERATION, row.originRequestId)))
                 require(origin.protocol == 5 && origin.queueId > row.planQueueWatermark)
                 val operation = decodeNextOperationIntent(origin.intentJson)
@@ -56,9 +82,9 @@ internal class NextCountDayStore(private val database: HabitDatabase) {
                 if (row.planPredecessorId == null) require(row.planPredecessorOriginHash == null && row.planPredecessorDependencyHash == null && frontier == null)
                 else {
                     require(isContractUuid(row.planPredecessorId) &&
-                        row.planPredecessorOriginHash == NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?",
+                        row.planPredecessorOriginHash == NextRequestSql.rowHash(database, "next_request_origins", "kind=? AND requestId=?",
                             arrayOf(NEXT_OPERATION, row.planPredecessorId)) &&
-                        row.planPredecessorDependencyHash == NextRequestSql.rowHash(sql, "next_structural_dependencies", "operationId=?",
+                        row.planPredecessorDependencyHash == NextRequestSql.rowHash(database, "next_structural_dependencies", "operationId=?",
                             arrayOf(row.planPredecessorId)))
                     val predecessor = requireNotNull(database.nextRequestDao().origin(NEXT_OPERATION, row.planPredecessorId))
                     require(predecessor.accountId == origin.accountId && predecessor.queueId <= row.planQueueWatermark)
@@ -97,7 +123,7 @@ internal class NextCountDayStore(private val database: HabitDatabase) {
             arrayOf(NEXT_OPERATION, "%${habit.uuid}%", dateProbe)).use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
         require(originals.size <= 10_000)
         for (id in originals) {
-            requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, id)))
+            requireNotNull(NextRequestSql.rowHash(database, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, id)))
             val origin = requireNotNull(database.nextRequestDao().origin(NEXT_OPERATION, id))
             require(origin.protocol == 5 && isContractUuid(origin.accountId) && isContractUuid(id))
             if (accountId != null) require(origin.accountId == accountId) { "COUNT_SESSION_CHANGED" }
@@ -116,7 +142,7 @@ internal class NextCountDayStore(private val database: HabitDatabase) {
             arrayOf("%${habit.uuid}%", dateProbe)).use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
         require(states.size <= 10_000)
         for (id in states) {
-            requireNotNull(NextRequestSql.rowHash(sql, "sync_entity_state", "entityType=? AND entityUuid=?", arrayOf("activity_event", id)))
+            requireNotNull(NextRequestSql.rowHash(database, "sync_entity_state", "entityType=? AND entityUuid=?", arrayOf("activity_event", id)))
             val state = requireNotNull(database.syncOutboxDao().getState("activity_event", id))
             val payload = Json.parseToJsonElement(requireNotNull(state.payloadJson)).jsonObject
             require(state.payloadHash == syncPayloadHash(state.payloadJson))
@@ -144,10 +170,10 @@ internal class NextCountDayStore(private val database: HabitDatabase) {
         require(frontier == null || frontier.requestId == origin.requestId && frontier.actualId == predecessor?.operationId)
         val predecessorId = frontier?.logicalId ?: predecessor?.operationId
         val day = current.copy(originRequestId = origin.requestId,
-            originHash = requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, origin.requestId))),
+            originHash = requireNotNull(NextRequestSql.rowHash(database, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, origin.requestId))),
             planPredecessorId = predecessorId,
-            planPredecessorOriginHash = predecessorId?.let { requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, it))) },
-            planPredecessorDependencyHash = predecessorId?.let { requireNotNull(NextRequestSql.rowHash(sql, "next_structural_dependencies", "operationId=?", arrayOf(it))) },
+            planPredecessorOriginHash = predecessorId?.let { requireNotNull(NextRequestSql.rowHash(database, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, it))) },
+            planPredecessorDependencyHash = predecessorId?.let { requireNotNull(NextRequestSql.rowHash(database, "next_structural_dependencies", "operationId=?", arrayOf(it))) },
             planQueueWatermark = origin.queueId - 1, capturedDeviceId = access.capturedDeviceId)
         check(dao.update(day) == 1 && read(habit, date) == day)
     }
@@ -170,7 +196,7 @@ internal class NextCountDayStore(private val database: HabitDatabase) {
         require(day.policy == NextCommonFactMapper.countPolicy(operation.payload))
         if (day.firstEventUuid != operation.entityUuid || day.originRequestId != null) return null
         val predecessor = pendingPlan(habit, queueId) ?: return null
-        if (NextRequestSql.rowHash(sql, "next_structural_supersessions", "replacementId=?",
+        if (NextRequestSql.rowHash(database, "next_structural_supersessions", "replacementId=?",
                 arrayOf(predecessor.operationId)) == null) return null
         val authenticated = requireNotNull(syncAccess())
         require(authenticated.session == access.session && authenticated.deviceId == access.capturedDeviceId &&
@@ -183,8 +209,8 @@ internal class NextCountDayStore(private val database: HabitDatabase) {
         logical: NextRequestOriginEntity, day: CountDayEntity, habit: HabitEntity) {
         require(frontier.requestId == origin.requestId && frontier.logicalId == day.planPredecessorId &&
             frontier.logicalOriginHash == day.planPredecessorOriginHash && frontier.dependencyHash == day.planPredecessorDependencyHash)
-        require(frontier.actualOriginHash == NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?",
-            arrayOf(NEXT_OPERATION, frontier.actualId)) && frontier.supersessionHash == NextRequestSql.rowHash(sql,
+        require(frontier.actualOriginHash == NextRequestSql.rowHash(database, "next_request_origins", "kind=? AND requestId=?",
+            arrayOf(NEXT_OPERATION, frontier.actualId)) && frontier.supersessionHash == NextRequestSql.rowHash(database,
             "next_structural_supersessions", "originalId=?", arrayOf(frontier.logicalId)))
         val replacement = requireNotNull(database.nextStructuralCausalDao().supersession(frontier.logicalId))
         val actual = requireNotNull(database.nextRequestDao().origin(NEXT_OPERATION, frontier.actualId))
@@ -227,7 +253,7 @@ internal class NextCountDayStore(private val database: HabitDatabase) {
                 check(read(habit, key.second, allowUnbound = true) == day)
             }
             if (policy != null) proofs += requireNotNull(read(habit, key.second, allowUnbound = true)) to requireNotNull(
-                NextRequestSql.rowHash(sql, "count_days", "habitId=? AND localDate=?", arrayOf(habit.id, key.second)))
+                NextRequestSql.rowHash(database, "count_days", "habitId=? AND localDate=?", arrayOf(habit.id, key.second)))
         }
         return proofs
     }
@@ -235,7 +261,7 @@ internal class NextCountDayStore(private val database: HabitDatabase) {
     suspend fun verify(proofs: List<Pair<CountDayEntity, String>>) {
         check(database.inTransaction())
         for ((day, hash) in proofs) {
-            check(NextRequestSql.rowHash(sql, "count_days", "habitId=? AND localDate=?", arrayOf(day.habitId, day.localDate)) == hash)
+            check(NextRequestSql.rowHash(database, "count_days", "habitId=? AND localDate=?", arrayOf(day.habitId, day.localDate)) == hash)
             check(read(requireNotNull(database.habitDao().getHabitById(day.habitId)), day.localDate) == day)
         }
     }
@@ -251,7 +277,7 @@ internal class NextCountDayStore(private val database: HabitDatabase) {
             val date = change.payload.getValue("local_date").jsonPrimitive.content
             val day = requireNotNull(read(habit, date))
             require(day.policy == NextCommonFactMapper.countPolicy(change.payload))
-            captured[habit.id to date] = day to requireNotNull(NextRequestSql.rowHash(sql, "count_days",
+            captured[habit.id to date] = day to requireNotNull(NextRequestSql.rowHash(database, "count_days",
                 "habitId=? AND localDate=?", arrayOf(habit.id, date)))
         }
         return captured.values.toList()

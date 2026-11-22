@@ -72,8 +72,13 @@ fun HabitCard(
     onReactivation: () -> Unit = {},
     // Slot progress for focus mode (COUNTING habit in time window)
     slotProgress: String? = null,
-    actionsEnabled: Boolean = true
+    actionsEnabled: Boolean = true,
+    countSummary: com.dayforge.domain.model.CountSummary? = countHistory?.summary,
+    countDisplay: com.dayforge.domain.model.CountDisplayProjection? = null
 ) {
+    require(countHistory == null || countSummary == countHistory.summary) { "COUNT_DISPLAY_INPUT_CHANGED" }
+    require(countDisplay == null || countSummary == null) { "COUNT_DISPLAY_INPUT_CHANGED" }
+    val countPolicy = if (countDisplay != null) countDisplay.todayPolicy else countSummary?.todayPolicy
     var showMenu by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
 
@@ -164,7 +169,7 @@ fun HabitCard(
                                 )
                             }
                             // 倒计数标签（仅计数型习惯且为倒计数模式时显示）- 白底主题色字
-                            if (habit.habitType == HabitType.COUNTING && (countHistory?.todayPolicy?.isCountdown ?: habit.isCountdown)) {
+                            if (habit.habitType == HabitType.COUNTING && (countPolicy?.isCountdown ?: habit.isCountdown)) {
                                 Spacer(modifier = Modifier.width(8.dp))
                                 AssistChip(
                                     onClick = { },
@@ -307,16 +312,18 @@ fun HabitCard(
                                 todayCount
                             }
                             CompletionButton(
+                                busy = habit.id in com.dayforge.ui.LocalInFlightHabitIds.current,
+                    countCommandModel = com.dayforge.ui.LocalCountButtonModels.current[habit.uuid],
                                 completed = completed,
                                 actionsEnabled = actionsEnabled,
                                 undoAvailable = undoAvailable,
                                 habitType = habit.habitType,
-                                targetValue = activeTimer?.takeIf { it.habitId == habit.id }?.targetMinutes ?: countHistory?.todayPolicy?.targetValue ?: habit.targetValue,
+                                targetValue = activeTimer?.takeIf { it.habitId == habit.id }?.targetMinutes ?: countPolicy?.targetValue ?: habit.targetValue,
                                 currentCount = displayCount,
-                                actualCount = countHistory?.todayQuantity ?: displayCount.toLong(),
-                                countRuleKnown = countHistory == null || countHistory.todayPolicy != null,
+                                actualCount = countDisplay?.todayQuantity ?: countSummary?.todayQuantity ?: displayCount.toLong(),
+                                countRuleKnown = (countDisplay == null && countSummary == null) || countPolicy != null,
                                 timerState = timerState,
-                                isCountdown = activeTimer?.takeIf { it.habitId == habit.id }?.isCountdown ?: countHistory?.todayPolicy?.isCountdown ?: habit.isCountdown,
+                                isCountdown = activeTimer?.takeIf { it.habitId == habit.id }?.isCountdown ?: countPolicy?.isCountdown ?: habit.isCountdown,
                                 onCheckIn = onCheckIn,
                                 onUndo = onUndo,
                                 onIncrement = onIncrement,

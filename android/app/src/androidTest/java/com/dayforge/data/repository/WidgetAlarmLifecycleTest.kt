@@ -1,5 +1,7 @@
 package com.dayforge.data.repository
 
+import android.appwidget.AppWidgetManager
+import android.content.ComponentName
 import android.app.AlarmManager
 import android.content.Context
 import android.content.ContextWrapper
@@ -30,7 +32,8 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** Real account/Room/repository preparation. Only AlarmManager submission is replaced. */
+/** Real account/Room/repository preparation. Explicit installed-consumer inventory keeps
+ * all original COUNT/timer/error branches live; no fake ID is submitted to a widget host. */
 @HiltAndroidTest
 @RunWith(AndroidJUnit4::class)
 class WidgetAlarmLifecycleTest {
@@ -45,14 +48,20 @@ class WidgetAlarmLifecycleTest {
     private val app get() = InstrumentationRegistry.getInstrumentation().targetContext
     private val db get() = storage.database
     private val alarms = mockk<AlarmManager>(relaxed = true)
+    private val installed = mockk<AppWidgetManager>()
     private lateinit var context: Context
     private fun id(n: Int) = "ab330000-0000-4000-8000-${n.toString(16).padStart(12, '0')}"
     @Before fun setup() = runBlocking<Unit> {
         hilt.inject()
         sessions.exclusive { tokens.clearTokens(); tokens.saveLoginSession("synthetic-first", "synthetic-refresh", "member", id(1), false) }
+        every { installed.getAppWidgetIds(any<ComponentName>()) } returns intArrayOf(701)
         context = object : ContextWrapper(app) {
             override fun getApplicationContext(): Context = this
-            override fun getSystemService(name: String): Any? = if (name == ALARM_SERVICE) alarms else super.getSystemService(name)
+            override fun getSystemService(name: String): Any? = when (name) {
+                ALARM_SERVICE -> alarms
+                APPWIDGET_SERVICE -> installed
+                else -> super.getSystemService(name)
+            }
         }
         val entry = WidgetEntryPoint.from(app)
         mockkObject(WidgetEntryPoint.Companion)
@@ -87,33 +96,82 @@ class WidgetAlarmLifecycleTest {
     }
 
     @Test fun actualCountPreparationDoesNotReenterLockAndOldAlarmIsDiscardedAfterSwitch() = runBlocking<Unit> {
+        fun mark(stage: String) {
+            android.util.Log.d("WidgetAlarmGateTiming", "stage=$stage at_ns=${android.os.SystemClock.elapsedRealtimeNanos()}")
+        }
         val now = ZonedDateTime.now()
         val habitId = habits.createHabit("Alarm count", "", HabitType.COUNTING, 0, "#123456", HabitSchedule.Daily,
             targetValue = 2, bestTime = (now.hour * 60 + now.minute).toLong(), completionPolicy = "recurring",
             appearance = ObjectAppearance(IconReference.Role("habit.custom"), "#123456", "theme"), creationAuthority = creator.capture())
         val row = requireNotNull(habits.getHabitById(habitId))
         val before = db.withTransaction { nextRestartDatabaseProof(db) }
+        val qualification = CountReadQualificationFixtureAssertions(db, tokens, sessions)
+        val beforeRead = qualification.beginBeforeFirstRead()
+        val originalAuthority = requireNotNull(tokens.localCoreWriteAccess())
         val real = habits
         val gated = spyk(real)
-        val entry = mockk<WidgetEntryPoint>()
+        val actualEntry = WidgetEntryPoint.from(app)
+        val entry = mockk<com.dayforge.di.WidgetGraphAccess>()
+        coEvery { entry.withGraph(any<suspend () -> Any?>()) } coAnswers {
+            actualEntry.withGraph(firstArg<suspend () -> Any?>())
+        }
+        every { entry.bound() } answers { actualEntry.bound() }
         every { entry.displayPublisher() } returns publisher
         every { entry.habitRepository() } returns gated
         every { WidgetEntryPoint.from(context) } returns entry
         val entered = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
         coEvery { gated.getCountHistory(row) } coAnswers {
+            mark("real_count_begin")
             val read = real.getCountHistory(row)
-            entered.complete(Unit); release.await(); read
+            mark("real_count_return")
+            entered.complete(Unit); mark("entered_complete"); release.await(); mark("read_release_return"); read
         }
-        val scheduling = async(Dispatchers.IO) { FocusWidgetAlarmScheduler.scheduleNextRefresh(context) }
+        val scheduling = async(Dispatchers.IO) {
+            mark("scheduling_begin")
+            FocusWidgetAlarmScheduler.scheduleNextRefresh(context)
+            mark("scheduling_return")
+        }
         try {
-            withTimeout(5000) { entered.await() }
+            mark("entered_await_begin")
+            try {
+                withTimeout(5000) { entered.await() }
+            } catch (error: Throwable) {
+                mark("entered_await_failed")
+                throw error
+            }
+            mark("entered_await_return")
+            // The REAL original getCountHistory has completed and is held before platform
+            // publication. Inspect that first read now, while the original account is current.
+            assertEquals(originalAuthority, tokens.localCoreWriteAccess())
+            val prepared = qualification.verifyFirstRetry(beforeRead)
+            val preparedHash = db.withTransaction { nextRestartDatabaseProof(db) }
+            if (prepared == beforeRead) assertEquals(before, preparedHash)
+            mark("account_switch_begin")
             sessions.exclusive { tokens.saveLoginSession("synthetic-other", "synthetic-refresh", "other", id(50), false) }
-            release.complete(Unit); withTimeout(5000) { scheduling.await() }
+            mark("account_switch_return")
+            mark("normal_release")
+            release.complete(Unit)
+            mark("scheduling_await_begin")
+            try {
+                withTimeout(5000) { scheduling.await() }
+            } catch (error: Throwable) {
+                mark("scheduling_await_failed")
+                throw error
+            }
+            mark("scheduling_await_return")
             verify(exactly = 0) { alarms.setWindow(any(), any(), any(), any()) }
             verify(exactly = 0) { alarms.setAlarmClock(any(), any()) }
             verify(exactly = 0) { alarms.cancel(any<android.app.PendingIntent>()) }
-            assertEquals(before, db.withTransaction { nextRestartDatabaseProof(db) })
-        } finally { release.complete(Unit); scheduling.cancelAndJoin() }
+            // Rejected old-account publication has NO write allowance, even for COUNT cache.
+            qualification.assertUnchanged(prepared)
+            assertEquals(preparedHash, db.withTransaction { nextRestartDatabaseProof(db) })
+        } finally {
+            mark("cleanup_release")
+            release.complete(Unit)
+            mark("cleanup_cancel_join_begin")
+            scheduling.cancelAndJoin()
+            mark("cleanup_cancel_join_return")
+        }
     }
 
     @Test fun emptyCurrentSourcesCancelOldAlarmAndPlatformFailurePropagatesWithoutLockLeak() = runBlocking<Unit> {

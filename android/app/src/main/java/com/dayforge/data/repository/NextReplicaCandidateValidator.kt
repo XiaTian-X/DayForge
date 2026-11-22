@@ -3,6 +3,8 @@ package com.dayforge.data.repository
 import android.content.Context
 import androidx.room.Room
 import androidx.room.withTransaction
+import androidx.sqlite.db.SupportSQLiteOpenHelper
+import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import com.dayforge.data.api.dto.*
 import com.dayforge.data.local.*
 import com.dayforge.data.local.entity.NextSyncStateEntity
@@ -13,6 +15,7 @@ import java.time.Instant
 import java.util.Collections
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -54,12 +57,20 @@ internal class ValidatedReplicaCandidate internal constructor(
  * process-wide provider, copies credentials, publishes a cursor, or acknowledges old requests.
  * Internal merge participants are reused; their public authenticated write entries are not called.
  */
-internal class NextReplicaCandidateValidator @Inject constructor(
-    @param:ApplicationContext private val context: Context,
+internal class NextReplicaCandidateValidator internal constructor(
+    private val context: Context,
     private val tokens: TokenManager,
     private val sessions: AccountSessionCoordinator,
-    private val preferences: PreferencesManager
+    private val preferences: PreferencesManager,
+    private val nativeFactory: SupportSQLiteOpenHelper.Factory
 ) {
+    @Inject constructor(
+        @ApplicationContext context: Context,
+        tokens: TokenManager,
+        sessions: AccountSessionCoordinator,
+        preferences: PreferencesManager
+    ) : this(context, tokens, sessions, preferences, FrameworkSQLiteOpenHelperFactory())
+
     private val json = Json { encodeDefaults = true }
 
     suspend fun validate(original: LocalSyncAccess, installation: String,
@@ -116,84 +127,89 @@ internal class NextReplicaCandidateValidator @Inject constructor(
             // This is a private projection scope, not authority given to HTTP or active storage.
             val candidateScope = LocalSyncAccess(original.session.copy(syncEpoch = frozen.syncEpoch), proof.deviceId,
                 proof.capabilityRevision, proof.capabilities.toSet())
+            val factory = CountTrustOpenHelperFactory(context.applicationContext, nativeFactory)
             val candidate = Room.inMemoryDatabaseBuilder(context.applicationContext, HabitDatabase::class.java)
-                .addCallback(SyncSchemaCallback).build()
+                .openHelperFactory(factory).addCallback(SyncSchemaCallback).build()
+                .also { CountTrustRuntime.attach(it, factory) }
             var failure: Throwable? = null
             try {
-                candidate.withTransaction {
-                    val local = OneTimeLocalIntentStore(candidate, tokens, sessions, preferences)
-                    val accepted = OneTimeAcceptedEventStore(candidate, tokens, sessions, local)
-                    accepted.restoreAcceptedDataInTransaction(OneTimeSyncContext(candidateScope.session, proof.deviceId),
-                        NextSyncBootstrapResponse(snapshot.changes.filter { it.entityType != "challenge_round" },
-                            snapshot.nextCursor, snapshot.serverTime, snapshot.oneTimeCheckpoints))
-                    val hash = syncPayloadHash(wire)
-                    val state = NextSyncStateEntity(frozen.accountId, frozen.serverInstanceId, frozen.syncEpoch, proof.deviceId,
-                        1, snapshot.nextCursor, hash, hash, challengeContract = 1)
-                    val rounds = NextChallengeStore(candidate)
-                    rounds.mergeInTransaction(candidateScope, null, state, snapshot.metadata())
-                    check(candidate.nextSyncStateDao().insert(state) == 1L)
-                    check(rounds.activeInTransaction(candidateScope).second == rounds.readInTransaction(candidateScope, state))
-                    check(candidate.syncOutboxDao().count() == 0 && candidate.timeLogDao().getPendingTimerCommands(1).isEmpty())
-                    check(!candidate.nextRequestDao().hasAny())
-                    frozen.activeTimer?.let { timer ->
-                        require(timer.state in setOf("running", "paused") && timer.endedAt == null && timer.completedEventId == null)
-                        require(listOf(timer.sessionId, timer.activityUuid, timer.controllerDeviceId).all(::isContractUuid))
-                        require(timer.controlGeneration > 0 && timer.revision > 0 && timer.nextCommandSequence > 0 &&
-                            timer.targetSeconds >= 0 && timer.maxDurationSeconds in 1..86_400 &&
-                            timer.activeElapsedMs in 0..timer.maxDurationSeconds.toLong() * 1000)
-                        require(timer.timezone in java.time.ZoneId.getAvailableZoneIds())
-                        val started = Instant.parse(timer.startedAt)
-                        require(Instant.parse(timer.stateChangedAt) >= started)
-                        timer.lastHeartbeatAt?.let { require(Instant.parse(it) >= started) }
-                        require(candidate.habitDao().getHabitByUuid(timer.activityUuid)?.habitType == com.dayforge.data.model.HabitType.TIMER)
-                        RoundActiveTimerResponse(timer, snapshot.serverTime, 1, snapshot.checkpoints, snapshot.births)
+                coroutineScope {
+                    candidate.withTransaction {
+                        requireNotNull(CountTrustRuntime.forDatabase(candidate)).prepareOutboxAllocatorsForWrite(candidate)
+                        val local = OneTimeLocalIntentStore(candidate, tokens, sessions, preferences)
+                        val accepted = OneTimeAcceptedEventStore(candidate, tokens, sessions, local)
+                        accepted.restoreAcceptedDataInTransaction(OneTimeSyncContext(candidateScope.session, proof.deviceId),
+                            NextSyncBootstrapResponse(snapshot.changes.filter { it.entityType != "challenge_round" },
+                                snapshot.nextCursor, snapshot.serverTime, snapshot.oneTimeCheckpoints))
+                        val hash = syncPayloadHash(wire)
+                        val state = NextSyncStateEntity(frozen.accountId, frozen.serverInstanceId, frozen.syncEpoch, proof.deviceId,
+                            1, snapshot.nextCursor, hash, hash, challengeContract = 1)
+                        val rounds = NextChallengeStore(candidate)
+                        rounds.mergeInTransaction(candidateScope, null, state, snapshot.metadata())
+                        check(candidate.nextSyncStateDao().insert(state) == 1L)
+                        check(rounds.activeInTransaction(candidateScope).second == rounds.readInTransaction(candidateScope, state))
+                        check(candidate.syncOutboxDao().count() == 0 && candidate.timeLogDao().getPendingTimerCommands(1).isEmpty())
+                        check(!candidate.nextRequestDao().hasAny())
+                        frozen.activeTimer?.let { timer ->
+                            require(timer.state in setOf("running", "paused") && timer.endedAt == null && timer.completedEventId == null)
+                            require(listOf(timer.sessionId, timer.activityUuid, timer.controllerDeviceId).all(::isContractUuid))
+                            require(timer.controlGeneration > 0 && timer.revision > 0 && timer.nextCommandSequence > 0 &&
+                                timer.targetSeconds >= 0 && timer.maxDurationSeconds in 1..86_400 &&
+                                timer.activeElapsedMs in 0..timer.maxDurationSeconds.toLong() * 1000)
+                            require(timer.timezone in java.time.ZoneId.getAvailableZoneIds())
+                            val started = Instant.parse(timer.startedAt)
+                            require(Instant.parse(timer.stateChangedAt) >= started)
+                            timer.lastHeartbeatAt?.let { require(Instant.parse(it) >= started) }
+                            require(candidate.habitDao().getHabitByUuid(timer.activityUuid)?.habitType == com.dayforge.data.model.HabitType.TIMER)
+                            RoundActiveTimerResponse(timer, snapshot.serverTime, 1, snapshot.checkpoints, snapshot.births)
+                        }
                     }
-                }
-                currentCoroutineContext().ensureActive()
-                authorize(original, installation)
-                read?.authorize(tokens)
-                val records = linkedMapOf<ReplicaRecordKey, JsonElement>()
-                fun add(kind: String, identity: String, value: JsonElement) {
-                    check(records.put(ReplicaRecordKey(kind, identity), value) == null)
-                }
-                snapshot.changes.forEach { add(it.entityType, it.entityUuid, it.payload) }
-                snapshot.oneTimeCheckpoints.forEach { add("one_time_checkpoint", it.activityUuid, json.encodeToJsonElement(it)) }
-                snapshot.checkpoints.forEach { checkpoint ->
-                    add("challenge_checkpoint", checkpoint.head.activityUuid,
-                        json.encodeToJsonElement(checkpoint.copy(records = checkpoint.records.sortedBy { it.head.generation })))
-                    checkpoint.records.filter { it.head.generation > 0 }.forEach { record ->
-                        val key = ReplicaRecordKey("challenge_round", record.head.roundUuid)
-                        val value = json.encodeToJsonElement(record)
-                        require(records[key]?.let { it == value } != false)
-                        records[key] = value
+                    currentCoroutineContext().ensureActive()
+                    authorize(original, installation)
+                    read?.authorize(tokens)
+                    val records = linkedMapOf<ReplicaRecordKey, JsonElement>()
+                    fun add(kind: String, identity: String, value: JsonElement) {
+                        check(records.put(ReplicaRecordKey(kind, identity), value) == null)
                     }
-                }
-                snapshot.births.forEach { add("challenge_birth.${it.entityType}", it.entityUuid, json.encodeToJsonElement(it)) }
-                frozen.activeTimer?.let { add("active_timer", it.sessionId, json.encodeToJsonElement(it)) }
-                // Active target checkpoints use stable validated contents, not volatile server_time.
-                val contentHash = replicaCandidateContentHash(frozen.syncEpoch, snapshot.nextCursor, proof, records, frozen.activeTimer != null)
-                candidate.withTransaction {
-                    // Existing merge helpers timestamp cache receipt locally. A fresh private
-                    // projection must instead bind those cache-only timestamps to verified
-                    // remote updated_at, without changing any business occurrence/history time.
-                    for (change in snapshot.changes.filterNot { it.entityType == "challenge_round" }) {
-                        val shadow = requireNotNull(candidate.syncOutboxDao().getState(change.entityType, change.entityUuid))
-                        val stamp = Instant.parse(change.changedAt).toEpochMilli()
-                        candidate.openHelper.writableDatabase.execSQL(
-                            "UPDATE sync_entity_state SET updatedAt=? WHERE entityType=? AND entityUuid=?",
-                            arrayOf<Any>(stamp, change.entityType, change.entityUuid))
-                        check(candidate.syncOutboxDao().getState(change.entityType, change.entityUuid) == shadow.copy(updatedAt = stamp))
+                    snapshot.changes.forEach { add(it.entityType, it.entityUuid, it.payload) }
+                    snapshot.oneTimeCheckpoints.forEach { add("one_time_checkpoint", it.activityUuid, json.encodeToJsonElement(it)) }
+                    snapshot.checkpoints.forEach { checkpoint ->
+                        add("challenge_checkpoint", checkpoint.head.activityUuid,
+                            json.encodeToJsonElement(checkpoint.copy(records = checkpoint.records.sortedBy { it.head.generation })))
+                        checkpoint.records.filter { it.head.generation > 0 }.forEach { record ->
+                            val key = ReplicaRecordKey("challenge_round", record.head.roundUuid)
+                            val value = json.encodeToJsonElement(record)
+                            require(records[key]?.let { it == value } != false)
+                            records[key] = value
+                        }
                     }
-                    val current = candidate.nextSyncStateDao().rows().single()
-                    check(candidate.nextSyncStateDao().update(current.copy(bootstrapHash = contentHash, batchHash = contentHash)) == 1)
-                    val challenge = candidate.nextChallengeDao().states().single()
-                    check(candidate.nextChallengeDao().update(challenge.copy(batchHash = contentHash)) == 1)
-                    NextChallengeStore(candidate).activeInTransaction(candidateScope)
+                    snapshot.births.forEach { add("challenge_birth.${it.entityType}", it.entityUuid, json.encodeToJsonElement(it)) }
+                    frozen.activeTimer?.let { add("active_timer", it.sessionId, json.encodeToJsonElement(it)) }
+                    // Active target checkpoints use stable validated contents, not volatile server_time.
+                    val contentHash = replicaCandidateContentHash(frozen.syncEpoch, snapshot.nextCursor, proof, records, frozen.activeTimer != null)
+                    candidate.withTransaction {
+                        // Existing merge helpers timestamp cache receipt locally. A fresh private
+                        // projection must instead bind those cache-only timestamps to verified
+                        // remote updated_at, without changing any business occurrence/history time.
+                        for (change in snapshot.changes.filterNot { it.entityType == "challenge_round" }) {
+                            val shadow = requireNotNull(candidate.syncOutboxDao().getState(change.entityType, change.entityUuid))
+                            val stamp = Instant.parse(change.changedAt).toEpochMilli()
+                            candidate.openHelper.writableDatabase.execSQL(
+                                "UPDATE sync_entity_state SET updatedAt=? WHERE entityType=? AND entityUuid=?",
+                                arrayOf<Any>(stamp, change.entityType, change.entityUuid))
+                            check(candidate.syncOutboxDao().getState(change.entityType, change.entityUuid) == shadow.copy(updatedAt = stamp))
+                        }
+                        val current = candidate.nextSyncStateDao().rows().single()
+                        check(candidate.nextSyncStateDao().update(current.copy(bootstrapHash = contentHash, batchHash = contentHash)) == 1)
+                        val challenge = candidate.nextChallengeDao().states().single()
+                        check(candidate.nextChallengeDao().update(challenge.copy(batchHash = contentHash)) == 1)
+                        NextChallengeStore(candidate).activeInTransaction(candidateScope)
+                    }
+                    read?.authorize(tokens)
+                    ValidatedReplicaCandidate(original.copy(capabilities = original.capabilities.toSet()), frozen.syncEpoch,
+                        snapshot.nextCursor, syncPayloadHash(wire), proof.copy(capabilities = Collections.unmodifiableList(proof.capabilities.toList())),
+                        records, frozen.activeTimer != null, ReplicaProjection.capture(candidate))
                 }
-                read?.authorize(tokens)
-                ValidatedReplicaCandidate(original.copy(capabilities = original.capabilities.toSet()), frozen.syncEpoch,
-                    snapshot.nextCursor, syncPayloadHash(wire), proof.copy(capabilities = Collections.unmodifiableList(proof.capabilities.toList())),
-                    records, frozen.activeTimer != null, ReplicaProjection.capture(candidate))
             } catch (error: Throwable) {
                 failure = error
                 throw error

@@ -1,6 +1,7 @@
 package com.dayforge.data.repository
 
 import android.content.Context
+import android.database.Cursor
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.room.withTransaction
 import androidx.test.core.app.ApplicationProvider
@@ -8,6 +9,10 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.dayforge.data.api.dto.*
 import com.dayforge.data.local.PhysicalDatabaseRule
+import com.dayforge.data.local.CountTrustRuntime
+import com.dayforge.data.local.CountTrustSchema
+import com.dayforge.data.history.CountTrustIndex
+import com.dayforge.data.history.HistoryBlockCodec
 import com.dayforge.data.local.PreferencesManager
 import com.dayforge.data.local.TokenManager
 import com.dayforge.data.local.entity.CompletionEntity
@@ -31,6 +36,9 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+
+private data class RestoreNativeCell(val type: Int, val value: Any?)
+private typealias RestoreRawImage = Map<String, List<Map<String, RestoreNativeCell>>>
 
 @RunWith(AndroidJUnit4::class)
 class NextCommonRestoreTest {
@@ -91,7 +99,7 @@ class NextCommonRestoreTest {
         val before = durable(); val history = countRead()
         assertEquals(1L, history.todayQuantity); assertNull(history.todayPolicy)
         assertEquals(setOf(java.time.LocalDate.parse("2026-09-28")), history.unknownDates)
-        assertTrue(history.qualifiedDates.isEmpty()); assertEquals(before, durable())
+        assertTrue(history.qualifiedDates.isEmpty()); assertFirstQualificationOnly(before, history)
     }
 
     @Test fun acceptedHistoricalCheckInCanCoexistWithCountFactsWithoutInventingItsCountPolicy() = runBlocking<Unit> {
@@ -102,7 +110,7 @@ class NextCommonRestoreTest {
         assertEquals(6L, history.todayQuantity); assertEquals(CountDayPolicy(10, false), history.todayPolicy)
         assertFalse(history.completedToday); assertTrue(history.qualifiedDates.isEmpty())
         assertFalse(db.syncOutboxDao().getState("activity_event", durationId)!!.payloadJson!!.contains("count_policy"))
-        assertEquals(before, durable())
+        assertFirstQualificationOnly(before, history)
     }
 
     @Test fun acceptedUndoneCountRestoresOriginalDayWithoutUsingTodaysMutableConfiguration() = runBlocking<Unit> {
@@ -123,7 +131,7 @@ class NextCommonRestoreTest {
         val accepted = durable()
         storage.reopen()
         restore(response)
-        assertEquals(accepted, durable())
+        assertRestoreGenerationOnly(accepted, 6L)
     }
 
     @Test fun mixedCountRulesAndLateDayMutationCannotPartiallyRestoreAcceptedSnapshot() = runBlocking<Unit> {
@@ -274,14 +282,139 @@ class NextCommonRestoreTest {
         put("show_in_activity_detail", true); put("prompt_on_complete", prompt); put("is_active", true)
     }, revision)
     private fun all() = snapshot(duration(), completed(), observation(), fact(), link(), task(parent = goalId), goal(), activity(), metric())
-    private fun durable(): Map<String, List<List<String?>>> {
+    /** Complete main storage, including control/root/nodes/routes/command rows and SQLite rows.
+     * A TEMP change journal must never shadow main.sqlite_sequence. Values retain native types.
+     */
+    private fun durable(): RestoreRawImage {
         val sql = db.openHelper.readableDatabase
-        val tables = sql.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").use { cursor ->
-            buildList { while (cursor.moveToNext()) add(cursor.getString(0)) }
+        val tables = sql.query("SELECT name FROM main.sqlite_master WHERE type='table' ORDER BY name").use { cursor ->
+            buildList { while (cursor.moveToNext()) {
+                assertEquals(Cursor.FIELD_TYPE_STRING, cursor.getType(0))
+                add(cursor.getString(0).also { require(it.matches(Regex("[A-Za-z_][A-Za-z_0-9]*"))) })
+            } }
         }
-        return tables.associateWith { table -> sql.query("SELECT * FROM \"$table\" ORDER BY rowid").use { cursor ->
-            buildList { while (cursor.moveToNext()) add((0 until cursor.columnCount).map { cursor.getString(it) }) }
+        return tables.associateWith { table -> sql.query("SELECT * FROM main.`$table` ORDER BY rowid").use { cursor ->
+            buildList { while (cursor.moveToNext()) add(buildMap {
+                for (column in 0 until cursor.columnCount) {
+                    val type = cursor.getType(column)
+                    val value: Any? = when (type) {
+                        Cursor.FIELD_TYPE_NULL -> null
+                        Cursor.FIELD_TYPE_INTEGER -> cursor.getLong(column)
+                        Cursor.FIELD_TYPE_FLOAT -> cursor.getDouble(column).toRawBits()
+                        Cursor.FIELD_TYPE_STRING -> cursor.getString(column)
+                        Cursor.FIELD_TYPE_BLOB -> cursor.getBlob(column).toList()
+                        else -> error("Unexpected SQLite native type: $type")
+                    }
+                    put(cursor.getColumnName(column), RestoreNativeCell(type, value))
+                }
+            }) }
         } }
+    }
+
+    private fun control(image: RestoreRawImage): Map<String, RestoreNativeCell> =
+        image.getValue("count_trust_control").single().also { row ->
+            assertEquals(setOf("id", "storageId", "generation", "dirty"), row.keys)
+            assertEquals(RestoreNativeCell(Cursor.FIELD_TYPE_INTEGER, 1L), row.getValue("id"))
+            assertEquals(Cursor.FIELD_TYPE_STRING, row.getValue("storageId").type)
+            assertTrue(com.dayforge.domain.model.isContractUuid(row.getValue("storageId").value as String))
+            assertEquals(Cursor.FIELD_TYPE_INTEGER, row.getValue("generation").type)
+            assertTrue((row.getValue("generation").value as Long) >= 0L)
+            assertEquals(RestoreNativeCell(Cursor.FIELD_TYPE_INTEGER, 1L), row.getValue("dirty"))
+        }
+
+    private fun withGeneration(before: RestoreRawImage, delta: Long): RestoreRawImage {
+        require(delta > 0L)
+        val row = control(before)
+        val expected = row + ("generation" to RestoreNativeCell(Cursor.FIELD_TYPE_INTEGER,
+            Math.addExact(row.getValue("generation").value as Long, delta)))
+        return before + ("count_trust_control" to listOf(expected))
+    }
+
+    /** Only named SUCCESSFUL direct restores use this helper. Rejections and acceptRecovery's
+     * persisted-receipt fast return still compare the COMPLETE native image without allowance.
+     * Known replay work: three suppressOutbox 0->1->0 pairs = 6; one completion UPDATE = +1;
+     * all() adds completion + timer + metric UPDATEs and two allocation DELETE/INSERT pairs = +7.
+     */
+    private fun assertRestoreGenerationOnly(before: RestoreRawImage, expectedDelta: Long): RestoreRawImage {
+        require(expectedDelta in setOf(6L, 7L, 13L))
+        val expected = withGeneration(before, expectedDelta)
+        val actual = durable()
+        assertEquals(expected, actual)
+        return actual
+    }
+
+    /** First legitimate COUNT read may issue only its complete, authenticated derived cache.
+     * No rejected read is preheated. Every other table/column stays exact, then a same-root read
+     * must preserve the entire native image, including every BLOB and the control row.
+     */
+    private suspend fun assertFirstQualificationOnly(before: RestoreRawImage,
+        history: com.dayforge.domain.model.CountHistory) {
+        val oldControl = control(before)
+        assertTrue(before.getValue("count_trust_root").isEmpty())
+        assertTrue(before.getValue("count_trust_nodes").isEmpty())
+        val issued = durable()
+        val cleared = oldControl + ("dirty" to RestoreNativeCell(Cursor.FIELD_TYPE_INTEGER, 0L))
+        assertEquals(listOf(cleared), issued.getValue("count_trust_control"))
+        assertEquals(before + mapOf(
+            "count_trust_control" to listOf(cleared),
+            "count_trust_root" to issued.getValue("count_trust_root"),
+            "count_trust_nodes" to issued.getValue("count_trust_nodes")), issued)
+        sessions.exclusive { db.withTransaction {
+            val authority = requireNotNull(tokens.localCoreWriteAccess())
+            val owner = requireNotNull(CountTrustRuntime.forDatabase(db))
+            owner.maintenance(db) {
+                val sql = db.openHelper.writableDatabase
+                CountTrustSchema.validate(sql)
+                val header = requireNotNull(CountTrustSeal.read(sql))
+                assertEquals(CountTrustSeal.VALIDATOR, header.validator)
+                assertEquals(1L, header.revision)
+                assertEquals(oldControl.getValue("generation").value as Long, header.generation)
+                val binding = CountTrustSeal.binding(authority, oldControl.getValue("storageId").value as String)
+                val schemaHash = CountTrustIndex.hash(JsonArray(owner.schemaSnapshot().map { row ->
+                    JsonArray(row.map { it?.let(::JsonPrimitive) ?: JsonNull })
+                }).toString().toByteArray(Charsets.UTF_8))
+                assertTrue("Issued root must authenticate the current scope and actual schema",
+                    CountTrustSeal().matches(header, binding, schemaHash))
+                val index = CountTrustIndex(sql, binding, header.root) {}
+                index.verifyContents() // ALL reachable tree nodes and full value chunks, not one point.
+                assertEquals(CountTrustValidationEnvironment.current(),
+                    CountTrustValidationEnvironment.Snapshot.decode(requireNotNull(index.get(CountTrustValidationEnvironment.KEY))))
+                // Authentication of one root must not excuse arbitrary orphan cache additions.
+                val reachable = linkedSetOf<String>()
+                val visitedTrees = hashSetOf<String>()
+                val pending = ArrayDeque<HistoryBlockCodec.Ref>()
+                pending.addLast(header.root)
+                while (pending.isNotEmpty()) {
+                    val ref = pending.removeLast()
+                    if (!visitedTrees.add(ref.digest)) continue
+                    reachable.add(ref.digest)
+                    val bytes = sql.query("SELECT body FROM main.count_trust_nodes WHERE digest=?", arrayOf(ref.digest)).use { cursor ->
+                        assertTrue(cursor.moveToFirst())
+                        assertEquals(Cursor.FIELD_TYPE_BLOB, cursor.getType(0))
+                        cursor.getBlob(0).also { assertFalse(cursor.moveToNext()) }
+                    }
+                    when (val node = HistoryBlockCodec.decode(ref, bytes)) {
+                        is HistoryBlockCodec.Branch -> node.children.forEach(pending::addLast)
+                        is HistoryBlockCodec.Leaf -> node.records.forEach { record ->
+                            val pointer = Json.parseToJsonElement(record.payload.toByteArray().toString(Charsets.UTF_8)).jsonObject
+                            pointer.getValue("chunks").jsonArray.forEach { reachable.add(it.jsonPrimitive.content) }
+                        }
+                    }
+                }
+                val retained = issued.getValue("count_trust_nodes").map { row ->
+                    assertEquals(setOf("digest", "body"), row.keys)
+                    assertEquals(Cursor.FIELD_TYPE_STRING, row.getValue("digest").type)
+                    assertEquals(Cursor.FIELD_TYPE_BLOB, row.getValue("body").type)
+                    row.getValue("digest").value as String
+                }
+                assertEquals(retained.size, retained.toSet().size)
+                assertEquals(reachable, retained.toSet())
+            }
+            assertEquals(authority, tokens.localCoreWriteAccess())
+        } }
+        assertEquals(issued, durable())
+        assertEquals(history, countRead())
+        assertEquals(issued, durable())
     }
     private suspend fun frozenLocal(): com.dayforge.data.local.entity.SyncOutboxEntity {
         restore(snapshot(activity()))
@@ -315,12 +448,12 @@ class NextCommonRestoreTest {
         assertEquals(cursor, tokens.syncCursor.first())
     }
 
-    @Test fun cachedUndoRevisionCannotBeCoercedOrNormalizedDuringActualRestore() = runBlocking {
+    @Test fun cachedUndoRevisionCannotBeCoercedOrNormalizedDuringActualRestore() = runBlocking<Unit> {
         val undo = fact(undoId, "revert", target = checkId)
         val response = snapshot(activity(), fact())
         restore(snapshot(activity(), fact(), undo))
         val before = durable()
-        restore(response); assertEquals(before, durable())
+        restore(response); assertRestoreGenerationOnly(before, 6L)
         val shadow = db.syncOutboxDao().getState("activity_event", undoId)!!
         val text = requireNotNull(shadow.payloadJson)
         assertTrue(text.contains("\"revision\":1"))
@@ -334,7 +467,11 @@ class NextCommonRestoreTest {
         }
         // Only restore the exact synthetic corruption owned by this test; production must not rewrite it.
         db.syncOutboxDao().upsertState(shadow)
-        restore(response); assertEquals(before, durable())
+        val repaired = durable()
+        // One successful replay (+6), six corrupt REPLACE writes and one exact repair.
+        // recursive_triggers=ON makes each existing-shadow REPLACE DELETE + INSERT (+2).
+        assertEquals(withGeneration(before, 6L + 2L * (6L + 1L)), repaired)
+        restore(response); assertRestoreGenerationOnly(repaired, 6L)
     }
 
     @Test fun allAcceptedTypesAndOnceHistoryRestoreAtomicallyAndReopenWithoutOutboxOrCursorChanges() = runBlocking {
@@ -343,7 +480,7 @@ class NextCommonRestoreTest {
         restore(snapshot)
         val before = durable()
         storage.reopen(); restore(snapshot)
-        assertEquals(before, durable())
+        assertRestoreGenerationOnly(before, 13L)
         assertEquals(cursor, tokens.syncCursor.first()); assertEquals(0, db.syncOutboxDao().count())
         assertEquals(2, db.completionDao().countAll())
         assertEquals(5, db.completionDao().getCompletionByUuid(checkId)!!.value)
@@ -394,7 +531,7 @@ class NextCommonRestoreTest {
         assertTrue(runCatching { restore(all()) }.isFailure); assertEquals(before, durable())
     }
 
-    @Test fun frozenMatchingLocalFactIsNotAcknowledgedAndCaptureMetadataIsKept() = runBlocking {
+    @Test fun frozenMatchingLocalFactIsNotAcknowledgedAndCaptureMetadataIsKept() = runBlocking<Unit> {
         val frozen = frozenLocal()
         val id = db.completionDao().getCompletionByUuid(checkId)!!.id
         restore(snapshot(activity(), fact()))
@@ -403,7 +540,7 @@ class NextCommonRestoreTest {
         assertEquals(id, db.completionDao().getCompletionByUuid(checkId)!!.id)
         assertEquals("captured", db.completionDao().getCompletionByUuid(checkId)!!.timeMetadataSource)
         assertNotNull(db.syncOutboxDao().getState("activity_event", checkId))
-        val before = durable(); restore(snapshot(activity(), fact())); assertEquals(before, durable())
+        val before = durable(); restore(snapshot(activity(), fact())); assertRestoreGenerationOnly(before, 7L)
     }
 
     @Test fun mismatchedFrozenContentAndUnpreparedOrRejectedIdentityCannotBeClaimedByPull() = runBlocking {
@@ -465,20 +602,21 @@ class NextCommonRestoreTest {
         assertEquals(before, durable())
     }
 
-    @Test fun localLinkFlagsArePreservedAndNewRevisionWaitsForPendingOrRejectedEdits() = runBlocking {
+    @Test fun localLinkFlagsArePreservedAndNewRevisionWaitsForPendingOrRejectedEdits() = runBlocking<Unit> {
         restore(snapshot(activity(), metric(), link()))
         val row = db.habitMetricLinkDao().getLinkByUuid(linkId)!!
         db.habitMetricLinkDao().update(row.copy(promptOnComplete = false))
         val pending = db.syncOutboxDao().getAll().single()
-        val before = durable(); restore(snapshot(activity(), metric(), link())); assertEquals(before, durable())
-        assertTrue(runCatching { restore(snapshot(activity(), metric(), link(2, false))) }.isFailure); assertEquals(before, durable())
+        val before = durable(); restore(snapshot(activity(), metric(), link()))
+        val replayed = assertRestoreGenerationOnly(before, 6L)
+        assertTrue(runCatching { restore(snapshot(activity(), metric(), link(2, false))) }.isFailure); assertEquals(replayed, durable())
         db.syncOutboxDao().markDeadLetter(pending.id, "CONFLICT", "synthetic", 12)
         val rejected = durable(); assertTrue(runCatching { restore(snapshot(activity(), metric(), link(2, false))) }.isFailure); assertEquals(rejected, durable())
         db.syncOutboxDao().deleteById(pending.id)
         restore(snapshot(activity(), metric(), link(2, false)))
         assertEquals(row.id, db.habitMetricLinkDao().getLinkByUuid(linkId)!!.id)
         assertFalse(db.habitMetricLinkDao().getLinkByUuid(linkId)!!.promptOnComplete)
-        val newer = durable(); restore(snapshot(activity(), metric(), link())); assertEquals(newer, durable())
+        val newer = durable(); restore(snapshot(activity(), metric(), link())); assertRestoreGenerationOnly(newer, 6L)
     }
 
     @Test fun pendingTimerCommandsAndLoginOrEpochChangesCannotBeConsumedByRestore() = runBlocking {
@@ -496,7 +634,7 @@ class NextCommonRestoreTest {
         restore(snapshot(activity(), fact(), undo))
         val before = durable()
         restore(snapshot(activity(), fact()))
-        assertEquals(before, durable()); assertNull(db.completionDao().getCompletionByUuid(checkId))
+        assertRestoreGenerationOnly(before, 6L); assertNull(db.completionDao().getCompletionByUuid(checkId))
         val shadow = db.syncOutboxDao().getState("activity_event", undoId)!!
         db.syncOutboxDao().upsertState(shadow.copy(payloadJson = JsonObject(undo.payload - "event_type").toString()))
         val corrupt = durable()

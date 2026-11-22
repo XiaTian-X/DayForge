@@ -3,6 +3,7 @@ package com.dayforge.ui.components
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
@@ -51,7 +52,8 @@ fun MetricValueInput(
     targetValue: Double?,
     targetDirection: String?,
     onConfirm: (value: Double, note: String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    busy: Boolean = false
 ) {
     val context = LocalContext.current
     var inputValue by rememberSaveable { mutableStateOf("") }
@@ -99,7 +101,7 @@ fun MetricValueInput(
     }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!busy) onDismiss() },
         title = {
             Text(
                 text = stringResource(R.string.metric_input_title),
@@ -129,6 +131,7 @@ fun MetricValueInput(
 
                 // Value input
                 OutlinedTextField(
+                    enabled = !busy,
                     value = inputValue,
                     onValueChange = { newValue ->
                         inputValue = NumericInputUtils.filterNumericInput(newValue, decimalPlaces)
@@ -147,6 +150,7 @@ fun MetricValueInput(
 
                 // Note input (optional)
                 OutlinedTextField(
+                    enabled = !busy,
                     value = noteValue,
                     onValueChange = { noteValue = it },
                     singleLine = true,
@@ -164,13 +168,14 @@ fun MetricValueInput(
                         onConfirm(value, noteValue.trim())
                     }
                 },
-                enabled = parsedValue != null
+                enabled = !busy && parsedValue != null
             ) {
-                Text(text = stringResource(R.string.metric_record_value))
+                if (busy) androidx.compose.material3.CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                else Text(text = stringResource(R.string.metric_record_value))
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(onClick = onDismiss, enabled = !busy) {
                 Text(text = stringResource(R.string.action_cancel))
             }
         }

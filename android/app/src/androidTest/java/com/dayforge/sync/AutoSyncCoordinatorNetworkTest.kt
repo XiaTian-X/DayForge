@@ -33,6 +33,7 @@ class AutoSyncCoordinatorNetworkTest {
     @Before fun setup() {
         mockkStatic(WorkManager::class)
         every { WorkManager.getInstance(context) } returns workManager
+        stubSyncWorkQueries(workManager)
         every { monitor.state } returns state
         every { outbox.observePendingCount() } returns emptyFlow()
         every { timers.observePendingTimerCommandCount() } returns emptyFlow()
@@ -57,6 +58,20 @@ class AutoSyncCoordinatorNetworkTest {
         changes.emit(Unit); runCurrent(); advanceTimeBy(2_000)
         changes.emit(Unit); runCurrent(); advanceTimeBy(2_000); runCurrent(); enqueues(1)
         advanceTimeBy(1_000); runCurrent(); enqueues(2)
+    }
+
+    @Test fun capabilityNoiseDoesNotWakeButChangedRoutesAndReconnectStillDo() = runTest {
+        AutoSyncCoordinator(context, outbox, timers, monitor, backgroundScope).start()
+        runCurrent()
+        val stable = connected(1)
+        state.value = stable; runCurrent(); advanceTimeBy(2_000); runCurrent(); enqueues(2)
+        repeat(5) {
+            state.value = stable.copy(revision = it + 2L)
+            runCurrent(); advanceTimeBy(3_000); runCurrent()
+        }
+        enqueues(2)
+        state.value = stable.copy(revision = 9, routingRevision = 1)
+        runCurrent(); advanceTimeBy(2_000); runCurrent(); enqueues(3)
     }
 
     @Test fun network_bursts_debounce_and_reconnect_schedules_exactly_one_attempt() = runTest {

@@ -7,12 +7,9 @@ import com.dayforge.data.local.businessDate
 import com.dayforge.data.local.entity.CompletionEntity
 import com.dayforge.data.local.entity.HabitEntity
 import com.dayforge.data.local.entity.NextRequestOriginEntity
-import com.dayforge.data.model.HabitType
 import com.dayforge.domain.model.CountDayPolicy
 import com.dayforge.domain.model.isContractUuid
-import java.time.Instant
 import java.time.LocalDate
-import java.time.ZoneId
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.json.Json
@@ -32,52 +29,41 @@ internal class RecurringCompletionFactEvidence(private val database: HabitDataba
         check(database.inTransaction())
         val originals = originals(habit, facts.mapTo(hashSetOf()) { it.uuid }, account)
         val reverted = acceptedReverts(habit)
-        for (fact in facts) {
+        for (chunk in facts.chunked(128)) {
+          val acceptedRows = acceptedFactRows(database, chunk.map { it.uuid })
+          for (fact in chunk) {
             currentCoroutineContext().ensureActive()
             check(fact.uuid !in reverted) { "COUNT_FACT_INVALID" }
             val original = originals[fact.uuid]?.payload
-            val accepted = accepted(fact.uuid)
-            if (accepted != null) {
-                check(accepted.payload["event_type"] in quantityTypes) { "COUNT_FACT_INVALID" }
-                val wasCheckIn = accepted.payload["event_type"] == JsonPrimitive("check_in")
-                check(fact == NextCommonFactMapper.completion(accepted, habit, fact) &&
-                    NextCommonFactMapper.countPolicy(accepted.payload) ==
-                        (if (wasCheckIn) null else policies[fact.businessDate])) { "COUNT_FACT_INVALID" }
-                // If retained locally, it must still be the same immutable fact, not a different sender's snapshot.
-                original?.let { NextCommonFactProof.requireOriginalPayload(it, accepted,
-                    accepted.payload.getValue("source_device_id").jsonPrimitive.content) }
-            } else if (original != null) {
-                val policy = NextCommonFactMapper.countPolicy(original)
-                // A tracking-mode edit does not erase old check-ins or relabel them as known counts.
-                val wasCheckIn = original["event_type"] == JsonPrimitive("check_in")
-                val expected = SyncV2Mapper.completion(fact, habit.copy(habitType =
-                    if (wasCheckIn) HabitType.CHECK_IN else HabitType.COUNTING))
-                check(JsonObject(original.filterKeys { it != "count_policy" }) == expected &&
-                    policy == (if (wasCheckIn) null else policies[fact.businessDate]) && (!wasCheckIn || fact.value == 1)) { "COUNT_FACT_INVALID" }
-                val instant = Instant.ofEpochMilli(requireNotNull(fact.actualCompletedAt) { "COUNT_FACT_INVALID" })
-                val zone = ZoneId.of(fact.recordedTimezone)
-                check(instant.atZone(zone).toLocalDate() == fact.businessDate &&
-                    fact.date == fact.businessDate.atStartOfDay(zone).toInstant().toEpochMilli()) { "COUNT_FACT_INVALID" }
-            } else {
-                // Unproven legacy quantities remain unknown; a known day's effective fact needs its own proof.
-                check(fact.businessDate !in policies) { "COUNT_FACT_INVALID" }
-            }
+            val accepted = if (acceptedRows == null) accepted(fact.uuid)
+                else acceptedRows[fact.uuid]?.let { decodeAccepted(fact.uuid, it) }
+            CountFactEvidenceRules.verify(habit, fact, policies[fact.businessDate], original,
+                accepted, fact.uuid in reverted)
+          }
         }
         return originals
     }
 
     private suspend fun accepted(id: String, revertParent: String? = null): SyncV2Change? {
-        NextRequestSql.rowHash(sql, "sync_entity_state", "entityType=? AND entityUuid=?",
+        NextRequestSql.rowHash(database, "sync_entity_state", "entityType=? AND entityUuid=?",
             arrayOf("activity_event", id)) ?: return null
         val state = requireNotNull(database.syncOutboxDao().getState("activity_event", id))
+        return decodeAccepted(id, state, revertParent)
+    }
+
+    private fun decodeAccepted(id: String, state: com.dayforge.data.local.entity.SyncEntityStateEntity,
+        revertParent: String? = null): SyncV2Change? {
         check(state.payloadJson != null &&
             state.payloadHash == syncPayloadHash(state.payloadJson)) { "COUNT_FACT_INVALID" }
         val body = Json.parseToJsonElement(state.payloadJson).jsonObject
         if (revertParent != null && (body["activity_uuid"] != JsonPrimitive(revertParent) ||
                 body["event_type"] != JsonPrimitive("revert"))) return null
         check(!state.deleted && state.revision > 0) { "COUNT_FACT_INVALID" }
+        // Both private callers immediately validate with completion()/revert(). Those mappers
+        // enforce the complete ordinary snapshot contract AND the parent/projection contract.
+        // Do not separately repeat header/date/zone/source parsing before that same validation.
         return SyncV2Change(0, "activity_event", id, "upsert", state.revision, body,
-            body.getValue("updated_at").jsonPrimitive.content).also(NextCommonFactMapper::validateOrdinaryFactSnapshot)
+            body.getValue("updated_at").jsonPrimitive.content)
     }
 
     private suspend fun acceptedReverts(habit: HabitEntity): Set<String> {
@@ -118,7 +104,7 @@ internal class RecurringCompletionFactEvidence(private val database: HabitDataba
         val rows = if (hashes == null) emptyMap() else database.nextRequestDao().origins(NEXT_OPERATION, ids).associateBy { it.requestId }
         for (id in ids) {
             currentCoroutineContext().ensureActive()
-            requireNotNull(hashes?.get(id) ?: NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?",
+            requireNotNull(hashes?.get(id) ?: NextRequestSql.rowHash(database, "next_request_origins", "kind=? AND requestId=?",
                 arrayOf(NEXT_OPERATION, id)))
             val origin = requireNotNull(if (hashes == null) database.nextRequestDao().origin(NEXT_OPERATION, id) else rows[id])
             check(origin.protocol == 5 && isContractUuid(origin.accountId) && origin.queueId > 0) { "COUNT_FACT_INVALID" }

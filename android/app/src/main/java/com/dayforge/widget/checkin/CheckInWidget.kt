@@ -24,7 +24,6 @@ import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
-import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.domain.service.ScheduleValidator
 import com.dayforge.widget.WidgetFailureChecker
 import com.dayforge.widget.base.StatusLabels
@@ -110,7 +109,7 @@ class CheckInWidget : GlanceAppWidget() {
         private suspend fun prepareWidgetData(context: Context, glanceId: GlanceId, habitId: Long,
             publication: com.dayforge.data.repository.WidgetDisplayPublisher.Publication): suspend () -> Unit {
             val appContext = context.applicationContext
-            val database = HabitDatabaseProvider.getInstance(appContext)
+            val database = com.dayforge.di.WidgetEntryPoint.database(appContext)
             val habit = database.habitDao().getVisibleHabitById(habitId)
 
             if (habit == null) {
@@ -136,8 +135,7 @@ class CheckInWidget : GlanceAppWidget() {
             val completedToday = completions.sumOf { it.value }
             val typed = if (habit.appearance != null) com.dayforge.di.WidgetEntryPoint.from(appContext)
                 .factReader().read(habit) else null
-            val oneTime = if (habit.completionPolicy == "one_and_done") dagger.hilt.android.EntryPointAccessors
-                .fromApplication(appContext, com.dayforge.di.WidgetEntryPoint::class.java).habitRepository()
+            val oneTime = if (habit.completionPolicy == "one_and_done") com.dayforge.di.WidgetEntryPoint.from(appContext).habitRepository()
                 .getOneTimeStatus(habitId) else null
             val isCompleted = typed?.completed ?: oneTime?.completed ?: (completedToday >= habit.targetValue)
 

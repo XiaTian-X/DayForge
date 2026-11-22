@@ -6,6 +6,8 @@ import com.dayforge.data.api.NextSyncHttp
 import com.dayforge.data.api.dto.*
 import com.dayforge.data.appearance.MaterialSocketServer
 import com.dayforge.data.local.entity.*
+import com.dayforge.data.repository.NextTimerRequestNativeFault.Kind
+import com.dayforge.data.repository.NextTimerRequestNativeFault.Targets
 import java.io.IOException
 import java.time.Instant
 import kotlinx.coroutines.*
@@ -19,6 +21,19 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class NextTimerRequestStoreTest : NextCoreRequestFixture() {
+    private val nativeFault = NextTimerRequestNativeFault()
+    init { storage.isolatedBuilder = { context -> buildDiagnosticFaultDatabase(context, nativeFault, storage.queryCallback) } }
+    private fun installFaultOnFreshConnection() {
+        nativeFault.installOnNextOpen()
+        storage.reopen()
+        assertTrue(db.openHelper.writableDatabase.isOpen)
+    }
+    private fun reopenWithoutFault() {
+        storage.reopen()
+        assertTrue(db.openHelper.writableDatabase.isOpen)
+        nativeFault.requireColdFaultAbsent()
+    }
+    private suspend fun mainImage() = db.withTransaction { NextReplicaStorageProof(db).readInTransaction().contents }
     private val codec = Json { encodeDefaults = true }
     private fun timers(http: NextSyncHttp) = NextTimerRequestStore(db, tokens, sessions, sender(http))
 
@@ -159,26 +174,37 @@ class NextTimerRequestStoreTest : NextCoreRequestFixture() {
     }
 
     @Test fun receiptQueueAndFinalCommitFailuresRollBackExactCommandWithoutTimerMutation() = runBlocking<Unit> {
+        installFaultOnFreshConnection()
         val first = start(); val local = db.timeLogDao().getTimeLogByUuid(first.sessionUuid)
-        register(); val (http, _) = channel(::timerReply); val store = timers(http)
+        register(); val (http, server) = channel(::timerReply); val store = timers(http)
         val delivered = sender(http).sendCommand(access(), first.commandId)!!
-        val sql = db.openHelper.writableDatabase
-        for (fault in listOf("BEFORE INSERT ON next_acceptances BEGIN SELECT RAISE(ABORT,'receipt'); END",
-            "BEFORE INSERT ON next_acceptances BEGIN SELECT RAISE(IGNORE); END",
-            "AFTER DELETE ON timer_command_outbox BEGIN UPDATE next_acceptances SET resultHash='broken'; END",
-            "AFTER INSERT ON next_acceptances BEGIN UPDATE timelogs SET durationSeconds=77; END")) {
-            sql.execSQL("CREATE TRIGGER timer_ack_fault $fault")
-            assertNotNull(rejected { store.accept(delivered) }); sql.execSQL("DROP TRIGGER timer_ack_fault")
+        val before = mainImage()
+        for (fault in listOf(Kind.RECEIPT_ABORT, Kind.RECEIPT_IGNORE, Kind.QUEUE_RECEIPT, Kind.RECEIPT_TIMER)) {
+            nativeFault.arm(fault, Targets(first.commandId, first.sessionUuid, first.id))
+            val failure = rejected { store.accept(delivered) }
+            assertNotNull(failure); nativeFault.requireTriggered(failure)
+            assertEquals("Every main row and signed schema must roll back after $fault", before, mainImage())
             unaccepted(first); assertEquals(local, db.timeLogDao().getTimeLogByUuid(first.sessionUuid))
         }
-        sql.execSQL("CREATE TABLE timer_commit_parent(id INTEGER PRIMARY KEY)")
-        sql.execSQL("CREATE TABLE timer_commit_child(id INTEGER REFERENCES timer_commit_parent(id) DEFERRABLE INITIALLY DEFERRED)")
-        sql.execSQL("CREATE TRIGGER timer_commit AFTER INSERT ON next_acceptances BEGIN INSERT INTO timer_commit_child VALUES(1); END")
-        assertNotNull(rejected { store.accept(delivered) })
-        storage.reopen(); unaccepted(first); assertEquals(local, db.timeLogDao().getTimeLogByUuid(first.sessionUuid))
-        assertEquals(0, count("timer_commit_child")); db.openHelper.writableDatabase.execSQL("DROP TRIGGER timer_commit")
+        val originalOwner = requireNotNull(com.dayforge.data.local.CountTrustRuntime.forDatabase(db))
+        nativeFault.arm(Kind.DEFERRED_END, Targets(first.commandId, first.sessionUuid, first.id))
+        val failure = rejected { store.accept(delivered) }
+        assertNotNull(failure); nativeFault.requireTriggered(failure)
+        assertTrue(originalOwner.isRetired)
+        assertTrue(com.dayforge.data.local.CountTrustRetirementReason.UNKNOWN_END in originalOwner.retirementReasons)
+        // Actual failed native END is not a rollback certificate: close that owner before
+        // any SQL inspection, reopen without TEMP faults, then compare the whole main image.
+        reopenWithoutFault()
+        assertNotSame(originalOwner, requireNotNull(com.dayforge.data.local.CountTrustRuntime.forDatabase(db)))
+        assertEquals("Cold disk must retain the complete pre-attempt main image", before, mainImage())
+        unaccepted(first); assertEquals(local, db.timeLogDao().getTimeLogByUuid(first.sessionUuid))
+        nativeFault.requireColdFaultAbsent()
+        val requests = server.requests.size
         assertEquals(NextOperationAcceptance.COMMITTED, timers(http).accept(delivered))
-        storage.reopen(); assertEquals(NextOperationAcceptance.REPLAYED, timers(http).sendAndAccept(access(), first.commandId))
+        assertEquals(requests, server.requests.size)
+        val accepted = mainImage()
+        reopenWithoutFault(); assertEquals(NextOperationAcceptance.REPLAYED, timers(http).sendAndAccept(access(), first.commandId))
+        assertEquals(requests, server.requests.size); assertEquals(accepted, mainImage())
     }
 
     @Test fun responseLossReplaysExactOriginalCommandThenColdAcceptanceNeedsNoNetwork() = runBlocking<Unit> {
@@ -226,7 +252,10 @@ class NextTimerRequestStoreTest : NextCoreRequestFixture() {
     }
 
     @Test fun completeStopReceiptEnablesActualAtomicRecoveryAndWrongFactOrLateReceiptMutationRollsBack() = runBlocking<Unit> {
-        register(); val (http, _) = channel(::timerReply)
+        // Installation precedes every captured store/context/stage, so this tests the
+        // original late receipt mutation, not a schema change between preparation and use.
+        installFaultOnFreshConnection()
+        register(); val (http, server) = channel(::timerReply)
         producer().write(local()) { habits().updateHabit(timerHabit.copy(description = "Published")) }
         val planIntent = db.syncOutboxDao().getAll().single()
         sender(http).sendAndAcceptOperation(access(), planIntent.operationId)
@@ -245,19 +274,24 @@ class NextTimerRequestStoreTest : NextCoreRequestFixture() {
         assertNull(db.syncOutboxDao().getState("activity_event", commands.first().sessionUuid))
         val stopId = commands.last().commandId
         val receipt = db.nextRequestDao().acceptance(NEXT_TIMER, stopId)!!
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER late_timer_receipt AFTER INSERT ON sync_entity_state WHEN NEW.entityType='activity_event' BEGIN UPDATE next_acceptances SET resultHash='broken' WHERE requestId='$stopId'; END")
-        assertNotNull(rejected { restoreStore().acceptRecovery(context, stage, snapshot) })
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER late_timer_receipt")
+        val before = mainImage()
+        nativeFault.arm(Kind.LATE_RECOVERY_RECEIPT, Targets(stopId, commands.first().sessionUuid))
+        val failure = rejected { restoreStore().acceptRecovery(context, stage, snapshot) }
+        assertNotNull(failure); nativeFault.requireTriggered(failure)
+        assertEquals("Late actual shadow trigger must roll back every main row and schema", before, mainImage())
         assertEquals(receipt, db.nextRequestDao().acceptance(NEXT_TIMER, stopId)); assertEquals(local, db.timeLogDao().getTimeLogByUuid(commands.first().sessionUuid))
         assertEquals(stage, restoreStore().recoveryState(context)); assertEquals(0L, tokens.syncCursor.first())
         assertEquals(NextRecoveryStateEntity.ACCEPTED_DATA, restoreStore().acceptRecovery(context, stage, snapshot).phase)
-        storage.reopen()
+        val accepted = mainImage(); val requests = server.requests.size
+        reopenWithoutFault()
         val completed = db.timeLogDao().getTimeLogByUuid(commands.first().sessionUuid)!!
         assertEquals(60_000L, completed.timerActiveElapsedMillis); assertEquals(60, completed.durationSeconds)
         assertEquals(local!!.startTime, completed.startTime); assertEquals(local.endTime, completed.endTime)
         assertEquals(60_000L, db.timeLogDao().getDayAllocations(completed.uuid).sumOf { it.durationMillis })
         assertEquals(2, db.timeLogDao().getTimerSegments(completed.uuid).size); assertEquals(0, count("timer_command_outbox"))
         assertEquals(0L, tokens.syncCursor.first()) // Candidate accepted; runtime activation is a later joint step.
+        commands.forEach { assertEquals(NextOperationAcceptance.REPLAYED, timers(http).sendAndAccept(access(), it.commandId)) }
+        assertEquals(requests, server.requests.size); assertEquals(accepted, mainImage())
     }
 
     @Test fun noReceiptOrUnresolvedSuffixCannotBeAdoptedAsACompletedTimerByRecovery() = runBlocking<Unit> {

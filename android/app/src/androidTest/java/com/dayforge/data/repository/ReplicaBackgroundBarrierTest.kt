@@ -18,7 +18,7 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class ReplicaBackgroundBarrierTest : NextCoreRequestFixture() {
     private fun dependencies(): AccountIconWorker.Dependencies = mockk<AccountIconWorker.Dependencies>().also {
-        every { it.replica() } returns ReplicaPresentationRepository(db, tokens, sessions)
+        every { it.iconWorkerAccess() } returns com.dayforge.sync.AccountIconWorkerAccess(ReplicaPresentationRepository(db, tokens, sessions))
         every { it.materials() } answers { throw AssertionError("Must not initialize the material runtime") }
     }
     private fun worker(dependencies: AccountIconWorker.Dependencies) =

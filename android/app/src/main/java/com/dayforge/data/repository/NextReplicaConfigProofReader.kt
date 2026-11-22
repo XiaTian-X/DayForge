@@ -18,18 +18,27 @@ internal class ReplicaConfigProof internal constructor(val requests: ReplicaRequ
 internal class NextReplicaConfigProofReader(private val database: HabitDatabase, private val tokens: TokenManager,
     private val sessions: AccountSessionCoordinator) {
     suspend fun read(requests: ReplicaRequestProof): ReplicaConfigProof = withContext(Dispatchers.IO) {
-        sessions.exclusive { database.withTransaction {
-            fun unchanged(hash: String) = require(hash == requests.storageHash) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
-            check(tokens.isCurrentSyncAuthority(requests.original)) {
-                "SYNC_ACCOUNT_CHANGED"
-            }
-            unchanged(NextReplicaStorageProof(database).readInTransaction().hash)
-            val journals = NextConfigImportStore(database).recoveryInTransaction(requests.original, requests.states)
-            unchanged(NextReplicaStorageProof(database).readInTransaction().hash)
-            check(tokens.isCurrentSyncAuthority(requests.original)) {
-                "SYNC_ACCOUNT_CHANGED"
-            }
-            ReplicaConfigProof(requests, journals)
-        } }
+        sessions.exclusive { database.withTransaction { ReplicaStorageSnapshot.inspect(database) { observed ->
+            readInSnapshot(requests, observed)
+        } } }
+    }
+
+    /** The owning pipeline may borrow only its current controlled no-write observation.
+     * The original participant still performs every authority, source and domain check.
+     */
+    internal suspend fun readInSnapshot(requests: ReplicaRequestProof, observed: ReplicaStorageSnapshot?): ReplicaConfigProof {
+        check(database.inTransaction()) { "SYNC_REPLICA_AMBIENT_TRANSACTION" }
+        observed?.requireCurrent(database)
+        fun unchanged(hash: String) = require(hash == requests.storageHash) { "SYNC_RECOVERY_PREVIEW_CHANGED" }
+        check(tokens.isCurrentSyncAuthority(requests.original)) {
+            "SYNC_ACCOUNT_CHANGED"
+        }
+        unchanged((observed?.storage(database) ?: NextReplicaStorageProof(database).readInTransaction()).hash)
+        val journals = NextConfigImportStore(database).recoveryInTransaction(requests.original, requests.states)
+        unchanged((observed?.storage(database) ?: NextReplicaStorageProof(database).readInTransaction()).hash)
+        check(tokens.isCurrentSyncAuthority(requests.original)) {
+            "SYNC_ACCOUNT_CHANGED"
+        }
+        return ReplicaConfigProof(requests, journals)
     }
 }

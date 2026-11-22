@@ -170,71 +170,74 @@ internal class CompletionMetricPromptStore(
         inputs: Map<String, CompletionMetricInput>
     ): CompletionMetricPrompt = sessions.exclusive {
         access(snapshot.session, true)
-        database.withTransaction {
+        database.withTransaction { withTrust(snapshot) { trust ->
             val checkpoint = requireProfile(snapshot)
             val current = editable(snapshot)
             if (!current.entries.map { it.metricUuid }.containsAll(inputs.keys)) fail(CompletionMetricPromptException.Reason.INVALID_INPUT)
             val entries = current.entries.map { entry -> inputs[entry.metricUuid]?.let {
                 entry.copy(input = it.value, note = it.note)
             } ?: entry }
-            val result = if (entries == current.entries) current else replaceDraft(current, entries)
+            val result = if (entries == current.entries) current else replaceDraft(current, entries, trust)
             check(requireProfile(snapshot) == checkpoint)
             result
-        }
+        } }
     }
 
     /** Explicitly acknowledge changed units/precision before a later submission; retain input. */
     suspend fun refreshMetadata(snapshot: CompletionMetricPrompt): CompletionMetricPrompt = sessions.exclusive {
         access(snapshot.session, true)
-        database.withTransaction {
+        database.withTransaction { withTrust(snapshot) { trust ->
             val checkpoint = requireProfile(snapshot)
             val current = editable(snapshot)
             val result = replaceDraft(current, current.entries.map { entry ->
                 val metric = target(current, entry, checkUnit = false)
                 entry.copy(metricName = metric.name, unit = metric.unit, decimalPlaces = metric.decimalPlaces)
-            })
+            }, trust)
             check(requireProfile(snapshot) == checkpoint)
             result
-        }
+        } }
     }
 
     suspend fun dismiss(snapshot: CompletionMetricPrompt) = sessions.exclusive {
         access(snapshot.session, true)
-        database.withTransaction {
+        database.withTransaction { withTrust(snapshot) { trust ->
             val checkpoint = requireProfile(snapshot)
             val current = load(snapshot.row.eventUuid, snapshot.session)
-            if (current.row.state == "dismissed" && current.row.revision == snapshot.row.revision) return@withTransaction
+            if (current.row.state == "dismissed" && current.row.revision == snapshot.row.revision) return@withTrust
             if (current.row.revision != snapshot.row.revision) fail(CompletionMetricPromptException.Reason.STALE_DRAFT)
             if (current.row.state != "pending") fail(CompletionMetricPromptException.Reason.CLOSED)
-            check(dao.updatePrompt(current.row.copy(state = "dismissed")) == 1)
+            val dismissed = current.row.copy(state = "dismissed")
+            trust?.prompt(current.row, dismissed)
+            check(dao.updatePrompt(dismissed) == 1)
             check(requireProfile(snapshot) == checkpoint)
-        }
+        } }
     }
 
     suspend fun submit(snapshot: CompletionMetricPrompt): CompletionMetricSaved = sessions.exclusive {
         access(snapshot.session, true)
         // Freeze the observation instant separately, so a later fact/outbox failure keeps it
         // together with the user's already-persisted input and original identities.
-        val prepared = database.withTransaction {
+        val prepared = database.withTransaction { withTrust(snapshot) { trust ->
             val checkpoint = requireProfile(snapshot)
             val current = load(snapshot.row.eventUuid, snapshot.session)
             if (current.row.revision != snapshot.row.revision) fail(CompletionMetricPromptException.Reason.STALE_DRAFT)
             if (current.row.state == "dismissed") fail(CompletionMetricPromptException.Reason.CLOSED)
             selected(current)
-            if (current.row.state == "saved") return@withTransaction current
+            if (current.row.state == "saved") return@withTrust current
             current.entries.filter { it.input.isNotBlank() }.forEach { target(current, it) }
             val result = if (current.row.recordedAtMillis != null) current else {
                 val instant = now()
                 val timezone = zone()
                 requireValidTime(instant, timezone)
                 val frozen = current.row.copy(recordedAtMillis = instant, timezone = timezone)
+                trust?.prompt(current.row, frozen)
                 check(dao.updatePrompt(frozen) == 1)
                 decode(frozen, current.session)
             }
             check(requireProfile(snapshot) == checkpoint)
             result
-        }
-        database.withTransaction {
+        } }
+        database.withTransaction { withTrust(snapshot) { trust ->
             val checkpoint = requireProfile(snapshot)
             val current = load(prepared.row.eventUuid, prepared.session)
             if (current.row.copy(state = prepared.row.state) != prepared.row) fail(CompletionMetricPromptException.Reason.STALE_DRAFT)
@@ -247,7 +250,7 @@ internal class CompletionMetricPromptStore(
                     verifyProfileOrigin(snapshot, entry, payload)
                 }
                 check(requireProfile(snapshot) == checkpoint)
-                return@withTransaction CompletionMetricSaved(entries.map { it.observationUuid }, true)
+                return@withTrust CompletionMetricSaved(entries.map { it.observationUuid }, true)
             }
             val rows = entries.map { entry ->
                 val metric = target(current, entry)
@@ -268,16 +271,27 @@ internal class CompletionMetricPromptStore(
                 it.moveToFirst() && it.getInt(0) == 0
             }
             if (!enabled) fail(CompletionMetricPromptException.Reason.CORRUPT)
+            trust?.prepareMetrics(rows.size)
+            trust?.suppression()
             sql.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
-            rows.forEach { (_, log, _) -> database.metricLogDao().insertForSync(log) }
+            rows.forEachIndexed { index, (_, log, _) ->
+                trust?.metric(index, log)
+                val id = database.metricLogDao().insertForSync(log)
+                trust?.allocatedMetric(index, id)
+            }
             sql.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
             val captured = mutableListOf<Pair<NextRequestOriginEntity, String>>()
-            rows.forEach { (entry, _, payload) ->
-                outbox.insert(SyncOutboxEntity(operationId = entry.operationId, recordType = "metric_log",
+            rows.forEachIndexed { index, (entry, _, payload) ->
+                val queued = SyncOutboxEntity(operationId = entry.operationId, recordType = "metric_log",
                     entityUuid = entry.observationUuid, wireEntityUuid = entry.observationUuid,
                     action = "upsert", referenceUuid = entry.metricUuid, payloadJson = payload,
-                    createdAt = requireNotNull(current.row.recordedAtMillis)))
-                dao.insertSubmission(receipt(entry, payload))
+                    createdAt = requireNotNull(current.row.recordedAtMillis))
+                trust?.outbox(index, queued)
+                val queuedId = outbox.insert(queued)
+                trust?.allocatedOutbox(index, queuedId)
+                val submission = receipt(entry, payload)
+                dao.insertSubmission(submission)
+                trust?.submission(submission)
                 val operation = SyncV2Operation(entry.operationId, "metric_observation", entry.observationUuid,
                     "upsert", payload = Json.parseToJsonElement(payload) as JsonObject)
                 validateNextSyncOperation(operation)
@@ -301,6 +315,7 @@ internal class CompletionMetricPromptStore(
                     current.session.authentication.userId, current.session.serverInstanceId, current.session.syncEpoch,
                     hash, bytes.toString(Charsets.UTF_8))
                 database.nextRequestDao().insertOrigin(origin)
+                trust?.origin(origin)
                 captured += origin to requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins",
                     "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, entry.operationId)))
                 check(database.nextRequestDao().origin(NEXT_OPERATION, entry.operationId) == origin &&
@@ -308,6 +323,7 @@ internal class CompletionMetricPromptStore(
                     dao.submission(entry.operationId) == receipt(entry, payload))
             }
             val saved = current.row.copy(state = "saved")
+            trust?.prompt(current.row, saved)
             check(dao.updatePrompt(saved) == 1)
             for ((entry, log, payload) in rows) {
                 val actual = requireNotNull(database.metricLogDao().getLogByUuid(entry.observationUuid))
@@ -322,6 +338,23 @@ internal class CompletionMetricPromptStore(
             NextRequestSql.requireOutboxEnabled(sql)
             access(current.session, true)
             CompletionMetricSaved(entries.map { it.observationUuid }, false)
+        } }
+    }
+
+    /** Each original prompt transaction owns a separate capture. In particular the frozen
+     * instant's committed first transaction is never merged with metric persistence/retry.
+     * No optional cold qualification or authority is created by a draft or readonly replay.
+     */
+    private suspend fun <T> withTrust(snapshot: CompletionMetricPrompt,
+        block: suspend (OncePromptTrust?) -> T): T {
+        check(database.inTransaction())
+        val kernel = CountTrustKernel(database, tokens, sessions)
+        val access = tokens.localCoreWriteAccess()?.takeIf { it.session == snapshot.session }
+        return kernel.withOnceCapture(access) { capture ->
+            val update = OncePromptTrust.create(database, capture)
+            val result = block(update)
+            kernel.finishOnce(capture, update?.freeze())
+            result
         }
     }
 
@@ -370,9 +403,11 @@ internal class CompletionMetricPromptStore(
         return current
     }
 
-    private suspend fun replaceDraft(current: CompletionMetricPrompt, entries: List<CompletionMetricDraft>): CompletionMetricPrompt {
+    private suspend fun replaceDraft(current: CompletionMetricPrompt, entries: List<CompletionMetricDraft>,
+        trust: OncePromptTrust?): CompletionMetricPrompt {
         val updated = current.row.copy(revision = current.row.revision + 1, entriesJson = json.encodeToString(entries),
             recordedAtMillis = null, timezone = null)
+        trust?.prompt(current.row, updated)
         check(dao.updatePrompt(updated) == 1)
         return decode(updated, current.session)
     }
@@ -451,7 +486,8 @@ internal class CompletionMetricPromptStore(
         }
 
         /** Called only inside the completion transaction, after its fact/outbox were inserted. */
-        suspend fun createInTransaction(database: HabitDatabase, habit: HabitEntity, eventUuid: String) {
+        suspend fun createInTransaction(database: HabitDatabase, habit: HabitEntity,
+            eventUuid: String): CompletionMetricPromptEntity? {
             check(database.inTransaction())
             val entries = database.habitMetricLinkDao().getVisibleLinksForHabit(habit.id)
                 .filter { it.isActive && it.promptOnComplete }.map { link ->
@@ -461,8 +497,11 @@ internal class CompletionMetricPromptStore(
                     CompletionMetricDraft(link.uuid, metric.uuid, metric.name, metric.unit, metric.decimalPlaces,
                         UUID.randomUUID().toString(), UUID.randomUUID().toString())
                 }
-            if (entries.isNotEmpty()) database.completionFollowUpDao().insertPrompt(CompletionMetricPromptEntity(
-                eventUuid = eventUuid, activityUuid = habit.uuid, entriesJson = json.encodeToString(entries)))
+            if (entries.isEmpty()) return null
+            val created = CompletionMetricPromptEntity(eventUuid = eventUuid, activityUuid = habit.uuid,
+                entriesJson = json.encodeToString(entries))
+            database.completionFollowUpDao().insertPrompt(created)
+            return created
         }
     }
 }

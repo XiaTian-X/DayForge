@@ -22,3 +22,20 @@ internal fun ReminderNavigationEffect(
         } finally { consume(request) }
     }
 }
+
+/** Production navigation preserves the exact object selection from the validated request read. */
+@Composable
+internal fun ReminderSelectionNavigationEffect(
+    request: ReminderDetailRequest?, graphReady: Boolean, loginVisible: Boolean,
+    open: suspend (ReminderDetailRequest, (com.dayforge.data.local.DatabaseObjectSelection) -> Unit) -> Boolean,
+    consume: (ReminderDetailRequest) -> Unit, navigate: (com.dayforge.data.local.DatabaseObjectSelection) -> Unit
+) {
+    LaunchedEffect(request, graphReady) {
+        if (request == null || !graphReady) return@LaunchedEffect
+        try { if (!loginVisible) open(request, navigate) }
+        catch (error: Exception) {
+            if (error is CancellationException) throw error
+            android.util.Log.e("HabitReminder", "Cannot resolve reminder source navigation", error)
+        } finally { consume(request) }
+    }
+}

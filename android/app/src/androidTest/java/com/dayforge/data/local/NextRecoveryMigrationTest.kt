@@ -55,7 +55,7 @@ class NextRecoveryMigrationTest {
     }
     private fun structure(db: SupportSQLiteDatabase) = rows(db,
         "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' " +
-            "AND name NOT LIKE 'room_%' AND name NOT LIKE 'replica_fence_%' AND tbl_name NOT IN ('next_replica_fence','next_recovery_audits','next_abandoned_requests','next_recovery_audit_payloads','next_config_imports','next_config_import_payloads','next_restart_materializations','next_restart_plan_proofs','next_challenge_state','next_challenge_rounds','next_challenge_births','count_days','next_sync_state','next_rejections','next_structural_dependencies','next_structural_supersessions','next_recovery_state','next_request_origins','next_transmissions','next_acceptances') ORDER BY type,name")
+            "AND name NOT LIKE 'room_%' AND name NOT LIKE 'replica_fence_%' AND name NOT LIKE 'count_trust_dirty_%' AND tbl_name NOT IN ('count_trust_control','count_trust_root','count_trust_nodes','count_trust_routes','count_command_results','count_command_intents','count_command_status','count_command_recovery_roots','count_command_nodes') AND tbl_name NOT IN ('next_replica_fence','next_recovery_audits','next_abandoned_requests','next_recovery_audit_payloads','next_config_imports','next_config_import_payloads','next_restart_materializations','next_restart_plan_proofs','next_challenge_state','next_challenge_rounds','next_challenge_births','count_days','next_sync_state','next_rejections','next_structural_dependencies','next_structural_supersessions','next_recovery_state','next_request_origins','next_transmissions','next_acceptances') ORDER BY type,name")
     private fun insert(db: SupportSQLiteDatabase, table: String, values: Map<String, Any>) {
         val content = ContentValues()
         entities.first { it.getValue("tableName").jsonPrimitive.content == table }.getValue("fields").jsonArray.forEach {
@@ -108,17 +108,20 @@ class NextRecoveryMigrationTest {
         assertEquals(16, entities.size)
         repeat(2) {
             val db = open(); val sql = db.openHelper.writableDatabase
-            assertEquals(18, sql.version); assertEquals(before, snapshot(sql)); assertEquals(ddl, structure(sql))
+            assertEquals(20, sql.version); assertEquals(before, snapshot(sql)); assertEquals(ddl, structure(sql))
             assertNull(db.nextRecoveryDao().state())
             assertEquals(listOf(listOf("ok")), rows(sql, "PRAGMA integrity_check"))
             assertTrue(rows(sql, "PRAGMA foreign_key_check").isEmpty())
         }
     }
     @Test fun validationFailureRollsBackNewTableAndOldRowsBeforeARealRetry() {
-        seed { it.execSQL("ALTER TABLE one_time_transmissions RENAME TO unavailable_transmissions") }
-        assertTrue(runCatching { open().openHelper.writableDatabase }.exceptionOrNull()?.message.orEmpty().contains("Migration didn't properly handle"))
+        var beforeFailure: JsonObject? = null
+        seed { it.execSQL("ALTER TABLE one_time_transmissions RENAME TO unavailable_transmissions"); beforeFailure = migrationValidationImage(it) }
+        val failure = runCatching { open().openHelper.writableDatabase }.exceptionOrNull()
+        requireMissingTableMigrationFailure(failure, "one_time_transmissions")
         room!!.close()
         SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READWRITE).use { raw ->
+            assertEquals(requireNotNull(beforeFailure), migrationValidationImage(raw))
             assertEquals(7, raw.version)
             raw.rawQuery("SELECT name FROM sqlite_master WHERE name='next_recovery_state'", null).use { assertFalse(it.moveToFirst()) }
             raw.rawQuery("SELECT payloadJson FROM sync_outbox", null).use {
@@ -126,8 +129,32 @@ class NextRecoveryMigrationTest {
             }
             raw.execSQL("ALTER TABLE unavailable_transmissions RENAME TO one_time_transmissions")
         }
-        assertEquals(18, open().openHelper.writableDatabase.version)
+        assertEquals(20, open().openHelper.writableDatabase.version)
     }
+    @Test(timeout = 150_000) fun finalRoomValidationRollsBackAllOldCellsAndSchemaBeforeRealRetry() {
+        var original: JsonObject? = null
+        var damaged: JsonObject? = null
+        seed { sql ->
+            original = migrationValidationImage(sql)
+            sql.execSQL("ALTER TABLE one_time_transmissions RENAME COLUMN operationJson TO unavailable_operationJson")
+            damaged = migrationValidationImage(sql)
+        }
+        val failure = runCatching { open().openHelper.writableDatabase }.exceptionOrNull()
+        requireFinalRoomMigrationValidationFailure(failure, "one_time_transmissions", "operationJson")
+        room!!.close()
+        SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READWRITE).use { raw ->
+            assertEquals(7, raw.version)
+            assertEquals(requireNotNull(damaged), migrationValidationImage(raw))
+            raw.execSQL("ALTER TABLE one_time_transmissions RENAME COLUMN unavailable_operationJson TO operationJson")
+            // SQLite may rewrite identifier quoting during explicit repair; every original
+            // typed data cell/rowid still matches. The failed migration above kept full DDL.
+            assertEquals(requireNotNull(original).getValue("tables"), migrationValidationImage(raw).getValue("tables"))
+        }
+        val sql = open().openHelper.writableDatabase
+        assertEquals(20, sql.version)
+        CountCommandStorageInitialization.verifyMandatory(sql)
+    }
+
     @Test fun forgedVersionSevenIdentityCannotInitializeRecoveryOrModifyFrozenRows() {
         seed { it.execSQL("UPDATE room_master_table SET identity_hash='unknown' WHERE id=42") }
         assertTrue(runCatching { open().openHelper.writableDatabase }.exceptionOrNull()?.message.orEmpty().contains("integrity"))

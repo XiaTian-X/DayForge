@@ -48,6 +48,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -89,6 +91,7 @@ class NestedViewModelTest {
     private lateinit var tokens: com.dayforge.data.local.TokenManager
     private lateinit var habitPreferences: com.dayforge.data.repository.HabitPreferenceRepository
     private lateinit var viewModel: NestedViewModel
+    private lateinit var checkInService: CheckInService
     private lateinit var preferencesFile: File
     private lateinit var dataStoreScope: CoroutineScope
 
@@ -136,7 +139,7 @@ class NestedViewModelTest {
             habitRepository = habitRepository,
             habitPreferences = habitPreferences
         )
-        val checkInService = CheckInService(habitRepository, completionDao, timeLogDao)
+        checkInService = io.mockk.spyk(CheckInService(habitRepository, completionDao, timeLogDao))
         viewModel = NestedViewModel(
             context = context,
             habitDao = habitDao,
@@ -462,6 +465,11 @@ class NestedViewModelTest {
 
     @Test
     fun goal_and_reactivation_dialogs_preserve_child_lifecycle_state() = runTest {
+        // This journey stays on the hierarchy screen across both dialogs. Keep its actual
+        // visible subscription; first() alone unsubscribes and permits replay expiration.
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            viewModel.topLevelHabitsWithChildren.collect()
+        }
         val parent = habit(HabitType.GOAL, "Goal", uuid = "goal")
         habitDao.insert(parent)
         val childId = habitDao.insert(
@@ -483,12 +491,21 @@ class NestedViewModelTest {
         assertEquals(1, viewModel.goalProgress.value)
         assertEquals(1, viewModel.goalTarget.value)
 
+        // Match the real dialog: its originating completion must release the busy gate first.
+        withContext(Dispatchers.Default) {
+            withTimeout(5_000) { viewModel.busyHabitIds.first { childId !in it } }
+        }
         viewModel.dismissGoalDialog()
         awaitGoalDialogVisibility(visible = false)
         assertEquals(FailMode.LOOSE, habitDao.getHabitById(childId)?.failMode)
 
+        withContext(Dispatchers.Default) {
+            withTimeout(5_000) { viewModel.busyHabitIds.first { childId !in it } }
+        }
         viewModel.showReactivationDialog(childId)
-        viewModel.showReactivationDialog.first { it }
+        withContext(Dispatchers.Default) {
+            withTimeout(5_000) { viewModel.showReactivationDialog.first { it } }
+        }
         assertTrue(viewModel.showReactivationDialog.value)
         assertEquals(childId, viewModel.reactivationHabitId.value)
         assertEquals("Target child", viewModel.reactivationHabitName.value)
@@ -497,6 +514,44 @@ class NestedViewModelTest {
         assertFalse(viewModel.showReactivationDialog.value)
         assertNull(viewModel.reactivationHabitId.value)
         assertEquals("", viewModel.reactivationHabitName.value)
+    }
+
+    @Test fun acceptedChildIncrementRetainsFollowUpsWhenHierarchyExpires() = runTest {
+        val parent = habit(HabitType.GOAL, "Goal", uuid = "offscreen-goal")
+        habitDao.insert(parent)
+        val child = habit(HabitType.COUNTING, "Offscreen child", uuid = "offscreen-child",
+            parentUuid = parent.uuid, targetCycles = 1)
+        val childId = habitDao.insert(child)
+        val linked = metric("Linked", "kg", 1, "offscreen-metric")
+        val metricId = metricDao.insert(linked)
+        linkDao.insert(link(childId, child.uuid, metricId, linked.uuid, true))
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val actual = CheckInService(habitRepository, completionDao, timeLogDao)
+        io.mockk.coEvery { checkInService.incrementCount(context, childId) } coAnswers {
+            release.await()
+            actual.incrementCount(context, childId)
+        }
+        val visible = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            viewModel.topLevelHabitsWithChildren.collect()
+        }
+        awaitHierarchy { parents -> parents.any { p -> p.children.any { it.habit.id == childId } } }
+        viewModel.incrementCount(childId)
+        assertTrue(childId in viewModel.busyHabitIds.value)
+        visible.cancelAndJoin()
+        testDispatcher.scheduler.advanceTimeBy(1_001)
+        testDispatcher.scheduler.runCurrent()
+        assertTrue(viewModel.topLevelHabitsWithChildren.value.isEmpty())
+        release.complete(Unit)
+        withContext(Dispatchers.Default) {
+            withTimeout(5_000) { viewModel.busyHabitIds.first { childId !in it } }
+        }
+        assertEquals(1, completionDao.getByHabitOnce(childId).size)
+        assertTrue(viewModel.showGoalDialog.value)
+        assertEquals(childId, viewModel.goalHabitId.value)
+        assertEquals(1, viewModel.goalTarget.value)
+        assertEquals(metricId, viewModel.postCheckInState.value?.linkedMetrics?.single()?.metricId)
+        awaitHierarchy { parents -> parents.any { p -> p.children.any { it.habit.id == childId && it.completedToday } } }
+        assertTrue(viewModel.showGoalDialog.value)
     }
 
     private suspend fun awaitGoalDialogVisibility(visible: Boolean) {

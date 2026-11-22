@@ -1,16 +1,22 @@
 package com.dayforge.data.repository
 
+import com.dayforge.data.local.ReplicaSchemaSql
+
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import androidx.room.withTransaction
 import androidx.sqlite.db.SupportSQLiteOpenHelper
+import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.data.local.LocalSyncAccess
+import com.dayforge.data.local.PlaintextTokenCipher
+import com.dayforge.data.local.TokenCipher
 import com.dayforge.data.local.entity.MetricLogEntity
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.*
@@ -21,6 +27,71 @@ import org.junit.runner.RunWith
 /** Compare the production schema against an owned reference, preserving physical old file/DS. */
 @RunWith(AndroidJUnit4::class)
 class NextReplicaSchemaValidatorTest : NextCoreRequestFixture() {
+    private val nativeFault = RestartConstraintFault()
+    init { storage.isolatedBuilder = { buildDiagnosticFaultDatabase(it, nativeFault) } }
+
+    /** Exactly the two original empty-table constraint faults, below the unchanged gate. */
+    private class RestartConstraintFault : SupportSQLiteOpenHelper.Factory {
+        enum class Kind { LOST_DEFERRAL, NULLABLE_REVISION }
+        private var native: SupportSQLiteDatabase? = null
+        private var originalSql: String? = null
+        private var originalIndices: List<String> = emptyList()
+        private var originalTriggers: List<String> = emptyList()
+        fun rewrite(kind: Kind): String {
+            val raw = requireNotNull(native); check(raw.isOpen && !raw.inTransaction())
+            raw.query("SELECT COUNT(*) FROM main.next_restart_plan_proofs").use { check(it.moveToFirst() && it.getLong(0) == 0L) }
+            val ddl = raw.query("SELECT sql FROM main.sqlite_master WHERE type='table' AND name='next_restart_plan_proofs'").use {
+                check(it.moveToFirst()); it.getString(0).also { _ -> check(!it.moveToNext()) }
+            }
+            fun definitions(type: String) = raw.query("SELECT sql FROM main.sqlite_master WHERE type=? AND tbl_name='next_restart_plan_proofs' AND sql IS NOT NULL ORDER BY name", arrayOf(type)).use { c ->
+                buildList { while (c.moveToNext()) add(c.getString(0)) }
+            }
+            originalSql = ddl; originalIndices = definitions("index"); originalTriggers = definitions("trigger")
+            val changed = when (kind) {
+                Kind.LOST_DEFERRAL -> ddl.replace("DEFERRABLE INITIALLY DEFERRED", "NOT DEFERRABLE INITIALLY IMMEDIATE")
+                Kind.NULLABLE_REVISION -> ddl.replace("`revision` INTEGER NOT NULL", "`revision` INTEGER")
+            }
+            check(changed != ddl)
+            raw.beginTransaction()
+            try {
+                raw.execSQL("DROP TABLE next_restart_plan_proofs")
+                raw.execSQL(changed); originalIndices.forEach(raw::execSQL); originalTriggers.forEach(raw::execSQL)
+                raw.setTransactionSuccessful()
+            } finally { raw.endTransaction() }
+            return changed
+        }
+        fun restoreClosed(raw: SQLiteDatabase) {
+            check(raw.inTransaction())
+            raw.execSQL("DROP TABLE next_restart_plan_proofs")
+            raw.execSQL(requireNotNull(originalSql)); originalIndices.forEach(raw::execSQL); originalTriggers.forEach(raw::execSQL)
+        }
+        override fun create(configuration: SupportSQLiteOpenHelper.Configuration): SupportSQLiteOpenHelper {
+            fun remember(db: SupportSQLiteDatabase) = db.also { native = it }
+            val parent = configuration.callback
+            val callback = object : SupportSQLiteOpenHelper.Callback(parent.version) {
+                override fun onConfigure(db: SupportSQLiteDatabase) = parent.onConfigure(remember(db))
+                override fun onCreate(db: SupportSQLiteDatabase) = parent.onCreate(remember(db))
+                override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = parent.onUpgrade(remember(db), oldVersion, newVersion)
+                override fun onDowngrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = parent.onDowngrade(remember(db), oldVersion, newVersion)
+                override fun onOpen(db: SupportSQLiteDatabase) = parent.onOpen(remember(db))
+                override fun onCorruption(db: SupportSQLiteDatabase) = parent.onCorruption(remember(db))
+            }
+            val helper = FrameworkSQLiteOpenHelperFactory().create(SupportSQLiteOpenHelper.Configuration.builder(configuration.context)
+                .name(configuration.name).callback(callback).noBackupDirectory(configuration.useNoBackupDirectory).build())
+            return object : SupportSQLiteOpenHelper by helper {
+                override val writableDatabase get() = remember(helper.writableDatabase)
+                override val readableDatabase get() = remember(helper.readableDatabase)
+            }
+        }
+    }
+
+    private val decryptCalls = AtomicInteger()
+    private val failDecryptAt = AtomicInteger(Int.MAX_VALUE)
+    override fun tokenCipher(): TokenCipher = object : TokenCipher {
+        override fun encrypt(value: String) = PlaintextTokenCipher.encrypt(value)
+        override fun decrypt(value: String): String? =
+            if (decryptCalls.incrementAndGet() == failDecryptAt.get()) null else PlaintextTokenCipher.decrypt(value)
+    }
     private suspend fun hash() = db.withTransaction { NextReplicaStorageProof(db).readInTransaction().hash }
     private suspend fun verify(hash: String, original: LocalSyncAccess) =
         NextReplicaSchemaValidator(app, db, tokens, sessions).validate(original, hash)
@@ -30,23 +101,72 @@ class NextReplicaSchemaValidatorTest : NextCoreRequestFixture() {
         assertArrayEquals(image, storage.snapshotClosedDatabase()); assertEquals(prefs, dataStore.data.first())
         assertEquals(original, access()); assertSame(db, HabitDatabaseProvider.getInstance(app))
     }
-    private fun rewriteEmptyTable(table: String, edit: (String) -> String) {
-        require(table.matches(Regex("[a-z_]+")))
+    private suspend fun requireControlledRejection(statement: String, reason: String) {
+        check(!db.inTransaction())
+        val before = hash()
+        val failure = runCatching { db.openHelper.writableDatabase.execSQL(statement) }.exceptionOrNull()
+        assertTrue("The controlled entry must reject this physical fault before SQL: $failure", failure is IllegalStateException)
+        assertEquals(reason, failure?.message)
+        assertEquals("Rejected fault setup must not change any stored byte or DDL", before, hash())
+    }
+
+    /** Fault injection only: close the owned testbed connection, use one independent native
+     * transaction, then reopen the real production provider. No production handle escape.
+     */
+    private fun corruptClosedTestbed(change: (SQLiteDatabase) -> Unit) {
+        check(app.packageName == "com.dayforge.testbed" && !db.inTransaction())
+        db.close(); HabitDatabaseProvider.clearInstanceForTesting()
+        try {
+            SQLiteDatabase.openDatabase(app.getDatabasePath("habit_database").path, null, SQLiteDatabase.OPEN_READWRITE).use { native ->
+                check(!native.inTransaction())
+                native.beginTransaction()
+                try { change(native); native.setTransactionSuccessful() }
+                finally { native.endTransaction() }
+            }
+        } finally { storage.reopen() }
+    }
+
+    private suspend fun rewriteRestartConstraint(kind: RestartConstraintFault.Kind) {
+        check(!db.inTransaction())
         val sql = db.openHelper.writableDatabase
-        sql.query("SELECT COUNT(*) FROM $table").use { require(it.moveToFirst() && it.getLong(0) == 0L) }
-        val original = sql.query("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", arrayOf(table)).use {
-            require(it.moveToFirst() && it.getType(0) == Cursor.FIELD_TYPE_STRING); it.getString(0)
+        val identity = sql.query("SELECT identity_hash FROM main.room_master_table WHERE id=42").use {
+            check(it.moveToFirst()); it.getString(0)
         }
-        val indices = sql.query("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL", arrayOf(table)).use {
-            buildList { while (it.moveToNext()) add(it.getString(0)) }
+        val guard = sql.query("SELECT sql FROM main.sqlite_master WHERE type='trigger' AND tbl_name='next_restart_plan_proofs' AND name LIKE 'count_trust_dirty_%' ORDER BY name LIMIT 1").use {
+            check(it.moveToFirst()); it.getString(0)
         }
-        val triggers = sql.query("SELECT sql FROM sqlite_master WHERE type='trigger' AND tbl_name=? ORDER BY name", arrayOf(table)).use {
-            buildList { while (it.moveToNext()) add(it.getString(0)) }
+        requireControlledRejection(guard, "COUNT_TRUST_SCHEMA_DDL_DENIED")
+        val changed = nativeFault.rewrite(kind)
+        sql.query("SELECT sql FROM main.sqlite_master WHERE type='table' AND name='next_restart_plan_proofs'").use {
+            assertTrue(it.moveToFirst()); assertEquals("Actual fixed native constraint fault", changed, it.getString(0)); assertFalse(it.moveToNext())
         }
-        val changed = edit(original); require(changed != original)
-        sql.execSQL("DROP TABLE $table") // This empty, isolated testbed table only.
-        // Change only the requested constraint, not the independently owned write fences.
-        sql.execSQL(changed); indices.forEach(sql::execSQL); triggers.forEach(sql::execSQL)
+        sql.query("SELECT identity_hash FROM main.room_master_table WHERE id=42").use {
+            assertTrue(it.moveToFirst()); assertEquals(identity, it.getString(0)); assertFalse(it.moveToNext())
+        }
+    }
+
+    /** First reach the original validator while its actual owner is open. Then separately
+     * prove the stricter cold mandatory Root rejects the same physical schema with zero change.
+     */
+    private suspend fun schemaRejectedWarmAndCold(original: LocalSyncAccess, restore: (SQLiteDatabase) -> Unit) {
+        val before = db.withTransaction { NextReplicaStorageProof(db).readInTransaction() }
+        val prefs = dataStore.data.first()
+        assertEquals("SYNC_RECOVERY_SCHEMA_INVALID", rejected { verify(before.hash, original) }.message)
+        val after = db.withTransaction { NextReplicaStorageProof(db).readInTransaction() }
+        assertEquals(before.contents, after.contents); assertEquals(before.hash, after.hash)
+        assertEquals(prefs, dataStore.data.first()); assertEquals(original, access())
+        val image = storage.snapshotClosedDatabase()
+        val cold = runCatching { db.openHelper.writableDatabase }.exceptionOrNull()
+        assertTrue("Cold mandatory primary binding must reject before the validator", cold is IllegalArgumentException)
+        assertEquals("COMMAND_PRIMARY_BINDING_CHANGED", cold?.message)
+        db.close(); HabitDatabaseProvider.clearInstanceForTesting()
+        val file = app.getDatabasePath("habit_database")
+        assertArrayEquals("Cold rejection cannot alter the closed native image", image, file.readBytes())
+        assertEquals(prefs, dataStore.data.first()); assertEquals(original, access())
+        corruptClosedTestbed(restore)
+        // Only restore the fixed test fault; a valid original root must verify on the real open.
+        val repaired = hash()
+        assertEquals(repaired, verify(repaired, original).storageHash)
     }
 
     @Test fun freshAndAnalyzedSchemaAreReadOnlyAndRemainValidAfterColdReopen() = runBlocking<Unit> {
@@ -87,8 +207,8 @@ class NextReplicaSchemaValidatorTest : NextCoreRequestFixture() {
                 }).build()).use { it.writableDatabase }
             val file = app.getDatabasePath(name)
             require(file.isFile && file.length() in 1..67_108_864L)
-            storage.restoreClosedDatabase(file.readBytes()) // Only the owned testbed DB; production migrates 1→18.
-            assertEquals(18, db.openHelper.writableDatabase.version)
+            storage.restoreClosedDatabase(file.readBytes()) // Only the owned testbed DB; production migrates 1→19.
+            assertEquals(20, db.openHelper.writableDatabase.version)
             val point = hash(); val original = access()
             unchanged { assertEquals(point, verify(point, original).storageHash) }
         } finally { assertTrue(app.deleteDatabase(name)) }
@@ -96,33 +216,40 @@ class NextReplicaSchemaValidatorTest : NextCoreRequestFixture() {
 
     @Test fun unchangedRoomHashCannotHideLostDeferredForeignKeyOrNullableConstraint() = runBlocking<Unit> {
         register(); val original = access()
-        rewriteEmptyTable("next_restart_plan_proofs") { it.replace("DEFERRABLE INITIALLY DEFERRED", "NOT DEFERRABLE INITIALLY IMMEDIATE") }
-        val deferral = hash()
-        unchanged { assertEquals("SYNC_RECOVERY_SCHEMA_INVALID", rejected { verify(deferral, original) }.message) }
-        rewriteEmptyTable("next_restart_plan_proofs") {
-            it.replace("NOT DEFERRABLE INITIALLY IMMEDIATE", "DEFERRABLE INITIALLY DEFERRED")
-                .replace("`revision` INTEGER NOT NULL", "`revision` INTEGER")
+        for (fault in RestartConstraintFault.Kind.entries) {
+            rewriteRestartConstraint(fault)
+            schemaRejectedWarmAndCold(original, nativeFault::restoreClosed)
         }
-        val nullable = hash()
-        unchanged { assertEquals("SYNC_RECOVERY_SCHEMA_INVALID", rejected { verify(nullable, original) }.message) }
     }
 
     @Test fun changedIndexCollationDirectionAndSameNamedTriggerCannotPass() = runBlocking<Unit> {
         register(); val original = access()
+        val warm = hash()
+        assertEquals(warm, verify(warm, original).storageHash)
+        fun definition(type: String, name: String) = db.openHelper.writableDatabase.query(
+            "SELECT sql FROM main.sqlite_master WHERE type=? AND name=?", arrayOf(type, name)).use {
+            assertTrue(it.moveToFirst()); it.getString(0).also { _ -> assertFalse(it.moveToNext()) }
+        }
+        val originalIndex = definition("index", "index_metrics_uuid")
         db.openHelper.writableDatabase.execSQL("DROP INDEX index_metrics_uuid")
         db.openHelper.writableDatabase.execSQL("CREATE INDEX index_metrics_uuid ON metrics(uuid COLLATE NOCASE DESC)")
-        val index = hash()
-        unchanged { assertEquals("SYNC_RECOVERY_SCHEMA_INVALID", rejected { verify(index, original) }.message) }
-        db.openHelper.writableDatabase.execSQL("DROP INDEX index_metrics_uuid")
-        db.openHelper.writableDatabase.execSQL("CREATE INDEX index_metrics_uuid ON metrics(uuid)")
+        assertTrue(definition("index", "index_metrics_uuid").contains("NOCASE DESC"))
+        schemaRejectedWarmAndCold(original) { raw ->
+            raw.execSQL("DROP INDEX index_metrics_uuid"); raw.execSQL(originalIndex)
+        }
+        val originalTrigger = definition("trigger", "sync_metrics_update")
         db.openHelper.writableDatabase.execSQL("DROP TRIGGER sync_metrics_update")
         db.openHelper.writableDatabase.execSQL("CREATE TRIGGER sync_metrics_update AFTER UPDATE ON metrics BEGIN SELECT 1; END")
-        val trigger = hash()
-        unchanged { assertEquals("SYNC_RECOVERY_SCHEMA_INVALID", rejected { verify(trigger, original) }.message) }
+        assertTrue(definition("trigger", "sync_metrics_update").contains("BEGIN SELECT 1; END"))
+        schemaRejectedWarmAndCold(original) { raw ->
+            raw.execSQL("DROP TRIGGER sync_metrics_update"); raw.execSQL(originalTrigger)
+        }
     }
 
     @Test fun blobInIntegerBusinessFieldAndOrphanForeignKeyAreRejectedBeforeArchive() = runBlocking<Unit> {
         register(); val original = access()
+        val warm = hash()
+        assertEquals(warm, verify(warm, original).storageHash)
         db.withTransaction {
             val sql = db.openHelper.writableDatabase
             sql.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
@@ -154,16 +281,34 @@ class NextReplicaSchemaValidatorTest : NextCoreRequestFixture() {
     @Test fun unknownViewAndExtraIdentityRowCannotBeApprovedAsCurrentSchema() = runBlocking<Unit> {
         register(); val original = access()
         db.openHelper.writableDatabase.execSQL("CREATE VIEW unreviewed_archive_data AS SELECT * FROM metrics")
-        val view = hash()
-        unchanged { assertEquals("SYNC_RECOVERY_SCHEMA_INVALID", rejected { verify(view, original) }.message) }
-        db.openHelper.writableDatabase.execSQL("DROP VIEW unreviewed_archive_data")
-        db.openHelper.writableDatabase.execSQL("INSERT INTO room_master_table(id,identity_hash) VALUES(43,'unreviewed')")
+        db.openHelper.writableDatabase.query("SELECT sql FROM main.sqlite_master WHERE type='view' AND name='unreviewed_archive_data'").use {
+            assertTrue(it.moveToFirst()); assertTrue(it.getString(0).contains("SELECT * FROM metrics")); assertFalse(it.moveToNext())
+        }
+        schemaRejectedWarmAndCold(original) { it.execSQL("DROP VIEW unreviewed_archive_data") }
+        val corruptIdentity = "INSERT INTO room_master_table(id,identity_hash) VALUES(43,'unreviewed')"
+        requireControlledRejection(corruptIdentity, "COUNT_TRUST_SYSTEM_WRITE_DENIED")
+        corruptClosedTestbed { it.execSQL(corruptIdentity) }
+        db.openHelper.writableDatabase.query("SELECT identity_hash FROM room_master_table WHERE id=43").use {
+            assertTrue("The original extra-identity fault must reach the real validator", it.moveToFirst())
+            assertEquals("unreviewed", it.getString(0)); assertFalse(it.moveToNext())
+        }
         val identity = hash()
         unchanged { assertEquals("SYNC_RECOVERY_SCHEMA_INVALID", rejected { verify(identity, original) }.message) }
     }
 
     @Test fun changedContentsOrAccountAuthorityCannotReuseOldProof() = runBlocking<Unit> {
         register(); val original = access(); val point = hash()
+        assertEquals(point, verify(point, original).storageHash)
+        unchanged {
+            // A warm expected schema must never cache source acceptance or final authority.
+            // Fail only the second fresh access-token proof, after actual source verification.
+            decryptCalls.set(0); failDecryptAt.set(2)
+            try {
+                assertEquals("SYNC_ACCOUNT_CHANGED", rejected { verify(point, original) }.message)
+                assertEquals("Both entry and final authority must use current credentials", 2, decryptCalls.get())
+            } finally { failDecryptAt.set(Int.MAX_VALUE) }
+        }
+        assertEquals(point, verify(point, original).storageHash)
         db.withTransaction {
             val sql = db.openHelper.writableDatabase
             sql.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")

@@ -32,7 +32,7 @@ class ReplicaRecoveryContentTest {
     private var confirmations = 0; private var resumes = 0; private var inspections = 0
     private var cancelled = 0; private var logins = 0
     private val current = AtomicBoolean(true)
-    @Composable private fun content() = MaterialTheme {
+    @Composable private fun Content() = MaterialTheme {
         ReplicaRecoveryContent(state.value, diagnostic, { inspections++ }, {}, {}, { resumes++ },
             { state.value = state.value.copy(approved = it) }, { confirmations++ }, { cancelled++ },
             { _, _ -> logins++ }, { _, _ -> }, {}, {}, isCurrent = { current.get() })
@@ -53,7 +53,7 @@ class ReplicaRecoveryContentTest {
     }
     @Test fun confirmationIsDisabledUntilExplicitConsentAndPhoneWidthIsRespected() {
         val proof = evidence(); state.value = state.value.copy(stage = proof.stage, evidence = proof)
-        compose.setContent { Box(Modifier.width(320.dp)) { content() } }
+        compose.setContent { Box(Modifier.width(320.dp)) { Content() } }
         compose.onNodeWithTag("replica-recovery-list").performScrollToNode(hasTestTag("replica-recovery-confirm"))
         compose.onNodeWithTag("replica-recovery-confirm").assertIsNotEnabled()
         compose.onNodeWithTag("replica-recovery-approve").performClick()
@@ -64,7 +64,7 @@ class ReplicaRecoveryContentTest {
     }
     @Test fun postcommitOnlyOffersForwardContinuationAndNeverCancellationOrImplicitConfirmation() {
         state.value = state.value.copy(stage = recoveryUiStage(ReplicaSwitchPhase.DESTINATION_BOUND))
-        compose.setContent { content() }
+        compose.setContent { Content() }
         compose.onNodeWithTag("replica-recovery-cancel").assertDoesNotExist()
         compose.onNodeWithTag("replica-recovery-confirm").assertDoesNotExist()
         clickTag("replica-recovery-resume")
@@ -72,7 +72,7 @@ class ReplicaRecoveryContentTest {
     }
     @Test fun loginFormIsNotSavedAndDismissOrSubmitDoesNotRetainCredentials() {
         val restoration = StateRestorationTester(compose)
-        restoration.setContent { content() }
+        restoration.setContent { Content() }
         clickTag("replica-recovery-login")
         compose.onNodeWithTag("replica-recovery-username").performTextInput("member")
         compose.onNodeWithTag("replica-recovery-password").performTextInput("synthetic-password")
@@ -91,7 +91,7 @@ class ReplicaRecoveryContentTest {
     @Test fun orphanControlsHidePrivateReviewAndOnlyPermitLocalInspection() {
         val proof = evidence(); state.value = state.value.copy(stage = proof.stage, evidence = proof, approved = true)
         diagnostic = ReplicaPresentationCheck(ReplicaPresentationProblem.ORPHAN_STAGE)
-        compose.setContent { content() }
+        compose.setContent { Content() }
         compose.onNodeWithTag("replica-recovery-login").assertDoesNotExist()
         compose.onNodeWithTag("replica-recovery-confirm").assertDoesNotExist()
         compose.onNodeWithTag("replica-recovery-preview").assertDoesNotExist()
@@ -100,7 +100,7 @@ class ReplicaRecoveryContentTest {
         compose.runOnIdle { assertEquals(1, inspections); assertEquals(0, confirmations); assertEquals(0, logins) }
     }
     @Test fun staleLoginPopupCannotSubmitCredentialsBeforeTheNextCompositionFrame() {
-        compose.setContent { content() }
+        compose.setContent { Content() }
         clickTag("replica-recovery-login")
         compose.onNodeWithTag("replica-recovery-username").performTextInput("member")
         compose.onNodeWithTag("replica-recovery-password").performTextInput("synthetic-password")
@@ -116,7 +116,7 @@ class ReplicaRecoveryContentTest {
             every { pendingVariants } returns mapOf(recoveryId(31) to setOf("dark"))
         }
         state.value = state.value.copy(material = gaps, error = ReplicaRecoveryError.MATERIAL)
-        compose.setContent { content() }
+        compose.setContent { Content() }
         val missing = compose.activity.getString(R.string.replica_recovery_asset_missing, recoveryId(30))
         compose.onNodeWithTag("replica-recovery-list").performScrollToNode(hasText(missing))
         compose.onNodeWithText(missing).assertIsDisplayed()

@@ -62,6 +62,7 @@ internal class NextRecoveryConfirmationStore(private val database: HabitDatabase
         require(checkpoint == ticket.checkpoint()) { "SYNC_RECOVERY_CHECKPOINT_CHANGED" }
         val drafts = projections.plan(current)
         require(drafts == ticket.drafts()) { "SYNC_RECOVERY_PROJECTION_CHANGED" }
+        com.dayforge.data.local.CountTrustRuntime.forDatabase(database)?.prepareOutboxAllocatorsForWrite(database)
         val beforeSources = NextRequestSql.sources(sql, "sync_outbox")
         val preserved = NextRecoveryPreservationStore(database).snapshot(ticket.recoveryId)
         val rows = audit.graphRows(current.archive)
@@ -108,7 +109,7 @@ internal class NextRecoveryConfirmationStore(private val database: HabitDatabase
         }
         projections.apply(drafts)
         require(NextRequestSql.sources(sql, "sync_outbox") == beforeSources.filterKeys { it !in retiredIds }) { "SYNC_RECOVERY_QUEUE_CHANGED" }
-        require(NextRecoveryPreservationStore(database).snapshot(ticket.recoveryId) == preserved) { "SYNC_RECOVERY_PROTECTED_STATE_CHANGED" }
+        NextRecoveryPreservationStore(database).requireUnchanged(ticket.recoveryId, preserved)
         val result = audit.read(access, ticket.recoveryId)
         validateTicket(result, ticket)
         currentCoroutineContext().ensureActive()

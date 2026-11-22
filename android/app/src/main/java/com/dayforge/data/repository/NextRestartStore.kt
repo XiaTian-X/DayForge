@@ -23,8 +23,8 @@ internal class NextRestartStore(private val database: HabitDatabase) {
 
     private suspend fun rowHash(table: String, id: String) = when (table) {
         "next_request_origins", "next_transmissions", "next_acceptances", "next_rejections" ->
-            NextRequestSql.rowHash(sql, table, "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, id))
-        else -> NextRequestSql.rowHash(sql, table, "operationId=?", arrayOf(id))
+            NextRequestSql.rowHash(database, table, "kind=? AND requestId=?", arrayOf(NEXT_OPERATION, id))
+        else -> NextRequestSql.rowHash(database, table, "operationId=?", arrayOf(id))
     }
 
     suspend fun original(access: LocalSyncAccess, id: String): Original {
@@ -54,7 +54,7 @@ internal class NextRestartStore(private val database: HabitDatabase) {
         val queue = database.syncOutboxDao().getById(origin.queueId)
         if (queue == null) require(rowHash("next_acceptances", id) != null && database.syncOutboxDao().getByOperationId(id) == null)
         else {
-            require(NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(origin.queueId)) == origin.sourceHash &&
+            require(NextRequestSql.rowHash(database, "sync_outbox", "id=?", arrayOf(origin.queueId)) == origin.sourceHash &&
                 NextRequestSql.sourceHash(queue) == origin.sourceHash && queue.operationId == id &&
                 queue.recordType == RESTART_RECORD && queue.entityUuid == proposal.head.activityUuid &&
                 queue.wireEntityUuid == proposal.head.roundUuid && queue.action == "upsert" && queue.referenceUuid == null &&
@@ -76,7 +76,7 @@ internal class NextRestartStore(private val database: HabitDatabase) {
                 com.dayforge.data.local.LocalCoreWriteAccess(access.session, access.capabilities, access.deviceId))
         }
         for (terminal in proposal.terminals) {
-            val raw = requireNotNull(NextRequestSql.rowHash(sql, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_TIMER, terminal.commandId)))
+            val raw = requireNotNull(NextRequestSql.rowHash(database, "next_request_origins", "kind=? AND requestId=?", arrayOf(NEXT_TIMER, terminal.commandId)))
             val source = requireNotNull(requests.origin(NEXT_TIMER, terminal.commandId))
             val intent = requireNotNull(roundTimerIntent(source.intentJson))
             require(raw == terminal.originHash && source.protocol == 5 && source.accountId == origin.accountId &&
@@ -207,15 +207,22 @@ internal class NextRestartStore(private val database: HabitDatabase) {
             val proof = NextRestartPlanProofEntity(id, original.hash, requireNotNull(rowHash("next_transmissions", id)),
                 change.revision, change.sequence, requireNotNull(access.deviceId), planJson, syncPayloadHash(planJson))
             val previous = dao.planProof(id)
-            val protected = nextRestartDatabaseProof(database, excluded = setOf("next_restart_plan_proofs"))
+            val control = CountTrustRecoveryControl.read(database)
+            val protected = nextRestartDatabaseProof(database, excluded = setOf("next_restart_plan_proofs"), control = control)
             val otherProofs = nextRestartDatabaseProof(database, only = setOf("next_restart_plan_proofs"), excludedRequestId = id)
-            if (previous == null) dao.insertPlanProof(proof) else {
+            var writes = 0L
+            if (previous == null) {
+                dao.insertPlanProof(proof)
+                writes++
+            } else {
                 requireNotNull(rowHash("next_restart_plan_proofs", id)); require(previous == proof) { "SYNC_RESTART_PLAN_PROOF_CHANGED" }
             }
             requireNotNull(rowHash("next_restart_plan_proofs", id))
+            val after = requireNextRestartControl(database, control, writes)
             require(dao.planProof(id) == proof && original(access, id).hash == original.hash &&
-                nextRestartDatabaseProof(database, excluded = setOf("next_restart_plan_proofs")) == protected &&
+                nextRestartDatabaseProof(database, excluded = setOf("next_restart_plan_proofs"), control = after) == protected &&
                 nextRestartDatabaseProof(database, only = setOf("next_restart_plan_proofs"), excludedRequestId = id) == otherProofs)
+            requireNextRestartControl(database, control, writes)
         }
     }
 
@@ -232,7 +239,13 @@ internal class NextRestartStore(private val database: HabitDatabase) {
     }
 
     /** Immutable frontiers are re-audited even on cold replay. Only actual accepted Plan revisions qualify. */
-    suspend fun frontier(access: LocalSyncAccess, original: Original, timers: NextTimerRequestStore): Pair<JsonObject, String> {
+    suspend fun frontier(access: LocalSyncAccess, original: Original, timers: NextTimerRequestStore): Pair<JsonObject, String> =
+        frontier(access, original) { id, session, sequence ->
+            timers.requireAcceptedTerminalInTransaction(access, id, session, sequence)
+        }
+
+    private suspend fun frontier(access: LocalSyncAccess, original: Original,
+        terminalProof: suspend (String, String, Int) -> String): Pair<JsonObject, String> {
         val proposal = original.value
         val proofs = mutableListOf(original.hash)
         proposal.restartFrontier?.let { previous -> proofs += acceptedPlan(access, previous).second }
@@ -253,14 +266,31 @@ internal class NextRestartStore(private val database: HabitDatabase) {
             revision < Long.MAX_VALUE && java.time.Instant.parse(plan.getValue("created_at").jsonPrimitive.content) ==
                 java.time.Instant.parse(proposal.displayedPlan.getValue("created_at").jsonPrimitive.content))
         for (terminal in proposal.terminals) {
-            proofs += timers.requireAcceptedTerminalInTransaction(access, terminal.commandId, terminal.sessionId, terminal.sequence)
+            proofs += terminalProof(terminal.commandId, terminal.sessionId, terminal.sequence)
         }
         return plan to nextRequestHash(JsonArray(proofs.map(::JsonPrimitive)).toString().toByteArray(Charsets.UTF_8))
     }
 
-    suspend fun requireMaterializedFrontier(access: LocalSyncAccess, original: Original, timers: NextTimerRequestStore): SyncV2Operation {
+    suspend fun requireMaterializedFrontier(access: LocalSyncAccess, original: Original, timers: NextTimerRequestStore): SyncV2Operation =
+        requireMaterializedFrontier(access, original) { id, session, sequence ->
+            timers.requireAcceptedTerminalInTransaction(access, id, session, sequence)
+        }
+
+    /** The same original materialization/frontier contract for SELECT-only local recovery.
+     * It uses this database's complete terminal reader; no HTTP, fake proof callback or lease escapes. */
+    internal suspend fun recoveryMaterializedFrontier(access: LocalSyncAccess, original: Original): SyncV2Operation =
+        requireMaterializedFrontier(access, original) { id, session, sequence ->
+            // This recovery caller has no outer sender/abandonment graph audit. An ACK
+            // cannot coexist with a rejected or abandoned terminal in its dependency set.
+            require(NextRequestSql.rowHash(database, "next_rejections", "kind=? AND requestId=?", arrayOf(NEXT_TIMER, id)) == null &&
+                NextRequestSql.rowHash(database, "next_abandoned_requests", "kind=? AND requestId=?", arrayOf(NEXT_TIMER, id)) == null)
+            NextAcceptedTimerProofStore(database).requireTerminal(access, id, session, sequence)
+        }
+
+    private suspend fun requireMaterializedFrontier(access: LocalSyncAccess, original: Original,
+        terminalProof: suspend (String, String, Int) -> String): SyncV2Operation {
         val operation = materialization(access, original)
-        val (plan, proof) = frontier(access, original, timers)
+        val (plan, proof) = frontier(access, original, terminalProof)
         val stored = requireNotNull(dao.materialization(original.row.requestId))
         require(stored.frontierHash == proof && Json.decodeFromJsonElement<ChallengeRestartIntent>(operation.payload).expectedPlanRevision ==
             plan.getValue("revision").jsonPrimitive.long)

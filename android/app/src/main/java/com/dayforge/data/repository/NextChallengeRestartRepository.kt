@@ -139,7 +139,9 @@ internal class NextChallengeRestartRepository internal constructor(
                 database.withTransaction {
                     NextRequestSql.requireOutboxEnabled(sql)
                     val original = store.original(access, id)
-                    val unchanged = nextRestartDatabaseProof(database, excludedRequestId = id)
+                    val control = CountTrustRecoveryControl.read(database)
+                    val unchanged = nextRestartDatabaseProof(database, excludedRequestId = id, control = control)
+                    var writes = 0L
                     val (plan, frontier) = store.frontier(access, original, timers)
                     if (database.nextRestartDao().materialization(id) == null) {
                         require(requests.transmission(NEXT_OPERATION, id) == null && requestHash("next_rejections", id) == null)
@@ -154,19 +156,24 @@ internal class NextChallengeRestartRepository internal constructor(
                         val bytes = encodeSyncRequest(SyncV2Operation.serializer(), operation)
                         database.nextRestartDao().materialize(NextRestartMaterializationEntity(id, NEXT_OPERATION,
                             original.hash, frontier, bytes.toString(Charsets.UTF_8), nextRequestHash(bytes)))
+                        writes++
                         val body = RoundSyncPushRequest(1, requireNotNull(access.deviceId), listOf(operation), listOf(ChallengeSourceContext(id, null)))
                         val wire = encodeSyncRequest(RoundSyncPushRequest.serializer(), body)
                         requests.insertTransmission(NextTransmissionEntity(NEXT_OPERATION, id, original.row.queueId, 5,
                             original.row.accountId, requireNotNull(original.row.serverInstanceId), requireNotNull(original.row.syncEpoch),
                             access.deviceId, nextRequestHash(wire), wire))
+                        writes++
                     }
                     val operation = store.requireMaterializedFrontier(access, store.original(access, id), timers)
                     store.transmission(access, original, operation)
                     require(store.original(access, id).hash == original.hash)
-                    require(nextRestartDatabaseProof(database, excludedRequestId = id) == unchanged)
+                    val after = requireNextRestartControl(database, control, writes)
+                    require(nextRestartDatabaseProof(database, excludedRequestId = id, control = after) == unchanged)
                     NextRequestSql.requireOutboxEnabled(sql); authorize(access)
-                    requireNotNull(requests.transmission(NEXT_OPERATION, id)).wireBytes.copyOf() to
+                    val prepared = requireNotNull(requests.transmission(NEXT_OPERATION, id)).wireBytes.copyOf() to
                         requireNotNull(requestHash("next_transmissions", id))
+                    requireNextRestartControl(database, control, writes)
+                    prepared
                 }
             }
             val result = channel.roundPushFrozen(prepared.first)
@@ -201,17 +208,28 @@ internal class NextChallengeRestartRepository internal constructor(
                 authorize(access)
                 return@withTransaction NextRestartOutcome.REPLAYED
             }
+            val control = CountTrustRecoveryControl.read(database)
             val protected = nextRestartDatabaseProof(database, excluded = setOf("sync_outbox", "next_challenge_state",
-                "next_challenge_rounds", "next_challenge_births"), excludedRequestId = id)
+                "next_challenge_rounds", "next_challenge_births"), excludedRequestId = id, control = control)
             val sources = NextRequestSql.sources(sql, "sync_outbox")
             val oldMetadata = NextChallengeStore(database).activeInTransaction(access).second
             var expectedMetadata = oldMetadata
+            var writes = 0L
             val outcome = if (success) {
                 require(requestHash("next_rejections", id) == null) { "SYNC_RESTART_REJECTED" }
                 expectedMetadata = NextChallengeStore(database).acknowledgeInTransaction(access, frozen.metadata())
+                // ACK independently proves its exact successful DML. Derive this outer budget
+                // from the validated append-only member delta, never from the observed counter.
+                val oldRounds = oldMetadata.checkpoints.flatMap { it.records }.map { it.head.roundUuid }.toSet()
+                val oldBirths = oldMetadata.births.map { it.entityType to it.entityUuid }.toSet()
+                writes = 1L + expectedMetadata.checkpoints.sumOf { checkpoint ->
+                    checkpoint.records.count { it.head.roundUuid !in oldRounds }.toLong()
+                } + expectedMetadata.births.count { it.entityType to it.entityUuid !in oldBirths }
                 val accepted = NextAcceptanceEntity(NEXT_OPERATION, id, original.hash, transmittedHash, nextRequestHash(bytes), json)
                 requests.insertAcceptance(accepted)
+                writes++
                 database.syncOutboxDao().deleteById(original.row.queueId)
+                writes++
                 store.accepted(access, original.reference)
                 require(requests.acceptance(NEXT_OPERATION, id) == accepted)
                 require(NextRequestSql.sources(sql, "sync_outbox") == sources - original.row.queueId)
@@ -223,20 +241,25 @@ internal class NextChallengeRestartRepository internal constructor(
             } else {
                 val previous = database.nextSyncStateDao().rejections().singleOrNull { it.kind == NEXT_OPERATION && it.requestId == id }
                 val rejected = NextRejectionEntity(NEXT_OPERATION, id, original.hash, transmittedHash, nextRequestHash(bytes), json)
-                if (previous == null) database.nextSyncStateDao().insertRejection(rejected) else require(previous == rejected) { "SYNC_RESTART_RESULT_CHANGED" }
+                if (previous == null) {
+                    database.nextSyncStateDao().insertRejection(rejected)
+                    writes++
+                } else require(previous == rejected) { "SYNC_RESTART_RESULT_CHANGED" }
                 require(NextRequestSql.sources(sql, "sync_outbox") == sources &&
                     NextChallengeStore(database).activeInTransaction(access).second == oldMetadata)
                 requireNotNull(requestHash("next_rejections", id))
                 require(database.nextSyncStateDao().rejections().single { it.kind == NEXT_OPERATION && it.requestId == id } == rejected)
                 NextRestartOutcome.REJECTED
             }
+            val after = requireNextRestartControl(database, control, writes)
             require(nextRestartDatabaseProof(database, excluded = setOf("sync_outbox", "next_challenge_state",
-                "next_challenge_rounds", "next_challenge_births"), excludedRequestId = id) == protected)
+                "next_challenge_rounds", "next_challenge_births"), excludedRequestId = id, control = after) == protected)
             require(store.original(access, id).hash == original.hash &&
                 requestHash("next_transmissions", id) == transmittedHash)
             store.requireMaterializedFrontier(access, original, timers)
             require(NextChallengeStore(database).activeInTransaction(access).second == expectedMetadata)
             NextRequestSql.requireOutboxEnabled(sql); authorize(access)
+            requireNextRestartControl(database, control, writes)
             outcome
         }
     }
@@ -299,28 +322,39 @@ internal class NextChallengeRestartRepository internal constructor(
             val proposal = NextRestartProposal(1, operationId, head, old, requireNotNull(access.deviceId), ticket.original,
                 base, configuration, previous, terminals)
             val intent = encodeSyncRequest(NextRestartProposal.serializer(), proposal).toString(Charsets.UTF_8)
-            val before = nextRestartDatabaseProof(database, setOf("sync_outbox", "next_request_origins"), habit.id)
+            val control = CountTrustRecoveryControl.read(database)
+            val before = nextRestartDatabaseProof(database, setOf("sync_outbox", "next_request_origins"), habit.id,
+                control = control)
             val origins = nextRestartDatabaseProof(database, only = setOf("next_request_origins"))
             val sources = NextRequestSql.sources(sql, "sync_outbox")
             val watermark = NextRequestSql.watermark(sql, "sync_outbox")
             val updated = habit.copy(isActive = true, updatedAt = System.currentTimeMillis())
+            var writes = 0L
             sql.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
+            writes++
             database.habitDao().update(updated)
+            writes++
             sql.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
+            writes++
             val queueId = database.syncOutboxDao().insert(SyncOutboxEntity(operationId = operationId, recordType = RESTART_RECORD,
                 entityUuid = habit.uuid, wireEntityUuid = head.roundUuid, action = "upsert", payloadJson = intent))
+            writes++
             require(queueId > watermark)
             val sourceHash = requireNotNull(NextRequestSql.rowHash(sql, "sync_outbox", "id=?", arrayOf(queueId)))
             val origin = NextRequestOriginEntity(NEXT_OPERATION, operationId, queueId, 5, access.session.authentication.userId,
                 access.session.serverInstanceId, access.session.syncEpoch, sourceHash, intent)
             require(nextRestartDatabaseProof(database, only = setOf("next_request_origins")) == origins)
             requests.insertOrigin(origin)
+            writes++
             val original = store.original(access, operationId)
+            val after = requireNextRestartControl(database, control, writes)
             require(original.row == origin && original.value == proposal && database.habitDao().getHabitById(habit.id) == updated &&
                 NextRequestSql.sources(sql, "sync_outbox") == sources + (queueId to sourceHash) &&
-                nextRestartDatabaseProof(database, setOf("sync_outbox", "next_request_origins"), habit.id) == before)
+                nextRestartDatabaseProof(database, setOf("sync_outbox", "next_request_origins"), habit.id,
+                    control = after) == before)
             require(nextRestartDatabaseProof(database, only = setOf("next_request_origins"), excludedRequestId = operationId) == origins)
             NextRequestSql.requireOutboxEnabled(sql); authorize(access)
+            requireNextRestartControl(database, control, writes)
             original.reference
         }
     }
@@ -356,8 +390,10 @@ internal class NextChallengeRestartRepository internal constructor(
 
 /** Exact raw database proof, confined to the current transaction; never a cached write permission. */
 internal suspend fun nextRestartDatabaseProof(database: HabitDatabase, excluded: Set<String> = emptySet(),
-    excludedHabitId: Long? = null, only: Set<String>? = null, excludedRequestId: String? = null): String {
+    excludedHabitId: Long? = null, only: Set<String>? = null, excludedRequestId: String? = null,
+    control: CountTrustRecoveryControl? = null): String {
     check(database.inTransaction())
+    if (control != null) require(CountTrustRecoveryControl.read(database) == control) { "SYNC_RESTART_SIDE_EFFECT" }
     val sql = database.openHelper.writableDatabase
     val tables = sql.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'room_%' ORDER BY name")
         .use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
@@ -366,6 +402,12 @@ internal suspend fun nextRestartDatabaseProof(database: HabitDatabase, excluded:
     fun bytes(value: ByteArray) { digest.update(ByteBuffer.allocate(4).putInt(value.size).array()); digest.update(value) }
     for (table in tables) {
         require(table.matches(Regex("[a-zA-Z_][a-zA-Z_0-9]*"))); bytes(table.toByteArray(Charsets.UTF_8))
+        if (table == "count_trust_control" && control != null) {
+            // Explicit mutation callers separately prove the exact generation/dirty delta.
+            // Every ordinary/default proof still hashes all original control bytes.
+            bytes("1:${control.storageId}".toByteArray(Charsets.UTF_8))
+            continue
+        }
         val (where, args) = when {
             table == "habits" && excludedHabitId != null -> " WHERE id<>?" to arrayOf<Any>(excludedHabitId)
             table in setOf("next_request_origins", "next_transmissions", "next_acceptances", "next_rejections") && excludedRequestId != null ->
@@ -388,5 +430,18 @@ internal suspend fun nextRestartDatabaseProof(database: HabitDatabase, excluded:
             }
         } }
     }
+    if (control != null) require(CountTrustRecoveryControl.read(database) == control) { "SYNC_RESTART_SIDE_EFFECT" }
     return nextRequestHash(digest.digest())
+}
+
+/** Exact permanent invalidation caused by successful original DML. No runtime qualification,
+ * journal authority or root issuance is acquired, including for a soft-retired recovery owner.
+ */
+internal fun requireNextRestartControl(database: HabitDatabase, before: CountTrustRecoveryControl?, writes: Long): CountTrustRecoveryControl? {
+    require(writes >= 0)
+    val after = CountTrustRecoveryControl.read(database)
+    require(if (before == null) after == null else after != null && after.storageId == before.storageId &&
+        after.generation == Math.addExact(before.generation, writes) &&
+        after.dirty == (if (writes == 0L) before.dirty else 1L)) { "SYNC_RESTART_SIDE_EFFECT" }
+    return after
 }

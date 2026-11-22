@@ -67,17 +67,18 @@ object ActivityRateCalculator {
         schedule: HabitSchedule,
         createdAt: Long,
         completions: List<LocalDate>,
-        now: Long = System.currentTimeMillis()
+        now: Long = System.currentTimeMillis(),
+        zone: ZoneId = ZoneId.systemDefault()
     ): Int {
         // 1. 生成窗口内的应打卡日序列
-        val windowDays = generateWindowCheckInDays(schedule, createdAt, now)
+        val windowDays = generateWindowCheckInDays(schedule, createdAt, now, zone)
 
         // 2. 获取单次扣分值
         val deduction = getDeductionPerMiss(schedule)
 
         // 3. 统计未完成的应打卡日数量
         val completedDays = completions.toSet()
-        val missedCount = windowDays.count { millisToLocalDate(it) !in completedDays }
+        val missedCount = windowDays.count { millisToLocalDate(it, zone) !in completedDays }
 
         // 4. 计算活跃度
         val totalDeduction = missedCount * deduction
@@ -97,11 +98,12 @@ object ActivityRateCalculator {
     fun generateWindowCheckInDays(
         schedule: HabitSchedule,
         createdAt: Long,
-        now: Long
+        now: Long,
+        zone: ZoneId = ZoneId.systemDefault()
     ): List<Long> {
         val windowSize = getWindowSize(schedule)
-        val today = millisToLocalDate(now)
-        val creationDate = millisToLocalDate(createdAt)
+        val today = millisToLocalDate(now, zone)
+        val creationDate = millisToLocalDate(createdAt, zone)
 
         // A habit created today has not missed its first opportunity yet. Without
         // this guard a new daily habit immediately starts at 85% before the user
@@ -114,30 +116,30 @@ object ActivityRateCalculator {
 
         // 从今天往回找，收集 windowSize 个应打卡日
         while (count < windowSize && currentDate >= creationDate) {
-            if (ScheduleValidator.isCheckInAllowedOnDate(schedule, createdAt, currentDate)) {
+            if (ScheduleValidator.isCheckInAllowedOnDate(schedule, createdAt, currentDate, zone)) {
                 checkInDays.add(0, currentDate)  // 插入到开头，保持从远到近的顺序
                 count++
             }
             currentDate = currentDate.minusDays(1)
         }
 
-        return checkInDays.map { localDateToMillis(it) }
+        return checkInDays.map { localDateToMillis(it, zone) }
     }
 
     /**
      * 毫秒转 LocalDate
      */
-    private fun millisToLocalDate(millis: Long): LocalDate {
+    private fun millisToLocalDate(millis: Long, zone: ZoneId): LocalDate {
         return Instant.ofEpochMilli(millis)
-            .atZone(ZoneId.systemDefault())
+            .atZone(zone)
             .toLocalDate()
     }
 
     /**
      * LocalDate 转毫秒（当天0点）
      */
-    private fun localDateToMillis(date: LocalDate): Long {
-        return date.atStartOfDay(ZoneId.systemDefault())
+    private fun localDateToMillis(date: LocalDate, zone: ZoneId): Long {
+        return date.atStartOfDay(zone)
             .toInstant()
             .toEpochMilli()
     }

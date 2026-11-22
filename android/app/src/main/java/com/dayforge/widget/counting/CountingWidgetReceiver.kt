@@ -13,4 +13,10 @@ class CountingWidgetReceiver : GlanceAppWidgetReceiver() {
         if (appWidgetIds.isNotEmpty()) WidgetRefreshScheduler.request(context)
         super.onUpdate(context, appWidgetManager, appWidgetIds)
     }
+
+    override fun onDisabled(context: Context) {
+        WidgetRefreshScheduler.request(context)
+        super.onDisabled(context)
+    }
+
 }

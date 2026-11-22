@@ -21,6 +21,7 @@ import com.dayforge.data.repository.HabitRepository
 import app.cash.turbine.test
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -86,6 +87,28 @@ class EditHabitViewModelScheduleDaysTest {
     }
 
     // Test: getScheduleDays(Daily) returns 1
+    @Test fun repeatedDeletionIsAdmittedOnceAndImmediatelyDisablesSave() = runTest {
+        val id = habitDao.insert(HabitEntity(name = "single delete", description = "", habitType = HabitType.CHECK_IN,
+            iconResId = 0, colorHex = "#2196F3", schedule = HabitSchedule.Daily))
+        viewModel.loadHabit(id)
+        kotlinx.coroutines.withContext(Dispatchers.Default) {
+            kotlinx.coroutines.withTimeout(5_000) {
+                viewModel.uiState.first { !it.isLoading && it.habitId == id }
+            }
+        }
+        var callbacks = 0
+        // No coroutine dispatch is needed before the admission flag becomes visible.
+        repeat(20) { viewModel.deleteHabit { callbacks++ } }
+        kotlinx.coroutines.withContext(Dispatchers.Default) {
+            kotlinx.coroutines.withTimeout(5_000) {
+                viewModel.uiState.first { it.habitId == 0L && !it.isDeleting }
+            }
+        }
+        assertEquals(1, callbacks)
+        assertNull(habitDao.getHabitById(id))
+        assertEquals(1, database.syncOutboxDao().getAll().count { it.recordType == "habit" && it.action == "delete" })
+    }
+
     @Test
     fun getScheduleDays_daily_returns1() {
         val result = viewModel.getScheduleDays(HabitSchedule.Daily)

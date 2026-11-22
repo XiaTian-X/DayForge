@@ -122,6 +122,9 @@ class AccountIconRecoveryDatabaseTest {
 
     @Test fun freshEmptyReferenceAndAnalyzeAreReadOnlyAndAllEightCollectionsRemainExplicit() = runBlocking<Unit> {
         val context = metadata.capture(); database.openHelper.writableDatabase
+        val template = ReplicaIconReferenceSchema.read(app)
+        assertSame("Only fixed reference metadata is reused", template, ReplicaIconReferenceSchema.read(app))
+        assertEquals(5, template.version)
         val before = image(); val values = preferences.data.first()
         val proof = reader().read(context)
         assertFalse(proof.activationAuthorized); assertFalse(proof.hasUnresolvedTransfers)
@@ -129,6 +132,9 @@ class AccountIconRecoveryDatabaseTest {
         assertEquals(8, proof.contents.getValue("tables").jsonObject.size)
         assertTrue(proof.contents.getValue("tables").jsonObject.values.all { it.jsonArray.isEmpty() })
         assertEquals(64, proof.hash.length); reader().revalidate(proof)
+        val reobserved = reader().read(context)
+        assertNotSame("Actual source proof must always be rebuilt", proof, reobserved)
+        assertEquals(proof.contents, reobserved.contents); assertEquals(proof.hash, reobserved.hash)
         assertArrayEquals(before, image()); assertEquals(values, preferences.data.first())
         sql("ANALYZE")
         val analyzed = image(); reader().read(context)

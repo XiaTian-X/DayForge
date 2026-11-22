@@ -18,6 +18,32 @@ import org.junit.runner.RunWith
 /** Real file Room/auth/socket and original offline commands, not a service stopwatch test. */
 @RunWith(AndroidJUnit4::class)
 class NextRoundTimerStoreTest : NextCoreRequestFixture() {
+    private val lateFault = NextRoundTimerNativeFault()
+    init { storage.isolatedBuilder = { context -> buildDiagnosticFaultDatabase(context, lateFault) } }
+    private suspend fun exactMain() = db.withTransaction {
+        com.dayforge.data.local.CountCommandMigrationFixture.snapshot(db.openHelper.writableDatabase).contents
+    }
+
+    @Test fun listSnapshotSharesProofWithoutChangingChallengeAuthorityOrHistory() = runBlocking<Unit> {
+        val (http, _) = channel(::respond)
+        initialize(http)
+        val writer = NextTimerWriter(db, tokens, sessions)
+        val assertions = CountConsumerReadFixtureAssertions(db, tokens, sessions)
+        suspend fun compare() {
+            val expected = requireNotNull(writer.widgetSnapshot(timerHabit)).copy(startGuard = null)
+            assertEquals(expected, writer.statusSnapshot(timerHabit))
+            assertEquals(initial(timerHabit.uuid).head, expected.authority.challengeHead)
+        }
+        val before = assertions.capture()
+        compare()
+        val first = assertions.assertFirstReadOnly(before)
+        compare()
+        assertions.assertUnchanged(first)
+        val command = startRound()
+        CountTimerStartReadFixtureAssertions(db, tokens, sessions)
+            .verifyAfterKnownStart(first, command) { compare() }
+    }
+
     private val json = Json { encodeDefaults = true }
     private val policies = mutableMapOf<String, TimerStartPolicy>()
     private var returnedRestart = false
@@ -228,13 +254,18 @@ class NextRoundTimerStoreTest : NextCoreRequestFixture() {
                 TimerCommandEntity(commandId = id(22), sessionUuid = first.sessionUuid, sequence = 2, commandType = "pause",
                     occurredAt = millis + 30_000, expectedControlGeneration = 1, activeElapsedMillis = 30_000))
         }
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER timer_root_origin_fault AFTER INSERT ON next_request_origins WHEN NEW.requestId='${id(22)}' BEGIN UPDATE next_request_origins SET intentJson=replace(intentJson,'${id(4)}','${id(9)}') WHERE requestId='${creation.operationId}'; END")
-        rejected { pause() }; db.openHelper.writableDatabase.execSQL("DROP TRIGGER timer_root_origin_fault")
+        lateFault.installOnNextOpen(NextRoundTimerNativeFault.Mode.CREATION_ORIGIN, creation.operationId)
+        storage.reopen()
+        val before = exactMain()
+        lateFault.arm()
+        val failure = rejected { pause() }
+        lateFault.requireActualFaultAndEnd(failure)
+        assertEquals(before, exactMain())
         assertEquals(origin, db.nextRequestDao().origin(NEXT_OPERATION, creation.operationId))
         assertEquals(original, db.timeLogDao().getTimeLogByUuid(first.sessionUuid)); assertEquals(segments, db.timeLogDao().getTimerSegments(first.sessionUuid))
         assertEquals(listOf(first), db.timeLogDao().getPendingTimerCommands()); assertNull(db.nextRequestDao().origin(NEXT_TIMER, id(22)))
         assertEquals(creation, db.syncOutboxDao().getById(creation.id)); assertEquals(2, count("next_request_origins"))
-        storage.reopen(); pause()
+        storage.reopen(); assertEquals(before, exactMain()); pause()
         assertEquals(2, db.timeLogDao().getPendingTimerCommands().size)
         assertTrue(db.timeLogDao().getTimeLogByUuid(first.sessionUuid)!!.isPaused)
         assertEquals(origin, db.nextRequestDao().origin(NEXT_OPERATION, creation.operationId))
@@ -297,31 +328,50 @@ class NextRoundTimerStoreTest : NextCoreRequestFixture() {
         rejected { timers(http).accept(delivery.copy(challengeMetadata = null)) }
         val wrong = metadata(listOf(ChallengeBirth("timer_session", first.sessionUuid, restart().head)), true)
         rejected { timers(http).accept(delivery.copy(challengeMetadata = wrong)) }
-        val faults = listOf("BEFORE INSERT ON next_challenge_births BEGIN SELECT RAISE(IGNORE); END",
-            "AFTER INSERT ON next_challenge_births BEGIN UPDATE timelogs SET durationSeconds=77; END",
-            "AFTER INSERT ON next_acceptances BEGIN UPDATE next_challenge_state SET metadataHash='bad'; END",
-            "AFTER INSERT ON next_acceptances BEGIN UPDATE next_sync_state SET cursor=cursor+1,generation=generation+1; UPDATE next_challenge_state SET cursor=cursor+1,generation=generation+1; END")
+        val faults = listOf(NextRoundTimerNativeFault.Mode.IGNORE_BIRTH,
+            NextRoundTimerNativeFault.Mode.TIMER_VALUE, NextRoundTimerNativeFault.Mode.METADATA_HASH,
+            NextRoundTimerNativeFault.Mode.CURSOR)
         faults.forEach { fault ->
-            db.openHelper.writableDatabase.execSQL("CREATE TRIGGER round_timer_fault $fault")
-            rejected { timers(http).accept(delivery) }; db.openHelper.writableDatabase.execSQL("DROP TRIGGER round_timer_fault")
+            lateFault.installOnNextOpen(fault); storage.reopen()
+            val before = exactMain()
+            lateFault.arm()
+            val failure = rejected { timers(http).accept(delivery) }
+            lateFault.requireActualFaultAndEnd(failure)
+            assertEquals(before, exactMain())
             unaccepted(first); assertEquals(local, db.timeLogDao().getTimeLogByUuid(first.sessionUuid))
             assertEquals(0, count("next_challenge_births")); assertEquals(20L, merger(http).state(access(), true)!!.cursor)
         }
+        val beforeCold = exactMain()
+        storage.reopen(); assertEquals(beforeCold, exactMain())
         assertEquals(NextOperationAcceptance.COMMITTED, timers(http).accept(delivery))
     }
 
     @Test fun realDeferredFinalCommitFailureRollsBackBirthReceiptAndQueueAndColdRetrySucceeds() = runBlocking {
         val (http, _) = channel(::respond); initialize(http); val first = startRound()
         val delivery = timers(http).send(access(), first.commandId)!!
-        val sql = db.openHelper.writableDatabase
-        sql.execSQL("CREATE TABLE round_timer_guard(value TEXT REFERENCES next_challenge_rounds(roundUuid) DEFERRABLE INITIALLY DEFERRED)")
-        sql.execSQL("CREATE TRIGGER round_timer_commit AFTER INSERT ON next_acceptances BEGIN INSERT INTO round_timer_guard VALUES('" + id(999) + "'); END")
-        rejected { timers(http).accept(delivery) }; storage.reopen(); unaccepted(first)
-        assertEquals(0, count("round_timer_guard")); assertEquals(0, count("next_challenge_births"))
+        lateFault.installOnNextOpen(NextRoundTimerNativeFault.Mode.DEFERRED_COMMIT)
+        storage.reopen()
+        val before = exactMain()
+        val oldOwner = requireNotNull(com.dayforge.data.local.CountTrustRuntime.forDatabase(db))
+        lateFault.arm()
+        val failure = rejected { timers(http).accept(delivery) }
+        lateFault.requireActualFaultAndEnd(failure)
+        assertTrue(oldOwner.isRetired)
+        assertTrue(com.dayforge.data.local.CountTrustRetirementReason.UNKNOWN_END in oldOwner.retirementReasons)
+        storage.reopen()
+        assertEquals(before, exactMain())
+        assertNotSame(oldOwner, requireNotNull(com.dayforge.data.local.CountTrustRuntime.forDatabase(db)))
+        unaccepted(first)
+        // The native observer proved the actual writer's TEMP orphan and original engine
+        // COMMIT failure, not physical rollback on the old connection. This cold physical
+        // owner proves all main rows unchanged and has no old connection-local fault objects.
+        db.openHelper.writableDatabase.query("SELECT count(*) FROM temp.sqlite_master WHERE name='round_timer_guard'").use {
+            assertTrue(it.moveToFirst()); assertEquals(0L, it.getLong(0)); assertFalse(it.moveToNext())
+        }
+        assertEquals(0, count("next_challenge_births"))
         assertEquals(20L, merger(http).state(access(), true)!!.cursor)
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER round_timer_commit")
-        db.openHelper.writableDatabase.execSQL("DROP TABLE round_timer_guard")
-        storage.reopen(); assertEquals(NextOperationAcceptance.COMMITTED, timers(http).accept(delivery))
+        storage.reopen(); assertEquals(before, exactMain())
+        assertEquals(NextOperationAcceptance.COMMITTED, timers(http).accept(delivery))
     }
 
     @Test fun causalPlanAndSameSessionPredecessorsStillRequireOriginalAcceptedReceipts() = runBlocking {

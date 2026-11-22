@@ -34,7 +34,8 @@ class NestedHabitTreeBuilder @Inject constructor(
     private val oneTimeRepository: com.dayforge.data.repository.OneTimeRepository? = null,
     private val timerWriter: com.dayforge.data.repository.NextTimerWriter? = null,
     private val countHistoryReader: com.dayforge.data.repository.CountHistoryReader? = null,
-    private val checkHistoryReader: com.dayforge.data.repository.CheckHistoryReader? = null
+    private val checkHistoryReader: com.dayforge.data.repository.CheckHistoryReader? = null,
+    private val countActions: com.dayforge.data.repository.CountActionReader? = null
 ) {
 
     suspend fun build(
@@ -111,7 +112,22 @@ class NestedHabitTreeBuilder @Inject constructor(
                 hasFailed = com.dayforge.domain.service.FailureCheckerUtils.countHasFailed(child, history), countHistory = history)
         }
         if (child.habitType == HabitType.CHECK_IN && child.appearance != null) {
-            val history = requireNotNull(checkHistoryReader) { "CHECK_READER_REQUIRED" }.read(child)
+            val reader = requireNotNull(checkHistoryReader) { "CHECK_READER_REQUIRED" }
+            val time = java.time.ZonedDateTime.now()
+            val projection = reader.readProjection(child, time.toLocalDate(), time.zone, time.toInstant().toEpochMilli())
+            // The old activity-rate helper samples its current day/zone after the read. Its window
+            // depends on that day, not the sub-day instant; crossing that boundary retains the full path.
+            if (projection.today == DateTimeUtils.today() && projection.zoneId == ZoneId.systemDefault().id) {
+                val card = requireNotNull(projection.card)
+                val allowed = ScheduleValidator.isCheckInAllowedToday(child.schedule, child.createdAt)
+                return ChildHabitWithStats(child, projection.completedToday,
+                    projection.todayQuantity.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), projection.todayLatestCompletionId,
+                    card.currentStreak, card.bestStreak, activityRate = card.activityRate, isCheckInAllowed = allowed,
+                    nextCheckInDate = if (allowed) null else ScheduleValidator.getNextCheckInDate(child.schedule, child.createdAt),
+                    targetProgress = if (child.targetCycles == null) 0 else projection.qualifiedDayCount,
+                    hasFailed = projection.hasFailed, checkActionIdentity = projection.actionIdentity)
+            }
+            val history = reader.read(child, projection.today)
             val allowed = ScheduleValidator.isCheckInAllowedToday(child.schedule, child.createdAt)
             return ChildHabitWithStats(child, history.completedToday,
                 history.todayQuantity.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
@@ -122,10 +138,26 @@ class NestedHabitTreeBuilder @Inject constructor(
                     history.qualifiedDates.toList()), isCheckInAllowed = allowed,
                 nextCheckInDate = if (allowed) null else ScheduleValidator.getNextCheckInDate(child.schedule, child.createdAt),
                 targetProgress = if (child.targetCycles == null) 0 else history.qualifiedDates.size,
-                hasFailed = com.dayforge.domain.service.FailureCheckerUtils.checkHasFailed(child, history))
+                hasFailed = com.dayforge.domain.service.FailureCheckerUtils.checkHasFailed(child, history),
+                checkActionIdentity = history.actionIdentity)
         }
         if (child.habitType == HabitType.TIMER && child.appearance != null) {
-            val snapshot = requireNotNull(timerWriter).statusSnapshot(child)
+            val writer = requireNotNull(timerWriter)
+            val display = writer.statusDisplaySnapshot(child)
+                ?: return ChildHabitWithStats(child, false, 0, null, 0, 0, isCheckInAllowed = false)
+            val projection = display.projection
+            if (projection.today == DateTimeUtils.today() && projection.zoneId == ZoneId.systemDefault().id) {
+                val allowed = ScheduleValidator.isCheckInAllowedToday(child.schedule, child.createdAt)
+                return ChildHabitWithStats(child, projection.completedToday,
+                    projection.todaySeconds.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), null,
+                    projection.currentStreak, projection.bestStreak, activityRate = projection.activityRate,
+                    isCheckInAllowed = allowed,
+                    nextCheckInDate = if (allowed) null else ScheduleValidator.getNextCheckInDate(child.schedule, child.createdAt),
+                    targetProgress = if (child.targetCycles == null) 0 else projection.qualifiedDayCount,
+                    hasFailed = projection.hasFailed, timerAuthority = display.authority)
+            }
+            // Preserve the original complete calculation if the read crossed a day/zone boundary.
+            val snapshot = writer.statusSnapshot(child)
                 ?: return ChildHabitWithStats(child, false, 0, null, 0, 0, isCheckInAllowed = false)
             val history = snapshot.history
             val allowed = ScheduleValidator.isCheckInAllowedToday(child.schedule, child.createdAt)
@@ -222,6 +254,8 @@ class NestedHabitTreeBuilder @Inject constructor(
             },
             targetProgress = targetProgress,
             hasFailed = hasFailed,
+            countActionIdentity = if (child.habitType == HabitType.COUNTING && child.appearance == null)
+                countActions?.legacy(child) else null,
             timerAuthority = if (child.habitType == HabitType.TIMER && child.appearance != null)
                 requireNotNull(timerWriter).capture(child.id, child) else null
         )

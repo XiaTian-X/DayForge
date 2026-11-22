@@ -55,7 +55,7 @@ class NextReplicaFenceMigrationTest {
         table to rows(db, "SELECT $columns FROM `$table` ORDER BY rowid")
     }
     private fun ddl(db: SupportSQLiteDatabase) = rows(db, "SELECT type,name,tbl_name,sql FROM sqlite_master " +
-        "WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'room_%' AND name NOT LIKE 'replica_fence_%' AND tbl_name NOT IN " +
+        "WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'room_%' AND name NOT LIKE 'replica_fence_%' AND name NOT LIKE 'count_trust_dirty_%' AND tbl_name NOT IN ('count_trust_control','count_trust_root','count_trust_nodes','count_trust_routes','count_command_results','count_command_intents','count_command_status','count_command_recovery_roots','count_command_nodes') AND tbl_name NOT IN " +
         "('next_replica_fence') ORDER BY type,name")
     private fun seed(block: (SupportSQLiteDatabase) -> Unit = {}) {
         FrameworkSQLiteOpenHelperFactory().create(SupportSQLiteOpenHelper.Configuration.builder(context)
@@ -88,7 +88,7 @@ class NextReplicaFenceMigrationTest {
         assertEquals(35, entities.size)
         repeat(2) {
             val db = open()
-            assertEquals(18, db.version); assertEquals(before, snapshot(db)); assertEquals(structure, ddl(db))
+            assertEquals(20, db.version); assertEquals(before, snapshot(db)); assertEquals(structure, ddl(db))
             for (table in newTables) assertTrue(rows(db, "SELECT * FROM $table").isEmpty())
             assertEquals(listOf(listOf("3:" + currentHabitIdentity())), rows(db, "SELECT identity_hash FROM room_master_table WHERE id=42"))
             assertTrue(rows(db, "PRAGMA foreign_key_check").isEmpty())
@@ -116,7 +116,7 @@ class NextReplicaFenceMigrationTest {
             for (table in newTables) raw.rawQuery("SELECT name FROM sqlite_master WHERE tbl_name=?", arrayOf(table)).use { assertFalse(it.moveToFirst()) }
             raw.execSQL("ALTER TABLE unavailable_transmissions RENAME TO one_time_transmissions")
         }
-        assertEquals(18, open().version)
+        assertEquals(20, open().version)
     }
     @Test fun fakeVersion17IdentityCannotAcquireFenceCapability() {
         seed { it.execSQL("UPDATE room_master_table SET identity_hash='unproven' WHERE id=42") }

@@ -107,6 +107,7 @@ interface HabitMetricLinkDao {
         const val LINKED_METRIC_SNAPSHOT_QUERY = """
             SELECT links.habitId AS habitId,
                    metrics.id AS metricId,
+                   metrics.uuid AS metricUuid,
                    metrics.name AS metricName,
                    latest.value AS latestValue,
                    metrics.unit AS unit,

@@ -37,7 +37,8 @@ data class LegacyWidgetRestartClaim internal constructor(
     internal val deviceId: String?,
     val habitId: Long,
     val habitUuid: String,
-    internal val plan: JsonObject
+    internal val plan: JsonObject,
+    internal val storageId: String? = null
 ) {
     internal fun session() = LocalDataSession(AuthenticationSession(accountId, authenticationGeneration), serverInstanceId, syncEpoch)
     fun encode(): String = Json.encodeToString(this)
@@ -47,13 +48,13 @@ data class LegacyWidgetRestartClaim internal constructor(
             return decodeSyncReply(value.toByteArray(Charsets.UTF_8), 65_536, serializer(), {}).also {
                 require(it.habitId > 0 && listOf(it.accountId, it.authenticationGeneration, it.habitUuid).all(::isContractUuid))
                 require((it.serverInstanceId == null) == (it.syncEpoch == null))
-                listOfNotNull(it.serverInstanceId, it.syncEpoch, it.deviceId).forEach { id -> require(isContractUuid(id)) }
+                listOfNotNull(it.serverInstanceId, it.syncEpoch, it.deviceId, it.storageId).forEach { id -> require(isContractUuid(id)) }
             }
         }
-        internal fun displayed(habit: HabitEntity, access: LocalCoreWriteAccess) = LegacyWidgetRestartClaim(
+        internal fun displayed(habit: HabitEntity, access: LocalCoreWriteAccess, storageId: String? = null) = LegacyWidgetRestartClaim(
             access.session.authentication.userId, access.session.authentication.generation,
             access.session.serverInstanceId, access.session.syncEpoch, access.capturedDeviceId,
-            habit.id, habit.uuid, SyncV2Mapper.planNode(habit))
+            habit.id, habit.uuid, SyncV2Mapper.planNode(habit), storageId)
     }
 }
 
@@ -80,7 +81,9 @@ class WidgetRestartEntry @Inject internal constructor(
                     legacy.session() == access.session && legacy.deviceId == access.capturedDeviceId &&
                     legacy.plan == SyncV2Mapper.planNode(habit)) { "WIDGET_RESTART_STALE_DISPLAY" }
                 NextChallengeStore(database).requirePlainInTransaction()
-                HabitReactivationRequest(habit, null, access)
+                com.dayforge.data.local.LocalReplicaIdentity.requireInTransaction(database, legacy.storageId,
+                    "LEGACY_WIDGET_REPLICA_CHANGED")
+                HabitReactivationRequest(habit, null, access, legacy)
             } else {
                 require(habit.appearance != null && habit.completionPolicy == "recurring") { "SYNC_RESTART_PROFILE_REQUIRED" }
                 fact?.let {
@@ -91,6 +94,8 @@ class WidgetRestartEntry @Inject internal constructor(
                 val rounds = requireNotNull(ticket.rounds) { "SYNC_RESTART_PROFILE_REQUIRED" }
                 timer?.let {
                     it.validate()
+                    com.dayforge.data.local.LocalReplicaIdentity.requireInTransaction(database, it.storageId,
+                        "TIMER_REPLICA_CHANGED")
                     require(habit.habitType == HabitType.TIMER && it.session() == access.session &&
                         it.deviceId == access.capturedDeviceId && it.habitUuid == habit.uuid &&
                         it.sessionUuid == null && it.originalPlan == NextStructureMapper.writePlan(habit).toString() &&
@@ -107,7 +112,7 @@ class WidgetRestartEntry @Inject internal constructor(
         }
     }
 
-    internal suspend fun commitLegacy(habit: HabitEntity, captured: LocalCoreWriteAccess) {
+    internal suspend fun commitLegacy(habit: HabitEntity, captured: LocalCoreWriteAccess, identity: LegacyWidgetRestartClaim) {
         // Permission refresh may perform sync; never do it while owning the account mutex/Room.
         structuralGuard.requireAllowed()
         sessions.exclusive {
@@ -115,7 +120,15 @@ class WidgetRestartEntry @Inject internal constructor(
                 check(tokens.localCoreWriteAccess() == captured) { "WIDGET_RESTART_STALE_ACCOUNT" }
                 require(captured.capabilities == null || "structure.write" in captured.capabilities) { "SYNC_STRUCTURE_WRITE_DENIED" }
                 check(database.habitDao().getVisibleHabitById(habit.id) == habit) { "WIDGET_RESTART_STALE_DISPLAY" }
+                check(identity.habitId == habit.id && identity.habitUuid == habit.uuid &&
+                    identity.session() == captured.session && identity.deviceId == captured.capturedDeviceId) {
+                    "WIDGET_RESTART_STALE_DISPLAY"
+                }
+                com.dayforge.data.local.LocalReplicaIdentity.requireInTransaction(database, identity.storageId,
+                    "LEGACY_WIDGET_REPLICA_CHANGED")
                 clearLegacyHabitHistoryInTransaction(database, habit)
+                com.dayforge.data.local.LocalReplicaIdentity.requireInTransaction(database, identity.storageId,
+                    "LEGACY_WIDGET_REPLICA_CHANGED")
                 check(tokens.localCoreWriteAccess() == captured) { "WIDGET_RESTART_STALE_ACCOUNT" }
             }
         }

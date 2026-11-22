@@ -13,6 +13,7 @@ import com.dayforge.data.repository.MetricRepository
 import com.dayforge.util.NumericInputUtils
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -55,6 +56,7 @@ data class CreateMetricUiState(
     // Habit links (for 26-02)
     val availableHabits: List<HabitEntity> = emptyList(),
     val selectedHabitIds: Set<Long> = emptySet(),
+    val selectedHabitUuids: Map<Long, String> = emptyMap(),
 
     // Form state
     val isStepValid: Boolean = false,
@@ -77,15 +79,28 @@ data class CreateMetricUiState(
  * Manages two-step creation flow with validation and persistence.
  */
 @HiltViewModel
-class CreateMetricViewModel @Inject constructor(
+class CreateMetricViewModel private constructor(
     @param:ApplicationContext private val context: Context,
-    private val metricRepository: MetricRepository,
-    private val metricDao: MetricDao,
-    private val habitDao: HabitDao
+    private val fixedMetricRepository: MetricRepository?,
+    private val fixedReads: com.dayforge.data.repository.CreationReadRepository?,
+    private val databases: com.dayforge.data.local.DatabaseRuntimeHost?
 ) : ViewModel() {
+    constructor(context: Context, metricRepository: MetricRepository, metricDao: MetricDao, habitDao: HabitDao) :
+        this(context, metricRepository, com.dayforge.data.repository.CreationReadRepository(habitDao, metricDao), null)
+    @Inject internal constructor(@ApplicationContext context: Context, databases: com.dayforge.data.local.DatabaseRuntimeHost) :
+        this(context, null, null, databases)
+    private val metricRepository get() = databases?.boundGraph()?.metricRepository ?: requireNotNull(fixedMetricRepository)
+    private val reads get() = databases?.boundGraph()?.creationReadRepository ?: requireNotNull(fixedReads)
 
-    private val _uiState = MutableStateFlow(CreateMetricUiState())
+    private val expiredMessage = context.getString(R.string.database_view_expired)
+    private val _uiState = com.dayforge.ui.CreationState(databases, CreateMetricUiState(),
+        { CreateMetricUiState(errorMessage = expiredMessage) })
     val uiState: StateFlow<CreateMetricUiState> = _uiState.asStateFlow()
+
+    internal fun beginSource(input: com.dayforge.data.local.DatabaseCreationInput) {
+        _uiState.bind(input)
+        input.authority?.let(::beginCreation)
+    }
 
     fun beginCreation(authority: com.dayforge.data.repository.ObjectCreationAuthority) {
         val current = _uiState.value
@@ -114,12 +129,14 @@ class CreateMetricViewModel @Inject constructor(
      * Lazy loading to avoid database query on ViewModel init.
      */
     fun loadHabitsIfNeeded() {
-        if (hasLoadedHabits) return
+        if (!_uiState.isCurrent() || hasLoadedHabits) return
         hasLoadedHabits = true
 
         viewModelScope.launch {
-            habitDao.getAllHabits().collect { habits ->
-                _uiState.value = _uiState.value.copy(availableHabits = habits)
+            _uiState.withGraph(com.dayforge.data.local.DatabaseRuntimeHost.Work.OBSERVATION) {
+                reads.habits().collect { habits ->
+                    _uiState.value = _uiState.value.copy(availableHabits = habits)
+                }
             }
         }
     }
@@ -134,7 +151,7 @@ class CreateMetricViewModel @Inject constructor(
             // Check for duplicate name before proceeding to step 2
             viewModelScope.launch {
                 val trimmedName = currentState.name.trim()
-                val existingMetric = metricDao.getMetricByName(trimmedName)
+                val existingMetric = _uiState.withGraph { reads.metricByName(trimmedName) }
                 if (existingMetric != null) {
                     _uiState.value = _uiState.value.copy(showDuplicateDialog = true)
                 } else {
@@ -236,14 +253,19 @@ class CreateMetricViewModel @Inject constructor(
      * Toggle habit selection for metric linking.
      * Per D-09: 0 selections is valid (metric is independent)
      */
-    fun toggleHabitSelection(habitId: Long) {
+    fun toggleHabitSelection(habitId: Long, expectedUuid: String? = null) {
+        if (!_uiState.isCurrent()) return
+        if (databases != null) require(expectedUuid != null) { "DATABASE_EPOCH_INPUT_REQUIRED" }
         val currentSelection = _uiState.value.selectedHabitIds
         val newSelection = if (habitId in currentSelection) {
             currentSelection - habitId
         } else {
             currentSelection + habitId
         }
-        _uiState.value = _uiState.value.copy(selectedHabitIds = newSelection)
+        val identities = if (habitId in newSelection && expectedUuid != null)
+            _uiState.value.selectedHabitUuids + (habitId to expectedUuid)
+            else _uiState.value.selectedHabitUuids - habitId
+        _uiState.value = _uiState.value.copy(selectedHabitIds = newSelection, selectedHabitUuids = identities)
     }
 
     // ========== Dialog Toggles ==========
@@ -296,6 +318,7 @@ class CreateMetricViewModel @Inject constructor(
     // ========== Save ==========
 
     fun saveMetric() {
+        if (!_uiState.isCurrent()) return
         // Prevent double-click
         if (isSavingInProgress || _uiState.value.savedMetricId != null) return
 
@@ -307,17 +330,9 @@ class CreateMetricViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                // Check for duplicate name
+                _uiState.withGraph {
+                // The repository checks the name in the same transaction as rows and links.
                 val trimmedName = currentState.name.trim()
-                val existingMetric = metricDao.getMetricByName(trimmedName)
-                if (existingMetric != null) {
-                    _uiState.value = _uiState.value.copy(
-                        isSaving = false,
-                        showDuplicateDialog = true
-                    )
-                    isSavingInProgress = false
-                    return@launch
-                }
 
                 // Pre-generate UUID for sync (D-08)
                 val metricUuid = java.util.UUID.randomUUID().toString()
@@ -338,7 +353,8 @@ class CreateMetricViewModel @Inject constructor(
                     appearance = currentState.appearance
                 )
 
-                val metricId = metricRepository.createMetric(metric, currentState.selectedHabitIds, currentState.creationAuthority)
+                val metricId = metricRepository.createMetric(metric, currentState.selectedHabitIds, currentState.creationAuthority,
+                    expectedHabitUuids = currentState.selectedHabitUuids.takeIf { databases != null })
 
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,
@@ -347,6 +363,7 @@ class CreateMetricViewModel @Inject constructor(
                     showColorPicker = false,
                     showUnitPicker = false
                 )
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 _uiState.value = _uiState.value.copy(isSaving = false)
                 throw e

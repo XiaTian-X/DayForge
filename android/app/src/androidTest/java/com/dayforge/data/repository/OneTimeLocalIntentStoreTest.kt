@@ -45,6 +45,10 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class OneTimeLocalIntentStoreTest {
     @get:Rule val rule = PhysicalDatabaseRule()
+    private val faults = OnceExistingFixtureFault()
+    init { rule.isolatedBuilder = { context ->
+        com.dayforge.data.local.HabitDatabaseProvider.build(context, rule.queryCallback, nativeFactory = faults)
+    } }
     private val sessions = AccountSessionCoordinator()
     private lateinit var tokens: TokenManager
     private lateinit var preferences: PreferencesManager
@@ -152,21 +156,20 @@ class OneTimeLocalIntentStoreTest {
     @Test fun outboxFailureRollsBackFactAndSuppressionFlagThenOriginalRequestCanRetry() = runBlocking {
         val snapshot = store().read(habit.uuid)
         val request = command(snapshot.queue.optimisticState)
-        db.openHelper.writableDatabase.execSQL("""
-            CREATE TRIGGER fail_once_outbox BEFORE INSERT ON sync_outbox
-            WHEN NEW.recordType = 'one_time_completion'
-            BEGIN SELECT RAISE(ABORT, 'intent write unavailable'); END
-        """.trimIndent())
+        faults.arm(OnceExistingFixtureFault.Kind.LOCAL_OUTBOX_ABORT,
+            OnceExistingFixtureFault.Targets(requestId = request.pending.operationId, activityUuid = habit.uuid))
         val failure = runCatching { store().append(snapshot.session, request) }.exceptionOrNull()
         assertTrue(failure?.message.orEmpty().contains("intent write unavailable"))
-        rule.reopen()
+        faults.requireFailure(requireNotNull(failure))
+        rule.reopen(); assertTrue(db.openHelper.writableDatabase.isOpen)
+        faults.requireColdRollback()
         assertEquals(0, db.completionDao().countAll())
         assertEquals(0, db.syncOutboxDao().count())
         assertEquals(habit, db.habitDao().getHabitById(habit.id))
         db.openHelper.readableDatabase.query("SELECT suppressOutbox FROM sync_control WHERE id=1").use {
             assertTrue(it.moveToFirst()); assertEquals(0, it.getInt(0))
         }
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_once_outbox")
+        faults.clear()
         assertFalse(store().append(snapshot.session, request).alreadyStored)
         assertEquals(request.pending.operationId, db.syncOutboxDao().getAll().single().operationId)
     }

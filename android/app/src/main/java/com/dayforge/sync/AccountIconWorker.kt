@@ -33,15 +33,17 @@ class AccountIconWorker internal constructor(context: Context, params: WorkerPar
     @InstallIn(SingletonComponent::class)
     interface Dependencies {
         fun materials(): AccountIconTransferService
-        fun replica(): com.dayforge.data.repository.ReplicaPresentationRepository
+        fun iconWorkerAccess(): AccountIconWorkerAccess
     }
 
     internal companion object {
         const val STATUS = "material_status"
         /** Same entry as the default worker: no material runtime/DB/file/network initialization on a closed replica. */
         suspend fun synchronize(dependencies: Dependencies): IconMaterialOutcome {
-            if (!dependencies.replica().isOrdinaryOpen()) return IconMaterialOutcome.ATTENTION
-            return dependencies.materials().synchronize()
+            return try { dependencies.iconWorkerAccess().synchronize(dependencies::materials) }
+            catch (_: com.dayforge.data.local.DatabaseRuntimeHost.SessionPreparationUnavailable) {
+                IconMaterialOutcome.ATTENTION
+            }
         }
     }
 }

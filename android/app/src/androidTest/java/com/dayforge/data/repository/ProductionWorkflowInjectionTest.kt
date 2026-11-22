@@ -135,7 +135,9 @@ class ProductionWorkflowInjectionTest {
         assertTrue(requireNotNull(recurring.countHistory).completions.isEmpty())
         assertEquals(beforeRead, db.syncOutboxDao().getAll())
         val beforeMidnight = db.habitDao().getAllHabitsOnce()
-        com.dayforge.di.WidgetEntryPoint.from(app).activityRateRefresher().refresh()
+        com.dayforge.di.WidgetEntryPoint.withGraph(app) {
+            com.dayforge.di.WidgetEntryPoint.from(app).activityRateRefresher().refresh()
+        }
         assertEquals(beforeMidnight, db.habitDao().getAllHabitsOnce()) // typed plans are not cache targets
         assertEquals(beforeRead, db.syncOutboxDao().getAll())
         val root = requireNotNull(db.habitDao().getHabitByUuid(goal.id))
@@ -174,7 +176,13 @@ class ProductionWorkflowInjectionTest {
     }
 
     @Test fun realTimerFocusAndSummaryWidgetsReadOriginalPolicyAndWithholdCorruptDisplay() = runBlocking<Unit> {
-        assertSame(timerWriter, com.dayforge.di.WidgetEntryPoint.from(app).timerWriter())
+        com.dayforge.di.WidgetEntryPoint.withGraph(app) {
+            val access = com.dayforge.di.WidgetEntryPoint.from(app)
+            // The production gateway owns one graph per operation; raw test injection is an
+            // explicitly separate fixed fixture, not a process-global production writer.
+            assertSame(access.bound().nextTimerWriter, access.timerWriter())
+            assertSame(access.timerWriter(), access.timerWriter())
+        }
         val now = java.time.ZonedDateTime.now()
         val rowId = habits.createHabit("Hilt frozen widget timer", "", HabitType.TIMER, 0, "#123456", HabitSchedule.Daily,
             targetValue = 1, isCountdown = true, bestTime = (now.hour * 60 + now.minute).toLong(),

@@ -162,11 +162,11 @@ class TimerTransitionDaoTest {
         }.exceptionOrNull()
         assertTrue(error is android.database.sqlite.SQLiteConstraintException)
         assertTrue(error?.message.orEmpty().contains("test stop insert failure"))
+        database.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_test_stop")
         reopen()
         assertEquals(original, dao.getById(id))
         assertEquals(segments, dao.getTimerSegments(session))
         assertEquals(commands, dao.getPendingTimerCommands())
-        database.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_test_stop")
         dao.finishTimerAndQueue(id, 20000, 10, 0, 3, 10000,
             command(session, 2, "stop", 20000, 10000), false)
         reopen()

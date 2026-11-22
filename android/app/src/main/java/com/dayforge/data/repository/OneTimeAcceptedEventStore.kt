@@ -53,14 +53,17 @@ internal class OneTimeAcceptedEventStore(
     /** Only the causal head is sendable, even if a pull has already seen its fact. */
     suspend fun prepare(activityUuid: String): PreparedOneTimeSubmission? = sessions.exclusive {
         val context = access(write = true)
-        database.withTransaction { NextChallengeStore(database).requirePlainInTransaction(); prepareInTransaction(context, activityUuid) }
+        database.withTransaction { NextChallengeStore(database).requirePlainInTransaction()
+            withTrustInTransaction { trust -> prepareInTransaction(context, activityUuid, trust = trust) }
+        }
     }
 
     /** The durable HTTP journal is the attempt proof; its source row must remain byte-identical. */
     internal suspend fun prepareInTransaction(context: OneTimeSyncContext, activityUuid: String,
-        journalled: Boolean = false): PreparedOneTimeSubmission? {
+        journalled: Boolean = false, trust: OnceTrustAck? = null): PreparedOneTimeSubmission? {
         check(database.inTransaction())
         access(context, write = true)
+        trust?.affect(activityUuid)
         local.readInTransaction(activityUuid, context.session)
         val row = outbox.getActivityIntents(activityUuid).firstOrNull() ?: return null
         if (row.deadLetteredAt != null) throw OneTimeLocalException(OneTimeLocalException.Reason.PENDING_REJECTED)
@@ -70,24 +73,37 @@ internal class OneTimeAcceptedEventStore(
         if (binding == null) {
             // No guessing the first device for an old/partially restored attempted operation.
             require(row.attemptedAt == null && row.attemptCount == 0)
-            receipts.insertTransmission(OneTimeTransmissionEntity(operation.operationId,
+            val inserted = OneTimeTransmissionEntity(operation.operationId,
                 context.session.authentication.userId, requireNotNull(context.session.serverInstanceId),
-                requireNotNull(context.session.syncEpoch), context.deviceId, json.encodeToString(operation)))
+                requireNotNull(context.session.syncEpoch), context.deviceId, json.encodeToString(operation))
+            receipts.insertTransmission(inserted)
+            trust?.let { it.record("one_time_transmissions", null, it.binding(inserted)) }
         } else {
             validateTransmission(binding, context, operation, sending = true)
             require(binding.rejectionJson == null && row.attemptedAt != null && row.attemptCount > 0)
         }
-        if (!journalled) outbox.markPrepared(row.id, row.wireEntityUuid, row.action, requireNotNull(row.payloadJson),
-            row.baseRevision, row.basePayloadJson, now())
+        if (!journalled) {
+            val before = trust?.before("sync_outbox", "id=?", arrayOf(row.id))
+            val preparedAt = now()
+            outbox.markPrepared(row.id, row.wireEntityUuid, row.action, requireNotNull(row.payloadJson),
+                row.baseRevision, row.basePayloadJson, preparedAt)
+            trust?.let { it.record("sync_outbox", requireNotNull(before), it.changed(before, mapOf(
+                "wireEntityUuid" to row.wireEntityUuid, "action" to row.action, "payloadJson" to row.payloadJson,
+                "baseRevision" to row.baseRevision, "basePayloadJson" to row.basePayloadJson,
+                "attemptedAt" to preparedAt, "attemptCount" to row.attemptCount.toLong() + 1L,
+                "lastError" to null, "errorCode" to null))) }
+        }
         return PreparedOneTimeSubmission(context, operation)
     }
 
     suspend fun acknowledge(prepared: PreparedOneTimeSubmission, result: NextSyncOperationResult): OneTimeLocalSnapshot = sessions.exclusive {
-        database.withTransaction { NextChallengeStore(database).requirePlainInTransaction(); requireNotNull(acknowledgeInTransaction(prepared, result)) }
+        database.withTransaction { NextChallengeStore(database).requirePlainInTransaction()
+            withTrustInTransaction { trust -> requireNotNull(acknowledgeInTransaction(prepared, result, trust = trust)) }
+        }
     }
 
     internal suspend fun acknowledgeInTransaction(prepared: PreparedOneTimeSubmission, result: NextSyncOperationResult,
-        journalled: Boolean = false, deletedParent: Boolean = false): OneTimeLocalSnapshot? {
+        journalled: Boolean = false, deletedParent: Boolean = false, trust: OnceTrustAck? = null): OneTimeLocalSnapshot? {
         check(database.inTransaction())
         access(prepared.context)
         require(result.status in setOf("applied", "already_applied"))
@@ -97,6 +113,7 @@ internal class OneTimeAcceptedEventStore(
         val fact = OneTimeServerFact(requireNotNull(result.entity), requireNotNull(result.revision))
         fact.requireOriginal(prepared.operation, prepared.context.deviceId)
         val activity = fact.proof.activityUuid
+        trust?.affect(activity)
         if (!deletedParent) local.readInTransaction(activity, prepared.context.session)
         requireReceipt(prepared.operation, activity)
         val binding = requireNotNull(receipts.transmission(prepared.operation.operationId))
@@ -116,22 +133,30 @@ internal class OneTimeAcceptedEventStore(
         if (deletedParent) {
             require(habits.getHabitByUuid(activity) == null)
             val shadow = outbox.getState("activity_event", fact.proof.publicId)
-            if (shadow == null) outbox.upsertState(SyncEntityStateEntity("activity_event", fact.proof.publicId,
-                fact.revision, payloadJson = fact.payload.toString(), payloadHash = syncPayloadHash(fact.payload.toString()), updatedAt = now()))
+            if (shadow == null) {
+                val inserted = SyncEntityStateEntity("activity_event", fact.proof.publicId,
+                    fact.revision, payloadJson = fact.payload.toString(), payloadHash = syncPayloadHash(fact.payload.toString()), updatedAt = now())
+                outbox.upsertState(inserted)
+                trust?.let { it.record("sync_entity_state", null, it.shadow(inserted)) }
+            }
             else require(!shadow.deleted && shadow.revision == fact.revision &&
                 shadow.payloadJson?.let { Json.parseToJsonElement(it) } == fact.payload)
-        } else merge(fact, prepared.context)
+        } else merge(fact, prepared.context, trust)
+        val beforeQueue = trust?.before("sync_outbox", "id=?", arrayOf(row.id))
         outbox.deleteById(row.id)
+        trust?.record("sync_outbox", requireNotNull(beforeQueue), null)
         return if (deletedParent) null else local.readInTransaction(activity, prepared.context.session)
     }
 
     /** Only an explicit, bound per-operation result quarantines a causal suffix. */
     suspend fun reject(prepared: PreparedOneTimeSubmission, result: NextSyncOperationResult): OneTimeLocalSnapshot = sessions.exclusive {
-        database.withTransaction { NextChallengeStore(database).requirePlainInTransaction(); requireNotNull(rejectInTransaction(prepared, result)) }
+        database.withTransaction { NextChallengeStore(database).requirePlainInTransaction()
+            withTrustInTransaction { trust -> requireNotNull(rejectInTransaction(prepared, result, trust = trust)) }
+        }
     }
 
     internal suspend fun rejectInTransaction(prepared: PreparedOneTimeSubmission, result: NextSyncOperationResult,
-        journalled: Boolean = false, deletedParent: Boolean = false): OneTimeLocalSnapshot? {
+        journalled: Boolean = false, deletedParent: Boolean = false, trust: OnceTrustAck? = null): OneTimeLocalSnapshot? {
         check(database.inTransaction())
         access(prepared.context)
         validateTaskResultBinding(prepared.operation, result)
@@ -142,6 +167,7 @@ internal class OneTimeAcceptedEventStore(
             require(it is kotlinx.serialization.json.JsonPrimitive && it.isString)
             it.content
         }
+        trust?.affect(activity)
         if (!deletedParent) local.readInTransaction(activity, prepared.context.session)
         requireReceipt(prepared.operation, activity)
         val binding = requireNotNull(receipts.transmission(prepared.operation.operationId))
@@ -158,8 +184,16 @@ internal class OneTimeAcceptedEventStore(
                 row.deadLetteredAt != null && row.errorCode == result.errorCode)
         } else {
             require(row.deadLetteredAt == null)
+            val beforeBinding = trust?.before("one_time_transmissions", "operationId=?", arrayOf(row.operationId))
+            val beforeQueue = trust?.before("sync_outbox", "id=?", arrayOf(row.id))
             check(receipts.recordRejection(row.operationId, serialized) == 1)
-            outbox.markDeadLetter(row.id, result.errorCode, result.message ?: requireNotNull(result.errorCode), now())
+            trust?.let { it.record("one_time_transmissions", requireNotNull(beforeBinding),
+                it.changed(beforeBinding, mapOf("rejectionJson" to serialized))) }
+            val rejectedAt = now()
+            val message = result.message ?: requireNotNull(result.errorCode)
+            outbox.markDeadLetter(row.id, result.errorCode, message, rejectedAt)
+            trust?.let { it.record("sync_outbox", requireNotNull(beforeQueue), it.changed(beforeQueue,
+                mapOf("errorCode" to result.errorCode, "lastError" to message, "deadLetteredAt" to rejectedAt))) }
         }
         // Do not fabricate the conflict head as a fact or alter any frozen successor/metric.
         return if (deletedParent) null else local.readInTransaction(activity, prepared.context.session)
@@ -174,12 +208,12 @@ internal class OneTimeAcceptedEventStore(
     suspend fun apply(context: OneTimeSyncContext, changes: List<SyncV2Change>) = sessions.exclusive {
         access(context)
         database.withTransaction {
-            applyInTransaction(context, changes)
+            withTrustInTransaction { trust -> applyInTransaction(context, changes, trust = trust) }
         }
     }
 
     internal suspend fun applyInTransaction(context: OneTimeSyncContext, changes: List<SyncV2Change>,
-        contiguous: Boolean = false) {
+        contiguous: Boolean = false, trust: OnceTrustAck? = null) {
         check(database.inTransaction())
         access(context)
         val activities = linkedSetOf<String>()
@@ -194,8 +228,11 @@ internal class OneTimeAcceptedEventStore(
                         fact.proof.oneTime.expectedHeadEventUuid == before.confirmed.headEventUuid) { "TASK_HISTORY_INCOMPLETE" }
                 }
             }
-            if (activities.add(fact.proof.activityUuid)) local.readInTransaction(fact.proof.activityUuid, context.session)
-            merge(fact, context)
+            if (activities.add(fact.proof.activityUuid)) {
+                trust?.affect(fact.proof.activityUuid)
+                local.readInTransaction(fact.proof.activityUuid, context.session)
+            }
+            merge(fact, context, trust)
         }
         activities.forEach { local.readInTransaction(it, context.session) }
     }
@@ -220,6 +257,7 @@ internal class OneTimeAcceptedEventStore(
             it.copy(payload = Json.parseToJsonElement(it.payload.toString()).jsonObject)
         }, oneTimeCheckpoints = response.oneTimeCheckpoints.toList())
         database.withTransaction {
+            com.dayforge.data.local.CountTrustRuntime.forDatabase(database)?.prepareOutboxAllocatorsForWrite(database)
             NextStructureStore(database).restoreInTransaction(snapshot.changes.filter {
                 it.entityType == "plan_node" || it.entityType == "metric"
             })
@@ -231,7 +269,10 @@ internal class OneTimeAcceptedEventStore(
     suspend fun restoreAcceptedData(context: OneTimeSyncContext, response: NextSyncBootstrapResponse): List<OneTimeLocalSnapshot> = sessions.exclusive {
         access(context)
         val snapshot = freeze(response)
-        database.withTransaction { restoreAcceptedDataInTransaction(context, snapshot) }
+        database.withTransaction {
+            com.dayforge.data.local.CountTrustRuntime.forDatabase(database)?.prepareOutboxAllocatorsForWrite(database)
+            restoreAcceptedDataInTransaction(context, snapshot)
+        }
     }
 
     /** Only a caller holding the authenticated context can observe its bound recovery stage. */
@@ -282,6 +323,7 @@ internal class OneTimeAcceptedEventStore(
             // must not reapply an old snapshot over later facts or consume a still-unknown request.
             if (current == accepted) return@withTransaction current
             if (current != expected) throw OneTimeLocalException(OneTimeLocalException.Reason.RECOVERY_STATE_CHANGED)
+            com.dayforge.data.local.CountTrustRuntime.forDatabase(database)?.prepareOutboxAllocatorsForWrite(database)
             restoreAcceptedDataInTransaction(context, snapshot)
             val countDays = NextCountDayStore(database).proofs(snapshot.changes)
             check(dao.update(accepted) == 1)
@@ -357,6 +399,7 @@ internal class OneTimeAcceptedEventStore(
                 }
                 parent to before
             }
+            com.dayforge.data.local.CountTrustRuntime.forDatabase(database)?.prepareOutboxAllocatorsForWrite(database)
             withoutLegacyOutbox {
                 checkpoints.forEach { (activity, checkpoint) ->
                     val (parent, before) = parents.getValue(activity)
@@ -408,7 +451,7 @@ internal class OneTimeAcceptedEventStore(
         ) throw OneTimeLocalException(OneTimeLocalException.Reason.TRANSMISSION_CONTEXT_CHANGED)
     }
 
-    private suspend fun merge(fact: OneTimeServerFact, context: OneTimeSyncContext) {
+    private suspend fun merge(fact: OneTimeServerFact, context: OneTimeSyncContext, trust: OnceTrustAck? = null) {
         val proof = fact.proof
         val before = local.readInTransaction(proof.activityUuid, context.session)
         val after = mergeOneTimeProjection(OneTimeProjection(proof.activityUuid, before.confirmed),
@@ -429,16 +472,24 @@ internal class OneTimeAcceptedEventStore(
                 ) throw OneTimeTransitionException("TASK_STATE_DIVERGED")
             }
         }
-        withoutLegacyOutbox {
-            persistFact(fact, context, habit)
-            if (after.state != before.confirmed) check(habits.updateForSync(habit.copy(
-                oneTimeConfirmedVersion = after.state.version, oneTimeConfirmedHeadEventUuid = after.state.headEventUuid,
-                oneTimeConfirmedCompletionEventUuid = after.state.completionEventUuid)) == 1)
+        withoutLegacyOutbox(trust) {
+            persistFact(fact, context, habit, trust)
+            if (after.state != before.confirmed) {
+                val old = trust?.before("habits", "id=?", arrayOf(habit.id))
+                check(habits.updateForSync(habit.copy(
+                    oneTimeConfirmedVersion = after.state.version, oneTimeConfirmedHeadEventUuid = after.state.headEventUuid,
+                    oneTimeConfirmedCompletionEventUuid = after.state.completionEventUuid)) == 1)
+                trust?.let { it.record("habits", requireNotNull(old), it.changed(old, mapOf(
+                    "oneTimeConfirmedVersion" to after.state.version,
+                    "oneTimeConfirmedHeadEventUuid" to after.state.headEventUuid,
+                    "oneTimeConfirmedCompletionEventUuid" to after.state.completionEventUuid))) }
+            }
         }
     }
 
     /** Shared immutable body/source validation; callers validate either the full chain or incremental edges. */
-    private suspend fun persistFact(fact: OneTimeServerFact, context: OneTimeSyncContext, habit: HabitEntity) {
+    private suspend fun persistFact(fact: OneTimeServerFact, context: OneTimeSyncContext, habit: HabitEntity,
+        trust: OnceTrustAck? = null) {
         val proof = fact.proof
         require(proof.activityUuid == habit.uuid)
         val shadow = outbox.getState("activity_event", proof.publicId)
@@ -457,9 +508,21 @@ internal class OneTimeAcceptedEventStore(
         val incoming = completion(fact, habit)
         if (existing != null) require(existing.copy(id = 0, createdAt = incoming.createdAt,
                 timeMetadataSource = "server", date = incoming.date) == incoming)
-        if (existing == null) check(facts.insertForSync(incoming) > 0)
-        if (shadow == null) outbox.upsertState(SyncEntityStateEntity("activity_event", proof.publicId,
-            fact.revision, payloadJson = fact.payload.toString(), payloadHash = syncPayloadHash(fact.payload.toString()), updatedAt = now()))
+        if (existing == null) {
+            trust?.let {
+                val expectedId = OnceTrustEvidence.nextId(database, "completions")
+                if (expectedId == null) it.decline()
+                else it.record("completions", null, it.completion(incoming.copy(id = expectedId)))
+            }
+            val inserted = facts.insertForSync(incoming)
+            check(inserted > 0)
+        }
+        if (shadow == null) {
+            val inserted = SyncEntityStateEntity("activity_event", proof.publicId,
+                fact.revision, payloadJson = fact.payload.toString(), payloadHash = syncPayloadHash(fact.payload.toString()), updatedAt = now())
+            outbox.upsertState(inserted)
+            trust?.let { it.record("sync_entity_state", null, it.shadow(inserted)) }
+        }
     }
 
     /** Recheck local projection and immutable fact after the outer receipt's writes/triggers. */
@@ -483,12 +546,31 @@ internal class OneTimeAcceptedEventStore(
             oneTimeExpectedHeadEventUuid = proof.oneTime.expectedHeadEventUuid, oneTimeRevertsEventUuid = proof.oneTime.revertsEventUuid)
     }
 
-    private suspend fun withoutLegacyOutbox(block: suspend () -> Unit) {
+    private suspend fun withoutLegacyOutbox(trust: OnceTrustAck? = null, block: suspend () -> Unit) {
         check(database.inTransaction())
         val sql = database.openHelper.writableDatabase
         require(sql.query("SELECT suppressOutbox FROM sync_control WHERE id=1").use { it.moveToFirst() && it.getInt(0) == 0 })
+        val before = trust?.before("sync_control", "id=?", arrayOf(1))
+        val suppressed = trust?.let { it.changed(requireNotNull(before), mapOf("suppressOutbox" to 1)) }
         sql.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
+        trust?.record("sync_control", before, suppressed)
         block()
         sql.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
+        trust?.record("sync_control", suppressed, before)
+    }
+
+    /** Standalone fact APIs own their original outer transaction. Request ACK/PULL callers
+     * instead pass their adapter to the inner method and seal only after their own final tail. */
+    private suspend fun <T> withTrustInTransaction(block: suspend (OnceTrustAck?) -> T): T {
+        check(database.inTransaction())
+        val kernel = CountTrustKernel(database, tokens, sessions)
+        val access = if (com.dayforge.data.local.CountTrustRuntime.forDatabase(database) == null) null
+            else tokens.localCoreWriteAccess()
+        return kernel.withOnceCapture(access) { capture ->
+            val trust = OnceTrustAck.create(database, capture)
+            val value = block(trust)
+            kernel.finishOnce(capture, trust?.freeze())
+            value
+        }
     }
 }

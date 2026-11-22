@@ -23,6 +23,9 @@ import org.junit.runner.RunWith
 /** Runtime-level chains reuse the physical Room/DataStore/actual socket fixture. */
 @RunWith(AndroidJUnit4::class)
 class NextSyncRuntimeTest : NextCoreRequestFixture() {
+    private val deferredCommitFault = NextSyncDeferredCommitFault()
+    private val faults = OnceExistingFixtureFault(deferredCommitFault)
+    init { storage.isolatedBuilder = { context -> buildDiagnosticFaultDatabase(context, faults, storage.queryCallback) } }
     private val json = Json { encodeDefaults = true }
     private fun runtime(http: NextSyncHttp) = NextSyncRuntime(db, tokens, sessions, http, preferences)
     private fun merger(http: NextSyncHttp): NextSyncMergeStore {
@@ -146,11 +149,9 @@ class NextSyncRuntimeTest : NextCoreRequestFixture() {
     @Test fun cursorAbortIgnoreAndLateCacheMutationRollBackWholePageThenExactRetryWorks() = runBlocking {
         register(); val (http, _) = channel(); val store = merger(http); val state = initial(http)
         val page = NextSyncPullResponse(listOf(renamed(21, 2, "Must commit together")), 21, false, time)
-        for (body in listOf("SELECT RAISE(ABORT,'cursor failed');", "SELECT RAISE(IGNORE);",
-            "UPDATE metrics SET name='late corruption' WHERE uuid='${metric.uuid}';")) {
-            db.openHelper.writableDatabase.execSQL("CREATE TRIGGER fail_cursor BEFORE UPDATE ON next_sync_state BEGIN $body END")
-            rejected { store.page(access(), state, page) }
-            db.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_cursor")
+        for (kind in listOf(OnceExistingFixtureFault.Kind.CURSOR_ABORT, OnceExistingFixtureFault.Kind.CURSOR_IGNORE, OnceExistingFixtureFault.Kind.CURSOR_METRIC)) {
+            faults.arm(kind, OnceExistingFixtureFault.Targets(metricUuid = metric.uuid))
+            faults.requireFailure(rejected { store.page(access(), state, page) }); faults.clear()
             assertEquals(state, store.state(access()))
             assertEquals(metric.name, db.metricDao().getMetricByUuid(metric.uuid)!!.name)
             assertEquals(1L, db.syncOutboxDao().getState("metric", metric.uuid)!!.revision)
@@ -168,11 +169,11 @@ class NextSyncRuntimeTest : NextCoreRequestFixture() {
         val day = requireNotNull(db.countDayDao().get(habit.id, "2026-10-06"))
         val origin = originalIntent(first)
         val page = NextSyncPullResponse(listOf(renamed(21, 2, "Together with count rule")), 21, false, time)
-        for (fault in listOf("UPDATE count_days SET targetValue=11;", "DELETE FROM count_days;")) {
-            db.openHelper.writableDatabase.execSQL("CREATE TRIGGER damage_day_cursor AFTER UPDATE ON next_sync_state BEGIN $fault END")
-            rejected { merger(http).page(access(), state, page) }
-            db.openHelper.writableDatabase.execSQL("DROP TRIGGER damage_day_cursor")
-            storage.reopen()
+        for (kind in listOf(OnceExistingFixtureFault.Kind.CURSOR_DAY_UPDATE, OnceExistingFixtureFault.Kind.CURSOR_DAY_DELETE)) {
+            faults.arm(kind, OnceExistingFixtureFault.Targets(activityUuid = habit.uuid))
+            faults.requireFailure(rejected { merger(http).page(access(), state, page) })
+            storage.reopen(); assertTrue(db.openHelper.writableDatabase.isOpen)
+            faults.requireColdRollback(); faults.clear()
             assertEquals(state, merger(http).state(access()))
             assertEquals(day, db.countDayDao().get(habit.id, day.localDate))
             assertEquals(origin, originalIntent(first))
@@ -195,7 +196,7 @@ class NextSyncRuntimeTest : NextCoreRequestFixture() {
         register()
         val (baseHttp, _) = channel(); initial(baseHttp)
         val rejectedRow = editMetric("Rejected local edit")
-        val fact = observation()
+        val fact = recordRuntimeMetricObservation(expectedRound = false, note = "captured\nvalue")
         var countRejected = 0
         var snapshot = baseline()
         val (http, _) = channel { input -> when {
@@ -367,18 +368,28 @@ class NextSyncRuntimeTest : NextCoreRequestFixture() {
     }
 
     @Test fun finalCommitFailureMustBeProvedByColdReopenNotByUncommittedWalVisibility() = runBlocking {
-        register(); val (http, _) = channel(); val store = merger(http); val state = initial(http)
-        val sql = db.openHelper.writableDatabase
-        sql.execSQL("CREATE TABLE cursor_commit_parent(id INTEGER PRIMARY KEY)")
-        sql.execSQL("CREATE TABLE cursor_commit_child(id INTEGER PRIMARY KEY,parent INTEGER REFERENCES cursor_commit_parent(id) DEFERRABLE INITIALLY DEFERRED)")
-        sql.execSQL("CREATE TRIGGER fail_cursor_commit AFTER UPDATE ON next_sync_state BEGIN INSERT INTO cursor_commit_child VALUES(1,99); END")
-        val page = NextSyncPullResponse(listOf(renamed(21, 2, "Cannot commit")), 21, false, time)
-        rejected { store.page(access(), state, page) }
+        register(); val (http, _) = channel(); val state = initial(http)
+        deferredCommitFault.installOnNextOpen()
         storage.reopen()
+        val store = merger(http)
+        assertEquals(state, store.state(access()))
+        val originalOwner = requireNotNull(com.dayforge.data.local.CountTrustRuntime.forDatabase(db))
+        val before = db.withTransaction { NextReplicaStorageProof(db).readInTransaction().contents }
+        val page = NextSyncPullResponse(listOf(renamed(21, 2, "Cannot commit")), 21, false, time)
+        deferredCommitFault.arm()
+        val failure = rejected { store.page(access(), state, page) }
+        deferredCommitFault.requireActualCommitConstraint(failure)
+        assertTrue(originalOwner.isRetired)
+        assertTrue(com.dayforge.data.local.CountTrustRetirementReason.UNKNOWN_END in originalOwner.retirementReasons)
+        storage.reopen()
+        assertNotSame(originalOwner, requireNotNull(com.dayforge.data.local.CountTrustRuntime.forDatabase(db)))
+        val after = db.withTransaction { NextReplicaStorageProof(db).readInTransaction().contents }
+        assertEquals(before, after)
+        deferredCommitFault.requireNotReinstalled()
         assertEquals(state, merger(http).state(access()))
         assertEquals(metric.name, db.metricDao().getMetricByUuid(metric.uuid)!!.name)
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_cursor_commit")
         assertEquals(21L, merger(http).page(access(), state, page).cursor)
+        assertEquals("Cannot commit", db.metricDao().getMetricByUuid(metric.uuid)!!.name)
     }
 
     @Test fun transientTimerFailureIsNotPermanentRejectionAndColdRetryKeepsOriginalBytes() = runBlocking {

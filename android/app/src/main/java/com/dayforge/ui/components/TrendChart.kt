@@ -138,9 +138,13 @@ fun TrendChart(
 ) {
     val appearance = rememberChartAppearance(metric.colorHex, lineColor, background, opaqueBackdrop)
     var selectedTimeRange by remember { mutableStateOf(defaultTimeRange) }
-    var selectedAggregation by remember(metric.aggregationType) {
+    var localAggregation by remember(metric.id, metric.aggregationType) {
         mutableStateOf(AggregationType.fromValue(metric.aggregationType))
     }
+    // Persisted charts are controlled by their acknowledged entity. A failed save leaves the
+    // old selection visible and the requested mode retryable; standalone charts remain local.
+    val selectedAggregation = if (onAggregationTypeChange == null) localAggregation
+        else AggregationType.fromValue(metric.aggregationType)
     var showAggregationMenu by remember { mutableStateOf(false) }
 
     // Delay chart rendering to improve initial load performance
@@ -192,9 +196,12 @@ fun TrendChart(
                         DropdownMenuItem(
                             text = { Text(type.getLabel()) },
                             onClick = {
-                                selectedAggregation = type
+                                if (!showAggregationMenu) return@DropdownMenuItem
                                 showAggregationMenu = false
-                                onAggregationTypeChange?.invoke(type)
+                                if (selectedAggregation != type) {
+                                    if (onAggregationTypeChange == null) localAggregation = type
+                                    else onAggregationTypeChange.invoke(type)
+                                }
                             }
                         )
                     }

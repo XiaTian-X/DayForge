@@ -62,6 +62,33 @@ class AndroidKeystoreTokenCipherTest {
         assertEquals("synthetic-token", cipher.decrypt(encrypted))
     }
 
+    @Test fun warmHandleRejectsDeletedKeyAndRecoversForNewCredentials() {
+        val old = cipher.encrypt("synthetic-old")
+        assertEquals("synthetic-old", cipher.decrypt(old))
+        KeyStore.getInstance("AndroidKeyStore").apply { load(null); deleteEntry(alias) }
+        assertNull(cipher.decrypt(old))
+        val replacement = cipher.encrypt("synthetic-new")
+        assertEquals("synthetic-new", cipher.decrypt(replacement))
+        assertEquals("synthetic-new", AndroidKeystoreTokenCipher(alias).decrypt(replacement))
+        assertNull(cipher.decrypt(old))
+    }
+
+    @Test fun sharedKeyHandleStillAuthenticatesEveryConcurrentCiphertext() = runBlocking {
+        val valid = cipher.encrypt("synthetic-shared")
+        val bytes = Base64.decode(valid.removePrefix("enc:v1:"), Base64.NO_WRAP)
+        bytes[bytes.lastIndex] = (bytes.last().toInt() xor 1).toByte()
+        val damaged = "enc:v1:" + Base64.encodeToString(bytes, Base64.NO_WRAP)
+        withContext(Dispatchers.IO) {
+            (1..8).map { async {
+                repeat(4) {
+                    assertEquals("synthetic-shared", cipher.decrypt(valid))
+                    assertNull(cipher.decrypt(damaged))
+                }
+            } }.awaitAll()
+        }
+        Unit
+    }
+
     @Test fun tokenManagerStoresNoPlaintextAndReopensWithTheSameKeystoreKey() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val file = File(context.cacheDir, "token-test-${UUID.randomUUID()}.preferences_pb")

@@ -92,6 +92,28 @@ def test_owned_joint_host_stops_with_terminal_proof_even_with_repeated_signals(
                 token=logged_in["access_token"],
             )
             assert me["public_id"] == logged_in["user_id"]
+            if not recovery:
+                # A separate synthetic account owns the complete COUNT command journey.
+                # The extra seeded identity never borrows joint-core's private data.
+                count_login = client.login("joint-count-command", TEST_ACCOUNT_PASSWORD)
+                count_me = client.request(
+                    "GET", "/api/v1/auth/users/me", token=count_login["access_token"]
+                )
+                assert count_me["public_id"] == count_login["user_id"]
+                assert count_me["public_id"] != me["public_id"]
+                coalesced_login = client.login(
+                    "joint-scheduler-coalesced", TEST_ACCOUNT_PASSWORD
+                )
+                coalesced_me = client.request(
+                    "GET",
+                    "/api/v1/auth/users/me",
+                    token=coalesced_login["access_token"],
+                )
+                assert coalesced_me["public_id"] == coalesced_login["user_id"]
+                assert coalesced_me["public_id"] not in {
+                    me["public_id"],
+                    count_me["public_id"],
+                }
             if recovery:
                 asyncio.run(write_new_metric(ready))
             # Exercise both the group and wrapper relay, as the physical gate
@@ -115,7 +137,7 @@ def test_owned_joint_host_stops_with_terminal_proof_even_with_repeated_signals(
                 assert proof["valid"] is True
                 assert proof["active_timer_count"] == 0
                 assert proof["protocol_version"] == 5
-                assert proof["row_counts"]["users"] == 9
+                assert proof["row_counts"]["users"] == 11
         finally:
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGKILL)

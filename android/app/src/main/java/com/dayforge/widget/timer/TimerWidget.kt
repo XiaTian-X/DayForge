@@ -26,7 +26,6 @@ import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import androidx.glance.action.clickable
 import com.dayforge.data.local.HabitDatabase
-import com.dayforge.data.local.HabitDatabaseProvider
 import com.dayforge.domain.service.ScheduleValidator
 import com.dayforge.domain.service.TimerElapsedCalculator
 import com.dayforge.util.DateTimeUtils
@@ -119,9 +118,12 @@ class TimerWidget : GlanceAppWidget() {
         }
 
         internal suspend fun refreshWidgetDataInScope(context: Context, glanceId: GlanceId, habitId: Long,
+            publication: com.dayforge.data.repository.WidgetDisplayPublisher.Publication): Boolean =
+            com.dayforge.di.WidgetEntryPoint.withGraph(context) { refreshInGraph(context, glanceId, habitId, publication) }
+        private suspend fun refreshInGraph(context: Context, glanceId: GlanceId, habitId: Long,
             publication: com.dayforge.data.repository.WidgetDisplayPublisher.Publication): Boolean {
             val appContext = context.applicationContext
-            val database = HabitDatabaseProvider.getInstance(appContext)
+            val database = com.dayforge.di.WidgetEntryPoint.database(appContext)
             var publishingDisplay = false
             try {
                 val visibleHabit = database.habitDao().getVisibleHabitById(habitId)
@@ -140,7 +142,7 @@ class TimerWidget : GlanceAppWidget() {
                 }
                 if (visibleHabit.appearance != null) {
                     val published = com.dayforge.di.WidgetEntryPoint.from(appContext).timerWriter()
-                        .renderWidgetSnapshot(visibleHabit, publication::isCurrentWhileAccountLocked) { snapshot ->
+                        .renderWidgetDisplaySnapshot(visibleHabit, publication::isCurrentWhileAccountLocked) { snapshot ->
                             publishingDisplay = true
                             writeWidgetState(appContext, glanceId, habitId, snapshot.habit, snapshot, publication)
                         }
@@ -182,7 +184,9 @@ class TimerWidget : GlanceAppWidget() {
         }
 
         /** False requests a normal full refresh; ticks never synthesize a new action claim. */
-        internal suspend fun refreshElapsedWidgetData(context: Context, glanceId: GlanceId, habitId: Long): Boolean {
+        internal suspend fun refreshElapsedWidgetData(context: Context, glanceId: GlanceId, habitId: Long): Boolean =
+            com.dayforge.di.WidgetEntryPoint.withGraph(context) { refreshElapsedInGraph(context, glanceId, habitId) }
+        private suspend fun refreshElapsedInGraph(context: Context, glanceId: GlanceId, habitId: Long): Boolean {
             val appContext = context.applicationContext
             val bound = com.dayforge.di.WidgetEntryPoint.from(appContext).configurationWorkflow()
                 .bound(com.dayforge.domain.service.WidgetConfigurationKind.TIMER, glanceId) ?: return false
@@ -195,7 +199,7 @@ class TimerWidget : GlanceAppWidget() {
             if (!publication.ownsFrame(previous)) return false
             if (previous[HABIT_ID_KEY] != habitId || previous[DATA_LOADED_KEY] != true ||
                 previous[READ_FAILED_KEY] == true || previous[IS_DELETED_KEY] == true) return false
-            val database = HabitDatabaseProvider.getInstance(appContext)
+            val database = com.dayforge.di.WidgetEntryPoint.database(appContext)
             val habit = database.habitDao().getVisibleHabitById(habitId) ?: return false
             // v4 has no retained-proof audit; keep its original loader and display semantics.
             if (habit.appearance == null) {
@@ -250,18 +254,18 @@ class TimerWidget : GlanceAppWidget() {
 
         private suspend fun writeWidgetState(context: Context, glanceId: GlanceId, habitId: Long,
             habit: com.dayforge.data.local.entity.HabitEntity,
-            snapshot: com.dayforge.data.repository.WidgetTimerReadSnapshot?,
+            snapshot: com.dayforge.data.repository.WidgetTimerDisplaySnapshot?,
             publication: com.dayforge.data.repository.WidgetDisplayPublisher.Publication) {
             prepareWidgetState(context, glanceId, habitId, habit, snapshot, publication)()
         }
 
         private suspend fun prepareWidgetState(context: Context, glanceId: GlanceId, habitId: Long,
             habit: com.dayforge.data.local.entity.HabitEntity,
-            snapshot: com.dayforge.data.repository.WidgetTimerReadSnapshot?,
+            snapshot: com.dayforge.data.repository.WidgetTimerDisplaySnapshot?,
             publication: com.dayforge.data.repository.WidgetDisplayPublisher.Publication,
             legacyIdentity: com.dayforge.data.repository.LegacyWidgetRestartClaim? = null): suspend () -> Unit {
             val appContext = context.applicationContext
-            val database = HabitDatabaseProvider.getInstance(appContext)
+            val database = com.dayforge.di.WidgetEntryPoint.database(appContext)
             val timeLogDao = database.timeLogDao()
             val activeTimer = snapshot?.activeLog ?: if (snapshot == null) timeLogDao.getActiveTimeLogForHabit(habitId) else null
             val legacyClaim = legacyIdentity?.let {
@@ -302,7 +306,7 @@ class TimerWidget : GlanceAppWidget() {
             val tomorrow = DateTimeUtils.startOfNextDayMillis(today)
 
             // Add current session elapsed time to accumulated if timer is running/paused
-            val accumulatedFromCompleted = snapshot?.history?.todaySeconds?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt() ?: timeLogDao.getCompletedDurationSecondsForDate(
+            val accumulatedFromCompleted = snapshot?.projection?.todaySeconds?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt() ?: timeLogDao.getCompletedDurationSecondsForDate(
                 habitId, java.time.LocalDate.now().toString(), today, tomorrow
             )
             val accumulatedSeconds = if (timerState != "NOT_RUNNING") {
@@ -334,15 +338,13 @@ class TimerWidget : GlanceAppWidget() {
 
             // Target progress - count days where timer target was met
             val targetProgress = if (habit.targetCycles != null) {
-                snapshot?.history?.qualifiedDates?.size ?: timeLogDao.getTargetMetDayCount(habit.id, targetSeconds)
+                snapshot?.projection?.qualifiedDayCount ?: timeLogDao.getTargetMetDayCount(habit.id, targetSeconds)
             } else 0
             // 目标完成：进度达标且习惯已被停用（用户点击了"确认完成"）
             val isGoalReached = habit.targetCycles != null && targetProgress >= habit.targetCycles && !habit.isActive
 
             // 失败状态判定
-            val hasFailed = snapshot?.history?.let {
-                com.dayforge.domain.service.FailureCheckerUtils.timerFailure(habit, it) == com.dayforge.domain.service.StrictFailureState.FAILED
-            } ?: WidgetFailureChecker.checkFailure(habit, database)
+            val hasFailed = snapshot?.projection?.hasFailed ?: WidgetFailureChecker.checkFailure(habit, database)
 
             // Pre-compute widget colors using WidgetColorResolver
             // Per WIDGET-COLOR-01, WIDGET-COLOR-06: Colors must be pre-calculated before rendering
@@ -370,7 +372,7 @@ class TimerWidget : GlanceAppWidget() {
                     prefs[IS_DELETED_KEY] = false
                     prefs[DATA_LOADED_KEY] = true
                     prefs[READ_FAILED_KEY] = false
-                    if (snapshot != null) prefs[ACTION_PROOF_KEY] = WidgetTimerAction.from(snapshot).encode()
+                    if (snapshot != null) prefs[ACTION_PROOF_KEY] = WidgetTimerAction(snapshot.habit.id, snapshot.authority, snapshot.startGuard).encode()
                     else prefs.remove(ACTION_PROOF_KEY)
                     if (legacyClaim != null) prefs[LEGACY_ACTION_PROOF_KEY] = legacyClaim.encode()
                     else prefs.remove(LEGACY_ACTION_PROOF_KEY)
@@ -378,7 +380,7 @@ class TimerWidget : GlanceAppWidget() {
                     if (snapshot != null) {
                         prefs[TICK_PLAN_KEY] = com.dayforge.data.repository.NextStructureMapper.writePlan(habit).toString()
                         snapshot.activeLogHash?.let { prefs[TICK_LOG_HASH_KEY] = it } ?: prefs.remove(TICK_LOG_HASH_KEY)
-                        prefs[TICK_DATE_KEY] = snapshot.history.today.toString()
+                        prefs[TICK_DATE_KEY] = snapshot.projection.today.toString()
                         prefs[TICK_ZONE_KEY] = java.time.ZoneId.systemDefault().id
                         prefs[TICK_COMPLETED_SECONDS_KEY] = accumulatedFromCompleted
                     } else {

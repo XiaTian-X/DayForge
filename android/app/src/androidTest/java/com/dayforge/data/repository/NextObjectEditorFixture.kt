@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.viewModelScope
 import com.dayforge.data.appearance.*
+import com.dayforge.data.local.PhysicalDatabaseRule
 import com.dayforge.domain.service.AccountIconController
 import com.dayforge.domain.service.AccountIconRuntime
 import kotlinx.coroutines.*
@@ -12,7 +13,9 @@ import org.junit.Assert.*
 import org.junit.Before
 
 /** Reuses the existing physical business DB fixture; adds only real account material storage. */
-abstract class NextObjectEditorFixture : NextCoreRequestFixture() {
+abstract class NextObjectEditorFixture internal constructor(
+    storage: PhysicalDatabaseRule = PhysicalDatabaseRule()
+) : NextCoreRequestFixture(storage) {
     // The inherited DB and any Activity rules have the default -1 order; -2 stays outside both.
     @get:org.junit.Rule(order = -2) val widgetRefresh = com.dayforge.widget.IsolatedWidgetRefreshRule()
     internal lateinit var iconDatabase: AccountIconDatabase
@@ -43,9 +46,12 @@ abstract class NextObjectEditorFixture : NextCoreRequestFixture() {
     internal fun creatingHabits() = HabitRepository(db.habitDao(), db.completionDao(), db.timeLogDao(), db,
         nextObjectEditor = editor, nextObjectCreator = creator, countHistoryReader = CountHistoryReader(db, tokens, sessions),
         checkHistoryReader = CheckHistoryReader(db, tokens, sessions), timerHistoryReader = TimerHistoryReader(db, tokens, sessions),
-        recurringHabitReader = RecurringHabitReader(db, tokens, sessions, editor))
+        recurringHabitReader = RecurringHabitReader(db, tokens, sessions, editor),
+        widgetFactReader = WidgetFactReader(db, tokens, sessions, preferences, CountHistoryReader(db, tokens, sessions)),
+        countActions = CountActionReader(db, tokens, sessions))
     internal fun creatingMetrics() = MetricRepository(db, db.metricDao(), db.metricLogDao(), db.habitDao(),
-        db.habitMetricLinkDao(), nextObjectEditor = editor, nextObjectCreator = creator)
+        db.habitMetricLinkDao(), nextObjectEditor = editor, nextObjectCreator = creator,
+        widgetFactReader = WidgetFactReader(db, tokens, sessions, preferences, CountHistoryReader(db, tokens, sessions)))
     internal fun onceRepository() = OneTimeRepository(db, tokens, sessions, preferences)
     internal fun onceHabits(once: OneTimeRepository) = HabitRepository(db.habitDao(), db.completionDao(), db.timeLogDao(), db,
         nextObjectEditor = editor, nextObjectCreator = creator, oneTimeRepository = once)
@@ -54,12 +60,14 @@ abstract class NextObjectEditorFixture : NextCoreRequestFixture() {
     }
 
     @After fun closeEditor() = runBlocking<Unit> {
-        withContext(Dispatchers.Main) { models.clear() }
-        for (model in ownedModels) withTimeout(5000) { model.viewModelScope.coroutineContext[Job]!!.cancelAndJoin() }
-        if (::icons.isInitialized) { icons.awaitImages(); icons.close() }
-        if (::iconDatabase.isInitialized) {
-            iconDatabase.close()
-            assertTrue(app.deleteDatabase(AccountIconDatabase.NAME) || !app.getDatabasePath(AccountIconDatabase.NAME).exists())
+        storage.recoveryCleanup {
+            withContext(Dispatchers.Main) { models.clear() }
+            for (model in ownedModels) withTimeout(5000) { model.viewModelScope.coroutineContext[Job]!!.cancelAndJoin() }
+            if (::icons.isInitialized) { icons.awaitImages(); icons.close() }
+            if (::iconDatabase.isInitialized) {
+                iconDatabase.close()
+                assertTrue(app.deleteDatabase(AccountIconDatabase.NAME) || !app.getDatabasePath(AccountIconDatabase.NAME).exists())
+            }
         }
     }
 }

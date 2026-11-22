@@ -83,7 +83,8 @@ class NextReplicaRecoveryReaderTest : NextCoreRequestFixture() {
         val calls = peer.requests.size
         val report = read()
         assertEquals(NextReplicaRecoveryReader.TABLES, report.rowCounts.keys)
-        assertEquals(36, report.rowCounts.size)
+        assertEquals(36, report.rowCounts.keys.count { it in NextReplicaRecoveryReader.BUSINESS_TABLES })
+        assertTrue(report.rowCounts.keys.containsAll(com.dayforge.data.local.CountTrustSchema.LOCAL_TABLES))
         assertEquals(original, report.original)
         assertTrue(report.reviewCounts.isEmpty()); assertFalse(report.activationAuthorized)
         assertTrue("complete_difference_preview" in report.remainingGates)

@@ -32,7 +32,9 @@ class TimerActionCallback : ActionCallback {
     }
 
     internal companion object {
-        suspend fun dispatch(context: Context, action: String, claim: LegacyWidgetTimerClaim) {
+        suspend fun dispatch(context: Context, action: String, claim: LegacyWidgetTimerClaim) =
+            WidgetEntryPoint.withGraph(context) { dispatchInGraph(context, action, claim) }
+        private suspend fun dispatchInGraph(context: Context, action: String, claim: LegacyWidgetTimerClaim) {
             val writer = WidgetEntryPoint.from(context).timerWriter()
             val habitId = claim.identity.habitId
             val snapshot = writer.requireLegacyWidgetAction(claim)

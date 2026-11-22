@@ -33,6 +33,55 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class NextReplicaArchiveTest : NextCoreRequestFixture() {
     @get:org.junit.Rule(order = -2) val widgetRefresh = com.dayforge.widget.IsolatedWidgetRefreshRule()
+    private val nativePageLimit = NativePageLimitFactory()
+    init { storage.isolatedBuilder = { HabitDatabaseProvider.build(it, nativeFactory = nativePageLimit) } }
+
+    /** Fixed physical quota below the controlled wrapper; no raw handle or arbitrary SQL escapes. */
+    private inner class NativePageLimitFactory : androidx.sqlite.db.SupportSQLiteOpenHelper.Factory {
+        @Volatile private var native: androidx.sqlite.db.SupportSQLiteDatabase? = null
+        @Volatile private var limited: androidx.sqlite.db.SupportSQLiteDatabase? = null
+
+        override fun create(configuration: androidx.sqlite.db.SupportSQLiteOpenHelper.Configuration): androidx.sqlite.db.SupportSQLiteOpenHelper {
+            val helper = androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory().create(configuration)
+            return object : androidx.sqlite.db.SupportSQLiteOpenHelper by helper {
+                override val writableDatabase get() = remember(helper.writableDatabase)
+                override val readableDatabase get() = remember(helper.readableDatabase)
+            }
+        }
+
+        private fun remember(raw: androidx.sqlite.db.SupportSQLiteDatabase): androidx.sqlite.db.SupportSQLiteDatabase {
+            check(limited == null || limited === raw) { "Page-limit fixture cannot change its live native owner" }
+            native = raw
+            return raw
+        }
+
+        private fun primary(): androidx.sqlite.db.SupportSQLiteDatabase = requireNotNull(native).also {
+            // Android's native transaction is thread-bound: these PRAGMAs use Room's primary,
+            // not a pooled WAL read connection or an independently opened database.
+            check(db.inTransaction() && it.isOpen && it.inTransaction())
+        }
+
+        private fun pragma(raw: androidx.sqlite.db.SupportSQLiteDatabase, name: String): Long =
+            raw.query("PRAGMA $name").use { check(it.moveToFirst()); it.getLong(0) }
+
+        fun limitToCurrentPages(): Long {
+            check(limited == null)
+            val raw = primary()
+            val maximum = pragma(raw, "max_page_count")
+            val pages = pragma(raw, "page_count")
+            assertEquals(pages, pragma(raw, "max_page_count=$pages"))
+            limited = raw
+            return maximum
+        }
+
+        fun restore(maximum: Long) {
+            val raw = primary()
+            check(limited === raw)
+            assertEquals(maximum, pragma(raw, "max_page_count=$maximum"))
+            limited = null
+        }
+    }
+
     private val json = Json { encodeDefaults = true }
     private lateinit var iconDb: AccountIconDatabase
     private lateinit var icons: AccountIconRepository
@@ -215,6 +264,49 @@ class NextReplicaArchiveTest : NextCoreRequestFixture() {
         http = NextSyncHttp(client, tokens, peer.origin)
     }
 
+    private suspend fun recordChangedObservation(): SyncOutboxEntity {
+        val imports = AccountIconImport(icons, iconStore, transfers)
+        val controller = AccountIconController({ AccountIconRuntime(icons, iconStore,
+            AccountIconRenderer(icons, iconStore), imports,
+            AccountIconDocuments(imports, app.contentResolver), {}) }, tokens)
+        return try {
+            val editor = NextObjectEditor(db, tokens, sessions, controller)
+            val repository = MetricRepository(db, db.metricDao(), db.metricLogDao(), db.habitDao(),
+                db.habitMetricLinkDao(), nextObjectEditor = editor)
+            val selected = editor.metric(metric.id)
+            val actual = requireNotNull(selected.value)
+            assertEquals(metric.uuid, actual.uuid); assertNotNull(actual.appearance)
+            val beforeLogs = db.metricLogDao().getAllLogsForMetric(actual.id).associateBy { it.id }
+            val beforeQueue = db.syncOutboxDao().getAll().associateBy { it.id }
+            fun originCount() = db.openHelper.writableDatabase.query("SELECT count(*) FROM main.next_request_origins").use {
+                assertTrue(it.moveToFirst()); it.getLong(0).also { _ -> assertFalse(it.moveToNext()) }
+            }
+            val beforeOrigins = originCount()
+            val observationId = repository.recordValue(actual.id, 5.5, "", millis,
+                authority = requireNotNull(selected.authority), expectedMetricUuid = actual.uuid)
+            val logs = db.metricLogDao().getAllLogsForMetric(actual.id).associateBy { it.id }
+            val observation = logs.getValue(observationId)
+            assertEquals(beforeLogs, logs - observationId); assertEquals(beforeLogs.size + 1, logs.size)
+            assertEquals(actual.id, observation.metricId); assertEquals(5.5, observation.value, 0.0)
+            assertEquals("", observation.note); assertEquals(millis, observation.date)
+            val queue = db.syncOutboxDao().getAll().associateBy { it.id }
+            val queued = queue.getValue((queue.keys - beforeQueue.keys).single())
+            assertEquals(beforeQueue, queue - queued.id); assertEquals(beforeQueue.size + 1, queue.size)
+            assertEquals("metric_log", queued.recordType); assertEquals("upsert", queued.action)
+            assertEquals(observation.uuid, queued.entityUuid); assertEquals(observation.uuid, queued.wireEntityUuid)
+            val origin = requireNotNull(db.nextRequestDao().origin(NEXT_OPERATION, queued.operationId))
+            assertEquals(queued.id, origin.queueId); assertEquals(queued.operationId, origin.requestId)
+            assertEquals(NextRequestSql.sourceHash(queued), origin.sourceHash); assertEquals(5, origin.protocol)
+            val operation = requireNotNull(roundOperationIntent(origin.intentJson)).operation
+            assertEquals(queued.operationId, operation.operationId); assertEquals(observation.uuid, operation.entityUuid)
+            assertEquals("metric_observation", operation.entityType); assertEquals("upsert", operation.action)
+            assertEquals(beforeOrigins + 1, originCount())
+            queued
+        } finally {
+            controller.awaitImages(); controller.close()
+        }
+    }
+
     @Test fun missingExactMaterialPackBlocksBeforeAnyFreezeOrArchive() = runBlocking<Unit> {
         initialize(); completeMaterial(); startRecovery()
         val preview = differences().capture(recoveryCandidate())
@@ -374,18 +466,13 @@ class NextReplicaArchiveTest : NextCoreRequestFixture() {
         }))
         val archived = workflow().prepare(differences().capture(recoveryCandidate()))
         val evidence = workflow().verifyForConfirmation(archived); val schema = ReplicaProjection.schemaHash(db)
-        val sql = db.openHelper.writableDatabase
-        fun pragma(name: String) = sql.query("PRAGMA $name").use { check(it.moveToFirst()); it.getLong(0) }
-        // Bind the fault to the primary transaction connection, not a WAL read connection.
-        val maximum = db.withTransaction {
-            val before = pragma("max_page_count"); val pages = pragma("page_count")
-            assertEquals(pages, pragma("max_page_count=$pages")); before
-        }
+        // Test-only native quota on the actual Room primary connection; production PRAGMA stays denied.
+        val maximum = db.withTransaction { nativePageLimit.limitToCurrentPages() }
         try {
             val error = rejected { workflow().confirm(evidence) }
             assertTrue("Must exercise actual storage-full rollback, got $error", generateSequence(error as Throwable?) { it.cause }
                 .any { it is android.database.sqlite.SQLiteFullException })
-        } finally { db.withTransaction { assertEquals(maximum, pragma("max_page_count=$maximum")) } }
+        } finally { db.withTransaction { nativePageLimit.restore(maximum) } }
         val committing = tokens.activeReplicaStage()!!; assertEquals(ReplicaSwitchPhase.COMMITTING, committing.phase)
         assertEquals(ReplicaCommitFate.OLD, NextReplicaCommitStore(db, tokens, sessions).fate(committing))
         assertEquals(schema, ReplicaProjection.schemaHash(db)); assertEquals(id(3), db.nextSyncStateDao().rows().single().syncEpoch)
@@ -424,7 +511,9 @@ class NextReplicaArchiveTest : NextCoreRequestFixture() {
         val sql = db.openHelper.writableDatabase
         val guard = sql.query("SELECT sql FROM sqlite_master WHERE name='replica_fence_metrics_update'").use { check(it.moveToFirst()); it.getString(0) }
         sql.execSQL("DROP TRIGGER replica_fence_metrics_update")
-        assertEquals("SYNC_REPLICA_FENCE_CHANGED", rejected { workflow().resume(committing) }.message)
+        val schemaFailure = rejected { workflow().resume(committing) }
+        assertTrue(schemaFailure is IllegalArgumentException); assertEquals("COMMAND_PRIMARY_BINDING_CHANGED", schemaFailure.message)
+        assertTrue(schemaFailure.stackTrace.any { it.className.startsWith("com.dayforge.data.repository.CountCommandSeal") })
         sql.execSQL(guard); assertEquals(ReplicaCommitFate.COMMITTED, store.fate(committing))
         // Deliberate corruption only in isolated testbed: same row/count/cursor, exact DDL restored.
         sql.execSQL("DROP TRIGGER replica_fence_metrics_update")
@@ -471,7 +560,7 @@ class NextReplicaArchiveTest : NextCoreRequestFixture() {
         assertFalse(tokens.replicaSwitchPending()); assertNull(db.nextReplicaFenceDao().state()); assertEquals(before, storageHash())
         assertFalse(File(directory, "replica-archives-v1").exists())
         completeMaterial()
-        val writer = producer(); writer.writeRounds(writer.captureRounds()) { metrics().recordValue(metric.id, 5.5, "", millis) }
+        recordChangedObservation()
         val changed = storageHash()
         assertEquals("SYNC_RECOVERY_PREVIEW_CHANGED", rejected { workflow().prepare(preview) }.message)
         assertFalse(tokens.replicaSwitchPending()); assertEquals(changed, storageHash()); assertEquals(1, db.syncOutboxDao().getAll().size)
@@ -576,7 +665,11 @@ class NextReplicaArchiveTest : NextCoreRequestFixture() {
             expired = access
             assertFalse(input.activationAuthorized); assertFalse(input.hasReview); assertTrue(input.missingAssets.isEmpty())
             assertEquals(3, input.business.records.size); assertEquals(36, input.storage.contents.getValue("tables").jsonObject.keys
-                .count { !it.startsWith("sqlite_") && it !in setOf("android_metadata", "room_master_table") })
+                .count { !it.startsWith("sqlite_") && it !in setOf("android_metadata", "room_master_table") &&
+                    it !in com.dayforge.data.local.CountCommandV20Schema.currentLocalTables })
+            assertEquals(NextReplicaRecoveryReader.TABLES, input.storage.contents.getValue("tables").jsonObject.keys
+                .filterNot { it.startsWith("sqlite_") || it in setOf("android_metadata", "room_master_table") }.toSet())
+            assertTrue(input.storage.contents.getValue("tables").jsonObject.keys.containsAll(com.dayforge.data.local.CountTrustSchema.LOCAL_TABLES))
             assertEquals(8, input.icons.contents.getValue("tables").jsonObject.size); assertTrue(input.iconFiles.files.isEmpty())
             assertNull(input.themes.preferences.selectionRaw); assertNull(input.themes.preferences.catalogRaw); assertTrue(input.themes.files.isEmpty())
             assertEquals(setOf("current", "authority"), input.uses.map { it.source }.toSet())

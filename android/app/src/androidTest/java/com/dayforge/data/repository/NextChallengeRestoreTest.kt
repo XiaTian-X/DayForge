@@ -18,6 +18,10 @@ import org.junit.runner.RunWith
 /** Physical Room, original journals and real profile HTTP; no synthetic cursor-only success. */
 @RunWith(AndroidJUnit4::class)
 class NextChallengeRestoreTest : NextCoreRequestFixture() {
+    private val sqlCalls = java.util.concurrent.atomic.AtomicLong()
+    init { storage.queryCallback = object : androidx.room.RoomDatabase.QueryCallback {
+        override fun onQuery(sqlQuery: String, bindArgs: List<Any?>) { sqlCalls.incrementAndGet() }
+    } }
     private val json = Json { encodeDefaults = true }
     private fun initial(activity: String) = ChallengeRoundRecord(initialChallengeRoundHead(activity), null, null, null)
     private fun restarted(activity: String = habit.uuid) = ChallengeRoundRecord(
@@ -305,6 +309,75 @@ class NextChallengeRestoreTest : NextCoreRequestFixture() {
         register()
         rejected { store.challengeMetadata(access()) }
         assertEquals(2, count("next_challenge_rounds"))
+    }
+
+    @Test fun streamedRawAuditKeepsCompositeKeysAndRejectsDamagedRowsWithoutCachingOrWriting() = runBlocking<Unit> {
+        register()
+        val (http, _) = channel()
+        val births = listOf("activity_event", "timer_session").map {
+            ChallengeBirth(it, id(880), initial(timerHabit.uuid).head)
+        }
+        val expected = metadata(births = births)
+        val store = merger(http)
+        store.bootstrap(access(), null, snapshot(meta = expected))
+        val sql = db.openHelper.writableDatabase
+        val tables = listOf("next_challenge_state", "next_challenge_rounds", "next_challenge_births")
+        suspend fun oldAudit(table: String) {
+            val keys = when (table) {
+                "next_challenge_state" -> listOf("id")
+                "next_challenge_rounds" -> listOf("roundUuid")
+                else -> listOf("entityType", "entityUuid")
+            }
+            sql.query("SELECT ${keys.joinToString(",")} FROM $table").use { cursor ->
+                while (cursor.moveToNext()) {
+                    val args = keys.mapIndexed<String, Any> { i, key ->
+                        if (key == "id") {
+                            require(cursor.getType(i) == android.database.Cursor.FIELD_TYPE_INTEGER && cursor.getLong(i) == 1L)
+                            cursor.getLong(i)
+                        } else {
+                            require(cursor.getType(i) == android.database.Cursor.FIELD_TYPE_STRING)
+                            cursor.getString(i)
+                        }
+                    }.toTypedArray()
+                    assertNotNull(NextRequestSql.rowHash(sql, table, keys.joinToString(" AND ") { "$it=?" }, args))
+                }
+            }
+        }
+        val before = db.withTransaction { nextRestartDatabaseProof(db) }
+        db.withTransaction {
+            val beforeOld = sqlCalls.get()
+            tables.forEach { oldAudit(it) }
+            val oldCalls = sqlCalls.get() - beforeOld
+            val beforeNew = sqlCalls.get()
+            tables.forEach { NextRequestSql.auditChallengeRows(sql, it) }
+            val newCalls = sqlCalls.get() - beforeNew
+            assertEquals(9L, newCalls)
+            assertTrue("Streamed audit must reduce SQL without dropping rows", newCalls < oldCalls)
+        }
+        assertEquals(before, db.withTransaction { nextRestartDatabaseProof(db) })
+        val corruptions = listOf(
+            "next_challenge_state" to "UPDATE next_challenge_state SET cursor=0.5",
+            "next_challenge_rounds" to "UPDATE next_challenge_rounds SET recordJson=CAST(recordJson AS BLOB)",
+            "next_challenge_rounds" to "UPDATE next_challenge_rounds SET generation=0.5",
+            "next_challenge_births" to "UPDATE next_challenge_births SET entityType=CAST(entityType AS BLOB)",
+            "next_challenge_state" to "UPDATE next_challenge_state SET metadataHash=hex(zeroblob(600000))"
+        )
+        for ((table, statement) in corruptions) {
+            val rollback = IllegalStateException("fixture rollback")
+            assertSame(rollback, rejected { db.withTransaction {
+                sql.execSQL(statement)
+                val damaged = nextRestartDatabaseProof(db)
+                val old = rejected { oldAudit(table) }
+                val fresh = rejected { NextRequestSql.auditChallengeRows(sql, table) }
+                assertEquals(old.javaClass, fresh.javaClass)
+                assertEquals(damaged, nextRestartDatabaseProof(db))
+                throw rollback
+            } })
+            assertEquals(before, db.withTransaction { nextRestartDatabaseProof(db) })
+        }
+        assertEquals(expected, store.challengeMetadata(access()))
+        storage.reopen()
+        assertEquals(expected, merger(http).challengeMetadata(access()))
     }
 
     @Test fun emptyPageCanAdvanceCheckpointWithoutDroppingExistingCacheOrFacts() = runBlocking {

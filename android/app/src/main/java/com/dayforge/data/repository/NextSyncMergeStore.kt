@@ -105,6 +105,7 @@ internal class NextSyncMergeStore(
                     recovery?.candidateCursor ?: recovery?.minimumCursor ?: 0)) { "SYNC_SNAPSHOT_BEHIND" }
                 requireInitializedCache()
                 auditShadows()
+                com.dayforge.data.local.CountTrustRuntime.forDatabase(database)?.prepareOutboxAllocatorsForWrite(database)
                 val sources = pendingSources()
                 pruneCache(frozen)
                 once.restoreAcceptedDataInTransaction(context(access), frozen)
@@ -149,14 +150,28 @@ internal class NextSyncMergeStore(
         return sessions.exclusive {
             authorize(access)
             database.withTransaction {
+                val trust = CountTrustKernel(database, tokens, sessions)
+                val core = tokens.localCoreWriteAccess()?.takeIf {
+                    it.session == access.session && it.capturedDeviceId == access.deviceId }
+                trust.withOnceCapture(core) { capture ->
+                val update = OnceTrustAck.create(database, capture)
+                // Only the original ONCE/empty page shape is maintained. Mixed structural,
+                // deletion or unrelated domain pages retain their existing whole-dirty path.
+                if (frozen.changes.any { it.entityType != "activity_event" || it.operation != "upsert" ||
+                        it.payload["one_time"].let { value -> value == null || value == JsonNull } }) update?.decline()
                 val current = requireNotNull(readState(access))
                 val terminals = NextRecoveryAuditStore(database).validatedMembers(access)
                 val rounds = NextChallengeStore(database)
                 if (cacheOnly) rounds.requireQuiescentInTransaction(access)
-                if (metadata == null) rounds.requirePlainInTransaction() else requireNotNull(rounds.readInTransaction(access, current))
-                if (current == next) return@withTransaction current
+                val retainedMetadata = if (metadata == null) { rounds.requirePlainInTransaction(); null }
+                    else requireNotNull(rounds.readInTransaction(access, current))
+                if (current == next) return@withOnceCapture current
                 require(current == expected) { "SYNC_CURSOR_CHANGED" }
                 auditShadows()
+                // The original plain empty same-cursor page is MAIN read-only; keep its
+                // complete audits below without manufacturing a metadata write.
+                if (!(metadata == null && frozen.changes.isEmpty() && frozen.nextCursor == expected.cursor))
+                    com.dayforge.data.local.CountTrustRuntime.forDatabase(database)?.prepareOutboxAllocatorsForWrite(database)
                 val sources = pendingSources()
                 if (metadata != null) for (change in frozen.changes)
                     NextRestartStore(database).capturePlanFrame(access, change, metadata)
@@ -177,7 +192,7 @@ internal class NextSyncMergeStore(
                         when (change.entityType) {
                             "plan_node", "metric" -> NextStructureStore(database).restoreInTransaction(listOf(change), incremental = true)
                             "activity_event" -> if (change.payload["one_time"].let { it != null && it != JsonNull })
-                                once.applyInTransaction(context(access), listOf(change), contiguous = true)
+                                once.applyInTransaction(context(access), listOf(change), contiguous = true, trust = update)
                             else restoreFacts(access, change)
                             "metric_observation", "activity_metric_link" -> restoreFacts(access, change)
                             else -> error("Unsupported sync entity")
@@ -185,16 +200,66 @@ internal class NextSyncMergeStore(
                     }
                 }
                 check(pendingSources() == sources)
-                if (metadata != null) mergeRounds(access, current, next, metadata)
+                if (metadata != null) {
+                    prepareOncePageMarker(update, current, next, requireNotNull(retainedMetadata), metadata)
+                    mergeRounds(access, current, next, metadata)
+                }
                 check(pendingSources() == sources)
                 check(cacheProof(listOf("next_restart_plan_proofs")) == restartPlans)
                 val result = if (metadata == null && frozen.changes.isEmpty() && frozen.nextCursor == expected.cursor) current
-                else commitState(access, current, next)
+                else {
+                    prepareOncePageCursor(update, current, next)
+                    commitState(access, current, next)
+                }
                 if (cacheOnly) rounds.requireQuiescentInTransaction(access)
                 require(NextRecoveryAuditStore(database).validatedMembers(access) == terminals) { "RECOVERY_TERMINAL_CHANGED" }
+                // All original source/cache/round/cursor and terminal checks precede signing.
+                // In particular once.apply never signs for this outer page's later writes.
+                trust.finishOnce(capture, update?.freeze())
                 result
-            }
+            } }
         }
+    }
+
+    /** Predict the original formal page marker, including its same-value fields. This is
+     * distinct from ACK's marker: a page advances generation/cursor/batchHash. Legitimate
+     * additional metadata is still merged by the original full proof and stays dirty.
+     */
+    private fun prepareOncePageMarker(update: OnceTrustAck?, current: NextSyncStateEntity,
+        next: NextSyncStateEntity, actual: ChallengeMetadata, incoming: ChallengeMetadata) {
+        update ?: return
+        if (!update.context.formal) { update.decline(); return }
+        val retained = json.decodeFromJsonElement(ChallengeMetadata.serializer(),
+            requireNotNull(update.context.index.get(CountTrustRoundEvidence.METADATA)))
+        check(actual == retained) { "ONCE_PULL_METADATA_CHANGED" }
+        val checkpoints = retained.checkpoints.associateBy { it.head.activityUuid }
+        val births = retained.births.associateBy { it.entityType to it.entityUuid }
+        if (incoming.checkpoints.any { candidate -> checkpoints[candidate.head.activityUuid]?.let { old ->
+                old.copy(records = old.records.sortedBy { it.head.generation }) !=
+                    candidate.copy(records = candidate.records.sortedBy { it.head.generation }) } != false } ||
+            incoming.births.any { births[it.entityType to it.entityUuid] != it }) {
+            update.decline(); return
+        }
+        val before = requireNotNull(update.before("next_challenge_state", "id=?", arrayOf(1)))
+        check(before.text("accountId") == current.accountId && before.text("serverInstanceId") == current.serverInstanceId &&
+            before.text("syncEpoch") == current.syncEpoch && before.text("deviceId") == current.deviceId &&
+            before.long("generation") == current.generation && before.long("cursor") == current.cursor &&
+            before.text("batchHash") == current.batchHash &&
+            before.text("metadataHash") == syncPayloadHash(json.encodeToString(retained))) { "ONCE_PULL_METADATA_CHANGED" }
+        update.record("next_challenge_state", before, update.changed(before, mapOf(
+            "generation" to next.generation, "cursor" to next.cursor, "batchHash" to next.batchHash)))
+    }
+
+    private fun prepareOncePageCursor(update: OnceTrustAck?, current: NextSyncStateEntity, next: NextSyncStateEntity) {
+        update ?: return
+        val before = requireNotNull(update.before("next_sync_state", "id=?", arrayOf(1)))
+        check(before.long("generation") == current.generation && before.long("cursor") == current.cursor &&
+            before.text("batchHash") == current.batchHash) { "ONCE_PULL_CURSOR_CHANGED" }
+        val expected = update.row("next_sync_state", mapOf("accountId" to next.accountId,
+            "serverInstanceId" to next.serverInstanceId, "syncEpoch" to next.syncEpoch, "deviceId" to next.deviceId,
+            "generation" to next.generation, "cursor" to next.cursor, "bootstrapHash" to next.bootstrapHash,
+            "batchHash" to next.batchHash, "id" to next.id, "challengeContract" to next.challengeContract))
+        update.record("next_sync_state", before, expected)
     }
 
     private suspend fun restoreFacts(access: LocalSyncAccess, change: SyncV2Change) {

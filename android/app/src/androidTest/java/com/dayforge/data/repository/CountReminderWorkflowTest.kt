@@ -229,7 +229,27 @@ class CountReminderWorkflowTest : NextObjectEditorFixture() {
             sql.execSQL("UPDATE habits SET bestTime=1440 WHERE id=?", arrayOf(habit.id))
             sql.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
         }
-        controller.schedule(habit.id, at(8)); assertTrue(alarms.state.value.alarms.isEmpty())
+        val damaged = requireNotNull(db.habitDao().getHabitById(habit.id))
+        assertEquals(1440L, damaged.bestTime)
+        assertEquals("09:00", requireNotNull(damaged.planMetadata).preferredLocalTime)
+        val previousAlarm = alarms.pending()
+        // The pure planner still rejects an out-of-range clock. The authenticated COUNT
+        // reader must reject the inconsistent structure before this planner can run.
+        assertNull(HabitReminderPlan.next(damaged, previousAlarm.reading.target,
+            previousAlarm.reading.quantity, at(8)))
+        val raw = db.withTransaction { NextReplicaStorageProof(db).readInTransaction().contents }
+        val beforeAlarms = alarms.state.value
+        val refusal = rejected { controller.schedule(habit.id, at(8)) }
+        assertEquals(IllegalArgumentException::class.java, refusal.javaClass)
+        assertEquals("Preferred time must be explicitly updated together with its metadata", refusal.message)
+        assertEquals("A rejected direct read must not publish or replace an alarm", beforeAlarms, alarms.state.value)
+        assertEquals(raw, db.withTransaction { NextReplicaStorageProof(db).readInTransaction().contents })
+        // Production bulk rebuilding clears stale alarms before independently refusing this
+        // damaged row. Keep the original no-alarm contract without weakening the reader.
+        controller.rescheduleAll(); assertTrue(alarms.state.value.alarms.isEmpty())
+        assertEquals(beforeAlarms.shown, alarms.state.value.shown)
+        assertEquals(beforeAlarms.replacements, alarms.state.value.replacements)
+        assertEquals(raw, db.withTransaction { NextReplicaStorageProof(db).readInTransaction().contents })
     }
 
     @Test fun observationRebuildsAfterBusinessChangesAndClearsPublishedStateOnLogout() = runBlocking<Unit> {

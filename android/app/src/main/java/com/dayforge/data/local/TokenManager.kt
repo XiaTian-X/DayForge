@@ -32,9 +32,24 @@ internal data class LocalDataSession(
 
 internal data class LocalFactAccess(val session: LocalDataSession, val canAppend: Boolean)
 
+/** Original opaque v4 metric identity. It is freshly decrypted on each capture and is
+ * deliberately not a canonical command namespace or typed/core authority. */
+internal data class LocalOpaqueMetricAccess(val facts: LocalFactAccess, val deviceId: String?,
+    val capabilitiesKnown: Boolean?, val capabilities: Set<String>?, val revision: String?,
+    val capabilitiesDeviceId: String?, val primaryEditor: Boolean?)
+
 /** Offline core writes may precede registration; known permissions must still be respected. */
 internal data class LocalCoreWriteAccess(val session: LocalDataSession, val capabilities: Set<String>?,
     val capturedDeviceId: String? = null)
+
+/** Non-secret metadata for the independent complete-command recovery proof only.
+ * Unlike core access equality, this binds registration revision/known state even offline.
+ * It is an observation, never a reusable authority; its consumer must reauthenticate.
+ */
+internal data class LocalCommandRecoveryAccess(val core: LocalCoreWriteAccess,
+    val capabilitiesKnown: Boolean?, val registeredCapabilities: Set<String>?,
+    val capabilityRevision: String?, val capabilitiesDeviceId: String?,
+    val isPrimaryEditor: Boolean?, val installationId: String?)
 
 /** A single snapshot; icon access never inherits legacy/unknown device permissions. */
 internal data class LocalIconAccess(
@@ -71,6 +86,27 @@ class AuthenticationSnapshot(
 internal class ReplicaLoginWitness internal constructor(internal val owner: TokenManager,
     internal val values: Preferences, val accountId: String, val serverInstanceId: String,
     val currentEpoch: String, val destinationEpoch: String?)
+
+/** Exact raw snapshot stays inside TokenManager closures. Neither this witness nor a
+ * successful preparation is an authenticated business grant. No credential toString/export. */
+internal class LegacySessionPreparationSnapshot internal constructor(
+    internal val owner: TokenManager,
+    internal val unchanged: (Preferences) -> Boolean,
+    internal val prepared: (Preferences, String) -> Boolean,
+    internal val stamp: PersonalDataDisplayMemory.Stamp,
+    internal val classification: LegacySessionGenerationResult?,
+    internal val recovery: suspend () -> ReplicaPresentationWitness
+) {
+    internal val needsGeneration get() = classification == null
+}
+
+internal sealed interface LegacySessionGenerationResult {
+    data class CreatedGeneration(val generation: String) : LegacySessionGenerationResult
+    data class CurrentGeneration(val generation: String) : LegacySessionGenerationResult
+    data object NotApplicable : LegacySessionGenerationResult
+    data object AuthenticationUnavailable : LegacySessionGenerationResult
+    data object Stale : LegacySessionGenerationResult
+}
 
 /**
  * Manages authentication tokens using DataStore for persistent storage.
@@ -114,6 +150,19 @@ class TokenManager @Inject constructor(
     internal fun registerIconCache(cache: AccountIconMemory.Cache) = iconMemory.register(cache)
     private val replicaPresentation = ReplicaPresentationMemory()
     internal fun registerReplicaPresentation(cache: ReplicaPresentationMemory.Cache) = replicaPresentation.register(cache)
+    private val personalDisplay = PersonalDataDisplayMemory()
+    internal fun registerPersonalDisplay(listener: PersonalDataDisplayMemory.Listener) = personalDisplay.register(listener)
+    internal fun capturePersonalDisplayStamp(): PersonalDataDisplayMemory.Stamp? = personalDisplay.capture()
+    internal fun isCurrentPersonalDisplayStamp(stamp: PersonalDataDisplayMemory.Stamp): Boolean = personalDisplay.isCurrent(stamp)
+    internal fun publishPersonalDisplayStamp(stamp: PersonalDataDisplayMemory.Stamp, assignment: () -> Boolean): Boolean =
+        personalDisplay.publish(stamp, assignment)
+    /** Local replica replacement also revokes old display sources even if credential cleanup
+     * later fails. No credential or persisted authorization is changed by this memory fence.
+     */
+    internal suspend fun <T> withLocalReplicaDisplayTransition(block: suspend () -> T): T {
+        personalDisplay.begin()
+        return try { block() } finally { personalDisplay.end() }
+    }
     internal fun beginIconSelectionTransition() = iconMemory.beginTransition()
     internal fun endIconSelectionTransition() = iconMemory.endTransition()
 
@@ -121,11 +170,18 @@ class TokenManager @Inject constructor(
     private fun iconIdentity(preferences: Preferences): List<Any?> =
         listOf(preferences[ACCESS_TOKEN_KEY] != null) + ICON_IDENTITY_KEYS.map { preferences[it] }
 
+    // Include ciphertext replacement: a same-generation replacement is not proof of validity.
+    // Comparison stays inside TokenManager; no credentials enter display snapshots or logs.
+    private fun personalDisplayIdentity(preferences: Preferences): List<Any?> =
+        ICON_IDENTITY_KEYS.map { preferences[it] } +
+            listOf(preferences[ACCESS_TOKEN_KEY], preferences[DEVICE_PRIMARY_EDITOR_KEY])
+
     /** No delayed Flow collector: block publication across the actual persisted transition. */
     private suspend fun editPreferences(block: suspend (MutablePreferences) -> Unit): Preferences {
         val caller = currentCoroutineContext()
         var transitioning = false
         var replicaTransitioning = false
+        var displayTransitioning = false
         try {
             // DataStore owns the write actor: cancelling its caller need not stop a write
             // after transform. Join actual persistence before reopening image publication.
@@ -133,9 +189,14 @@ class TokenManager @Inject constructor(
                 dataStore.edit { preferences ->
                     caller.ensureActive()
                     val before = iconIdentity(preferences)
+                    val beforeDisplay = personalDisplayIdentity(preferences)
                     val beforePointer = preferences.asMap().filterKeys { it.name == ReplicaSwitchGuard.POINTER.name }
                     block(preferences)
                     caller.ensureActive()
+                    if (beforeDisplay != personalDisplayIdentity(preferences)) {
+                        personalDisplay.begin()
+                        displayTransitioning = true
+                    }
                     if (before != iconIdentity(preferences)) {
                         iconMemory.beginTransition()
                         transitioning = true
@@ -153,6 +214,7 @@ class TokenManager @Inject constructor(
             // conservative memory eviction is safe and cannot delete installation intent.
             if (transitioning) iconMemory.endTransition()
             if (replicaTransitioning) replicaPresentation.end()
+            if (displayTransitioning) personalDisplay.end()
         }
     }
 
@@ -162,7 +224,7 @@ class TokenManager @Inject constructor(
      */
     val accessToken: Flow<String?> = dataStore.data.map { preferences ->
         preferences[ACCESS_TOKEN_KEY]?.let(tokenCipher::decrypt)
-    }
+    }.flowOn(Dispatchers.IO)
 
     /**
      * Flow of the current refresh token.
@@ -170,7 +232,7 @@ class TokenManager @Inject constructor(
      */
     val refreshToken: Flow<String?> = dataStore.data.map { preferences ->
         preferences[REFRESH_TOKEN_KEY]?.let(tokenCipher::decrypt)
-    }
+    }.flowOn(Dispatchers.IO)
 
     /**
      * Flow of the current user email.
@@ -248,9 +310,100 @@ class TokenManager @Inject constructor(
         }
     }
 
+    /** Explicit upgrade preflight, called under the existing account coordinator. Raw
+     * Preferences (including refresh ciphertext and recovery audits) never leave this closure.
+     * A key of ANY stored type counts as present; malformed values retain their old lane.
+     */
+    internal suspend fun captureLegacySessionPreparationWhileAccountLocked(): LegacySessionPreparationSnapshot =
+        withContext(Dispatchers.IO) {
+            val stamp = checkNotNull(capturePersonalDisplayStamp()) { "LEGACY_SESSION_PREPARATION_CHANGED" }
+            val values = dataStore.data.first()
+            check(isCurrentPersonalDisplayStamp(stamp)) { "LEGACY_SESSION_PREPARATION_CHANGED" }
+            legacyPreparationSnapshot(values, stamp)
+        }
+
+    private fun legacyPreparationSnapshot(values: Preferences, stamp: PersonalDataDisplayMemory.Stamp) =
+        LegacySessionPreparationSnapshot(this, { it.asMap() == values.asMap() },
+            { current, generation -> current[AUTH_SESSION_KEY] == generation &&
+                current.asMap().filterKeys { it.name != AUTH_SESSION_KEY.name } == values.asMap() },
+            stamp, legacySessionClassification(values), { replicaPresentationWitness(values) })
+
+    /** Bind completion to the persisted successor AND its still-current memory stamp.
+     * A competing refresh/login never lets an old result publish under a new source. */
+    internal suspend fun completedLegacySessionPreparationWhileAccountLocked(
+        expected: LegacySessionPreparationSnapshot, result: LegacySessionGenerationResult?
+    ): LegacySessionPreparationSnapshot? = withContext(Dispatchers.IO) {
+        val stamp = capturePersonalDisplayStamp() ?: return@withContext null
+        val values = dataStore.data.first()
+        val matches = if (result is LegacySessionGenerationResult.CreatedGeneration)
+            expected.prepared(values, result.generation) else expected.unchanged(values)
+        if (expected.owner !== this@TokenManager || !matches || !isCurrentPersonalDisplayStamp(stamp)) null
+        else legacyPreparationSnapshot(values, stamp)
+    }
+
+    internal suspend fun isCurrentLegacySessionPreparationWhileAccountLocked(expected: LegacySessionPreparationSnapshot): Boolean =
+        withContext(Dispatchers.IO) { expected.owner === this@TokenManager && expected.unchanged(dataStore.data.first()) }
+
+    private fun legacySessionClassification(values: Preferences): LegacySessionGenerationResult? {
+        val raw = values.asMap().entries.singleOrNull { it.key.name == AUTH_SESSION_KEY.name }
+        if (raw != null) {
+            val generation = raw.value as? String
+            return if (generation != null && com.dayforge.domain.model.isContractUuid(generation))
+                LegacySessionGenerationResult.CurrentGeneration(generation)
+            else LegacySessionGenerationResult.NotApplicable
+        }
+        val user = values[USER_ID_KEY] ?: return LegacySessionGenerationResult.NotApplicable
+        if (values[SYNC_ACCOUNT_ID_KEY] != user || !com.dayforge.domain.model.isContractUuid(user))
+            return LegacySessionGenerationResult.NotApplicable
+        val server = values[SERVER_INSTANCE_ID_KEY]
+        val epoch = values[SYNC_EPOCH_KEY]
+        if ((server == null) != (epoch == null) || listOfNotNull(server, epoch, values[SYNC_DEVICE_ID_KEY])
+                .any { !com.dayforge.domain.model.isContractUuid(it) })
+            return LegacySessionGenerationResult.NotApplicable
+        return null
+    }
+
+    /** Metadata preparation only, AFTER the caller's full SQL recovery inspection and actual
+     * Room END, still under the SAME account lock. This method never enters Host/Room/account
+     * locks. The one actor compares every raw field, repeats the complete recovery metadata
+     * validation and decrypts the CURRENT access once. Refresh is bound but never decrypted.
+     */
+    internal suspend fun prepareLegacySessionGenerationWhileAccountLocked(
+        expected: LegacySessionPreparationSnapshot
+    ): LegacySessionGenerationResult = withContext(Dispatchers.IO) {
+        check(expected.owner === this@TokenManager) { "LEGACY_SESSION_PREPARATION_OWNER" }
+        // Existing/noncanonical sessions retain all original fresh authority and permission
+        // checks. A read-only classification cannot manufacture new command authority.
+        expected.classification?.let { disposition ->
+            return@withContext if (expected.unchanged(dataStore.data.first())) disposition
+                else LegacySessionGenerationResult.Stale
+        }
+        var created = false
+        var outcome: LegacySessionGenerationResult = LegacySessionGenerationResult.Stale
+        val saved = editPreferences { values ->
+            if (!expected.unchanged(values)) return@editPreferences
+            check(legacySessionClassification(values) == null) { "LEGACY_SESSION_PREPARATION_CHANGED" }
+            val recovery = replicaPresentationWitness(values)
+            check(!recovery.pointerPresent && recovery.history.none { !it.terminal }) {
+                ReplicaSwitchGuard.PENDING
+            }
+            if (values[ACCESS_TOKEN_KEY]?.let(tokenCipher::decrypt) == null) {
+                outcome = LegacySessionGenerationResult.AuthenticationUnavailable
+                return@editPreferences
+            }
+            values[AUTH_SESSION_KEY] = UUID.randomUUID().toString()
+            // This temporary outcome is never published before editPreferences joins actual
+            // persistence AND rechecks caller cancellation. Read the generation from saved.
+            created = true
+        }
+        if (created)
+            LegacySessionGenerationResult.CreatedGeneration(requireNotNull(saved[AUTH_SESSION_KEY]))
+        else outcome
+    }
+
     /** Read request credentials and their account generation from one DataStore snapshot. */
     suspend fun authenticationSnapshot(): AuthenticationSnapshot? =
-        snapshot(dataStore.data.first())
+        withContext(Dispatchers.IO) { snapshot(dataStore.data.first()) }
 
     /** Credential-free UI generation only, NOT authenticated access. Allows explicit recovery
      * login even when old Keystore ciphertext is unusable; actual operations still prove auth.
@@ -329,15 +482,14 @@ class TokenManager @Inject constructor(
     }
 
     /** Read ownership, generation, replica and permissions from the same persisted snapshot. */
-    internal suspend fun localFactAccess(): LocalFactAccess? {
-        return factAccess(dataStore.data.first())
-    }
+    internal suspend fun localFactAccess(): LocalFactAccess? =
+        withContext(Dispatchers.IO) { factAccess(dataStore.data.first()) }
 
     internal val factAccessChanges: Flow<LocalFactAccess?> = dataStore.data.map(::factAccess)
         .distinctUntilChanged().flowOn(Dispatchers.IO)
 
     private fun factAccess(preferences: Preferences): LocalFactAccess? {
-        val authentication = snapshot(preferences)?.session ?: return null
+        val authentication = verifiedLocalSession(preferences) ?: return null
         if (preferences[SYNC_ACCOUNT_ID_KEY] != authentication.userId) return null
         val server = preferences[SERVER_INSTANCE_ID_KEY]
         val epoch = preferences[SYNC_EPOCH_KEY]
@@ -349,6 +501,26 @@ class TokenManager @Inject constructor(
         )
     }
 
+    /** Explicit original v4 channel, not a catch-all core-null permission. Identity may be
+     * opaque, but credentials/account/replica are still proved from ONE fresh snapshot.
+     * Capability metadata participates in fresh equality only. The original legacy metric
+     * read/write entry does not turn canAppend into an additional business gate. */
+    internal suspend fun localOpaqueMetricAccess(): LocalOpaqueMetricAccess? = withContext(Dispatchers.IO) {
+        val values = dataStore.data.first()
+        if (ReplicaSwitchGuard.blocked(values)) return@withContext null
+        val device = values[SYNC_DEVICE_ID_KEY]
+        val identities = listOfNotNull(values[USER_ID_KEY] ?: return@withContext null,
+            values[AUTH_SESSION_KEY] ?: "legacy", values[SERVER_INSTANCE_ID_KEY], values[SYNC_EPOCH_KEY], device)
+        // Pure exclusion only: null grants nothing; the canonical caller still performs its
+        // original fresh core check. Do not decrypt the canonical access token twice merely
+        // to determine that this compatibility lane does not apply.
+        if (identities.all { com.dayforge.domain.model.isContractUuid(it) }) return@withContext null
+        val facts = factAccess(values) ?: return@withContext null
+        LocalOpaqueMetricAccess(facts, device, values[DEVICE_CAPABILITIES_KNOWN_KEY],
+            values[DEVICE_CAPABILITIES_KEY]?.let { java.util.Collections.unmodifiableSet(it.toSet()) },
+            values[DEVICE_CAPABILITY_REVISION_KEY], values[DEVICE_CAPABILITIES_DEVICE_KEY], values[DEVICE_PRIMARY_EDITOR_KEY])
+    }
+
     /** Called inside the owning preferences actor after its caller proved the Room habit UUID.
      * No account-lock re-entry or second DataStore snapshot; this is not a business-write grant.
      */
@@ -357,10 +529,46 @@ class TokenManager @Inject constructor(
         check(factAccess(values)?.session == expected) { "HABIT_PREFERENCE_SESSION_CHANGED" }
     }
 
-    internal suspend fun localIconAccess(): LocalIconAccess? = iconAccess(dataStore.data.first())
+    internal suspend fun localIconAccess(): LocalIconAccess? =
+        withContext(Dispatchers.IO) { iconAccess(dataStore.data.first()) }
 
     internal suspend fun localCoreWriteAccess(): LocalCoreWriteAccess? = withContext(Dispatchers.IO) {
         coreWriteAccess(dataStore.data.first())
+    }
+
+    /** One fresh persisted snapshot and one original core credential check. Keep exact
+     * registration metadata (including a revision-only change) without granting sync/icon
+     * authority to an unregistered device. No credential value leaves this method.
+     */
+    internal suspend fun localCommandRecoveryAccess(): LocalCommandRecoveryAccess? = withContext(Dispatchers.IO) {
+        val values = dataStore.data.first()
+        val core = coreWriteAccess(values) ?: return@withContext null
+        fun immutable(value: Set<String>?) = value?.let { java.util.Collections.unmodifiableSet(it.toSet()) }
+        LocalCommandRecoveryAccess(core.copy(capabilities = immutable(core.capabilities)),
+            values[DEVICE_CAPABILITIES_KNOWN_KEY], immutable(values[DEVICE_CAPABILITIES_KEY]),
+            values[DEVICE_CAPABILITY_REVISION_KEY], values[DEVICE_CAPABILITIES_DEVICE_KEY],
+            values[DEVICE_PRIMARY_EDITOR_KEY], values[INSTALLATION_ID_KEY])
+    }
+
+    /** Lifecycle signal, not a reusable write grant. Authenticate EVERY preferences emission
+     * before deduplicating the result, including unrelated edits after Keystore invalidation.
+     * Cold by design: no replayed authority across subscribers or operations.
+     */
+    internal val coreAccessChanges: Flow<LocalCoreWriteAccess?> = dataStore.data.map(::coreWriteAccess)
+        .distinctUntilChanged().flowOn(Dispatchers.IO)
+
+    /** Only lifecycle changes invalidate a presentation. Still decrypt every emitted snapshot. */
+    internal val personalDisplayChanges: Flow<Unit> = dataStore.data.map {
+        coreWriteAccess(it) to personalDisplayIdentity(it)
+    }.distinctUntilChanged().map { Unit }.flowOn(Dispatchers.IO)
+
+    /** Final fence for one display transaction, not a reusable write grant. Core/freeze and
+     * registered device permissions must agree in ONE fresh snapshot and one real decryption.
+     */
+    internal suspend fun isCurrentDisplayReadAuthority(core: LocalCoreWriteAccess,
+        registered: LocalSyncAccess?): Boolean = withContext(Dispatchers.IO) {
+        val values = dataStore.data.first()
+        coreWriteAccess(values) == core && (registered == null || syncAccessMetadata(values) == registered)
     }
 
     /** Read-only recovery proof, never a ticket for an ordinary writer. */
@@ -372,8 +580,10 @@ class TokenManager @Inject constructor(
     internal val replicaPresentationChanges: Flow<Unit> = dataStore.data.map { Unit }
 
     /** One actual snapshot, no credential export. Orphan/corrupt stages are not an open replica. */
-    internal suspend fun replicaPresentationWitness(): ReplicaPresentationWitness {
-        val values = dataStore.data.first()
+    internal suspend fun replicaPresentationWitness(): ReplicaPresentationWitness =
+        replicaPresentationWitness(dataStore.data.first())
+
+    private suspend fun replicaPresentationWitness(values: Preferences): ReplicaPresentationWitness {
         val rows = values.asMap().filterKeys { it.name.startsWith(ReplicaSwitchStage.KEY_PREFIX) }
         val historyRows = values.asMap().filterKeys { ReplicaSwitchStage.isHistoryKey(it.name) }
         check(historyRows.values.sumOf { (it as? String)?.toByteArray(Charsets.UTF_8)?.size?.toLong()
@@ -560,7 +770,7 @@ class TokenManager @Inject constructor(
     }
 
     private fun observationCoreAccess(preferences: Preferences): LocalCoreWriteAccess? {
-        val authentication = snapshot(preferences)?.session ?: return null
+        val authentication = verifiedLocalSession(preferences) ?: return null
         if (preferences[SYNC_ACCOUNT_ID_KEY] != authentication.userId ||
             !com.dayforge.domain.model.isContractUuid(authentication.userId) ||
             !com.dayforge.domain.model.isContractUuid(authentication.generation)) return null
@@ -587,6 +797,14 @@ class TokenManager @Inject constructor(
         syncAccessMetadata(preferences) == expected &&
             preferences[ACCESS_TOKEN_KEY]?.let(tokenCipher::decrypt) != null
     }
+
+    /** Fresh authority for a guard which consumes no HTTP credentials. Registered guards
+     * prove current metadata and access ciphertext; registration keeps its original snapshot
+     * contract. Neither branch caches authority or replaces the caller's final fresh guard.
+     */
+    internal suspend fun isCurrentSyncAuthorityForValidation(expected: LocalSyncAccess): Boolean =
+        if (expected.deviceId != null) isCurrentSyncAuthority(expected)
+        else syncAuthenticationSnapshot(expected) != null
 
     /** Discovery supplies the explicit replica, but never rewrites the persisted owner/replica. */
     internal suspend fun registrationSyncAccess(server: String, epoch: String): LocalSyncAccess? = withContext(Dispatchers.IO) {
@@ -637,10 +855,10 @@ class TokenManager @Inject constructor(
         .distinctUntilChanged().flowOn(Dispatchers.IO)
 
     /** Bind credentials and all material permissions to ONE actual persisted snapshot. */
-    internal suspend fun iconAuthenticationSnapshot(expected: LocalIconAccess): AuthenticationSnapshot? {
+    internal suspend fun iconAuthenticationSnapshot(expected: LocalIconAccess): AuthenticationSnapshot? = withContext(Dispatchers.IO) {
         val preferences = dataStore.data.first()
-        if (iconAccessMetadata(preferences) != expected) return null
-        return snapshot(preferences)?.takeIf { it.session == expected.session.authentication }
+        if (iconAccessMetadata(preferences) != expected) return@withContext null
+        snapshot(preferences)?.takeIf { it.session == expected.session.authentication }
     }
 
     private fun iconAccess(preferences: Preferences): LocalIconAccess? {
@@ -671,6 +889,15 @@ class TokenManager @Inject constructor(
             LocalDataSession(authentication, server, epoch), device, revision,
             "structure.write" in capabilities
         )
+    }
+
+    /** Local guards need a freshly decrypted access token, not HTTP refresh credentials.
+     * No plaintext or authority cache: re-read and prove the current ciphertext on every call.
+     */
+    private fun verifiedLocalSession(preferences: Preferences): AuthenticationSession? {
+        val userId = preferences[USER_ID_KEY] ?: return null
+        preferences[ACCESS_TOKEN_KEY]?.let(tokenCipher::decrypt) ?: return null
+        return AuthenticationSession(userId, preferences[AUTH_SESSION_KEY] ?: "legacy")
     }
 
     private fun snapshot(preferences: Preferences): AuthenticationSnapshot? {

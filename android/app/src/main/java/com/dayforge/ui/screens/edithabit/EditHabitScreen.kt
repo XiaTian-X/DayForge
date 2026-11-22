@@ -45,15 +45,16 @@ fun EditHabitScreen(
     habitId: Long,
     viewModel: EditHabitViewModel = hiltViewModel(),
     onNavigateBack: () -> Unit,
-    onHabitDeleted: () -> Unit
+    onHabitDeleted: () -> Unit,
+    sourceSelection: com.dayforge.data.local.DatabaseObjectSelection? = null
 ) {
-    val uiState by viewModel.uiState.collectAsState(context = kotlinx.coroutines.Dispatchers.Main)
+    val observedState by viewModel.uiState.collectAsState(context = kotlinx.coroutines.Dispatchers.Main)
+    // Every callback closes over the same immutable frame that supplied its rendered data.
+    val uiState = observedState
 
     // Load habit on first composition - only if not already loaded
-    LaunchedEffect(habitId) {
-        if (uiState.habitId != habitId && !uiState.habitNotFound) {
-            viewModel.loadHabit(habitId)
-        }
+    LaunchedEffect(habitId, sourceSelection) {
+        viewModel.loadHabit(habitId, sourceSelection)
     }
 
     if (uiState.habitNotFound) {
@@ -71,7 +72,7 @@ fun EditHabitScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = viewModel::toggleDeleteDialog) {
+                    IconButton(enabled = !uiState.isSaving && !uiState.isDeleting, onClick = { viewModel.toggleDeleteDialogFrom(uiState) }) {
                         Icon(
                             Icons.Default.Delete,
                             contentDescription = stringResource(R.string.action_delete),
@@ -82,7 +83,11 @@ fun EditHabitScreen(
             )
         }
     ) { padding ->
-        if (uiState.isLoading) {
+        if (uiState.sourceExpired) {
+            Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                Text(stringResource(R.string.database_view_expired))
+            }
+        } else if (uiState.isLoading) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -102,7 +107,7 @@ fun EditHabitScreen(
                 // Name field
                 OutlinedTextField(
                     value = uiState.name,
-                    onValueChange = viewModel::updateName,
+                    onValueChange = { value -> viewModel.updateNameFrom(uiState, value) },
                     label = { Text(stringResource(R.string.edit_habit_name_required)) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
@@ -114,7 +119,7 @@ fun EditHabitScreen(
                 // Description field
                 OutlinedTextField(
                     value = uiState.description,
-                    onValueChange = viewModel::updateDescription,
+                    onValueChange = { value -> viewModel.updateDescriptionFrom(uiState, value) },
                     label = { Text(stringResource(R.string.edit_habit_description_optional)) },
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 2
@@ -126,9 +131,9 @@ fun EditHabitScreen(
                 if (uiState.habitType != HabitType.GOAL) {
                     // Lazy load top-level habits when selector is expanded
                     var parentSelectorExpanded by remember { mutableStateOf(false) }
-                    LaunchedEffect(parentSelectorExpanded) {
+                    LaunchedEffect(parentSelectorExpanded, uiState.sourceSelection) {
                         if (parentSelectorExpanded) {
-                            viewModel.loadTopLevelHabitsIfNeeded()
+                            viewModel.loadTopLevelHabitsFrom(uiState)
                         }
                     }
 
@@ -138,9 +143,9 @@ fun EditHabitScreen(
                         currentHabitId = uiState.habitId,
                         showSelector = uiState.showParentSelector,
                         onExpand = { parentSelectorExpanded = true },
-                        onToggleSelector = viewModel::toggleParentSelector,
-                        onSelectParent = viewModel::updateParentHabit,
-                        onClearParent = viewModel::clearParentHabit
+                        onToggleSelector = { viewModel.toggleParentSelectorFrom(uiState) },
+                        onSelectParent = { value -> viewModel.updateParentHabitFrom(uiState, value) },
+                        onClearParent = { viewModel.clearParentHabitFrom(uiState) }
                     )
 
                     Spacer(modifier = Modifier.height(16.dp))
@@ -166,7 +171,7 @@ fun EditHabitScreen(
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilterChip(
                             selected = !uiState.isCountdown,
-                            onClick = { viewModel.updateIsCountdown(false) },
+                            onClick = { viewModel.updateIsCountdownFrom(uiState, false) },
                             label = { Text(countupLabel) },
                             leadingIcon = if (!uiState.isCountdown) {
                                 { Icon(Icons.Default.Check, null, Modifier.size(18.dp)) }
@@ -174,7 +179,7 @@ fun EditHabitScreen(
                         )
                         FilterChip(
                             selected = uiState.isCountdown,
-                            onClick = { viewModel.updateIsCountdown(true) },
+                            onClick = { viewModel.updateIsCountdownFrom(uiState, true) },
                             label = { Text(countdownLabel) },
                             leadingIcon = if (uiState.isCountdown) {
                                 { Icon(Icons.Default.Check, null, Modifier.size(18.dp)) }
@@ -197,7 +202,7 @@ fun EditHabitScreen(
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilterChip(
                             selected = uiState.schedule is HabitSchedule.Daily,
-                            onClick = { viewModel.updateSchedule(HabitSchedule.Daily) },
+                            onClick = { viewModel.updateScheduleFrom(uiState, HabitSchedule.Daily) },
                             label = { Text(stringResource(R.string.frequency_daily)) },
                             enabled = isScheduleOptionAllowed(1),  // Daily = 1 day
                             leadingIcon = if (uiState.schedule is HabitSchedule.Daily) {
@@ -206,7 +211,7 @@ fun EditHabitScreen(
                         )
                         FilterChip(
                             selected = uiState.schedule is HabitSchedule.Weekly,
-                            onClick = { viewModel.updateSchedule(HabitSchedule.Weekly(emptyList())) },
+                            onClick = { viewModel.updateScheduleFrom(uiState, HabitSchedule.Weekly(emptyList())) },
                             label = { Text(stringResource(R.string.frequency_weekly)) },
                             enabled = isScheduleOptionAllowed(7),  // Weekly = 7 days
                             leadingIcon = if (uiState.schedule is HabitSchedule.Weekly) {
@@ -215,7 +220,7 @@ fun EditHabitScreen(
                         )
                         FilterChip(
                             selected = uiState.schedule is HabitSchedule.Monthly,
-                            onClick = { viewModel.updateSchedule(HabitSchedule.Monthly(1)) },
+                            onClick = { viewModel.updateScheduleFrom(uiState, HabitSchedule.Monthly(1)) },
                             label = { Text(stringResource(R.string.frequency_monthly)) },
                             enabled = isScheduleOptionAllowed(30),  // Monthly = 30 days
                             leadingIcon = if (uiState.schedule is HabitSchedule.Monthly) {
@@ -224,7 +229,7 @@ fun EditHabitScreen(
                         )
                         FilterChip(
                             selected = uiState.schedule is HabitSchedule.Custom,
-                            onClick = { viewModel.updateSchedule(HabitSchedule.Custom(1)) },
+                            onClick = { viewModel.updateScheduleFrom(uiState, HabitSchedule.Custom(1)) },
                             label = { Text(stringResource(R.string.frequency_custom)) },
                             enabled = true,  // Custom is always selectable (per context D-03)
                             leadingIcon = if (uiState.schedule is HabitSchedule.Custom) {
@@ -278,7 +283,7 @@ fun EditHabitScreen(
                         Spacer(modifier = Modifier.height(8.dp))
                         OutlinedTextField(
                             value = uiState.customInputValue,
-                            onValueChange = { viewModel.updateCustomInput(it) },
+                            onValueChange = { viewModel.updateCustomInputFrom(uiState, it) },
                             label = { Text(stringResource(R.string.edit_habit_frequency_days)) },
                             supportingText = { Text(stringResource(R.string.edit_habit_frequency_max, uiState.originalScheduleDays)) },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -291,7 +296,7 @@ fun EditHabitScreen(
                         Spacer(modifier = Modifier.height(8.dp))
                         OutlinedTextField(
                             value = uiState.monthlyInputValue,
-                            onValueChange = { viewModel.updateMonthlyInput(it) },
+                            onValueChange = { viewModel.updateMonthlyInputFrom(uiState, it) },
                             label = { Text(stringResource(R.string.edit_habit_day_of_month)) },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             modifier = Modifier.fillMaxWidth()
@@ -308,7 +313,7 @@ fun EditHabitScreen(
                     OutlinedTextField(
                         value = uiState.targetValue?.toString() ?: "",
                         onValueChange = {
-                            viewModel.updateTargetValue(it.toIntOrNull())
+                            viewModel.updateTargetValueFrom(uiState, it.toIntOrNull())
                         },
                         label = { Text(if (uiState.habitType == HabitType.TIMER) stringResource(R.string.edit_habit_daily_target_minutes) else stringResource(R.string.edit_habit_daily_target)) },
                         modifier = Modifier.fillMaxWidth()
@@ -321,7 +326,7 @@ fun EditHabitScreen(
                     value = uiState.targetCycles?.toString() ?: "",
                     onValueChange = {
                         val filtered = it.filter { c -> c.isDigit() }
-                        viewModel.updateTargetCycles(filtered.toIntOrNull()?.coerceAtLeast(1))
+                        viewModel.updateTargetCyclesFrom(uiState, filtered.toIntOrNull()?.coerceAtLeast(1))
                     },
                     label = { Text(stringResource(R.string.edit_habit_target_optional)) },
                     supportingText = {
@@ -353,7 +358,7 @@ fun EditHabitScreen(
                             selected = uiState.failMode == FailMode.STRICT,
                             onClick = {
                                 if (!uiState.hasCompletions) {
-                                    viewModel.updateFailMode(FailMode.STRICT)
+                                    viewModel.updateFailModeFrom(uiState, FailMode.STRICT)
                                 }
                             },
                             label = { Text(stringResource(R.string.edit_habit_strict_mode)) },
@@ -364,7 +369,7 @@ fun EditHabitScreen(
                             selected = uiState.failMode == FailMode.LOOSE,
                             onClick = {
                                 if (!uiState.hasCompletions) {
-                                    viewModel.updateFailMode(FailMode.LOOSE)
+                                    viewModel.updateFailModeFrom(uiState, FailMode.LOOSE)
                                 }
                             },
                             label = { Text(stringResource(R.string.edit_habit_relaxed_mode)) },
@@ -392,7 +397,7 @@ fun EditHabitScreen(
                 if (uiState.completionPolicy != "one_and_done") Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { viewModel.toggleTimePicker() },
+                        .clickable { viewModel.toggleTimePickerFrom(uiState) },
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                 ) {
                     Row(
@@ -433,7 +438,7 @@ fun EditHabitScreen(
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { viewModel.toggleIconPicker() },
+                        .clickable { viewModel.toggleIconPickerFrom(uiState) },
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                 ) {
                     Row(
@@ -453,7 +458,7 @@ fun EditHabitScreen(
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { viewModel.toggleColorPicker() },
+                        .clickable { viewModel.toggleColorPickerFrom(uiState) },
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                 ) {
                     Row(
@@ -479,9 +484,9 @@ fun EditHabitScreen(
                 var metricSectionExpanded by remember { mutableStateOf(false) }
 
                 // Lazy load metrics when section expands
-                LaunchedEffect(metricSectionExpanded) {
+                LaunchedEffect(metricSectionExpanded, uiState.sourceSelection) {
                     if (metricSectionExpanded) {
-                        viewModel.loadMetricsIfNeeded()
+                        viewModel.loadMetricsFrom(uiState)
                     }
                 }
 
@@ -540,13 +545,13 @@ fun EditHabitScreen(
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .clickable { viewModel.toggleMetricSelection(metric.id) }
+                                            .clickable { viewModel.toggleMetricSelectionFrom(uiState, metric.id) }
                                             .padding(vertical = 4.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Checkbox(
                                             checked = metric.id in uiState.selectedMetricIds,
-                                            onCheckedChange = { viewModel.toggleMetricSelection(metric.id) }
+                                            onCheckedChange = { viewModel.toggleMetricSelectionFrom(uiState, metric.id) }
                                         )
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Text(
@@ -565,10 +570,10 @@ fun EditHabitScreen(
                 // Save button
                 Button(
                     onClick = {
-                        viewModel.saveChanges { onNavigateBack() }
+                        viewModel.saveChangesFrom(uiState) { onNavigateBack() }
                     },
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = uiState.hasChanges && uiState.isValid && !uiState.isSaving
+                    enabled = uiState.hasChanges && uiState.isValid && !uiState.isSaving && !uiState.isDeleting
                 ) {
                     if (uiState.isSaving) {
                         CircularProgressIndicator(
@@ -587,11 +592,11 @@ fun EditHabitScreen(
     if (uiState.showIconPicker) {
         val appearance = uiState.appearance
         if (appearance != null) ObjectAppearancePicker(appearance, uiState.completionPolicy == "one_and_done",
-            uiState.editAuthority, onSelected = viewModel::updateAppearance, onDismiss = viewModel::toggleIconPicker)
+            uiState.editAuthority, onSelected = { value -> viewModel.updateAppearanceFrom(uiState, value) }, onDismiss = { viewModel.toggleIconPickerFrom(uiState) })
         else IconPicker(
             selectedIconId = uiState.iconResId,
-            onIconSelected = viewModel::updateIcon,
-            onDismiss = viewModel::toggleIconPicker
+            onIconSelected = { value -> viewModel.updateIconFrom(uiState, value) },
+            onDismiss = { viewModel.toggleIconPickerFrom(uiState) }
         )
     }
 
@@ -599,39 +604,41 @@ fun EditHabitScreen(
     if (uiState.showColorPicker) {
         ColorPicker(
             selectedColor = uiState.colorHex,
-            onColorSelected = viewModel::updateColor,
-            onDismiss = viewModel::toggleColorPicker
+            onColorSelected = { value -> viewModel.updateColorFrom(uiState, value) },
+            onDismiss = { viewModel.toggleColorPickerFrom(uiState) }
         )
     }
 
     // Delete confirmation dialog
     if (uiState.showDeleteDialog) {
         DeleteConfirmationDialog(
+            busy = uiState.isDeleting,
             habitName = uiState.name,
             onConfirm = {
-                viewModel.deleteHabit(onHabitDeleted)
+                viewModel.deleteHabitFrom(uiState, onHabitDeleted)
             },
-            onDismiss = viewModel::toggleDeleteDialog
+            onDismiss = { viewModel.toggleDeleteDialogFrom(uiState) }
         )
     }
 
     // Children deletion confirmation dialog
     if (uiState.showDeleteChildrenDialog) {
         AlertDialog(
-            onDismissRequest = { viewModel.dismissDeleteChildrenDialog() },
+            onDismissRequest = { viewModel.dismissDeleteChildrenDialogFrom(uiState) },
             title = { Text(stringResource(R.string.dialog_delete_habit_with_children_title)) },
             text = {
                 Text(stringResource(R.string.dialog_delete_habit_with_children_message, uiState.name, uiState.pendingDeleteChildrenCount))
             },
             confirmButton = {
                 TextButton(
-                    onClick = { viewModel.deleteHabitWithChildren(onHabitDeleted) }
+                    enabled = !uiState.isDeleting,
+                    onClick = { viewModel.deleteHabitWithChildrenFrom(uiState, onHabitDeleted) }
                 ) {
                     Text(stringResource(R.string.dialog_delete_habit_with_children), color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { viewModel.deleteHabitKeepChildren(onHabitDeleted) }) {
+                TextButton(enabled = !uiState.isDeleting, onClick = { viewModel.deleteHabitKeepChildrenFrom(uiState, onHabitDeleted) }) {
                     Text(stringResource(R.string.dialog_delete_habit_keep_children))
                 }
             }
@@ -641,11 +648,11 @@ fun EditHabitScreen(
     // Duplicate name error dialog
     if (uiState.showDuplicateDialog) {
         AlertDialog(
-            onDismissRequest = { viewModel.dismissDuplicateDialog() },
+            onDismissRequest = { viewModel.dismissDuplicateDialogFrom(uiState) },
             title = { Text(stringResource(R.string.dialog_cannot_save)) },
             text = { Text(stringResource(R.string.dialog_duplicate_habit_name)) },
             confirmButton = {
-                TextButton(onClick = { viewModel.dismissDuplicateDialog() }) {
+                TextButton(onClick = { viewModel.dismissDuplicateDialogFrom(uiState) }) {
                     Text(stringResource(R.string.action_confirm))
                 }
             }
@@ -655,11 +662,11 @@ fun EditHabitScreen(
     // Active timer blocking dialog
     if (uiState.showActiveTimerDialog) {
         AlertDialog(
-            onDismissRequest = { viewModel.dismissActiveTimerDialog() },
+            onDismissRequest = { viewModel.dismissActiveTimerDialogFrom(uiState) },
             title = { Text(stringResource(R.string.dialog_cannot_change_mode)) },
             text = { Text(stringResource(R.string.dialog_timer_running_message)) },
             confirmButton = {
-                TextButton(onClick = { viewModel.dismissActiveTimerDialog() }) {
+                TextButton(onClick = { viewModel.dismissActiveTimerDialogFrom(uiState) }) {
                     Text(stringResource(R.string.action_confirm))
                 }
             }
@@ -669,16 +676,16 @@ fun EditHabitScreen(
     // Default target value dialog
     if (uiState.showDefaultTargetDialog) {
         AlertDialog(
-            onDismissRequest = { viewModel.dismissDefaultTargetDialog() },
+            onDismissRequest = { viewModel.dismissDefaultTargetDialogFrom(uiState) },
             title = { Text(stringResource(R.string.dialog_target_empty_title)) },
             text = { Text(stringResource(R.string.dialog_target_empty_message)) },
             dismissButton = {
-                TextButton(onClick = { viewModel.dismissDefaultTargetDialog() }) {
+                TextButton(onClick = { viewModel.dismissDefaultTargetDialogFrom(uiState) }) {
                     Text(stringResource(R.string.action_cancel))
                 }
             },
             confirmButton = {
-                TextButton(onClick = { viewModel.confirmDefaultTarget { onNavigateBack() } }) {
+                TextButton(onClick = { viewModel.confirmDefaultTargetFrom(uiState) { onNavigateBack() } }) {
                     Text(stringResource(R.string.action_confirm))
                 }
             }
@@ -688,16 +695,16 @@ fun EditHabitScreen(
     // Default schedule value dialog
     if (uiState.showDefaultScheduleDialog) {
         AlertDialog(
-            onDismissRequest = { viewModel.dismissDefaultScheduleDialog() },
+            onDismissRequest = { viewModel.dismissDefaultScheduleDialogFrom(uiState) },
             title = { Text(stringResource(R.string.dialog_value_empty_title)) },
             text = { Text(stringResource(R.string.dialog_value_empty_message)) },
             dismissButton = {
-                TextButton(onClick = { viewModel.dismissDefaultScheduleDialog() }) {
+                TextButton(onClick = { viewModel.dismissDefaultScheduleDialogFrom(uiState) }) {
                     Text(stringResource(R.string.action_cancel))
                 }
             },
             confirmButton = {
-                TextButton(onClick = { viewModel.confirmDefaultSchedule { onNavigateBack() } }) {
+                TextButton(onClick = { viewModel.confirmDefaultScheduleFrom(uiState) { onNavigateBack() } }) {
                     Text(stringResource(R.string.action_confirm))
                 }
             }
@@ -712,7 +719,7 @@ fun EditHabitScreen(
             is24Hour = true
         )
         AlertDialog(
-            onDismissRequest = { viewModel.toggleTimePicker() },
+            onDismissRequest = { viewModel.toggleTimePickerFrom(uiState) },
             title = { Text(stringResource(R.string.edit_habit_best_time_label)) },
             text = {
                 Column {
@@ -727,8 +734,8 @@ fun EditHabitScreen(
             },
             dismissButton = {
                 TextButton(onClick = {
-                    viewModel.clearBestTime()
-                    viewModel.toggleTimePicker()
+                    viewModel.clearBestTimeFrom(uiState)
+                    viewModel.toggleTimePickerFrom(uiState)
                 }) {
                     Text(stringResource(R.string.edit_habit_best_time_none))
                 }
@@ -736,8 +743,8 @@ fun EditHabitScreen(
             confirmButton = {
                 TextButton(onClick = {
                     val minutes = timePickerState.hour * 60L + timePickerState.minute
-                    viewModel.updateBestTime(minutes)
-                    viewModel.toggleTimePicker()
+                    viewModel.updateBestTimeFrom(uiState, minutes)
+                    viewModel.toggleTimePickerFrom(uiState)
                 }) {
                     Text(stringResource(R.string.action_confirm))
                 }

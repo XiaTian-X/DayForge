@@ -11,6 +11,17 @@ import org.junit.runner.RunWith
 class TimerHistoryStorageTest : NextCoreRequestFixture() {
     private suspend fun proof() = db.withTransaction { nextRestartDatabaseProof(db) }
 
+    @Test fun changedDisplayRowMustReloadButRecoveryAndDifferentIdentityStillReject() = runBlocking<Unit> {
+        val reader = TimerHistoryReader(db, tokens, sessions)
+        db.habitDao().updateActivityRate(timerHabit.id, 7)
+        val before = proof()
+        assertTrue(rejected { reader.read(timerHabit) } is HabitReadSnapshotChanged)
+        val current = requireNotNull(db.habitDao().getHabitById(timerHabit.id))
+        assertFalse(reader.read(current).completedToday)
+        assertFalse(rejected { reader.read(current.copy(uuid = id(999))) } is HabitReadSnapshotChanged)
+        assertEquals(before, proof())
+    }
+
     @Test fun wrappedRawIntegersAreRejectedWithoutRepairingTimersOrQueues() = runBlocking<Unit> {
         register(); start()
         val reader = TimerHistoryReader(db, tokens, sessions)

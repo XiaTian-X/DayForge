@@ -8,12 +8,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -40,7 +42,8 @@ import com.dayforge.ui.components.StreakIndicator
 import com.dayforge.ui.components.TargetProgressIndicator
 import androidx.compose.ui.res.stringResource
 import com.dayforge.R
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.compose.ui.text.font.FontWeight
 import java.util.Locale
 
@@ -64,31 +67,84 @@ fun HabitDetailScreen(
     onNavigateBack: () -> Unit,
     onEditClick: (Long) -> Unit = {},
     onEditGoalClick: (Long) -> Unit = {},
-    viewModel: HabitDetailViewModel = hiltViewModel()
+    viewModel: HabitDetailViewModel = hiltViewModel(),
+    sourceSelection: com.dayforge.data.local.DatabaseObjectSelection? = null,
+    onEditHabitSelection: ((com.dayforge.data.local.DatabaseObjectSelection) -> Unit)? = null,
+    onEditGoalSelection: ((com.dayforge.data.local.DatabaseObjectSelection) -> Unit)? = null
 ) {
-    val state by viewModel.uiState.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    LifecycleStartEffect(viewModel) {
+        viewModel.resumeReads()
+        onStopOrDispose { viewModel.pauseReads() }
+    }
+    val observedState by viewModel.uiState.collectAsStateWithLifecycle()
+    // Capture this composition's complete frame; a retained callback must not read a newer
+    // delegated State value and attach its authority to an older visible input.
+    val state = observedState
+    val busyHabitIds by viewModel.busyHabitIds.collectAsStateWithLifecycle()
+    val promptFrameValue by viewModel.postCheckInFrame.collectAsStateWithLifecycle()
+    val fixedPrompt by viewModel.postCheckInState.collectAsStateWithLifecycle()
+    val promptFrame = promptFrameValue
+    val countPrompt = if (viewModel.fixedGraphConstruction) fixedPrompt else promptFrame?.value
 
-    LaunchedEffect(habitId) {
-        viewModel.loadHabit(habitId)
+    LaunchedEffect(habitId, sourceSelection) {
+        viewModel.loadHabit(habitId, sourceSelection)
     }
 
     // Per TARGET-02: Reactivation confirmation dialog for target-based habits
     if (state.showReactivationDialog) {
         AlertDialog(
-            onDismissRequest = { viewModel.dismissReactivationDialog() },
+            onDismissRequest = { viewModel.dismissReactivationDialog(state) },
             title = { Text(stringResource(R.string.dialog_reactivate_title)) },
             text = {
                 Text(stringResource(if (state.reactivationPreservesHistory) R.string.restart_message
                     else R.string.dialog_reactivate_habit_message, state.reactivationHabitName))
             },
             confirmButton = {
-                TextButton(onClick = { viewModel.confirmReactivation() }) {
+                TextButton(enabled = habitId !in busyHabitIds, onClick = { viewModel.confirmReactivation(state) }) {
                     Text(stringResource(R.string.dialog_reactivate_confirm), color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { viewModel.dismissReactivationDialog() }) {
+                TextButton(enabled = habitId !in busyHabitIds, onClick = { viewModel.dismissReactivationDialog(state) }) {
                     Text(stringResource(R.string.action_cancel))
+                }
+            }
+        )
+    }
+
+    countPrompt?.takeIf { it.habitId == habitId && it.show && it.linkedMetrics.isNotEmpty() }?.let { prompt ->
+        com.dayforge.ui.components.PostCheckInDialog(
+            habitName = prompt.habitName, linkedMetrics = prompt.linkedMetrics,
+            submissionProgress = prompt.factPrompt?.submissionPhase,
+            savedSubmission = { prompt.factPrompt?.savedSubmissionForDisplay() },
+            onContinue = if (prompt.factPrompt?.submissionPhase != null) ({
+                try { viewModel.continueSavedCountMetrics(prompt, promptFrame) }
+                catch (error: Exception) {
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    android.widget.Toast.makeText(context, com.dayforge.ui.actionFailureMessage(context, error), android.widget.Toast.LENGTH_LONG).show()
+                }
+                Unit
+            }) else null,
+            onRecord = { values, neverAsk ->
+                try { viewModel.recordCountMetrics(prompt, values, neverAsk, promptFrame) }
+                catch (error: Exception) {
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    android.widget.Toast.makeText(context, com.dayforge.ui.actionFailureMessage(context, error), android.widget.Toast.LENGTH_LONG).show()
+                }
+            },
+            onSkip = { neverAsk ->
+                try { viewModel.skipCountMetrics(prompt, neverAsk, promptFrame) }
+                catch (error: Exception) {
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    android.widget.Toast.makeText(context, com.dayforge.ui.actionFailureMessage(context, error), android.widget.Toast.LENGTH_LONG).show()
+                }
+            },
+            onDismiss = {
+                try { viewModel.dismissCountMetrics(prompt, promptFrame) }
+                catch (error: Exception) {
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    android.widget.Toast.makeText(context, com.dayforge.ui.actionFailureMessage(context, error), android.widget.Toast.LENGTH_LONG).show()
                 }
             }
         )
@@ -114,9 +170,11 @@ fun HabitDetailScreen(
                 actions = {
                     IconButton(enabled = state.habit != null && !state.readError, onClick = {
                         if (state.habit?.habitType == HabitType.GOAL) {
-                            onEditGoalClick(habitId)
+                            com.dayforge.ui.navigateRenderedDatabaseInput(context, viewModel.fixedGraphConstruction,
+                                habitId, state.sourceSelection, onEditGoalClick, onEditGoalSelection)
                         } else {
-                            onEditClick(habitId)
+                            com.dayforge.ui.navigateRenderedDatabaseInput(context, viewModel.fixedGraphConstruction,
+                                habitId, state.sourceSelection, onEditClick, onEditHabitSelection)
                         }
                     }) {
                         Icon(
@@ -134,7 +192,7 @@ fun HabitDetailScreen(
             )
         }
     ) { paddingValues ->
-        if (state.readError) com.dayforge.ui.components.DataReadFailure(viewModel::retryRead,
+        if (state.readError) com.dayforge.ui.components.DataReadFailure({ viewModel.retryRead(state) },
             Modifier.fillMaxSize().padding(paddingValues))
         else Surface(
             modifier = Modifier
@@ -168,7 +226,7 @@ fun HabitDetailScreen(
                     Spacer(modifier = Modifier.weight(1f))
                     Switch(
                         checked = state.habit?.isActive ?: true,
-                        onCheckedChange = { viewModel.toggleActiveStatus() }
+                        onCheckedChange = { viewModel.toggleActiveStatus(state) }
                     )
                 }
 
@@ -198,7 +256,7 @@ fun HabitDetailScreen(
                         Switch(
                             checked = state.notificationEnabled,
                             onCheckedChange = { enabled ->
-                                state.preferenceClaim?.let { viewModel.toggleNotificationEnabled(it, enabled) }
+                                state.preferenceClaim?.let { viewModel.toggleNotificationEnabled(it, enabled, state) }
                             }
                         )
                     }
@@ -244,8 +302,9 @@ fun HabitDetailScreen(
                                     style = MaterialTheme.typography.bodySmall)
                             }
                             if (once.completed) {
-                                TextButton(onClick = { viewModel.undoCompletion() }, enabled = once.canChange) {
-                                    Text(stringResource(R.string.once_undo))
+                                TextButton(onClick = { viewModel.undoCompletion(state) }, enabled = once.canChange && habitId !in busyHabitIds) {
+                                    if (habitId in busyHabitIds) CircularProgressIndicator(Modifier.size(18.dp))
+                                    else Text(stringResource(R.string.once_undo))
                                 }
                             }
                         } else if (habit?.targetCycles != null) {

@@ -168,7 +168,7 @@ internal class NextStructuralCausalStore(private val database: HabitDatabase,
         val cache = proof?.hashes
         val key = ProofKey(table, where, args.toList())
         if (cache != null && cache.containsKey(key)) return cache[key]
-        val value = NextRequestSql.rowHash(sql, table, where, args)
+        val value = NextRequestSql.rowHash(database, table, where, args)
         if (cache != null && cache.size < 512) cache[key] = value
         return value
     }

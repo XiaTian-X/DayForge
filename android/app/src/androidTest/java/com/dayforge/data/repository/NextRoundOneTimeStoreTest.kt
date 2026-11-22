@@ -22,6 +22,75 @@ import org.junit.runner.RunWith
 /** Actual once CAS stays independent from round heads; real Room/auth/socket and cold restart. */
 @RunWith(AndroidJUnit4::class)
 class NextRoundOneTimeStoreTest : NextCoreRequestFixture() {
+    private val faults = OnceExistingFixtureFault()
+    init { storage.isolatedBuilder = { context ->
+        com.dayforge.data.local.HabitDatabaseProvider.build(context, storage.queryCallback, nativeFactory = faults)
+    } }
+    private val challengeReads = java.util.concurrent.atomic.AtomicInteger()
+    init { storage.queryCallback = object : androidx.room.RoomDatabase.QueryCallback {
+        override fun onQuery(sqlQuery: String, bindArgs: List<Any?>) {
+            if (sqlQuery.contains("next_challenge_")) challengeReads.incrementAndGet()
+        }
+    } }
+
+    private fun dashboard() = DashboardReadRepository(db, tokens, sessions,
+        ReplicaPresentationRepository(db, tokens, sessions), CountHistoryReader(db, tokens, sessions),
+        CheckHistoryReader(db, tokens, sessions))
+
+    @Test fun dashboardOnceSharesRoundAuditButRetainsOriginalCasAndFullFactValidation() = runBlocking<Unit> {
+        val (http, _) = channel { response(it) }; initialize(http, secondOnce = true); append(700)
+        val once = OneTimeRepository(db, tokens, sessions, preferences)
+        val reader = dashboard()
+        val tasks = db.habitDao().getVisibleHabitsOnce().filter { it.completionPolicy == "one_and_done" }
+        val before = db.withTransaction { nextRestartDatabaseProof(db) }
+        challengeReads.set(0)
+        val independent = tasks.associate { it.id to once.read(it.id, it.uuid) }
+        val repeated = challengeReads.get()
+        challengeReads.set(0)
+        val sharedRows = once.readBatch(tasks)
+        assertTrue("Homepage must not re-audit all rounds for each once card", challengeReads.get() < repeated)
+        assertEquals(independent.mapValues { it.value.copy(authority = null) }, sharedRows.mapValues { it.value.copy(authority = null) })
+        val shared = sharedRows.getValue(habit.id)
+        assertEquals(before, db.withTransaction { nextRestartDatabaseProof(db) })
+        val batch = reader.read(java.time.ZonedDateTime.now())
+        assertTrue(reader.publish(batch) {})
+        // The opaque batch ticket must retain its original CAS, not become a new toggle.
+        once.change(habit.id, false, shared.completionId, habit.uuid, shared.authority)
+        assertEquals("ONE_TIME_ACTION_EXPIRED", rejected {
+            once.change(habit.id, false, shared.completionId, habit.uuid, shared.authority)
+        }.message)
+        val after = once.readBatch(tasks).getValue(habit.id)
+        assertFalse(after.completed); assertTrue(after.canChange)
+        assertEquals(2, db.completionDao().getByHabitOnce(habit.id).size)
+        assertEquals(2, db.syncOutboxDao().getAll().size)
+        db.openHelper.writableDatabase.execSQL("UPDATE completions SET value=99 WHERE habitId=?", arrayOf(habit.id))
+        val damaged = db.withTransaction { nextRestartDatabaseProof(db) }
+        rejected { once.readBatch(tasks) }
+        assertEquals(damaged, db.withTransaction { nextRestartDatabaseProof(db) })
+    }
+
+    @Test fun onceParticipantCannotBorrowClosedOrChildScopeAndOldBatchCannotPublishAfterReauthentication() = runBlocking<Unit> {
+        val (http, _) = channel { response(it) }; initialize(http)
+        val once = OneTimeRepository(db, tokens, sessions, preferences)
+        var saved: RecurringDisplayReadScope? = null
+        RecurringDisplayReadScope.withSnapshot(db, tokens, sessions) { scope ->
+            saved = scope
+            assertFalse(once.readInTransaction(habit.id, habit.uuid, scope).completed)
+            coroutineScope {
+                assertTrue(async { runCatching { once.readInTransaction(habit.id, habit.uuid, scope) }.isFailure }.await())
+            }
+        }
+        db.withTransaction { rejected { once.readInTransaction(habit.id, habit.uuid, requireNotNull(saved)) } }
+        val reader = dashboard()
+        val batch = reader.read(java.time.ZonedDateTime.now())
+        val ticket = once.readBatch(listOf(habit)).getValue(habit.id)
+        tokens.saveLoginSession("replacement", "refresh", "member", id(1), false)
+        assertFalse(reader.publish(batch) { fail("Old account result published") })
+        rejected { once.change(habit.id, true, expectedUuid = habit.uuid, authority = ticket.authority) }
+        assertTrue(db.completionDao().getByHabitOnce(habit.id).isEmpty())
+        assertTrue(db.syncOutboxDao().getAll().isEmpty())
+    }
+
     private val json = Json { encodeDefaults = true }
     private fun localOnce() = OneTimeLocalIntentStore(db, tokens, sessions, preferences)
     private fun facts() = OneTimeAcceptedEventStore(db, tokens, sessions, localOnce())
@@ -35,7 +104,7 @@ class NextRoundOneTimeStoreTest : NextCoreRequestFixture() {
     private fun canonical(type: String, uuid: String, payload: JsonObject) = SyncV2Change(0, type, uuid, "upsert", 1,
         JsonObject(payload + mapOf("public_id" to JsonPrimitive(uuid), "revision" to JsonPrimitive(1),
             "created_at" to JsonPrimitive(time), "updated_at" to JsonPrimitive(time), "deleted_at" to JsonNull)), time)
-    private suspend fun initialize(http: NextSyncHttp) {
+    private suspend fun initialize(http: NextSyncHttp, secondOnce: Boolean = false) {
         register()
         db.withTransaction {
             db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=1 WHERE id=1")
@@ -43,14 +112,17 @@ class NextRoundOneTimeStoreTest : NextCoreRequestFixture() {
                 completionPolicy = "one_and_done", oneTimeConfirmedVersion = 0,
                 appearance = ObjectAppearance(IconReference.Role("task.custom"), "#123456", "object"))
             db.habitDao().update(habit)
+            if (secondOnce) db.habitDao().insert(habit.copy(id = 0, uuid = id(990), name = "Second once"))
             db.openHelper.writableDatabase.execSQL("UPDATE sync_control SET suppressOutbox=0 WHERE id=1")
         }
         val meta = metadata()
-        merger(http).bootstrap(access(), null, RoundSyncBootstrapResponse(listOf(
-            canonical("plan_node", habit.uuid, NextStructureMapper.writePlan(habit)),
-            canonical("plan_node", timerHabit.uuid, NextStructureMapper.writePlan(timerHabit)),
-            canonical("metric", metric.uuid, NextStructureMapper.writeMetric(metric))), 20, time,
-            listOf(OneTimeProjection(habit.uuid, OneTimeState(0, null, null))), 1, meta.checkpoints, meta.births))
+        val plans = db.habitDao().getVisibleHabitsOnce()
+        merger(http).bootstrap(access(), null, RoundSyncBootstrapResponse(plans.map {
+            canonical("plan_node", it.uuid, NextStructureMapper.writePlan(it))
+        } + canonical("metric", metric.uuid, NextStructureMapper.writeMetric(metric)), 20, time,
+            plans.filter { it.completionPolicy == "one_and_done" }.map {
+                OneTimeProjection(it.uuid, OneTimeState(0, null, null))
+            }, 1, meta.checkpoints, meta.births))
     }
     private suspend fun command(n: Int): OneTimeLocalCommand {
         val state = localOnce().read(habit.uuid).queue.optimisticState
@@ -161,13 +233,12 @@ class NextRoundOneTimeStoreTest : NextCoreRequestFixture() {
         rejected { store(http).accept(delivery.copy(challengeMetadata = null)) }
         rejected { store(http).accept(delivery.copy(challengeMetadata = metadata(true).copy(births =
             listOf(ChallengeBirth("activity_event", row.entityUuid, initial().head))))) }
-        val faults = listOf("BEFORE INSERT ON next_challenge_rounds BEGIN SELECT RAISE(IGNORE); END",
-            "AFTER INSERT ON next_challenge_rounds BEGIN UPDATE completions SET value=99; END",
-            "AFTER INSERT ON next_acceptances BEGIN UPDATE next_challenge_state SET metadataHash='bad'; END",
-            "AFTER INSERT ON next_acceptances BEGIN UPDATE next_sync_state SET cursor=cursor+1,generation=generation+1; UPDATE next_challenge_state SET cursor=cursor+1,generation=generation+1; END")
-        for (fault in faults) {
-            db.openHelper.writableDatabase.execSQL("CREATE TRIGGER round_once_fault $fault")
-            rejected { store(http).accept(delivery) }; db.openHelper.writableDatabase.execSQL("DROP TRIGGER round_once_fault")
+        for (kind in listOf(OnceExistingFixtureFault.Kind.ROUND_IGNORE, OnceExistingFixtureFault.Kind.ROUND_FACT,
+            OnceExistingFixtureFault.Kind.RECEIPT_METADATA, OnceExistingFixtureFault.Kind.RECEIPT_CURSORS)) {
+            val targetActivity = if (kind in setOf(OnceExistingFixtureFault.Kind.ROUND_IGNORE,
+                OnceExistingFixtureFault.Kind.ROUND_FACT)) timerHabit.uuid else habit.uuid
+            faults.arm(kind, OnceExistingFixtureFault.Targets(requestId = row.operationId, activityUuid = targetActivity))
+            faults.requireFailure(rejected { store(http).accept(delivery) }); faults.clear()
             pending(row); assertEquals(before, localOnce().read(habit.uuid)); assertEquals(1, count("next_challenge_rounds"))
             assertNull(db.syncOutboxDao().getState("activity_event", row.entityUuid))
         }
@@ -177,11 +248,12 @@ class NextRoundOneTimeStoreTest : NextCoreRequestFixture() {
     @Test fun realDeferredFinalCommitFailurePreservesFactQueueHistoryAndColdExactRetry() = runBlocking {
         val (http, _) = channel { response(it, true) }; initialize(http); val row = append(140)
         val delivery = store(http).send(access(), row.operationId)!!; val before = localOnce().read(habit.uuid)
-        db.openHelper.writableDatabase.execSQL("CREATE TABLE round_once_commit(value TEXT REFERENCES next_challenge_rounds(roundUuid) DEFERRABLE INITIALLY DEFERRED)")
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER round_once_final AFTER INSERT ON next_acceptances BEGIN INSERT INTO round_once_commit VALUES('${id(999)}'); END")
-        rejected { store(http).accept(delivery) }; storage.reopen(); pending(row)
-        assertEquals(before, localOnce().read(habit.uuid)); assertEquals(0, count("round_once_commit")); assertEquals(1, count("next_challenge_rounds"))
-        db.openHelper.writableDatabase.execSQL("DROP TRIGGER round_once_final"); db.openHelper.writableDatabase.execSQL("DROP TABLE round_once_commit")
+        faults.arm(OnceExistingFixtureFault.Kind.DEFERRED_END, OnceExistingFixtureFault.Targets(requestId = row.operationId))
+        faults.requireFailure(rejected { store(http).accept(delivery) })
+        storage.reopen(); assertTrue(db.openHelper.writableDatabase.isOpen)
+        faults.requireColdRollback(); pending(row)
+        assertEquals(before, localOnce().read(habit.uuid)); assertEquals(1, count("next_challenge_rounds"))
+        faults.clear()
         storage.reopen(); assertEquals(committed(), store(http).accept(delivery)); storage.reopen()
         assertEquals(replayed(), store(http).sendAndAccept(access(), row.operationId))
     }
@@ -189,17 +261,15 @@ class NextRoundOneTimeStoreTest : NextCoreRequestFixture() {
     @Test fun producerAndFirstJournalFaultsDoNotCommitSourceOrAlterCheckpointAndRetryWorks() = runBlocking {
         val (http, server) = channel { response(it) }; initialize(http)
         val cmd = command(150); val ticket = producer().captureRounds()
-        val faults = listOf("BEFORE INSERT ON next_request_origins BEGIN SELECT RAISE(IGNORE); END",
-            "AFTER INSERT ON next_request_origins BEGIN UPDATE next_sync_state SET cursor=cursor+1,generation=generation+1; UPDATE next_challenge_state SET cursor=cursor+1,generation=generation+1; END")
-        for (fault in faults) {
-            db.openHelper.writableDatabase.execSQL("CREATE TRIGGER round_once_birth $fault")
-            rejected { localOnce().appendRounds(ticket, cmd) }; db.openHelper.writableDatabase.execSQL("DROP TRIGGER round_once_birth")
+        for (kind in listOf(OnceExistingFixtureFault.Kind.ORIGIN_IGNORE, OnceExistingFixtureFault.Kind.ORIGIN_CURSORS)) {
+            faults.arm(kind, OnceExistingFixtureFault.Targets(requestId = cmd.pending.operationId))
+            faults.requireFailure(rejected { localOnce().appendRounds(ticket, cmd) }); faults.clear()
             assertEquals(0, count("completions")); assertEquals(0, count("local_fact_submissions")); assertEquals(0, count("next_request_origins")); assertEquals(0, db.syncOutboxDao().count())
         }
         assertFalse(localOnce().appendRounds(ticket, cmd).alreadyStored); assertTrue(localOnce().appendRounds(ticket, cmd).alreadyStored)
         val row = db.syncOutboxDao().getAll().single()
-        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER round_once_journal AFTER INSERT ON next_transmissions BEGIN UPDATE next_sync_state SET cursor=cursor+1,generation=generation+1; UPDATE next_challenge_state SET cursor=cursor+1,generation=generation+1; END")
-        rejected { store(http).sendAndAccept(access(), row.operationId) }; db.openHelper.writableDatabase.execSQL("DROP TRIGGER round_once_journal")
+        faults.arm(OnceExistingFixtureFault.Kind.JOURNAL_CURSORS, OnceExistingFixtureFault.Targets(requestId = row.operationId))
+        faults.requireFailure(rejected { store(http).sendAndAccept(access(), row.operationId) }); faults.clear()
         pending(row); assertEquals(0, count("next_transmissions")); assertEquals(0, count("one_time_transmissions")); assertTrue(server.requests.all { it.path.endsWith("/identity") })
         assertEquals(committed(), store(http).sendAndAccept(access(), row.operationId))
     }
