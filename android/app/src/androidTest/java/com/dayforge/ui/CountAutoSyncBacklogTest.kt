@@ -115,6 +115,7 @@ class CountAutoSyncBacklogTest {
     private var heldRequest: String? = null
     private var heldWorkId: String? = null
     private var ackOverlap: Boolean? = null
+    private var recordTouch: JsonObject? = null
     private val releaseOnDown = AtomicReference<Rect?>()
     private var originalWindowCallback: Pair<Window, Window.Callback>? = null
     private var aRef: CountCommandStore.Reference? = null
@@ -298,8 +299,21 @@ class CountAutoSyncBacklogTest {
         times["prompt_candidate_ns"] = seen.observedAt
         server.metrics.forEachIndexed { index, metric -> observed.replaceText("${metric.name} (${metric.unit})", (41.125 + index).toString()) }
         observed.dismissImeIfVisible { value -> evidence?.let { File(it, "ime.json").writeText(value.toString()) } }
-        val ready = observed.seen("metric_ready", now()) { it.button(label(R.string.post_checkin_record))?.let { node -> node.enabled && node.fullyVisible } == true }
-        val input = observed.tap(requireNotNull(ready.snapshot.button(label(R.string.post_checkin_record))))
+        val title = label(R.string.post_checkin_title)
+        val action = label(R.string.post_checkin_record)
+        fun recordButton(snapshot: CountJourneyWindows.Snapshot): CountJourneyWindows.Node? {
+            val currentFrame = vm.postCheckInFrame.value
+            check(currentFrame?.publication === frame.publication && frame.publication.isCurrentInMemory() &&
+                currentFrame?.value?.factPrompt === prompt) { "Original required metric prompt expired" }
+            if (snapshot.window != seen.snapshot.window || !snapshot.focused ||
+                snapshot.imeVisible != false || snapshot.imeBottom != 0 || !snapshot.text(title) ||
+                snapshot.nodes.mapNotNull { it.editable }.sorted() != listOf("41.125", "42.125")) return null
+            return snapshot.button(action)?.takeIf { it.click && it.enabled && it.fullyVisible }
+        }
+        val input = withTimeout(45_000) {
+            observed.seen("metric_ready", now()) { recordButton(it) != null }
+            observed.tapCurrentDialog(seen.snapshot.window, ::recordButton) { recordTouch = it }
+        }
         times["metric_input_ns"] = input.started
         withTimeout(45_000) { vm.postCheckInFrame.first { it?.value == null } }
         val child = requireNotNull(prompt.submittedCommand)
@@ -504,6 +518,7 @@ class CountAutoSyncBacklogTest {
         val server = peer?.snapshot()
         File(directory, "journey.json").writeText(buildJsonObject {
             put("format", 1); put("class", "com.dayforge.ui.CountAutoSyncBacklogTest"); put("pid", Process.myPid())
+            put("record_touch", recordTouch ?: JsonNull)
             put("stage", stage); put("error_class", error?.javaClass?.name?.let(::JsonPrimitive) ?: JsonNull)
             put("body_error", bodyFailure?.javaClass?.name?.let(::JsonPrimitive) ?: JsonNull)
             put("cleanup_error", cleanupFailure?.javaClass?.name?.let(::JsonPrimitive) ?: JsonNull)

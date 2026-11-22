@@ -8,11 +8,14 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver
 import android.view.Window
+import android.view.accessibility.AccessibilityWindowInfo
 import android.view.inspector.WindowInspector
 import androidx.annotation.RequiresApi
 import androidx.core.view.WindowInsetsCompat
 import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.ui.platform.ViewRootForTest
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsNode
@@ -62,7 +65,7 @@ internal class CountJourneyWindows(private val directory: File) {
     }
     data class Input(val downTime: Long, val started: Long, val downReturned: Long, val upReturned: Long)
     data class Dispatch(val downTime: Long, val action: Int, val enteredAt: Long, val returnedAt: Long,
-        val busyBefore: Boolean, val busyAfter: Boolean)
+        val busyBefore: Boolean, val busyAfter: Boolean, val window: Int, val rawX: Float, val rawY: Float, val handled: Boolean)
     private val inputCallbacks = IdentityHashMap<Window, Pair<Window.Callback, Window.Callback>>()
     private val dispatched = arrayListOf<Dispatch>()
     /** Installed before setContent/first input. Transparent original Window dispatch, never
@@ -74,8 +77,10 @@ internal class CountJourneyWindows(private val directory: File) {
         val observed = object : Window.Callback by original {
             override fun dispatchTouchEvent(event: MotionEvent): Boolean {
                 val entered = SystemClock.elapsedRealtimeNanos(); val before = busy()
+                val rawX = event.rawX; val rawY = event.rawY
                 val handled = original.dispatchTouchEvent(event)
-                dispatched += Dispatch(event.downTime, event.actionMasked, entered, SystemClock.elapsedRealtimeNanos(), before, busy())
+                dispatched += Dispatch(event.downTime, event.actionMasked, entered, SystemClock.elapsedRealtimeNanos(),
+                    before, busy(), System.identityHashCode(window.decorView), rawX, rawY, handled)
                 return handled
             }
         }
@@ -367,6 +372,95 @@ internal class CountJourneyWindows(private val directory: File) {
             put("draw_samples", synchronized(lock) { draws.size })
         }.toString())
     }
+    private fun dialogOf(view: View): Window? {
+        if (view is DialogWindowProvider) return view.window
+        if (view is ViewGroup) for (index in 0 until view.childCount) {
+            dialogOf(view.getChildAt(index))?.let { return it }
+        }
+        return null
+    }
+
+    @Suppress("DEPRECATION")
+    private fun systemAllowsTouch(windows: List<AccessibilityWindowInfo>, point: Offset): Boolean = try {
+        fun contains(window: AccessibilityWindowInfo): Boolean {
+            val x = point.x.toInt(); val y = point.y.toInt()
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                return android.graphics.Region().also(window::getRegionInScreen).contains(x, y)
+            }
+            return android.graphics.Rect().also(window::getBoundsInScreen).contains(x, y)
+        }
+        val appWindow = windows.singleOrNull {
+            it.type == AccessibilityWindowInfo.TYPE_APPLICATION && it.isFocused && contains(it)
+        }
+        appWindow != null && windows.none {
+            (it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD || it.layer > appWindow.layer) && contains(it)
+        }
+    } finally {
+        windows.forEach { it.recycle() }
+    }
+
+    /** Collect system hit-test evidence after the screenshot, then resample the original dialog
+     * before the only real DOWN/UP. The caller supplies the same bounded wait as the screenshot. */
+    suspend fun tapCurrentDialog(windowId: Int, button: (Snapshot) -> Node?, witness: (JsonObject) -> Unit): Input {
+        val ui = InstrumentationRegistry.getInstrumentation().uiAutomation
+        val flag = android.accessibilityservice.AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+        val addFlag = ui.serviceInfo.flags and flag == 0
+        val dialog = withContext(Dispatchers.Main.immediate) {
+            val root = WindowInspector.getGlobalWindowViews().single { System.identityHashCode(it) == windowId }
+            checkNotNull(dialogOf(root)).also {
+                check(it.decorView === root)
+                if (!inputCallbacks.containsKey(it)) observeInput(it) { false }
+            }
+        }
+        fun pick(): Node? = snapshot(dialog.decorView)?.let(button)
+        var selected: Node? = null
+        var pickedAt: Long? = null
+        var attempt: Input? = null
+        var dispatch: List<Dispatch> = emptyList()
+        try {
+            if (addFlag) ui.serviceInfo = ui.serviceInfo.apply { flags = flags or flag }
+            while (true) {
+                val candidate = withContext(Dispatchers.Main.immediate) { pick() }
+                if (candidate != null && systemAllowsTouch(ui.windows, candidate.bounds.center)) {
+                    val fresh = withContext(Dispatchers.Main.immediate) {
+                        pick()?.takeIf { it.id == candidate.id && it.bounds == candidate.bounds }?.also {
+                            pickedAt = SystemClock.elapsedRealtimeNanos()
+                        }
+                    }
+                    if (fresh != null) {
+                        selected = fresh
+                        val input = tap(fresh)
+                        attempt = input
+                        dispatch = dispatches(input).filter { it.window == windowId }
+                        check(dispatch.map { it.action } == listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP) &&
+                            dispatch.all { it.handled && fresh.bounds.contains(Offset(it.rawX, it.rawY)) }) {
+                            "The single Record touch was not handled in the original dialog button bounds"
+                        }
+                        return input
+                    }
+                }
+                kotlinx.coroutines.android.awaitFrame()
+            }
+        } finally {
+            try {
+                if (addFlag) ui.serviceInfo = ui.serviceInfo.apply { flags = flags and flag.inv() }
+            } finally {
+                witness(buildJsonObject {
+                    put("window", windowId); put("fresh_pick_ns", pickedAt?.let(::JsonPrimitive) ?: JsonNull)
+                    put("bounds", selected?.bounds?.let { b -> JsonArray(listOf(b.left, b.top, b.right, b.bottom).map(::JsonPrimitive)) } ?: JsonNull)
+                    put("input_start_ns", attempt?.started?.let(::JsonPrimitive) ?: JsonNull)
+                    put("up_returned_ns", attempt?.upReturned?.let(::JsonPrimitive) ?: JsonNull)
+                    put("down_time_ms", attempt?.downTime?.let(::JsonPrimitive) ?: JsonNull)
+                    put("dispatch", JsonArray(dispatch.map { event -> buildJsonObject {
+                        put("action", event.action); put("window", event.window); put("down_time_ms", event.downTime)
+                        put("raw_x", event.rawX); put("raw_y", event.rawY); put("handled", event.handled)
+                        put("entered_ns", event.enteredAt); put("returned_ns", event.returnedAt)
+                    } }))
+                })
+            }
+        }
+    }
+
     fun tap(node: Node): Input {
         check(node.click && node.enabled)
         return touch(node.bounds)
