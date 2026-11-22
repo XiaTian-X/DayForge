@@ -59,11 +59,16 @@ class CiCapacityTest(unittest.TestCase):
         self.assertIn("uv sync --frozen", verify)
         self.assertIn("uv run --frozen python -m pytest -p tests.warning_budget", verify)
 
-    def test_android_hosted_job_and_case_deadlines_are_unchanged(self):
+    def test_hosted_android_build_has_time_to_report_before_the_step_and_job_end(self):
         android = self.job("android")
-        self.assertIn("    timeout-minutes: 25\n", android)
-        self.assertIn("        timeout-minutes: 20\n", android)
-        self.assertIn("        run: ./tools/verify android-build\n", android)
+        self.assertEqual(["50"], re.findall(r"^    timeout-minutes: (\d+)$", android, re.MULTILINE))
+        self.assertIn(
+            '        timeout-minutes: 45\n'
+            '        env:\n'
+            '          DAYFORGE_BUILD_TIMEOUT_SECONDS: "2400"\n'
+            '        run: ./tools/verify android-build\n',
+            android,
+        )
         runner = (ROOT / "tools/run_android_tests.py").read_text()
         self.assertIn(
             '"-Pandroid.testInstrumentationRunnerArguments.timeout_msec=150000"', runner
